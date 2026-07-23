@@ -327,8 +327,8 @@ Shipped alongside PR 2 middleware as a separate PR. Adds:
   `DataClass.DESCRIPTION` (MEDIUM). Rationale: the column contains
   fixed system prose — the consent prompt text the user saw. The taxonomy
   has no non-sensitive-text class; DESCRIPTION is the conservative choice.
-  The field is intentionally **omitted from `privacy_status` and `privacy_log`
-  read payloads** so those tools remain LOW-tier — `grant_prompt` lives only
+  The field is intentionally **omitted from `privacy(view="status")` and
+  `privacy(view="log")` read payloads** so those projections remain LOW-tier — `grant_prompt` lives only
   in the database for audit traceability, not on the wire.
 
 ### What is unchanged by PR 3
@@ -416,7 +416,7 @@ Because both functions share the same `_TRANSFORMS` table, a change to how CRITI
 **This PR is redaction-only.** Specifically:
 
 - CRITICAL-tier columns (`ACCOUNT_IDENTIFIER`, `INSTITUTION_ACCOUNT_NUMBER`, `ROUTING_NUMBER`) are **always masked** in `sql_query` results, exactly as the typed tools mask them (account number → `****<last4>`, routing number → `*****`).
-- HIGH/MEDIUM/LOW columns (amounts, descriptions, dates, categories) **pass through in the clear**, matching the current behavior of `transactions_search` and other typed tools.
+- HIGH/MEDIUM/LOW columns (amounts, descriptions, dates, categories) **pass through in the clear**, matching the current behavior of `transactions(account=..., start=..., end=..., merchant=..., category=..., min_amount=..., max_amount=..., text=..., limit=..., cursor=...)` and other typed tools.
 - There is **no consent gate** on `sql_query`. The consent enforcement gate is deferred project-wide. When the gate un-defers, `sql_query` will inherit it automatically because it routes column → class → `_TRANSFORMS`, the same path the typed surface uses.
 - There are **no degraded/refusal responses**. Those were explicitly dropped from the PR 4 scope.
 
@@ -471,10 +471,10 @@ post-middleware assertion at `tests/scenarios/test_privacy_middleware_perf.py`.
 
 | Tool / command | Service method | Tier | Shape |
 |---|---|---|---|
-| `transactions_get` | `TransactionService.get(limit=100)` | medium | ~100-row list |
-| `reports_spending` | `SpendingService.by_category()` | low | aggregate |
-| `accounts` | `AccountService.list_accounts()` | medium | ~4-row list (CRITICAL fields) |
-| `reports_budget` (removed) | `BudgetService.status()` | low | aggregate + per-budget rows — tool removed (synthesized from `BudgetService`, not a `reports.*` view); re-registers via the report framework when M3C ships a `reports.budget` view |
-| `reports_networth_history` | `NetworthService.history()` | medium | time-series |
+| `transactions` | `TransactionService.get(limit=100)` | high (static) | ~100-row list |
+| `reports(report_id="core:spending")` | `ReportCatalog.execute()` → `spending_trend` | high | transaction-amount aggregates |
+| `accounts` | `AccountService.list_accounts()` | dynamic; maximum critical | ~4-row list (critical fields masked) |
+| Budget reporting (not registered) | `BudgetService.status()` | low | aggregate + per-budget rows — synthesized from `BudgetService`, not a `reports.*` view; it registers through the report framework when M3C ships a `reports.budget` view |
+| `reports(report_id="core:networth_history", parameters={"from_date":"2026-01-01","to_date":"2026-06-30"})` | `NetworthService.history()` | high | balance time-series |
 
 Concrete numbers are populated by Phase 9 after the post-middleware run.

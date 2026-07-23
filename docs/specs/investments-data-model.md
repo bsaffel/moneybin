@@ -25,8 +25,9 @@ lot/holding derivation.
 
 The crucial scoping insight (from the overview): **realized gain/loss is computed
 entirely from the ledger** — a sale's proceeds versus the cost of the lots it
-consumes, both recorded events — so it requires no market price. Only *unrealized*
-gain/loss needs a current price, which is Pillar C's job.
+consumes, both recorded events — so it requires no market price. *Unrealized*
+gain/loss uses the broker-carried close shipped in Pillar C.1; external feeds and
+the daily valued series remain later Pillar C work.
 
 Related specs:
 - [`investments-overview.md`](investments-overview.md) — umbrella; vision, pillars, cross-cutting contracts
@@ -142,7 +143,8 @@ Related specs:
     (deferred to M1K). Named **`currency_code`** per `multi-currency.md`'s canonical
     column-name decision (matching `core.fct_transactions` / `core.dim_accounts`).
 16. **CLI commands** under a top-level `investments` group (see CLI Interface).
-17. **MCP tools** under the `investments_*` namespace (see MCP Interface).
+17. **MCP reads** through `investments(view=...)`, plus the three admitted
+    investment write tools (see MCP Interface).
 18. **All commands support `--output json`** for non-interactive / agent parity.
 
 ## Data Model
@@ -384,7 +386,7 @@ Columns:
 > already sends. `valuation_status` says which figure the reader is holding:
 > `valued` (the close is today's), `carried_forward` (the most recent close is
 > older), `unpriced` (no close resolved), or `withheld` (the share count is known
-> wrong — an unreconciled split, a broker divergence). The last two publish NULL
+> wrong — an unreconciled split or broker divergence). The last two publish NULL
 > rather than zero, so a total never silently absorbs a position it could not
 > value. External feeds and manual overrides (C.2) and the daily valued series
 > `core.fct_holdings_daily` (C.3) remain designed.
@@ -681,7 +683,7 @@ moneybin investments holdings [--account <id|name>] [--output json|table]
 - Current positions: quantity, cost basis, average cost, market value, unrealized
   gain, and the date and age of the close each value rests on. A position with no
   usable price, or one whose share count is known wrong, renders `-` rather than a
-  zero; its `status` column says which.
+  zero; its status column says which.
 
 ```
 moneybin investments lots [--account <id|name>] [--security <ticker|name>] \
@@ -753,12 +755,7 @@ portfolio market_value=27850.00 USD max_days_since_observed=3
 The first column is `security_id` (a 12-hex catalog id), not a ticker. Each row
 carries its own currency code after the money figures. An absent figure renders
 `-`, matching `avg_cost`'s existing NULL rendering — a blank column reads as zero,
-and NULL here means "no number", not "worth nothing". The `portfolio` line prints
-whenever there are result rows: a single total when every priced position shares
-one currency, a per-currency split otherwise, plus `max_days_since_observed` (the
-age of the stalest close behind any published figure). The warning goes to stderr
-and is suppressed by `--quiet`; it fires only when at least one row is `unpriced`
-or `withheld`.
+and NULL here means "no number", not "worth nothing".
 
 ```
 $ moneybin investments gains --account fidelity_brokerage --from 2024-01-01
@@ -772,30 +769,33 @@ Date         Security  Qty     Proceeds    Basis       Gain/Loss   Term
 
 ## MCP Interface
 
-Namespace `investments_*`, following [`mcp-architecture.md`](mcp-architecture.md)
-conventions (response envelope, sensitivity tiers). Functional parity with the CLI
-(same outcomes reachable), not 1:1 naming.
+The `investments` tool selects a read projection with `view`, following
+[`mcp-architecture.md`](mcp-architecture.md) conventions (response envelope,
+sensitivity tiers). Functional parity with the CLI means the same outcomes are
+reachable, not that callback names mirror command names.
 
 ### Read tools
 
-**`investments`** — List ledger events.
-- Params: `account` (optional), `security` (optional), `type` (optional), `from`/`to` (optional DATE)
+**`investments(view="events", ...)`** — List ledger events.
+- Params: `account` (optional), `security` (optional), `start`/`end` (optional DATE), `limit`, and `cursor`
 - Sensitivity: `high` (derived from field classification — quantity/price/amount/fees are `TXN_AMOUNT`)
 
-**`investments_holdings`** — Current positions with cost basis.
-- Params: `account` (optional)
+**`investments(view="holdings", ...)`** — Current positions with cost basis and
+broker-carried valuation fields.
+- Params: `account` (optional), `security` (optional), `limit`, and `cursor`
 - Sensitivity: `high` (cost basis / average cost are `BALANCE`-classified)
 
-**`investments_lots`** — Open/closed lots.
-- Params: `account` (optional), `security` (optional), `open_only` (BOOLEAN, default true)
+**`investments(view="lots", ...)`** — Open/closed lots.
+- Params: `account` (optional), `security` (optional), `open_only` (optional
+  BOOLEAN; defaults to `true` when omitted), `limit`, and `cursor`
 - Sensitivity: `high` (cost basis fields are `BALANCE`-classified)
 
-**`investments_gains`** — Realized gain/loss (1099-B surface).
-- Params: `account` (optional), `security` (optional), `from`/`to` (optional DATE), `term` (optional)
+**`investments(view="gains", ...)`** — Realized gain/loss (1099-B surface).
+- Params: `account` (optional), `security` (optional), `start`/`end` (optional DATE), `limit`, and `cursor`
 - Sensitivity: `high` (proceeds/cost basis/gain-loss are `BALANCE`-classified)
 
-**`investments_securities`** — The catalog.
-- Params: `security_type` (optional)
+**`investments(view="securities", ...)`** — The catalog.
+- Params: `security` (optional), `limit`, and `cursor`
 - Sensitivity: `low` (reference data, no amounts)
 
 ### Write tools
@@ -813,53 +813,39 @@ so a retry cannot double-insert. The one soft exception is an unresolved or
 ambiguous *security* ref: that event is skipped and reported in `error_details`,
 and the rest of the batch still commits.
 
+Registered top-level schema: `investments_record(events=[...])`. `events` is
+the sole required top-level field and must be an array; no other top-level
+fields are accepted. Each event uses the item contract above (`account`, `type`,
+and `date` required; the remaining event fields are optional by event type).
+
 **`investments_securities_set`** — Shape 1b (entity upsert). Create-or-update one
 catalog entry, including its `cost_basis_method` per-security override.
+
+Registered top-level schema: `coingecko_id`, `cost_basis_method`,
+`currency_code`, `cusip`, `exchange`, `figi`, `is_cash_equivalent`, `isin`,
+`name`, `security_id`, `security_type`, and `ticker`. All 12 fields are optional
+in the tool schema and no other top-level fields are accepted. Creating a row
+(`security_id` omitted) requires `name` and `security_type`; updating an
+existing row uses `security_id` and forbids changing `security_type`.
 
 **`investments_lots_select`** — Shape 1a (collection state-set). Set the full set of
 `(lot_id, quantity)` selections for one disposal (delete by omission); an empty
 `selections=[]` clears all overrides and reverts the disposal to FIFO.
+
+Registered top-level schema:
+`investments_lots_select(disposal_txn_id=..., selections=[...])`. Both fields
+are required and no other top-level fields are accepted. Each selection is a
+`{"lot_id": ..., "quantity": "..."}` object.
 
 The **per-account default** cost-basis method is a field on `accounts_set`
 (`default_cost_basis_method`), not a separate tool — same reasoning as the CLI.
 
 ### Response envelope
 
-Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
-`investments_holdings`:
-
-```json
-{
-  "summary": {
-    "total_count": 3,
-    "sensitivity": "high",
-    "display_currency": "USD"
-  },
-  "data": {
-    "rows": [
-      {
-        "account_id": "fidelity_brokerage",
-        "security_id": "a3f19c02b8e1",
-        "quantity": "15.0000000000",
-        "cost_basis": "2475.00",
-        "average_cost": "165.0000000000",
-        "currency_code": "USD",
-        "market_value": "2850.00",
-        "unrealized_gain": "375.00",
-        "price_date": "2026-07-19",
-        "price_source": "plaid",
-        "days_since_observed": 0,
-        "valuation_status": "valued"
-      }
-    ],
-    "max_days_since_observed": 3,
-    "total_market_value": "27850.00",
-    "market_value_by_currency": {"USD": "27850.00"},
-    "warnings": ["1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (the share count is known wrong)."]
-  },
-  "actions": ["Use investments_lots for per-lot basis", "Use investments_gains for realized gain/loss"]
-}
-```
+`investments(view="holdings")` returns the standard envelope from
+[`mcp-architecture.md`](mcp-architecture.md), with typed result rows and runtime
+warnings or next-action hints where applicable. The current registry advertises no
+output schema, so this spec does not freeze a JSON response object.
 
 ## Testing Strategy
 
@@ -926,7 +912,7 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 
 ## Out of Scope
 
-- **Market-price valuation / unrealized gain** — Pillar C (`investments-price-feeds.md`).
+- **External price feeds, manual overrides, and daily valuation history** — Pillar C.2/C.3 (`investments-price-feeds.md`); broker-carried close valuation shipped in C.1.
 - **Holdings in net worth** — Pillar D (`investments-net-worth.md`).
 - **Plaid / OFX import** — separate children; each adds its own provider-shaped raw table + staging model into the core union (Requirement 7).
 - **Options, margin, short positions, derivatives** — future.
@@ -956,7 +942,7 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - `src/moneybin/services/investment_service.py` — security resolution, manual entry, method election, lot selection (composes the repos)
 - `src/moneybin/privacy/payloads/investments.py` — response payload shapes backing the field-classification-derived sensitivity tiers (MCP Interface)
 - `src/moneybin/cli/commands/investments/` — `investments` command group (`__init__.py` for `add`/`list`/`holdings`/`gains`, `securities.py`, `lots.py`)
-- `src/moneybin/mcp/tools/investments.py` — `investments_*` tools
+- `src/moneybin/mcp/tools/investments.py` — investment MCP handlers
 - `tests/moneybin/test_services/test_investment_service.py`, `tests/moneybin/test_cli/test_investments.py`,
   `tests/moneybin/test_investments/test_cost_basis_engine.py`, `tests/moneybin/test_investments/test_sqlmesh_loader.py`,
   `tests/moneybin/test_investments/test_investment_models_transform.py`, `tests/moneybin/test_investments_schema.py`,
@@ -975,7 +961,8 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - `src/moneybin/sql/schema/app_account_settings.sql` — add the `default_cost_basis_method` column for fresh installs (the migration covers existing databases)
 - `src/moneybin/repositories/account_settings_repo.py` — extend `AccountSettingsRepo.set()` and `_ACCOUNT_SETTINGS_COLUMNS` with the new column
 - `src/moneybin/tables.py` — add table constants (`DIM_SECURITIES`, `FCT_INVESTMENT_TRANSACTIONS`, `FCT_INVESTMENT_LOTS`, `FCT_REALIZED_GAINS`, `DIM_HOLDINGS`)
-- `src/moneybin/privacy/taxonomy.py` — field classifications backing the `investments_*` tools' sensitivity tiers
+- `src/moneybin/privacy/taxonomy.py` — field classifications backing the
+  investment MCP handlers' sensitivity tiers
 - `src/moneybin/metrics/registry.py` — instrumentation for ingestion + cost-basis runs (per `observability.md`)
 - `docs/specs/account-management.md` — document the `accounts set` / `accounts_set` cost-basis-method extension + the new `app.account_settings` column
 - `docs/specs/INDEX.md`, `docs/roadmap.md` — status + milestone rows

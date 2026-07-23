@@ -35,11 +35,11 @@ Two sub-forms determined by the cardinality of the call's input.
 - **Form:** `<entity>_set(scope, full_state)` — typically a list or map.
 - **Delete handling:** by omission. NO paired `_delete` tool.
 - **Examples:**
-  - `investments_lots_select(disposal_txn_id, selections=[...])` — the full
+  - `investments_lots_select(disposal_txn_id=..., selections=[...])` — the full
     specific-identification lot selection for one disposal.
-  - `transactions_categorize_rules_set(targets=[...])` — confirmed rule target
+  - `transactions_categorize_rules_set(rules=[...])` — confirmed rule definition
     state as one auditable batch.
-  - `import_labels_set(import_id, labels=[...])`.
+  - `import_labels_set(import_id=..., labels=[...])`.
 
 **1b. Entity upsert / partial update.**
 
@@ -51,8 +51,8 @@ Two sub-forms determined by the cardinality of the call's input.
   static risk and confirms only the destructive validated branch. Use a paired
   `_delete` when those contracts materially differ.
 - **Examples:**
-  - `accounts_set(account_id, ...)` — partial update of one account's settings.
-  - `investments_securities_set(security_id, ...)` — create or update one
+  - `accounts_set(account_id=..., ...)` — partial update of one account's settings.
+  - `investments_securities_set(security_id=..., ...)` — create or update one
     securities-catalog entry.
 
 **Distinguishing 1a vs 1b at design time:**
@@ -87,8 +87,9 @@ and `note_delete` variants inside one registered tool.
 - **Test:** the operation is an event, not a state change. Has timing and side effects. Reversibility lives in an audit log, not in a paired "undo" tool.
 - **Form:** `<entity>_<verb>(...)`. The verb names what happens, not the entity's resulting state.
 - **Examples:**
-  - `import_files(paths, refresh, force)` — batch import event.
-  - `sync_pull(institution, force, refresh)` — pull from a connector.
+  - `import_files(paths=[...], refresh=..., force=...)` — batch import event.
+  - `sync_pull(institution=...)` — pull from a connector; the tool refreshes
+    automatically after changed raw state.
   - `refresh_run()` — execute the refresh pipeline.
 
 Batch tools with per-item error handling (`transactions_create`,
@@ -164,8 +165,8 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 | `_confirm` | Accept or override an interactively-presented proposal (terminal step of a propose→review→confirm workflow) | `import_confirm` |
 | `_refresh` | Rebuild derived state from raw inputs (refresh domain) | `refresh_run` (umbrella) |
 | `_pull` | Fetch new data from an established external connection (already-authenticated) | `sync_pull`, `gsheet_pull` |
-| `_link` | Establish an authenticated session with a **mediated third-party provider** (Plaid-style OAuth → server-held tokens → server-mediated API access) | `sync_link` (Plaid, future SimpleFIN/MX) |
-| `_connect` | Establish a binding to **user-controlled storage** (direct OAuth or URL identification → client speaks the provider's API directly, no server mediation) | `gsheet_connect` (future `airtable_connect`, `smartsheet_connect`, `notion_connect`) |
+| `_link` | Establish an authenticated session with a **mediated third-party provider** (Plaid-style OAuth → server-held tokens → server-mediated API access) | `sync_link` |
+| `_connect` | Establish a binding to **user-controlled storage** (direct OAuth or URL identification → client speaks the provider's API directly, no server mediation) | `gsheet_connect` |
 | `_get` | Not admitted as a separate identity; use a coarse read with a stable reference | `accounts(...)`, `transactions(...)` |
 | `_status` | Retained when operation or lifecycle status is a material contract | `system_status`, `import_status`, `sync_status` |
 | `_history` | Not admitted as a separate identity; use a view selector, filter, audit read, or report entry | `system_audit`, `reports(...)` |
@@ -252,12 +253,12 @@ MoneyBin's surface mixes three audiences:
 | **Operator territory** | `sql_query`, `sql_schema`, `system_audit` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
 
 **Per `docs/specs/mcp-tool-surface-scaling.md`:** MoneyBin exposes one bounded
-standard registry. Generic clients receive it in full. Capable hosts may defer
-schemas from that same registry, but availability, names, annotations,
-allowlists, approvals, and audit identity do not change. Audience positioning
-uses the FastMCP `instructions` field, distinct description openings,
-prefix-grouped names, and `actions[]` hints—not packs, profiles, or reconnect
-modes.
+standard registry. Generic clients receive it in full. Capable hosts can
+optionally defer schemas from that same registry, but availability, names,
+annotations, allowlists, approvals, and audit identity do not change. Audience
+positioning uses the FastMCP `instructions` field, distinct description
+openings, prefix-grouped names, and `actions[]` hints—not packs, profiles, or
+reconnect modes.
 
 **Test:** if a tool's primary caller is a human operator (or a power-user agent explicitly inspecting internals), the tool's description should say so, it should NOT be cited in user-facing tools' `actions[]` hints, and it should NOT appear in the `instructions` field's top-level enumeration. If the primary caller is an agent helping a user with their finances, the opposite — surface it prominently across those three levers.
 
@@ -273,10 +274,10 @@ slots.
 ### MCP
 
 The five shapes and verb vocabulary above are MCP-native. One bounded standard
-registry is capability-complete for generic clients; capable hosts may defer
-schema injection from the same registry. Audience positioning happens through
-the `instructions` field, description prose, `actions[]` hints, and
-backing-spec maturity.
+registry is capability-complete for generic clients; capable hosts can
+optionally defer schema injection from the same registry. Audience positioning
+happens through the `instructions` field, description prose, `actions[]` hints,
+and backing-spec maturity.
 
 ### CLI
 
@@ -333,6 +334,10 @@ Defended exceptions are legitimate but must be **documented in the tool's MCP de
 
 ## Applying this rule
 
+Future MCP capabilities remain unnamed until admission. Describe a proposed
+capability by stable ID and intent; assign its public tool name only after the
+bounded-registry record passes.
+
 When adding or modifying a tool / command / endpoint:
 
 1. Name the capability ID and user intent.
@@ -355,11 +360,11 @@ When adding or modifying a tool / command / endpoint:
 
 ## Registry budget
 
-The operating contract is one 45-tool standard registry. Generic clients and
-supported deferred-loading hosts use the same registry, without reconnect,
-packs, or profiles; reports never consume tool slots. The deterministic
-comparison passed, but promotion remains unready until context-budget and
-host-native-deferral evidence is observed.
+The operating contract is one 45-tool standard registry. Generic clients
+receive it in full; capable hosts may optionally defer schemas from that same
+registry without reconnect, packs, or profiles. Reports never consume tool
+slots. The deterministic comparison passed, but promotion remains unready
+until context-budget and host-native-deferral evidence is observed.
 
 - Target 30–40 standard tools across core and installed extensions.
 - Above 40 requires a carrying-weight review of every tool.

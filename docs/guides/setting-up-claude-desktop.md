@@ -54,7 +54,7 @@ To confirm the connection, ask Claude to run `system_status` (a low-sensitivity 
 
 - **No `.mcpb` bundle yet.** Anthropic's desktop extensions are the newer one-click install path; MoneyBin ships the `mcp install` config path above instead — supported, not legacy.
 - **Cowork sessions can't see MoneyBin.** Claude's *remote* Cowork sessions run in Anthropic's cloud and cannot reach a server on your machine — a local session sees MoneyBin normally, a remote one behaves as though it is not installed. See the [MCP clients guide](mcp-clients.md#claude-desktop) for the Cowork caveat and the managed-device admin flags that can disable local MCP.
-- **Where your data goes.** The MoneyBin server makes no outbound calls, but Claude Desktop forwards the tool results it receives to Anthropic's model as ordinary context. The [MCP clients guide](mcp-clients.md#where-data-goes) and the [threat model](threat-model.md) spell out the egress posture.
+- **Where your data goes.** MoneyBin has no telemetry or ambient egress, but explicit `sync_*` and `gsheet_*` connector calls reach their configured services. Claude Desktop forwards the tool results it receives to Anthropic's model as ordinary context. The [MCP clients guide](mcp-clients.md#where-data-goes) and the [threat model](threat-model.md) spell out the boundary.
 
 ## Next steps
 

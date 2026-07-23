@@ -18,8 +18,8 @@ delivers in its existing sync payload. External feeds, manual overrides, and
 trade-implied prices (C.2) and the daily valued series (C.3) remain designed.
 `src/moneybin/sqlmesh/models/reports/net_worth.sql` reads `core.fct_balances_daily`
 alone and excludes holdings entirely. A brokerage account therefore contributes
-its cash balance to net worth and none of its positions. This spec closes that
-gap and supplies the daily valued series Pillar D
+its cash balance to net worth and none of its positions. This spec carries the
+remaining price-observation and daily-series work that Pillar D
 (`investments-net-worth.md`) joins into `reports.net_worth`.
 
 ## Background
@@ -135,35 +135,14 @@ The provider cache. Immutable, append-only, one row per observation.
 | `provider_security_key` | VARCHAR | the provider's own identifier — Plaid's `security_id`, a ticker, a `coingecko_id` |
 | `price_date` | DATE | the date the price applies to |
 | `quote_currency` | VARCHAR | ISO 4217; the currency the price is expressed in |
-| `source_type` | VARCHAR | `plaid`, `stooq`, `coingecko` — provider observations only; the canonical provenance column name across layers |
+| `source` | VARCHAR | `plaid`, `stooq`, `coingecko` — provider observations only |
 | `source_origin` | VARCHAR | which connection produced it; `''` for single-tenant feeds |
 | `close` | DECIMAL(28,10) | price of one unit |
 | `price_basis` | VARCHAR | `raw`, `split_adjusted`, `split_and_dividend_adjusted` |
-| `extracted_at` | TIMESTAMP | when the provider served the observation |
-| `loaded_at` | TIMESTAMP | when the row was written locally |
+| `fetched_at` | TIMESTAMP | when the row was observed |
 
 Primary key
-`(source_type, source_origin, provider_security_key, price_date, quote_currency)`.
-
-**Append-only is enforced by the conflict mode, not by convention.**
-`Database.ingest_dataframe` offers four modes and only one preserves
-immutability. The default `insert` raises on a primary-key conflict, so
-re-running a sync that re-reports a stored close fails the pull outright.
-`upsert` — what every other Plaid `_load_*` uses — overwrites in place, which is
-exactly the mutation this table exists to prevent. Prices therefore write with
-`on_conflict="ignore"`: the first observation for a key is kept and later
-re-reports of the same key are dropped. The seed store
-(`extractors/pdf/seed_store.py`) already uses this mode for the same reason.
-
-**The timestamp pair matches every other raw table.** `extracted_at` is the
-provider's own serve instant (for Plaid, `sync_data.metadata.synced_at`) and
-`loaded_at` is the local insert instant. This is the same pair
-`raw.plaid_securities` and every sibling carries, so it is named the same here
-rather than introducing a third term for a concept the schema already has.
-Both columns are `pl.Datetime(time_zone="UTC")` on the Polars side; any DATE
-derived from them must go through the extractor's `_utc_date` helper, because
-DuckDB rebases a tz-aware value into the session zone on insert and a naive
-`::DATE` cast would record the local calendar date.
+`(source, source_origin, provider_security_key, price_date, quote_currency)`.
 
 **`raw` stores the provider's key, not the canonical one.** Canonical
 `security_id` is minted by `SecurityResolver`, which `sync_service.pull()` runs
@@ -231,7 +210,8 @@ non-positive closes, and **resolves `provider_security_key` to the canonical
 `security_id`** through the same link tables `SecurityResolver` populates. A row
 whose provider key has not resolved yet stays in `raw` and is absent from
 staging — it is not dropped, and it appears once its security resolves.
-`investment_unresolved_securities` already reports that backlog.
+The unresolved-security backlog remains available through the current
+investment workflow; it does not add a separate MCP callback.
 
 **Every provider resolves the same way, including the keyless feeds.**
 `app.security_links` is already provider-neutral by design — its header calls
@@ -259,7 +239,7 @@ single resolution path whose bindings are reversible, audited, and uniform — a
 ### New model: `core.fct_security_prices`
 
 The resolved series. One row per `(security_id, price_date, quote_currency)`,
-carrying the winning `close` plus `source_type` and `price_basis` as provenance.
+carrying the winning `close` plus `source` and `price_basis` as provenance.
 Kind FULL.
 
 It unions three inputs: provider observations from `raw.security_prices`, user
@@ -277,11 +257,12 @@ recorded, rather than silently valued.
 
 ### Extended model: `core.dim_holdings`
 
-Adds `market_value`, `unrealized_gain`, `price_date`, `price_source`,
-`days_since_observed`, and `valuation_status`. Shipped in C.1, which also
-rewrote the two comments the change made stale — the header's cost-basis-only
-note and the parenthetical on `provider_reported_value` that described MoneyBin
-as computing no market value.
+Phase C.1 shipped `market_value`, `unrealized_gain`, `price_date`,
+`price_source`, `days_since_observed`, and `valuation_status`, and rewrote the
+two comments that change made stale — the header's cost-basis-only note and the
+parenthetical on `provider_reported_value` that described MoneyBin as computing
+no market value. C.2/C.3 retain this projection while adding price sources and
+the dated series.
 
 ### New model: `core.fct_holdings_daily`
 
@@ -618,7 +599,7 @@ separately against the ledger rather than here.
 
 Adapters live in `src/moneybin/connectors/prices/`, matching the
 `connectors/gsheet/` shape: a network client that pulls into `raw.*`. Two
-concrete modules behind one Protocol. Provider identity is data in the `source_type`
+concrete modules behind one Protocol. Provider identity is data in the `source`
 column, so nothing needs runtime registration.
 
 ```python
@@ -672,59 +653,21 @@ value while keeping `source = 'override'` provenance. `surface-design.md` also
 requires a paired `_delete` for this mutation shape.
 
 `moneybin sync pull` refreshes prices for held securities as part of its existing
-run. `investments holdings` gains `market_value`, `unrealized_gain`, and an as-of
-column reporting `price_date` and staleness. `investments gains` does not: it
-reports realized disposals for 1099-B reconciliation, where the sale price is the
-recorded one and a current market close has no bearing.
+run. `investments holdings` and `investments gains` gain `market_value`,
+`unrealized_gain`, and an as-of column reporting `price_date` and staleness.
 
 Sensitivity is `high`, matching the tier MCP derives for cost-basis and quantity
 data. Market values are the same class of data as the holdings they value.
 
-## MCP interface
+## MCP and report integration
 
-- `investments_prices_sync` — refresh; returns counts written, failed, and
-  skipped, with per-security reasons.
-- `investments_prices_list` — the observation history for a security: every
-  stored row with its `source_type`, `price_date`, `quote_currency`, `price_basis`,
-  and whether it is the resolved winner for its date.
-- `investments_prices_set` — record a mark.
-- `investments_prices_delete` — remove a mark, returning the date to
-  provider-derived valuation.
-
-`investments_prices_list` is not optional ergonomics. `mcp.md` makes MCP exposure
-the default and admits only two exceptions — secret material and hands-on
-operator territory — and price history is neither. It also closes a concrete gap:
-an agent about to call `_set` cannot otherwise discover that an override already
-exists for that date, because `investments_holdings` reports the *resolved* value
-and not the observations behind it. Writing blind over an existing mark is
-exactly the silent action `design-principles.md` requires a surface for.
-
-The grain differs from `investments_holdings` — observations per security-date
-rather than one row per position — which is why it is a separate tool rather than
-a flag on the holdings response.
-
-`investments_holdings` returns `market_value`, `price_date`,
-`days_since_observed`, and `valuation_status` per position, plus two
-portfolio-level figures: a count of positions in `unpriced` or `withheld`
-status, and `max_days_since_observed`, the age in days of the stalest close
-behind any published figure. The count stays scoped to the two statuses that
-publish no number. `carried_forward` is excluded from it because markets close
-about 114 days a year, so counting it would raise the caveat on most days for
-most users and teach the reader to skip it; the age discloses the same risk as
-a number, with no threshold to pick. An agent reading a total learns from the
-same response how much of it rests on stale or missing prices.
-
-The response also carries `total_market_value`, and it is published only when
-every priced position shares one currency. `fct_security_prices` converts
-nothing and `dim_holdings` joins each price on the position's own
-`currency_code`, so a portfolio holding a EUR-quoted ETF beside USD positions
-has no single market value. In that case the total is NULL and
-`market_value_by_currency` carries the per-currency split, which stops the
-wrong sum structurally rather than by a caveat the reader has to notice — the
-same rule `market_value` follows when a price is missing. M1K.2 supplies the
-conversion that makes one total meaningful across currencies. `investments_gains` does not carry these columns: it reports realized
-disposals for 1099-B reconciliation, where the sale price is the recorded one
-and a current market close has no bearing.
+This spec adds no price-observation MCP route. C.1 already extends the existing
+`investments(view="holdings", ...)` projection with `market_value`,
+`unrealized_gain`, `price_date`, `days_since_observed`, and `valuation_status`.
+C.2/C.3 may add further price sources and a dated series, but an
+observation-grain capability remains unnamed until it passes the standard
+tool-admission review. Holdings do not yet feed the registered net-worth reports;
+that integration remains Pillar D.
 
 ---
 
@@ -767,8 +710,8 @@ and a current market close has no bearing.
 - **`price_basis` enforcement** — an adapter returning no basis fails ingest.
 - **Non-Plaid key binding** — a stooq ticker and a CoinGecko slug each bind
   through `SecurityLinksRepo` and resolve in `prep.stg_security_prices`; an
-  unbound key leaves its row in `raw` and surfaces in
-  `investment_unresolved_securities` rather than vanishing. The migration test
+  unbound key leaves its row in `raw` and surfaces in the unresolved-security
+  backlog rather than vanishing. The migration test
   runs against a populated `app.security_links`, per the migration-realism rule.
 - **Adapter fixtures** — recorded provider responses. No test performs a network
   call.
@@ -781,20 +724,15 @@ A change to `core` grain requires `make test-scenarios`, which the default
 
 ## Metrics
 
-Of the table below, only `price_rows_written_total` is registered in
-`src/moneybin/metrics/registry.py` today (per
-[`observability.md`](observability.md)); the rest is the target shape. The
-`price_refresh_*` pair is unobservable until C.2's network adapters exist (C.1
-reaches no network), so it lands with them. `price_resolution_status_total` and
-`price_staleness_days` need no network — C.1 already computes their inputs
-(`core.dim_holdings.valuation_status` and `days_since_observed`) — and are
-tracked as a C.1 follow-up rather than shipped here.
+Registered in `src/moneybin/metrics/registry.py` per
+[`observability.md`](observability.md). A refresh reaches the network and can
+partially fail, so it is unobservable without them.
 
 | Metric | Type | Labels | Purpose |
 |---|---|---|---|
-| `price_refresh_duration_seconds` | Histogram | `source_type` | Per-adapter fetch latency; the signal that a provider is degrading before it fails. |
-| `price_refresh_securities_total` | Counter | `source_type`, `outcome` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
-| `price_rows_written_total` | Counter | `source_type` | Ingest volume, and the check that a backfill wrote what it claimed. |
+| `price_refresh_duration_seconds` | Histogram | `source` | Per-adapter fetch latency; the signal that a provider is degrading before it fails. |
+| `price_refresh_securities_total` | Counter | `source`, `outcome` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
+| `price_rows_written_total` | Counter | `source` | Ingest volume, and the check that a backfill wrote what it claimed. |
 | `price_resolution_status_total` | Counter | `status` | `status` ∈ `valued` / `carried_forward` / `unpriced` / `unreconstructable` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities, and the `unreconstructable` share is how much history M1J.6 would recover. |
 | `price_staleness_days` | Gauge | — | Maximum `days_since_observed` across held securities. One number answering "how old is the oldest price my net worth rests on." |
 
@@ -805,11 +743,9 @@ stay low-cardinality and non-identifying, per the logging and privacy rules.
 
 ## Implementation plan
 
-Three phases, each independently shippable. **C.1 has shipped; C.2 and C.3 are
-designed but unbuilt** — which is why this spec stays `in-progress` rather than
-`implemented`.
+Three phases, each independently shippable.
 
-**C.1 — broker-carried prices and current value.** *Shipped.* No outbound network code.
+**C.1 — broker-carried prices and current value.** No outbound network code.
 Capture the `close_price` Plaid already delivers into `raw.security_prices`,
 build `core.fct_security_prices`, extend `core.dim_holdings`. Closes the
 no-market-value gap for every Plaid brokerage user.
@@ -828,7 +764,7 @@ sits between them.
 extension that lets their keys bind, the override table and repo, trade-implied
 prices, the first-available floor, staleness surfacing,
 `investment_price_disagreement` (the first phase in which one security can carry
-two sources), and the CLI and MCP surface.
+two sources), the CLI surface, and the existing investment/report integration.
 
 **C.3 — the daily series.** `core.fct_holdings_daily` and
 `investment_price_discontinuity`. Unblocks Pillar D. Pre-window dates report
@@ -848,7 +784,6 @@ two sources), and the CLI and MCP surface.
 - `src/moneybin/connectors/prices/coingecko.py`
 - `src/moneybin/services/price_service.py`
 - `src/moneybin/cli/commands/investments/prices.py`
-- `src/moneybin/mcp/tools/investment_prices.py`
 - `src/moneybin/sql/migrations/V0NN__extend_security_link_ref_kinds.py` (C.2) —
   adds `stooq_ticker` and `coingecko_slug` to the `app.security_links.ref_kind`
   CHECK. `V038` is the highest at the time of writing; take the next free number
@@ -862,15 +797,8 @@ two sources), and the CLI and MCP surface.
   to match the migration, so a fresh database and a migrated one agree
 - `src/moneybin/extractors/plaid/extractor.py` — append `close_price` keyed by
   Plaid's own security key to `raw.security_prices` during ingestion, before the
-  upsert overwrites it and before the resolver has minted a canonical id. Adds a
-  `security_prices_loaded` field to the `LoadResult` dataclass and a call in
-  `load()`, matching every other per-table count. `SyncSecurity.close_price` is
-  nullable and its currency arrives as the mutually exclusive
-  `iso_currency_code` / `unofficial_currency_code` pair, so a security missing
-  either a price or its date yields no row rather than a NULL-keyed one
-- `src/moneybin/metrics/registry.py` — `price_rows_written_total` (the one
-  price metric C.1 registers; the other four in the Metrics table land later,
-  see there)
+  upsert overwrites it and before the resolver has minted a canonical id
+- `src/moneybin/metrics/registry.py` — the five price metrics
 - `src/moneybin/schema.py` — add both new DDL files to
   `_NON_PROVIDER_SCHEMA_FILES`. `_all_schema_files()` enumerates that explicit
   list plus a `raw_*.sql` glob inside provider directories, so a file added
@@ -879,24 +807,10 @@ two sources), and the CLI and MCP surface.
 - `src/moneybin/services/doctor_service.py` — `investment_price_disagreement`
   (C.2) and `investment_price_discontinuity` (C.3), registered alongside the nine
   existing investment checks
-- `src/moneybin/config.py` (C.2) — staleness defaults, backfill bound,
-  `price_disagreement_tolerance_pct`. No `InvestmentsSettings` class exists
-  today, so this creates the section and registers it on `MoneyBinSettings`
-  alongside `matching`, `doctor`, and the rest. It lands in C.2 rather than
-  C.1 because nothing in C.1 reads a threshold: `days_since_observed` is a
-  raw day count and `valuation_status` turns on whether a price exists, not on
-  whether it is old enough to warn about. The first consumers are
-  `investment_price_disagreement` and the CLI's staleness column.
-  `asset-tracking.md` proposes a sibling `asset_staleness_default_days` at the
-  settings root; the two land under one vocabulary rather than diverging
-- `src/moneybin/tables.py` — new table constants. `core.fct_security_prices`
-  takes `audience="interface"` to match the five shipped investment core models;
-  the raw and app tables stay internal
+- `src/moneybin/config.py` — staleness defaults, backfill bound,
+  `price_disagreement_tolerance_pct`
+- `src/moneybin/tables.py` — new table constants
 - `src/moneybin/cli/commands/investments/__init__.py` — register `prices`
-- `tests/moneybin/db_helpers.py` — `CORE_DIM_HOLDINGS_STUB_DDL` hardcodes
-  `dim_holdings`' column list for tests that INSERT fixture rows, so it drifts
-  silently the moment the model gains a column. Any core-model column addition
-  has to update the stub in the same change
 - `docs/specs/INDEX.md`, `docs/specs/investments-overview.md`,
   `docs/roadmap.md`, `CHANGELOG.md`
 
@@ -917,7 +831,7 @@ two sources), and the CLI and MCP surface.
 - **Bid, ask, and NAV as distinct price types.** One close per source per date.
 - **Benchmark comparison, time-weighted and money-weighted return.**
 - **Options, derivatives, short positions.**
-- **Tier 3, a sync-brokered keyed provider.** The `source_type` column and resolution
+- **Tier 3, a sync-brokered keyed provider.** The `source` column and resolution
   rule accommodate it; nothing cross-repo lands here.
 - **Split-source symmetry.** M1J.5.
 
@@ -930,7 +844,7 @@ two sources), and the CLI and MCP surface.
   loses one of them silently, and forces currency rates into a second table with
   a second resolution path.
 
-- **One `raw` table with a `source_type` column, not a table per provider.**
+- **One `raw` table with a `source` column, not a table per provider.**
   `investments-data-model.md` establishes per-provider raw tables for entities
   pulled from a provider's API — transactions, holdings, securities — because
   each provider's payload has its own shape. A price observation has one shape

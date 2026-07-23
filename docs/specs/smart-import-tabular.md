@@ -565,7 +565,7 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
   replaced with hyphens, stripped.
 - **Row number assignment:** 1-based source file line/row number.
 - **Running balance validation** (when `balance` column is mapped):
-  Balance columns are a powerful free validation signal that most importers ignore.
+  Balance columns provide a zero-cost validation signal present in many exports.
   When present, verify internal consistency by checking sequential balance deltas:
   `balance[n] - balance[n-1]` should equal `amount[n]` (within a rounding tolerance
   based on the detected number format: ±0.01 for 2-decimal currencies, ±0.001 for
@@ -927,9 +927,8 @@ flowchart TD
 ### Primary import command
 
 The primary command is `moneybin import files` (variadic — accepts one or more paths) —
-format-agnostic, handles all tabular formats through the same entry point. Renamed from
-`moneybin import file` (singular) as part of the transform handoff spec; see
-`smart-import-transform.md`.
+format-agnostic and handles all tabular formats through the same entry point. Its batch
+contract is described in `smart-import-transform.md`.
 
 ```bash
 # Happy path — format matches or detection succeeds
@@ -962,7 +961,7 @@ moneybin import files workbook.xlsx --account-name "Savings" --sheet="Transactio
 # Direct account ID (bypass name matching)
 moneybin import files statement.csv --account-id chase-checking
 
-# Skip end-of-batch refresh pipeline (matching + SQLMesh apply + categorization)
+# Skip the default gsheet → match → transform → categorize → identity refresh
 moneybin import files statement.csv --account-name "Checking" --no-refresh
 ```
 
@@ -1148,8 +1147,8 @@ MCP tools mirror CLI capabilities through the shared service layer.
 
 ### `import_files` — primary import tool
 
-Renamed from `import_file` (singular) in the transform handoff PR. Takes a list of paths
-and runs the refresh pipeline once at end-of-batch by default.
+The batch import entry takes a list of paths and runs the refresh pipeline once
+at end-of-batch by default.
 
 ```python
 def import_files(
@@ -1167,17 +1166,15 @@ SQLMesh apply + categorization) runs unless `refresh=False`.
 
 The high-confidence / confirmation-required / low-confidence detection-result
 shapes described above for the interactive CLI flow surface in `data.files[]`
-entries; the batch tool does not have a separate `import_confirm` step (see
-note below).
+entries. A staged preview is completed through `import_confirm(preview_id=...)`.
 
 ### `import_confirm` — confirm or override a pending detection
 
-Originally specified as a paired tool for the interactive confirmation flow.
-Not shipped as a standalone MCP tool: detection ambiguity surfaces in the
-`import_files` response envelope (per-file confidence + suggested overrides) and
-the caller retries with explicit `format_name=` or override flags rather than
-holding a confirmation token. Tracked as future work if interactive token-based
-flows become necessary.
+`import_confirm(preview_id=...)` atomically consumes an unchanged staged preview
+and imports its file. Optional `account_bindings`, `account_id`,
+`account_metadata`, `account_name`, and `bridge_response` complete the reviewed
+proposal. A sign inversion remains human-owned through elicitation; the agent
+does not receive a public sign parameter.
 
 ### `import_preview` — preview file structure
 
@@ -1189,44 +1186,37 @@ def import_preview(file_path: str) -> PreviewResult:
     #          (structural red flag — forces confidence to low)
 ```
 
-### `import_history` — list past imports
+### `import_status` — read import history, formats, or inbox state
 
 ```python
-def import_history(
-    limit: int = 20,
+def import_status(
+    sections: list[Literal["imports", "formats", "inbox"]] | None = None,
+    limit: int = 100,
     import_id: str | None = None,
-) -> list[ImportLogEntry]:
-    # Returns: import_id, source_file, format_name, rows_imported, status,
-    #          started_at, accounts, detection_confidence
+    cursor: str | None = None,
+) -> ResponseEnvelope:
+    # sections=["imports"] is the import history projection; sections=["formats"]
+    # is learned-format discovery; sections=["inbox"] is pending inbox state.
 ```
 
-### `import_revert` — undo an import batch
+### `import_revert` — undo an import batch or delete one saved format
 
 ```python
-def import_revert(import_id: str) -> RevertResult:
-    # Returns: {"status": "reverted", "rows_deleted": 347, "accounts_affected": [...]}
-    # or: {"status": "already_reverted", "reverted_at": "..."}
-    # or: {"status": "not_found", "reason": "No import with ID ..."}
+def import_revert(
+    operation: Literal["revert_import", "delete_saved_format"] = "revert_import",
+    import_id: str | None = None,
+    format_name: str | None = None,
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope:
+    # operation="revert_import" requires import_id. operation="delete_saved_format"
+    # requires format_name and payload-bound confirmation.
 ```
 
-### `import_formats` — list available formats
+### Format discovery
 
-Shipped as `import_formats` (not `list_formats` — `_list` suffixes dropped per
-shape-5 noun-only convention, PR #172).
-
-```python
-def import_formats() -> ResponseEnvelope:
-    # data.formats: [{name, institution_name, file_type, times_used, last_used_at, source}]
-```
-
-### Renamed/replaced MCP tools
-
-| Original tool | Current tool | Notes |
-|---|---|---|
-| `csv_list_profiles` | `import_formats` | Format-neutral; `_list` suffix dropped (PR #172) |
-| `csv_save_profile` | Absorbed into `import_files` via `save_format` flag | No standalone save — formats are saved as part of import |
-| `csv_preview_file` | `import_preview` | Format-neutral |
-| `import_file` (singular) | `import_files` (list, batch-shaped) | Renamed in transform handoff; runs refresh pipeline at end-of-batch |
+`import_status(sections=["formats"])` returns learned tabular and PDF formats.
+The format projection is read-only; a saved format is removed through
+`import_revert(operation="delete_saved_format", format_name=..., confirmation_token=...)`.
 
 ---
 
@@ -1693,7 +1683,7 @@ is catastrophic. Fixtures are the primary defense against regression.
 | `src/moneybin/database.py` | Add `ingest_dataframe()` method |
 | `src/moneybin/services/import_service.py` | Replace CSV-specific import with tabular import pipeline |
 | `src/moneybin/cli/commands/import_cmd.py` | Update flags, add format management subcommands |
-| `src/moneybin/mcp/tools/import_tools.py` | Format-neutral import MCP tools (`import_files`, `import_preview`, `import_status`, `import_revert`, `import_formats`); replaces the previous `csv_*` tools |
+| `src/moneybin/mcp/tools/import_tools.py` | Format-neutral import MCP tools (`import_files`, `import_preview`, `import_status`, `import_revert`); replaces the previous CSV-specific tools |
 | `src/moneybin/sqlmesh/models/core/dim_accounts.sql` | Replace `csv` CTE with `tabular` |
 | `src/moneybin/sqlmesh/models/core/fct_transactions.sql` | Replace `csv` CTE with `tabular` |
 

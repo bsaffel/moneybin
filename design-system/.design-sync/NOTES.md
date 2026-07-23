@@ -177,6 +177,18 @@ the design runtime that renders them actually exists.
 - **Render verification is manual (MCP browser)**, not the automated check — a
   re-sync must re-verify via MCP or install npm playwright + chromium.
 - **Not shipped (enhancement candidates):** the Newsreader *italic* face.
+- **Don't diagnose staleness from local `ds-bundle-out/` or from
+  `_ds_needs_recompile`.** Both mislead:
+  - `ds-bundle-out/` is gitignored and regenerated per clone, so its mtime
+    tracks *when you last built*, not what the mirror holds. A checkout can
+    carry a months-old bundle while the mirror is current.
+  - `_ds_needs_recompile` is rewritten by **every** build (and twice per
+    upload, as the fence). Its presence means "a build ran", never "a build is
+    pending" — reading it as a symptom sends you chasing work already done.
+  - The only truth about what's published is the mirror's `_ds_sync.json`:
+    `styleSha` for the token/CSS layer, `bundleSha12` for the bundle,
+    `renderHashes`/`sourceKeys` per component. Fetch it, save the sidecar
+    locally, then pass that path to the driver's `--remote` flag to diff it.
 
 ## Known render warns
 

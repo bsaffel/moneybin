@@ -13,9 +13,8 @@
 - **Status:** in-progress — the 45-tool registry is operating, but promotion is
   blocked on observed context-budget and host-native-deferral evidence
 - **Address:** M3K.2 — second work item under M3K (CLI / MCP UX standards)
-- **Origin:** July 2026 deep MCP surface review: the former 105-tool registry
-  exceeded Windsurf's 100-tool global ceiling and serialized to about 90,600
-  characters before host-specific wrapping.
+- **Origin:** July 2026 MCP surface review. ADR-016 records the measured
+  pre-cutover registry and the rationale for the bounded replacement.
 
 ## Goal
 
@@ -28,8 +27,7 @@ smallest possible tool count and not a marketing-friendly headline.
 
 ## Decision summary
 
-MoneyBin replaced the 105-tool surface with one bounded 45-tool standard
-registry.
+MoneyBin operates one bounded 45-tool standard registry.
 
 - Every standard client receives the complete registered surface. There are no
   core capability packs, hidden expert tools, or reconnect-only modes.
@@ -48,63 +46,28 @@ registry.
 - All registered reports execute through one read-only `reports` catalog and
   runner. Adding a report does not add an MCP tool.
 - Every public tool returns canonical JSON text and equivalent
-  `structuredContent`. The initial standard registry advertises no
+  `structuredContent`. The current standard registry advertises no
   `outputSchema`; a schema is admitted only for a named consumer that needs
   protocol-level result validation or hydration.
 - Every surface change is measured in serialized metadata bytes and evaluated
   for selection, arguments, workflow completion, and safety.
 
-This design supersedes the proposed connection-profile model that appeared in
-the first draft of this spec. The four-tool difference between a proposed
-44-tool universal surface and 48-tool complete registry did not justify a
-second user-visible concept. The generic report runner then reduced the exact
-standard registry to 45 tools.
+ADR-016 records why a connection-profile model was rejected. The operating
+contract has one registry and one generic report runner.
 
 The 45-tool standard registry is now the operating reality. Promotion remains
-open for observed baseline/candidate evaluation evidence and the other gates at
-the end of this spec.
+open for observed context-budget and host-native-deferral evidence.
 
 ## Why now
 
-### Frozen pre-cutover baseline
+The operating registry contains 45 tools, stays below Windsurf's
+100-active-tool global cap, and leaves 55 tool slots for other connected
+servers. Its rendered metadata, tool identities, and zero advertised output
+schemas are frozen in the standard snapshot below.
 
-The July 2026 frozen registry contained:
-
-| Measure | Current value |
-|---|---:|
-| Visible tools | 105 |
-| Serialized tool metadata | 90,734 bytes |
-| Rough token estimate | ~20,000–23,000 |
-| Description characters | ~34,013 |
-| Input-schema characters | ~35,270 |
-| Parameters | 216 |
-| Tools with advertised `outputSchema` | 0 |
-
-The four largest groups — transactions, accounts, investments, and import —
-contain 59 tools and about 62% of the serialized metadata.
-
-The contract-foundation experiment advertised full payload schemas for all 105
-tools. It increased serialized metadata to 861,301 bytes: 768,887 bytes of
-output schemas alone. No current MoneyBin client depends on schema-based result
-hydration or validation. The approximately 10× total increase therefore failed
-the carrying-weight test and was rejected before the standard-registry
-cutover.
-
-Three entries are deprecated aliases rather than capabilities:
-
-- `transactions_review`
-- `sync_connect`
-- `sync_connect_status`
-
-Removing them after the existing pre-launch compatibility window reduces the
-registry to 102 but does not solve the disclosure problem.
-
-### The failure is no longer theoretical
-
-Windsurf's Cascade accepts at most 100 active tools across all connected MCP
-servers. MoneyBin alone advertises 105. The current design cannot work
-completely in a documented client and leaves no budget for a second server in
-clients with a similar ceiling.
+ADR-016, the archived MCP catalog, the changelog, and frozen fixtures retain
+the measured pre-cutover registry and rejected-schema experiment. They are the
+historical record; this active spec governs the current registry.
 
 Count is only a proxy. Similar or overlapping tools create more selection
 ambiguity than an equal number of distinct tools, while a large discriminated
@@ -232,8 +195,8 @@ and debugging but does not consume an MCP slot.
 
 `steps=["match"]` remains the surgical matching path.
 `steps=["identity"]` runs the account- and merchant-link backfills. The
-dedicated `transactions_matches_run`, `accounts_links_run`, and
-`merchants_links_run` MCP tools retire while their CLI commands may remain.
+granular CLI commands remain operator controls without additional MCP
+identities.
 
 ### 8. Reports are registered data products, not tools
 
@@ -297,7 +260,7 @@ The [MCP tool
 specification](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)
 makes `outputSchema` optional, and [FastMCP supports structured results without
 one](https://gofastmcp.com/v2/servers/tools). MoneyBin therefore does not
-advertise output schemas in the initial standard registry. A future schema is
+advertise output schemas in the current standard registry. A future schema is
 an opt-in public contract, admitted only when:
 
 1. a named client or integration consumes it;
@@ -328,10 +291,10 @@ CI rejects duplicate description openings and enforces description budgets.
 ## Standard registry
 
 The 45-tool registry below is the live public contract. Generic clients receive
-all 45 tools; supported hosts may defer schemas from that same registry without
-reconnect, packs, or profiles. The registry selection has passed its
-deterministic contract comparison, but promotion remains open until the
-observed-evidence gates below close.
+all 45 tools; capable hosts may optionally defer schemas from that same
+registry without reconnect, packs, or profiles. The registry selection has
+passed its deterministic contract comparison, but promotion remains open until
+the observed-evidence gates below close.
 
 | Domain | Standard tools | Responsibilities |
 |---|---|---|
@@ -406,31 +369,26 @@ logical IDs actually affected by changed accepts; provider-link acceptance does
 not claim unrelated already-categorized transactions, and manual investment
 events already represented in core are counted once.
 
-### Major consolidation map
+### Cross-surface outcome map
 
-| Existing/candidate tools | Proposed contract |
+The executable capability map is authoritative. Representative CLI outcomes
+reach the standard registry through these coarse operations and selectors:
+
+| CLI outcome | Standard MCP contract |
 |---|---|
-| `system_status`, `system_doctor`, categorization statistics | `system_status(sections=..., detail=...)` |
-| `system_audit`, `system_audit_history`, `system_audit_get` | `system_audit(...)` |
-| Every `reports_*` tool and future report extension | `reports(report_id=..., parameters=...)` |
-| Account list/get/summary/resolve reads | `accounts(view=..., ...)` |
-| Balance latest/history/drift reads | `accounts_balances(view=..., ...)` or a registered report where analytical |
-| Net-worth snapshot/history and all other report outputs | Registered report entries |
-| Investment events/holdings/lots/gains/securities reads | `investments(view=..., ...)` |
-| Note add/edit/delete, tags/splits, tag rename | `transactions_annotate(requests=[...])`; note lifecycle remains stable-ID imperative inside the coarse umbrella |
-| Largest/anomalous transaction analysis | Registered reports, not transaction-domain tools |
-| Categorization pending and all match/link pending/history tools | `reviews(kind=..., status=..., ...)` |
-| Account/merchant/security merge decisions | `identity_links_decide(...)` |
-| `transactions_matches_run` | `refresh_run(steps=["match"])` |
-| `accounts_links_run`, `merchants_links_run` | `refresh_run(steps=["identity"])` |
-| Category and merchant reads | `taxonomy(view=..., ...)` |
-| Category create/set/delete and merchant create | `taxonomy_set(...)` |
-| Import status, inbox pending, and format discovery | `import_status(sections=...)` |
-| GSheet list/status | `gsheet(...)` |
-| GSheet auth/connect/reconnect | `gsheet_connect(...)` |
-| Sync link status | `sync_status(session_id=...)` |
-| Privacy status/log | `privacy(...)` |
-| Consent grant/revoke | `privacy_consent_set(...)` |
+| Account list/detail/summary/resolution | `accounts(view=..., reference=..., query=...)` |
+| Latest balances/history/assertions/reconciliation | `accounts_balances(view=..., reference=...)` |
+| Named analytical output | `reports(report_id=..., parameters=...)` |
+| Investment events/holdings/lots/gains/securities | `investments(view=..., ...)` |
+| Notes, tags, splits, and tag rename | `transactions_annotate(requests=[...])` |
+| Pending and historical review queues | `reviews(kind=..., status=...)` |
+| Match stage | `refresh_run(steps=["match"])` |
+| Identity-link stage | `refresh_run(steps=["identity"])` |
+| Category or merchant taxonomy | `taxonomy(view=...)` |
+| Import status, inbox, or format discovery | `import_status(sections=...)` |
+
+Future MCP capabilities remain unnamed until admission through the bounded
+registry. A CLI command or service method does not reserve a future tool name.
 
 ## Surface budgets and admission
 
@@ -460,107 +418,21 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 ### Standard-registry carrying-weight evidence
 
-The deterministic Plan 6
+The deterministic current
 [`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json) snapshot
-contains 45 tools, 47,684 bytes of serialized metadata, zero advertised output schemas,
-and registry SHA-256
+contains 45 tools, 47,684 bytes of serialized metadata, zero advertised output
+schemas, and registry SHA-256
 `6d1a1f33bfc005bfc7d38136679ff487b857f74610c877cacc748de31a6ed763`.
-The frozen baseline is 90,734 bytes with SHA-256
-`ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
-The delta is -43,050 bytes (-47.4%). The deterministic estimate is 11,921
-metadata tokens; a percentage of context is
+The deterministic estimate is 11,921 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
 
-### Historical pre-cutover replacement cohort (not an active catalog)
+### Historical evidence location
 
-The following table and cohorts preserve the names that the standard registry
-replaced. They are historical measurement inputs, not current tool guidance.
-Totals include name, description, input schema, annotations, and other protocol
-metadata. A positive input-schema delta is retained when it carries a selector,
-discriminator, conditional requirement, or confirmation boundary that the
-narrower definitions did not express.
-
-| Standard operation | Total bytes candidate / replaced (delta) | Input-schema bytes candidate / replaced (delta) |
-|---|---:|---:|
-| `system_status` | 663 / 2,725 (-2,062) | 277 / 793 (-516) |
-| `system_audit` | 746 / 1,958 (-1,212) | 412 / 684 (-272) |
-| `accounts` | 823 / 2,240 (-1,417) | 465 / 808 (-343) |
-| `accounts_balances` | 1,069 / 2,786 (-1,717) | 718 / 1,286 (-568) |
-| `investments` | 1,076 / 4,908 (-3,832) | 672 / 2,727 (-2,055) |
-| `transactions` | 1,287 / 2,383 (-1,096) | 821 / 1,666 (-845) |
-| `transactions_categorize_rules` | 564 / 318 (+246) | 144 / 62 (+82) |
-| `reviews` | 703 / 8,687 (-7,984) | 414 / 2,493 (-2,079) |
-| `taxonomy` | 669 / 620 (+49) | 389 / 177 (+212) |
-| `import_status` | 642 / 1,236 (-594) | 405 / 429 (-24) |
-| `gsheet` | 441 / 1,016 (-575) | 219 / 200 (+19) |
-| `privacy` | 590 / 1,007 (-417) | 267 / 393 (-126) |
-| `accounts_balance_assert` | 1,416 / 1,679 (-263) | 775 / 674 (+101) |
-| `transactions_annotate` | 3,457 / 3,653 (-196) | 2,882 / 962 (+1,920) |
-| `transactions_categorize_rules_set` | 3,043 / 2,670 (+373) | 2,428 / 1,260 (+1,168) |
-| `reviews_decide` | 2,480 / 2,566 (-86) | 2,039 / 1,220 (+819) |
-| `identity_links_decide` | 2,848 / 5,762 (-2,914) | 2,438 / 2,003 (+435) |
-| `taxonomy_set` | 3,480 / 3,223 (+257) | 3,085 / 1,163 (+1,922) |
-| `privacy_consent_set` | 1,217 / 2,188 (-971) | 799 / 1,021 (-222) |
-
-The exact historical replaced-name cohorts are:
-
-- `system_status` ← `system_status`, `system_doctor`,
-  `transactions_categorize_stats`
-- `system_audit` ← `system_audit`, `system_audit_history`, `system_audit_get`
-- `accounts` ← `accounts`, `accounts_get`, `accounts_summary`,
-  `accounts_resolve`
-- `accounts_balances` ← `accounts_balances`, `accounts_balance_history`,
-  `accounts_balance_assertions`, `accounts_balance_reconcile`
-- `investments` ← `investments`, `investments_holdings`, `investments_lots`,
-  `investments_gains`, `investments_securities`
-- `transactions` ← `transactions_get`
-- `transactions_categorize_rules` ← `transactions_categorize_rules`
-- `reviews` ← `review`, `transactions_categorize_pending`,
-  `transactions_categorize_auto_review`, `transactions_matches_pending`,
-  `transactions_matches_history`, `accounts_links_pending`,
-  `accounts_links_history`, `merchants_links_pending`,
-  `merchants_links_history`, `investments_securities_links_pending`,
-  `investments_securities_links_history`
-- `taxonomy` ← `categories`, `merchants`
-- `import_status` ← `import_status`, `import_formats`, `import_inbox_pending`
-- `gsheet` ← `gsheet`, `gsheet_status`
-- `privacy` ← `privacy_status`, `privacy_log`
-- `accounts_balance_assert` ← `accounts_balance_assert`,
-  `accounts_balance_assertion_delete`
-- `transactions_annotate` ← `transactions_notes_add`,
-  `transactions_notes_edit`, `transactions_notes_delete`,
-  `transactions_tags_set`, `transactions_tags_rename`,
-  `transactions_splits_set`
-- `transactions_categorize_rules_set` ←
-  `transactions_categorize_rules_create`,
-  `transactions_categorize_rules_delete`
-- `reviews_decide` ← `transactions_matches_set`,
-  `transactions_categorize_auto_accept`
-- `identity_links_decide` ← `accounts_links_set`, `merchants_links_set`,
-  `investments_securities_links_set`
-- `taxonomy_set` ← `categories_create`, `categories_set`, `categories_delete`,
-  `merchants_create`
-- `privacy_consent_set` ← `privacy_consent_grant`, `privacy_consent_revoke`
-
-The replaced granular callbacks across the accounts, categories, curation,
-Google Sheets, import inbox, import workflow, investments, merchants, privacy,
-system, transactions, and transaction-categorization modules are internal
-helpers retained for standard-boundary composition and parity. Each module
-declares an explicit `_LEGACY_INTERNAL_CALLBACKS` inventory; those functions
-are undecorated, never individually registered, and covered by a surface-budget
-guard. They are not aliases, an alternate MCP mode, or candidates for future
-publication.
-
-Four operations are individually larger in total metadata:
-`transactions_categorize_rules` (+246), `taxonomy` (+49),
-`transactions_categorize_rules_set` (+295), and `taxonomy_set` (+114).
-They retain approved projection/history or target-state semantics that the
-replaced definitions lacked. Splitting them would spend additional public
-identities and repeat descriptions/annotations without evidence of better
-selection or safety. The approved 45-tool design therefore keeps them whole;
-future evaluation may justify a split, but byte pressure alone may not remove
-their selectors, discriminators, conditional fields, or safety contracts.
+[ADR-016](../decisions/016-bounded-mcp-tool-registry.md) owns the measured
+pre-cutover registry, replacement cohorts, metadata comparison, and rejected
+alternatives. The archived MCP catalog, changelog, and frozen fixtures preserve
+the underlying names and numbers. Active governance does not duplicate them.
 
 ### Tool admission record
 
@@ -590,29 +462,41 @@ A PR proposing an `outputSchema` must additionally name:
 4. the representative client compatibility tests; and
 5. the persisted evaluation demonstrating a material benefit.
 
-The initial standard registry has zero admitted output schemas. Advertising one
-without this record is a contract failure.
+The current standard registry has zero advertised output schemas. Advertising
+one without this record is a contract failure.
+
+### Documentation closure
+
+Current MCP governance derives names and counts from `STANDARD_TOOL_NAMES` and
+the executable capability map. Active specs, architecture documents, and
+contributor rules describe the operating registry and its coarse selectors. A
+retired callback name is replaced with the standard operation and the selector
+that reaches the same outcome; a generic migration claim is not enough.
+
+Historical counts and retired names remain only where removing them would
+damage the record: changelog entries, ADRs, archived specs, and frozen
+regression fixtures. These locations must identify the material as historical.
+No other public document may present or repeat the retired surface.
+
+Documentation changed with this contract uses the ledger-grade voice from
+`.claude/rules/documentation.md`: exact numbers, present-tense claims, named
+limitations, sentence-case headings, and no marketing or compliance cadence.
+A documentation contract test scans current MCP governance and fails on
+retired counts or tool names. Historical evidence remains path-separated in
+the four record classes above.
 
 ## Evaluation contract
 
 ### Baselines
 
-The contract foundation is active work. The frozen pre-cutover registry lives
-at [`tests/fixtures/mcp_surface/baseline-2026-07-17.json`](../../tests/fixtures/mcp_surface/baseline-2026-07-17.json);
-the matching evaluation capture lives at
-[`tests/fixtures/mcp_eval/captures/baseline-105.json`](../../tests/fixtures/mcp_eval/captures/baseline-105.json).
-The frozen snapshot preserves the actual 105-tool registry with no advertised
-output schemas. It remains the byte baseline for the standard-registry
-consolidation. The rejected full-schema experiment is recorded separately as
-861,301 bytes and is not used to make the candidate comparison easier.
+The frozen pre-cutover surface fixture lives at
+[`tests/fixtures/mcp_surface/baseline-2026-07-17.json`](../../tests/fixtures/mcp_surface/baseline-2026-07-17.json).
+ADR-016 owns its measured interpretation. The current registry fixture is
+[`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json).
 
 The 50-tool maximum and 40-tool carrying-weight review threshold are durable
-policy. Plan 6 enabled both hard-limit and description-budget enforcement
-atomically when it cut the standard registry to 45 tools.
-
-`baseline-105.json` is a deterministic `contract_fixture`, not observed model
-or host evidence. It proves the evaluation format and scoring path; fresh
-observed baseline and candidate evidence remain required for promotion.
+policy. Both hard-limit and description-budget enforcement apply to the
+operating 45-tool registry.
 
 The persisted comparison records `contract_passed: true` and
 `promotion_ready: false`: context budget: not_observed; host-native deferral:
@@ -622,11 +506,10 @@ the remaining promotion blockers, not reasons to misstate the operating
 
 Evaluate:
 
-1. the frozen pre-cutover 105-tool surface;
-2. the exact 45-tool standard registry;
-3. individual consolidation alternatives where schema size or accuracy is
+1. the exact 45-tool standard registry;
+2. individual consolidation alternatives where schema size or accuracy is
    uncertain;
-4. host-native deferred loading where supported.
+3. optional host-native deferred loading from that same registry.
 
 ### Corpus
 
@@ -688,65 +571,24 @@ For every discriminated or coarse contract they prove:
 Compatibility fixes are schema-aware and conservative. MoneyBin does not add a
 global coercion layer without evidence from supported clients.
 
-## Migration
+## Remaining promotion work
 
-### Phase 0 — freeze evidence
-
-- Generate the current registry snapshot and byte inventory.
-- Bind CLI/MCP parity to capability IDs and service outcomes.
-- Commit the evaluation corpus and baseline results.
-- Remove the three deprecated aliases from the advertised surface.
-
-### Phase 1 — shared contracts
-
-- Preserve canonical structured results without advertising output schemas.
-- Add the consumer-driven output-schema admission gate.
-- Add explicit capability, audience, safety, and workflow metadata.
-- Implement shared entity resolution and payload-bound confirmation.
-- Add count/byte, description, workflow-closure, and rendered-schema gates.
-
-### Phase 2 — generic reports
-
-- Change report MCP registration from one tool per report to one catalog.
-- Extend `ReportSpec` with metric semantics and stable namespaced IDs.
-- Migrate service-backed report exceptions into the registry.
-- Preserve generated per-report CLI commands.
-
-### Phase 3 — domain consolidation
-
-- Land the approved domain contracts incrementally.
-- Keep old names as hidden, callable aliases only when compatibility requires
-  it, for one explicitly bounded pre-launch release.
-- Re-run evaluation and byte gates after every cohort.
-
-### Phase 4 — default cut
-
-- Switch the advertised surface atomically after all 45 target tools are
-  implemented and workflow-closed.
-- Update instructions, resources, capability map, public catalog, and client
-  compatibility docs in the same release.
-- Remove expired aliases.
-
-### Phase 5 — host-native deferral
-
-- Enable host-native tool search/deferred loading where original tool identity,
-  annotations, allowlists, and approvals are preserved.
-- Keep the same complete registry for generic clients.
-- Treat host support as compatibility data, not server-side branching.
+- Capture observed model-context cost for the current standard registry.
+- Capture optional host-native deferral using the same names, annotations,
+  allowlists, approvals, and audit identities.
+- Persist those results without changing what generic clients receive.
 
 ## Alternatives
 
-### Keep all 105 tools visible
+### Retain the pre-cutover registry
 
-Rejected. It already exceeds a documented client ceiling and has no credible
-growth path.
+Rejected. ADR-016 records the measured ceiling and growth-path rationale.
 
 ### Split core capabilities into standard and extended profiles
 
-Rejected after design review. A proposed 44-tool universal versus 48-tool
-complete split added setup and workflow-closure complexity to hide only four
-expert operations. The generic report runner reduced the complete target
-further. MoneyBin will maintain one bounded standard registry instead.
+Rejected after design review. Profiles add setup and workflow-closure
+complexity while changing tool availability and identity across clients.
+MoneyBin maintains one bounded standard registry instead.
 
 ### Restore server-driven progressive disclosure
 
@@ -777,21 +619,13 @@ is a bounded domain runner, not an execution proxy.
 
 This spec remains `in-progress` and must not move to `implemented` until:
 
-- the proposed names and contracts reconcile against live code;
-- canonical FastMCP text/structured transport is proven;
-- the standard registry advertises zero output schemas, or every exception has
-  an approved consumer-driven admission record;
-- the report catalog contract and metric metadata are concrete;
-- payload-bound confirmation and entity-resolution contracts are concrete;
-- the capability-parity test is enforceable;
-- baseline and proposed surfaces have persisted eval results;
-- the proposed registry satisfies count and metadata budgets;
-- rendered schemas pass representative client compatibility tests;
-- the atomic documentation/rule migration is complete;
-- ADR-016 is accepted.
+- observed model-context evidence is persisted for the 45-tool registry;
+- optional host-native deferral is observed against that same registry; and
+- ADR-016 is accepted after those evidence gates close.
 
-The current comparison does not satisfy these promotion gates: context budget:
-not_observed; host-native deferral: not_observed; `promotion_ready: false`.
+The deterministic contract records `contract_passed: true`. The remaining
+promotion state is context budget: not_observed; host-native deferral:
+not_observed; `promotion_ready: false`.
 
 ## Non-goals
 

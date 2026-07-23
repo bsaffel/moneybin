@@ -112,9 +112,9 @@ Req 4, each returning an `AuditEvent`. Services compose the repo; no service
 issues raw DML against this table. `doctor_service` `_run_app_integrity` gains
 one `_run_app_audit_coverage(USER_REPORTS, "report_id")` call.
 
-`name` is the handle every tool in R5 takes; the service layer resolves it to
-`report_id` before touching the repo, per identifiers.md Guard 2. `report_id` is
-the audit target and the stable identity across renames.
+`name` is the handle every operation in R5 takes; the service layer resolves it
+to `report_id` before touching the repo, per identifiers.md Guard 2. `report_id`
+is the audit target and the stable identity across renames.
 
 #### The stored `ParamSpec` fields are declared, not introspected
 
@@ -252,7 +252,8 @@ rediscover it. R9 keeps a CRITICAL *bound* parameter out of the provenance view,
 but a user who writes the value straight into the SQL — `WHERE routing_number =
 '021000021'` instead of `= $acct` — puts it in a MEDIUM column that
 `_TRANSFORMS` passes through unmasked today, so it reaches an agent through both
-`sql_query` over `app.user_reports` and `reports_explain`'s `sql_template`.
+`sql_query` over `app.user_reports` and the report-inspection capability's SQL
+template.
 
 Accepted because the alternatives are worse: masking inside user-authored SQL
 means either redacting text the user must be able to read back and edit, or
@@ -272,12 +273,12 @@ not v1 scope; the accepted risk above is what holds until it lands.
 #### Archive is domain state; `deleted_at` is not the mechanism
 
 `is_active` follows the lifecycle-flag pattern used by `app.categories` and
-`app.categorization_rules`. Archiving is `reports_set(name, is_active=False)`.
-`surface-design.md` sanctions **both** shapes here — `_set` with a typed field
-(its stated resolution for `_toggle`) and `_archive` as a domain verb — and this
-spec takes `_set` because archiving carries no domain meaning the typed field
-erases, and it adds no tool. Archived reports stay runnable by name; archiving
-suppresses catalog noise, it does not revoke access.
+`app.categorization_rules`. Archiving is the report-lifecycle mutation with
+`is_active=False`. `surface-design.md` sanctions a typed field on a target-state
+mutation here because archiving carries no domain meaning the field erases.
+That operation is a capability requirement, not a reserved MCP identity;
+archived reports stay runnable by name, so archiving suppresses catalog noise
+rather than revoking access.
 
 There is deliberately **no `deleted_at`**. Soft delete as a *recoverability*
 mechanism would be a second, weaker implementation of a job Invariant 10 already
@@ -289,10 +290,10 @@ dedicated column would duplicate audit state and could drift from it.
 
 Because `name` is `UNIQUE` and archived rows stay in the table, an archived name
 stays taken. A save onto a colliding archived name must say so and name both
-exits — restore it with `reports_set(name, is_active=True)`, or free the name
-with `reports_set(name, state="absent")`. Reporting a bare "name already exists"
-for a report the default catalog hides is the failure this clause exists to
-prevent.
+exits — restore it by setting `is_active=True` through the lifecycle capability,
+or free the name through that capability's hard-delete branch. Reporting a bare
+"name already exists" for a report the default catalog hides is the failure
+this clause exists to prevent.
 
 ### R2 — Save-time classification is invisible
 
@@ -357,8 +358,8 @@ Rejecting duplicate names is what keeps that map addressable. DuckDB permits
 but `classes` is a JSON object keyed by name and `redact_records` masks
 `row.items()` by that same key — so one entry survives, holding whichever class
 resolved last, and it governs whichever value survives. The mask stops
-corresponding to the value it is supposed to cover, and
-`reports_reclassify(x, …)` would then mutate one entry for a name that means two
+corresponding to the value it is supposed to cover, and the classification-
+downgrade capability would then mutate one entry for a name that means two
 things. A duplicate name carries no meaning in a durable report that anything
 downstream can address by name, so this refuses at save rather than becoming a
 named risk: the alternative is masking that is correct only by the accident of
@@ -400,10 +401,11 @@ reproduction against DuckDB 1.5.4:
 #### Every SQL or parameter change re-runs this pipeline
 
 The pipeline is not the *save* path; it is the path any mutation of `query_sql`
-or `params` takes. `reports_set` is a partial update (R5), so a call that
-touches either field must re-run steps 1–6 and persist the new SQL, class map,
-parameter classes, and fingerprint in a **single** repo write. Parameter classes
-are derived from the comparison each placeholder appears in (step 5), so
+or `params` takes. The report-lifecycle capability is a partial update (R5), so
+a request that touches either field must re-run steps 1–6 and persist the new
+SQL, class map, parameter classes, and fingerprint in a **single** repo write.
+Parameter classes are derived from the comparison each placeholder appears in
+(step 5), so
 rewriting the SQL can move a parameter from `AGGREGATE` to `ROUTING_NUMBER`
 exactly as it can a projection — a stale parameter class renders a CRITICAL
 literal into the provenance view under the old, weaker class. Skipping it re-creates the exact bug
@@ -415,7 +417,8 @@ touches neither field (`description`, `is_active`) skips derivation entirely.
 `class_downgrades` does not survive a `query_sql` change. A downgrade is a human
 judgment about one column of one query (D5), and carrying it onto rewritten SQL
 is the same stale-authority failure one level down. The mutation clears the map
-and its response names the cleared columns; re-apply with `reports_reclassify`.
+and its response names the cleared columns; re-apply through the classification-
+downgrade capability.
 
 #### Not every savable report is graduation-eligible
 
@@ -428,7 +431,7 @@ but can never be materialized.
 This spec keeps the wider save-time allowlist — composing on top of a built-in
 report is real value, and the umbrella's graduation promise is explicitly
 conditional ("if it proves its worth"). The obligation is honesty, not
-restriction: `reports_explain` reports graduation eligibility and the specific
+restriction: report inspection returns graduation eligibility and the specific
 reason it is unavailable. Narrowing the allowlist to `{core, app}` remains the
 alternative if ineligible reports prove confusing in practice.
 
@@ -444,13 +447,14 @@ everywhere else.
 - **Unresolvable columns produce one non-blocking note** on the save response,
   naming the columns and the fix. Not a gate. The report saves.
 - **Masked output self-explains.** Any run that masks at least one column
-  carries an `actions[]` hint pointing at `reports_explain`. A `'*****'` with no
-  explanation becomes a two-call fix.
+  carries an `actions[]` hint describing the report-inspection outcome; the
+  implementing PR binds that hint only to an admitted surface. A `'*****'` with
+  no explanation becomes a two-call fix.
 
 The residual honesty: *over*-classification cannot be detected automatically —
 that is why D5 leaves the downgrade judgment to a human. A z-score correctly
-derives as `TXN_AMOUNT` (HIGH) and masks. The `actions[]` hint plus
-`reports_reclassify` is a mitigation, not a fix.
+derives as `TXN_AMOUNT` (HIGH) and masks. The `actions[]` hint plus the
+classification-downgrade capability is a mitigation, not a fix.
 
 ### R4 — Drift detection keys on the class map, not the migration counter
 
@@ -557,7 +561,7 @@ columns.** A dynamic report's parameter classes are derived at save (R2 step 5)
 from the columns its filters compare against, so they go stale by exactly the
 mechanism this section exists to catch — and one level deeper than the rows do.
 If `dim_accounts.external_ref` is reclassified upward, the *result columns*
-correctly fail closed on the next run, while `reports_explain` would keep
+correctly fail closed on the next run, while report inspection would keep
 rendering `WHERE external_ref = $ref` with the value inline under the class
 stored months earlier. The rows would be masked and the filter that selected
 them printed in the clear. So the Mismatch branch re-derives parameter classes
@@ -603,47 +607,41 @@ apart is not acceptable; two meanings with a mandatory discriminator is.
 ### R5 — One access path, three tiers behind it
 
 Reading a report — catalog or execution — adds **no MCP tool**. The shipped
-`reports(report_id, parameters, limit)` contract is already the universal path,
-and a user report resolves through it exactly as a built-in does. This spec
-extends that tool's resolution to span all three tiers; it does not sit a second
-dispatcher beside it.
+`reports(report_id=..., parameters=..., limit=...)` contract is already the
+universal path, and a user report resolves through it exactly as a built-in
+does. This spec extends that tool's resolution to span all three tiers; it does
+not sit a second dispatcher beside it.
 
 | Operation | MCP | CLI |
 |---|---|---|
 | Catalog, all tiers | `reports` (omit `report_id`) | `moneybin reports list` |
-| Run any report | `reports(report_id, parameters)` | `moneybin reports run` |
-| Save / update / rename / archive / delete | `reports_set` | `moneybin reports create`, `set`, `delete` |
-| Inspect | `reports_explain` | `moneybin reports explain` |
-| Downgrade a class | `reports_reclassify` | `moneybin reports reclassify` |
+| Run any report | `reports(report_id=..., parameters=...)` | `moneybin reports run` |
+| Save / update / rename / archive / delete | Unadmitted capability; MCP identity remains unnamed | `moneybin reports create`, `set`, `delete` |
+| Inspect | Unadmitted capability; MCP identity remains unnamed | `moneybin reports explain` |
+| Downgrade a class | Unadmitted capability; MCP identity remains unnamed | `moneybin reports reclassify` |
 
-**The write surface is three new tools, not six, and the constraint is the
-registry budget.** `mcp-tool-surface-scaling.md` operates one bounded registry
-of 45 standard tools against a hard maximum of 50 (ADR-016), with a
-carrying-weight review required of every tool above 40. Six new `reports_*`
-identities would land at 51 — over the hard maximum — so the earlier shape was
-not merely unfashionable under the consolidated surface, it was unbuildable
-without superseding an ADR. Three lands at 48, and each of the three owes the
-seven-question admission record in its implementing PR.
+**The MCP registry remains the operating 45-tool contract.** This draft does
+not reserve three identities or count them against the hard maximum of 50. The
+implementing PR must first try an existing projection, method, batch, target
+state, report entry, or workflow umbrella, then complete the seven-question
+admission record in `mcp-tool-surface-scaling.md` for each capability that still
+requires a distinct identity. Because the registry is already above 40, that PR
+also owes the full carrying-weight review, exact serialized metadata delta, and
+persisted selection, argument, workflow, safety, and schema-compatibility
+evidence. Until those gates pass, the capabilities remain unnamed and the only
+MCP report contract is the shipped `reports` catalog/runner.
 
-The collapse follows `surface-design.md` rather than the count. `reports_set` is
-shape 1b: create, update, rename, archive, and delete share intent,
-authorization, sensitivity, and audit contract, so they belong in one typed
-target-state mutation (`state="absent"` for the hard delete, which advertises
-maximum static risk and confirms only that branch). The rule reserves a strict
-`_create` and a paired `_delete` for cases where those contracts *materially*
-differ, which is not this one — the collision guard that motivated a strict
-create is a property of the registry and runs on every path that sets a name,
-so it does not need a tool of its own.
-
-`reports_explain` stays separate because its trust contract genuinely differs:
-[R9](#r9--provenance-renders-identically-across-tiers) has it render a
-parameter value verbatim that the same report's results mask, so folding it into
-`reports` behind a flag would put two sensitivity contracts under one identity —
-and its output family (SQL, lineage, class map) is not the row union `reports`
-returns, which fails the shared-output test for acceptable polymorphism.
-`_reclassify` is a domain verb because it carries D5's mandatory `reason`, which
-a generic field-set erases, and because its elicitation and audit contracts are
-unlike any other write in the domain.
+The capability boundaries follow `surface-design.md`, not a desired tool count.
+Create, update, rename, archive, and delete share intent, authorization,
+sensitivity, and audit contract, so the lifecycle requirement is one typed
+target-state capability with a hard-delete branch that advertises maximum
+static risk and confirms only that branch. Report inspection has a materially
+different trust contract: [R9](#r9--provenance-renders-identically-across-tiers)
+renders a parameter value verbatim that the same report's results mask, and its
+SQL, lineage, and class-map output is not the tagged row union returned by
+`reports`. Classification downgrade is separate again because D5's mandatory
+human confirmation and audit contract cannot be erased into a generic field
+update. These are capability boundaries for admission review, not public names.
 
 The catalog read is the **noun** `reports`, because `_list` is on the rule's
 explicit drop list and no shipped MCP tool carries the suffix. The CLI keeps
@@ -653,25 +651,27 @@ explicit drop list and no shipped MCP tool carries the suffix. The CLI keeps
 capability through the same service without requiring name equality, which is
 the capability symmetry `.claude/rules/surface-design.md` asks for.
 
-The catalog excludes archived reports by default; `include_archived` (CLI
-`--archived`) widens it. Each entry carries a `tier` field.
+The catalog excludes archived reports by default. The CLI's `--archived` view
+widens it; any equivalent MCP projection must be justified as an extension of
+the existing `reports` input schema in the implementing PR rather than assumed
+here. Each entry carries a `tier` field.
 
 **Names are unique across the whole registry, not just against built-ins.**
 `reports` resolves one `report_id` across three tiers, so two reports sharing a
 name make the catalog and its runner ambiguous. The check runs in both
-directions: `reports_set` rejects a name already held by a built-in *or* an
-installed extension, and installing an extension whose report name collides with
-an existing user report fails with both names rather than silently shadowing
-one. Defining a precedence order instead would mean a user's saved report can
-change meaning when an unrelated package is installed — a rule nobody can see
-from the catalog.
+directions: the lifecycle capability rejects a name already held by a built-in
+*or* an installed extension, and installing an extension whose report name
+collides with an existing user report fails with both names rather than silently
+shadowing one. Defining a precedence order instead would mean a user's saved
+report can change meaning when an unrelated package is installed — a rule
+nobody can see from the catalog.
 
 **Both of those are mutation-time checks, and a collision can arrive without a
 mutation.** Upgrading MoneyBin can add a built-in whose name a user already
 took; upgrading an installed package can rename one of its reports onto the
-same ground. Neither path calls `reports_set` or the install check, so a
-registry validated at every write can still be ambiguous at the next startup —
-and the tier that loses is always the user's, since the colliding name was
+same ground. Neither path calls the lifecycle mutation or the install check, so
+a registry validated at every write can still be ambiguous at the next startup
+— and the tier that loses is always the user's, since the colliding name was
 theirs first.
 
 So catalog construction validates the assembled registry rather than trusting
@@ -683,28 +683,29 @@ the user's report hides their work behind an upgrade they did not ask for, and
 shadowing the built-in makes a shipped report vanish for one user with no
 visible cause.
 
-**`reports_reclassify` requires human confirmation and cannot be self-accepted
-by the agent that calls it.** A downgrade permanently lowers the masking floor
-for a column across every future run and every surface — `reports`,
-`sql_query`, `reports_explain` — on the strength of a `reason` string the caller
-supplies about its own request. `design-principles.md` is explicit that an
-inference this consequential "is never eligible for agent self-accept, regardless
-of confidence score," and the cost of a wrong one is exactly the kind it names as
-raising the bar: silent, durable, and invisible in the result.
+**The classification-downgrade capability requires human confirmation and
+cannot be self-accepted by the agent that invokes it.** A downgrade permanently
+lowers the masking floor for a column across every future run and every surface
+— `reports`, `sql_query`, and report inspection — on the strength of a `reason`
+string the caller supplies about its own request. `design-principles.md` is
+explicit that an inference this consequential "is never eligible for agent
+self-accept, regardless of confidence score," and the cost of a wrong one is
+exactly the kind it names as raising the bar: silent, durable, and invisible in
+the result.
 
 The mechanism already exists and the precedent is unambiguous. `import_confirm`
 is agent-callable and still cannot be answered by the agent —
 `confirm_or_raise` raises when the client cannot elicit, so nothing loads
-(`mcp/tools/import_tools.py`). `reports_reclassify` takes the same shape: the
-tool presents the column, its derived class, the proposed class, and the
-`reason`, and the downgrade persists only on human confirmation through
-elicitation. A client that cannot elicit gets a refusal, not a default-accept.
-The generic MCP consent ladder does not cover this — it gates what leaves the
-machine on one request, not a durable change to what is masked on all future
-ones.
+(`mcp/tools/import_tools.py`). If the downgrade capability passes MCP admission,
+it must take the same confirmation shape: present the column, its derived class,
+the proposed class, and the `reason`, then persist only after human confirmation
+through elicitation. A client that cannot elicit gets a refusal, not a
+default-accept. The generic MCP consent ladder does not cover this — it gates
+what leaves the machine on one request, not a durable change to what is masked
+on all future ones.
 
 **A downgrade must lower the tier, and an equal-tier weakening is refused
-outright.** `reports_reclassify` applies the rule `.claude/rules/reports.md`
+outright.** The runtime capability applies the rule `.claude/rules/reports.md`
 already states for materialized reports — not a second rule beside it:
 `tier(to)` must be strictly below `tier(from)`, and `mask_strength(to)` may not
 rise. A reason cannot waive the equal-tier case.
@@ -727,17 +728,17 @@ weakening is refused with no reason able to excuse it. Holding
 axis while weakening the other.
 
 Materialized reports get this at CI time (`reports-foundation.md` R3); a dynamic
-report has no repo artifact and no CI step, so the tool is the only place it can
-run. The two surfaces must enforce the *same* rule: the agent-reachable,
-runtime, un-reviewed-by-CI path is the last one that should get the weaker of
-two guards.
+report has no repo artifact and no CI step, so the runtime downgrade path is the
+only place it can run. The two surfaces must enforce the *same* rule: the
+runtime, un-reviewed-by-CI path is the last one that should get the weaker of two
+guards.
 
-**Renames go through the same collision check as creation.** `reports_set` is
-how a report is renamed (R1), so a rename into a name already held by a built-in
-or an installed extension would satisfy the table's `UNIQUE` constraint — which
-only spans `app.user_reports` — and still leave `reports` ambiguous across
-tiers. The check is a property of the registry, not of any one branch of
-`reports_set`; every path that can set a name runs it.
+**Renames go through the same collision check as creation.** The lifecycle
+capability owns report renames (R1), so a rename into a name already held by a
+built-in or an installed extension would satisfy the table's `UNIQUE`
+constraint — which only spans `app.user_reports` — and still leave `reports`
+ambiguous across tiers. The check is a property of the registry, not of any one
+lifecycle branch; every path that can set a name runs it.
 
 **Parameters cross the wire as a mapping, not `**kwargs`.** Both registrars
 synthesize an explicit signature from `spec.params`, and FastMCP and Typer
@@ -785,21 +786,23 @@ and distribution a repo artifact gets and a database row does not.
 
 ### R6 — The verify surface (absorbs M2I)
 
-`reports_explain(handle, params=None)` returns, for any tier. `handle` resolves
+The report-inspection capability returns the same evidence for every tier, but
+this draft assigns it no MCP identity. If its implementing PR cannot place the
+outcome behind an admitted existing projection, it must pass the bounded-
+registry admission record before receiving a public name. Its handle resolves
 by the shared reference contract's order — an exact `report_id` first, then an
 exact name (`.claude/rules/mcp.md` "Entity resolution") — so a report whose name
 is contested by a registry collision (R5) stays inspectable by its stable
-`report_id`. Every handle-taking operation resolves the same way, on both
-surfaces: `reports_reclassify`, the MCP `reports` tool (whose parameter is
-already `report_id`), and the CLI's `reports run` / `explain` / `reclassify`,
-which accept a `report_id` wherever they accept a name. This is what actually
-delivers the collision-recovery promise — a contested name has an unambiguous
-`report_id` escape hatch on every path a human or agent might take, not only the
-inspect path. The catalog *displays* names because that is what a user reads;
-resolution accepts either because a name a user cannot currently type still has
-an id they can.
+`report_id`. Every handle-taking operation resolves the same way: the shipped
+`reports` tool already accepts `report_id`, and the CLI's `reports run` /
+`explain` / `reclassify` commands accept a `report_id` wherever they accept a
+name. This is what actually delivers the collision-recovery promise — a
+contested name has an unambiguous `report_id` escape hatch on every admitted
+path. The catalog *displays* names because that is what a user reads; resolution
+accepts either because a name a user cannot currently type still has an id they
+can.
 
-For any tier, `reports_explain` returns:
+For any tier, report inspection returns:
 
 - the SQL in both forms defined by [R9](#r9--provenance-renders-identically-across-tiers);
 - the resolved class map, per column, with provenance — which upstream column it
@@ -809,10 +812,10 @@ For any tier, `reports_explain` returns:
 - graduation eligibility, with the disqualifying reason when it is unavailable
   (R2).
 
-It accepts `params` because R9's executed form needs values to render. Omitted
-params fall back to declared defaults; what happens when a required parameter
-has no default depends on where the SQL comes from, and the two tiers cannot be
-made uniform here:
+It accepts a parameter mapping because R9's executed form needs values to
+render. Omitted parameters fall back to declared defaults; what happens when a
+required parameter has no default depends on where the SQL comes from, and the
+two tiers cannot be made uniform here:
 
 - **User-created** — the SQL is a stored template. A missing required value
   renders as its `$name` placeholder in `sql_template`, the executed `sql` form
@@ -821,7 +824,7 @@ made uniform here:
   only way to obtain the query is `spec.runner(db, **params)`
   (`_framework/execute.py:194`), which raises on a missing keyword argument
   before a query exists, and a placeholder sentinel would fail the runner's own
-  validation or ID resolution instead. So `reports_explain` requires every
+  validation or ID resolution instead. So report inspection requires every
   `required` parameter for these tiers and returns a validation error naming
   the missing ones.
 - **Service-backed (`ServiceReportSpec`)** — there is no query to return at
@@ -833,7 +836,7 @@ made uniform here:
 The third kind is why R9's "provenance renders identically across tiers" is
 bounded rather than absolute, and the bound is worth stating plainly: a
 service-backed report cannot feed the brass SQL chip a query, because it has
-none. `reports_explain` returns its declared `semantics.provenance` — the
+none. Report inspection returns its declared `semantics.provenance` — the
 `reports.*` view names the service reads (`("reports.net_worth",)` for
 `core:networth`) — and an explicit `sql_unavailable` reason naming the
 service-backed kind. A chip that renders "derived by `NetworthService` from
@@ -841,11 +844,12 @@ service-backed kind. A chip that renders "derived by `NetworthService` from
 to fill the slot does not, and the whole point of the provenance chip is that
 it can be checked.
 
-Everything else `reports_explain` returns — class map, lineage, freshness,
+Everything else report inspection returns — class map, lineage, freshness,
 graduation eligibility — is parameter-independent and available for all three.
 
-This is the *verify* half of "create and verify", and R5's dispatcher makes it
-uniform across tiers.
+This is the *verify* half of "create and verify". R5's shared registry and
+service contract make the outcome uniform across tiers without pre-admitting a
+new tool.
 
 ### R7 — Parity is enforced by test, not by intention
 
@@ -891,11 +895,11 @@ binding if it reads better.
 
 `WidgetCard`'s contract states that "every widget that shows a number must pass
 `sql` — a widget that can't state its query doesn't ship." All three tiers
-satisfy it from one source: `reports_explain` returns the query, so the brass SQL
+satisfy it from one source: report inspection returns the query, so the brass SQL
 chip is fed identically whether the report came from a decorator or a row. (The
 prop is typed optional; the requirement is the component's stated convention.)
 
-`reports_explain` returns two forms, because the provenance ladder's bottom rung
+Report inspection returns two forms, because the provenance ladder's bottom rung
 opens the query in the SQL console for direct editing, where a template with
 unbound `$month` would fail:
 
@@ -910,7 +914,7 @@ unbound `$month` would fail:
 **A parameter classed above LOW keeps its placeholder in `sql`.** Rendering is
 not execution, so it never passes through `run_report`'s `classify_columns` /
 `redact_records` — a report filtered by account or routing number would return
-that value verbatim from `reports_explain` while the same value is masked in
+that value verbatim from report inspection while the same value is masked in
 every row of the result it explains. Every bound parameter therefore carries a
 `DataClass`; the renderer emits a literal only for LOW-classed bindings and
 leaves the rest as `$name`.
@@ -981,9 +985,9 @@ So a binding carries its own class:
   comparison against an expression, a placeholder used in two places with
   different classes — resolves to `UNRESOLVED` and keeps its placeholder.
 
-One mechanism serves all three tiers, which is the parity R5 asks for:
-`reports_explain` reads the class off the binding it is about to render and
-never reconstructs it from anything else.
+One mechanism serves all three tiers, which is the parity R5 asks for: report
+inspection reads the class off the binding it is about to render and never
+reconstructs it from anything else.
 
 `UNRESOLVED` is derived, never stored: `taxonomy.py` notes that *declaring* a
 column unresolved defeats the completeness tests that exist to find gaps, and
@@ -1006,12 +1010,13 @@ change owns the fix — the rule is rewritten to define the contract in terms of
 `ReportSpec`, with the three-part form named as what a *materialized* report
 requires.
 
-Implementation also updates `docs/specs/moneybin-mcp.md` and
-`docs/specs/moneybin-cli.md` for the four MCP tools (three of them new) and
-seven CLI subcommands in R5, **and `docs/specs/moneybin-capabilities.md`** —
-mcp.md's surface-change
-discipline requires two specs per change, the surface-specific one and the
-cross-surface capability map, with a row added or updated per capability.
+Implementation also updates `docs/specs/moneybin-cli.md` for the seven CLI
+subcommands in R5 and **`docs/specs/moneybin-capabilities.md`** for their shared
+service outcomes. If any non-read capability passes MCP admission, the same PR
+also updates `docs/specs/moneybin-mcp.md`; mcp.md's surface-change discipline
+requires the surface-specific spec and cross-surface capability map to move
+together. The shipped `reports(report_id=..., parameters=...)` catalog/runner
+remains the only MCP identity this draft assumes.
 
 ## Observability
 
@@ -1048,10 +1053,12 @@ would hide a surface that is refusing every downgrade for mechanical reasons.
   two shapes for one concept, which is the two-patterns rot `design-principles.md`
   names as the largest source of decay. Decide with the implementing PR, which
   is where the consumer list can actually be enumerated.
-- **Does `reports_set` earn a registry slot at 48 of 50?** The three write tools
-  fit `surface-design.md`'s shapes, but fitting a shape is not the admission
-  test — the seven-question record in `.claude/rules/mcp.md` also demands the
-  serialized byte delta and evaluation evidence, and neither exists until the
-  tools do. If the carrying-weight review rejects one, the fallback is folding
-  the write path into an existing coarse mutation rather than superseding
-  ADR-016's hard maximum. Settle this in the implementing PR, with numbers.
+- **Which MCP identities, if any, pass bounded-registry admission?** Lifecycle,
+  inspection, and classification downgrade are distinct capability boundaries,
+  not reserved tool names. Fitting `surface-design.md`'s shapes is not the
+  admission test: the implementing PR must first try an existing projection,
+  method, batch, target state, report entry, or workflow umbrella, then supply
+  the seven-question record, serialized byte delta, and evaluation evidence for
+  every remaining identity. The registry stays at 45 until that evidence passes;
+  the fallback is an existing admitted operation or CLI-only operator control,
+  not a speculative alias or an override of ADR-016's hard maximum.

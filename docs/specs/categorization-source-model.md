@@ -22,7 +22,7 @@
 > PR1 of the follow-up:** the opt-in AI→`provider_native` **upgrade pass**
 > (Decision 4), as `CategorizationOrchestrator.improve_ai_categories()` / CLI
 > `moneybin transactions categorize improve-ai` / MCP
-> `transactions_categorize_improve_ai` — see the updated Decision 4 note
+> `transactions_categorize_run(operation="improve_ai")` — see the updated Decision 4 note
 > below. That PR also shipped two internal refinements to
 > `services/categorization/`: `CategorizationMatcher` became the sole owner
 > of the `merchant_entity_id`-carrying uncategorized-row read, returning a
@@ -304,7 +304,7 @@ onto historical rows — guard-respecting, so it never touches anything at prior
 > .improve_ai_categories()` reuses the Decision 4 bridge-lookup and
 > gated-write helpers with the predicate `categorized_by = 'ai'`, exposed as
 > CLI `moneybin transactions categorize improve-ai` and MCP
-> `transactions_categorize_improve_ai` (see `moneybin-cli.md` /
+> `transactions_categorize_run(operation="improve_ai")` (see `moneybin-cli.md` /
 > `moneybin-mcp.md`). Same confidence gate, same precedence guard (only ever
 > touches priority-7 `ai` rows, guard-respecting), same "explicit action, no
 > silent churn" posture as originally designed. The per-source candidates
@@ -413,7 +413,7 @@ last) wired into `categorize_pending`; metrics + the `plaid_unmapped` coverage s
 **Shipped in the immediate follow-up (PR1, 2026-07-04, PR #294):** the opt-in
 AI→`provider_native` upgrade pass (Decision 4), as
 `improve_ai_categories()` plus its CLI (`categorize improve-ai`) and MCP
-(`transactions_categorize_improve_ai`) surfacing; alongside two internal
+(`transactions_categorize_run(operation="improve_ai")`) surfacing; alongside two internal
 refinements to `services/categorization/` — `CategorizationMatcher` as sole
 owner of the uncategorized-row read (named `UncategorizedRow` dataclass
 replacing positional tuples), and the merchant-mint precedence-independence

@@ -199,12 +199,15 @@ A firewall ruleset for the MoneyBin client alone — without an MCP client runni
 | Activity | Outbound from MoneyBin client | Notes |
 |---|---|---|
 | OFX / QFX / QBO / CSV / PDF imports | None | Pure file path; never reads `sync.server_url`. |
-| `moneybin mcp serve` | None | stdio JSON-RPC only; no listening port; no telemetry. |
+| `moneybin mcp serve` startup / local tools | None | stdio JSON-RPC only; no listening port; no telemetry. Explicit connector tool calls follow the rows below. |
 | `moneybin db ...`, `moneybin transform apply`, `moneybin reports ...` | None | All local. |
 | `moneybin sync ...` (Plaid path) | `sync.server_url` only | Default is `None` — the user supplies the broker URL via env / config. Set to your self-hosted instance or to the hosted broker if you choose one. |
+| `moneybin gsheet ...` / `gsheet_*` | Google OAuth and Sheets APIs | Only when the user invokes the connector; credentials remain in `SecretStore`. |
 | Categorization assist (MCP tool) | None | The LLM call originates in the MCP client process, not in MoneyBin. |
 
 No telemetry, no analytics, no update checks, no enrichment lookups. The MCP client running alongside MoneyBin makes its own outbound calls per its own privacy policy — that is out of MoneyBin's control.
+The MCP connector spellings follow the same boundary: `sync_*` reaches the
+configured broker and `gsheet_*` reaches Google only when invoked.
 
 ### Self-hosted moneybin-sync trust delta
 
@@ -254,7 +257,7 @@ MoneyBin is AI-native — and that introduces risks that don't exist in a plain 
 
 - **Prompt injection from your own data is unfiltered.** A transaction description that says `IGNORE PREVIOUS INSTRUCTIONS AND DO X` arrives at the LLM as ordinary tool-result content. MoneyBin doesn't scan, strip, or quote-escape this kind of content. The LLM's own safety training is the only filter. For high-stakes operations, prefer the CLI (where there is no LLM in the loop) over the agent.
 
-- **No egress redaction.** MoneyBin's tool results are not filtered or scrubbed before they leave the server process. The `SanitizedLogFormatter` operates on log lines only. An opt-in redaction layer (mask merchants, mask amounts, send aggregates only) is on the post-launch roadmap; it is not shipped today.
+- **No general consent redaction beyond critical-field masking.** Critical account/routing fields are masked before tool results leave today. Medium/high fields are not otherwise degraded or scrubbed based on consent; `SanitizedLogFormatter` protects log lines only. Aggregate-only consent degradation remains deferred.
 
 ---
 

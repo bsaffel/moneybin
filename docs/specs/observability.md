@@ -249,14 +249,16 @@ The MCP server calls `setup_observability(stream="mcp")` at startup.
 
 - Metrics flush uses the periodic strategy (every 5 min) since MCP sessions can be long.
 - Tool call instrumentation is automatic — a decorator on all tool handlers records `mcp_tool_calls_total` and `mcp_tool_duration_seconds` without per-tool opt-in.
-- Privacy middleware decisions logged at INFO: `"Consent not granted, returning degraded response"`.
+- Privacy instrumentation records the classified tier and masking outcome.
+  Consent-based degradation is deferred and therefore emits no runtime decision
+  log today.
 
 ### What the AI Host Sees on stderr
 
 ```
 2026-04-20 14:23:01 - moneybin.mcp - INFO - Server started, database: ~/.moneybin/data/default.db
-2026-04-20 14:23:05 - moneybin.mcp - INFO - Tool reports_spending called
-2026-04-20 14:23:05 - moneybin.mcp - INFO - Consent not granted, returning degraded response
+2026-04-20 14:23:05 - moneybin.mcp - INFO - Tool reports called
+2026-04-20 14:23:05 - moneybin.mcp - INFO - Tool response classified and masked
 ```
 
 ## 7. CLI Commands
@@ -289,7 +291,7 @@ $ moneybin stats
 Import Records:     12,847 total (247 today)
 Import Duration:    p50=0.8s  p95=2.1s
 Auto-categorized:   78% of transactions
-MCP Tool Calls:     1,203 total (top: reports_spending, transactions_get)
+MCP Tool Calls:     1,203 total (top: reports, transactions)
 Dedup Matches:      1,891 records merged
 ```
 

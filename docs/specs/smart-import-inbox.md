@@ -12,7 +12,9 @@ Give users a "drop a file here, then ask MoneyBin to import it" workflow that mi
 
 ## Background
 
-Today's import surface is path-based: `moneybin import file <path>` (CLI) and `import.file` (MCP). Both are correct and private — the LLM only sees the path string, never the file's contents. But two ergonomic gaps remain:
+Today's import surface is path-based: `moneybin import files <path>` (CLI) and
+`import_files(paths=[...])` (MCP). Both are correct and private — the LLM only
+sees the path string, never the file's contents. But two ergonomic gaps remain:
 
 - **Discoverability.** A new user has no obvious place to put a downloaded statement. They reach for chat-attachment upload, which exposes the entire file to the LLM (and the host's logs/cache) before any tool ever runs. The current docs don't push them toward a private alternative because there isn't a particularly natural one.
 - **Batch flow.** Importing five files means typing five paths or five chat turns. There's no "drain everything new" gesture that matches how users already think about sync folders.
@@ -48,7 +50,7 @@ The existing `~/.moneybin/` location is the older Unix dotdir form of platform c
 9. **Atomic file movement.** Each file is processed in three filesystem steps: source → staging path inside the destination directory → final destination. Movement uses `os.rename` (atomic on the same filesystem). A crash mid-import leaves the file either in `inbox/` (not yet moved), in a discoverable `staging-*` path inside `processed/` or `failed/`, or at its final destination — never partially written or duplicated. A startup recovery pass (run at the start of every sync) cleans up stale `staging-*` entries by reverting them to `inbox/`.
 10. **Out-of-scope on inbox/processed/failed boundaries.** Sync only acts on regular files directly inside `inbox/` (root) or directly inside `inbox/<single-subfolder>/`. Nested subfolders deeper than one level, symlinks, and hidden files (starting with `.`) are skipped with an `ignored` entry in the response. This rules out sync recursing into `processed/`, `failed/`, or accidentally following a symlink out of the home directory.
 11. **CLI surface.** `moneybin import inbox` drains the active profile's inbox. `moneybin import inbox list` previews without moving. `moneybin import inbox path` prints the active profile's inbox parent (`<inbox_root>/<profile>/`). All three live under the existing `import` group per `moneybin-cli.md` and respect the global `--profile` flag.
-12. **MCP surface.** `import_inbox_sync` drains. `import_inbox_pending` previews. Both are `low` sensitivity (return aggregate counts, filenames, and error codes — never file contents).
+12. **MCP surface.** `import_inbox_sync` drains. `import_status(sections=["inbox"])` reads pending inbox state. Both are `low` sensitivity (return aggregate counts, filenames, and error codes — never file contents).
 
 ### Non-Functional
 
@@ -60,7 +62,7 @@ The existing `~/.moneybin/` location is the older Unix dotdir form of platform c
 
 ## Data Model
 
-No new database tables. The inbox is filesystem state; the database side is unchanged because each file's import path goes through the existing `ImportService.import_file()`.
+No new database tables. The inbox is filesystem state; the database side is unchanged because each file's import path goes through the existing batch import service.
 
 Existing tables touched indirectly via `ImportService`:
 
@@ -71,9 +73,9 @@ Existing tables touched indirectly via `ImportService`:
 
 ### Files to Create
 
-- `src/moneybin/services/inbox_service.py` — `InboxService` class encapsulating directory layout, locking, the recovery pass, file movement, and the sync/list operations. Calls `ImportService.import_file()` for each file. Returns a dataclass result (`InboxSyncResult`) with `processed`, `failed`, `skipped`, `ignored` lists.
+- `src/moneybin/services/inbox_service.py` — `InboxService` class encapsulating directory layout, locking, the recovery pass, file movement, and the sync/list operations. Calls the batch import service for each file. Returns a dataclass result (`InboxSyncResult`) with `processed`, `failed`, `skipped`, `ignored` lists.
 - `src/moneybin/cli/commands/import_inbox.py` — Typer subcommands `inbox`, `inbox list`, `inbox path` registered under the existing `import` group.
-- `src/moneybin/mcp/tools/import_inbox.py` — `import_inbox_sync` and `import_inbox_pending` MCP tools.
+- `src/moneybin/mcp/tools/import_inbox.py` — `import_inbox_sync`; pending state is projected by `import_status(sections=["inbox"])`.
 - `tests/services/test_inbox_service.py` — service-level unit + integration tests.
 - `tests/cli/test_import_inbox.py` — CLI subprocess tests.
 - `tests/mcp/test_import_inbox_tools.py` — MCP tool tests.
@@ -82,7 +84,8 @@ Existing tables touched indirectly via `ImportService`:
 
 - `src/moneybin/config.py` — add `ImportSettings` submodel with `inbox_root: Path = Path.home() / "Documents" / "MoneyBin"`. Wire into `MoneyBinSettings`. The active-profile inbox path (`<inbox_root>/<profile>/`) is derived at access time, not stored, so a profile switch picks up the new path without restart.
 - `src/moneybin/cli/commands/import_cmd.py` — register the new subcommands under the existing `import` Typer group.
-- `src/moneybin/mcp/_registration.py` — register the two new tools.
+- `src/moneybin/mcp/_registration.py` — register `import_inbox_sync`; inbox
+  state remains a section of `import_status`.
 - `src/moneybin/metrics/registry.py` — add the two new metrics.
 - `docs/specs/INDEX.md` — add an entry under "Smart Import."
 - `README.md` — add a roadmap entry (📐) and a brief mention in the import section.
@@ -106,7 +109,9 @@ moneybin import inbox path       Print the configured inbox parent path
                                  (handy for shell composition).
 ```
 
-Output format follows `cli-ux-standards.md` (planned) and the existing `import file` command. `--output json` returns the same structure as the MCP envelope's `data` field.
+Output format follows `cli-ux-standards.md` (planned) and the existing `import
+files` command. `--output json` returns the same structure as the MCP envelope's
+`data` field.
 
 Example session:
 
@@ -135,12 +140,13 @@ Done: 1 imported, 0 failed, 1 pending.
 
 ## MCP Interface
 
-Two new tools under the existing `import.*` namespace.
+One dedicated `import_inbox_sync` tool plus the `sections=["inbox"]`
+projection of the existing `import_status` tool.
 
 ### `import_inbox_sync`
 
 - **Sensitivity:** `low` (returns counts, filenames, error codes; never file contents)
-- **Args:** `refresh: bool = True` — added in the transform handoff (PR #143/#151). When True, runs the post-load refresh pipeline (matching + SQLMesh apply + categorization) once after all files have been imported; pass False to defer.
+- **Args:** `refresh: bool = True` — when true, runs the default gsheet → match → transform → categorize → identity pipeline once after all files have been imported; pass false to defer.
 - **Behavior:** runs the same operation as `moneybin import inbox`.
 - **Response data:**
   ```json
@@ -180,15 +186,19 @@ Two new tools under the existing `import.*` namespace.
   dead end with `candidates: []`.
 - **Actions hints:** when any `account_confirmation` pending entries are returned: `"Some pending files need an account identity — run moneybin import confirm <pending-path> --accept --account-binding <source_key>=<account_id|new> (--accept ratifies the settled mapping; source_key + candidate accounts are in each pending entry's account_proposals, also mirrored in the .pending.yml sidecar), or move the file into inbox/<account-slug>/ and re-run import_inbox_sync."`
 
-### `import_inbox_pending`
+### Inbox status projection
 
 - **Sensitivity:** `low`
-- **Args:** none
-- **Behavior:** lists pending files in the inbox without moving them. Returns the same shape as `import_inbox_sync`, but every entry is in a fourth top-level array `would_process` (rather than `processed`/`failed`), and items carry a `predicted_outcome` field (`auto_detect`, `account_from_folder`, `would_fail:<error_code>`).
+- **Call:** `import_status(sections=["inbox"])`
+- **Behavior:** reads pending inbox state without moving files. The mutation is
+  `import_inbox_sync(refresh=...)`; the status projection is a section of
+  `import_status`, not a separate pending tool.
 
 ### Tool visibility
 
-Both tools live in the core `import` namespace and are visible at session connect (no `moneybin.discover` step). This matches existing `import.file` and is appropriate because importing files is one of the primary user goals.
+Both import capabilities live in the standard registry and are visible at
+session connect without a discovery meta-tool step. This matches `import_files` and is
+appropriate because importing files is one of the primary user goals.
 
 ## Testing Strategy
 
