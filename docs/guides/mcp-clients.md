@@ -166,7 +166,7 @@ moneybin mcp install --client windsurf -y
 
 > **MoneyBin’s 45-tool registry fits Windsurf’s limit.** Cascade holds a maximum
 > of **100 tools at any one time**, across *all* connected MCP servers. MoneyBin
-> uses 45 slots and leaves 55 slots before other servers.
+> uses 45 slots and leaves 55 slots for other servers.
 > Windsurf gives no warning when the combined total crosses the limit; disable
 > unused servers in **Settings → MCP Servers** if your overall configuration
 > exceeds 100.

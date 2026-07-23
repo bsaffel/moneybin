@@ -15,7 +15,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.tools import FunctionTool
 
-from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+from moneybin.mcp.surface import STANDARD_TOOL_COUNT, STANDARD_TOOL_NAMES
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.tables import INTERFACE_TABLES
 
@@ -58,7 +58,7 @@ CURRENT_PUBLIC_ROOTS = tuple(
         *ROOT.glob("*.md"),
         *(ROOT / ".github").rglob("*.md"),
         *(ROOT / ".claude/rules").glob("*.md"),
-        *(ROOT / "design-system").glob("*.md"),
+        *(ROOT / "design-system").rglob("*.md"),
         *(ROOT / "docs").rglob("*.md"),
     })
 )
@@ -73,6 +73,14 @@ RETIRED_COUNT_PATTERNS = (
     re.compile(r"\bmore than 100 tools\b", re.IGNORECASE),
     re.compile(r"\bour 105\b", re.IGNORECASE),
     re.compile(r"\btotal_count:\s*105\b", re.IGNORECASE),
+)
+CURRENT_REGISTRY_TOOL_COUNT_PATTERNS = (
+    re.compile(
+        r"\b(?P<count>\d+)(?:-|\s+)tools?\s+"
+        r"(?:(?:[a-z-]+\s+){0,3})?(?:MCP\s+)?(?:server|registry)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?P<count>\d+)\s+MoneyBin\s+tools?\b", re.IGNORECASE),
 )
 INLINE_CODE_SPAN_PATTERN = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 MCP_RESOURCE_URI_PATTERN = re.compile(
@@ -98,6 +106,16 @@ FENCED_ONE_WORD_IDENTIFIER_PATTERN = re.compile(
     r"(?m)^(?!```[ \t]*mcp\b)```[^\n]*\n"
     r"[ \t]*(?P<name>[a-z][a-z0-9]*)[ \t]*\n^```[ \t]*$"
 )
+
+
+def _current_registry_tool_counts(text: str) -> set[int]:
+    return {
+        int(match.group("count"))
+        for pattern in CURRENT_REGISTRY_TOOL_COUNT_PATTERNS
+        for match in pattern.finditer(text)
+    }
+
+
 MCP_CONTRACT_TABLE_PATTERN = re.compile(
     r"(?m)^(?P<header>[ \t]*\|?[^\n|]+(?:\|[^\n|]+)+\|?[ \t]*)\n"
     r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*\n"
@@ -1547,6 +1565,29 @@ def test_governance_describes_one_current_registry_and_future_admission() -> Non
     assert "seven-question admission record" in rule
     assert "reports never consume tool slots" in extensions
     assert "without reconnect, packs, or profiles" in client_guide
+
+
+def test_current_registry_count_claims_match_live_surface() -> None:
+    claims = {
+        path: _current_registry_tool_counts(path.read_text())
+        for path in CURRENT_PUBLIC_ROOTS
+    }
+
+    assert claims[ROOT / "README.md"] == {STANDARD_TOOL_COUNT}
+    assert claims[FEATURES] == {STANDARD_TOOL_COUNT}
+    assert ROOT / "design-system/.design-sync/NOTES.md" in CURRENT_PUBLIC_ROOTS
+    assert {
+        path: counts
+        for path, counts in claims.items()
+        if counts and counts != {STANDARD_TOOL_COUNT}
+    } == {}
+
+
+def test_current_registry_tool_count_patterns_identify_registry_claims() -> None:
+    text = """A 44-tool MCP server exposes a 44-tool standard registry.
+    It provides 44 MoneyBin tools."""
+
+    assert _current_registry_tool_counts(text) == {44}
 
 
 def test_current_mcp_guidance_uses_only_standard_tool_names() -> None:
