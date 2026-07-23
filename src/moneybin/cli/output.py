@@ -298,11 +298,12 @@ def render_export_receipt(
             typer.echo(f"Exported artifact: {payload.artifact_path}")
             if payload.compressed_artifact_path is not None:
                 typer.echo(f"Compressed artifact: {payload.compressed_artifact_path}")
-            return
-        typer.echo(
-            f"Exported to sheets:{payload.destination.name} "
-            f"(identity={payload.sheets_identity})"
-        )
+        else:
+            typer.echo(
+                f"Exported to sheets:{payload.destination.name} "
+                f"(identity={payload.sheets_identity})"
+            )
+        typer.echo("✅ Export complete.")
 
     render_or_json(
         build_envelope(

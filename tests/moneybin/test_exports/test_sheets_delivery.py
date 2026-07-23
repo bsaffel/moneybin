@@ -10,7 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from moneybin.connectors.gsheet.errors import GSheetAPIError, GSheetAuthError
+from moneybin.connectors.gsheet.errors import (
+    GSheetAPIError,
+    GSheetAuthError,
+    GSheetRateLimitError,
+)
 from moneybin.connectors.gsheet.sheets_api import SheetsClient, WorkbookMetadata
 from moneybin.connectors.gsheet.testing.fake_oauth_client import TestOAuthClient
 from moneybin.connectors.gsheet.testing.fake_sheets_client import (
@@ -194,6 +198,57 @@ def test_cancelled_request_cannot_promote_staged_sheets(db: Database) -> None:
     assert any(" Staging " in name for name in names)
     assert not any(name.startswith("MB Bundle ") for name in names)
     assert [operation for operation, _ in client.requests] == ["create", "write"]
+
+
+def test_lost_promotion_response_is_reconciled_as_success(db: Database) -> None:
+    """A committed Google batch with a lost response must not be reported stale."""
+
+    class PromoteThenLoseResponse(TestSheetsClient):
+        def promote_sheets(self, *args: Any, **kwargs: Any) -> None:
+            super().promote_sheets(*args, **kwargs)
+            raise GSheetAPIError("response lost")
+
+    client = PromoteThenLoseResponse()
+    client.register_workbook("output-sheet", FakeWorkbook("Output"))
+    publisher = SheetsExportPublisher(sheets_client=client)
+
+    receipt = _publish(db, publisher, make_snapshot())
+
+    assert receipt.sheets_identity == "MB:20260721T184233Z"
+    names = {
+        sheet.name for sheet in client.get_workbook_metadata("output-sheet").sheets
+    }
+    assert "MB Bundle 20260721T184233Z activity" in names
+    assert not any(" Staging " in name for name in names)
+
+
+def test_publish_retries_a_transient_sheets_rate_limit(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One temporary 429 during validation does not abandon a staged export."""
+
+    class RateLimitedReadOnce(TestSheetsClient):
+        attempts = 0
+
+        def read_sheet_values(self, *args: Any, **kwargs: Any) -> list[list[str]]:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise GSheetRateLimitError("temporary")
+            return super().read_sheet_values(*args, **kwargs)
+
+    client = RateLimitedReadOnce()
+    client.register_workbook("output-sheet", FakeWorkbook("Output"))
+
+    def skip_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("moneybin.exports.sheets.time.sleep", skip_sleep)
+
+    receipt = _publish(db, SheetsExportPublisher(sheets_client=client), make_snapshot())
+
+    assert receipt.sheets_identity == "MB:20260721T184233Z"
+    assert client.attempts >= 2
 
 
 def test_publish_uses_write_capability_for_output_metadata_and_validation(

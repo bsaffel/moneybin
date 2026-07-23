@@ -59,6 +59,7 @@ MUTATION_CONSTRAINT_VIOLATION = "mutation_constraint_violation"
 MUTATION_INVALID_INPUT = "mutation_invalid_input"
 MUTATION_NOT_FOUND = "mutation_not_found"
 MUTATION_NOTHING_TO_DO = "mutation_nothing_to_do"
+MUTATION_REDACTION_CHOICE_REQUIRED = "mutation_redaction_choice_required"
 
 
 # ---------------------------------------------------------------------------

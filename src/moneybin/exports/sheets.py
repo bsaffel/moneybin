@@ -5,12 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 import unicodedata
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypeVar
 
-from moneybin.connectors.gsheet.errors import GSheetAPIError, GSheetError
+from moneybin.connectors.gsheet.errors import (
+    GSheetAPIError,
+    GSheetError,
+    GSheetRateLimitError,
+)
 from moneybin.connectors.gsheet.sheets_api import (
     SheetCreate,
     SheetIdentity,
@@ -33,6 +39,9 @@ _MAX_SHEET_TITLE_LENGTH = 100
 _MAX_MANAGED_PREFIX_LENGTH = 40
 _SAFE_PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]*[A-Za-z0-9]$|^[A-Za-z0-9]$")
 _INVALID_TITLE_CHARACTERS = re.compile(r"[\[\]:*?/\\]")
+_RETRY_MAX = 3
+_RETRY_BACKOFF_BASE_SECONDS = 1.0
+_T = TypeVar("_T")
 
 
 class OAuthGrantLike(Protocol):
@@ -85,8 +94,11 @@ class SheetsExportPublisher:
         lifetime = publication_lifetime or current_request_lifetime()
         if lifetime is not None:
             lifetime.raise_if_cancelled()
-        metadata = self._sheets.get_workbook_metadata(
-            spreadsheet_id, require_write=True
+        metadata = self._with_rate_limit_retry(
+            lambda: self._sheets.get_workbook_metadata(
+                spreadsheet_id, require_write=True
+            ),
+            lifetime=lifetime,
         )
         run_id = _available_run_id(snapshot, prefix, metadata.sheets)
         replacements = _managed_replacements(
@@ -117,7 +129,10 @@ class SheetsExportPublisher:
         try:
             if lifetime is not None:
                 lifetime.raise_if_cancelled()
-            staged = self._sheets.create_sheets(spreadsheet_id, tuple(creates))
+            staged = self._with_rate_limit_retry(
+                lambda: self._sheets.create_sheets(spreadsheet_id, tuple(creates)),
+                lifetime=lifetime,
+            )
         except GSheetError as exc:
             recovered = self._recover_created_sheets(
                 spreadsheet_id,
@@ -139,12 +154,18 @@ class SheetsExportPublisher:
                 SheetValueWrite(sheet=identity, values=item.values)
                 for identity, item in zip(staged, planned, strict=True)
             )
-            self._sheets.write_sheet_values(spreadsheet_id, writes)
+            self._with_rate_limit_retry(
+                lambda: self._sheets.write_sheet_values(spreadsheet_id, writes),
+                lifetime=lifetime,
+            )
             for identity, item in zip(staged, planned, strict=True):
                 if lifetime is not None:
                     lifetime.raise_if_cancelled()
-                actual = self._sheets.read_sheet_values(
-                    spreadsheet_id, identity.name, require_write=True
+                actual = self._with_rate_limit_retry(
+                    lambda sheet_name=identity.name: self._sheets.read_sheet_values(
+                        spreadsheet_id, sheet_name, require_write=True
+                    ),
+                    lifetime=lifetime,
                 )
                 _validate_values(actual, item.values)
 
@@ -153,17 +174,37 @@ class SheetsExportPublisher:
                 for identity, item in zip(staged, planned, strict=True)
             )
             with publication_barrier(lifetime):
-                self._sheets.promote_sheets(
-                    spreadsheet_id,
-                    managed_prefix=prefix,
-                    renames=renames,
-                    deletes=replacements,
+                self._with_rate_limit_retry(
+                    lambda: self._sheets.promote_sheets(
+                        spreadsheet_id,
+                        managed_prefix=prefix,
+                        renames=renames,
+                        deletes=replacements,
+                    ),
+                    lifetime=lifetime,
                 )
         except GSheetError as exc:
+            if self._promotion_completed(
+                spreadsheet_id,
+                staged=staged,
+                planned=planned,
+                replacements=replacements,
+            ):
+                return self._receipt(snapshot, destination, prefix, run_id)
             raise SheetsPublishError(
                 staging_sheet_ids=tuple(sheet.gid for sheet in staged),
             ) from exc
 
+        return self._receipt(snapshot, destination, prefix, run_id)
+
+    @staticmethod
+    def _receipt(
+        snapshot: PreparedExport,
+        destination: ExportDestination,
+        prefix: str,
+        run_id: str,
+    ) -> ExportReceipt:
+        """Build the stable receipt for a completed staged promotion."""
         return ExportReceipt(
             subject=snapshot.subject.as_manifest(),
             format="sheets",
@@ -182,6 +223,45 @@ class SheetsExportPublisher:
             checksums={table.name: table.checksum_sha256 for table in snapshot.tables},
             recovery_actions=(),
         )
+
+    def _promotion_completed(
+        self,
+        spreadsheet_id: str,
+        *,
+        staged: tuple[SheetIdentity, ...],
+        planned: tuple[_PlannedSheet, ...],
+        replacements: tuple[SheetIdentity, ...],
+    ) -> bool:
+        """Recognize a server-side promotion whose response was lost."""
+        try:
+            metadata = self._sheets.get_workbook_metadata(
+                spreadsheet_id, require_write=True
+            )
+        except GSheetError:
+            return False
+        names_by_gid = {sheet.gid: sheet.name for sheet in metadata.sheets}
+        return all(
+            names_by_gid.get(identity.gid) == item.visible_name
+            for identity, item in zip(staged, planned, strict=True)
+        ) and all(identity.gid not in names_by_gid for identity in replacements)
+
+    def _with_rate_limit_retry(
+        self,
+        operation: Callable[[], _T],
+        *,
+        lifetime: RequestLifetime | None,
+    ) -> _T:
+        """Retry only transient 429s, respecting request cancellation."""
+        for attempt in range(_RETRY_MAX):
+            if lifetime is not None:
+                lifetime.raise_if_cancelled()
+            try:
+                return operation()
+            except GSheetRateLimitError:
+                if attempt + 1 == _RETRY_MAX:
+                    raise
+                time.sleep(_RETRY_BACKOFF_BASE_SECONDS**attempt)
+        raise RuntimeError("Sheets rate-limit retry loop unexpectedly exhausted")
 
     def _recover_created_sheets(
         self, spreadsheet_id: str, *, prefix: str, staging_names: set[str]
@@ -347,11 +427,6 @@ def _managed_replacements(
     subject_namespace = (
         f"{prefix} Bundle " if subject_kind == "bundle" else f"{prefix} Report "
     )
-    kind = "Bundle" if subject_kind == "bundle" else "Report"
-    metadata_namespaces = (
-        f"{prefix} {kind} Manifest",
-        f"{prefix} {kind} Dictionary",
-    )
     return tuple(
         SheetIdentity(
             name=sheet.name,
@@ -359,11 +434,7 @@ def _managed_replacements(
             managed_prefix=sheet.managed_prefix,
         )
         for sheet in sheets
-        if sheet.managed_prefix == prefix
-        and (
-            sheet.name.startswith(subject_namespace)
-            or sheet.name.startswith(metadata_namespaces)
-        )
+        if sheet.managed_prefix == prefix and sheet.name.startswith(subject_namespace)
     )
 
 

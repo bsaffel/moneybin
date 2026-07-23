@@ -44,6 +44,14 @@ class ReservedExportDestinationError(UserError):
         )
 
 
+def local_export_publish_error() -> UserError:
+    """Return the shared public error for a failed local publication."""
+    return UserError(
+        "Local export could not be published.",
+        code=error_codes.INFRA_IO_ERROR,
+    )
+
+
 def normalize_export_destination_name(name: str) -> str:
     """Normalize destination names with the shared reference-resolution rules."""
     return " ".join(unicodedata.normalize("NFKC", name).casefold().split())

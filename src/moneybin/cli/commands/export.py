@@ -229,6 +229,7 @@ def _run_export(
     )
     redaction_mode = _redaction_mode(unredacted=unredacted, yes=yes)
 
+    from moneybin.exports.models import local_export_publish_error  # noqa: PLC0415
     from moneybin.exports.service import ExportService  # noqa: PLC0415
 
     cli_actor = f"export_{subject_kind}"
@@ -265,13 +266,7 @@ def _run_export(
             destination_kind, _ = _destination_reference(destination_reference)
             if destination_kind != "local":
                 raise
-            from moneybin import error_codes  # noqa: PLC0415
-            from moneybin.errors import UserError  # noqa: PLC0415
-
-            raise UserError(
-                "Local export could not be published.",
-                code=error_codes.INFRA_IO_ERROR,
-            ) from exc
+            raise local_export_publish_error() from exc
     render_export_receipt(receipt, output, cli_actor=cli_actor)
 
 
@@ -466,6 +461,7 @@ def destination_add_local(
                 actor=_ACTOR,
             )
     typer.echo(f"Saved local destination {name}: {resolved_path}")
+    typer.echo("✅ Destination saved.")
 
 
 @destination_add_app.command("sheets")
@@ -489,6 +485,7 @@ def destination_add_sheets(
             oauth_client=build_oauth_client(),
         )
     typer.echo(f"Saved Sheets destination {name}.")
+    typer.echo("✅ Destination saved.")
 
 
 @destination_app.command("remove")
@@ -512,3 +509,4 @@ def destination_remove(
                     code=error_codes.MUTATION_NOT_FOUND,
                 )
     typer.echo(f"Removed destination configuration for {name}.")
+    typer.echo("✅ Destination removed.")

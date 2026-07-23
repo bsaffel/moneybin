@@ -553,6 +553,25 @@ def test_sheets_client_promote_uses_atomic_delete_then_rename_batch(
     )
 
 
+def test_sheets_client_promote_rejects_unmanaged_identity_before_api_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production client never submits a delete for a user-owned tab."""
+    client = SheetsClient(oauth=MagicMock())
+    build = MagicMock()
+    monkeypatch.setattr(client, "_build_service", build)
+
+    with pytest.raises(ValueError, match="managed namespace"):
+        client.promote_sheets(
+            "ss1",
+            managed_prefix="MB",
+            deletes=(SheetIdentity("User Notes", 7, None),),
+            renames=(),
+        )
+
+    build.assert_not_called()
+
+
 # -- _map_error ---------------------------------------------------------------
 
 

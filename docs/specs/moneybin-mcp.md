@@ -85,7 +85,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `privacy` | `cursor`, `limit`, `view` | Privacy and consent projection | Read / dynamic / maximum low / privacy-derived |
 | `privacy_consent_set` | `backend`, `categories`, `confirmation_token`, `mode`, `state` | Set consent state | Audited write / maximum low |
 | `export_run` | `destination`, `redaction_mode`, `subject` | Publish a bundle or registered report to a named destination | External delivery / dynamic / non-idempotent / maximum medium |
-| `exports_set` | `target` | Export-destination target state | Audited write / maximum medium |
+| `exports_set` | `confirmation_token`, `target` | Export-destination target state | Audited write / maximum medium |
 | `refresh_run` | `steps` | Refresh derived state | Audited workflow / maximum medium |
 | `sql_query` | `query` | Operator SQL escape hatch | Read / dynamic / maximum critical / query-derived |
 | `sql_schema` | `table` | Curated SQL schema | Read / dynamic / maximum critical / schema-derived |
@@ -168,6 +168,7 @@ stays below the 50-tool hard limit:
 - `exports_set` asserts one named local or Sheets destination's typed target
   state. It shares the same service/repository owners as
   `moneybin export destination ...`; removing configuration never deletes
+  artifacts, workbooks, or tabs, but still requires payload-bound confirmation.
   artifacts, workbooks, or tabs.
 - `system_status(sections=["exports"])` reports destination readiness through
   the existing orientation tool, so status does not consume a third export

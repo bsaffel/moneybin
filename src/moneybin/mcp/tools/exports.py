@@ -13,15 +13,23 @@ from fastmcp.server.elicitation import AcceptedElicitation
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.exports.models import (
     ExportCommand,
+    ExportDestination,
     ExportReceipt,
     RedactionMode,
+    local_export_publish_error,
 )
 from moneybin.exports.service import ExportService
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.elicitation import supports_elicitation
 from moneybin.privacy.taxonomy import DataClass
@@ -215,7 +223,7 @@ def _redaction_refusal(reason: str) -> UserError:
     return UserError(
         "Choose redacted or unredacted output explicitly before exporting. "
         "Nothing was written.",
-        code="redaction_choice_required",
+        code=error_codes.MUTATION_REDACTION_CHOICE_REQUIRED,
         hint="Retry export_run with redaction_mode='redacted' or 'unredacted'.",
         details={
             "default": "redacted",
@@ -322,10 +330,7 @@ def _run_export(
     except OSError as exc:
         if destination_request.kind != "local":
             raise
-        raise UserError(
-            "Local export could not be published.",
-            code=error_codes.INFRA_IO_ERROR,
-        ) from exc
+        raise local_export_publish_error() from exc
 
 
 @mcp_tool(
@@ -351,6 +356,9 @@ async def export_run(
     return build_envelope(
         data=_receipt_output(receipt),
         recovery_actions=list(receipt.recovery_actions),
+        actions=[
+            "Inspect destination readiness with system_status(sections=['exports'])."
+        ],
     )
 
 
@@ -380,6 +388,77 @@ def _remove_destination(
             code=error_codes.MUTATION_INVALID_INPUT,
         )
     event = repo.remove(target.name, actor=_ACTOR)
+    if event is None:
+        raise _missing_destination()
+    return event
+
+
+def _removal_binding(
+    target: LocalDestinationTarget | SheetsDestinationTarget,
+    destination: ExportDestination,
+) -> ConfirmationBinding:
+    """Bind absence approval to the exact saved destination before-state."""
+    if destination.destination_id is None:
+        raise ValueError("Saved export destination is missing destination_id")
+    return ConfirmationBinding(
+        arguments={
+            "target": target.model_dump(mode="json"),
+            "destination_before_state": {
+                "kind": destination.kind,
+                "name": destination.name,
+                "local_path": (
+                    str(destination.local_path)
+                    if destination.local_path is not None
+                    else None
+                ),
+                "spreadsheet_id": destination.spreadsheet_id,
+                "managed_tab_prefix": destination.managed_tab_prefix,
+            },
+        },
+        resolved_ids=(destination.destination_id,),
+        actor=_ACTOR,
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="export_destination_remove",
+        blast_radius={"saved_destinations": 1},
+    )
+
+
+def _preview_removal(
+    target: LocalDestinationTarget | SheetsDestinationTarget,
+) -> ExportDestination:
+    """Resolve the exact saved destination without starting a mutation."""
+    with get_database(read_only=True) as db:
+        repo = ExportDestinationsRepo(db)
+        resolved = repo.resolve(target.name)
+    if isinstance(resolved, MissingEntity):
+        raise _missing_destination()
+    if isinstance(resolved, AmbiguousEntity):
+        raise UserError(
+            "Export destination reference is ambiguous.",
+            code=error_codes.MUTATION_AMBIGUOUS,
+            details={"candidate_ids": list(resolved.candidate_ids)},
+        )
+    if resolved.kind != target.kind:
+        raise UserError(
+            f"Export destination is configured as {resolved.kind}, not {target.kind}.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    return resolved
+
+
+def _remove_destination_confirmed(
+    target: LocalDestinationTarget | SheetsDestinationTarget,
+    grant: ConfirmationGrant,
+) -> AuditEvent:
+    """Remove only after a fresh in-transaction approval binding check."""
+    with get_database(read_only=False) as db:
+        repo = ExportDestinationsRepo(db)
+        event = repo.remove(
+            target.name,
+            actor=_ACTOR,
+            verify=lambda live: grant.verify(_removal_binding(target, live)),
+        )
     if event is None:
         raise _missing_destination()
     return event
@@ -418,9 +497,31 @@ def _set_destination(
 )
 async def exports_set(
     target: ExportDestinationTarget,
+    confirmation_token: str | None = None,
 ) -> ResponseEnvelope[ExportDestinationSetOutput]:
     """Assert one named local or Sheets destination's target state."""
-    event = await asyncio.to_thread(_set_destination, target)
+    if target.state == "present":
+        if confirmation_token is not None:
+            raise UserError(
+                "confirmation_token is valid only for state='absent'.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        event = await asyncio.to_thread(_set_destination, target)
+    else:
+        destination = await asyncio.to_thread(_preview_removal, target)
+        grant = await grant_confirmation_or_raise(
+            binding=(
+                _removal_binding(target, destination)
+                if confirmation_token is None
+                else None
+            ),
+            message=(
+                "Remove this saved export destination configuration? Existing "
+                "artifacts and Sheets tabs will not be deleted."
+            ),
+            confirmation_token=confirmation_token,
+        )
+        event = await asyncio.to_thread(_remove_destination_confirmed, target, grant)
     return build_envelope(
         data=ExportDestinationSetOutput(
             destination=ExportDestinationStateOutput(

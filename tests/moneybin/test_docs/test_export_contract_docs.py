@@ -81,7 +81,7 @@ def test_export_docs_match_runtime_redaction_selection() -> None:
         assert "`--unredacted` selects unredacted output affirmatively" in text
     for text in (spec, mcp):
         assert "explicit `redaction_mode` does not prompt" in text
-        assert "`redaction_choice_required`" in text
+        assert "`mutation_redaction_choice_required`" in text
 
 
 def test_cli_docs_publish_the_exact_export_command_grammar() -> None:

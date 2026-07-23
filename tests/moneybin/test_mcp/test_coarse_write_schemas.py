@@ -67,7 +67,10 @@ async def test_export_write_schemas_keep_event_and_target_state_separate() -> No
         "destination",
         "redaction_mode",
     }
-    assert set(destinations.inputSchema["properties"]) == {"target"}
+    assert set(destinations.inputSchema["properties"]) == {
+        "confirmation_token",
+        "target",
+    }
     assert "operation" not in json.dumps(export.inputSchema)
     assert "action" not in json.dumps(destinations.inputSchema)
     assert export.annotations is not None

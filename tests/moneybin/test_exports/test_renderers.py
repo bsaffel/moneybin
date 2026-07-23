@@ -11,10 +11,12 @@ from decimal import Decimal
 from pathlib import Path
 
 import duckdb
+import pytest
 from openpyxl import load_workbook
 
 from moneybin.exports.renderers import (
     decode_csv_cell,
+    normalize_tabular_cell,
     render_csv,
     render_parquet,
     render_xlsx,
@@ -135,6 +137,12 @@ def test_csv_round_trips_typed_values_through_duckdb(tmp_path: Path) -> None:
         "note",
     ]
     assert relation.fetchall() == list(make_snapshot().tables[0].rows)
+
+
+def test_normalize_tabular_cell_rejects_unsupported_types() -> None:
+    """Unknown prepared values must not silently stringify into an export."""
+    with pytest.raises(TypeError, match="Unsupported export cell value"):
+        normalize_tabular_cell(object())
 
 
 def test_csv_null_escape_and_formula_contract_round_trips_losslessly(

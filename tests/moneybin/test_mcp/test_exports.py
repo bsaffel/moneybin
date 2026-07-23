@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastmcp.server.elicitation import AcceptedElicitation
+from fastmcp.server.elicitation import AcceptedElicitation, DeclinedElicitation
 from mcp.types import TextContent
 from typer.testing import CliRunner
 
@@ -299,12 +298,47 @@ async def test_export_run_without_redaction_or_elicitation_returns_refusal(
 
     structured = _structured(response)
     assert structured["status"] == "error"
-    assert structured["error"]["code"] == "redaction_choice_required"
+    assert structured["error"]["code"] == "mutation_redaction_choice_required"
     assert structured["error"]["details"] == {
         "default": "redacted",
         "options": ["redacted", "unredacted"],
         "reason": "client_unsupported",
     }
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("elicitation_result", "reason"),
+    [
+        (DeclinedElicitation(), "declined"),
+        (AcceptedElicitation(data="unexpected"), "invalid_response"),
+    ],
+)
+async def test_export_run_refuses_nonaccepted_or_invalid_redaction_choice(
+    elicitation_result: object,
+    reason: str,
+    mcp_db: object,
+) -> None:
+    from moneybin.exports.service import ExportService
+    from moneybin.mcp.tools import exports as exports_mcp
+
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(return_value=elicitation_result)
+    with (
+        patch.object(exports_mcp, "get_context", return_value=ctx),
+        patch.object(exports_mcp, "supports_elicitation", return_value=True),
+        patch.object(ExportService, "run") as run,
+    ):
+        response = await call_tool_raw(
+            isolated_server(exports_mcp.register_export_tools),
+            "export_run",
+            {
+                "subject": {"kind": "bundle"},
+                "destination": {"kind": "local", "name": "exports"},
+            },
+        )
+
+    assert _structured(response)["error"]["details"]["reason"] == reason
     run.assert_not_called()
 
 
@@ -349,11 +383,6 @@ async def test_export_run_rejects_legacy_redaction_selectors(legacy: str) -> Non
             "moneybin.exports.service.ExportService",
             "set_sheets_destination",
         ),
-        (
-            {"kind": "local", "state": "absent", "name": "archive"},
-            "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo",
-            "remove",
-        ),
     ],
 )
 async def test_exports_set_delegates_target_state_to_normal_owner(
@@ -378,23 +407,7 @@ async def test_exports_set_delegates_target_state_to_normal_owner(
         parent_audit_id=None,
         operation_id="operation_1",
     )
-    destination = ExportDestination(
-        destination_id="dst_1",
-        name=target["name"],
-        kind=target["kind"],
-        local_path=(Path("/Users/test/archive") if target["kind"] == "local" else None),
-        spreadsheet_id=("sheet_abc" if target["kind"] == "sheets" else None),
-        managed_tab_prefix=("MoneyBin" if target["kind"] == "sheets" else None),
-    )
-    resolve_patch = (
-        patch(
-            "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.resolve",
-            return_value=destination,
-        )
-        if target["state"] == "absent"
-        else nullcontext()
-    )
-    with resolve_patch, patch(f"{owner}.{method}", return_value=event) as mutate:
+    with patch(f"{owner}.{method}", return_value=event) as mutate:
         response = await call_tool_raw(
             isolated_server(register_export_tools),
             "exports_set",
@@ -412,6 +425,82 @@ async def test_exports_set_delegates_target_state_to_normal_owner(
         "operation_id": "operation_1",
     }
     assert mutate.call_count == 1
+
+
+async def test_exports_set_requires_confirmation_before_removing_configuration(
+    mcp_db: object,
+) -> None:
+    from moneybin.mcp.tools import exports as exports_mcp
+    from moneybin.services.audit_service import AuditEvent
+
+    destination = _local_destination(Path.cwd() / "archive", name="archive")
+    destination = ExportDestination(
+        destination_id="dst_1",
+        name=destination.name,
+        kind=destination.kind,
+        local_path=destination.local_path,
+        spreadsheet_id=None,
+        managed_tab_prefix=None,
+    )
+    event = MagicMock(spec=AuditEvent)
+    event.target_id = "dst_1"
+    event.operation_id = "operation_1"
+
+    with (
+        patch.object(exports_mcp, "_preview_removal", return_value=destination),
+        patch.object(
+            exports_mcp,
+            "grant_confirmation_or_raise",
+            new=AsyncMock(return_value=MagicMock()),
+        ) as confirm,
+        patch.object(
+            exports_mcp, "_remove_destination_confirmed", return_value=event
+        ) as remove,
+    ):
+        response = await call_tool_raw(
+            isolated_server(exports_mcp.register_export_tools),
+            "exports_set",
+            {"target": {"kind": "local", "state": "absent", "name": "archive"}},
+        )
+
+    assert _structured(response)["data"]["destination"]["state"] == "absent"
+    assert confirm.await_count == 1
+    remove.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"kind": "local", "state": "present", "name": "archive"},
+        {
+            "kind": "local",
+            "state": "absent",
+            "name": "archive",
+            "local_path": str(Path.cwd() / "archive"),
+        },
+        {
+            "kind": "sheets",
+            "state": "absent",
+            "name": "dashboard",
+            "spreadsheet_id": "sheet_abc",
+        },
+        {
+            "kind": "local",
+            "state": "present",
+            "name": "archive",
+            "local_path": "relative/path",
+        },
+    ],
+)
+def test_destination_target_validation_rejects_invalid_state_shapes(
+    target: dict[str, Any],
+) -> None:
+    from pydantic import TypeAdapter, ValidationError
+
+    from moneybin.mcp.tools.exports import ExportDestinationTarget
+
+    with pytest.raises(ValidationError):
+        TypeAdapter(ExportDestinationTarget).validate_python(target)
 
 
 async def test_export_run_returns_sanitized_service_error(mcp_db: object) -> None:

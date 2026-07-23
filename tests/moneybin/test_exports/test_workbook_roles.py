@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+import pytest
+
 from moneybin.exports.workbook_roles import workbook_role_lease
 
 
@@ -32,3 +34,10 @@ def test_same_workbook_role_lease_serializes_threads(tmp_path: Path) -> None:
         "private-workbook-id" not in path.name
         for path in tmp_path.glob(".workbook-role-*.lock")
     )
+
+
+def test_permit_rejects_a_different_workbook_identity(tmp_path: Path) -> None:
+    """A lease for one workbook cannot authorize another workbook's publish."""
+    with workbook_role_lease(tmp_path / "moneybin.duckdb", "workbook-a") as permit:
+        with pytest.raises(ValueError, match="does not match"):
+            permit.assert_for("workbook-b")

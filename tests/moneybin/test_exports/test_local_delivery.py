@@ -18,6 +18,10 @@ from moneybin.exports.local import LocalExportPublisher
 from moneybin.exports.manifest import LocalExportFormat
 from moneybin.exports.renderers import RenderedArtifact
 from moneybin.exports.snapshot import PreparedExport
+from moneybin.services.request_lifetime import (
+    PublicationCancelledError,
+    RequestLifetime,
+)
 from tests.moneybin.test_exports.test_renderers import make_snapshot, make_text_snapshot
 
 
@@ -126,6 +130,50 @@ def test_publish_never_overwrites_a_successful_collision(tmp_path: Path) -> None
     assert first.artifact_path.exists()
     assert second.artifact_path.exists()
     assert _mode(exports_root / ".publish.lock") == 0o600
+
+
+def test_cancelled_local_publish_cleans_staging_before_visible_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation after rendering cannot leave a partial visible bundle."""
+    exports_root = tmp_path / "exports"
+    publisher = LocalExportPublisher(exports_root)
+    lifetime = RequestLifetime()
+    original_render = publisher._render  # pyright: ignore[reportPrivateUsage]
+
+    def render_then_cancel(
+        snapshot: PreparedExport,
+        format: LocalExportFormat,
+        staging_root: Path,
+    ) -> Path:
+        rendered = original_render(snapshot, format, staging_root)
+        lifetime.cancel_and_wait()
+        return rendered
+
+    monkeypatch.setattr(publisher, "_render", render_then_cancel)
+
+    with pytest.raises(PublicationCancelledError):
+        publisher.publish(
+            make_snapshot(),
+            format="csv",
+            compress_zip=False,
+            publication_lifetime=lifetime,
+        )
+
+    assert not list(exports_root.glob("export-*"))
+    assert not list(exports_root.glob(".staging-*"))
+
+
+def test_local_destination_file_collision_is_rejected(tmp_path: Path) -> None:
+    """A configured file cannot be mistaken for an export directory."""
+    exports_root = tmp_path / "not-a-directory"
+    exports_root.write_text("occupied")
+
+    with pytest.raises(ValueError, match="not a directory"):
+        LocalExportPublisher(exports_root).publish(
+            make_snapshot(), format="csv", compress_zip=False
+        )
 
 
 def test_tampered_staging_bundle_is_not_published_or_left_behind(

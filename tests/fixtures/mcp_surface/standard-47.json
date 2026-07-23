@@ -1,5 +1,5 @@
 {
-  "sha256": "9b7bb6ec1b7d078de5e459fc0a0f4f231f489544e709f9e9cf229ec362e5da31",
+  "sha256": "e97981fd39b6c8a0514d8f36d13afdbb794f6d06f4694d1ea2f9ad9391974121",
   "tool_count": 47,
   "tools": [
     {
@@ -662,6 +662,17 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "target": {
               "oneOf": [
                 {
@@ -851,11 +862,11 @@
         "name": "exports_set"
       },
       "description_bytes": 374,
-      "input_schema_bytes": 1502,
+      "input_schema_bytes": 1584,
       "name": "exports_set",
       "other_bytes": 62,
       "output_schema_bytes": 0,
-      "total_bytes": 2073
+      "total_bytes": 2155
     },
     {
       "annotation_bytes": 89,
@@ -4918,5 +4929,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 51296
+  "total_bytes": 51378
 }

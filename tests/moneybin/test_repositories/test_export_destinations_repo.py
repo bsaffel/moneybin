@@ -13,6 +13,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.exports.models import ExportDestination, ReservedExportDestinationError
 from moneybin.repositories.export_destinations_repo import (
+    ExportDestinationChangedError,
     ExportDestinationSpreadsheetConflictError,
     ExportDestinationsRepo,
 )
@@ -156,6 +157,39 @@ def test_remove_deletes_configuration_only_and_emits_one_audit_row(
     assert audit[-1][0] == "export_destination.remove"
     assert json.loads(audit[-1][4])["name"] == "removable"
     assert audit[-1][5] is None
+
+
+def test_publication_recheck_rejects_a_repointed_sheets_destination(
+    repo: ExportDestinationsRepo,
+) -> None:
+    """Publication may not use a workbook identity resolved before a repoint."""
+    repo.set_sheets(
+        name="dashboard",
+        spreadsheet_id="sheet-original",
+        managed_tab_prefix="MoneyBin",
+        actor="cli",
+    )
+    resolved = repo.resolve("dashboard")
+    assert isinstance(resolved, ExportDestination)
+    repo.set_sheets(
+        name="dashboard",
+        spreadsheet_id="sheet-repointed",
+        managed_tab_prefix="MoneyBin",
+        actor="cli",
+    )
+
+    with pytest.raises(ExportDestinationChangedError):
+        repo.assert_current_for_publication(resolved)
+
+
+def test_list_and_resolve_treat_an_unmigrated_export_table_as_empty(
+    db: Database,
+) -> None:
+    """Read-only first calls must not crash before V041 has applied."""
+    repo = ExportDestinationsRepo(db)
+
+    assert repo.list() == []
+    assert repo.resolve("missing") == MissingEntity(reference="missing")
 
 
 def test_set_sheets_rejects_an_inbound_connection_workbook(

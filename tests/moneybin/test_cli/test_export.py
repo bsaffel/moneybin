@@ -201,6 +201,34 @@ def test_export_report_parses_optional_string_parameters(tmp_path: Path) -> None
     assert run.call_args.args[0].report_parameters["as_of"] == "2026-07-01"
 
 
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        ["top=1", "top=2"],
+        ["top"],
+        ["top=not-an-integer"],
+    ],
+)
+def test_export_report_rejects_invalid_parameter_bindings(
+    parameters: list[str],
+    tmp_path: Path,
+) -> None:
+    """Malformed, duplicate, and mistyped --param values fail before delivery."""
+    with patch("moneybin.exports.service.ExportService.run") as run:
+        result = runner.invoke(
+            app,
+            [
+                "export",
+                "report",
+                "core:large_transactions",
+                *[item for parameter in parameters for item in ("--param", parameter)],
+            ],
+        )
+
+    assert result.exit_code == 2
+    run.assert_not_called()
+
+
 def test_export_rejects_implicit_path_destinations() -> None:
     result = runner.invoke(app, ["export", "bundle", "--to", "./exports"])
 

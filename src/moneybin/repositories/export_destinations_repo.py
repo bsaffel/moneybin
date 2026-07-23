@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, cast
+
+import duckdb
 
 from moneybin import error_codes
 from moneybin.errors import UserError
@@ -99,10 +102,14 @@ class ExportDestinationsRepo(BaseRepo):
 
     def _list_full_rows(self) -> list[dict[str, Any]]:
         columns = ", ".join(quote_ident(column) for column in _FULL_ROW_COLUMNS)
-        rows = self._db.execute(
-            f"SELECT {columns} FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + allowlisted columns
-            "ORDER BY name ASC, destination_id ASC"
-        ).fetchall()
+        try:
+            rows = self._db.execute(
+                f"SELECT {columns} FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + allowlisted columns
+                "ORDER BY name ASC, destination_id ASC"
+            ).fetchall()
+        except duckdb.CatalogException:
+            # Read-only first calls intentionally do not initialize new schemas.
+            return []
         return [dict(zip(_FULL_ROW_COLUMNS, row, strict=True)) for row in rows]
 
     def assert_not_inbound_connection(self, spreadsheet_id: str) -> None:
@@ -299,6 +306,7 @@ class ExportDestinationsRepo(BaseRepo):
         reference: str,
         *,
         actor: str,
+        verify: Callable[[ExportDestination], None] | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent | None:
@@ -325,6 +333,8 @@ class ExportDestinationsRepo(BaseRepo):
                     "destination_id",
                     destination_id,
                 )
+                if verify is not None:
+                    verify(_decode_destination(before))
                 self._db.execute(
                     f"DELETE FROM {EXPORT_DESTINATIONS.full_name} WHERE destination_id = ?",  # noqa: S608  # TableRef + parameterized value
                     [destination_id],

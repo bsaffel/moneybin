@@ -115,7 +115,7 @@ stores a remembered redaction preference.
 MCP callers supply `redaction_mode="redacted"` or
 `redaction_mode="unredacted"`. An explicit `redaction_mode` does not prompt.
 Omission elicits the choice when the client supports elicitation; otherwise the
-tool returns a structured `redaction_choice_required` refusal. It never infers
+tool returns a structured `mutation_redaction_choice_required` refusal. It never infers
 unredacted output.
 
 The redaction choice is an output policy after canonical selection or report

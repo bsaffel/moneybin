@@ -43,11 +43,12 @@ exactly two export-specific tools:
   report to a named local or Google Sheets destination. Supply
   `redaction_mode="redacted"` or `redaction_mode="unredacted"` on every run. If
   the value is omitted, clients with elicitation ask; other clients receive a
-  structured `redaction_choice_required` refusal. An explicit `redaction_mode`
+  structured `mutation_redaction_choice_required` refusal. An explicit `redaction_mode`
   does not prompt.
 - `exports_set` asserts one named local or Sheets destination's target state.
   It creates, updates, or removes MoneyBin configuration; removal does not
-  delete existing files, workbooks, or tabs.
+  delete existing files, workbooks, or tabs, and requires a payload-bound
+  confirmation token when elicitation is unavailable.
 
 Call `system_status(sections=["exports"])` to inspect destination readiness
 without adding a third export tool. Sheets destinations are output-only and

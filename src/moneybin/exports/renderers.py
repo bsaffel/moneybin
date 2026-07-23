@@ -223,6 +223,7 @@ def normalize_tabular_cell(value: object) -> TabularCell:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, Decimal):
+        # Text preserves DECIMAL precision; XLSX numeric cells are IEEE-754 doubles.
         return str(value)
     if isinstance(value, (datetime, date, time)):
         return value.isoformat()
