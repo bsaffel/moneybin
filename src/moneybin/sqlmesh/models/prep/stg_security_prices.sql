@@ -18,18 +18,18 @@ MODEL (
 
    COVERAGE — read this before adding a price adapter. The CASE below maps exactly
    ONE source: 'plaid' -> 'plaid_security_id'. That is the complete set that resolves
-   today. Any other value of raw.security_prices.source makes the CASE return NULL,
+   today. Any other value of raw.security_prices.source_type makes the CASE return NULL,
    `links.ref_kind = NULL` evaluates to UNKNOWN, and this INNER JOIN discards the row
    silently — no error, no doctor check, no counter.
 
    That drop is PERMANENT, not deferred, and this is the one way it differs from the
    unresolved-binding case described above. An unresolved observation waits in raw and
-   reappears here the moment its security binds. A row whose source has no ref_kind
+   reappears here the moment its security binds. A row whose source_type has no ref_kind
    mapping never reappears no matter how many bindings are accepted, because the
    failure is in the mapping, not the binding. It is invisible and unrecoverable until
    someone edits this file.
 
-   Nothing upstream prevents it: raw.security_prices.source carries no CHECK constraint
+   Nothing upstream prevents it: raw.security_prices.source_type carries no CHECK constraint
    (unlike price_basis), its own schema comment names stooq and coingecko as expected
    values, and core.fct_security_prices already ranks override, stooq, coingecko, and
    trade_implied. So a new adapter MUST extend this CASE in the SAME change that starts
@@ -42,7 +42,7 @@ SELECT
   p.provider_security_key,
   p.price_date,
   UPPER(p.quote_currency) AS quote_currency,
-  p.source,
+  p.source_type,
   p.source_origin,
   p.close,
   p.price_basis,
@@ -51,8 +51,8 @@ SELECT
 FROM raw.security_prices AS p
 JOIN app.security_links AS links
   ON links.status = 'accepted'
-  AND links.source_type = p.source
+  AND links.source_type = p.source_type
   AND links.ref_value = p.provider_security_key
-  AND links.ref_kind = CASE p.source WHEN 'plaid' THEN 'plaid_security_id' END
+  AND links.ref_kind = CASE p.source_type WHEN 'plaid' THEN 'plaid_security_id' END
 WHERE
   p.close > 0

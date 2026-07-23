@@ -27,7 +27,7 @@ def _insert_price(
     db.execute(
         """
         INSERT INTO raw.security_prices
-            (provider_security_key, price_date, quote_currency, source,
+            (provider_security_key, price_date, quote_currency, source_type,
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?::DATE, ?, ?, ?, ?, ?,
                 COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
@@ -60,7 +60,7 @@ def test_one_row_per_security_date_currency(db: Database) -> None:
         ctx.plan(auto_apply=True, no_prompts=True)
 
     row = db.execute(
-        "SELECT security_id, quote_currency, source, price_basis, updated_at "
+        "SELECT security_id, quote_currency, source_type, price_basis, updated_at "
         "FROM core.fct_security_prices"
     ).fetchone()
     # Full-row shape check — the four given tests otherwise only ever assert on

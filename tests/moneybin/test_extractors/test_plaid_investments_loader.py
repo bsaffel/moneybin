@@ -564,7 +564,7 @@ def test_close_price_lands_in_the_price_history(
     _load(db, sync_data)
     row = db.execute(
         """
-        SELECT provider_security_key, price_date, quote_currency, source,
+        SELECT provider_security_key, price_date, quote_currency, source_type,
                source_origin, close, price_basis
         FROM raw.security_prices
         WHERE provider_security_key = 'sec_aapl'
@@ -680,7 +680,7 @@ def test_reload_counts_no_price_rows_and_does_not_advance_the_metric(
     completely stalled upstream feed — the one condition it exists to expose.
     """
     name = "moneybin_price_rows_written_total"
-    labels = {"source": "plaid"}
+    labels = {"source_type": "plaid"}
 
     first = _load(db, sync_data, job_id="job-price-1")
     assert first.security_prices_loaded == 2, "first pull writes both observations"

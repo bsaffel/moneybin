@@ -135,7 +135,7 @@ The provider cache. Immutable, append-only, one row per observation.
 | `provider_security_key` | VARCHAR | the provider's own identifier — Plaid's `security_id`, a ticker, a `coingecko_id` |
 | `price_date` | DATE | the date the price applies to |
 | `quote_currency` | VARCHAR | ISO 4217; the currency the price is expressed in |
-| `source` | VARCHAR | `plaid`, `stooq`, `coingecko` — provider observations only |
+| `source_type` | VARCHAR | `plaid`, `stooq`, `coingecko` — provider observations only; the canonical provenance column name across layers |
 | `source_origin` | VARCHAR | which connection produced it; `''` for single-tenant feeds |
 | `close` | DECIMAL(28,10) | price of one unit |
 | `price_basis` | VARCHAR | `raw`, `split_adjusted`, `split_and_dividend_adjusted` |
@@ -259,7 +259,7 @@ single resolution path whose bindings are reversible, audited, and uniform — a
 ### New model: `core.fct_security_prices`
 
 The resolved series. One row per `(security_id, price_date, quote_currency)`,
-carrying the winning `close` plus `source` and `price_basis` as provenance.
+carrying the winning `close` plus `source_type` and `price_basis` as provenance.
 Kind FULL.
 
 It unions three inputs: provider observations from `raw.security_prices`, user
@@ -618,7 +618,7 @@ separately against the ledger rather than here.
 
 Adapters live in `src/moneybin/connectors/prices/`, matching the
 `connectors/gsheet/` shape: a network client that pulls into `raw.*`. Two
-concrete modules behind one Protocol. Provider identity is data in the `source`
+concrete modules behind one Protocol. Provider identity is data in the `source_type`
 column, so nothing needs runtime registration.
 
 ```python
@@ -685,7 +685,7 @@ data. Market values are the same class of data as the holdings they value.
 - `investments_prices_sync` — refresh; returns counts written, failed, and
   skipped, with per-security reasons.
 - `investments_prices_list` — the observation history for a security: every
-  stored row with its `source`, `price_date`, `quote_currency`, `price_basis`,
+  stored row with its `source_type`, `price_date`, `quote_currency`, `price_basis`,
   and whether it is the resolved winner for its date.
 - `investments_prices_set` — record a mark.
 - `investments_prices_delete` — remove a mark, returning the date to
@@ -787,9 +787,9 @@ partially fail, so it is unobservable without them.
 
 | Metric | Type | Labels | Purpose |
 |---|---|---|---|
-| `price_refresh_duration_seconds` | Histogram | `source` | Per-adapter fetch latency; the signal that a provider is degrading before it fails. |
-| `price_refresh_securities_total` | Counter | `source`, `outcome` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
-| `price_rows_written_total` | Counter | `source` | Ingest volume, and the check that a backfill wrote what it claimed. |
+| `price_refresh_duration_seconds` | Histogram | `source_type` | Per-adapter fetch latency; the signal that a provider is degrading before it fails. |
+| `price_refresh_securities_total` | Counter | `source_type`, `outcome` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
+| `price_rows_written_total` | Counter | `source_type` | Ingest volume, and the check that a backfill wrote what it claimed. |
 | `price_resolution_status_total` | Counter | `status` | `status` ∈ `valued` / `carried_forward` / `unpriced` / `unreconstructable` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities, and the `unreconstructable` share is how much history M1J.6 would recover. |
 | `price_staleness_days` | Gauge | — | Maximum `days_since_observed` across held securities. One number answering "how old is the oldest price my net worth rests on." |
 
@@ -910,7 +910,7 @@ two sources), and the CLI and MCP surface.
 - **Bid, ask, and NAV as distinct price types.** One close per source per date.
 - **Benchmark comparison, time-weighted and money-weighted return.**
 - **Options, derivatives, short positions.**
-- **Tier 3, a sync-brokered keyed provider.** The `source` column and resolution
+- **Tier 3, a sync-brokered keyed provider.** The `source_type` column and resolution
   rule accommodate it; nothing cross-repo lands here.
 - **Split-source symmetry.** M1J.5.
 
@@ -923,7 +923,7 @@ two sources), and the CLI and MCP surface.
   loses one of them silently, and forces currency rates into a second table with
   a second resolution path.
 
-- **One `raw` table with a `source` column, not a table per provider.**
+- **One `raw` table with a `source_type` column, not a table per provider.**
   `investments-data-model.md` establishes per-provider raw tables for entities
   pulled from a provider's API — transactions, holdings, securities — because
   each provider's payload has its own shape. A price observation has one shape

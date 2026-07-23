@@ -32,9 +32,9 @@ def _ref_kind_mapping() -> dict[str, str]:
     app.security_links.ref_kind CHECK).
     """
     sql = _MODEL_PATH.read_text()
-    case_blocks = re.findall(r"CASE\s+p\.source(.*?)\bEND\b", sql, re.DOTALL)
+    case_blocks = re.findall(r"CASE\s+p\.source_type(.*?)\bEND\b", sql, re.DOTALL)
     assert len(case_blocks) == 1, (
-        f"expected exactly one `CASE p.source` in {_MODEL_PATH.name}; a second one "
+        f"expected exactly one `CASE p.source_type` in {_MODEL_PATH.name}; a second one "
         f"means ref_kind resolution forked and this test no longer covers it: "
         f"{case_blocks}"
     )
@@ -55,7 +55,7 @@ def _insert_price(
     db.execute(
         """
         INSERT INTO raw.security_prices
-            (provider_security_key, price_date, quote_currency, source,
+            (provider_security_key, price_date, quote_currency, source_type,
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?::DATE, 'USD', ?, ?, ?, 'raw',
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -157,7 +157,9 @@ def test_every_mapped_source_resolves_end_to_end(db: Database) -> None:
 
     resolved = {
         row[0]
-        for row in db.execute("SELECT source FROM prep.stg_security_prices").fetchall()
+        for row in db.execute(
+            "SELECT source_type FROM prep.stg_security_prices"
+        ).fetchall()
     }
     assert resolved == set(mapping), (
         f"every source mapped in the ref_kind CASE must resolve; mapped={set(mapping)} "
@@ -172,7 +174,7 @@ def test_an_unmapped_source_is_dropped_permanently_not_deferred(db: Database) ->
 
     This is the finding the COVERAGE block in the model documents, pinned as behavior.
     The binding here is *accepted* and its ref_value matches, so the row fails for one
-    reason only: `CASE p.source WHEN 'plaid' ... END` returns NULL for 'stooq', making
+    reason only: `CASE p.source_type WHEN 'plaid' ... END` returns NULL for 'stooq', making
     `links.ref_kind = NULL` UNKNOWN and the INNER JOIN drop the row. That is unlike the
     unresolved-binding case, where the observation waits in raw and reappears once its
     security binds — no number of accepted bindings will ever surface this one.

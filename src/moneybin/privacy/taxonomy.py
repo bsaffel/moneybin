@@ -634,7 +634,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # matching that precedent rather than TXN_DATE.
         "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
         # Which provider supplied the close — a routing tag, like
-        # fct_security_prices.source.
+        # fct_security_prices.source_type.
         "price_source": DataClass.TXN_TYPE,
         # CURRENT_DATE - price_date: CURRENT_DATE is public, so this is bijective
         # with price_date (uncategorized_queue.age_days precedent) and inherits its
@@ -780,7 +780,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
         "quote_currency": DataClass.CURRENCY,
         "close": DataClass.AGGREGATE,
-        "source": DataClass.TXN_TYPE,
+        "source_type": DataClass.TXN_TYPE,
         "price_basis": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },

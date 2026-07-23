@@ -625,8 +625,8 @@ PRICE_ROWS_WRITTEN_TOTAL = Counter(
     "moneybin_price_rows_written_total",
     # Rows the append-only insert actually wrote — a re-reported observation is
     # dropped and must not count, so a flat counter means a stalled price feed.
-    "Price observations written to raw.security_prices, by source",
-    ["source"],
+    "Price observations written to raw.security_prices, by source_type",
+    ["source_type"],
 )
 
 SECURITY_LINK_OUTCOMES_TOTAL = Counter(

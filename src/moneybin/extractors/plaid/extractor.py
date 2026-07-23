@@ -179,7 +179,7 @@ _SECURITY_PRICES_SCHEMA = pl.Schema({
     "provider_security_key": pl.Utf8,
     "price_date": pl.Date,
     "quote_currency": pl.Utf8,
-    "source": pl.Utf8,
+    "source_type": pl.Utf8,
     "source_origin": pl.Utf8,
     "close": pl.Decimal(28, 10),
     "price_basis": pl.Utf8,
@@ -635,7 +635,7 @@ class PlaidExtractor:
                 "provider_security_key": sec.security_id,
                 "price_date": sec.close_price_as_of,
                 "quote_currency": sec.iso_currency_code or sec.unofficial_currency_code,
-                "source": "plaid",
+                "source_type": "plaid",
                 "source_origin": sec.provider_item_id,
                 "close": sec.close_price,
                 "price_basis": "raw",
@@ -675,7 +675,7 @@ class PlaidExtractor:
         # advances, so counting the batch would make this counter climb
         # steadily through a fully stalled upstream feed — the one condition it
         # exists to expose.
-        PRICE_ROWS_WRITTEN_TOTAL.labels(source="plaid").inc(written)
+        PRICE_ROWS_WRITTEN_TOTAL.labels(source_type="plaid").inc(written)
         logger.info(f"Loaded {written} security price observations")
         return written
 

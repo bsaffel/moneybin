@@ -122,7 +122,7 @@ WITH positions AS (
     quote_currency,
     close,
     price_date,
-    source
+    source_type
   FROM core.fct_security_prices
   WHERE
     price_date <= CURRENT_DATE
@@ -277,7 +277,7 @@ SELECT
     )::DECIMAL(18, 2)
   END AS unrealized_gain, /* market_value less cost basis; NULL whenever market_value is NULL. Realized gain is ledger-derived and lives in core.fct_realized_gains */
   CASE WHEN wh.is_withheld THEN NULL ELSE lp.price_date END AS price_date, /* The date of the close used, which may be earlier than today. NULL whenever market_value is NULL — both when no close resolved ('unpriced') and when one did but the quantity is known wrong ('withheld'): a withheld row publishing today's date beside blanked figures reads as "pricing is current, something else is missing", which is the opposite of the truth. The close itself is not lost — it stays queryable in core.fct_security_prices, which is where a support path should look */
-  CASE WHEN wh.is_withheld THEN NULL ELSE lp.source END AS price_source, /* Which source supplied the close (see core.fct_security_prices); NULL exactly when price_date is NULL, on both 'unpriced' and 'withheld' */
+  CASE WHEN wh.is_withheld THEN NULL ELSE lp.source_type END AS price_source, /* Which source_type supplied the close (see core.fct_security_prices); NULL exactly when price_date is NULL, on both 'unpriced' and 'withheld' */
   CASE
     WHEN wh.is_withheld
     THEN NULL

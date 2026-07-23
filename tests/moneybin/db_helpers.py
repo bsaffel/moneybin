@@ -348,7 +348,7 @@ CREATE TABLE IF NOT EXISTS core.fct_security_prices (
     price_date DATE,
     quote_currency VARCHAR,
     close DECIMAL(28, 10),
-    source VARCHAR,
+    source_type VARCHAR,
     price_basis VARCHAR,
     updated_at TIMESTAMP
 );

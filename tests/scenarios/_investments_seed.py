@@ -108,7 +108,7 @@ def insert_security_price(
     db.execute(
         """
         INSERT INTO raw.security_prices
-            (provider_security_key, price_date, quote_currency, source,
+            (provider_security_key, price_date, quote_currency, source_type,
              source_origin, close, price_basis, extracted_at)
         VALUES (?, ?::DATE, ?, ?, ?, ?::DECIMAL(28,10), ?, ?::TIMESTAMP)
         """,  # noqa: S608  # test fixture insert, parameterized values

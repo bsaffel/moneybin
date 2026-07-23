@@ -597,7 +597,7 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Price history for one security, most recent first "
             "(substitute YOUR_SECURITY_ID)",
             sql="""
-                SELECT price_date, close, quote_currency, source
+                SELECT price_date, close, quote_currency, source_type
                 FROM core.fct_security_prices
                 WHERE security_id = 'YOUR_SECURITY_ID'
                 ORDER BY price_date DESC

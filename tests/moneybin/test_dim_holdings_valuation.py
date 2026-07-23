@@ -107,7 +107,7 @@ def _seed_price(
     db.execute(
         """
         INSERT INTO raw.security_prices
-            (provider_security_key, price_date, quote_currency, source,
+            (provider_security_key, price_date, quote_currency, source_type,
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?, ?, 'plaid', 'item_1', ?, 'raw',
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -406,7 +406,7 @@ def test_price_in_another_currency_does_not_value_the_position(db: Database) -> 
     db.execute(
         """
         INSERT INTO raw.security_prices
-            (provider_security_key, price_date, quote_currency, source,
+            (provider_security_key, price_date, quote_currency, source_type,
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, CURRENT_DATE, 'GBP', 'plaid', 'item_1', 95.00, 'raw',
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)

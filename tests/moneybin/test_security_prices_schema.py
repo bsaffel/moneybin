@@ -21,7 +21,7 @@ def _insert(
     db.execute(
         """
         INSERT INTO raw.security_prices
-            (provider_security_key, price_date, quote_currency, source,
+            (provider_security_key, price_date, quote_currency, source_type,
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?::DATE, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
