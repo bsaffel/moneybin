@@ -551,6 +551,7 @@ class ExportService:
         tables = (table,)
         snapshot = PreparedExport(
             artifact_version=ARTIFACT_VERSION,
+            export_id=None,
             profile=profile,
             created_at=datetime.now(UTC),
             subject=ExportSubject(

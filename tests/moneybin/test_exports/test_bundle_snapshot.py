@@ -189,6 +189,8 @@ def test_prepare_bundle_builds_the_closed_typed_canonical_snapshot(
 
     assert [table.name for table in first.tables] == EXPECTED_TABLES
     assert first.artifact_version == 1
+    assert isinstance(first.manifest["export_id"], str)
+    assert first.manifest["export_id"]
     assert first.profile == "test"
     assert first.created_at.tzinfo is UTC
     assert first.manifest["created_at"] == first.created_at.isoformat()

@@ -12,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from moneybin.exports.catalog import BUNDLE_TABLES
 from moneybin.exports.models import RedactionMode
@@ -88,6 +88,7 @@ class PreparedExport:
     """An immutable snapshot ready for any renderer."""
 
     artifact_version: int
+    export_id: str
     profile: str
     created_at: datetime
     subject: ExportSubject
@@ -106,6 +107,7 @@ class PreparedExport:
         tables: tuple[PreparedTable, ...],
         data_dictionary: Mapping[str, object] | None = None,
         provenance: ReportExportProvenance | None = None,
+        export_id: str | None = None,
         *,
         _data_dictionary: Mapping[str, object] | None = None,
     ) -> None:
@@ -119,6 +121,7 @@ class PreparedExport:
         )
         frozen = cast(Mapping[str, object], _freeze_metadata(source_dictionary))
         object.__setattr__(self, "artifact_version", artifact_version)
+        object.__setattr__(self, "export_id", export_id or uuid4().hex)
         object.__setattr__(self, "profile", profile)
         object.__setattr__(self, "created_at", created_at)
         object.__setattr__(self, "subject", subject)
@@ -137,6 +140,7 @@ class PreparedExport:
         """Return the JSON-safe receipt for this prepared snapshot."""
         return {
             "artifact_version": self.artifact_version,
+            "export_id": self.export_id,
             "profile": self.profile,
             "created_at": self.created_at.isoformat(),
             "subject": self.subject.as_manifest(),
@@ -210,6 +214,7 @@ def build_bundle_snapshot(
         tables=prepared_tables,
         data_dictionary=build_data_dictionary(prepared_tables),
         provenance=None,
+        export_id=None,
     )
 
 

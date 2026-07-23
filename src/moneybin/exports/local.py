@@ -160,6 +160,7 @@ class LocalExportPublisher:
                 },
                 checksums=verified_checksums,
                 recovery_actions=(),
+                export_id=snapshot.export_id,
             )
         finally:
             if staging_root.exists():
@@ -223,6 +224,7 @@ def validate_bundle(
         expected_files=_BUNDLE_SIDECARS | set(table_paths.values()),
     )
     manifest = _read_json_object(files["manifest.json"])
+    _require_export_id(manifest)
     dictionary = _read_json_object(files["data-dictionary.json"])
     if dictionary != snapshot.data_dictionary:
         raise ValueError("export data dictionary does not match prepared snapshot")
@@ -258,6 +260,12 @@ def validate_bundle(
     )
 
 
+def _require_export_id(manifest: dict[str, object]) -> None:
+    """Reject development artifacts produced before v1 required run identity."""
+    if not isinstance(manifest.get("export_id"), str) or not manifest["export_id"]:
+        raise ValueError("export artifact lacks export_id; re-export required")
+
+
 def validate_xlsx(path: Path, snapshot: PreparedExport) -> _ValidatedArtifact:
     """Read the workbook back and validate its visible data and receipts."""
     _validate_regular_file(path)
@@ -277,6 +285,7 @@ def validate_xlsx(path: Path, snapshot: PreparedExport) -> _ValidatedArtifact:
             raise ValueError("XLSX worksheets must all be visible")
 
         manifest = _parse_xlsx_json(workbook["MoneyBin Manifest"]["A2"].value)
+        _require_export_id(manifest)
         dictionary = _parse_xlsx_json(workbook["MoneyBin Data Dictionary"]["A2"].value)
         if dictionary != snapshot.data_dictionary:
             raise ValueError("XLSX data dictionary does not match prepared snapshot")

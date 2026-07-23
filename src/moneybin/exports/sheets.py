@@ -230,6 +230,7 @@ class SheetsExportPublisher:
             },
             checksums={table.name: table.checksum_sha256 for table in snapshot.tables},
             recovery_actions=(),
+            export_id=snapshot.export_id,
         )
 
     def _promotion_completed(

@@ -137,6 +137,7 @@ class ExportReceipt:
     output_classes: Mapping[str, Mapping[str, str]]
     checksums: Mapping[str, str]
     recovery_actions: tuple[RecoveryAction, ...]
+    export_id: str = "test-export"
 
 
 @dataclass(frozen=True, slots=True)

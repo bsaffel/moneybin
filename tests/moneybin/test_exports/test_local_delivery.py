@@ -371,6 +371,30 @@ def test_snapshot_manifest_tamper_is_not_published(
     assert not list(exports_root.glob("export-*"))
 
 
+def test_pre_export_id_bundle_is_rejected_with_reexport_guidance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = local_delivery.render_csv
+
+    def render_without_export_id(
+        snapshot: PreparedExport, staging_root: Path
+    ) -> RenderedArtifact:
+        rendered = original(snapshot, staging_root)
+        manifest_path = rendered.path / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        del manifest["export_id"]
+        manifest_path.write_text(json.dumps(manifest))
+        return rendered
+
+    monkeypatch.setattr(local_delivery, "render_csv", render_without_export_id)
+
+    with pytest.raises(ValueError, match="re-export required"):
+        LocalExportPublisher(tmp_path / "exports").publish(
+            make_snapshot(), format="csv", compress_zip=False
+        )
+
+
 def test_internally_consistent_dictionary_tamper_is_not_published(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

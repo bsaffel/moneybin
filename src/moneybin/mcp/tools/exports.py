@@ -199,6 +199,7 @@ class ExportReceiptOutput:
     row_counts: Annotated[dict[str, int], DataClass.AGGREGATE]
     output_classes: Annotated[dict[str, dict[str, str]], DataClass.AGGREGATE]
     checksums: Annotated[dict[str, str], DataClass.RECORD_ID]
+    export_id: Annotated[str, DataClass.RECORD_ID]
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +288,7 @@ def _receipt_output(receipt: ExportReceipt) -> ExportReceiptOutput:
             table: dict(classes) for table, classes in receipt.output_classes.items()
         },
         checksums=dict(receipt.checksums),
+        export_id=receipt.export_id,
     )
 
 
