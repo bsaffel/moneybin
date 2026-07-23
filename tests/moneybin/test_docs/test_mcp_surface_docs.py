@@ -1570,7 +1570,7 @@ def test_governance_describes_one_current_registry_and_future_admission() -> Non
 def test_current_registry_count_claims_match_live_surface() -> None:
     claims = {
         path: _current_registry_tool_counts(path.read_text())
-        for path in CURRENT_PUBLIC_ROOTS
+        for path in _current_public_mcp_docs()
     }
 
     assert claims[ROOT / "README.md"] == {STANDARD_TOOL_COUNT}
@@ -1581,6 +1581,16 @@ def test_current_registry_count_claims_match_live_surface() -> None:
         for path, counts in claims.items()
         if counts and counts != {STANDARD_TOOL_COUNT}
     } == {}
+
+
+def test_mcp_client_quickstart_matches_system_status_overview_contract() -> None:
+    client_guide = CLIENT_GUIDE.read_text()
+
+    assert 'system_status(sections=["overview"])' in client_guide
+    assert '"sensitivity": "low"' in client_guide
+    assert '"sections": [' in client_guide
+    assert '"kind": "overview"' in client_guide
+    assert '"overview": {' in client_guide
 
 
 def test_current_registry_tool_count_patterns_identify_registry_claims() -> None:

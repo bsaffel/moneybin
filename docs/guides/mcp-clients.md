@@ -261,25 +261,38 @@ Practical guidance:
 
 After installing and restarting the client, run one low-risk tool:
 
-- `system_status` — data inventory and freshness snapshot. Low sensitivity, no PII.
+- `system_status(sections=["overview"])` — data inventory and freshness snapshot.
+  This overview-only call is low sensitivity and contains no PII.
 - `accounts` — lists configured accounts.
 
 Both return the standard MoneyBin envelope. `system_status` looks roughly like:
 
 ```json
 {
-  "summary": {"sensitivity": "low", "display_currency": "USD", "degraded": false},
+  "summary": {
+    "total_count": 1,
+    "returned_count": 1,
+    "has_more": false,
+    "sensitivity": "low",
+    "display_currency": "USD"
+  },
   "data": {
-    "accounts": {"count": 6},
-    "transactions": {"count": 12483, "date_range": ["2023-01-04", "2026-05-14"], "last_import_at": "2026-05-17T09:12:33"},
-    "categorization": {"uncategorized": 17},
-    "transforms": {"pending": false, "last_apply_at": "2026-05-17T09:13:01"}
+    "kind": "sections",
+    "sections": [{
+      "kind": "overview",
+      "overview": {
+        "accounts": {"count": 6},
+        "transactions": {"count": 12483, "date_range": ["2023-01-04", "2026-05-14"], "last_import_at": "2026-05-17T09:12:33"},
+        "categorization": {"uncategorized": 17},
+        "transforms": {"pending": false, "last_apply_at": "2026-05-17T09:13:01"}
+      }
+    }]
   },
   "actions": ["Use reviews for per-queue review counts", "Use reports(report_id=\"core:spending\") for a monthly spending trend snapshot"]
 }
 ```
 
-If the response is missing fields, has `degraded: true` unexpectedly, or surfaces a raw error, check that the server actually started — each client writes its own log; consult that client's documentation for log paths, since MoneyBin's stderr is forwarded into the client's process logs.
+If the response is missing `sections`, has `degraded: true` unexpectedly, or surfaces a raw error, check that the server actually started — each client writes its own log; consult that client's documentation for log paths, since MoneyBin's stderr is forwarded into the client's process logs.
 
 You can cross-check the same payload from the CLI:
 
