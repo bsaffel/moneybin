@@ -132,8 +132,9 @@ tell callers to refine the query or rerun with a larger limit.
 | Tier | Data | Consent |
 |---|---|---|
 | `low` | Aggregates, counts, category labels | None |
-| `medium` | Row-level: descriptions, amounts, dates | Consent ledger exists; enforcement deferred |
-| `high` | Critical PII fields (account numbers) | Critical masking wired; consent enforcement deferred |
+| `medium` | Descriptions, merchant names, dates, and user notes | Consent ledger exists; enforcement deferred |
+| `high` | Financial amounts and balances | Consent ledger exists; enforcement deferred |
+| `critical` | Account and routing identifiers | Critical masking wired; consent enforcement deferred |
 
 The consent ledger is not yet a global runtime gate. Tools cannot assume that a
 missing consent grant automatically degrades or blocks data. A future gate may

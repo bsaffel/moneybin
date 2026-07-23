@@ -148,7 +148,8 @@ into user-facing domains: 14 prefixes compose 11 domain groups.
 |---|---|---|
 | `system_*` | Orientation and audit | Data inventory, audit, and operation reversal |
 | `reports` | Read-only analytics | Registered catalog and report execution |
-| `accounts_*`, `investments_*` | Financial entities | Account state, balances, investment ledger, and lots |
+| `accounts_*` | Accounts | Account state and balances |
+| `investments_*` | Investments | Investment ledger and lots |
 | `transactions_*` | Transaction workflows | Query, curation, and categorization |
 | `reviews_*`, `identity_*` | Reviews | User decisions, including identity-link decisions |
 | `taxonomy_*` | Reference data | Categories and related taxonomy target state |
@@ -438,8 +439,8 @@ response behavior.
 
 | Sensitivity | Data characteristics | Consent-enforcement target | Example tools |
 |---|---|---|---|
-| `low` | Counts and structural metadata | None | `system_status`; catalog mode of `reports` |
-| `medium` | User-authored labels or contextual records without financial amounts | Future policy-dependent gate | selected review and taxonomy projections |
+| `low` | Counts and structural metadata | None | catalog mode of `reports` |
+| `medium` | User-authored labels or contextual records without financial amounts | Future policy-dependent gate | `system_status` (dynamic, maximum medium); selected review and taxonomy projections |
 | `high` | Financial amounts, balances, descriptions, dates, or merchant data | Future `mcp-data-sharing` gate | `transactions` (static high); executed financial reports |
 | `critical` | Account/routing identifiers and equivalent direct identifiers | Always mask critical fields; future gate is additional | `accounts` (dynamic, maximum critical); `reports` (dynamic, maximum critical) |
 
