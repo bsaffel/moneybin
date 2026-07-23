@@ -2722,6 +2722,16 @@ def test_historical_mcp_surface_corpus_is_complete_and_scannable() -> None:
             "docs/specs/investments-data-model.md",
             "Market value/unrealized gain unavailable until price feeds ship",
         ),
+        (
+            "docs/specs/investments-price-feeds.md",
+            "MoneyBin computes cost basis today and no market value anywhere.",
+        ),
+        (
+            "docs/specs/investments-data-model.md",
+            "Market value and unrealized gain require price feeds (coming in Pillar C).",
+        ),
+        ("docs/roadmap.md", "market prices designed (M1J.3)"),
+        ("docs/specs/INDEX.md", "C and D remain planned."),
         ("docs/specs/privacy-data-classification.md", "SpendingService.by_category()"),
         (
             "docs/specs/privacy-data-classification.md",
@@ -2739,6 +2749,18 @@ def test_final_review_stale_contract_corpus_is_absent(
     stale: str,
 ) -> None:
     assert stale not in (ROOT / relative).read_text()
+
+
+def test_shipped_brokerage_valuation_docs_remain_current() -> None:
+    price_feeds = (ROOT / "docs/specs/investments-price-feeds.md").read_text()
+    data_model = (ROOT / "docs/specs/investments-data-model.md").read_text()
+    roadmap = (ROOT / "docs/roadmap.md").read_text()
+    overview = (ROOT / "docs/specs/investments-overview.md").read_text()
+
+    assert "Phase C.1 shipped" in price_feeds
+    assert "broker-carried close valuation" in data_model
+    assert "Pillar C.1 ✅ shipped" in roadmap
+    assert "Current open quantity + cost basis + broker-carried valuation" in overview
 
 
 def test_import_preview_docs_match_the_live_write_annotation_and_retention() -> None:

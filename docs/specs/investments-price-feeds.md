@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-ready
+in-progress
 
 ## Goal
 
@@ -11,12 +11,15 @@ history for held securities, resolve one price per security per date from
 competing sources, and publish holdings market value and unrealized gain/loss on
 top of the shipped cost-basis engine.
 
-MoneyBin computes cost basis today and no market value anywhere.
-`core.dim_holdings` carries `quantity`, `cost_basis`, and `average_cost`;
+Phase C.1 shipped: `core.dim_holdings` carries `market_value`, `unrealized_gain`,
+`price_date`, `price_source`, `days_since_observed`, and `valuation_status` beside
+`quantity`, `cost_basis`, and `average_cost`, valued from the close Plaid already
+delivers in its existing sync payload. External feeds, manual overrides, and
+trade-implied prices (C.2) and the daily valued series (C.3) remain designed.
 `src/moneybin/sqlmesh/models/reports/net_worth.sql` reads `core.fct_balances_daily`
 alone and excludes holdings entirely. A brokerage account therefore contributes
-its cash balance to net worth and none of its positions. This spec closes that
-gap and supplies the daily valued series Pillar D
+its cash balance to net worth and none of its positions. This spec carries the
+remaining price-observation and daily-series work that Pillar D
 (`investments-net-worth.md`) joins into `reports.net_worth`.
 
 ## Background
@@ -254,12 +257,12 @@ recorded, rather than silently valued.
 
 ### Extended model: `core.dim_holdings`
 
-Adds `market_value`, `unrealized_gain`, `price_date`, `price_source`,
-`days_since_observed`, and `valuation_status`. Two comments go stale and are
-rewritten: the header's "Cost basis only — unrealized gain/loss needs a current
-price, which Pillar C (price feeds) supplies", and the parenthetical on
-`provider_reported_value` reading "MoneyBin computes no market value until
-price feeds land".
+Phase C.1 shipped `market_value`, `unrealized_gain`, `price_date`,
+`price_source`, `days_since_observed`, and `valuation_status`, and rewrote the
+two comments that change made stale — the header's cost-basis-only note and the
+parenthetical on `provider_reported_value` that described MoneyBin as computing
+no market value. C.2/C.3 retain this projection while adding price sources and
+the dated series.
 
 ### New model: `core.fct_holdings_daily`
 
@@ -658,12 +661,13 @@ data. Market values are the same class of data as the holdings they value.
 
 ## MCP and report integration
 
-This spec adds no price-observation MCP route. Its agent-facing integration
-extends the existing `investments(view="holdings", ...)` and
-`investments(view="gains", ...)` projections with `market_value`, `price_date`,
-`days_since_observed`, and `valuation_status`, and feeds valued positions into
-registered net-worth reports. A future observation-grain capability remains
-unnamed until it passes the standard tool-admission review.
+This spec adds no price-observation MCP route. C.1 already extends the existing
+`investments(view="holdings", ...)` projection with `market_value`,
+`unrealized_gain`, `price_date`, `days_since_observed`, and `valuation_status`.
+C.2/C.3 may add further price sources and a dated series, but an
+observation-grain capability remains unnamed until it passes the standard
+tool-admission review. Holdings do not yet feed the registered net-worth reports;
+that integration remains Pillar D.
 
 ---
 

@@ -25,8 +25,9 @@ lot/holding derivation.
 
 The crucial scoping insight (from the overview): **realized gain/loss is computed
 entirely from the ledger** — a sale's proceeds versus the cost of the lots it
-consumes, both recorded events — so it requires no market price. Only *unrealized*
-gain/loss needs a current price, which is Pillar C's job.
+consumes, both recorded events — so it requires no market price. *Unrealized*
+gain/loss uses the broker-carried close shipped in Pillar C.1; external feeds and
+the daily valued series remain later Pillar C work.
 
 Related specs:
 - [`investments-overview.md`](investments-overview.md) — umbrella; vision, pillars, cross-cutting contracts
@@ -371,12 +372,24 @@ Columns:
   cost_basis        DECIMAL(18,2)    -- Total open basis (Σ cost_basis_remaining)
   average_cost      DECIMAL(28,10)   -- cost_basis / quantity; (28,10) not Rule-6 (18,8) on purpose — crypto fractional-unit precision propagates through the ratio
   currency_code     VARCHAR          -- Denominating currency
+  market_value      DECIMAL(18,2)    -- quantity × the resolved close; NULL (never zero) unless valuation_status is valued or carried_forward
+  unrealized_gain   DECIMAL(18,2)    -- market_value − cost_basis; signed, negative below cost; NULL whenever market_value is
+  price_date        DATE             -- Date of the close used, which may be earlier than today; NULL when no close resolved
+  price_source      VARCHAR          -- Which source supplied the close (see core.fct_security_prices); NULL when no close resolved
+  days_since_observed INT            -- Calendar days between price_date and today; 0 on a same-day close; NULL when no close resolved
+  valuation_status  VARCHAR          -- valued | carried_forward | unpriced | withheld
   updated_at        TIMESTAMP        -- Row freshness
 ```
 
-> **Unrealized gain/loss** (`quantity × current_price − cost_basis`) is intentionally
-> absent here — it requires a price, which Pillar C (`investments-price-feeds.md`)
-> supplies. `dim_holdings` v1 carries cost basis only.
+> **Unrealized gain/loss** arrived with Pillar C phase C.1
+> (`investments-price-feeds.md`), computed against the close a connected broker
+> already sends. `valuation_status` says which figure the reader is holding:
+> `valued` (the close is today's), `carried_forward` (the most recent close is
+> older), `unpriced` (no close resolved), or `withheld` (the share count is known
+> wrong — an unreconciled split or broker divergence). The last two publish NULL
+> rather than zero, so a total never silently absorbs a position it could not
+> value. External feeds and manual overrides (C.2) and the daily valued series
+> `core.fct_holdings_daily` (C.3) remain designed.
 
 ## Cost-Basis Engine
 
@@ -667,8 +680,10 @@ moneybin investments list [--account <id|name>] [--security <ticker|name>] \
 ```
 moneybin investments holdings [--account <id|name>] [--output json|table]
 ```
-- Current positions: quantity, cost basis, average cost. *(Market value / unrealized
-  gain appear once Pillar C ships; v1 shows cost basis only and says so.)*
+- Current positions: quantity, cost basis, average cost, market value, unrealized
+  gain, and the date and age of the close each value rests on. A position with no
+  usable price, or one whose share count is known wrong, renders `-` rather than a
+  zero; its status column says which.
 
 ```
 moneybin investments lots [--account <id|name>] [--security <ticker|name>] \
@@ -729,13 +744,18 @@ moneybin investments securities set <security_id> [--name ...] [--ticker ...] \
 ```
 $ moneybin investments holdings --account fidelity_brokerage
 
-Security   Qty      Cost Basis   Avg Cost   Method
-AAPL       15.000   $2,475.00    $165.00    fifo
-VTSAX      210.450  $24,800.00   $117.84    average
-BTC        0.500    $18,000.00   $36,000.00 specific
+a3f19c02b8e1 qty=15.0000000000 cost_basis=2475.00 avg_cost=165.0000000000 market_value=2850.00 unrealized_gain=375.00 USD status=valued as_of=2026-07-19 (0d)
+7d40be91c5a2 qty=200.0000000000 cost_basis=23400.00 avg_cost=117.0000000000 market_value=25000.00 unrealized_gain=1600.00 USD status=carried_forward as_of=2026-07-16 (3d)
+c81a5f6039db qty=0.5000000000 cost_basis=18000.00 avg_cost=36000.0000000000 market_value=- unrealized_gain=- USD status=unpriced
+portfolio market_value=27850.00 USD max_days_since_observed=3
 
-  ℹ️  Market value and unrealized gain require price feeds (coming in Pillar C).
+⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (the share count is known wrong).
 ```
+
+The first column is `security_id` (a 12-hex catalog id), not a ticker. Each row
+carries its own currency code after the money figures. An absent figure renders
+`-`, matching `avg_cost`'s existing NULL rendering — a blank column reads as zero,
+and NULL here means "no number", not "worth nothing".
 
 ```
 $ moneybin investments gains --account fidelity_brokerage --from 2024-01-01
@@ -760,7 +780,8 @@ reachable, not that callback names mirror command names.
 - Params: `account` (optional), `security` (optional), `start`/`end` (optional DATE), `limit`, and `cursor`
 - Sensitivity: `high` (derived from field classification — quantity/price/amount/fees are `TXN_AMOUNT`)
 
-**`investments(view="holdings", ...)`** — Current positions with cost basis.
+**`investments(view="holdings", ...)`** — Current positions with cost basis and
+broker-carried valuation fields.
 - Params: `account` (optional), `security` (optional), `limit`, and `cursor`
 - Sensitivity: `high` (cost basis / average cost are `BALANCE`-classified)
 
@@ -891,7 +912,7 @@ output schema, so this spec does not freeze a JSON response object.
 
 ## Out of Scope
 
-- **Market-price valuation / unrealized gain** — Pillar C (`investments-price-feeds.md`).
+- **External price feeds, manual overrides, and daily valuation history** — Pillar C.2/C.3 (`investments-price-feeds.md`); broker-carried close valuation shipped in C.1.
 - **Holdings in net worth** — Pillar D (`investments-net-worth.md`).
 - **Plaid / OFX import** — separate children; each adds its own provider-shaped raw table + staging model into the core union (Requirement 7).
 - **Options, margin, short positions, derivatives** — future.

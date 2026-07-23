@@ -85,7 +85,7 @@ valuation on top. Consumers (CLI, MCP, the `us_tax` package, reports) read from
 | `core.fct_investment_transactions` | Fact | One investment event | The ledger: buys, sells, dividends, reinvests, splits, transfers, fees |
 | `core.fct_investment_lots` | Fact (derived) | One open/closed tax lot | Each acquisition opens a lot; disposals consume lots per the elected method; carries cost basis and remaining quantity (no gain/loss columns) |
 | `core.fct_realized_gains` | Fact (derived) | One (disposal × consumed lot) pair | The 1099-B grain: proceeds, cost basis, gain/loss, short/long-term split |
-| `core.dim_holdings` | Dimension (derived) | One position (account × security) | Current open quantity + cost basis; sum of open lots. *(Name locked by `extension-contracts.md`.)* |
+| `core.dim_holdings` | Dimension (derived) | One position (account × security) | Current open quantity + cost basis + broker-carried valuation; sum of open lots. *(Name locked by `extension-contracts.md`.)* |
 | `core.fct_holdings_daily` | Fact (derived) | One position per day | Daily-valued time series (holdings × price). **Pillar C** — needs price feeds. *(Planned name; illustrative in `architecture-shared-primitives.md`, not yet a locked contract.)* |
 
 Mutable user state lives in `app.*`: the manual-entry security catalog, the
