@@ -265,6 +265,35 @@ def test_google_oauth_upgrade_retains_refresh_token_when_google_omits_replacemen
     )
 
 
+def test_google_oauth_read_authorization_reuses_write_refresh_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store_with({
+        GSHEET_WRITE_REFRESH_TOKEN_KEY: "existing-write-refresh",
+    })
+    creds = MagicMock(
+        refresh_token=None,
+        token="read-access",  # noqa: S106  # test credential
+        expiry=None,
+        granted_scopes=[GOOGLE_SHEETS_READ_SCOPE],
+        scopes=[GOOGLE_SHEETS_READ_SCOPE],
+    )
+    flow = MagicMock()
+    flow.run_local_server.return_value = creds
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    monkeypatch.setattr(
+        InstalledAppFlow,
+        "from_client_config",
+        MagicMock(return_value=flow),
+    )
+
+    grant = GoogleOAuthClient(store, _make_settings()).authorize(require_write=False)
+
+    assert grant.can_write is False
+    store.set_key.assert_any_call(GSHEET_REFRESH_TOKEN_KEY, "existing-write-refresh")
+
+
 def test_google_oauth_write_upgrade_rejects_partial_scope_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

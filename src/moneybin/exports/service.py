@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
@@ -375,11 +376,7 @@ class ExportService:
         from moneybin.config import get_settings  # noqa: PLC0415
 
         default_path = get_settings().profile_exports_dir.expanduser().resolve()
-        default_reasons = (
-            ("local_path_not_directory",)
-            if default_path.exists() and not default_path.is_dir()
-            else ()
-        )
+        default_reasons = _local_path_validation_reasons(default_path)
         results = [
             ExportDestinationReadiness(
                 name="local:exports",
@@ -595,8 +592,8 @@ def _destination_validation_reasons(
             or destination.managed_tab_prefix is not None
         ):
             reasons.append("invalid_destination_configuration")
-        elif destination.local_path.exists() and not destination.local_path.is_dir():
-            reasons.append("local_path_not_directory")
+        else:
+            reasons.extend(_local_path_validation_reasons(destination.local_path))
     elif destination.kind == "sheets":
         if destination.local_path is not None or not destination.spreadsheet_id:
             reasons.append("invalid_destination_configuration")
@@ -610,6 +607,22 @@ def _destination_validation_reasons(
     else:
         reasons.append("invalid_destination_configuration")
     return tuple(reasons)
+
+
+def _local_path_validation_reasons(path: Path) -> tuple[str, ...]:
+    """Return readiness reasons before a local publisher creates its root."""
+    candidate = path
+    if path.exists():
+        if not path.is_dir():
+            return ("local_path_not_directory",)
+    else:
+        while not candidate.exists():
+            candidate = candidate.parent
+        if not candidate.is_dir():
+            return ("local_path_not_directory",)
+    if not os.access(candidate, os.W_OK | os.X_OK):
+        return ("local_path_not_writable",)
+    return ()
 
 
 def _bounded_label(value: object, allowed: frozenset[str]) -> str:

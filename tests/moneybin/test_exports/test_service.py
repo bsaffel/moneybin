@@ -570,6 +570,85 @@ def test_status_projects_destination_readiness_without_target_identifiers(
     assert "/private/export/path" not in str(serialized)
 
 
+def test_status_marks_default_file_destination_not_writable(
+    db: Database, tmp_path: Path
+) -> None:
+    """The derived local destination is not ready when its path is a file."""
+    local_file = tmp_path / "exports-file"
+    local_file.write_text("not a directory")
+
+    with patch("moneybin.config.get_settings") as get_settings:
+        get_settings.return_value.profile_exports_dir = local_file
+        status = ExportService(db).status()
+
+    assert status.destinations[0].reasons == ("local_path_not_directory",)
+    assert status.destinations[0].write_capable is False
+
+
+def test_status_marks_local_destination_without_writable_parent_not_ready(
+    db: Database, tmp_path: Path
+) -> None:
+    """A configured path reports unavailable before publishing tries to create it."""
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    destination_path = parent / "exports"
+    db.execute(
+        """
+        INSERT INTO app.export_destinations (
+            destination_id, name, kind, local_path, spreadsheet_id,
+            managed_tab_prefix, created_at, updated_at
+        ) VALUES (
+            'local-not-writable', 'archive', 'local', ?, NULL, NULL,
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        """,
+        [str(destination_path)],
+    )
+
+    with patch("moneybin.exports.service.os.access", create=True, return_value=False):
+        status = ExportService(db).status()
+
+    archive = next(item for item in status.destinations if item.name == "archive")
+    assert archive.reasons == ("local_path_not_writable",)
+    assert archive.write_capable is False
+
+
+@patch("moneybin.config.get_settings")
+@patch("moneybin.exports.local.LocalExportPublisher")
+def test_run_rejects_file_local_destination_before_preparing_or_writing(
+    publisher_type: MagicMock,
+    get_settings: MagicMock,
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """The delivery gate shares the local file-path readiness validation."""
+    local_file = tmp_path / "exports-file"
+    local_file.write_text("not a directory")
+    request = replace(
+        _request(),
+        destination=replace(_destination("local"), local_path=local_file),
+    )
+    get_settings.return_value.profile = "personal"
+
+    with (
+        patch(
+            "moneybin.database.get_database",
+            return_value=_database_context(db),
+        ),
+        patch.object(
+            ExportService,
+            "resolve_destination",
+            return_value=request.destination,
+        ),
+        patch.object(ExportService, "prepare_bundle") as prepare_bundle,
+        pytest.raises(ValueError, match="local_path_not_directory"),
+    ):
+        ExportService(db).run(_command_from_request(request), actor="test")
+
+    prepare_bundle.assert_not_called()
+    publisher_type.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "reference",
     ["local:exports", "local: EXPORTS ", "local:ｅｘｐｏｒｔｓ"],

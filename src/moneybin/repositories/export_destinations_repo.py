@@ -59,6 +59,18 @@ class ExportDestinationSpreadsheetConflictError(UserError):
         )
 
 
+class ExportDestinationNamespaceConflictError(UserError):
+    """Raised when another destination already owns a Sheets tab namespace."""
+
+    def __init__(self) -> None:
+        """Build a user-safe Sheets output namespace conflict."""
+        super().__init__(
+            "Another export destination already manages this spreadsheet tab prefix. "
+            "Choose a distinct prefix.",
+            code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+        )
+
+
 class ExportDestinationChangedError(UserError):
     """Raised when saved output configuration changes before publication."""
 
@@ -280,7 +292,10 @@ class ExportDestinationsRepo(BaseRepo):
                 )
             with self._transaction(in_outer_txn=in_outer_txn):
                 self._validate_destination(
-                    name=name, kind=kind, spreadsheet_id=spreadsheet_id
+                    name=name,
+                    kind=kind,
+                    spreadsheet_id=spreadsheet_id,
+                    managed_tab_prefix=managed_tab_prefix,
                 )
                 before = self._fetch_by_name(name)
                 destination_id = (
@@ -330,6 +345,7 @@ class ExportDestinationsRepo(BaseRepo):
         name: str,
         kind: DestinationKind,
         spreadsheet_id: str | None,
+        managed_tab_prefix: str | None,
     ) -> None:
         """Reject reserved targets and workbook role conflicts before mutation."""
         if kind != "sheets":
@@ -340,6 +356,16 @@ class ExportDestinationsRepo(BaseRepo):
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
         self.assert_not_inbound_connection(spreadsheet_id)
+        if managed_tab_prefix is None:
+            raise ValueError("A Sheets destination requires a managed tab prefix")
+        conflict = self._db.execute(
+            f"SELECT 1 FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE kind = 'sheets' AND spreadsheet_id = ? "
+            "AND managed_tab_prefix = ? AND name <> ? LIMIT 1",
+            [spreadsheet_id, managed_tab_prefix, name],
+        ).fetchone()
+        if conflict is not None:
+            raise ExportDestinationNamespaceConflictError()
 
     def remove(
         self,

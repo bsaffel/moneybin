@@ -591,7 +591,25 @@ def test_export_destination_add_sheets_accepts_workbook_url_without_gid() -> Non
     assert set_sheets.call_args.kwargs["spreadsheet_id"] == "sheet_abc"
 
 
-def test_export_destination_remove_deletes_configuration_only() -> None:
+def test_export_destination_remove_requires_confirmation() -> None:
+    with (
+        patch("moneybin.database.get_database") as get_database,
+        patch(
+            "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.remove",
+        ) as remove,
+    ):
+        get_database.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(
+            app,
+            ["export", "destination", "remove", "dashboard"],
+            input="n\n",
+        )
+
+    assert result.exit_code == 0, result.output
+    remove.assert_not_called()
+
+
+def test_export_destination_remove_deletes_configuration_only_with_yes() -> None:
     with (
         patch("moneybin.database.get_database") as get_database,
         patch(
@@ -602,7 +620,7 @@ def test_export_destination_remove_deletes_configuration_only() -> None:
         get_database.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(
             app,
-            ["export", "destination", "remove", "dashboard"],
+            ["export", "destination", "remove", "dashboard", "--yes"],
         )
 
     assert result.exit_code == 0, result.output

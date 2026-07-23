@@ -491,6 +491,7 @@ def destination_add_sheets(
 @destination_app.command("remove")
 def destination_remove(
     name: str = typer.Argument(..., help="Saved destination name or ID."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
 ) -> None:
     """Remove MoneyBin configuration without deleting destination content."""
     from moneybin import error_codes  # noqa: PLC0415
@@ -499,6 +500,9 @@ def destination_remove(
     from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
         ExportDestinationsRepo,
     )
+
+    if not yes and not typer.confirm(f"Remove destination configuration {name!r}?"):
+        raise typer.Exit(0)
 
     with handle_cli_errors(cli_actor="export_destination_remove"):
         with get_database(read_only=False) as db:

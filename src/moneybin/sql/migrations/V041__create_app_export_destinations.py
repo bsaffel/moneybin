@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS app.export_destinations (
     managed_tab_prefix VARCHAR,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (spreadsheet_id, managed_tab_prefix),
     CHECK (
         (kind = 'local' AND local_path IS NOT NULL
          AND spreadsheet_id IS NULL AND managed_tab_prefix IS NULL)

@@ -72,8 +72,9 @@ async def test_system_status_exports_uses_typed_privacy_safe_readiness(
         for item in section.destinations
     ] == [
         ("local:exports", "local", True, True),
-        ("archive", "local", True, True),
+        ("archive", "local", False, False),
     ]
+    assert section.destinations[1].reasons == ["local_path_not_writable"]
     serialized = response.to_dict()
     assert serialized["summary"]["sensitivity"] == "medium"
     assert "/private/export/path" not in str(serialized)

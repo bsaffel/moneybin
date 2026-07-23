@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS app.export_destinations (
     managed_tab_prefix VARCHAR, -- Prefix for tabs managed by MoneyBin in this workbook; required only for Sheets
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Destination configuration creation timestamp
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Last destination-configuration mutation timestamp
+    UNIQUE (spreadsheet_id, managed_tab_prefix), -- A Sheets tab namespace belongs to only one destination; NULL local fields remain distinct
     CHECK (
         (kind = 'local' AND local_path IS NOT NULL
          AND spreadsheet_id IS NULL AND managed_tab_prefix IS NULL)

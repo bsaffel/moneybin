@@ -179,9 +179,7 @@ class GoogleOAuthClient:
 
         refresh_token = getattr(creds, "refresh_token", None)
         if not refresh_token:
-            fallback_keys = (
-                (_WRITE_KEYS, _READ_KEYS) if require_write else (_READ_KEYS,)
-            )
+            fallback_keys = (_WRITE_KEYS, _READ_KEYS)
             for fallback in fallback_keys:
                 try:
                     refresh_token = self._secrets.get_key(fallback.refresh)

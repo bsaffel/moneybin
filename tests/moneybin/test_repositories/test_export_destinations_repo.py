@@ -14,6 +14,7 @@ from moneybin.errors import UserError
 from moneybin.exports.models import ExportDestination, ReservedExportDestinationError
 from moneybin.repositories.export_destinations_repo import (
     ExportDestinationChangedError,
+    ExportDestinationNamespaceConflictError,
     ExportDestinationSpreadsheetConflictError,
     ExportDestinationsRepo,
 )
@@ -103,6 +104,26 @@ def test_set_sheets_writes_complete_destination_and_one_audit_row(
     assert len(audit) == 1
     assert audit[0][0] == "export_destination.set_sheets"
     assert json.loads(audit[0][5])["spreadsheet_id"] == "sheet_123"
+
+
+def test_set_sheets_rejects_a_duplicate_managed_namespace(
+    repo: ExportDestinationsRepo,
+) -> None:
+    """One workbook prefix may belong to only one saved destination."""
+    repo.set_sheets(
+        name="dashboard",
+        spreadsheet_id="sheet_123",
+        managed_tab_prefix="MoneyBin",
+        actor="cli",
+    )
+
+    with pytest.raises(ExportDestinationNamespaceConflictError):
+        repo.set_sheets(
+            name="other-dashboard",
+            spreadsheet_id="sheet_123",
+            managed_tab_prefix="MoneyBin",
+            actor="cli",
+        )
 
 
 def test_set_replaces_a_destination_kind_with_one_paired_audit_row(
