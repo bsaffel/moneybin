@@ -253,8 +253,8 @@ clients receive every tool; capable hosts may optionally defer schemas from
 that same registry without reconnect, packs, or profiles. Reports never
 consume tool slots. The deterministic comparison passed, but promotion remains
 unready until context-budget and host-native-deferral evidence is observed.
-Future MCP capabilities remain unnamed until admission through the bounded
-registry.
+See `surface-design.md` for the admission rule before naming future MCP
+capabilities.
 
 **Admission sequence.** Before proposing a tool, try an existing projection,
 method, batch, declarative state, report entry, or workflow umbrella. The PR

@@ -58,6 +58,7 @@ CURRENT_PUBLIC_ROOTS = tuple(
         *ROOT.glob("*.md"),
         *(ROOT / ".github").rglob("*.md"),
         *(ROOT / ".claude/rules").glob("*.md"),
+        *(ROOT / "design-system").glob("*.md"),
         *(ROOT / "docs").rglob("*.md"),
     })
 )
@@ -1024,7 +1025,8 @@ def _mcp_contract_violations(
     schema_literals = frozenset(_schema_string_literals(schemas))
     retired_names = (BASELINE_TOOL_NAMES | HISTORICAL_TOOL_NAMES) - schemas.keys()
 
-    for name in sorted(retired_names | PROSPECTIVE_MCP_NAMES):
+    prospective_names = PROSPECTIVE_MCP_NAMES - schemas.keys()
+    for name in sorted(retired_names | prospective_names):
         pattern = rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])"
         for match in re.finditer(pattern, text):
             requires_closed_world_context = (
@@ -1481,9 +1483,12 @@ def test_cli_spec_describes_outcome_parity_without_input_identity() -> None:
 
 
 def test_future_mcp_capabilities_remain_unnamed_until_admission() -> None:
-    for path in (ARCHITECTURE_SPEC, MCP_SPEC, SCALING_SPEC, MCP_RULE, SURFACE_RULE):
+    for path in (ARCHITECTURE_SPEC, MCP_SPEC, SCALING_SPEC, SURFACE_RULE):
         text = " ".join(path.read_text().split())
         assert "Future MCP capabilities remain unnamed until admission" in text, path
+
+    mcp_rule = " ".join(MCP_RULE.read_text().split())
+    assert "`surface-design.md` for the admission rule" in mcp_rule
 
     combined = "\n".join(
         path.read_text()
@@ -2206,6 +2211,16 @@ def test_mcp_contract_scan_validates_assigned_calls() -> None:
 )
 def test_mcp_contract_scan_accepts_live_properties_and_enums(text: str) -> None:
     assert _mcp_contract_violations(text, Path("docs/example.md")) == []
+
+
+def test_mcp_contract_scan_accepts_promoted_prospective_name() -> None:
+    schemas = {**STANDARD_TOOL_SCHEMAS, "sql_describe": {}}
+    text = "## MCP Interface\n\n### Tools\n\n| `sql_describe` | Describe SQL |"
+
+    assert (
+        _mcp_contract_violations(text, Path("docs/example.md"), tool_schemas=schemas)
+        == []
+    )
 
 
 def test_mcp_contract_scan_validates_resource_uris() -> None:
