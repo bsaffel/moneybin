@@ -24,6 +24,15 @@
    provider_security_key follow as the deterministic backstop for rows tied even on
    extracted_at, and close is the final tiebreak — see below.
 
+   Freshness fails to decide when the retired and successor refs arrive in ONE sync: the
+   extractor stamps a single batch-level extracted_at per pull, so both refs tie on it and
+   the ASCII backstop would settle a split by key sort again. That grain is WITHHELD
+   instead (same_pull_key_conflict below emits no row for it), so dim_holdings falls back to
+   an earlier close under its own split-staleness guards rather than publishing an
+   arbitrary, possibly pre-split close as 'valued'. The withhold is scoped to DIFFERENT
+   provider refs disagreeing on close within one pull — a same-ref casing duplicate (one
+   provider_security_key, 'usd' vs 'USD') is not a churn and keeps its close tiebreak.
+
    This is a total order over the emitted columns. The model exposes security_id,
    price_date, and quote_currency (the partition), plus close, source_type, price_basis,
    and extracted_at; source_rank is a pure function of source_type, and price_basis is
@@ -71,10 +80,17 @@ WITH ranked AS (
       WHEN 'trade_implied'
       THEN 5
       ELSE 99
-    END AS source_rank
+    END AS source_rank,
+    (
+      MIN(p.provider_security_key) OVER same_pull <> MAX(p.provider_security_key) OVER same_pull
+      AND MIN(p.close) OVER same_pull <> MAX(p.close) OVER same_pull
+    ) AS same_pull_key_conflict
   FROM prep.stg_security_prices AS p
   WHERE
     p.price_basis = 'raw'
+  WINDOW same_pull AS (
+    PARTITION BY p.security_id, p.price_date, p.quote_currency, p.source_type, p.source_origin, p.extracted_at
+  )
 )
 SELECT
   security_id, /* FK to core.dim_securities (grain) */
@@ -90,3 +106,4 @@ QUALIFY
     PARTITION BY security_id, price_date, quote_currency
     ORDER BY source_rank, source_type, extracted_at DESC, source_origin, provider_security_key, close
   ) = 1
+  AND NOT same_pull_key_conflict

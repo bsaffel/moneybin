@@ -49,6 +49,8 @@ WITH positions AS (
       SUM(l.cost_basis_remaining) / NULLIF(SUM(l.remaining_quantity), 0)
     )::DECIMAL(28, 10) AS average_cost,
     MAX(l.currency_code) AS currency_code,
+    COUNT(DISTINCT l.currency_code) AS currency_count,
+    MIN(l.acquisition_date) AS earliest_acquisition_date,
     BOOL_OR(l.basis_incomplete::BOOLEAN) AS basis_incomplete,
     MAX(l.updated_at) AS updated_at
   FROM core.fct_investment_lots AS l
@@ -123,7 +125,8 @@ WITH positions AS (
     quote_currency,
     close,
     price_date,
-    source_type
+    source_type,
+    updated_at
   FROM core.fct_security_prices
   WHERE
     price_date <= CURRENT_DATE
@@ -203,12 +206,19 @@ WITH positions AS (
   WHERE
     NOT security_id IS NULL
 ), withheld AS (
-  /* Three clauses, none redundant — each guards a failure the others miss, and all
+  /* Four clauses, none redundant — each guards a failure the others miss. The first
      three are quantity-specific: market value is quantity x price and does not depend
      on cost basis at all, so gating on investment_holdings_divergence (which also
      fails on a pure cost-basis mismatch) or on investment_staging_rejects (which fires
      on unmapped_subtype and transfer_direction_underivable too) would withhold a
      correct number for unrelated reasons.
+
+     The second is scoped to positions HELD ACROSS the split
+     (earliest_acquisition_date <= sr.trade_date): a corporate action only misstates a
+     quantity that existed at the split. A position whose earliest lot opened AFTER the
+     reject's date has a correct quantity from inception and carries no split event of
+     its own, so without this bound it would withhold forever with nothing that could
+     ever clear it.
 
      The third is not covered by the first: when the newest snapshot omits a position the
      ledger still carries, provider_reported_quantity is NULL, so
@@ -216,7 +226,13 @@ WITH positions AS (
      the position would slip through — publishing a market value for shares the broker
      says are gone. It fires ONLY when the broker once reported this position
      (ever_reported_positions): a position never in any snapshot is a manual holding, not
-     a phantom, and withholding it would falsely claim the share count is wrong. */
+     a phantom, and withholding it would falsely claim the share count is wrong.
+
+     The fourth guards a value that cannot be computed rather than one known wrong: open
+     lots recorded in more than one currency (the manual event API takes --currency per
+     event) have no single close to value the combined quantity against, so quantity x
+     price would multiply a mixed-unit sum by one currency's price. Withheld until the
+     lots agree; the arbitrary MAX(currency_code) picked above never reaches a figure. */
   SELECT
     pos.account_id,
     pos.security_id,
@@ -230,6 +246,7 @@ WITH positions AS (
       FROM split_reject_securities AS sr
       WHERE
         sr.security_id = pos.security_id
+        AND pos.earliest_acquisition_date <= sr.trade_date
         AND NOT EXISTS(
           SELECT
             1
@@ -249,7 +266,8 @@ WITH positions AS (
         WHERE
           erp.account_id = pos.account_id AND erp.security_id = pos.security_id
       )
-    ) AS is_withheld
+    )
+    OR pos.currency_count > 1 AS is_withheld
   FROM positions AS pos
   LEFT JOIN provider_reported AS pr
     ON pr.account_id = pos.account_id AND pr.security_id = pos.security_id
@@ -274,7 +292,8 @@ WITH positions AS (
     p.security_id,
     lp.close,
     lp.price_date,
-    lp.source_type
+    lp.source_type,
+    lp.updated_at AS price_updated_at
   FROM positions AS p
   JOIN latest_price AS lp
     ON lp.security_id = p.security_id AND lp.quote_currency = UPPER(p.currency_code)
@@ -332,7 +351,11 @@ SELECT
   pr.provider_reported_cost_basis, /* NON-AUTHORITATIVE: the broker's claimed cost basis. Never overwrites or feeds `cost_basis` above; system doctor warns when the two diverge */
   pr.provider_reported_value, /* NON-AUTHORITATIVE: the broker's claimed market value. MoneyBin computes `market_value` above independently, as quantity × its own resolved close, and never blends this claim into it — no doctor check reconciles the two yet */
   pr.provider_reported_as_of, /* Oldest extracted_at among the snapshots summed into the three columns above (MIN, not MAX) — a canonical position spanning multiple broker connections is only as fresh as its stalest contributor; NULL when the broker no longer reports this position */
-  p.updated_at /* Latest of all per-row input timestamps contributing to this row's current values (MAX over the position's open lots). Provider-reported columns do not advance it — they are a reference, not an input. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
+  GREATEST(
+    p.updated_at,
+    COALESCE(lp.price_updated_at, p.updated_at),
+    COALESCE(pr.provider_reported_as_of, p.updated_at)
+  ) AS updated_at /* Latest of all per-row input timestamps: the MAX over the position's open lots, the resolved close's freshness (market_value advances when a newer close lands), and the provider snapshot's as-of (valuation_status can flip when a snapshot contradicts the ledger). COALESCE folds the LEFT-JOINed price and provider timestamps only when present, so an unpriced or snapshot-less position falls back to the lot timestamp. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
 FROM positions AS p
 LEFT JOIN provider_reported AS pr
   ON pr.account_id = p.account_id AND pr.security_id = p.security_id

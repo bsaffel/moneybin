@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -96,12 +96,17 @@ def _seed_price(
     close: str,
     security_id: str = _DEFAULT_SECURITY_ID,
     quote_currency: str = "USD",
+    extracted_at: str | None = None,
 ) -> None:
     """One raw close plus the accepted binding that resolves it to ``security_id``.
 
     Both the provider key and the link id are derived from ``security_id`` (see
     ``_provider_key``), so seeding two securities produces two distinct, both-accepted
     bindings rather than one accepted and one silently swallowed by ON CONFLICT.
+
+    ``extracted_at`` overrides the observation's provider-served timestamp (default
+    ``CURRENT_TIMESTAMP``) — the freshness ``core.fct_security_prices`` carries as
+    ``updated_at`` and ``core.dim_holdings`` folds into its own row watermark.
     """
     provider_key = _provider_key(security_id)
     db.execute(
@@ -110,9 +115,9 @@ def _seed_price(
             (provider_security_key, price_date, quote_currency, source_type,
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?, ?, 'plaid', 'item_1', ?, 'raw',
-                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [provider_key, price_date, quote_currency, close],
+        [provider_key, price_date, quote_currency, close, extracted_at],
     )
     db.execute(
         """
@@ -873,3 +878,140 @@ def test_manual_account_without_a_snapshot_still_values(db: Database) -> None:
     market_value, _gain, _pd, _src, _days, status = _holding(db)
     assert status == _expected_status(elapsed)
     assert market_value == Decimal("1200.00")
+
+
+@pytest.mark.slow
+def test_broker_position_matching_the_snapshot_claim_values(db: Database) -> None:
+    """A broker position whose quantity AGREES with the newest snapshot stays valued.
+
+    The most common real case — a correctly-reconciled brokerage position — and the
+    adversarial partner to test_quantity_divergence_withholds: identical broker coverage
+    and a snapshot for the SAME bound security, the only difference being that the claim
+    AGREES with the ledger. The single snapshot both bootstraps the 10-unit opening lot
+    (sync-plaid-investments.md § Opening-lot bootstrap) and is the newest claim (also 10),
+    so provider_reported_quantity == quantity and clause 1's
+    `quantity <> provider_reported_quantity` is false. A model that withheld on the mere
+    PRESENCE of a provider claim, or inverted that comparison, passes every other test in
+    this module and fails only here.
+    """
+    anchor = _db_today(db)
+    _seed_security(db)
+    _seed_price(db, price_date=anchor, close="120.00")
+    _seed_broker_snapshot(db, account_id="acc_1", quantity="10")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    elapsed = (_db_today(db) - anchor).days
+    market_value, _gain, _pd, _src, _days, status = _holding(db)
+    assert status == _expected_status(elapsed), (
+        "a broker position whose claim matches the ledger must value, not withhold"
+    )
+    assert market_value == Decimal("1200.00"), "10 units × the 120.00 close"
+
+    quantity, claimed = _acc_1_quantities(db)
+    assert quantity == claimed == Decimal("10.0000000000"), (
+        "the withhold must NOT rest here — ledger and claim agree"
+    )
+
+
+@pytest.mark.slow
+def test_position_opened_after_a_reject_split_is_not_withheld(db: Database) -> None:
+    """A split reject withholds only positions HELD ACROSS the split, not later ones.
+
+    A corporate action can only misstate a quantity that existed at the split. This
+    position's single lot opens 2026-06-15, AFTER the 2026-06-01 reject, so its quantity is
+    correct from inception and it carries no split event of its own. Scoping the withhold
+    by security_id alone (the pre-fix behavior) would withhold it FOREVER — no later event
+    can restate a split it never experienced. The adversarial partner is
+    test_split_reject_withholds_the_value, whose only difference is a lot opened
+    2026-01-05, BEFORE the same reject.
+    """
+    anchor = _db_today(db)
+    _seed_security(db)
+    _seed_price(db, price_date=anchor, close="120.00")
+    _seed_split_reject(db, account_id="acc_1", trade_date=date(2026, 6, 1))
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, fees, created_by,
+            investment_transaction_id
+        ) VALUES ('buy_after', 'imp_1', 'acc_1', 'canonvti0000001', 'VTI', 'buy',
+                  DATE '2026-06-15', 10, 100.00, -1000.00, 0.00, 'test', 'buy_after')
+        """  # noqa: S608  # test fixture, not executing user SQL
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    elapsed = (_db_today(db) - anchor).days
+    market_value, _gain, _pd, _src, _days, status = _holding(db)
+    assert status == _expected_status(elapsed), (
+        "a position opened after the split was never exposed to it — withholding it would "
+        "be permanent, never clearing"
+    )
+    assert market_value == Decimal("1200.00"), "10 units × the 120.00 close"
+
+
+@pytest.mark.slow
+def test_updated_at_reflects_the_resolved_close_freshness(db: Database) -> None:
+    """A newer close changing market_value must advance the row's updated_at watermark.
+
+    market_value is quantity × the resolved close, so the close's freshness is a real
+    input to this row. Pre-fix, updated_at was MAX over the open lots only, so a new close
+    could change market_value while updated_at stayed pinned to an old trade timestamp —
+    breaking the documented core.*.updated_at incremental-freshness contract. The close is
+    stamped with a far-future extracted_at that no lot timestamp can reach, so a folded
+    watermark must surface it and an unfolded one (the pre-fix behavior) cannot.
+    """
+    anchor = _db_today(db)
+    _seed_position(db)
+    _seed_price(
+        db, price_date=anchor, close="120.00", extracted_at="2099-01-01 00:00:00"
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT updated_at FROM core.dim_holdings WHERE account_id = 'acc_1'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == datetime(2099, 1, 1), (
+        "the resolved close's freshness must fold into the row watermark"
+    )
+
+
+@pytest.mark.slow
+def test_mixed_currency_lots_withhold_the_value(db: Database) -> None:
+    """Open lots in two currencies have no single close to value the combined quantity.
+
+    The manual event API takes --currency per event, so one (account, security) position
+    can carry a USD lot and a EUR lot. quantity × price would multiply the summed 15 units
+    by whichever currency MAX(currency_code) happens to pick — a mixed-unit product, not a
+    stale price. The value is withheld until the lots agree. A USD close DID resolve, so a
+    model missing the currency guard would publish a figure; the adversarial partner is
+    every single-currency position in this module, which values normally.
+    """
+    anchor = _db_today(db)
+    _seed_position(db, currency_code="USD")
+    _seed_price(db, price_date=anchor, close="120.00")
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, fees, created_by,
+            investment_transaction_id, currency_code
+        ) VALUES ('buy_eur', 'imp_1', 'acc_1', 'canonvti0000001', 'VTI', 'buy',
+                  DATE '2026-01-06', 5, 90.00, -450.00, 0.00, 'test', 'buy_eur', 'EUR')
+        """  # noqa: S608  # test fixture, not executing user SQL
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    _assert_withheld_publishes_nothing(_holding(db))
+    assert _resolved_close(db, anchor) == Decimal("120.0000000000"), (
+        "a close resolved; the NULLs above are the currency withhold, not an absent price"
+    )

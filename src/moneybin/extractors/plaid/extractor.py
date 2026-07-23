@@ -643,6 +643,10 @@ class PlaidExtractor:
                 "loaded_at": loaded_at,
             }
             for sec in securities
+            # Silent by design: a null, zero, negative, dateless, or currency-less quote
+            # means Plaid never served a usable price for this security (it sends null,
+            # not 0, for "no price"), so there is nothing to lose. Contrast the
+            # rounds-to-zero warning below, which drops a valid price we DID receive.
             if sec.close_price is not None
             and sec.close_price > 0
             and sec.close_price_as_of is not None

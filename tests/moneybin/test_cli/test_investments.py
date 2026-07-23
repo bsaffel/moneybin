@@ -488,9 +488,9 @@ class TestHoldingsAndGains:
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
         assert "market_value=1200.00" in result.output
-        assert "unrealized_gain=200.00" in result.output
+        assert "unrealized_gain=200.00 USD" in result.output
         assert "status=valued as_of=2026-07-15 (0d)" in result.output
-        assert "market_value=- unrealized_gain=- status=unpriced" in result.output
+        assert "market_value=- unrealized_gain=- USD status=unpriced" in result.output
 
     @pytest.mark.unit
     def test_holdings_text_reports_the_stalest_close_as_a_number(

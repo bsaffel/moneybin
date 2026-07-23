@@ -1679,7 +1679,11 @@ class InvestmentService:
                 quantity=r[2],
                 cost_basis=r[3],
                 average_cost=r[4],
-                currency_code=str(r[5]),
+                # Normalize to the price layer's canonical UPPER form (lots store the
+                # code verbatim; 'usd' and 'USD' are one currency): keeps a row's own
+                # currency_code equal to the market_value_by_currency key a consumer
+                # would look it up under.
+                currency_code=str(r[5]).upper(),
                 market_value=r[6],
                 unrealized_gain=r[7],
                 price_date=r[8],

@@ -267,7 +267,7 @@ def investments_holdings(
         typer.echo(
             f"{row.security_id:<10} qty={row.quantity} "
             f"cost_basis={row.cost_basis} avg_cost={avg} "
-            f"market_value={value} unrealized_gain={gain} "
+            f"market_value={value} unrealized_gain={gain} {row.currency_code} "
             f"status={row.valuation_status}{as_of}"
         )
     if result.rows:

@@ -11,6 +11,13 @@ from moneybin.database import Database, sqlmesh_context
 
 pytestmark = pytest.mark.integration
 
+# source_rank is the first ORDER BY key, but it cannot be mutation-tested across two
+# source_type values yet: only 'plaid' resolves to a canonical security_id through
+# prep.stg_security_prices' 'plaid_security_id' link, so a second source (stooq,
+# coingecko) has no binding to reach this core model. That cross-source ordering test
+# lands with C.2's adapters and their ref_kind bindings. Until then every fixture here
+# is source='plaid' and source_rank is exercised only as a constant. Tracked for C.2.
+
 
 def _insert_price(
     db: Database,
@@ -172,6 +179,96 @@ def test_split_day_key_churn_resolves_by_freshness_not_key_sort(db: Database) ->
     assert rows == [(Decimal("200.0000000000"),)], (
         "the successor ref carries the fresher observation and the post-split close; "
         "the retired ref's pre-split 2000.00 must not win on key sort"
+    )
+
+
+@pytest.mark.slow
+def test_split_day_key_churn_in_one_pull_withholds_the_grain(db: Database) -> None:
+    """When both refs arrive in one sync, freshness cannot decide — so withhold the grain.
+
+    test_split_day_key_churn_resolves_by_freshness_not_key_sort only resolves because its
+    two refs carry DIFFERENT extracted_at. In production the extractor stamps one
+    batch-level extracted_at per pull, so a retired ref and its successor reported in the
+    SAME sync tie on it too. With freshness exhausted the ORDER BY would fall through to
+    provider_security_key and settle a 10:1 split by ASCII sort — publishing the pre-split
+    2000.00, which dim_holdings would multiply by the POST-split quantity. This grain must
+    instead emit NO row, so dim_holdings falls back to an earlier close under its own
+    split-staleness guards rather than a confidently wrong one.
+
+    Adversarial orientation: the losing pre-split ref ('sec_a', 2000.00) is inserted first
+    and sorts first on provider_security_key, so a model that dropped the withhold and let
+    key sort decide publishes 2000.00 — the exact wrong answer. A single-row result of ANY
+    close means the guard is gone.
+    """
+    _insert_price(
+        db,
+        key="sec_a",
+        close="2000.00",
+        origin="item_1",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="sec_b",
+        close="200.00",
+        origin="item_1",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _accept_link(db, key="sec_a", canonical_id="canonvti0000001")
+    _accept_link(db, key="sec_b", canonical_id="canonvti0000001")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    staged = db.execute("SELECT COUNT(*) FROM prep.stg_security_prices").fetchone()
+    assert staged is not None and staged[0] == 2, (
+        "both refs must resolve to the one canonical security for this to exercise the "
+        "core-layer withhold rather than an upstream filter"
+    )
+
+    resolved = db.execute("SELECT COUNT(*) FROM core.fct_security_prices").fetchone()
+    assert resolved is not None and resolved[0] == 0, (
+        "a freshness-tied conflict between two provider refs is unresolvable — the grain "
+        "must withhold, not settle the split by key sort"
+    )
+
+
+@pytest.mark.slow
+def test_same_pull_casing_duplicate_of_one_ref_still_resolves(db: Database) -> None:
+    """The same-pull withhold is scoped to DIFFERENT refs — one ref's casing dup is not a churn.
+
+    Adversarial partner to test_split_day_key_churn_in_one_pull_withholds_the_grain: two
+    rows share one extracted_at and conflict on close, but they carry the SAME
+    provider_security_key ('sec_vti', differing only in the 'usd'/'USD' casing staging
+    folds away). That is a raw duplicate of one instrument, not a retired/successor pair,
+    so `close` legitimately breaks the tie and a row must still resolve. A withhold guard
+    that keyed on any close conflict — rather than a conflict spanning distinct provider
+    refs — would wrongly blank this grain.
+    """
+    _insert_price(
+        db,
+        key="sec_vti",
+        close="220.00",
+        quote_currency="USD",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="sec_vti",
+        close="205.00",
+        quote_currency="usd",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        "SELECT quote_currency, close FROM core.fct_security_prices"
+    ).fetchall()
+    assert rows == [("USD", Decimal("205.0000000000"))], (
+        "one ref's casing duplicate must resolve by close, not withhold as a churn"
     )
 
 

@@ -742,18 +742,23 @@ moneybin investments securities set <security_id> [--name ...] [--ticker ...] \
 ```
 $ moneybin investments holdings --account fidelity_brokerage
 
-a3f19c02b8e1 qty=15.0000000000 cost_basis=2475.00 avg_cost=165.0000000000 market_value=2850.00 unrealized_gain=375.00 status=valued as_of=2026-07-19 (0d)
-7d40be91c5a2 qty=200.0000000000 cost_basis=23400.00 avg_cost=117.0000000000 market_value=25000.00 unrealized_gain=1600.00 status=carried_forward as_of=2026-07-16 (3d)
-c81a5f6039db qty=0.5000000000 cost_basis=18000.00 avg_cost=36000.0000000000 market_value=- unrealized_gain=- status=unpriced
+a3f19c02b8e1 qty=15.0000000000 cost_basis=2475.00 avg_cost=165.0000000000 market_value=2850.00 unrealized_gain=375.00 USD status=valued as_of=2026-07-19 (0d)
+7d40be91c5a2 qty=200.0000000000 cost_basis=23400.00 avg_cost=117.0000000000 market_value=25000.00 unrealized_gain=1600.00 USD status=carried_forward as_of=2026-07-16 (3d)
+c81a5f6039db qty=0.5000000000 cost_basis=18000.00 avg_cost=36000.0000000000 market_value=- unrealized_gain=- USD status=unpriced
+portfolio market_value=27850.00 USD max_days_since_observed=3
 
 ⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (the share count is known wrong).
 ```
 
-The first column is `security_id` (a 12-hex catalog id), not a ticker. An absent
-figure renders `-`, matching `avg_cost`'s existing NULL rendering — a blank column
-reads as zero, and NULL here means "no number", not "worth nothing". The warning
-goes to stderr and is suppressed by `--quiet`; it fires only when at least one row
-is `unpriced` or `withheld`.
+The first column is `security_id` (a 12-hex catalog id), not a ticker. Each row
+carries its own currency code after the money figures. An absent figure renders
+`-`, matching `avg_cost`'s existing NULL rendering — a blank column reads as zero,
+and NULL here means "no number", not "worth nothing". The `portfolio` line prints
+whenever there are result rows: a single total when every priced position shares
+one currency, a per-currency split otherwise, plus `max_days_since_observed` (the
+age of the stalest close behind any published figure). The warning goes to stderr
+and is suppressed by `--quiet`; it fires only when at least one row is `unpriced`
+or `withheld`.
 
 ```
 $ moneybin investments gains --account fidelity_brokerage --from 2024-01-01
@@ -847,6 +852,9 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
         "valuation_status": "valued"
       }
     ],
+    "max_days_since_observed": 3,
+    "total_market_value": "27850.00",
+    "market_value_by_currency": {"USD": "27850.00"},
     "warnings": ["1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (the share count is known wrong)."]
   },
   "actions": ["Use investments_lots for per-lot basis", "Use investments_gains for realized gain/loss"]

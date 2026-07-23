@@ -143,7 +143,7 @@ The provider cache. Immutable, append-only, one row per observation.
 | `loaded_at` | TIMESTAMP | when the row was written locally |
 
 Primary key
-`(source, source_origin, provider_security_key, price_date, quote_currency)`.
+`(source_type, source_origin, provider_security_key, price_date, quote_currency)`.
 
 **Append-only is enforced by the conflict mode, not by convention.**
 `Database.ingest_dataframe` offers four modes and only one preserves
@@ -781,9 +781,14 @@ A change to `core` grain requires `make test-scenarios`, which the default
 
 ## Metrics
 
-Registered in `src/moneybin/metrics/registry.py` per
-[`observability.md`](observability.md). A refresh reaches the network and can
-partially fail, so it is unobservable without them.
+Of the table below, only `price_rows_written_total` is registered in
+`src/moneybin/metrics/registry.py` today (per
+[`observability.md`](observability.md)); the rest is the target shape. The
+`price_refresh_*` pair is unobservable until C.2's network adapters exist (C.1
+reaches no network), so it lands with them. `price_resolution_status_total` and
+`price_staleness_days` need no network — C.1 already computes their inputs
+(`core.dim_holdings.valuation_status` and `days_since_observed`) — and are
+tracked as a C.1 follow-up rather than shipped here.
 
 | Metric | Type | Labels | Purpose |
 |---|---|---|---|
@@ -863,7 +868,9 @@ two sources), and the CLI and MCP surface.
   nullable and its currency arrives as the mutually exclusive
   `iso_currency_code` / `unofficial_currency_code` pair, so a security missing
   either a price or its date yields no row rather than a NULL-keyed one
-- `src/moneybin/metrics/registry.py` — the five price metrics
+- `src/moneybin/metrics/registry.py` — `price_rows_written_total` (the one
+  price metric C.1 registers; the other four in the Metrics table land later,
+  see there)
 - `src/moneybin/schema.py` — add both new DDL files to
   `_NON_PROVIDER_SCHEMA_FILES`. `_all_schema_files()` enumerates that explicit
   list plus a `raw_*.sql` glob inside provider directories, so a file added
