@@ -253,6 +253,26 @@ def test_publish_retries_a_transient_sheets_rate_limit(
     assert delays == [1.0, 1.5]
 
 
+def test_publish_encodes_nulls_distinctly_from_empty_strings(db: Database) -> None:
+    snapshot = make_text_snapshot((None, "", r"\N", r"\literal"))
+    publisher, client = _publisher(db)
+
+    _publish(db, publisher, snapshot)
+
+    assert client.read_sheet_values(
+        "output-sheet", "MB Bundle 20260721T184233Z activity"
+    ) == [["note"], [r"\N"], [""], [r"\\N"], [r"\\literal"]]
+    manifest = json.loads(
+        client.read_sheet_values("output-sheet", "MB Bundle Manifest")[1][0]
+    )
+    assert manifest["sheets_encoding"] == {
+        "scheme": "moneybin.sheets-cell",
+        "version": 1,
+        "null": r"\N",
+        "escape": "\\",
+    }
+
+
 def test_publish_uses_write_capability_for_output_metadata_and_validation(
     db: Database,
 ) -> None:

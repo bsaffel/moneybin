@@ -189,6 +189,10 @@ class ExportService:
                         ExportDestinationsRepo(db).assert_current_for_publication(
                             destination
                         )
+                    elif destination.destination_id is not None:
+                        ExportDestinationsRepo(db).assert_current_for_publication(
+                            destination
+                        )
 
                 if lifetime is not None:
                     lifetime.raise_if_cancelled()
@@ -368,13 +372,21 @@ class ExportService:
                 require_write=True
             )
 
+        from moneybin.config import get_settings  # noqa: PLC0415
+
+        default_path = get_settings().profile_exports_dir.expanduser().resolve()
+        default_reasons = (
+            ("local_path_not_directory",)
+            if default_path.exists() and not default_path.is_dir()
+            else ()
+        )
         results = [
             ExportDestinationReadiness(
                 name="local:exports",
                 kind="local",
-                ready=True,
-                write_capable=True,
-                reasons=(),
+                ready=not default_reasons,
+                write_capable=not default_reasons,
+                reasons=default_reasons,
             )
         ]
         for destination in stored:
@@ -582,6 +594,8 @@ def _destination_validation_reasons(
             or destination.managed_tab_prefix is not None
         ):
             reasons.append("invalid_destination_configuration")
+        elif destination.local_path.exists() and not destination.local_path.is_dir():
+            reasons.append("local_path_not_directory")
     elif destination.kind == "sheets":
         if destination.local_path is not None or not destination.spreadsheet_id:
             reasons.append("invalid_destination_configuration")

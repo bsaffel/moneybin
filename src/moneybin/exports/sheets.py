@@ -41,6 +41,14 @@ _SAFE_PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]*[A-Za-z0-9]$|^[A-Za-z0-9]
 _INVALID_TITLE_CHARACTERS = re.compile(r"[\[\]:*?/\\]")
 _RETRY_MAX = 3
 _RETRY_BACKOFF_BASE_SECONDS = 1.5
+_SHEETS_NULL = r"\N"
+_SHEETS_ESCAPE = "\\"
+SHEETS_ENCODING = {
+    "scheme": "moneybin.sheets-cell",
+    "version": 1,
+    "null": _SHEETS_NULL,
+    "escape": _SHEETS_ESCAPE,
+}
 _T = TypeVar("_T")
 
 
@@ -353,6 +361,7 @@ def _planned_sheets(
     manifest = deepcopy(snapshot.manifest)
     manifest["format"] = "sheets"
     manifest["destination_kind"] = "sheets"
+    manifest["sheets_encoding"] = deepcopy(SHEETS_ENCODING)
     manifest_values = (("JSON",), (_json_text(manifest),))
     dictionary_values = (("JSON",), (_json_text(snapshot.data_dictionary),))
     result.append(
@@ -377,11 +386,21 @@ def _planned_sheets(
 
 
 def _table_values(table: PreparedTable) -> tuple[tuple[object, ...], ...]:
-    header = tuple(column.name for column in table.columns)
+    header = tuple(_sheets_payload_cell(column.name) for column in table.columns)
     rows = tuple(
-        tuple(normalize_tabular_cell(value) for value in row) for row in table.rows
+        tuple(_sheets_payload_cell(value) for value in row) for row in table.rows
     )
     return (header, *rows)
+
+
+def _sheets_payload_cell(value: object) -> object:
+    """Encode NULL and escaped text distinctly in the Sheets cell surface."""
+    if value is None:
+        return _SHEETS_NULL
+    normalized = normalize_tabular_cell(value)
+    if isinstance(normalized, str) and normalized.startswith(_SHEETS_ESCAPE):
+        return f"{_SHEETS_ESCAPE}{normalized}"
+    return normalized
 
 
 def _managed_title(prefix: str, *segments: str) -> str:
@@ -441,9 +460,7 @@ def _managed_replacements(
 def _validate_values(
     actual: list[list[str]], expected: tuple[tuple[object, ...], ...]
 ) -> None:
-    expected_text = [
-        ["" if cell is None else str(cell) for cell in row] for row in expected
-    ]
+    expected_text = [[str(cell) for cell in row] for row in expected]
     width = max((len(row) for row in expected_text), default=0)
     normalized_actual = [row + [""] * (width - len(row)) for row in actual]
     while normalized_actual and not any(normalized_actual[-1]):

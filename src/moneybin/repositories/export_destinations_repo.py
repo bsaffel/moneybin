@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, cast
@@ -82,6 +82,22 @@ def _decode_destination(row: dict[str, Any]) -> ExportDestination:
     )
 
 
+def _audit_workbook_ids(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    """Return every workbook role affected by an audited destination replay."""
+    return tuple(
+        sorted({
+            spreadsheet_id
+            for image in (before, after)
+            if image is not None
+            for spreadsheet_id in [cast(str | None, image.get("spreadsheet_id"))]
+            if spreadsheet_id is not None
+        })
+    )
+
+
 class ExportDestinationsRepo(BaseRepo):
     """Audited saved-destination configuration for export delivery."""
 
@@ -122,21 +138,45 @@ class ExportDestinationsRepo(BaseRepo):
         if conflict is not None:
             raise ExportDestinationSpreadsheetConflictError()
 
-    def assert_current_for_publication(
-        self,
-        destination: ExportDestination,
-    ) -> None:
-        """Recheck saved output identity and role while its workbook lease is held."""
-        if (
-            destination.kind != "sheets"
-            or destination.destination_id is None
-            or destination.spreadsheet_id is None
-        ):
-            raise ValueError("A saved Sheets destination is required")
+    def assert_current_for_publication(self, destination: ExportDestination) -> None:
+        """Recheck saved output identity and, for Sheets, workbook role."""
+        if destination.destination_id is None:
+            raise ValueError("A saved export destination is required")
         current = self._fetch_full_row(destination.destination_id)
         if current is None or _decode_destination(current) != destination:
             raise ExportDestinationChangedError()
-        self.assert_not_inbound_connection(destination.spreadsheet_id)
+        if destination.kind == "sheets":
+            if destination.spreadsheet_id is None:
+                raise ValueError("A Sheets destination requires a spreadsheet ID")
+            self.assert_not_inbound_connection(destination.spreadsheet_id)
+
+    def undo_event(
+        self,
+        event: AuditEvent,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent | None:
+        """Restore a destination only while its workbook role remains exclusive."""
+        with ExitStack() as stack:
+            for workbook_id in _audit_workbook_ids(
+                event.before_value, event.after_value
+            ):
+                stack.enter_context(
+                    workbook_role_lease(
+                        self._db.path,
+                        workbook_id,
+                        lifetime=current_request_lifetime(),
+                    )
+                )
+            with self._transaction(in_outer_txn=in_outer_txn):
+                before = event.before_value
+                if before is not None and before.get("kind") == "sheets":
+                    spreadsheet_id = cast(str | None, before.get("spreadsheet_id"))
+                    if spreadsheet_id is None:
+                        raise ValueError("Audit image lacks a Sheets spreadsheet ID")
+                    self.assert_not_inbound_connection(spreadsheet_id)
+                return super().undo_event(event, actor=actor, in_outer_txn=True)
 
     def list(self) -> list[ExportDestination]:
         """Return saved destinations in stable user-facing name order."""

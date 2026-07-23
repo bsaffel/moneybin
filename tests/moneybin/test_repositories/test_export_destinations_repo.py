@@ -19,6 +19,8 @@ from moneybin.repositories.export_destinations_repo import (
 )
 from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
 from moneybin.services.entity_reference import AmbiguousEntity, MissingEntity
+from moneybin.services.mutation_context import operation
+from moneybin.services.undo_service import UndoService
 from moneybin.sql.migrations.V041__create_app_export_destinations import migrate
 from tests.moneybin.migration_helpers import run_migration
 
@@ -180,6 +182,51 @@ def test_publication_recheck_rejects_a_repointed_sheets_destination(
 
     with pytest.raises(ExportDestinationChangedError):
         repo.assert_current_for_publication(resolved)
+
+
+def test_publication_recheck_rejects_a_repointed_local_destination(
+    repo: ExportDestinationsRepo,
+) -> None:
+    repo.set_local(name="archive", local_path=Path("original"), actor="cli")
+    resolved = repo.resolve("archive")
+    assert isinstance(resolved, ExportDestination)
+    repo.set_local(name="archive", local_path=Path("repointed"), actor="cli")
+
+    with pytest.raises(ExportDestinationChangedError):
+        repo.assert_current_for_publication(resolved)
+
+
+def test_undo_destination_restore_rechecks_inbound_workbook_role(
+    db: Database, repo: ExportDestinationsRepo
+) -> None:
+    repo.set_sheets(
+        name="dashboard",
+        spreadsheet_id="shared-workbook",
+        managed_tab_prefix="MB",
+        actor="cli",
+    )
+    with operation() as removal_operation:
+        repo.remove("dashboard", actor="cli")
+    GSheetConnectionsRepo(db).insert(
+        spreadsheet_id="shared-workbook",
+        sheet_gid=0,
+        sheet_name="Transactions",
+        workbook_name="Inbound",
+        adapter="transactions",
+        alias=None,
+        account_id=None,
+        account_name=None,
+        column_mapping={"Date": "date"},
+        header_signature=["Date"],
+        date_format=None,
+        sign_convention=None,
+        number_format=None,
+        skip_rows=0,
+        skip_trailing_patterns=None,
+    )
+
+    with pytest.raises(ExportDestinationSpreadsheetConflictError):
+        UndoService(db).undo(removal_operation, actor="cli")
 
 
 def test_list_and_resolve_treat_an_unmigrated_export_table_as_empty(

@@ -16,13 +16,16 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Mapping
+from contextlib import ExitStack
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from moneybin import error_codes
 from moneybin.errors import UserError
 from moneybin.exports.workbook_roles import workbook_role_lease
 from moneybin.repositories.base import BaseRepo, quote_ident
+from moneybin.services.audit_service import AuditEvent
 from moneybin.services.request_lifetime import current_request_lifetime
 from moneybin.tables import EXPORT_DESTINATIONS, GSHEET_CONNECTIONS
 
@@ -101,6 +104,22 @@ def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
     return out
 
 
+def _audit_workbook_ids(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    """Return every workbook role affected by an audited connection replay."""
+    return tuple(
+        sorted({
+            spreadsheet_id
+            for image in (before, after)
+            if image is not None
+            for spreadsheet_id in [cast(str | None, image.get("spreadsheet_id"))]
+            if spreadsheet_id is not None
+        })
+    )
+
+
 class GSheetConnectionsRepo(BaseRepo):
     """Audited CRUD over ``app.gsheet_connections``.
 
@@ -143,6 +162,34 @@ class GSheetConnectionsRepo(BaseRepo):
         ).fetchone()
         if conflict is not None:
             raise GSheetConnectionExportDestinationConflictError()
+
+    def undo_event(
+        self,
+        event: AuditEvent,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent | None:
+        """Restore an inbound connection only while its workbook stays outbound-free."""
+        with ExitStack() as stack:
+            for workbook_id in _audit_workbook_ids(
+                event.before_value, event.after_value
+            ):
+                stack.enter_context(
+                    workbook_role_lease(
+                        self._db.path,
+                        workbook_id,
+                        lifetime=current_request_lifetime(),
+                    )
+                )
+            with self._transaction(in_outer_txn=in_outer_txn):
+                before = event.before_value
+                if before is not None:
+                    spreadsheet_id = cast(str | None, before.get("spreadsheet_id"))
+                    if spreadsheet_id is None:
+                        raise ValueError("Audit image lacks an inbound spreadsheet ID")
+                    self.assert_not_export_destination(spreadsheet_id)
+                return super().undo_event(event, actor=actor, in_outer_txn=True)
 
     # ------------------------------------------------------------------
     # Mutations

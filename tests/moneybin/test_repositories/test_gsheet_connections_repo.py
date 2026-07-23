@@ -21,6 +21,8 @@ from moneybin.repositories.gsheet_connections_repo import (
     GSheetConnectionExportDestinationConflictError,
     GSheetConnectionsRepo,
 )
+from moneybin.services.mutation_context import operation
+from moneybin.services.undo_service import UndoService
 
 
 def _insert_default(
@@ -336,6 +338,22 @@ def test_delete_writes_audit_row_with_before_value(db: Database) -> None:
     assert before_decoded["connection_id"] == cid
     assert before_decoded["spreadsheet_id"] == "ss_delete"
     assert after_value is None
+
+
+def test_undo_connection_restore_rechecks_export_workbook_role(db: Database) -> None:
+    repo = GSheetConnectionsRepo(db)
+    connection_id = _insert_default(repo, spreadsheet_id="shared-workbook")
+    with operation() as deletion_operation:
+        repo.delete(connection_id, actor="cli")
+    ExportDestinationsRepo(db).set_sheets(
+        name="dashboard",
+        spreadsheet_id="shared-workbook",
+        managed_tab_prefix="MB",
+        actor="cli",
+    )
+
+    with pytest.raises(GSheetConnectionExportDestinationConflictError):
+        UndoService(db).undo(deletion_operation, actor="cli")
 
 
 # ---------------------------------------------------------------------------

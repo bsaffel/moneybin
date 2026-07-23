@@ -180,6 +180,10 @@ def test_run_releases_read_only_snapshot_before_local_publication(
     with (
         patch.object(ExportService, "resolve_destination", return_value=destination),
         patch.object(ExportService, "prepare_bundle", return_value=snapshot),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
     ):
         result = ExportService.run(_command(), actor="test")
 
@@ -310,6 +314,10 @@ def test_run_records_success_outcome(
             return_value=destination,
         ),
         patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
     ):
         ExportService.run(_command_from_request(request), actor="test")
 
@@ -345,6 +353,10 @@ def test_run_prepares_and_publishes_one_local_bundle(
             "prepare_bundle",
             return_value=snapshot,
         ) as prepare,
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
     ):
         receipt = ExportService.run(_command_from_request(request), actor="cli")
 
