@@ -624,6 +624,23 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "cost_basis": DataClass.BALANCE,
         "average_cost": DataClass.BALANCE,
         "currency_code": DataClass.CURRENCY,
+        # market_value/unrealized_gain (Pillar C): quantity × a resolved close, and
+        # that figure less cost_basis — the same "held stock" character as
+        # cost_basis/average_cost above, not a single flow. Same class, same tier.
+        "market_value": DataClass.BALANCE,
+        "unrealized_gain": DataClass.BALANCE,
+        # price_date names a market close's date (public reference data, like
+        # fct_security_prices.price_date), not a fact about the user — LOW tier,
+        # matching that precedent rather than TXN_DATE.
+        "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
+        # Which provider supplied the close — a routing tag, like
+        # fct_security_prices.source_type.
+        "price_source": DataClass.TXN_TYPE,
+        # CURRENT_DATE - price_date: CURRENT_DATE is public, so this is bijective
+        # with price_date (uncategorized_queue.age_days precedent) and inherits its
+        # class rather than TXN_DATE.
+        "days_since_observed": DataClass.TIMESTAMP_OBSERVABILITY,
+        "valuation_status": DataClass.TXN_TYPE,
         # The broker's non-authoritative claim about the same position. Being a
         # reference rather than MoneyBin's own figure changes nothing about its
         # sensitivity — it discloses the identical holding, so each column
@@ -750,6 +767,21 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "cost_basis_method": DataClass.TXN_TYPE,
         "basis_incomplete": DataClass.TXN_TYPE,
         "currency_code": DataClass.CURRENCY,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("core", "fct_security_prices"): {
+        "security_id": DataClass.RECORD_ID,
+        # A market close is public reference data (what a security's price WAS
+        # on a date) — not a personal fact about the user, unlike
+        # fct_investment_transactions.price which is what the user actually
+        # paid. Neither this row nor its date names an account or a quantity
+        # held, so both get the same LOW-tier public-reference treatment as
+        # dim_securities.ticker/name rather than TXN_AMOUNT/TXN_DATE.
+        "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
+        "quote_currency": DataClass.CURRENCY,
+        "close": DataClass.AGGREGATE,
+        "source_type": DataClass.TXN_TYPE,
+        "price_basis": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "fct_transaction_lines"): {

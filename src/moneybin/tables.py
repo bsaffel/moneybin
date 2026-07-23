@@ -125,6 +125,8 @@ FCT_INVESTMENT_TRANSACTIONS = TableRef(
 FCT_INVESTMENT_LOTS = TableRef("core", "fct_investment_lots", audience="interface")
 FCT_REALIZED_GAINS = TableRef("core", "fct_realized_gains", audience="interface")
 DIM_HOLDINGS = TableRef("core", "dim_holdings", audience="interface")
+SECURITY_PRICES = TableRef("raw", "security_prices")
+FCT_SECURITY_PRICES = TableRef("core", "fct_security_prices", audience="interface")
 
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")

@@ -244,7 +244,7 @@ class TestSyntheticWriter:
         captured: list[tuple[str, pl.DataFrame]] = []
         original_ingest = db.ingest_dataframe
 
-        def capturing_ingest(table: str, df: pl.DataFrame, **kwargs: Any) -> None:
+        def capturing_ingest(table: str, df: pl.DataFrame, **kwargs: Any) -> int:
             captured.append((table, df))
             return original_ingest(table, df, **kwargs)
 

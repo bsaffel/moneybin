@@ -363,7 +363,7 @@ Investment ledger, positions, tax lots, realized gains, and the manually-maintai
 |---|---|---|
 | `investments add` | Record one ledger event. `--type reinvest` writes the acquisition + paired income row atomically. | `--account`, `--type`, `--date`, `--security`, `--quantity`, `--price`, `--amount`, `--fees`, `--subtype`, `--acquired`, `--basis`, `--event-group`, `--currency`, `--description` |
 | `investments list` | List ledger events from `core.fct_investment_transactions`. | `--account`, `--security`, `--type`, `--from`, `--to` |
-| `investments holdings` | Current positions: quantity, cost basis, average cost. (Market value awaits price feeds — Pillar C.) | `--account` |
+| `investments holdings` | Current positions: quantity, cost basis, average cost, market value, unrealized gain, and the date and age of the close used. A position with no usable price shows `-`, never a zero. | `--account` |
 | `investments gains` | Realized gain/loss (the 1099-B surface) from `core.fct_realized_gains`. | `--account`, `--security`, `--from`, `--to`, `--term {short,long}` |
 | `investments lots list` | Tax lots with remaining quantity and basis. Open lots only by default. | `--account`, `--security`, `--open/--all` |
 | `investments lots select <disposal-txn-id>` | Set the full specific-identification lot selection for a disposal (declarative replace). `--clear` reverts to FIFO. | `--lot LOT_ID:QTY` (repeatable), `--clear` |

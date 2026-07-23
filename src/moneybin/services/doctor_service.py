@@ -74,12 +74,13 @@ _ALLOWED_PK_EXPRS = frozenset({_BALANCE_ASSERTIONS_PK_EXPR})
 
 _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
 
-# Shared by `_run_investment_unreported_holdings` and
-# `_run_investment_phantom_holdings` — both need "the one whole snapshot per
-# item with the latest extracted_at" (never "latest row per position": that
-# would let a stale survivor from an earlier pull mask an omission in the
-# newest one). Mirrors the identical CTE in `dim_holdings.sql`. No leading
-# `WITH` — callers splice this into their own `WITH <this>, ...` clause.
+# Used by `_run_investment_unreported_holdings`, which needs "the one whole
+# snapshot per item with the latest extracted_at" (never "latest row per
+# position": that would let a stale survivor from an earlier pull mask an
+# omission in the newest one). Mirrors the identical CTE in `dim_holdings.sql`.
+# No leading `WITH` — callers splice this into their own `WITH <this>, ...`
+# clause. (`_run_investment_phantom_holdings` no longer needs it: it scopes on
+# the position-level `ever_reported_positions` gate instead.)
 #
 # Derived from the snapshot RECEIPTS (one row per item per pull, written even
 # when the item reports zero positions), NOT from the presence of holdings rows.
@@ -1125,66 +1126,49 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_investment_phantom_holdings(self) -> InvariantResult:
-        """Open lots MoneyBin holds that the broker's newest snapshot no longer reports.
+        """Open lots the broker once reported but its newest snapshot no longer does.
 
-        The mirror image of ``_run_investment_unreported_holdings``, and the
-        more dangerous direction the OTHER way: MoneyBin claiming a position
-        the broker's current data disagrees with OVERSTATES net worth,
-        rather than understating it. ``core.dim_holdings.provider_reported_quantity``
-        is already NULL exactly when the broker's newest snapshot omits a
-        position MoneyBin holds a lot for (``dim_holdings.sql`` — "that NULL
-        is itself the signal") — this check is what actually reads it.
+        The mirror image of ``_run_investment_unreported_holdings``, and the more
+        dangerous direction: MoneyBin claiming a position the broker's current
+        data disagrees with OVERSTATES net worth, rather than understating it.
+        ``core.dim_holdings.provider_reported_quantity`` is already NULL exactly
+        when the broker's newest snapshot omits a position MoneyBin holds a lot for
+        (``dim_holdings.sql`` — "that NULL is itself the signal"); this check reads
+        it, scoped to phantoms.
 
-        The stale-item guard keys on whether the ITEM (``source_origin``)
-        delivered a snapshot, NOT on whether the ACCOUNT appears in it. An
-        account-keyed guard drops the worst phantom of all: Plaid returns no
-        holding entries for an account holding nothing, so a fully-liquidated
-        account whose sells never reached the ledger has ZERO rows in the
-        newest snapshot — the 100%-overstated account is exactly the one an
-        account-keyed guard filters out. Keying on the item still rules out the
-        case the guard exists for: an item that never delivered a snapshot
-        (never synced, disconnected) has no ``newest_snapshot`` row at all, so
-        none of its accounts are checked. An account's item is read from either
-        Plaid investment staging view — a liquidated account is absent from
-        holdings but still present in transactions.
+        Scoped to positions the broker ONCE reported — ``ever_reported_positions``,
+        the same position-level gate ``dim_holdings.sql`` withholds on. A position
+        that never appears in any holdings snapshot is a manual holding, not a
+        phantom, and flagging it would tell the user their share count is wrong when
+        it is not — the false alarm this scope exists to avoid. "The broker stopped
+        reporting this" is only meaningful for a position it once reported, and a
+        holdings row exists only for a broker-covered account, so this one gate
+        subsumes the older account-level coverage scope.
 
-        "The item delivered a snapshot" is read from the snapshot RECEIPTS
-        (``_NEWEST_HOLDINGS_SNAPSHOT_CTE``), not from the presence of holdings
-        rows — the same distinction one level up. An item whose entire pull
-        comes back empty (every account at the broker liquidated) writes no
-        holdings rows, so a row-derived guard reads the last NON-EMPTY pull as
-        current and ``dim_holdings`` hands this check the STALE quantity the
-        broker no longer claims — a `pass` on the largest overstatement there
-        is. With the receipt, that pull IS the newest snapshot, no holdings row
-        joins to it, ``provider_reported_quantity`` is NULL, and every lot the
-        ledger never closed surfaces here.
+        A row surfaced here is a lot the ledger never closed against a once-reported
+        position: an option assignment/exercise mapped to ``other`` with no ledger
+        quantity (see ``_run_investment_unmodeled_legs``), an early sale the ledger
+        never recorded, or a lot the engine otherwise failed to close.
 
-        A row surfaced here is a lot the ledger never closed: an option
-        assignment/exercise mapped to ``other`` with no ledger quantity (see
-        ``_run_investment_unmodeled_legs``), an early sale the ledger never
-        recorded, or a lot the engine otherwise failed to close.
+        Known limitation: a Plaid security id that churned across a corporate action
+        — old id bound and reported, new id unbound — still resolves to the same
+        canonical id and surfaces here; that case wants the new id bound, not a
+        reconciliation. Matches ``dim_holdings.sql``'s ``ever_reported_positions``.
         """
         name = "investment_phantom_holdings"
         try:
             rows = self._db.execute(
                 f"""
-                WITH {_NEWEST_HOLDINGS_SNAPSHOT_CTE},
-                account_items AS (
-                    SELECT DISTINCT account_id, source_origin
+                WITH ever_reported_positions AS (
+                    SELECT DISTINCT account_id, security_id
                     FROM prep.stg_plaid__investment_holdings
-                    UNION
-                    SELECT DISTINCT account_id, source_origin
-                    FROM prep.stg_plaid__investment_transactions
-                ),
-                reported_accounts AS (
-                    SELECT DISTINCT ai.account_id
-                    FROM account_items AS ai
-                    JOIN newest_snapshot AS ns
-                      ON ns.source_origin = ai.source_origin
+                    WHERE NOT security_id IS NULL
                 )
                 SELECT d.account_id, d.security_id
                 FROM {DIM_HOLDINGS.full_name} AS d
-                JOIN reported_accounts AS ra ON ra.account_id = d.account_id
+                JOIN ever_reported_positions AS erp
+                  ON erp.account_id = d.account_id
+                  AND erp.security_id = d.security_id
                 WHERE d.provider_reported_quantity IS NULL
                 ORDER BY d.account_id, d.security_id
                 """  # noqa: S608  # TableRef constant + fixed view name, no user input

@@ -46,7 +46,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -281,7 +281,13 @@ class RecordEventsResult:
 
 @dataclass(frozen=True, slots=True)
 class HoldingRow:
-    """One current position — cost basis only (Pillar C adds market value)."""
+    """One current position — cost basis plus the Pillar-C valuation.
+
+    ``market_value``/``unrealized_gain`` are NULL — never zero — whenever
+    ``valuation_status`` is ``unpriced`` or ``withheld``; a zero is
+    indistinguishable from a worthless position. ``unrealized_gain`` is
+    signed (negative below cost); ``market_value`` is not.
+    """
 
     account_id: str
     security_id: str
@@ -289,14 +295,39 @@ class HoldingRow:
     cost_basis: Decimal
     average_cost: Decimal | None
     currency_code: str
+    market_value: Decimal | None
+    unrealized_gain: Decimal | None
+    price_date: date | None
+    price_source: str | None
+    days_since_observed: int | None
+    valuation_status: str
 
 
 @dataclass(frozen=True, slots=True)
 class HoldingsResult:
-    """Result of :meth:`InvestmentService.holdings`."""
+    """Result of :meth:`InvestmentService.holdings`.
+
+    ``max_days_since_observed`` is the largest ``days_since_observed`` across
+    the priced positions — the age of the stalest close any published figure
+    rests on. It is a number, not a warning: markets close ~114 days a year, so
+    a boolean staleness flag would fire on most days for most users and train
+    the reader to ignore it. NULL when no position priced, because a 0 there
+    would read as "every close is today's".
+
+    ``total_market_value`` is published only when every priced position shares
+    one currency. ``core.fct_security_prices`` converts nothing, so a mixed
+    portfolio's ``market_value`` column holds figures in two units; summing it
+    would add euros to dollars and report one number. When the currencies
+    differ the total is NULL and ``market_value_by_currency`` carries the
+    split — the wrong sum is prevented structurally, not by a caveat the
+    reader has to notice.
+    """
 
     rows: list[HoldingRow]
     warnings: list[str]
+    max_days_since_observed: int | None = None
+    total_market_value: Decimal | None = None
+    market_value_by_currency: dict[str, Decimal] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1495,10 +1526,9 @@ class InvestmentService:
     # Read path — list_events, holdings, lots, gains
     # ------------------------------------------------------------------
 
-    _HOLDINGS_WARNING = (
-        "Market value and unrealized gain/loss are unavailable until price "
-        "feeds ship (holdings show cost basis only)."
-    )
+    # Statuses that publish no market value. Mirrors dim_holdings.sql's
+    # valuation_status vocabulary; 'valued'/'carried_forward' both carry a number.
+    _UNVALUED_STATUSES: frozenset[str] = frozenset({"unpriced", "withheld"})
     _VALID_TERMS: frozenset[str] = frozenset({"short", "long"})
 
     def _resolve_filters(
@@ -1605,10 +1635,19 @@ class InvestmentService:
         account_ref: str | None = None,
         security_ref: str | None = None,
     ) -> HoldingsResult:
-        """Current positions (cost basis only) from ``core.dim_holdings``.
+        """Current positions from ``core.dim_holdings``, valued where possible.
 
-        Always carries the Pillar-C market-value caveat: no price feed exists
-        yet, so quantity/cost-basis/average-cost is the full picture.
+        Each row carries cost basis and — when a close resolved — market value,
+        unrealized gain, the date of the close used, and how many days old it
+        is. A position whose value is ``unpriced`` or ``withheld`` reports NULL
+        rather than zero; the count of those rows is named in a warning, the
+        same shape ``lots()`` uses for ``basis_incomplete``.
+
+        ``max_days_since_observed`` carries the age of the stalest close behind
+        any published figure — always present, never a warning.
+        ``total_market_value`` is published only when every priced position
+        shares one currency; otherwise it is NULL and
+        ``market_value_by_currency`` carries the per-currency split.
         """
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
@@ -1625,26 +1664,68 @@ class InvestmentService:
         rows = self._db.execute(
             f"""
             SELECT account_id, security_id, quantity, cost_basis, average_cost,
-                   currency_code
+                   currency_code, market_value, unrealized_gain, price_date,
+                   price_source, days_since_observed, valuation_status
               FROM {DIM_HOLDINGS.full_name}
               {where_sql}
              ORDER BY account_id, security_id
             """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
+        holding_rows = [
+            HoldingRow(
+                account_id=str(r[0]),
+                security_id=str(r[1]),
+                quantity=r[2],
+                cost_basis=r[3],
+                average_cost=r[4],
+                # Normalize to the price layer's canonical UPPER form (lots store the
+                # code verbatim; 'usd' and 'USD' are one currency): keeps a row's own
+                # currency_code equal to the market_value_by_currency key a consumer
+                # would look it up under.
+                currency_code=str(r[5]).upper(),
+                market_value=r[6],
+                unrealized_gain=r[7],
+                price_date=r[8],
+                price_source=None if r[9] is None else str(r[9]),
+                days_since_observed=None if r[10] is None else int(r[10]),
+                valuation_status=str(r[11]),
+            )
+            for r in rows
+        ]
+        warnings: list[str] = []
+        unvalued = sum(
+            1 for row in holding_rows if row.valuation_status in self._UNVALUED_STATUSES
+        )
+        if unvalued:
+            warnings.append(
+                f"{unvalued} position(s) report no market value — see each row's "
+                "valuation_status: 'unpriced' (no close resolved) or 'withheld' "
+                "(the share count is known wrong)."
+            )
+        # Scope the age to the rows carrying a figure: it discloses how old the
+        # published numbers are, not how old an absent one would have been.
+        observed_ages = [
+            row.days_since_observed
+            for row in holding_rows
+            if row.market_value is not None and row.days_since_observed is not None
+        ]
+        by_currency: dict[str, Decimal] = {}
+        for row in holding_rows:
+            if row.market_value is None:
+                continue
+            # Fold case before grouping: 'usd' and 'USD' name one currency, and
+            # treating them as two would suppress a total that is safe to publish.
+            code = row.currency_code.upper()
+            by_currency[code] = by_currency.get(code, Decimal("0")) + row.market_value
         return HoldingsResult(
-            rows=[
-                HoldingRow(
-                    account_id=str(r[0]),
-                    security_id=str(r[1]),
-                    quantity=r[2],
-                    cost_basis=r[3],
-                    average_cost=r[4],
-                    currency_code=str(r[5]),
-                )
-                for r in rows
-            ],
-            warnings=[self._HOLDINGS_WARNING],
+            rows=holding_rows,
+            warnings=warnings,
+            max_days_since_observed=max(observed_ages) if observed_ages else None,
+            total_market_value=(
+                next(iter(by_currency.values())) if len(by_currency) == 1 else None
+            ),
+            market_value_by_currency=by_currency,
         )
 
     def lots(

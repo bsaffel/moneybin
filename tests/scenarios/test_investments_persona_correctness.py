@@ -61,6 +61,40 @@ SHORT: rows = STOCK-short (0.00) + FUND (15.00) + CRYPTO (50.00)
   gain_loss    0.00 + 15.00 + 50.00 =    65.00
 LONG:  rows = STOCK-long
   proceeds 2000.00, cost_basis 1000.00, gain_loss 1000.00
+
+--- Valuation (Pillar C.1): ingest -> resolve -> value ------------------------
+Three price observations are seeded into raw.security_prices under the
+PROVIDER's key, and resolve to canonical securities through accepted
+app.security_links bindings — the same chain a Plaid `sync pull` drives.
+
+STOCK (priced):
+  binding  plaid_sec_stock -> STOCK
+  close    250.00 on 2024-08-01, price_basis 'raw'
+  holding  qty 5, cost_basis 1000.00 (derived above)
+  market_value    = 5 x 250.00      = 1250.00
+  unrealized_gain = 1250.00 - 1000.00 = 250.00
+  valuation_status = 'carried_forward' — 2024-08-01 is strictly before today,
+  so the close is the most recent one AT OR BEFORE today but not today's.
+
+FUND (negative expectation — an observation that must NOT value the position):
+  binding  plaid_sec_fund -> FUND
+  close    30.00 on 2024-08-01, price_basis 'split_adjusted'
+  core.fct_security_prices admits only price_basis = 'raw', so this
+  observation is excluded and FUND reports NO value. Had it leaked through,
+  FUND would read 15 x 30.00 = 450.00 — the assertion below fails loudly
+  rather than silently valuing a position from an adjusted series.
+  market_value = NULL, valuation_status = 'unpriced'
+
+CRYPTO (negative expectation — unresolved provider key):
+  close    99.00 on 2024-08-01 under key plaid_sec_unbound, with NO accepted
+  binding. prep.stg_security_prices INNER JOINs app.security_links, so the
+  observation waits in raw and reaches no position.
+  market_value = NULL, valuation_status = 'unpriced'
+
+No position is 'withheld': the withhold clauses key off Plaid holdings /
+transaction staging, and this persona is manual-only, so no account is
+broker-covered. `days_since_observed` is deliberately NOT asserted exactly —
+it is CURRENT_DATE - price_date and grows by one every day the suite runs.
 =============================================================================
 """
 
@@ -71,7 +105,12 @@ from decimal import Decimal
 import pytest
 
 from moneybin.database import Database
-from tests.scenarios._investments_seed import insert_event, insert_security
+from tests.scenarios._investments_seed import (
+    insert_event,
+    insert_security,
+    insert_security_link,
+    insert_security_price,
+)
 from tests.scenarios._runner import load_shipped_scenario, scenario_env
 from tests.scenarios._runner.steps import run_step
 
@@ -99,6 +138,17 @@ _EXPECTED_HOLDINGS: dict[str, tuple[Decimal, Decimal, Decimal]] = {
     "STOCK": (Decimal("5"), Decimal("1000.00"), Decimal("200")),
     "FUND": (Decimal("15"), Decimal("225.00"), Decimal("15")),
     "CRYPTO": (Decimal("15"), Decimal("200.00"), Decimal("13.3333333333")),
+}
+
+# Expected valuation keyed by security_id:
+# (market_value, unrealized_gain, valuation_status). Derived in the docstring's
+# valuation block — NOT read off the pipeline. A None pair is the load-bearing
+# negative: an adjusted series (FUND) and an unresolved provider key (CRYPTO)
+# must each leave the position unvalued rather than publishing a number.
+_EXPECTED_VALUATION: dict[str, tuple[Decimal | None, Decimal | None, str]] = {
+    "STOCK": (Decimal("1250.00"), Decimal("250.00"), "carried_forward"),
+    "FUND": (None, None, "unpriced"),
+    "CRYPTO": (None, None, "unpriced"),
 }
 
 # Method-proof: realized cost basis per security proves HIFO/average actually
@@ -225,6 +275,44 @@ def _seed_ledger(db: Database) -> None:
     )
 
 
+def _seed_prices(db: Database) -> None:
+    """Seed the price feed: one usable close plus two that must not value a position.
+
+    Provider keys resolve through app.security_links, so the observation lands
+    keyed the way a provider sends it and the pipeline does the binding.
+    """
+    insert_security_link(
+        db, link_id="link_stock", security_id="STOCK", ref_value="plaid_sec_stock"
+    )
+    insert_security_link(
+        db, link_id="link_fund", security_id="FUND", ref_value="plaid_sec_fund"
+    )
+
+    # STOCK: a usable raw close — the one observation that values a position.
+    insert_security_price(
+        db,
+        provider_security_key="plaid_sec_stock",
+        price_date="2024-08-01",
+        close="250.00",
+    )
+    # FUND: bound, but split_adjusted — core.fct_security_prices admits only 'raw'.
+    insert_security_price(
+        db,
+        provider_security_key="plaid_sec_fund",
+        price_date="2024-08-01",
+        close="30.00",
+        price_basis="split_adjusted",
+    )
+    # CRYPTO: raw, but the provider key has no accepted binding — staging's INNER
+    # JOIN holds it in raw rather than valuing anything.
+    insert_security_price(
+        db,
+        provider_security_key="plaid_sec_unbound",
+        price_date="2024-08-01",
+        close="99.00",
+    )
+
+
 @pytest.mark.scenarios
 @pytest.mark.slow
 def test_investments_persona_correctness() -> None:
@@ -234,6 +322,7 @@ def test_investments_persona_correctness() -> None:
 
     with scenario_env(scenario) as (db, _tmp, env):
         _seed_ledger(db)
+        _seed_prices(db)
         run_step("transform", scenario.setup, db, env=env)
 
         # --- core.fct_investment_lots ---------------------------------------
@@ -305,3 +394,32 @@ def test_investments_persona_correctness() -> None:
             assert basis == exp_basis, f"{sec} holding cost_basis"
             assert isinstance(avg, Decimal), f"{sec} average_cost must be Decimal"
             assert avg == exp_avg, f"{sec} holding average_cost"
+
+        # --- Valuation: ingest -> resolve -> value ---------------------------
+        valuation_rows = db.execute(
+            """
+            SELECT security_id, market_value, unrealized_gain, valuation_status,
+                   price_date::VARCHAR, days_since_observed
+            FROM core.dim_holdings
+            """
+        ).fetchall()
+        actual_valuation = {
+            str(r[0]): (r[1], r[2], str(r[3]), r[4], r[5]) for r in valuation_rows
+        }
+        assert actual_valuation.keys() == _EXPECTED_VALUATION.keys()
+        for sec, (exp_value, exp_gain, exp_status) in _EXPECTED_VALUATION.items():
+            value, gain, status, price_date, age = actual_valuation[sec]
+            assert status == exp_status, f"{sec} valuation_status"
+            assert value == exp_value, f"{sec} market_value"
+            assert gain == exp_gain, f"{sec} unrealized_gain"
+            if exp_value is None:
+                # NULL, never 0.00 — a zero is indistinguishable from a
+                # worthless position and silently understates every aggregate.
+                assert value is None, f"{sec} unvalued position must be NULL"
+                assert price_date is None, f"{sec} unvalued position has no price"
+            else:
+                assert isinstance(value, Decimal), f"{sec} market_value is Decimal"
+                assert price_date == "2024-08-01", f"{sec} price_date"
+                # Exact age is CURRENT_DATE-dependent; the invariant is that a
+                # carried-forward close is strictly older than today.
+                assert age is not None and age > 0, f"{sec} days_since_observed"

@@ -451,14 +451,156 @@ class TestHoldingsAndGains:
     """Tests for `investments holdings` and `investments gains`."""
 
     @pytest.mark.unit
-    def test_holdings_json_carries_pillar_c_warning(
+    def test_holdings_json_carries_no_stale_price_feed_caveat(
         self, runner: CliRunner, db: Database
     ) -> None:
+        """Market value ships, so no row may claim it is unavailable."""
         result = runner.invoke(app, ["investments", "holdings", "--output", "json"])
         assert result.exit_code == 0, result.output
         data = json.loads(result.stdout)
-        assert data["data"]["warnings"]
-        assert "market value" in data["data"]["warnings"][0].lower()
+        assert data["data"]["warnings"] == []
+
+    @pytest.mark.unit
+    def test_holdings_text_renders_value_and_an_unpriced_dash(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """An unpriced position renders "-", never a blank that reads as zero."""
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
+                   0::INT AS days_since_observed, 'valued' AS valuation_status
+            UNION ALL
+            SELECT 'acct_brokerage', 'sec_2', 5::DECIMAL(28,10),
+                   500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'USD',
+                   CAST(NULL AS DECIMAL(18,2)), CAST(NULL AS DECIMAL(18,2)),
+                   CAST(NULL AS DATE), CAST(NULL AS VARCHAR), CAST(NULL AS INT),
+                   'unpriced'
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+        assert result.exit_code == 0, result.output
+        assert "market_value=1200.00" in result.output
+        assert "unrealized_gain=200.00 USD" in result.output
+        assert "status=valued as_of=2026-07-15 (0d)" in result.output
+        assert "market_value=- unrealized_gain=- USD status=unpriced" in result.output
+
+    @pytest.mark.unit
+    def test_holdings_text_reports_the_stalest_close_as_a_number(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """A four-month-old close discloses its age on the portfolio line."""
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-03-02' AS price_date, 'plaid' AS price_source,
+                   135::INT AS days_since_observed,
+                   'carried_forward' AS valuation_status
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+        assert result.exit_code == 0, result.output
+        assert "max_days_since_observed=135" in result.output
+
+    @pytest.mark.unit
+    def test_holdings_text_dashes_the_stalest_close_when_nothing_is_priced(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """An undefined max renders "-", never a 0 that reads as fresh."""
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   CAST(NULL AS DECIMAL(18,2)) AS market_value,
+                   CAST(NULL AS DECIMAL(18,2)) AS unrealized_gain,
+                   CAST(NULL AS DATE) AS price_date,
+                   CAST(NULL AS VARCHAR) AS price_source,
+                   CAST(NULL AS INT) AS days_since_observed,
+                   'unpriced' AS valuation_status
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+        assert result.exit_code == 0, result.output
+        assert "max_days_since_observed=-" in result.output
+
+    @pytest.mark.unit
+    def test_holdings_text_totals_a_single_currency_portfolio(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """One currency across the priced rows — the total prints."""
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
+                   0::INT AS days_since_observed, 'valued' AS valuation_status
+            UNION ALL
+            SELECT 'acct_brokerage', 'sec_2', 5::DECIMAL(28,10),
+                   500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'USD',
+                   800.00::DECIMAL(18,2), 300.00::DECIMAL(18,2),
+                   DATE '2026-07-15', 'plaid', 0::INT, 'valued'
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+        assert result.exit_code == 0, result.output
+        assert "market_value=2000.00 USD" in result.output
+        assert "mixed currencies" not in result.output
+
+    @pytest.mark.unit
+    def test_holdings_text_refuses_a_mixed_currency_total(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """EUR beside USD — print the split, never one added-up figure."""
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
+                   0::INT AS days_since_observed, 'valued' AS valuation_status
+            UNION ALL
+            SELECT 'acct_brokerage', 'sec_2', 5::DECIMAL(28,10),
+                   500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'EUR',
+                   900.00::DECIMAL(18,2), 400.00::DECIMAL(18,2),
+                   DATE '2026-07-15', 'plaid', 0::INT, 'valued'
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+        assert result.exit_code == 0, result.output
+        assert "market_value=- (mixed currencies)" in result.output
+        assert "USD=1200.00" in result.output
+        assert "EUR=900.00" in result.output
+        # The wrong sum must appear nowhere in the output.
+        assert "2100.00" not in result.output
 
     @pytest.mark.unit
     def test_gains_json_reports_basis_incomplete_warning(

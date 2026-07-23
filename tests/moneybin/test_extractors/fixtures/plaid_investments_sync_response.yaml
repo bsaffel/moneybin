@@ -36,6 +36,8 @@ securities:
     ticker_symbol: VTI
     name: Vanguard Total Stock Market ETF
     type: etf
+    close_price: "301.20"
+    close_price_as_of: "2026-07-08"
     iso_currency_code: USD
   - security_id: sec_dup
     provider_item_id: item_2
