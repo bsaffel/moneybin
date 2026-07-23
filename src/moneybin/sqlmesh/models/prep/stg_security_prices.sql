@@ -36,7 +36,12 @@ MODEL (
    writing its rows — and, because app.security_links.ref_kind is itself CHECK-
    constrained to ('plaid_security_id', 'institution_security_id'), must widen that
    constraint in the same change too. tests/moneybin/test_stg_security_prices.py drives
-   this CASE's mapped set directly and fails if either half is missing. */
+   this CASE's mapped set directly and fails if either half is missing.
+
+   No close-positivity filter follows: raw.security_prices enforces CHECK (close > 0) at
+   write, so a zero or negative close can never reach this view — the guard lives at the
+   write boundary of the append-only source, not as a read-time filter that could mask a
+   bad row already stored. */
 SELECT
   links.security_id AS security_id,
   p.provider_security_key,
@@ -54,5 +59,3 @@ JOIN app.security_links AS links
   AND links.source_type = p.source_type
   AND links.ref_value = p.provider_security_key
   AND links.ref_kind = CASE p.source_type WHEN 'plaid' THEN 'plaid_security_id' END
-WHERE
-  p.close > 0

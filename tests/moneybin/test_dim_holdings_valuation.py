@@ -139,6 +139,7 @@ def _seed_broker_snapshot(
     quantity: str,
     security_id: str = _DEFAULT_PROVIDER_KEY,
     source_file: str = "sync_job_1",
+    extracted_at: str | None = None,
 ) -> None:
     """One broker snapshot: the receipt plus the holding row it accounts for.
 
@@ -162,10 +163,10 @@ def _seed_broker_snapshot(
             source_origin, source_file, holdings_date, holdings_count,
             transactions_window_start, source_type, extracted_at, loaded_at
         ) VALUES ('item_1', ?, CURRENT_DATE, 1, DATE '2026-01-01', 'plaid',
-                  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                  COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         ON CONFLICT DO NOTHING
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [source_file],
+        [source_file, extracted_at],
     )
     db.execute(
         """
@@ -980,6 +981,56 @@ def test_updated_at_reflects_the_resolved_close_freshness(db: Database) -> None:
     assert row is not None
     assert row[0] == datetime(2099, 1, 1), (
         "the resolved close's freshness must fold into the row watermark"
+    )
+
+
+@pytest.mark.slow
+def test_updated_at_reflects_an_omitting_snapshot(db: Database) -> None:
+    """A pull that DROPS a reported position advances its watermark to that pull's time.
+
+    When a newer snapshot omits a previously reported position it flips to `withheld` — a
+    real input change — but the per-position provider claim is NULL (the omitted position
+    has no holdings row in that pull), so the watermark must come from the snapshot RECEIPT.
+    The omitting pull is stamped far in the future; a fold that read only the per-position
+    claim, or the open lots, would miss it and pin updated_at to the old lot time — the
+    asymmetry the account-blind per-position claim leaves. Adversarial partner to
+    test_updated_at_reflects_the_resolved_close_freshness (a manual position, no snapshot).
+    """
+    _seed_security(db)
+    # The price binding resolves the provider key to canonvti0000001; without it the
+    # broker holding never binds and no opening lot (hence no position) is created. Its
+    # own freshness is ~now, well below the 2099 receipt below, so the snapshot term is
+    # what the assertion isolates.
+    _seed_price(db, price_date=date(2026, 7, 15), close="120.00")
+    # First snapshot reports VTI: seeds the opening lot and is the prior evidence that
+    # makes the omission below a phantom rather than a manual holding. Stamped ~now.
+    _seed_broker_snapshot(
+        db, account_id="acc_1", quantity="10", source_file="sync_job_1"
+    )
+    # Newer snapshot omits VTI (a different unbound security), stamped far in the future so
+    # it is unambiguously the newest pull and no lot timestamp can reach it.
+    _seed_broker_snapshot(
+        db,
+        account_id="acc_1",
+        quantity="7",
+        security_id="sec_unbound",
+        source_file="sync_job_2",
+        extracted_at="2099-01-01 00:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT valuation_status, updated_at FROM core.dim_holdings "
+        "WHERE account_id = 'acc_1'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "withheld", (
+        "the newest snapshot omits the position — it is a phantom"
+    )
+    assert row[1] == datetime(2099, 1, 1), (
+        "the omitting pull's receipt freshness must fold into the row watermark"
     )
 
 

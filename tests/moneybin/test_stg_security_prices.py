@@ -6,6 +6,7 @@ import re
 from decimal import Decimal
 from pathlib import Path
 
+import duckdb
 import pytest
 
 import moneybin
@@ -204,12 +205,15 @@ def test_an_unmapped_source_is_dropped_permanently_not_deferred(db: Database) ->
 
 @pytest.mark.slow
 def test_non_positive_close_is_rejected(db: Database) -> None:
+    """A zero or negative close is rejected at the raw write boundary by CHECK (close > 0).
+
+    The guard lives on the append-only raw table, not as a downstream staging filter: a
+    non-positive close is never a real price, and blocking it at write keeps a bad row from
+    squatting on the primary key where — the table being append-only — it could never be
+    corrected. A valid positive close still inserts.
+    """
     _insert_price(db, key="sec_vti", close="214.55", price_date="2026-07-15")
-    _insert_price(db, key="sec_vti", close="0.0", price_date="2026-07-16")
-    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
-
-    with sqlmesh_context(db) as ctx:
-        ctx.plan(auto_apply=True, no_prompts=True)
-
-    rows = db.execute("SELECT price_date FROM prep.stg_security_prices").fetchall()
-    assert len(rows) == 1, "a zero close is not a price"
+    with pytest.raises(duckdb.ConstraintException):
+        _insert_price(db, key="sec_vti", close="0.0", price_date="2026-07-16")
+    with pytest.raises(duckdb.ConstraintException):
+        _insert_price(db, key="sec_vti", close="-5.00", price_date="2026-07-17")

@@ -78,11 +78,13 @@ WITH positions AS (
      NO newest snapshot (no rows to join — also correct). */
   SELECT
     source_origin,
-    source_file
+    source_file,
+    extracted_at
   FROM (
     SELECT
       source_origin,
       source_file,
+      extracted_at,
       ROW_NUMBER() OVER (PARTITION BY source_origin ORDER BY extracted_at DESC, source_file DESC) AS snapshot_rank
     FROM prep.stg_plaid__investment_holdings_snapshots
   )
@@ -205,6 +207,27 @@ WITH positions AS (
   FROM prep.stg_plaid__investment_holdings
   WHERE
     NOT security_id IS NULL
+), position_snapshot_freshness AS (
+  /* The newest snapshot receipt time for each (account, security) the broker has EVER
+     reported, read across ALL snapshots and joined to the newest snapshot of the
+     source_origin that carried it. This is the watermark input the per-position provider
+     claim cannot supply: when a fresh pull OMITS a position, provider_reported emits no
+     row (NULL as-of), yet that same pull is what flips the row to 'withheld' — a real
+     input change. Keyed here on the position (not the account) so a purely manual holding
+     in a broker-covered account, whose valuation never depends on a snapshot, is absent
+     and its watermark is not spuriously advanced by an unrelated pull. */
+  SELECT
+    h.account_id,
+    h.security_id,
+    MAX(ns.extracted_at) AS newest_snapshot_at
+  FROM prep.stg_plaid__investment_holdings AS h
+  JOIN newest_snapshot AS ns
+    ON ns.source_origin = h.source_origin
+  WHERE
+    NOT h.security_id IS NULL
+  GROUP BY
+    h.account_id,
+    h.security_id
 ), withheld AS (
   /* Four clauses, none redundant — each guards a failure the others miss. The first
      three are quantity-specific: market value is quantity x price and does not depend
@@ -354,11 +377,13 @@ SELECT
   GREATEST(
     p.updated_at,
     COALESCE(lp.price_updated_at, p.updated_at),
-    COALESCE(pr.provider_reported_as_of, p.updated_at)
-  ) AS updated_at /* Latest of all per-row input timestamps: the MAX over the position's open lots, the resolved close's freshness (market_value advances when a newer close lands), and the provider snapshot's as-of (valuation_status can flip when a snapshot contradicts the ledger). COALESCE folds the LEFT-JOINed price and provider timestamps only when present, so an unpriced or snapshot-less position falls back to the lot timestamp. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
+    COALESCE(psf.newest_snapshot_at, p.updated_at)
+  ) AS updated_at /* Latest of all per-row input timestamps: the MAX over the position's open lots, the resolved close's freshness (market_value advances when a newer close lands), and — for a broker-reported position — the newest snapshot receipt's time (valuation_status flips to 'withheld' when a fresh pull contradicts or omits the position). The snapshot term keys on the position, not the account, so a purely manual holding in a covered account is not advanced by an unrelated pull; and it uses the snapshot RECEIPT (not the per-position claim), so a pull that DROPS a position still advances its watermark. COALESCE folds the LEFT-JOINed price and snapshot timestamps only when present, so an unpriced, manual position falls back to the lot timestamp. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
 FROM positions AS p
 LEFT JOIN provider_reported AS pr
   ON pr.account_id = p.account_id AND pr.security_id = p.security_id
+LEFT JOIN position_snapshot_freshness AS psf
+  ON psf.account_id = p.account_id AND psf.security_id = p.security_id
 /* usable_price is per-position — currency-matched and split-staleness-excluded in the
    CTE above — so join on the position grain. A missing row means no usable close (none
    resolved, or the only one predates a recorded split), which reads as 'unpriced'. */
