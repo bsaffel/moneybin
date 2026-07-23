@@ -126,6 +126,26 @@ def test_set_sheets_rejects_a_duplicate_managed_namespace(
         )
 
 
+def test_set_sheets_rejects_a_normalized_duplicate_managed_namespace(
+    repo: ExportDestinationsRepo,
+) -> None:
+    """Sheets title equivalence also defines destination namespace ownership."""
+    repo.set_sheets(
+        name="dashboard",
+        spreadsheet_id="sheet_123",
+        managed_tab_prefix="MoneyBin",
+        actor="cli",
+    )
+
+    with pytest.raises(ExportDestinationNamespaceConflictError):
+        repo.set_sheets(
+            name="other-dashboard",
+            spreadsheet_id="sheet_123",
+            managed_tab_prefix="moneybin",
+            actor="cli",
+        )
+
+
 def test_set_replaces_a_destination_kind_with_one_paired_audit_row(
     db: Database, repo: ExportDestinationsRepo
 ) -> None:

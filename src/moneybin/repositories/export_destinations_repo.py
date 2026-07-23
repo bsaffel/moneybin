@@ -18,6 +18,7 @@ from moneybin.exports.models import (
     ExportDestination,
     validate_export_destination_name,
 )
+from moneybin.exports.sheets import normalized_sheet_title
 from moneybin.exports.workbook_roles import workbook_role_lease
 from moneybin.repositories.base import BaseRepo, quote_ident
 from moneybin.services.audit_service import AuditEvent
@@ -359,12 +360,16 @@ class ExportDestinationsRepo(BaseRepo):
         if managed_tab_prefix is None:
             raise ValueError("A Sheets destination requires a managed tab prefix")
         conflict = self._db.execute(
-            f"SELECT 1 FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT managed_tab_prefix FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + parameterized values
             "WHERE kind = 'sheets' AND spreadsheet_id = ? "
-            "AND managed_tab_prefix = ? AND name <> ? LIMIT 1",
-            [spreadsheet_id, managed_tab_prefix, name],
-        ).fetchone()
-        if conflict is not None:
+            "AND name <> ?",
+            [spreadsheet_id, name],
+        ).fetchall()
+        if any(
+            normalized_sheet_title(managed_tab_prefix)
+            == normalized_sheet_title(existing_prefix)
+            for (existing_prefix,) in conflict
+        ):
             raise ExportDestinationNamespaceConflictError()
 
     def remove(

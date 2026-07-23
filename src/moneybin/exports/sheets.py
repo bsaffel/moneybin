@@ -115,7 +115,7 @@ class SheetsExportPublisher:
             subject_kind=snapshot.subject.kind,
         )
         reserved_names = {
-            _normalized_title(sheet.name)
+            normalized_sheet_title(sheet.name)
             for sheet in metadata.sheets
             if sheet.gid not in {identity.gid for identity in replacements}
         }
@@ -329,10 +329,10 @@ def _available_run_id(
     base = snapshot.created_at.strftime("%Y%m%dT%H%M%SZ")
     candidate = base
     suffix = 2
-    names = {_normalized_title(sheet.name) for sheet in sheets}
+    names = {normalized_sheet_title(sheet.name) for sheet in sheets}
     while any(
-        name.startswith(_normalized_title(f"{prefix} "))
-        and f" {_normalized_title(candidate)} " in f" {name} "
+        name.startswith(normalized_sheet_title(f"{prefix} "))
+        and f" {normalized_sheet_title(candidate)} " in f" {name} "
         for name in names
     ):
         candidate = f"{base}-{suffix}"
@@ -421,15 +421,16 @@ def _unique_managed_title(used: set[str], prefix: str, *segments: str) -> str:
     base = _managed_title(prefix, *segments)
     title = base
     attempt = 1
-    while _normalized_title(title) in used:
+    while normalized_sheet_title(title) in used:
         digest = hashlib.sha256(f"{base}\x1f{attempt}".encode()).hexdigest()[:8]
         title = f"{base[: _MAX_SHEET_TITLE_LENGTH - 9]}-{digest}"
         attempt += 1
-    used.add(_normalized_title(title))
+    used.add(normalized_sheet_title(title))
     return title
 
 
-def _normalized_title(name: str) -> str:
+def normalized_sheet_title(name: str) -> str:
+    """Return the case-insensitive Sheets title comparison key."""
     return unicodedata.normalize("NFKC", name).casefold()
 
 

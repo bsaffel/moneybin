@@ -68,9 +68,18 @@ envelope contains once it reaches the model.
 | Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app` (amounts, descriptions, merchants, dates, locations) | Account/routing numbers (by column classification) | Per-call event |
 | Categorization assist (`transactions_categorize_assist`) | Scrubbed description (**merchant kept**, amount as a sign) + structural fields incl. `check_number` | Amount value, date, account ID, locations, embedded PII | Per-call event |
 | Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |
+| Exports (`export_run`, `exports_set`) | Export configuration and the receipt (destination, format, row counts, checksums, and export ID) | Account/routing numbers in the receipt | Per-call event; destination changes also create an audit row |
 | Errors / timeouts | A generic message; no row content, no SQL text | — | Per-call event |
 
 The rest of this page expands each column.
+
+An export writes a durable artifact outside the MCP response. Local exports write
+to the selected local destination; a Sheets export sends the selected rows to the
+Google Sheets API. Each run asks for `redacted` (the default) or `unredacted`.
+Redacted exports use the same column-classification masking as other MoneyBin
+responses: account and routing numbers are masked, while balances, amounts,
+merchant names, descriptions, and dates remain present. Unredacted export is an
+explicit per-run choice and bypasses that masking.
 
 ---
 

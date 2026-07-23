@@ -14,6 +14,7 @@ import duckdb
 import pytest
 from openpyxl import load_workbook
 
+import moneybin.exports.renderers as renderers
 from moneybin.exports.renderers import (
     decode_csv_cell,
     normalize_tabular_cell,
@@ -267,6 +268,13 @@ def test_parquet_round_trips_native_typed_values_through_duckdb(
         "note",
     ]
     assert relation.fetchall() == list(make_snapshot().tables[0].rows)
+
+
+def test_parquet_rendering_never_uses_duckdb_default_connection(tmp_path: Path) -> None:
+    """Rendering an in-memory snapshot must not create a DuckDB spill path."""
+    assert not hasattr(renderers, "duckdb")
+
+    render_parquet(make_snapshot(), tmp_path / "bundle")
 
 
 def test_bundle_manifest_and_sidecars_come_from_the_prepared_snapshot(

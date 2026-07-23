@@ -15,11 +15,10 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID
 
-import duckdb
 import pyarrow as pa
+import pyarrow.parquet as pq
 from openpyxl import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
-from sqlglot import exp, parse_one
 
 from moneybin.exports.manifest import (
     CSV_ENCODING,
@@ -170,23 +169,7 @@ def _write_parquet(table: PreparedTable, path: Path) -> None:
         ],
         names=[column.name for column in table.columns],
     )
-    relation = duckdb.from_arrow(arrow_table)
-    projections: list[str] = []
-    for column in table.columns:
-        identifier = exp.to_identifier(column.name, quoted=True).sql("duckdb")
-        duckdb_type = _validated_duckdb_type(column.duckdb_type)
-        projections.append(
-            f"CAST({identifier} AS {duckdb_type}) AS {identifier}"  # noqa: S608  # identifier is quoted and type is parsed by sqlglot
-        )
-    typed_relation = relation.project(", ".join(projections))
-    # DuckDB 1.5.4 documents relation.write_parquet(file_name). Passing the path
-    # through that Python API avoids interpolating a filesystem path into COPY SQL.
-    typed_relation.write_parquet(str(path))
-
-
-def _validated_duckdb_type(value: str) -> str:
-    parsed = parse_one(value, into=exp.DataType, dialect="duckdb")
-    return parsed.sql(dialect="duckdb")
+    pq.write_table(arrow_table, path)  # type: ignore[reportUnknownMemberType]  # pyarrow lacks complete type stubs
 
 
 def _csv_payload_cell(value: object) -> object:

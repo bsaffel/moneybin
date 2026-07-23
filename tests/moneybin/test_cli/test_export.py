@@ -418,6 +418,7 @@ def test_export_json_is_a_typed_standard_envelope(tmp_path: Path) -> None:
     assert envelope["data"]["format"] == receipt.format
     assert envelope["data"]["destination"]["name"] == "local:exports"
     assert envelope["data"]["artifact_path"] == str(artifact.resolve())
+    assert envelope["data"]["export_id"] == receipt.export_id
     assert envelope["data"]["output_classes"] == {
         "accounts": {"account_id": "record_id"},
         "transactions": {"amount": "txn_amount"},

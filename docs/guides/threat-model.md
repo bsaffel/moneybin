@@ -203,6 +203,7 @@ A firewall ruleset for the MoneyBin client alone — without an MCP client runni
 | `moneybin db ...`, `moneybin transform apply`, `moneybin reports ...` | None | All local. |
 | `moneybin sync ...` (Plaid path) | `sync.server_url` only | Default is `None` — the user supplies the broker URL via env / config. Set to your self-hosted instance or to the hosted broker if you choose one. |
 | `moneybin gsheet ...` / `gsheet_*` | Google OAuth and Sheets APIs | Only when the user invokes the connector; credentials remain in `SecretStore`. |
+| `moneybin export ... --destination sheets:*` / `export_run` | Google Sheets API | Only when the user explicitly selects a saved Sheets export destination; export data is written to its managed tabs. |
 | Categorization assist (MCP tool) | None | The LLM call originates in the MCP client process, not in MoneyBin. |
 
 No telemetry, no analytics, no update checks, no enrichment lookups. The MCP client running alongside MoneyBin makes its own outbound calls per its own privacy policy — that is out of MoneyBin's control.
