@@ -867,7 +867,15 @@ async def test_investment_coarse_transport_variants(
             register_investment_coarse_reads,
             {"view": "holdings"},
             "high",
-            {"aggregate", "balance", "currency", "record_id", "txn_amount"},
+            {
+                "aggregate",
+                "balance",
+                "currency",
+                "record_id",
+                "timestamp_observability",
+                "txn_amount",
+                "txn_type",
+            },
         ),
         (
             "investments",

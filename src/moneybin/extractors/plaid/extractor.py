@@ -34,6 +34,7 @@ from moneybin.extractors._types import ExtractionResult, ProviderSource, SyncRes
 from moneybin.extractors.plaid.config import PlaidProviderConfig
 from moneybin.metrics.registry import (
     INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL,
+    PRICE_ROWS_WRITTEN_TOTAL,
     SYNC_INVESTMENTS_RECORDS_LOADED,
 )
 from moneybin.tables import (
@@ -42,6 +43,7 @@ from moneybin.tables import (
     PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
     PLAID_INVESTMENT_TRANSACTIONS,
     PLAID_SECURITIES,
+    SECURITY_PRICES,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,7 @@ class LoadResult:
     investment_transactions_loaded: int = 0
     holdings_loaded: int = 0
     holding_lots_loaded: int = 0
+    security_prices_loaded: int = 0
     # A receipt is a durable raw write like any other, and on a liquidated
     # broker's pull it is the ONLY one — so callers gating refresh on "did
     # anything change" must be able to see it.
@@ -168,6 +171,18 @@ _SECURITIES_SCHEMA = pl.Schema({
     "source_file": pl.Utf8,
     "source_type": pl.Utf8,
     "source_origin": pl.Utf8,
+    "extracted_at": pl.Datetime(time_zone="UTC"),
+    "loaded_at": pl.Datetime(time_zone="UTC"),
+})
+
+_SECURITY_PRICES_SCHEMA = pl.Schema({
+    "provider_security_key": pl.Utf8,
+    "price_date": pl.Date,
+    "quote_currency": pl.Utf8,
+    "source_type": pl.Utf8,
+    "source_origin": pl.Utf8,
+    "close": pl.Decimal(28, 10),
+    "price_basis": pl.Utf8,
     "extracted_at": pl.Datetime(time_zone="UTC"),
     "loaded_at": pl.Datetime(time_zone="UTC"),
 })
@@ -336,6 +351,9 @@ class PlaidExtractor:
         securities_loaded = self._load_securities(
             sync_data.securities, source_file, extracted_at, loaded_at
         )
+        security_prices_loaded = self._load_security_prices(
+            sync_data.securities, extracted_at, loaded_at
+        )
         investment_transactions_loaded = self._load_investment_transactions(
             sync_data.investment_transactions, source_file, extracted_at, loaded_at
         )
@@ -365,6 +383,7 @@ class PlaidExtractor:
             holdings_loaded=holdings_loaded,
             holding_lots_loaded=holding_lots_loaded,
             holdings_snapshots_loaded=holdings_snapshots_loaded,
+            security_prices_loaded=security_prices_loaded,
         )
 
     def _validate_holdings_windows(
@@ -597,6 +616,72 @@ class PlaidExtractor:
         SYNC_INVESTMENTS_RECORDS_LOADED.labels(table="plaid_securities").inc(len(df))
         logger.info(f"Loaded {len(df)} Plaid securities")
         return len(df)
+
+    def _load_security_prices(
+        self,
+        securities: list[SyncSecurity],
+        extracted_at: datetime,
+        loaded_at: datetime,
+    ) -> int:
+        """Append the security-level close to the durable price history.
+
+        Runs beside the securities upsert rather than reading raw.plaid_securities
+        later: that table is keyed (security_id, source_origin) and upserted, so each
+        pull overwrites the previous close_price in place. Only the extractor sits
+        between the payload and that overwrite.
+        """
+        rows = [
+            {
+                "provider_security_key": sec.security_id,
+                "price_date": sec.close_price_as_of,
+                "quote_currency": sec.iso_currency_code or sec.unofficial_currency_code,
+                "source_type": "plaid",
+                "source_origin": sec.provider_item_id,
+                "close": sec.close_price,
+                "price_basis": "raw",
+                "extracted_at": extracted_at,
+                "loaded_at": loaded_at,
+            }
+            for sec in securities
+            # Silent by design: a null, zero, negative, dateless, or currency-less quote
+            # means Plaid never served a usable price for this security (it sends null,
+            # not 0, for "no price"), so there is nothing to lose. Contrast the
+            # rounds-to-zero warning below, which drops a valid price we DID receive.
+            if sec.close_price is not None
+            and sec.close_price > 0
+            and sec.close_price_as_of is not None
+            and (sec.iso_currency_code or sec.unofficial_currency_code)
+        ]
+        if not rows:
+            return 0
+        df = pl.DataFrame(rows, schema=_SECURITY_PRICES_SCHEMA)
+        # The pre-conversion guard above sees pydantic's unbounded Decimal; the
+        # column is DECIMAL(28,10), so a quote below 1e-10 rounds to zero HERE,
+        # silently and without error. Writing it would be permanent: the table
+        # is append-only with on_conflict='ignore', so a zero row squats on its
+        # primary key and every later corrected close for that date is dropped.
+        priced = df.filter(pl.col("close") > 0)
+        rounded_away = df.height - priced.height
+        if rounded_away:
+            logger.warning(
+                f"Skipped {rounded_away} security price observation(s) whose "
+                "quote rounds to zero at the stored scale (10 decimal places); "
+                "those positions stay unpriced"
+            )
+        if priced.is_empty():
+            return 0
+        # Append-only: keep the observation already stored for this key.
+        written = self.db.ingest_dataframe(
+            SECURITY_PRICES.full_name, priced, on_conflict="ignore"
+        )
+        # Rows WRITTEN, never rows offered: Plaid re-reports the same
+        # (security_id, close_price_as_of) on every pull until the close date
+        # advances, so counting the batch would make this counter climb
+        # steadily through a fully stalled upstream feed — the one condition it
+        # exists to expose.
+        PRICE_ROWS_WRITTEN_TOTAL.labels(source_type="plaid").inc(written)
+        logger.info(f"Loaded {written} security price observations")
+        return written
 
     def _load_investment_transactions(
         self,

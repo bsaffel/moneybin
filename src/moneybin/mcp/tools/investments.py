@@ -156,14 +156,31 @@ def investments(
 def investments_holdings(
     account: str | None = None,
 ) -> ResponseEnvelope[InvestmentHoldingsPayload]:
-    """Current positions: quantity, cost basis, average cost per (account, security).
+    """Current positions with market value per (account, security).
 
     Args:
         account: Account ID or free-text reference (resolved to an id).
 
-    Market value and unrealized gain/loss require price feeds (Pillar C, not
-    yet shipped) — this always carries a warning that only cost basis is
-    available. Amounts are in the currency named by `summary.display_currency`.
+    Each row carries quantity, cost basis, average cost, and — when a close
+    resolved — `market_value`, `unrealized_gain` (signed: negative below
+    cost), the `price_date` of the close used, and `days_since_observed`.
+    `valuation_status` is one of `valued` (close is today's),
+    `carried_forward` (the most recent close is older), `unpriced` (no close
+    resolved), or `withheld` (the share count is known wrong). The last two
+    report `market_value`/`unrealized_gain` as null, never zero, and
+    `data.warnings` names how many rows those are.
+
+    `data.max_days_since_observed` is the age in days of the stalest close any
+    published figure rests on — the largest `days_since_observed` across the
+    priced rows, null when no position priced. Read it before reporting a
+    portfolio value: a large number means the figures come from an old close.
+
+    Amounts are in each row's own `currency_code`, not converted to
+    `summary.display_currency`. Do not sum `market_value` across rows: read
+    `data.total_market_value`, which is populated only when every priced
+    position shares one currency and null when they do not. When it is null,
+    `data.market_value_by_currency` carries the per-currency split and no
+    single portfolio figure exists.
     """
     with get_database(read_only=True) as db:
         result = InvestmentService(db).holdings(account_ref=account)
@@ -1222,9 +1239,13 @@ def investments_coarse(
                 warnings=all_rows.warnings,
             )
         elif view == "holdings":
+            holdings = cast(InvestmentHoldingsPayload, all_rows)
             data = InvestmentsHoldingsView(
                 rows=page,
-                warnings=all_rows.warnings,
+                warnings=holdings.warnings,
+                max_days_since_observed=holdings.max_days_since_observed,
+                total_market_value=holdings.total_market_value,
+                market_value_by_currency=holdings.market_value_by_currency,
             )
         elif view == "lots":
             data = InvestmentsLotsView(
@@ -1267,8 +1288,17 @@ def register_investment_coarse_reads(mcp: FastMCP) -> None:
         investments_coarse,
         "investments",
         "Return investment events, holdings, open or full tax-lot history, "
-        "realized gains, or securities through one typed view. Amounts use the investment "
-        "ledger sign convention and the currency in summary.display_currency.",
+        "realized gains, or securities through one typed view. Amounts use the "
+        "investment ledger sign convention; currency is summary.display_currency "
+        "for every view except holdings, whose market_value stays in each row's "
+        "currency_code. For holdings, valuation_status marks each row valued, "
+        "carried_forward, unpriced, or withheld; unpriced and withheld report "
+        "market_value/unrealized_gain null (never zero) and data.warnings counts "
+        "them, and withheld means the share count is known wrong. Do not sum "
+        "market_value across rows: read data.total_market_value (null when priced "
+        "rows span currencies, with data.market_value_by_currency giving the "
+        "split) and data.max_days_since_observed for the stalest close behind any "
+        "published figure.",
         privacy_actor="investments",
     )
 

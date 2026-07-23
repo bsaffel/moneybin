@@ -183,7 +183,7 @@
   },
   "candidate": {
     "arguments": 1.0,
-    "metadata_bytes": 51378,
+    "metadata_bytes": 51951,
     "outcomes": [
       {
         "arguments": true,
@@ -366,7 +366,7 @@
   "comparison": {
     "argument_delta": 0.0,
     "failed_gates": [],
-    "metadata_bytes_delta": -39356,
+    "metadata_bytes_delta": -38783,
     "passed": true,
     "recovery_delta": 0.0,
     "safety_delta": 0.0,
@@ -378,7 +378,7 @@
   "evidence": {
     "baseline_registry_sha256": "ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79",
     "baseline_run_date": "2026-07-17",
-    "candidate_registry_sha256": "e97981fd39b6c8a0514d8f36d13afdbb794f6d06f4694d1ea2f9ad9391974121",
+    "candidate_registry_sha256": "04a3817f8d42adfe0b4dcbf950c16650740d3cd04cae20bea1f3e5bc889e53d7",
     "candidate_run_date": "2026-07-19",
     "context_budget": {
       "limit": 0.02,

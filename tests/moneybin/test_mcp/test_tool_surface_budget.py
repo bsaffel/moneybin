@@ -131,7 +131,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "system_audit": (746, 1_958),
     "accounts": (823, 2_240),
     "accounts_balances": (1_069, 2_786),
-    "investments": (1_076, 4_908),
+    "investments": (1_649, 4_908),
     "transactions": (1_287, 2_383),
     "transactions_categorize_rules": (564, 318),
     "reviews": (703, 8_687),

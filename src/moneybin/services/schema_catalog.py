@@ -570,6 +570,50 @@ EXAMPLES: dict[str, list[Example]] = {
                 ORDER BY cost_basis DESC
             """,
         ),
+        Example(
+            question="What are my positions worth, and how fresh is each price? "
+            "(market_value is NULL — never zero — when valuation_status is "
+            "'unpriced' or 'withheld')",
+            sql="""
+                SELECT security_id, quantity, cost_basis, market_value,
+                       unrealized_gain, valuation_status, days_since_observed
+                FROM core.dim_holdings
+                ORDER BY market_value DESC NULLS LAST
+            """,
+        ),
+        Example(
+            question="Which positions carry no market value, and why",
+            sql="""
+                SELECT account_id, security_id, quantity, cost_basis,
+                       valuation_status
+                FROM core.dim_holdings
+                WHERE valuation_status IN ('unpriced', 'withheld')
+                ORDER BY account_id, security_id
+            """,
+        ),
+    ],
+    "core.fct_security_prices": [
+        Example(
+            question="Price history for one security, most recent first "
+            "(substitute YOUR_SECURITY_ID)",
+            sql="""
+                SELECT price_date, close, quote_currency, source_type
+                FROM core.fct_security_prices
+                WHERE security_id = 'YOUR_SECURITY_ID'
+                ORDER BY price_date DESC
+            """,
+        ),
+        Example(
+            question="Latest known close for every security",
+            sql="""
+                SELECT security_id, quote_currency, close, price_date
+                FROM core.fct_security_prices
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY security_id, quote_currency
+                    ORDER BY price_date DESC
+                ) = 1
+            """,
+        ),
     ],
 }
 

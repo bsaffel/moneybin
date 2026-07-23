@@ -87,11 +87,11 @@ service-layer contract, or CLI-first operator exemptions.
 ## Current evidence
 
 The operating contract is the 47-tool standard registry. Its deterministic
-comparison records 51,296 candidate metadata bytes, SHA-256
-`9b7bb6ec1b7d078de5e459fc0a0f4f231f489544e709f9e9cf229ec362e5da31`, against
+comparison records 51,951 candidate metadata bytes, SHA-256
+`04a3817f8d42adfe0b4dcbf950c16650740d3cd04cae20bea1f3e5bc889e53d7`, against
 the 90,734-byte frozen baseline, SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`: a
--39,438-byte (-43.5%) delta. It advertises zero output schemas and has
+-38,783-byte (-42.7%) delta. It advertises zero output schemas and has
 `contract_passed: true`.
 
 This ADR remains **Proposed**. `promotion_ready: false`: context budget and

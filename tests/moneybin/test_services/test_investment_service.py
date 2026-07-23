@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 from prometheus_client import REGISTRY
@@ -1368,10 +1368,65 @@ def _insert_gain(
     )
 
 
-def _replace_holdings_view(
-    db: Database,
-    rows: list[tuple[str, str, str, str, str | None, str]],
-) -> None:
+class _Holding(NamedTuple):
+    """One ``core.dim_holdings`` fixture row.
+
+    Valuation columns default to the *unpriced* shape (no close resolved), so a
+    test that says nothing about valuation gets the honest no-price row rather
+    than an invented number.
+    """
+
+    account_id: str = "acct_brokerage"
+    security_id: str = "sec_1"
+    quantity: str = "10"
+    cost_basis: str = "1000.00"
+    average_cost: str | None = "100.00"
+    currency_code: str = "USD"
+    market_value: str | None = None
+    unrealized_gain: str | None = None
+    price_date: str | None = None
+    price_source: str | None = None
+    days_since_observed: str | None = None
+    valuation_status: str = "unpriced"
+
+
+def _holding_select(h: _Holding) -> str:
+    """Render one ``_Holding`` as a typed single-row SELECT."""
+
+    def money(v: str | None) -> str:
+        return "CAST(NULL AS DECIMAL(18,2))" if v is None else f"{v}::DECIMAL(18,2)"
+
+    def text(v: str | None) -> str:
+        return "CAST(NULL AS VARCHAR)" if v is None else f"'{v}'"
+
+    return (
+        f"SELECT '{h.account_id}' AS account_id, "
+        f"'{h.security_id}' AS security_id, "
+        f"{h.quantity}::DECIMAL(28,10) AS quantity, "
+        f"{h.cost_basis}::DECIMAL(18,2) AS cost_basis, "
+        + (
+            "CAST(NULL AS DECIMAL(28,10))"
+            if h.average_cost is None
+            else f"{h.average_cost}::DECIMAL(28,10)"
+        )
+        + " AS average_cost, "
+        f"'{h.currency_code}' AS currency_code, "
+        f"{money(h.market_value)} AS market_value, "
+        f"{money(h.unrealized_gain)} AS unrealized_gain, "
+        + ("CAST(NULL AS DATE)" if h.price_date is None else f"DATE '{h.price_date}'")
+        + " AS price_date, "
+        f"{text(h.price_source)} AS price_source, "
+        + (
+            "CAST(NULL AS INT)"
+            if h.days_since_observed is None
+            else f"{h.days_since_observed}::INT"
+        )
+        + " AS days_since_observed, "
+        f"'{h.valuation_status}' AS valuation_status"
+    )
+
+
+def _replace_holdings_view(db: Database, rows: list[_Holding]) -> None:
     """Override the empty core.dim_holdings stub with literal test rows.
 
     core.dim_holdings is a SQLMesh-managed VIEW; create_core_dim_stub_views
@@ -1382,25 +1437,9 @@ def _replace_holdings_view(
     (not user input), per security.md's test-fixture exception.
     """
     if not rows:
-        select_sql = (
-            "SELECT CAST(NULL AS VARCHAR) AS account_id, "
-            "CAST(NULL AS VARCHAR) AS security_id, "
-            "CAST(NULL AS DECIMAL(28,10)) AS quantity, "
-            "CAST(NULL AS DECIMAL(18,2)) AS cost_basis, "
-            "CAST(NULL AS DECIMAL(28,10)) AS average_cost, "
-            "CAST(NULL AS VARCHAR) AS currency_code WHERE FALSE"
-        )
+        select_sql = _holding_select(_Holding()) + " WHERE FALSE"
     else:
-        parts: list[str] = []
-        for acct, sec, qty, basis, avg, ccy in rows:
-            avg_sql = "NULL" if avg is None else f"{avg}::DECIMAL(28,10)"
-            parts.append(
-                f"SELECT '{acct}' AS account_id, '{sec}' AS security_id, "
-                f"{qty}::DECIMAL(28,10) AS quantity, "
-                f"{basis}::DECIMAL(18,2) AS cost_basis, "
-                f"{avg_sql} AS average_cost, '{ccy}' AS currency_code"
-            )
-        select_sql = " UNION ALL ".join(parts)
+        select_sql = " UNION ALL ".join(_holding_select(h) for h in rows)
     db.execute(  # noqa: S608  # test fixture view, literal test data only
         f"CREATE OR REPLACE VIEW core.dim_holdings AS {select_sql}"
     )
@@ -1479,24 +1518,27 @@ class TestListEvents:
 class TestHoldings:
     """Tests for InvestmentService.holdings()."""
 
-    def test_always_carries_pillar_c_warning(self, db: Database) -> None:
+    def test_empty_result_carries_no_warning(self, db: Database) -> None:
         _seed_read_fixtures(db)
         result = db_service(db).holdings()
         assert result.rows == []
-        assert any("price feed" in w for w in result.warnings)
+        assert result.warnings == []
 
     def test_returns_seeded_rows_with_decimal_preserved(self, db: Database) -> None:
         _seed_read_fixtures(db)
         _replace_holdings_view(
             db,
             [
-                (
-                    "acct_brokerage",
-                    "sec_1",
-                    "15",
-                    "2475.00",
-                    "165.00",
-                    "USD",
+                _Holding(
+                    quantity="15",
+                    cost_basis="2475.00",
+                    average_cost="165.00",
+                    market_value="2700.00",
+                    unrealized_gain="225.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
                 )
             ],
         )
@@ -1507,15 +1549,302 @@ class TestHoldings:
         assert row.cost_basis == Decimal("2475.00")
         assert row.average_cost == Decimal("165.0000000000")
         assert isinstance(row.quantity, Decimal)
-        assert any("price feed" in w for w in result.warnings)
+        # Pillar C: the valuation columns reach the surface, so no caveat fires.
+        assert row.market_value == Decimal("2700.00")
+        assert row.unrealized_gain == Decimal("225.00")
+        assert row.price_date == date(2026, 7, 15)
+        assert row.price_source == "plaid"
+        assert row.days_since_observed == 0
+        assert row.valuation_status == "valued"
+        assert result.warnings == []
+
+    def test_unrealized_gain_carries_a_loss_as_a_negative(self, db: Database) -> None:
+        """A position below cost reports a signed loss, not its magnitude."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    quantity="10",
+                    cost_basis="1000.00",
+                    market_value="800.00",
+                    unrealized_gain="-200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="1",
+                    valuation_status="carried_forward",
+                )
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.rows[0].unrealized_gain == Decimal("-200.00")
+
+    def test_unvalued_rows_are_counted_in_a_warning(self, db: Database) -> None:
+        """withheld/unpriced rows carry NULL, so the caller is told how many."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(security_id="sec_2", valuation_status="unpriced"),
+                _Holding(security_id="sec_3", valuation_status="withheld"),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert len(result.warnings) == 1
+        warning = result.warnings[0]
+        assert "2" in warning
+        assert "unpriced" in warning
+        assert "withheld" in warning
+
+    def test_max_days_since_observed_reports_the_stalest_priced_position(
+        self, db: Database
+    ) -> None:
+        """The portfolio-level number is the worst age, not the freshest."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(
+                    security_id="sec_2",
+                    market_value="800.00",
+                    unrealized_gain="-200.00",
+                    price_date="2026-03-02",
+                    price_source="plaid",
+                    days_since_observed="135",
+                    valuation_status="carried_forward",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.max_days_since_observed == 135
+
+    def test_a_four_month_old_close_reports_its_age_without_a_warning(
+        self, db: Database
+    ) -> None:
+        """The carried_forward regression: staleness discloses as a number.
+
+        Counting carried_forward as unvalued would fire on every weekend, so the
+        disclosure is the age itself — always present, never a warning.
+        """
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-03-02",
+                    price_source="plaid",
+                    days_since_observed="135",
+                    valuation_status="carried_forward",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.max_days_since_observed == 135
+        assert result.warnings == []
+
+    def test_max_days_since_observed_is_none_when_nothing_is_priced(
+        self, db: Database
+    ) -> None:
+        """No priced position means the max is undefined — null, not a fresh 0."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(security_id="sec_1", valuation_status="unpriced"),
+                _Holding(security_id="sec_2", valuation_status="withheld"),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.max_days_since_observed is None
+        # Paired positive: the same shape yields a number once one row prices.
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(security_id="sec_1", valuation_status="unpriced"),
+                _Holding(
+                    security_id="sec_2",
+                    market_value="800.00",
+                    unrealized_gain="-200.00",
+                    price_date="2026-07-12",
+                    price_source="plaid",
+                    days_since_observed="3",
+                    valuation_status="carried_forward",
+                ),
+            ],
+        )
+        assert db_service(db).holdings().max_days_since_observed == 3
+
+    def test_single_currency_portfolio_totals_its_market_value(
+        self, db: Database
+    ) -> None:
+        """One currency across every priced position — the total is safe to sum."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(
+                    security_id="sec_2",
+                    market_value="800.50",
+                    unrealized_gain="-199.50",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value == Decimal("2000.50")
+        assert result.market_value_by_currency == {"USD": Decimal("2000.50")}
+
+    def test_mixed_currency_portfolio_refuses_a_total(self, db: Database) -> None:
+        """Summing EUR into USD would invent a figure; publish the split instead."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    currency_code="USD",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(
+                    security_id="sec_2",
+                    currency_code="EUR",
+                    market_value="900.00",
+                    unrealized_gain="100.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value is None
+        assert result.market_value_by_currency == {
+            "USD": Decimal("1200.00"),
+            "EUR": Decimal("900.00"),
+        }
+
+    def test_currency_casing_does_not_read_as_a_second_currency(
+        self, db: Database
+    ) -> None:
+        """'usd' and 'USD' are one currency — a total must still publish."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    currency_code="USD",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(
+                    security_id="sec_2",
+                    currency_code="usd",
+                    market_value="800.00",
+                    unrealized_gain="-200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value == Decimal("2000.00")
+        assert result.market_value_by_currency == {"USD": Decimal("2000.00")}
+
+    def test_unpriced_positions_are_excluded_from_the_total(self, db: Database) -> None:
+        """A NULL market value contributes nothing — and no zero-currency key."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(
+                    security_id="sec_2",
+                    currency_code="EUR",
+                    valuation_status="unpriced",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value == Decimal("1200.00")
+        assert result.market_value_by_currency == {"USD": Decimal("1200.00")}
+
+    def test_nothing_priced_publishes_no_total_and_an_empty_breakdown(
+        self, db: Database
+    ) -> None:
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db, [_Holding(security_id="sec_1", valuation_status="unpriced")]
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value is None
+        assert result.market_value_by_currency == {}
 
     def test_account_ref_resolves_and_filters(self, db: Database) -> None:
         _seed_read_fixtures(db)
         _replace_holdings_view(
             db,
             [
-                ("acct_brokerage", "sec_1", "10", "1000.00", "100.00", "USD"),
-                ("acct_roth", "sec_2", "20", "2000.00", "100.00", "USD"),
+                _Holding(account_id="acct_brokerage", security_id="sec_1"),
+                _Holding(
+                    account_id="acct_roth",
+                    security_id="sec_2",
+                    quantity="20",
+                    cost_basis="2000.00",
+                ),
             ],
         )
         result = db_service(db).holdings(account_ref="acct_roth")
@@ -1528,8 +1857,8 @@ class TestHoldings:
         _replace_holdings_view(
             db,
             [
-                ("acct_brokerage", "sec_1", "10", "1000.00", "100.00", "USD"),
-                ("acct_brokerage", "sec_2", "20", "2000.00", "100.00", "USD"),
+                _Holding(security_id="sec_1"),
+                _Holding(security_id="sec_2", quantity="20", cost_basis="2000.00"),
             ],
         )
         result = db_service(db).holdings(security_ref="VTSAX")
