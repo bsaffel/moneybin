@@ -49,6 +49,7 @@ WITH positions AS (
       SUM(l.cost_basis_remaining) / NULLIF(SUM(l.remaining_quantity), 0)
     )::DECIMAL(28, 10) AS average_cost,
     MAX(l.currency_code) AS currency_code,
+    BOOL_OR(l.basis_incomplete::BOOLEAN) AS basis_incomplete,
     MAX(l.updated_at) AS updated_at
   FROM core.fct_investment_lots AS l
   WHERE
@@ -252,6 +253,41 @@ WITH positions AS (
   FROM positions AS pos
   LEFT JOIN provider_reported AS pr
     ON pr.account_id = pos.account_id AND pr.security_id = pos.security_id
+), usable_price AS (
+  /* The latest close for each position, dropped — so the LEFT JOIN below reads NULL and
+     the position falls back to 'unpriced' — when the ledger carries a recorded split
+     (core.fct_investment_transactions type='split', via position_split_events) NEWER
+     than that close. positions.quantity is already post-split, so multiplying it by a
+     pre-split close would misvalue by the split factor and publish it as
+     'carried_forward' — reading "a bit old" rather than "wrong by 2x". This is the
+     recorded-split-but-stale-price gap the split-reject withhold does not cover (that
+     clause fires on an UNrecorded split whose quantity is still pre-split).
+
+     The currency fold that used to sit on the final price join lives here now: both
+     sides UPPER()ed because the price's quote_currency (from the security object) and
+     the lot's currency_code (from the transaction object, stored verbatim; unofficial
+     crypto codes uncased) share no casing guarantee — a case-sensitive match would
+     report a position 'unpriced' while the resolved close sits in
+     core.fct_security_prices. */
+  SELECT
+    p.account_id,
+    p.security_id,
+    lp.close,
+    lp.price_date,
+    lp.source_type
+  FROM positions AS p
+  JOIN latest_price AS lp
+    ON lp.security_id = p.security_id AND lp.quote_currency = UPPER(p.currency_code)
+  WHERE
+    NOT EXISTS(
+      SELECT
+        1
+      FROM position_split_events AS pse
+      WHERE
+        pse.account_id = p.account_id
+        AND pse.security_id = p.security_id
+        AND pse.trade_date > lp.price_date
+    )
 )
 SELECT
   p.account_id, /* FK to core.dim_accounts (grain) */
@@ -268,14 +304,14 @@ SELECT
     )::DECIMAL(18, 2)
   END AS market_value, /* quantity × the resolved close. NULL — never zero — when no usable price applies or the quantity is known wrong: a zero is indistinguishable from a worthless position and silently understates every aggregate that sums it */
   CASE
-    WHEN wh.is_withheld
+    WHEN wh.is_withheld OR p.basis_incomplete
     THEN NULL
     ELSE (
       (
         p.quantity * lp.close
       )::DECIMAL(18, 2) - p.cost_basis
     )::DECIMAL(18, 2)
-  END AS unrealized_gain, /* market_value less cost basis; NULL whenever market_value is NULL. Realized gain is ledger-derived and lives in core.fct_realized_gains */
+  END AS unrealized_gain, /* market_value less cost basis. NULL whenever market_value is NULL, AND — even on a valued row — whenever any contributing open lot has basis_incomplete: an ACATS-style transfer_in with unknown basis stores a 0.00 cost that is not a real zero, so the subtraction would overstate the gain by the missing basis. market_value stays published (quantity × close is unaffected); only the gain is unknowable. Realized gain is ledger-derived and lives in core.fct_realized_gains */
   CASE WHEN wh.is_withheld THEN NULL ELSE lp.price_date END AS price_date, /* The date of the close used, which may be earlier than today. NULL whenever market_value is NULL — both when no close resolved ('unpriced') and when one did but the quantity is known wrong ('withheld'): a withheld row publishing today's date beside blanked figures reads as "pricing is current, something else is missing", which is the opposite of the truth. The close itself is not lost — it stays queryable in core.fct_security_prices, which is where a support path should look */
   CASE WHEN wh.is_withheld THEN NULL ELSE lp.source_type END AS price_source, /* Which source_type supplied the close (see core.fct_security_prices); NULL exactly when price_date is NULL, on both 'unpriced' and 'withheld' */
   CASE
@@ -300,16 +336,10 @@ SELECT
 FROM positions AS p
 LEFT JOIN provider_reported AS pr
   ON pr.account_id = p.account_id AND pr.security_id = p.security_id
-/* Both sides of the currency predicate are UPPER()ed because they arrive from
-   different provider objects with no shared casing guarantee: the price's
-   quote_currency comes from the security object, the lot's currency_code from the
-   transaction object (COALESCE(iso_currency_code, unofficial_currency_code), stored
-   verbatim). unofficial_currency_code — crypto and other non-ISO instruments —
-   promises no casing at all. A case-sensitive match here would report a position as
-   'unpriced' while the resolved close for it sits in core.fct_security_prices.
-   prep.stg_security_prices normalizes its own side because fct_security_prices'
-   grain depends on it; the lot side is left as stored, so the fold happens here. */
-LEFT JOIN latest_price AS lp
-  ON lp.security_id = p.security_id AND lp.quote_currency = UPPER(p.currency_code)
+/* usable_price is per-position — currency-matched and split-staleness-excluded in the
+   CTE above — so join on the position grain. A missing row means no usable close (none
+   resolved, or the only one predates a recorded split), which reads as 'unpriced'. */
+LEFT JOIN usable_price AS lp
+  ON lp.account_id = p.account_id AND lp.security_id = p.security_id
 LEFT JOIN withheld AS wh
   ON wh.account_id = p.account_id AND wh.security_id = p.security_id

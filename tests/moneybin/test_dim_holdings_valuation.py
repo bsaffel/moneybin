@@ -593,6 +593,118 @@ def test_split_recorded_on_the_ex_date_clears_a_settlement_dated_reject(
 
 
 @pytest.mark.slow
+def test_pre_split_price_falls_back_to_unpriced(db: Database) -> None:
+    """A recorded split newer than the only close makes that close unusable.
+
+    The ledger carries a 4:1 split dated 2026-06-01, restating the position to 40 post-
+    split units. The only available close is dated 2026-05-01 — PRE-split. Multiplying
+    the post-split quantity by a pre-split price would overstate market_value by the
+    split factor and publish it as carried_forward ("a bit old") rather than wrong-by-4x,
+    so the price is dropped and the position falls back to unpriced until a post-split
+    close lands. Distinct from the split-reject withhold: here the split IS recorded
+    (quantity restated), so nothing withholds — it is the PRICE, not the share count,
+    that is stale.
+    """
+    _seed_position(db)
+    _seed_price(db, price_date=date(2026, 5, 1), close="120.00")
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, fees, created_by,
+            investment_transaction_id
+        ) VALUES ('split_1', 'imp_1', 'acc_1', 'canonvti0000001', 'VTI', 'split',
+                  DATE '2026-06-01', 4, NULL, NULL, NULL, 'test', 'split_1')
+        """  # noqa: S608  # test fixture, not executing user SQL
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    market_value, _gain, price_date, source, days, status = _holding(db)
+    assert status == "unpriced", "the only close predates the recorded split"
+    assert market_value is None, (
+        "a pre-split price must not value a post-split quantity"
+    )
+    assert price_date is None
+    assert source is None
+    assert days is None
+
+
+@pytest.mark.slow
+def test_post_split_price_values_the_position(db: Database) -> None:
+    """A close dated after the recorded split values the restated quantity normally.
+
+    Adversarial partner to test_pre_split_price_falls_back_to_unpriced: identical 4:1
+    split dated 2026-06-01, but the close is dated 2026-06-15 — AFTER the split. The
+    price is usable, so the position values at 40 restated units × the close. Proves the
+    split-staleness exclusion does not over-withhold a valid post-split price; the only
+    difference from the pre-split case is which side of the split the close falls on.
+    """
+    _seed_position(db)
+    _seed_price(db, price_date=date(2026, 6, 15), close="120.00")
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, fees, created_by,
+            investment_transaction_id
+        ) VALUES ('split_1', 'imp_1', 'acc_1', 'canonvti0000001', 'VTI', 'split',
+                  DATE '2026-06-01', 4, NULL, NULL, NULL, 'test', 'split_1')
+        """  # noqa: S608  # test fixture, not executing user SQL
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    market_value, _gain, _pd, _src, _days, status = _holding(db)
+    assert status != "unpriced", "a post-split close is usable"
+    assert market_value == Decimal("4800.00"), "40 restated units × the 120.00 close"
+
+
+@pytest.mark.slow
+def test_incomplete_basis_nulls_unrealized_gain_but_keeps_market_value(
+    db: Database,
+) -> None:
+    """A transfer_in with unknown basis publishes market_value but not an overstated gain.
+
+    An ACATS-style transfer_in with no supplied basis opens a lot the engine flags
+    basis_incomplete, storing a 0.00 cost that is not a real zero. market_value
+    (quantity × close) is unaffected and stays published, but unrealized_gain =
+    market_value - cost_basis would overstate the gain by the entire missing basis, so it
+    is nulled. The complete-basis positions elsewhere in this module (e.g.
+    test_same_day_price_values_the_position) are the adversarial partner: their gain is
+    published because their basis is real.
+    """
+    anchor = _db_today(db)
+    _seed_security(db)
+    _seed_price(db, price_date=anchor, close="120.00")
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, fees, created_by,
+            investment_transaction_id, currency_code
+        ) VALUES ('xfer_1', 'imp_1', 'acc_1', 'canonvti0000001', 'VTI', 'transfer_in',
+                  DATE '2026-01-05', 10, NULL, NULL, 0.00, 'test', 'xfer_1', 'USD')
+        """  # noqa: S608  # test fixture, not executing user SQL
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    elapsed = (_db_today(db) - anchor).days
+    market_value, gain, _pd, _src, _days, status = _holding(db)
+    assert market_value == Decimal("1200.00"), (
+        "10 units × 120.00 — the value is knowable"
+    )
+    assert gain is None, "cost basis is incomplete; a computed gain would be overstated"
+    assert status == _expected_status(elapsed), (
+        "the position is priced, just gain-blind"
+    )
+
+
+@pytest.mark.slow
 def test_quantity_divergence_withholds(db: Database) -> None:
     """The broker's newest snapshot contradicts the ledger's own share count.
 
