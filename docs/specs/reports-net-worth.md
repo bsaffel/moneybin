@@ -7,8 +7,8 @@ implemented
 > described below was migrated to `reports.net_worth` as part of
 > [`reports-recipe-library.md`](reports-recipe-library.md) (PR landing the
 > inaugurating `reports.*` schema). `NetworthService` reads from
-> `reports.net_worth`; `TableRef.AGG_NET_WORTH` was replaced by
-> `TableRef.REPORTS_NET_WORTH`. Original section text below preserved for
+> `reports.net_worth`; the module-level `AGG_NET_WORTH` constant was replaced by
+> `REPORTS_NET_WORTH`. Original section text below preserved for
 > historical context; the live model lives at
 > `src/moneybin/sqlmesh/models/reports/net_worth.sql`.
 
@@ -45,7 +45,7 @@ Related specs and docs:
 8. **Manual balance assertions:** Users can assert a known balance via `moneybin accounts balance assert <account_id> <date> <amount>`. Stored in `app.balance_assertions`. Serves as an authoritative observation alongside institution-provided balances.
 9. **No balance without an anchor:** Accounts with zero balance observations produce no `fct_balances_daily` rows. The system does not estimate an opening balance from transactions alone.
 10. **CLI commands:** `moneybin reports networth`, `moneybin reports networth-history`, `moneybin accounts balance show`, `moneybin accounts balance history`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance assertion-delete`, `moneybin accounts balance reconcile`. The `accounts` parent group is registered by [`account-management.md`](account-management.md); this spec contributes the `balance` sub-group.
-11. **MCP tools** (per [`moneybin-mcp.md`](moneybin-mcp.md) v2): `reports_networth`, `reports_networth_history`, `accounts_balances`, `accounts_balance_history`, `accounts_balance_reconcile`, `accounts_balance_assertions`, `accounts_balance_assert` (write), `accounts_balance_assertion_delete` (write).
+11. **MCP surface** (per [`moneybin-mcp.md`](moneybin-mcp.md)): use `reports(report_id="core:networth")` for a snapshot and `reports(report_id="core:networth_history", parameters={"from_date":"2026-01-01","to_date":"2026-06-30","interval":"monthly"})` for history. History requires `from_date` and `to_date`; `interval` is optional. Balance operations use `accounts_balances(view=...)` and `accounts_balance_assert(account=..., as_of=..., state=...)`.
 12. **All commands support `--output json`** for non-interactive parity.
 13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (M1J and M1K respectively). Net worth v1 covers cash accounts only.
 
@@ -233,55 +233,71 @@ moneybin accounts balance reconcile [--account ACCOUNT_ID] [--threshold AMOUNT] 
 
 ## MCP Interface
 
-Tool naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix). Cross-domain rollups live under `reports_*`; per-account workflows live under `accounts_balance_*`.
+The registered MCP surface uses the generic report catalog for cross-domain
+rollups and a view-selected balance projection for per-account reads.
 
 ### Read tools
 
-**`reports_networth`** — Current or historical net worth.
-- Params: `as_of_date` (optional DATE), `account_ids` (optional list of VARCHAR)
-- Returns: total net worth, total assets, total liabilities, per-account breakdown with balance and source, as-of date
+**`reports(report_id="core:networth", parameters={...})`** — Current or
+historical net worth.
+- Params: `{"as_of": "YYYY-MM-DD", "account_ids": ["..."]}`; both are optional
+- Returns rows with `balance_date`, `net_worth`, `total_assets`,
+  `total_liabilities`, `account_count`, `account_id`, `account_name`,
+  `account_balance`, and `observation_source`; headline fields repeat on each
+  account-breakdown row
 - No-data contract: if no position exists on or before the requested date,
   `balance_date`, `net_worth`, `total_assets`, and `total_liabilities` are null;
-  `account_count` is `0` and the account breakdown is empty. A missing position is
-  never synthesized as a zero balance or assigned the current date.
+  `account_count` is `0`, and the result contains one sentinel row with null
+  `account_id`, `account_name`, `account_balance`, and `observation_source`. A
+  missing position is never synthesized as a zero balance or assigned the
+  current date.
 
-**`reports_networth_history`** — Net worth time series.
-- Params: `from_date` (DATE), `to_date` (DATE), `interval` (daily|weekly|monthly, default monthly)
-- Returns: time series with net worth, period-over-period change (absolute and percentage), account count
+**`reports(report_id="core:networth_history", parameters={...})`** — Net
+worth time series.
+- Params: `{"from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD", "interval": "daily|weekly|monthly"}`
+- Returns rows with only `period`, `net_worth`, `change_abs`, and `change_pct`
 - Each returned period uses its last resolved transaction-adjusted daily
   position; periods without a position are omitted.
 
-**`accounts_balances`** — Current balance per account.
-- Params: `account_ids` (optional list), `as_of_date` (optional DATE)
-- Returns: per-account balance with date of last observation and source attribution
+**`accounts_balances(view="latest", ...)`** — Current balance per account.
+- Params: `reference` (optional account reference), `as_of` (optional DATE), `limit`, and `cursor`
+- Returns observations with `account_id`, `balance_date`, `balance`,
+  `is_observed`, `observation_source`, and `reconciliation_delta`
 
-**`accounts_balance_history`** — Per-account balance time series.
-- Params: `account_id` (VARCHAR, required), `from_date` (optional DATE), `to_date` (optional DATE), `interval` (daily|weekly|monthly, default daily)
-- Returns: time series of `{date, balance, is_observed, observation_source, reconciliation_delta}`
+**`accounts_balances(view="history", ...)`** — Per-account balance time
+series.
+- Params: `reference` (required account reference), `start`/`end` (optional DATE), `limit`, and `cursor`
+- Returns observations with `account_id`, `balance_date`, `balance`,
+  `is_observed`, `observation_source`, and `reconciliation_delta`
 
-**`accounts_balance_reconcile`** — Accounts with non-zero reconciliation deltas.
-- Params: `account_ids` (optional list), `threshold` (optional DECIMAL, default 0.01)
-- Returns: list of `{account_id, balance_date, observed_balance, transaction_derived_balance, delta, source_type}` for days where the delta exceeds the threshold
+**`accounts_balances(view="reconcile", ...)`** — Accounts with non-zero
+reconciliation deltas.
+- Params: `reference` (optional account reference), `threshold` (optional DECIMAL), `limit`, and `cursor`
+- Returns observations with `account_id`, `balance_date`, `balance`,
+  `is_observed`, `observation_source`, and `reconciliation_delta` for days where
+  the absolute reconciliation delta exceeds the threshold
 
-**`accounts_balance_assertions`** — Manual balance assertions.
-- Params: `account_id` (optional VARCHAR)
-- Returns: list of assertions with dates, amounts, and notes
+**`accounts_balances(view="assertions", ...)`** — Manual balance assertions.
+- Params: `reference` (optional account reference), `limit`, and `cursor`
+- Returns assertions with `account_id`, `assertion_date`, `balance`, `notes`,
+  and `created_at`
 
 ### Write tools
 
-**`accounts_balance_assert`** — Insert or update a manual balance assertion.
-- Params: `account_id` (VARCHAR, required), `assertion_date` (DATE, required), `balance` (DECIMAL, required), `notes` (optional VARCHAR)
-- Returns: the upserted assertion row
-- Sensitivity: `medium` (writes financial data); requires confirmation per MCP write-tool conventions
+**`accounts_balance_assert(state="present", ...)`** — Insert or update a
+manual balance assertion.
+- Params: `account` (required), `as_of` (required DATE), `amount` (required DECIMAL)
+- Returns `account_id`, `as_of`, `prior_state`, `state`, and `operation_id`
+- Sensitivity: `medium` (writes financial data); `confirmation_token` is invalid
+  for `state="present"`
 
-**`accounts_balance_assertion_delete`** — Remove a manual balance assertion.
-- Params: `account_id` (VARCHAR, required), `assertion_date` (DATE, required)
-- Returns: status + the deleted row's previous values
+**`accounts_balance_assert(state="absent", ...)`** — Remove a manual balance
+assertion.
+- Params: `account` (required), `as_of` (required DATE), and the exact
+  payload-bound `confirmation_token`; `amount` is forbidden
+- Returns `account_id`, `as_of`, `prior_state`, `state`, and `operation_id`, or
+  `mutation_nothing_to_do` when already absent
 - Sensitivity: `medium`; requires confirmation
-
-### Resources
-
-**`net-worth://summary`** — Current net worth snapshot. Useful as context for AI conversations about finances. Returns: total net worth, total assets, total liabilities, account count, as-of date.
 
 ## Synthetic Data Requirements
 
@@ -397,9 +413,9 @@ Tests:
 
 - `src/moneybin/sql/schema.py` — register `app_balance_assertions.sql` in the schema init list (account-management.md registers `app_account_settings.sql`)
 - `src/moneybin/cli/main.py` — register the new top-level `reports` group; remove the `track networth` / `track balance` stubs from `commands/stubs.py` (they migrate to their v2 homes)
-- `src/moneybin/mcp/tools/__init__.py` (and the per-tool registry) — add tools listed in §MCP Interface
-- `src/moneybin/mcp/resources/` — add `net-worth://summary` resource
-- `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers per `moneybin-mcp.md`
+- `src/moneybin/mcp/tools/reports.py` and
+  `src/moneybin/mcp/tools/accounts.py` — register the catalog, balance-view,
+  and assertion-state routes listed in §MCP Interface
 - `docs/specs/INDEX.md` — flip status to `in-progress` on entry; flip to `implemented` when shipped
 
 ### Key Decisions

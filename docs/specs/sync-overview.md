@@ -332,19 +332,25 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 
 | Tool | Description | Parameters |
 |---|---|---|
-| `sync_pull` | Trigger a bank data sync, wait for completion, load results; runs post-load refresh by default | `institution: str \| None`, `force: bool`, `refresh: bool` |
-| `sync_status` | Show connected institutions and health | None |
-| `sync_link` | Start bank link flow | `institution: str \| None`; returns session URL |
-| `sync_link_status` | Poll a link session for completion | `session_id: str` |
-| `sync_disconnect` | Remove a bank connection | `institution: str` |
-| `sync_schedule_set` / `sync_schedule_show` / `sync_schedule_remove` | Manage automated sync schedule (split per shape-3 verb convention) | `time: str` on `_set` (HH:MM) |
+| `sync_pull` | Trigger a bank data sync, wait for completion, and load results | `institution: str \| None` |
+| `sync_status` | Show connected institutions and health, inspect one link session, or advance one device-login session | `session_id: str \| None` or `auth_session_id: str \| None` (mutually exclusive) |
+| `sync_link` | Start a bank link or device-login flow | `institution: str \| None`, `mode: "institution" \| "login"`; returns session URL or device credentials |
+| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `mode: "institution" \| "logout"`, `confirmation_token: str \| None` |
 
 Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/OpenAI tool-name regex (`mcp-architecture.md` §3).
 
-### Not exposed as MCP tools
+### MCP authentication lifecycle
 
-- **`login` / `logout`** — Requires browser interaction and credential handling. CLI-only. If not authenticated, MCP tools return an error directing the user to run `moneybin sync login`.
-- Provider-specific operations — all abstracted behind the provider-agnostic tools above.
+- Start device login with `sync_link(mode="login")`.
+- After the user completes the verification URL, advance that session with
+  `sync_status(auth_session_id=...)`.
+- Disconnecting an institution is a two-call confirmation flow. First call
+  `sync_disconnect(mode="institution", institution=<institution>)`; when it returns
+  `confirmation_required`, retry the same call with `confirmation_token=<token>`.
+- Clear profile-scoped credentials with `sync_disconnect(mode="logout")`. Logout
+  does not accept `institution` or `confirmation_token`.
+- Provider-specific operations remain abstracted behind the provider-agnostic
+  tools above.
 
 ### Prompt
 
@@ -354,7 +360,7 @@ Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/Op
 
 ### How synced data surfaces
 
-No sync-specific read tools needed. Once data is pulled and transformed, it flows through the existing core tables. All existing MCP tools (`transactions_review`, `reports_spending`, `accounts`, etc.) automatically include synced data via `source_type = '{provider}'` — the data warehouse doing its job.
+No additional sync-specific read tools are needed. Once data is pulled and transformed, it flows through the existing core tables and the standard query and report surface automatically includes synced data via `source_type = '{provider}'`.
 
 ---
 
@@ -427,7 +433,7 @@ The client detects the server's encryption state from the response:
 | `application/json` | Parse JSON directly (v1 server) |
 | `application/age` | Decrypt with private key, then parse JSON (v2 server) |
 
-No client-side flag or configuration needed. A v2 client works seamlessly against both v1 and v2 servers.
+No client-side flag or configuration is needed. A v2 client reads both v1 JSON and v2 encrypted responses.
 
 ### Cryptographic algorithm selection
 
@@ -437,7 +443,7 @@ Selected for simplicity, auditability, and mature library support. X25519 is the
 
 **Known limitations:**
 
-- **Not quantum-resistant.** X25519 is vulnerable to Shor's algorithm on a sufficiently powerful quantum computer. The threat to personal financial data is not imminent, but the design must not preclude an upgrade.
+- **Not quantum-resistant.** X25519 is vulnerable to Shor's algorithm on a fault-tolerant quantum computer. The threat to personal financial data is not imminent, but the design must not preclude an upgrade.
 - **Not FIPS 140-3 compliant.** X25519 is not a NIST-approved curve. FIPS requires P-256, P-384, or P-521 for ECC. Argon2id (used for passphrase-based key protection) is also not FIPS-approved (FIPS requires PBKDF2 or HKDF). If MoneyBin ever pursues SOC 2 certification or serves regulated entities, these algorithms would need to be swapped.
 
 **Upgrade path: hybrid X25519 + ML-KEM (CRYSTALS-Kyber)**
@@ -689,7 +695,7 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 - Plaid staging views and core model integration (see `sync-plaid.md`)
 - `app.sync_connections` table and health tracking
 - CLI commands: `login`, `logout`, `connect`, `disconnect`, `pull`, `status`
-- MCP tools: `sync.pull`, `sync.status`, `sync.connect`, `sync.disconnect`
+- MCP tools: `sync_pull`, `sync_status`, `sync_link`, `sync_disconnect`
 - MCP prompt: `sync_review`
 - Error handling with actionable guidance
 - Unit tests and SQL tests (no server dependency)
@@ -697,7 +703,7 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 ### Phase 2: Automation
 
 - `moneybin sync schedule set/show/remove` CLI commands
-- `sync.schedule` MCP tool
+- Scheduling remains CLI-only until a bounded MCP capability is separately admitted.
 - launchd (macOS) and cron (Linux) job generation
 - Logging configuration for unattended runs (rotate, size limit)
 - Schedule lifecycle management (idempotent set, clean remove)

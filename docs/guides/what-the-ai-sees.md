@@ -83,13 +83,12 @@ the MCP tools and the CLI `--output json` surface alike:
 - **Routing numbers** → `*****` (fully masked).
 
 This is enforced by **field classification**, not convention. Every tool in
-MoneyBin's 47-tool standard registry must declare the privacy class of each
-field it returns, or it fails to register at startup; a field **typed as** an
-account or routing number is always masked. The two dynamic surfaces reach that
-result by different paths: `sql_query` traces each output column back to its
-source column through the SQL and masks by the resolved class (a column it can't
-resolve **fails closed** to the most-sensitive treatment), while the report views
-mask by a **declared
+MoneyBin's 47-tool standard registry must declare the privacy class of each field it
+returns, or it fails to register at startup; a field **typed as** an account or
+routing number is always masked. The two dynamic surfaces reach the same result
+two different ways: `sql_query` traces each output column back to its source
+column through the SQL and masks by the resolved class (a column it can't resolve
+**fails closed** to the most-sensitive treatment), while the report views mask by a **declared
 per-report column→class map** — lineage tracing is deliberately *not* used there
 (a `reports.*` view is `SELECT * FROM <internal table>`, so tracing would classify
 the pointer and leak; per ADR-013). Either way raw SQL is not a bypass: `SELECT

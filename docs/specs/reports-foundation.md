@@ -43,7 +43,7 @@ column means**:
 
 | Path | Undeclared column resolves to | Where |
 |---|---|---|
-| Report tool (`reports_*`) | `ACCOUNT_IDENTIFIER` → masked | `reports/_framework/classify.py` (`_FAIL_CLOSED`) |
+| Report projection (`reports(report_id=...)`) | `ACCOUNT_IDENTIFIER` → masked | `reports/_framework/classify.py` (`_FAIL_CLOSED`) |
 | `sql_query` (pre-fix) | `AGGREGATE` (LOW) → **clear** | `privacy/sql_lineage.py`'s single fallback (R1 below splits it in two) |
 
 The report framework already reasoned about this correctly and called its
@@ -202,7 +202,7 @@ current — mechanically produced, so it cannot drift the way the bridge could.
 
 Per D3, membership in `reports.*` *is* the definition of "is a report."
 `uncategorized_queue` is service-internal — its only runtime reader is
-`services/categorization/queries.py`, backing `transactions_categorize_pending`
+`services/categorization/queries.py`, backing `reviews(kind="categorization", status="pending")`
 — so it moved out of `reports.*` into `core.uncategorized_queue`.
 
 `core` rather than `prep`, because `prep` is not in `_ALLOWED_QUERY_SCHEMAS`;

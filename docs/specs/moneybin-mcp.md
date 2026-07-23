@@ -11,12 +11,19 @@
 ## Purpose
 
 This is the concrete current MCP contract. Generic clients receive the complete
-47-tool standard registry. Supported hosts may defer schemas from that same
-registry without reconnect, packs, or profiles; names, annotations, approvals,
-allowlists, and audit identity do not change. The previous per-tool catalog is
-archived at [`archived/moneybin-mcp-pre-cutover.md`](archived/moneybin-mcp-pre-cutover.md).
+47-tool standard registry. Capable hosts may optionally defer schemas from that
+same registry without reconnect, packs, or profiles; names, annotations,
+approvals, allowlists, and audit identity do not change. The previous per-tool
+catalog is archived at
+[`archived/moneybin-mcp-pre-cutover.md`](archived/moneybin-mcp-pre-cutover.md).
+Future MCP capabilities remain unnamed until admission through the bounded
+registry.
 
 ## Standard registry
+
+The 11 user-facing domains below group 14 literal tool-name prefixes. A prefix
+is the portion before the first underscore: `identity_*` belongs to Reviews,
+`gsheet_*` belongs to Sync, and `refresh_*` plus `sql_*` belong to Platform.
 
 | Domain | Tools |
 |---|---|
@@ -68,7 +75,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / maximum medium / view-derived |
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / maximum low |
 | `import_files` | `force`, `paths`, `refresh` | Import files | Audited workflow / maximum critical / file-derived |
-| `import_preview` | `file_path` | Inspect an import before mutation | Read / dynamic / maximum critical / file-derived |
+| `import_preview` | `file_path` | Stage and inspect an import proposal | Staged write (`readOnlyHint=false`, `idempotentHint=false`) / dynamic / maximum critical / file-derived |
 | `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / maximum medium / preview-derived |
 | `import_status` | `cursor`, `import_id`, `limit`, `sections` | Import lifecycle status | Read / dynamic / maximum medium / import-derived |
 | `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch | Audited recovery / maximum low |
@@ -126,7 +133,7 @@ Every tool returns canonical JSON text and equivalent structured content with a
 `summary`, `data`, and `actions` envelope. Amounts use the accounting
 convention (negative expense, positive income) unless the tool explicitly
 states a presentation override; currency-bearing responses name their currency
-in `summary.display_currency`. Initial registry tools advertise zero output
+in `summary.display_currency`. Current registry tools advertise zero output
 schemas. A future schema needs the consumer-driven admission record in the
 governing spec.
 
@@ -138,7 +145,7 @@ and confirmation contracts.
 
 ## Coarse contracts and workflow boundaries
 
-- `reports(report_id, parameters, limit)` first returns the catalog without a
+- `reports(report_id=..., parameters=..., limit=...)` first returns the catalog without a
   report ID, then executes a selected report. New reports are catalog entries,
   never new tool slots.
 - `accounts`, `investments`, `transactions`, `reviews`, `taxonomy`, `privacy`,
@@ -151,7 +158,13 @@ and confirmation contracts.
   payload-bound `confirmation_token` and retry the same operation; both paths
   recompute and compare the live proposal inside the write transaction before
   importing. `import_status` and `import_revert` provide recovery.
-  `refresh_run` owns the bounded derived-state workflow.
+
+- `import_preview` persists encrypted metadata in `app.import_previews` and
+  staged bytes in `raw.import_preview_snapshots`. Preview issue, consume, and
+  expiry transitions are audit events; unused previews expire after the
+  configured TTL. Its `readOnlyHint=false` annotation reflects that retained
+  state even though it does not commit ledger rows.
+- `refresh_run` owns the bounded derived-state workflow.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 
@@ -192,8 +205,9 @@ standard names above and lead with `system_status` when orientation is needed.
 
 ### Resources
 
-`moneybin://schema` is the one registered ambient resource for privacy-safe
-read-only SQL; it does not create a discovery, pack, or profile mode.
+`moneybin://schema` is the one registered, client-requested resource for
+privacy-safe read-only SQL; it does not create a discovery, pack, or profile
+mode.
 
 ## Capability parity and exemptions
 

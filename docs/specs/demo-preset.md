@@ -37,11 +37,12 @@ The pieces already exist; `demo` orchestrates them.
 - **Profile lifecycle** (`services/profile_service.py`): `ProfileService.create`
   builds the profile dir + `config.yaml` + encrypted DB + optional inbox. It
   does **not** activate the profile.
-- **Refresh pipeline** (`services/refresh.py`): `refresh(db)` runs the full
-  `match → transform → categorize` cascade. `synthetic generate` runs only the
-  `transform` step, so synthetic data is materialized but **not matched or
-  categorized** — `demo` needs the full cascade to land a categorized,
-  doctor-clean dataset.
+- **Refresh pipeline** (`services/refresh.py`): unscoped `refresh(db)` runs the
+  full `gsheet → match → transform → categorize → identity` cascade. Demo uses
+  two scoped calls instead: `refresh(db, steps=["transform"])` builds the views,
+  then `refresh(db, steps=["match", "categorize"])` operates on them. The
+  `gsheet` and `identity` steps are intentionally omitted: demo owns its
+  synthetic raw input and needs no external pull or identity proposal backfill.
 - **Doctor** (`services/doctor_service.py`): `DoctorService.run_all()` returns
   a report; `report.failing == 0` is "clean."
 - **The answer** (`services/`… net worth): `NetworthService.current()` backs
@@ -49,9 +50,9 @@ The pieces already exist; `demo` orchestrates them.
   first-payoff.
 
 What's missing is the orchestration that (1) creates/activates a dedicated,
-safe-to-reset profile, (2) runs the *full* pipeline (not just transform), (3)
-asserts a clean doctor, and (4) ends on one obvious answer plus a guided
-next-step menu.
+safe-to-reset profile, (2) runs the scoped transform-then-match-and-categorize
+pipeline in its load-bearing order, (3) asserts a clean doctor, and (4) ends on
+one obvious answer plus a guided next-step menu.
 
 ## Design
 
@@ -156,7 +157,7 @@ flowchart TD
     SVC --> C["set_current_profile (process-level, to open the right DB)"]
     SVC --> R["if it existed: guard → rebuild the database from scratch"]
     SVC --> G["GeneratorEngine.generate → SyntheticWriter.write"]
-    SVC --> F["refresh(db, steps=[match, transform, categorize])"]
+    SVC --> F["scoped refresh: transform, then match + categorize"]
     SVC --> D["DoctorService.run_all()"]
     SVC --> N["NetworthService.current()"]
     SVC --> A["set_default_profile (only after a fully successful run)"]
@@ -216,7 +217,7 @@ follow-up (filed), not part of this feature. `DemoService` calls the clean
    `SyntheticWriter(db).write(...)`.
 5. **Transform**, on its own → `refresh(db, steps=["transform"])`. It must be its
    own call: `refresh()` runs its steps in canonical order (`gsheet` → `match` →
-   `transform` → `categorize`) *regardless of the order they are passed in*, so a
+   `transform` → `categorize` → `identity`) *regardless of the order they are passed in*, so a
    single combined call runs `match` first — against a database demo just rebuilt,
    where `prep.*`/`core.*` don't exist yet. `refresh()` treats the resulting
    `CatalogException` as an expected first-load precondition and swallows it, so
@@ -234,7 +235,8 @@ follow-up (filed), not part of this feature. `DemoService` calls the clean
    `core.dim_categories`), before `categorize`.
 7. **Match + categorize** → `refresh(db, steps=["match", "categorize"])` against the
    built views. The `gsheet` step is never requested: demo generated its own raw data
-   and must never trigger a live external pull. A failure in *any* step (including
+   and must never trigger a live external pull. The `identity` step is also omitted;
+   identity proposal backfill is outside the demo's categorized-report payoff. A failure in *any* requested step (including
    `matching_error` / `categorization_error`) aborts — demo's premise is a clean,
    categorized pipeline.
 8. **Doctor** → `DoctorService(db).run_all(full=True)` — exhaustive, not the default

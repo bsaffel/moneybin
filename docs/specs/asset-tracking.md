@@ -30,11 +30,11 @@ Related specs and docs:
 6. **Materialize `core.fct_asset_valuations_daily`** — a SQLMesh TABLE with one row per asset per day. Carries forward the latest valuation until a new one arrives. Simpler than account balance carry-forward — no transaction adjustments needed.
 7. **Extend `reports.net_worth`** to include asset valuations. Net worth = sum of account balances + sum of asset valuations. Disposed assets stop contributing after their disposal date.
 8. **Liability linking.** An asset can optionally reference a liability account in `dim_accounts` (e.g., a mortgage for a house, an auto loan for a car). This link is informational — it enables equity display (`value - liability balance`) but is not used in net worth arithmetic. Both the asset value and the liability balance contribute to net worth independently.
-9. **Staleness warnings.** Each valuation in `fct_asset_valuations_daily` tracks days since the last real observation. Warnings surface in CLI output and MCP responses when a valuation exceeds its staleness threshold. Warnings are informational only — stale values are still included in net worth.
+9. **Staleness warnings.** Each valuation in `fct_asset_valuations_daily` tracks days since the last real observation. Warnings surface in CLI output when a valuation exceeds its staleness threshold. Warnings are informational only — stale values are still included in net worth.
 10. **Staleness threshold resolution:** per-asset override → per-type default → global config default.
 11. **Asset disposal.** Assets can be marked as sold with a date and sale amount. Disposed assets stop contributing to net worth but their history is preserved.
 12. **CLI commands** under `assets` (see CLI Interface section).
-13. **MCP tools:** `assets`, `assets_get`, `assets_summary` (see MCP Interface section).
+13. **MCP boundary:** No asset-specific MCP route is registered.
 14. **All commands support `--output json`** for non-interactive parity.
 15. **Source precedence within a day.** When multiple valuation sources exist for the same asset on the same date: manual (user assertion) > appraisal > automated estimate (Zillow/KBB).
 
@@ -232,7 +232,6 @@ asset_staleness_default_days: int = (
 
 - **`assets list`** — warning indicator next to stale assets with days since last valuation
 - **`reports networth`** — summary note: "N assets have stale valuations" with asset names
-- **MCP tools** — `summary.warnings` array includes stale asset notices
 
 Staleness is informational only — never blocks queries or omits stale assets from net worth. The value is still included; the system tells you it might be outdated.
 
@@ -322,49 +321,21 @@ Net Worth: $347,250 as of 2025-04-23
   ⚠️ 1 asset has a stale valuation: 2021 Tesla Model 3 (234 days)
 ```
 
-## MCP Interface
+## MCP boundary
 
-### Tools
+Asset tracking is draft. No asset-specific MCP route or asset contribution to
+the report catalog is registered today. If this spec is implemented, asset
+valuation reads reach agents through the standard coarse registry or the
+existing report catalog; this spec does not reserve callback names.
 
-**`assets`** — List assets with current valuations and staleness status.
-- Params: `asset_type` (optional VARCHAR), `include_disposed` (optional BOOLEAN, default false)
-- Sensitivity: `medium` (asset names and values)
-- Returns: assets with latest valuation, days since valuation, staleness warning, linked liability balance
+### Draft report-catalog change
 
-**`assets_get`** — Full detail for a single asset including valuation history.
-- Params: `asset_id` (VARCHAR)
-- Sensitivity: `medium` (individual asset details)
-- Returns: all asset fields, valuation history, linked liability info, gain/loss vs acquisition cost
-
-**`assets_summary`** — Aggregate asset value by type.
-- Params: `as_of_date` (optional DATE)
-- Sensitivity: `low` (aggregates only)
-- Returns: total value, breakdown by type, count, stale asset warnings
-
-### Response envelope
-
-Follows the standard envelope from [`mcp-architecture.md`](mcp-architecture.md):
-
-```json
-{
-  "summary": {
-    "total_count": 3,
-    "sensitivity": "medium",
-    "display_currency": "USD",
-    "warnings": ["1 asset has a stale valuation: 2021 Tesla Model 3 (234 days)"]
-  },
-  "data": [...],
-  "actions": ["Use assets_get for full history", "Use 'assets value set' to update stale valuations"]
-}
-```
-
-### Write tools
-
-Deferred to v2, same as balance assertion write tools in the net worth spec. The `assets` CLI handles the low-frequency asset management workflow for v1.
-
-### Net worth tools (existing, extended)
-
-`reports_networth` and `reports_networth_history` from the net worth spec automatically include assets via the extended `reports.net_worth` view — no new tools needed. The response gains a `total_physical_assets` field alongside `total_assets` and `total_liabilities`.
+Implementation would extend
+`reports(report_id="core:networth", parameters={...})` and
+`reports(report_id="core:networth_history", parameters={...})` through the
+underlying `reports.net_worth` model. The proposed snapshot response adds
+`total_physical_assets` alongside `total_assets` and `total_liabilities`; that
+field is not part of the live catalog response.
 
 ## Testing Strategy
 
@@ -432,7 +403,6 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 - `src/moneybin/sql/schema.py` — register new DDL files for `app.assets` and `app.asset_valuations`
 - `src/moneybin/config.py` — add `asset_staleness_default_days` to `MoneyBinSettings`
 - `src/moneybin/sqlmesh/models/reports/net_worth.sql` — extend to include asset valuations (created by net worth spec, modified here)
-- `src/moneybin/mcp/tools/` — add `assets.list`, `assets.detail`, `assets.summary` tools
 - `docs/specs/INDEX.md` — add entry for this spec
 
 ### Key Decisions
@@ -440,7 +410,8 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 1. **Assets are not accounts.** Accounts have transactions and balances; assets have appraisals and valuations. Separate data models, united only at the net worth aggregation layer.
 2. **Manual valuations in `app`, external in `raw`.** Follows the existing layer conventions — user-authored state in `app`, external source data in `raw` flowing through `prep` to `core`.
 3. **Liability linking is informational.** The FK to `dim_accounts` enables equity display but does not affect net worth arithmetic. No double-counting risk.
-4. **Staleness is informational.** Warnings surface in CLI and MCP but never block queries or omit values from net worth.
+4. **Staleness is informational.** Warnings surface in the CLI and the proposed
+   report-catalog result but never block queries or omit values from net worth.
 5. **`sell` not `dispose`.** Natural language for the 90% case. Edge cases (gift, loss) handled with `--amount 0` and `--notes`.
 6. **`value set/unset`** — declarative verb pair for valuations. "Set" handles both insert and update. "Unset" is the natural inverse.
 7. **Source precedence mirrors net worth.** Manual > appraisal > automated estimate, same philosophy as balance observation precedence.

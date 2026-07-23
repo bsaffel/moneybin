@@ -18,7 +18,7 @@ Related specs:
 - [`transaction-curation.md`](transaction-curation.md) §"Dropped: verified flag" — original motivation
 - [`data-reconciliation.md`](data-reconciliation.md) — broader ETL integrity checks; doctor is a focused, user-facing subset
 - [`moneybin-cli.md`](moneybin-cli.md) — CLI v2 taxonomy; doctor is top-level, parallel to `transform`
-- [`moneybin-mcp.md`](moneybin-mcp.md) — `system_doctor` tool registration
+- [`moneybin-mcp.md`](moneybin-mcp.md) — the `system_status` doctor-section contract
 
 ## Design
 
@@ -152,18 +152,18 @@ With `--verbose`, affected IDs appear under each failing line:
 
 ## MCP Interface
 
-**`system_doctor`** — registered alongside `system_status` in `src/moneybin/mcp/tools/system.py`.
+**`system_status(sections=["doctor"], detail="full")`** — the selected doctor
+section of the standard system-status contract in `src/moneybin/mcp/tools/system.py`.
 
 ```python
-@mcp_tool(sensitivity="low", read_only=True)
-def system_doctor() -> ResponseEnvelope:
-    """Run pipeline integrity checks across all SQLMesh named audits.
-    Returns pass/fail/warn per invariant plus a transaction count.
-    Read-only — never writes. Call before relying on analytical results
-    to confirm the pipeline is self-consistent."""
+async def system_status_coarse(
+    sections: list[Literal["overview", "doctor", "categorization"]] | None = None,
+    detail: Literal["summary", "full"] = "summary",
+) -> ResponseEnvelope:
+    """Return selected system overview, integrity, and categorization sections."""
 ```
 
-Always runs with `verbose=False` — affected IDs are omitted (agents can query `core.fct_transactions` or `core.bridge_transfers` directly for drill-down). Registered in `register_system_tools()`.
+The full doctor selection returns affected IDs where the doctor contract permits them. It is reached through the standard system registration.
 
 ## Implementation Notes
 
@@ -187,9 +187,9 @@ Always runs with `verbose=False` — affected IDs are omitted (agents can query 
 ## Files to Modify
 
 - `src/moneybin/cli/commands/system/__init__.py` — register the `doctor` command on the existing `system` Typer group via `app.command(name="doctor")(_doctor.doctor_command)`
-- `src/moneybin/mcp/tools/system.py` — add `system_doctor`, register in `register_system_tools()`
+- `src/moneybin/mcp/tools/system.py` — expose doctor through the `system_status` section selector
 - `docs/specs/INDEX.md` — add this spec; update `data-reconciliation.md` entry with cross-reference
-- `docs/specs/moneybin-mcp.md` — document `system_doctor`
+- `docs/specs/moneybin-mcp.md` — document the `system_status` doctor section
 - `CHANGELOG.md` — `Added` entry under `Unreleased`
 - `docs/roadmap.md` — move to `✅ shipped` when complete
 

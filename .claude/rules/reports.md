@@ -107,7 +107,7 @@ definition of "is a report."** A view that exists only to back an internal
 service (not a CLI/MCP report surface) does not belong in `reports.*` — put it
 in `core` or `prep`. Precedent: `core.uncategorized_queue` (the categorization
 curator queue) moved out of `reports.*` because its only reader is
-`services/categorization/queries.py`, not a `reports_*` tool.
+`services/categorization/queries.py`, not the public `reports` catalog.
 
 ## A reports.* model reads only `core.*` / `app.*`
 

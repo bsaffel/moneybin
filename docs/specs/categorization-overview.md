@@ -98,7 +98,7 @@ When a user categorizes a transaction, the system identifies the pattern and pro
 - **Pattern extraction:** Merchant-first — use the canonical merchant name when a `merchant_id` exists, fall back to `normalize_description()` cleanup otherwise. Reuses the existing description normalization code.
 - **Proposal lifecycle:** `pending` → `approved` (promoted to `app.categorization_rules` with `created_by='auto_rule'`, `priority=200`) or `rejected` or `superseded` (when the user corrects the category).
 - **Correction handling:** Single user overrides don't affect the rule. After `auto_rule_override_threshold` (default 2) overrides, the rule is deactivated and a new proposal is created with the corrected category.
-- **UX:** Proposals accumulate silently. `transactions_categorize_commit` response includes a `rules_proposed` count and review hint. User reviews in batch via `transactions_categorize_auto_review` and `transactions_categorize_auto_accept`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
+- **UX:** Proposals accumulate silently. `transactions_categorize_commit` response includes a `rules_proposed` count and review hint. Users read the batch through `reviews(kind="auto_rules", status="pending")` and decide it through `reviews_decide(decisions=[{"kind": "auto_rule", "decision_id": "...", "decision": "accept"}])`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
 - **Conflicting categorizations:** Amount/account-aware rule proposals are deferred to future enhancements (see Future Directions).
 
 ---
@@ -138,7 +138,7 @@ The swappable interface above leaves room for a semantic-similarity tier — emb
 
 - **Minimum training samples:** configurable, default 50 categorized transactions.
 - **Features:** TF-IDF on normalized transaction description (v1). Amount as an optional second feature for experimentation.
-- **Retraining:** auto-retrains when statistically significant new categorizations exist (threshold relative to training set size, configurable via `categorization.ml_retrain_threshold`). `transactions_categorize_ml_train` remains as a manual escape hatch but is not part of the standard workflow.
+- **Retraining:** auto-retraining is a future capability when statistically significant new categorizations exist (threshold relative to training-set size, configurable via `categorization.ml_retrain_threshold`). It does not add a standard MCP operation.
 
 ### Model storage
 
@@ -188,13 +188,16 @@ User-facing surfaces (CLI, MCP responses) display **qualitative confidence tiers
 | Moderate | "moderate confidence" | Between `ml_review_threshold` and `ml_auto_apply_threshold` |
 | Low | "low confidence" | Below `ml_review_threshold` |
 
-`transactions_categorize_ml_status` and `detail=full` on transaction queries always expose the numeric score for power users. The qualitative tiers are the default presentation — they hide calibration noise while the model matures and communicate the system's certainty in terms that don't require ML background.
+The current transaction query exposes its standard operational projection only;
+it has no `detail` selector or ML-status companion. The qualitative tiers are
+the intended default presentation if the future ML capability is admitted.
 
 ### Accuracy measurement
 
 Model accuracy is measured by K-fold cross-validation (default K=5) on the user's categorized transaction history. The reported accuracy represents how often the model correctly predicts the category for transactions it wasn't trained on. Accuracy improves as more categorized transactions accumulate.
 
-`transactions_categorize_ml_status` reports overall accuracy and a per-category breakdown with precision, recall, and support:
+Future ML observability would report overall accuracy and a per-category
+breakdown with precision, recall, and support:
 
 - **Precision** for a category = when the model predicts this category, how often is it correct? Low precision means false positives.
 - **Recall** for a category = of all transactions that actually belong to this category, how many did the model find? Low recall means missed predictions.
@@ -211,13 +214,13 @@ Entertainment     0.83       0.45      11
 
 This gives the user actionable insight: "Shopping is noisy — maybe I should add more specific rules." "Entertainment has low recall because I only have 11 examples."
 
-### MCP tools
+### MCP boundary
 
-| Tool | Purpose |
-|---|---|
-| `transactions_categorize_ml_status` | Model health: trained/untrained, sample count, accuracy, per-category precision/recall/support, confidence distribution |
-| `transactions_categorize_ml_train` | Trigger training or retraining, returns accuracy metrics |
-| `transactions_categorize_ml_apply` | Run predictions manually with configurable threshold and dry-run mode |
+No ML-specific MCP operation is in the standard registry. The current
+categorization surface is `transactions_categorize_assist`,
+`transactions_categorize_commit`, `transactions_categorize_rules`,
+`transactions_categorize_rules_set`, and `transactions_categorize_run`. A
+future ML capability requires an admission decision before it becomes public.
 
 ---
 
@@ -243,9 +246,12 @@ Imported 120 transactions from chase_checking.csv
 
 ### Per-transaction explainability
 
-`transactions_search` includes categorization provenance for every transaction. The level of detail depends on the `detail` parameter:
+`transactions(account=..., start=..., end=..., merchant=..., category=...,
+min_amount=..., max_amount=..., text=..., limit=..., cursor=...)` is the
+standard transaction query route. It has no `detail` selector. A future ML
+projection would add provenance only through an admitted contract.
 
-**`detail=standard`** (default) — qualitative confidence tiers:
+Illustrative future qualitative-confidence projection:
 
 ```json
 {
@@ -257,7 +263,7 @@ Imported 120 transactions from chase_checking.csv
 }
 ```
 
-**`detail=full`** — numeric scores for power users:
+Illustrative future numeric-confidence projection:
 
 ```json
 {
@@ -276,12 +282,12 @@ Every categorization is traceable to its origin. No black boxes.
 
 ### System-level statistics
 
-`transactions_categorize_stats` extended with auto-rule and ML breakdowns:
+`system_status(sections=["categorization"], detail="full")` returns the
+categorization summary and its auto-rule health fields:
 
 - Total/categorized/uncategorized counts with percentage
 - Breakdown by `categorized_by` source
-- Auto-rule stats: proposed / approved / rejected / pending
-- ML model stats: status, last trained, sample count, accuracy
+- Active auto-rules, pending proposals, and transactions categorized by auto-rules
 
 ---
 
@@ -293,8 +299,8 @@ The categorization system starts cold — no rules, no merchant mappings, no ML 
 
 When users import data from competing tools (Mint, YNAB, Tiller, Monarch) via the
 [smart tabular importer](smart-import-tabular.md), source-provided categories are
-preserved in `raw.tabular_transactions.category`. These migrated categories are
-a powerful bootstrap signal:
+preserved in `raw.tabular_transactions.category`. These migrated categories
+supply three bootstrap inputs:
 
 1. **Direct rule seeding.** Each unique (merchant, category) pair in the migrated data
    becomes a candidate auto-rule. Import 3 years of Mint data where every Kroger
@@ -348,7 +354,7 @@ This is a future initiative with real privacy design work. The contribution pipe
 
 Explicitly deferred or owned elsewhere.
 
-- **Split transactions** — removed per import-first philosophy (see `mcp-architecture.md` section 9). Transaction annotations (`transactions_annotate` with `cash_breakdown`) cover the ATM-cash use case without creating phantom records.
+- **Split transactions** — removed per import-first philosophy (see `mcp-architecture.md` section 9). The ATM-cash use case uses `transactions_annotate(requests=[...])` without creating phantom records.
 - **Transfer detection** — owned by `matching-overview.md`. Different concern (record identity, not labeling).
 - **Category taxonomy seed data** — Plaid PFCv2 seed is already implemented. This spec references it; it is not redesigned here.
 - **Taxonomy evolution** — category merge/rename with cascading updates to rules, merchants, and transaction_categories. Future direction (see below).
@@ -375,9 +381,8 @@ Constrains any future cloud-based categorization features. The community-contrib
 Recurring detection complements categorization: recurring patterns are easy to
 categorize and support questions such as "how many active subscriptions do I
 have?" A future spec would design transaction-series identification, schedule
-inference, and a `transactions_recurring_assist` peer to
-`transactions_categorize_assist`. It is independent from cold-start and reuses
-the same workflow primitives.
+inference, and a dedicated future recurring-review capability. It is independent
+from cold-start and reuses the same workflow primitives.
 
 ### Local LLM-driven categorization (recommended future spec)
 
@@ -416,7 +421,7 @@ Not pillars, not designed in detail. Architectural constraints noted so the curr
 
 Decisions made during spec review, preserved for context.
 
-- **ML retraining trigger.** Auto-retrain when statistically significant new categorizations exist. The ML prediction step checks whether retraining is warranted before running predictions. Threshold is relative to training set size and configurable via `categorization.ml_retrain_threshold`. `transactions_categorize_ml_train` remains as a manual escape hatch but is not part of the standard workflow. The import summary notes when retraining occurred. The system should feel like it's learning from the user — "accuracy over automation" does not override the "system learns" commitment.
+- **ML retraining trigger.** A future ML capability may auto-retrain when statistically significant new categorizations exist. Its threshold is relative to training-set size and configurable via `categorization.ml_retrain_threshold`. It does not currently expose a standard MCP operation.
 - **Auto-rule deduplication.** Both proposals survive independently; user decides during review. See `categorization-auto-rules.md` Deduplication table and Out of Scope section. Intelligent merging of overlapping patterns is a future enhancement.
 - **ML confidence calibration.** Always use Platt scaling (`CalibratedClassifierCV`). Raw SVM distances are not meaningful as thresholds. Calibrated probabilities are noisier on small datasets but still more useful than uncalibrated scores. Progressive confidence disclosure (qualitative tiers instead of numeric scores) hides calibration noise from users until the model matures. See Confidence Calibration and Progressive Confidence Disclosure sections under Pillar D.
 - **Interaction with Smart Import pillar F.** ML training weights are determined by `categorized_by`, not `source_type`. No interaction. A transaction's label quality depends on who categorized it (user, rule, AI), not how the transaction entered the system (CSV, Plaid, AI-parsed PDF). If AI-parsed transactions have unreliable descriptions, that's a pillar F quality concern at parse time, not a training weight concern.

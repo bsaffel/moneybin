@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-07-20 -->
 # System Overview
 
 MoneyBin is a local-first, AI-native personal finance platform. This page is the orientation map — what each major piece does, how they fit together, and what runs when. For the architectural depth (primitives, contracts, layers, internal invariants), see [`docs/architecture.md`](../architecture.md). For column-level schema, see [`data-model.md`](data-model.md). For the full reference, see [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md).
@@ -11,10 +11,10 @@ Five runtime components plus three cross-cutting concerns. The data they share i
 |---|---|---|---|
 | **Local DuckDB store** | Storage | One encrypted file per profile under `~/.moneybin/profiles/<name>/moneybin.duckdb`. Holds `raw → prep → core → reports` plus the `app.*` overlay. | [`database-security.md`](../guides/database-security.md), [`data-model.md`](data-model.md) |
 | **CLI** | Runtime (per-invocation) | Typer-based command surface (Typer is the argparse-style CLI framework); first-class agent peer to MCP. Every command supports `--output json` and returns the same response envelope as the matching MCP tool. | [`cli-reference.md`](../guides/cli-reference.md) |
-| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). Registers more than 100 tools across roughly a dozen domains. Stdio transport today. | [`mcp-server.md`](../guides/mcp-server.md) |
+| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). One 47-tool standard registry spans 11 user-facing domain groups across 14 literal tool-name prefixes over stdio; the generic `reports` catalog and runner lists and executes registered reports. Capable hosts may optionally defer schemas only from that same registry. The registry advertises zero output schemas. | [`mcp-server.md`](../guides/mcp-server.md) |
 | **SQLMesh pipeline** | Runtime (on-demand) | Compiles and runs the `raw → prep → core → reports` transformations. SQLMesh owns every write to `prep.*`, `core.*`, `reports.*`, `meta.*`, and `seeds.*`. | [`data-pipeline.md`](../guides/data-pipeline.md) |
 | **Sync client** | Runtime (on-demand) | Talks to `moneybin-sync` to broker Plaid pulls. The server is opaque — the client only knows the API surface. | [`server-api-contract.md`](server-api-contract.md) |
-| **Privacy middleware** | Cross-cutting | Tool decorator (`@mcp_tool`) plus FastMCP middleware that enforces sensitivity tiers, redaction, and the read/write allowlist for every MCP call. DDL is rejected; managed writes target `app.*` and `raw.*` only. | [`docs/specs/mcp-architecture.md`](../specs/mcp-architecture.md) |
+| **Privacy middleware** | Cross-cutting | Tool decorator (`@mcp_tool`) plus FastMCP middleware that classifies responses, masks critical fields, and enforces the read/write allowlist. Global consent-based response gating remains deferred. | [`docs/specs/mcp-architecture.md`](../specs/mcp-architecture.md) |
 | **Observability** | Cross-cutting | Structured logs through `SanitizedLogFormatter` (always on), Prometheus-style metrics persisted to `app.metrics`, daily-rotating log files per profile. | [`observability.md`](../guides/observability.md) |
 | **Migrations** | Cross-cutting | Forward-only versioned migrations in `app.schema_migrations`; self-heal stuck rows when the migration body changes; `no_auto_upgrade` gate for explicit operator control. Runs at every `Database` open. | [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md) |
 
@@ -39,7 +39,7 @@ flowchart LR
   store --> sql
 ```
 
-The client is the only writer to the local store. Agents reach the data through MCP tools the client exposes; external SQL clients read the file directly (with the encryption key from `moneybin db key`). The sync client is the only outbound network path — it talks to `moneybin-sync`, which talks to Plaid.
+The client is the only writer to the local store. Agents reach the data through MCP tools the client exposes; external SQL clients read the file directly (with the encryption key from `moneybin db key`). There is no ambient egress or telemetry. Explicit `sync_*` calls reach opaque `moneybin-sync` APIs, and explicit `gsheet_*` calls reach Google OAuth/Sheets APIs.
 
 ## How components fit together
 
@@ -80,7 +80,7 @@ There is no daemon and no background worker. Components are either always presen
 
 - **Always on (in the file, not a process):** the encrypted DuckDB file, the `app.metrics` table, the audit log table, the daily-rotating log file.
 - **On-demand per CLI invocation:** the Typer entrypoint (one process per command), the service layer it imports, the DuckDB connection it opens, and — for `refresh` / `transform` — the SQLMesh adapter.
-- **On-demand per MCP session:** the MCP server child process, launched by the client when the session opens and torn down when it closes. The server holds one DuckDB connection open for the lifetime of the session.
+- **On-demand per MCP session:** the MCP server child process, launched by the client when the session opens and torn down when it closes. Database-touching tools open a fresh short-lived connection per call; sync authentication and other connector-only tools may open none.
 - **Optional / opt-in:** the sync client (only when `moneybin sync *` fires), the LLM-assist step in categorization (only when `transactions categorize assist` runs, and only the user's hosted LLM sees the prompt — amounts and account identifiers are stripped first).
 - **Never running locally:** `moneybin-sync` itself runs separately (self-hosted or hosted reference instance). The client has no listener, no background sync, no scheduler.
 
@@ -104,7 +104,7 @@ moneybin db init
 #    Beancount, PDF) and prompts for account assignment.
 moneybin import files my_export.csv
 
-# 4. Run the pipeline (matching → SQLMesh apply → categorization).
+# 4. Run the pipeline (gsheet → match → transform → categorize → identity).
 #    Most commands trigger refresh automatically; you rarely run it by hand.
 moneybin refresh
 
@@ -125,7 +125,16 @@ Workflow-ordered command groups (`import`, `sync`, `refresh`, `transactions`, `r
 
 ### MCP server
 
-More than 100 tools across roughly a dozen domains (`accounts.*`, `transactions.*`, `transactions.categorize.*`, `reports.*`, `refresh`, `sync.*`, `merchants.*`, `sql`, and a handful more). Stdio transport today. Supported in eight clients — see [`mcp-clients.md`](../guides/mcp-clients.md). Every tool declares a sensitivity tier (`low` / `medium` / `high`); the middleware surfaces the tier in each response envelope. → [`mcp-server.md`](../guides/mcp-server.md)
+One 47-tool standard registry spans 11 user-facing domain groups across 14
+literal tool-name prefixes over stdio. The generic `reports` catalog and runner
+lists and executes registered reports, so a new report does not add a tool slot.
+Capable hosts may optionally defer schemas from that same registry without
+changing its tool names, approvals, allowlists, annotations, or audit identity.
+The registry advertises zero output schemas. Supported in eight clients
+— see [`mcp-clients.md`](../guides/mcp-clients.md). MoneyBin uses four
+sensitivity tiers (`low` / `medium` / `high` / `critical`). Static tools derive
+classification from typed payloads; variable projections classify dynamically
+under a declared maximum. → [`mcp-server.md`](../guides/mcp-server.md)
 
 ### SQL
 
@@ -135,9 +144,9 @@ Read-only DuckDB query against the `core.*` and `reports.*` interface set. Reach
 
 A single tool invocation, end-to-end:
 
-1. **Session opens.** The MCP client launches the `moneybin mcp serve` process; FastMCP advertises the registered tool catalog on `tools/list`. The server opens one DuckDB connection (decrypting with the profile's key) for the session lifetime.
+1. **Session opens.** The MCP client launches the `moneybin mcp serve` process; FastMCP advertises the registered tool catalog on `tools/list`. No session-wide DuckDB connection is held.
 2. **Client invokes a tool** with arguments. FastMCP's `ValidationErrorMiddleware` runs first — Pydantic argument binding errors are translated into a friendly error envelope (`error.code = invalid_arguments`) and returned without ever reaching the tool body.
-3. **`@mcp_tool` decorator wraps the body.** It records the declared sensitivity tier, starts the wall-clock timeout guard (default 30s), and dispatches to the body via `asyncio.to_thread`.
+3. **`@mcp_tool` decorator wraps the body.** It applies static or dynamic classification, starts the wall-clock timeout guard (30s default, with bounded 180s workflow overrides), and dispatches synchronous bodies through a worker thread.
 4. **Tool body delegates to the service layer.** It imports a service (e.g., `TransactionService`), runs SQL against the open DuckDB connection, and returns a typed dataclass.
 5. **Envelope wrap-up.** The decorator checks the return is a `ResponseEnvelope`, attaches sensitivity metadata, and lets the body's action hints (suggested next tools) ride along. Classified domain exceptions become error envelopes; timeouts become a `timed_out` envelope; anything unclassified propagates to FastMCP.
 6. **Audit + return.** The audit primitive logs `tool=<name> sensitivity=<tier> metadata=<...>`. FastMCP serializes the envelope and returns it to the client.
@@ -178,7 +187,7 @@ There is no user account, no login, and no remote identity provider. The profile
 
 ## Sync and external services
 
-The only outbound network path in the core product is the sync client talking to `moneybin-sync`. The server brokers Plaid pulls and returns the transaction, balance, and account data the client lands in `raw.plaid_*`. The client/server boundary is documented in the API contract — providers behind the server (Plaid today; others later) are implementation details the client does not see. → [`server-api-contract.md`](server-api-contract.md)
+MoneyBin has no ambient network egress. Explicit `sync_*` operations call the opaque `moneybin-sync` API, whose provider implementations remain hidden from the client. Explicit `gsheet_*` operations call Google OAuth/Sheets directly. The sync client/server boundary is documented in the API contract. → [`server-api-contract.md`](server-api-contract.md)
 
 Import-only flows (files, inbox watch, manual entry) require no network access.
 

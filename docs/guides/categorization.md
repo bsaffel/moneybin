@@ -41,7 +41,7 @@ Categories themselves live in `core.dim_categories` (seeded defaults plus user-c
 
 ```mermaid
 flowchart TD
-    A[Import / Plaid sync<br/>writes raw rows] --> B[moneybin refresh<br/>match + transform + categorize]
+    A[Import / Plaid sync<br/>writes raw rows] --> B[moneybin refresh<br/>gsheet + match + transform + categorize + identity]
     B --> C{rows still<br/>uncategorized?}
     C -->|no| END[done]
     C -->|yes| D[transactions categorize assist<br/>returns PII-scrubbed batch]
@@ -53,7 +53,7 @@ flowchart TD
 
 A few things worth pinning down:
 
-- **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same pipeline: cross-source matching, SQLMesh transform, then rules and merchant matching. Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
+- **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same canonical pipeline: gsheet pull, cross-source matching, SQLMesh transform, categorization, then identity backfill. Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
 - **Newly created rules apply on the next refresh.** Creating a rule does not retroactively categorize old rows unless you opt in. Pass `--reapply` on the CLI `rules create`; MCP callers update the complete rule target state with `transactions_categorize_rules_set` and invoke `transactions_categorize_run` when they need an immediate run.
 - **`transactions categorize assist` never writes.** It returns PII-scrubbed records — merchant text is sent, embedded account numbers are masked; an LLM (in your MCP host, or a separate pipeline you wire up) proposes categorizations; you review; then a separate commit call persists the decisions.
 - **`commit`, `commit-from-file`, and the MCP `transactions_categorize_commit` tool all write `categorized_by='ai'`** — see the Hazard callout above. This is by design: the LLM is a probabilistic proposer, and `ai`-source means "anything else can override this," which is the right default for a guess.
@@ -93,8 +93,34 @@ MCP uses the bounded standard surface rather than one tool for every CLI subcomm
 | `transactions_categorize_rules` | Inspect the current or historical categorization-rule projection. |
 | `transactions_categorize_rules_set` | Set the complete reviewed rule target state. |
 | `transactions_categorize_run` | Run the deterministic categorization engines. |
+| `system_status` | Return categorization coverage and queue counts with `sections=["categorization"]`. |
+| `reviews` | Read the pending categorization or auto-rule queue with `kind="categorization"` or `kind="auto_rules"`. |
+| `reviews_decide` | Accept or reject reviewed categorization proposals or auto-rule proposals in one `decisions` batch. |
+| `taxonomy` / `taxonomy_set` | Read or declare category and merchant target state with `view="categories"` or `view="merchants"`. |
 
 Every tool returns the standard response envelope (`summary`, `data`, `actions`). `summary.display_currency` carries the currency for any amount-bearing data; amounts follow the accounting convention (negative = expense, positive = income; transfers exempt).
+
+For rule lifecycle writes, use one discriminated `rules` batch. Create or update
+with `{"kind": "rule", "state": "present", "rule_id": ..., "matcher":
+{"type": "contains", "value": "..."}, "category": "...", "priority": 200}`;
+omit `rule_id` for a new rule. Disable with `{"kind": "rule", "state":
+"inactive", "rule_id": ...}` and remove with `{"kind": "rule", "state":
+"absent", "rule_id": ...}`. Read the relevant projection first through
+`transactions_categorize_rules(view="active")`,
+`transactions_categorize_rules(view="inactive")`, or
+`transactions_categorize_rules(view="history")`.
+
+Taxonomy writes follow the same target-state discipline: `taxonomy_set` accepts
+category items with `kind="category"` and `state="present" | "inactive" |
+"absent"`, and merchant items with `kind="merchant"` and `state="present" |
+"absent"`. Transaction notes, tags, splits, and tag renames share
+`transactions_annotate(requests=[...])`; each request has a `kind` of
+`note_add`, `note_edit`, `note_delete`, `tags_set`, `splits_set`, or
+`tag_rename`.
+
+Submit categorization and auto-rule decisions in separate `reviews_decide`
+calls. An atomic decision batch may contain ordinary review kinds together, or
+only `kind="auto_rule"` items; it cannot mix the two.
 
 ## A typical session
 
@@ -315,7 +341,7 @@ There is no `categorize revert` command today. To investigate or undo a batch:
 - **ML-based categorization.** The `ml` source slot exists in the precedence ladder and the `transactions categorize ml {status,train,apply}` commands are registered, but they're stubs today — invoking any of them returns a not-implemented notice. A local model would slot in between `migration` and `plaid` in the precedence ladder.
 - **Bulk-import-as-user CLI.** See [Migrating curated categories](#migrating-curated-categories). The service method exists; the CLI/MCP entry point doesn't.
 - **CLI parity for `canonical_merchant_name`.** The CLI `commit` and `commit-from-file` strip the key today; only the MCP `transactions_categorize_commit` tool routes it through to the exemplar accumulator.
-- **Merchant exemplar inspection / pruning.** Merchant-specific curation (list, remove exemplar, hard-delete) is planned; it is not a current MCP tool.
+- **Merchant exemplar inspection / pruning.** No MCP route currently lists or removes exemplars or hard-deletes merchants. `taxonomy(view="merchants")` exposes catalog state; any future mutation remains unnamed until admission.
 - **Audit-based revert.** No `categorize revert` or `commit-from-file --undo`; bulk paths are also audit-silent, so an "undo last batch" tool would need both audit coverage and a revert primitive.
 - **Category-rename cascades** beyond the FK-resolved view path. Renaming a category surfaces immediately on read because `core.dim_categories` resolves through the FK, but the text snapshots on writer tables aren't rewritten yet.
 - **Cross-row pattern conditions.** Rules today match per-row. Rules that consider sequences (e.g., "this transaction is a refund of an earlier one") would need a new condition primitive.

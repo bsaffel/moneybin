@@ -64,12 +64,12 @@ Notes:
 
 Free-text references ("my Chase card", "savings") resolve to `account_id` through one entry point in [`AccountService.resolve()`](../../src/moneybin/services/account_service.py):
 
-- **MCP tool:** `accounts_resolve`.
+- **MCP tool:** `accounts(view="resolve", query="<query>")`.
 - **CLI:** `moneybin accounts resolve "<query>"`.
 
 The current implementation is a single-pass fuzzy match: it pulls `(account_id, display_name, account_subtype, institution_name)` from `core.dim_accounts`, scores the query against each of `display_name`, `account_subtype`, and `institution_name` using `difflib.SequenceMatcher`, takes the best ratio per account, and returns the top `limit` (default 5) sorted by confidence. There is no priority cascade (exact → last-4 → fuzzy); every candidate goes through the same ratio comparison and the highest score wins.
 
-`confidence` is a raw `difflib` ratio in `[0.0, 1.0]`. The service returns every candidate with a score strictly greater than zero, up to `limit`. **There is no configurable confidence floor** — `resolve(query, limit=5)` is the entire signature, and `accounts_resolve` exposes the same two parameters. Callers decide their own threshold.
+`confidence` is a raw `difflib` ratio in `[0.0, 1.0]`. The service returns every candidate with a score strictly greater than zero, up to `limit`. **There is no configurable confidence floor** — `resolve(query, limit=5)` is the entire service signature, and `accounts(view="resolve", query=..., limit=...)` exposes the same inputs. Callers decide their own threshold.
 
 Recommended consumer pattern for the confidence value the service returns:
 
@@ -81,7 +81,7 @@ These are recommendations for *consumers*, not enforced by the service. Agent lo
 
 Last-four-digit matching is not in the resolver today even though `last_four` exists on `dim_accounts`. Queries like `"...4521"` match only through whatever ratio they earn against `display_name`, which by default embeds the last four (`institution_name + account_type + …<last4>`).
 
-The result envelope (`AccountResolution.to_dict()`) is intentionally narrow — `account_id`, `display_name`, `account_subtype`, `institution_name`, and `confidence` rounded to three decimals. PII-adjacent fields (`last_four`, `credit_limit`, `routing_number`) are not returned here; callers that need them follow up with `accounts_get(account_id)`.
+The result envelope (`AccountResolution.to_dict()`) is intentionally narrow — `account_id`, `display_name`, `account_subtype`, `institution_name`, and `confidence` rounded to three decimals. PII-adjacent fields (`last_four`, `credit_limit`, `routing_number`) are not returned here; callers that need them follow up with `accounts(view="detail", reference=account_id)`.
 
 ## Cross-source representation
 
@@ -137,7 +137,7 @@ When stranding happens today, the operational answer is to re-attach state by ha
 - **Do not aggregate by `(account_id, source_type)` if you want one row per real-world account.** The dedup in `core.dim_accounts` already collapses on `account_id`, but if your query targets `prep.stg_*` or unions raw layers directly you will see one row per source.
 - **Do not assume `account_id` is opaque for log or display purposes.** OFX-sourced values are often the raw bank account number. Use `display_name` in human-facing surfaces. The `SanitizedLogFormatter` is a safety net, not a license to log `account_id` freely.
 - **Do not assume `account_id` survives a Plaid re-link.** It usually does not. If a user reports "all my Chase data disappeared after reconnecting," check `core.dim_accounts` for a second row with a different `account_id`.
-- **Do not rely on `accounts_resolve` for high-precision matching.** Confidence is a single `difflib` ratio against three free-text fields. Disambiguate with the user when confidence is close.
+- **Do not rely on `accounts(view="resolve", ...)` for high-precision matching.** Confidence is a single `difflib` ratio against three free-text fields. Disambiguate with the user when confidence is close.
 - **Watch timezones on `extracted_at` / `loaded_at`.** Both are stored UTC. If you reconcile monthly against another system that reports in a local timezone, convert at the report boundary, not on the join.
 
 ## Reconciliation recipes

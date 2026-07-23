@@ -258,7 +258,7 @@ Logical grain key: `(account_id, balance_date)`.
 
 ### `core.uncategorized_queue`
 
-Uncategorized transactions ranked by curator-impact. Grain: one row per uncategorized transaction. Excludes transfers and archived accounts. Service-internal — its only reader is the categorization surface (`moneybin transactions categorize pending` / MCP `transactions_categorize_pending`), not a standalone `reports.*` view.
+Uncategorized transactions ranked by curator-impact. Grain: one row per uncategorized transaction. Excludes transfers and archived accounts. Service-internal — its only reader is the categorization surface (`moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`), not a standalone `reports.*` view.
 
 | Column | Type | Description |
 |---|---|---|
@@ -276,7 +276,7 @@ Uncategorized transactions ranked by curator-impact. Grain: one row per uncatego
 
 ## `reports.*` — curated presentation views
 
-All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `reports_*` tools) read these directly.
+All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `reports(report_id=...)`) read these directly.
 
 ### Which view should I use?
 
@@ -290,7 +290,7 @@ All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `rep
 | Which subscriptions am I paying for? | `reports.recurring_subscriptions` | Heuristic candidates with confidence scores; does not auto-classify. |
 | Are my balances drifting from reality? | `reports.balance_drift` | Per-assertion deltas vs computed balance; feeds `moneybin doctor`. |
 
-What's not categorized yet is answered by `core.uncategorized_queue` (above) rather than a `reports.*` view — it's service-internal, reached via `moneybin transactions categorize pending` / MCP `transactions_categorize_pending`, not a standalone report.
+What's not categorized yet is answered by `core.uncategorized_queue` (above) rather than a `reports.*` view — it's service-internal, reached via `moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`, not a standalone report.
 
 When `cash_flow`, `spending_trend`, and `merchant_activity` overlap (e.g., "spend by category last month"), pick the one whose **grain** matches the question: `cash_flow` for `(month, account, category)`, `spending_trend` for `(month, category)` with windowed comparisons, `merchant_activity` for lifetime-per-merchant.
 

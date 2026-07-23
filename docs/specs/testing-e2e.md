@@ -18,7 +18,8 @@ All existing tests run in-process — CLI tests use `typer.testing.CliRunner`, i
 ## Non-Goals
 
 - Replacing unit or integration tests. E2E tests complement them.
-- Testing MCP server protocol (that's a separate concern).
+- Testing MCP server protocol (that's a separate concern). MCP surface docs
+  are guarded independently against the bounded standard registry snapshot.
 - Performance benchmarking.
 
 ## Design

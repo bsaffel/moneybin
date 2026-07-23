@@ -28,8 +28,10 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 ## Design Philosophy
 
 1. **Import-first, not ledger-first.** No general-purpose `add_transaction` tool. Transactions come from sources (files, connectors). Corrections and annotations are metadata on source-imported records, not counter-entries.
-2. **Privacy by architecture.** Every tool declares a sensitivity tier (`low`,
-   `medium`, `high`). Classification and critical-field masking are wired;
+2. **Privacy by architecture.** MoneyBin uses four sensitivity tiers (`low`,
+   `medium`, `high`, `critical`). Static tools derive their maximum tier from
+   the typed response payload; projection-varying tools opt into dynamic
+   classification and declare a maximum. Critical-field masking is wired;
    **global consent enforcement is deferred**. Do not claim or depend on an
    automatic consent gate or degraded response until that gate ships.
 3. **Batch-first, composable.** Each tool is called once per turn with a complete result. Collection operations accept lists, not single items.
@@ -60,11 +62,11 @@ Naming: **noun = query** (`reports`, `accounts`, `transactions`), **verb =
 action** (`transactions_categorize_commit`, `refresh_run`). No CRUD naming.
 
 **Tool disclosure: one bounded standard registry.** Generic clients receive
-every registered standard tool at connect. Capable hosts may defer schemas from
-that same registry, but availability, names, annotations, allowlists,
-approvals, and audit identity remain unchanged. Do not add packs, profiles,
-reconnect modes, or a runtime discovery tool. Each tool must justify its
-serialized metadata and carrying weight. See
+every registered standard tool at connect. Capable hosts may optionally defer
+schemas from that same registry, but availability, names, annotations,
+allowlists, approvals, and audit identity remain unchanged. Do not add packs,
+profiles, reconnect modes, or a runtime discovery tool. Each tool must justify
+its serialized metadata and carrying weight. See
 [`mcp-tool-surface-scaling.md`](../../docs/specs/mcp-tool-surface-scaling.md).
 
 ## Response Envelope
@@ -75,7 +77,7 @@ Every tool returns this shape:
 {
   "summary": {"total_count": 247, "returned_count": 50, "has_more": true, "sensitivity": "medium", "display_currency": "USD"},
   "data": [ ... ],
-  "actions": ["Use spending_by_category for breakdown"]
+  "actions": ["Use reports(report_id=\"core:spending\") for the breakdown"]
 }
 ```
 
@@ -130,8 +132,9 @@ tell callers to refine the query or rerun with a larger limit.
 | Tier | Data | Consent |
 |---|---|---|
 | `low` | Aggregates, counts, category labels | None |
-| `medium` | Row-level: descriptions, amounts, dates | Consent ledger exists; enforcement deferred |
-| `high` | Critical PII fields (account numbers) | Critical masking wired; consent enforcement deferred |
+| `medium` | Descriptions, merchant names, dates, and user notes | Consent ledger exists; enforcement deferred |
+| `high` | Financial amounts and balances | Consent ledger exists; enforcement deferred |
+| `critical` | Account and routing identifiers | Critical masking wired; consent enforcement deferred |
 
 The consent ledger is not yet a global runtime gate. Tools cannot assume that a
 missing consent grant automatically degrades or blocks data. A future gate may
@@ -178,7 +181,13 @@ The `FastMCP(instructions=...)` argument in `src/moneybin/mcp/server.py` is the 
 
 ## Connection Model
 
-All tools use `get_database()` from `src/moneybin/database.py`. Each call returns a **fresh, short-lived connection** that the caller must close via the context manager (`with get_database(...) as db:`). Read-only tools pass `read_only=True` so they attach DuckDB in shared-read mode and do not hold the exclusive write lock. Write tools use the default `read_only=False`. See [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) and [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).
+Tools that touch DuckDB use `get_database()` from `src/moneybin/database.py`.
+Each call returns a **fresh, short-lived connection** that the caller closes via
+the context manager (`with get_database(...) as db:`). Read-only tools pass
+`read_only=True`; writes open `get_database(read_only=False)` explicitly. Sync authentication
+and other connector-only operations may not open DuckDB at all. See
+[`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md)
+and [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).
 
 ## Data Access
 
@@ -240,10 +249,12 @@ must name its removal release. A report registers behind the single read-only
 `reports` catalog/runner and never adds an MCP tool.
 
 **Current registry.** The 47-tool standard registry is operating. Generic
-clients receive every tool; supported hosts may defer schemas from that same
-registry without reconnect, packs, or profiles. Reports never consume tool
-slots. The deterministic comparison passed, but promotion remains unready
-until context-budget and host-native-deferral evidence is observed.
+clients receive every tool; capable hosts may optionally defer schemas from
+that same registry without reconnect, packs, or profiles. Reports never
+consume tool slots. The deterministic comparison passed, but promotion remains
+unready until context-budget and host-native-deferral evidence is observed.
+See `surface-design.md` for the admission rule before naming future MCP
+capabilities.
 
 **Admission sequence.** Before proposing a tool, try an existing projection,
 method, batch, declarative state, report entry, or workflow umbrella. The PR
@@ -266,7 +277,7 @@ results are no worse. Count reduction alone is insufficient.
 All seven answers are required for a future tool; reports enter the catalog
 instead of consuming a tool slot.
 
-**Output-schema admission.** The initial standard registry advertises zero
+**Output-schema admission.** The current standard registry advertises zero
 output schemas. A PR adding one must include the consuming client/integration,
 the concrete hydration or validation failure without it, exact per-tool and
 registry-wide byte deltas, representative compatibility tests, and a persisted

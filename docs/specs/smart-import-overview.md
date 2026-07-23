@@ -132,7 +132,7 @@ Previously open; resolved in child or peer specs.
 
 - **Format persistence UX.** Auto-save by default; `--save-format` / `--no-save-format` to control. Resolved in `smart-import-tabular.md` requirement 10.
 - **Format precedence.** User DB formats override built-ins of the same name; built-in YAML is fallback only. Resolved in `smart-import-tabular.md` Stage 3, Step 1.
-- **MCP Apps wizard timing.** v1 ships basic MCP tools (`import_files`, `import_confirm`, `import_preview`, `import_formats`) via the shared service layer. The interactive wizard MCP App is Phase 2. Resolved in `smart-import-tabular.md` MCP Interface section.
+- **MCP Apps wizard timing.** v1 ships basic MCP tools (`import_files`, `import_confirm`, `import_preview`, `import_status(sections=["formats"])`) via the shared service layer. The interactive wizard MCP App is Phase 2. Resolved in `smart-import-tabular.md` MCP Interface section.
 - **`import_confirm` tool + "no silent failure" contract.** The propose→review→confirm flow — `import_files` returning a `confirmation_required` envelope on first-encounter unknown layouts, plus the terminal `import_confirm` tool — and the "no silent failures" criterion in Success Criteria are realized by [`smart-import-confirmation.md`](smart-import-confirmation.md) (`in-progress`).
 - **Batch folder UX.** Batch folder import deferred to post-v1 (listed under Future Enhancements in `smart-import-tabular.md`). AI consent model for batch will be resolved when batch is designed.
 - **Match-review hooks in import flow.** Import summary output includes match results ("3 auto-merged, 5 pending review. Run `moneybin matches review` when ready."). Review is a separate command, not inline. Resolved in `matching-overview.md` Default run model section.

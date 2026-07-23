@@ -43,17 +43,28 @@ in-progress
 ### Import-first rationale
 
 MoneyBin is designed around records from files and connectors. With OFX exports,
-CSV downloads, and provider APIs available, source-backed imports give every
-transaction durable provenance; manual entry cannot provide that guarantee.
+CSV downloads, and provider APIs available, source-backed imports remain the
+preferred path because they carry upstream provenance. Explicit manual batches
+are represented as their own source rather than bypassing the data pipeline.
 
 MoneyBin's position:
 
-- **Transactions come from sources** — files and connectors. Every transaction has provenance.
+- **Transactions come from sources** — files, connectors, and explicit manual
+  batches. Every transaction has MoneyBin source provenance.
 - **Corrections are metadata** — when a source record is wrong, the fix is an override in the prep layer ("for this transaction_id, the canonical amount is $42.50"), not a counter-entry in a ledger. The correction travels with the transaction, is auditable, and doesn't create phantom records.
 - **Annotations enrich, they don't create** — tags, notes, and cash breakdowns are metadata on existing transactions. A $200 ATM withdrawal can be annotated with how the cash was spent, but the annotation doesn't create new transactions that double-count the withdrawal.
-- **No general-purpose `add_transaction`** — investment trades, manual adjustments, and other sourceless records wait for their domain-specific source (broker CSV import, Plaid Investments). Domain-specific recording tools may exist within their namespace (e.g., future `investments.record_trade`), but there is no generic transaction creation tool.
+- **Validated manual batches use the pipeline** — `transactions_create` is the
+  validated batch-creation surface for 1–100 manual transactions. The batch is
+  validated atomically, recorded under one manual-source import, and materialized
+  through the normal pipeline; it is not a raw SQL or ledger-write bypass.
+  Investment trades and other domain-specific records still require an admitted
+  source or recording contract. Future MCP capabilities remain unnamed until
+  admission through the bounded registry.
 
-This philosophy is a deliberate product decision. MoneyBin is a data platform that imports and analyzes financial data, not a bookkeeping tool that records it manually.
+This philosophy is a deliberate product decision. MoneyBin is a data platform
+that preserves source identity through ingestion and analysis, including for
+explicitly created manual batches; it is not a general-purpose bookkeeping
+ledger.
 
 ---
 
@@ -128,14 +139,19 @@ check consent or substitute a degraded response.
 
 ### Namespace structure
 
-Tools use a hybrid namespace that reflects the most natural way an AI or user would think about the action. The first segment is the **domain**, the second is the **action or view**.
+Tools use a hybrid namespace that reflects the most natural way an AI or user
+would think about the action. The first segment is the **prefix** and the
+second is the **action or view**. The standard registry groups related prefixes
+into user-facing domains: 14 prefixes compose 11 domain groups.
 
 | Namespace | Domain | Purpose |
 |---|---|---|
 | `system_*` | Orientation and audit | Data inventory, audit, and operation reversal |
 | `reports` | Read-only analytics | Registered catalog and report execution |
-| `accounts_*`, `investments_*` | Financial entities | Account state, balances, investment ledger, and lots |
-| `transactions_*`, `reviews*` | Transaction workflows | Query, curation, categorization, and user decisions |
+| `accounts_*` | Accounts | Account state and balances |
+| `investments_*` | Investments | Investment ledger and lots |
+| `transactions_*` | Transaction workflows | Query, curation, and categorization |
+| `reviews_*`, `identity_*` | Reviews | User decisions, including identity-link decisions |
 | `taxonomy_*` | Reference data | Categories and related taxonomy target state |
 | `import_*` | File ingestion | Import, preview, confirmation, status, and reversal |
 | `sync_*`, `gsheet_*` | External connections | Mediated financial sync and user-controlled sheets |
@@ -196,20 +212,20 @@ For the consuming agent there is one surface, governed by one set of rules. The 
 ### Tool disclosure: full surface, taxonomy-led
 
 **Current registry.** The operating surface is one 47-tool standard registry.
-Generic clients receive every tool. Supported hosts may defer schemas from that
-same registry without reconnect, packs, or profiles; names, annotations,
-approvals, allowlists, and audit identity do not change. Reports are catalog
-entries behind `reports`, never tool slots. The deterministic contract passes,
-but promotion remains unready while context-budget and host-deferral evidence
-are `not_observed`.
+Generic clients receive every tool. Capable hosts may optionally defer schemas
+from that same registry without reconnect, packs, or profiles; names,
+annotations, approvals, allowlists, and audit identity do not change. Reports
+are catalog entries behind `reports`, never tool slots. The deterministic
+contract passes, but promotion remains unready while context-budget and
+host-deferral evidence are `not_observed`.
 
-> **Decision (2026-05-17, supersedes the 2026-05-10 "wired but disabled" stance):** Client-driven progressive disclosure is retired as a strategy. The full registered tool surface is visible at connect. Orientation is delivered through the FastMCP `instructions` field in the `initialize` response and through prefix-grouped tool names with crisp descriptions — both surfaces MoneyBin controls end-to-end. `moneybin_discover`, `MoneyBinSettings.mcp.progressive_disclosure`, and the `Visibility(False, tags={domain})` transforms have been removed. The `tags={domain}` markers on tools (still set via `@mcp_tool(domain=...)`) are kept as dormant metadata, in case a future first-party client (M3C Web UI, or anything driving the Anthropic API directly) can implement prompt-level schema injection in the style of Claude Code's `tool_search`.
+Server-driven progressive disclosure is not part of the operating contract.
+The full registered surface is visible at connect. Orientation uses the
+FastMCP `instructions` field, prefix-grouped names, crisp descriptions, and
+`actions[]` hints. ADR-016 records the superseded disclosure and pre-cutover
+registry history.
 
-> **Historical context (2026-07-15):** the former registry of 105 tools exceeded
-> Windsurf's ceiling. It is now the frozen byte/evaluation baseline; it is not
-> the live registry. M3K.2 selected the current 47-tool standard registry.
-
-#### Why retire client-driven disclosure
+#### Why server-driven disclosure stays absent
 
 `tools/list_changed` is part of the MCP spec, but client support is too uneven to design against — Claude Desktop is unreliable, VS Code Copilot and most generic MCP clients ignore it, and Claude Code's reliable handling is a property of the harness rather than the protocol. Building MoneyBin's disclosure story on a capability most clients lack means the agent silently never sees the extended tools because the client never re-fetches the list. That failure mode is worse than the soft cost of an above-sweet-spot tool count, because the soft cost is recoverable through three levers MoneyBin controls entirely:
 
@@ -217,24 +233,17 @@ are `not_observed`.
 2. **Prefix-grouped names + sharp descriptions.** The taxonomy *is* the discovery UI. A model that cannot pick the right tool from a well-named full surface will not be rescued by progressive disclosure either.
 3. **Surface discipline.** A tool may be registered only when its backing spec in `docs/specs/INDEX.md` reaches `in-progress` or `implemented`. No stubs on the public surface. Codified in `.claude/rules/mcp.md` "Surface change discipline".
 
-#### Historical pre-cutover tool namespaces
+#### Historical evidence
 
-| Namespace | Purpose |
-|---|---|
-| `accounts.*` | Account listing, balances, net worth |
-| `investments.*` | Ledger events, holdings, tax lots, realized gains, securities catalog |
-| `transactions.*` | Universal query, corrections, annotations, categorization (incl. rules, merchants, ML, auto-rule review), recurring |
-| `reports.*` | Cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual |
-| `categories.*`, `merchants.*` | Taxonomy reference data |
-| `import.*`, `sync.*` | Data ingestion (files, providers) |
-| `system.*` | Orientation, data status, audit log, schema health |
-| `sql.*` | Read-only escape hatch |
-
-This table is an archival naming snapshot only. It does not describe the live
-registry, current admission policy, or current orientation surface; those are
-defined by the 47-tool standard registry and its governing scaling spec.
+ADR-016 and the archived MCP catalog preserve pre-cutover namespace and
+callback evidence. This active architecture defines only the operating
+registry and current admission policy.
 
 #### Design implications for new tools
+
+Future MCP capabilities remain unnamed until admission. Specs describe the
+capability and intent first; an admitted registry change supplies the public
+identifier.
 
 - Assume every registered tool is always visible to the agent. Its description, parameter schema, and namespace placement compete for the same finite attention budget as every other tool.
 - The description opens with distinct intent-specific selection guidance and
@@ -245,19 +254,12 @@ defined by the 47-tool standard registry and its governing scaling spec.
 - The `actions` array in response envelopes is the only remaining "what to call next" affordance. When a tool returns `actions`, those tools are already registered and callable — no discover step in between.
 - When proposing a new tool, ask: does the work it does justify ~50–150 tokens of permanent model attention forever? If not, fold it into an adjacent tool (a parameter, a `detail` level) or drop it.
 
-#### Why this is now being revisited
+#### Optional host-native deferral
 
-The original decision named two conditions that would warrant reopening:
-
-1. **Client convergence on reliable disclosure.** If `tools/list_changed` becomes universally honored across the major clients MoneyBin targets, the dormant tag metadata can be re-activated without re-architecting.
-2. **First-party MoneyBin client.** A MoneyBin-owned Web UI (M3C) or direct Anthropic API host could implement prompt-level schema injection in the style of Claude Code's `tool_search`. Worth re-evaluating once M3C is concrete.
-
-Universal `tools/list_changed` support has not arrived, so server-driven
-dynamic disclosure remains rejected. The revisit is instead triggered by a
-hard client ceiling and a third path that does not require server mutation:
-consolidate to one bounded standard registry, then let capable hosts defer
-schemas from that same registry. Generic clients receive it in full. The
-47-tool registry is operating; its promotion evidence remains incomplete.
+Capable hosts may defer schema injection from the same registry when they
+preserve the original names, annotations, allowlists, approvals, and audit
+identity. Generic clients always receive the complete registry. This optional
+host behavior does not create a second server mode or change availability.
 
 ### Multi-currency as a crosscutting concern
 
@@ -266,7 +268,9 @@ Multi-currency is not a tool domain. It surfaces as:
 - A **parameter** on existing tools (e.g., `detail` level that includes native currency alongside home-currency amounts).
 - **Response metadata** (`display_currency`, `native_currencies` — see section 4).
 - A **service-layer concern** (conversion at query time using cached exchange rates).
-- **Rate overrides** handled via the curation taxonomy (a per-transaction note / split / tag, or a manual reversing transaction via `transactions_create`) — `transactions_correct` was retired in favor of the curation tools per `transaction-curation.md`.
+- **Rate overrides** handled via the curation taxonomy: a per-transaction note,
+  split, tag, or a manual reversing transaction through
+  `transactions_create`, per `transaction-curation.md`.
 
 ---
 
@@ -284,7 +288,7 @@ Tools that operate on collections accept and return lists in a single call. The 
 Turn 1: transactions_categorize_assist(limit=50)
         -> returns 50 redacted candidate transactions with descriptions, amounts, dates, suggested categories
 
-Turn 2: transactions_categorize_commit([{id: "tx_1", category: "groceries"}, {id: "tx_2", category: "dining"}, ...])
+Turn 2: transactions_categorize_commit(items=[...])
         -> applies all 50 categorizations, returns summary: {applied: 48, skipped: 2, errors: [...]}
 ```
 
@@ -306,8 +310,8 @@ Every tool returns a consistent envelope:
   },
   "data": [ ... ],
   "actions": [
-    "Use reports(report_id=\"core:spending\", parameters={...}) for a category breakdown",
-    "Use transactions(date_from=..., date_to=...) for row-level transactions in this window"
+    "Use reports(report_id=\"core:spending\") for a category breakdown",
+    "Use transactions(start=..., end=...) for row-level transactions in this window"
   ]
 }
 ```
@@ -423,7 +427,10 @@ The `detail` parameter controls response verbosity — `summary` returns aggrega
 
 ### Tool sensitivity declarations
 
-Every tool declares its **maximum data sensitivity** — the highest sensitivity tier that could appear in its full (non-degraded) response. This is a static property of the tool, not a runtime calculation.
+Every tool is classified through one of two live paths. Static tools derive a
+maximum sensitivity from the data classes on their typed response payload.
+Tools whose projection varies by request declare `dynamic_classification=True`,
+classify the returned payload, and advertise a `maximum_sensitivity` ceiling.
 
 Classification and critical-field masking are current behavior. The consent
 ledger is current, but **global consent enforcement is deferred**; the
@@ -432,21 +439,23 @@ response behavior.
 
 | Sensitivity | Data characteristics | Consent-enforcement target | Example tools |
 |---|---|---|---|
-| `low` | Aggregates, counts, category labels, structural metadata | None | `reports`, `system_status`, `accounts` |
-| `medium` | Row-level data: descriptions, amounts, dates, merchant names | `mcp-data-sharing` (tier-2, persistent) | `transactions`, `reviews`, `transactions_categorize_assist` |
-| `high` | Responses that include critical-tier fields (account numbers, routing numbers) — masked for cloud backends, unmaskable only in verified-local mode | `mcp-data-sharing` (tier-2) + masking invariant | `accounts` |
+| `low` | Counts and structural metadata | None | catalog mode of `reports` |
+| `medium` | Descriptions, merchant names, dates, user notes, and contextual records without financial amounts | Future policy-dependent gate | `system_status` (dynamic, maximum medium); selected review and taxonomy projections |
+| `high` | Financial amounts and balances | Future `mcp-data-sharing` gate | `transactions` (static high); executed financial reports |
+| `critical` | Account/routing identifiers and equivalent direct identifiers | Always mask critical fields; future gate is additional | `accounts` (dynamic, maximum critical); `reports` (dynamic, maximum critical) |
 
 ### Target sensitivity behavior by tier (not yet enforced)
 
-| | `low` tool | `medium` tool (consented) | `medium` tool (not consented) | `high` tool (consented) | `high` tool (not consented) |
-|---|---|---|---|---|---|
-| Response | Full data | Row-level data, critical fields masked | Degraded to aggregates | Full data, critical fields masked unless verified-local + `LOCAL_UNMASK_CRITICAL` | Degraded to aggregates |
-| Audit logged | Yes | Yes | Yes (degraded) | Yes | Yes (degraded) |
+Today, classification is recorded and critical fields are masked, but the
+presence or absence of a consent grant does not change the response. The target
+policy would allow a granted request at its classified tier and degrade or
+refuse an ungranted medium/high/critical request. That target must not be used
+as an active runtime guarantee.
 
 ### Target consent/degradation flow through the middleware (not yet enforced)
 
 ```
-Tool declares: sensitivity = "medium"
+Tool returns a classified medium/high/critical payload
                     |
                     v
         +-- Consent granted? ------- Yes --> Full response
@@ -535,22 +544,26 @@ minimize sensitive data in their requested and summarized results.
 
 ### Resources
 
-MCP resources are read-only data endpoints that give the AI ambient context without requiring a tool call. They're loaded into context when the AI connects, not on demand.
+MCP resources are client-requested, read-only data endpoints. Clients do not
+universally surface or load them, so every critical capability needs a tool path.
 
 **Design principles:**
 
-1. **Ambient, not interactive.** Resources provide background context the AI needs to be helpful — schema information, configuration state, available accounts. They don't accept parameters or perform actions.
-2. **Small and stable.** Resources should be compact enough to load into context without waste. They change infrequently (account list, schema shape, privacy status).
-3. **Bootstrap the AI.** The right set of resources means the AI's first tool call is the right one. Without resources, the AI has to call `overview_status` before it can do anything useful.
+1. **Read-only, not interactive.** Resources provide reference context. They do
+   not perform actions.
+2. **Small and stable.** Resources stay compact enough for explicit client reads.
+3. **Tool-reachable.** A client that does not expose resources must retain the
+   same critical capability through a registered tool.
 
 **Resources:**
 
-| Resource | Content | Why ambient |
+| Resource | Content | Tool path |
 |---|---|---|
-| `moneybin://status` | Data freshness, row counts, date ranges per source, last import timestamp | Lets the AI know what data exists without a tool call |
-| `moneybin://accounts` | Account list with types, institutions, currencies | Lets the AI reference accounts by name, filter by type |
-| `moneybin://privacy` | Active consent grants, configured backend, consent mode | Lets the AI know what it can and can't do before hitting a consent wall |
-| `moneybin://schema` | Core table schemas with column descriptions | Lets the AI write accurate SQL in `sql_query` without calling `describe_table` first |
+| `moneybin://schema` | Core and selected app-interface table schemas, column descriptions, and example queries | `sql_schema(table=...)` |
+
+Status, account, and privacy state are exposed through `system_status`,
+`accounts`, and `privacy`; they do not have separate resource identities.
+Additional resources require a reviewed contract before they are named.
 
 **What's NOT a resource:** Anything that changes frequently (transaction lists, balance snapshots, budget status) or requires parameters (filtered queries). Those are tools.
 
@@ -574,23 +587,37 @@ SPENDING = ReportSpec(
 )
 
 
-# MCP: one catalog/runner for every ReportSpec
-@mcp_tool(sensitivity="low")
+# MCP: one catalog/runner for every registered report
+@mcp_tool(
+    dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.CRITICAL,
+    domain="reports",
+)
 def reports(
     report_id: str | None = None,
     parameters: dict[str, object] | None = None,
 ) -> ResponseEnvelope:
+    catalog = get_report_catalog()
+    if report_id is None:
+        return catalog_to_payload(catalog)
     with get_database(read_only=True) as db:
-        return ReportRegistry(db).catalog_or_execute(report_id, parameters)
+        return catalog.execute(
+            db,
+            report_id=report_id,
+            parameters=parameters or {},
+            limit=get_max_rows(),
+        )
 
 
 # CLI: one ergonomic command for this report
 @reports_app.command("spending")
 def reports_command(from_month: str | None = None) -> None:
     with get_database(read_only=True) as db:
-        result = ReportRegistry(db).execute(
-            "core:spending",
-            {"from_month": from_month},
+        result = get_report_catalog().execute(
+            db,
+            report_id="core:spending",
+            parameters={"from_month": from_month},
+            limit=get_max_rows(),
         )
     render_table(result.columns, result.rows)
 ```
@@ -756,7 +783,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | **Service layer formalization** | Explicit shared services consumed by both MCP and CLI, returning typed Python objects |
 | **Response envelope** | Consistent `{summary, data, actions}` shape across all tools |
 | **Sensitivity declarations** | Static per-tool sensitivity tier driving automatic privacy enforcement |
-| **Tool disclosure** | Full registered surface visible at connect; orientation via FastMCP `instructions` field and prefix-grouped taxonomy. Client-driven progressive disclosure (`tools/list_changed` + `moneybin_discover`) retired 2026-05-17 — see §3. |
+| **Tool disclosure** | Full registered surface visible at connect; orientation via FastMCP `instructions` field and prefix-grouped taxonomy. Optional host-native deferral uses the same registry — see §3. |
 
 ---
 
@@ -782,7 +809,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | Spec | How it relates |
 |---|---|
 | [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) | Defines the privacy framework this spec consumes. MCP field minimization section references tool sensitivity declarations. |
-| [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure. Import tools in this spec's surface replace the prototype `import_file` tool. |
+| [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure and the admitted import operations. |
 | [`matching-overview.md`](matching-overview.md) | Match-review outcomes use the admitted `reviews` and `identity_links_decide` contracts. Audit log is shared infrastructure. |
 | [`extension-contracts.md`](extension-contracts.md) | Defines how third-party Analysis Packages register admitted operations and standalone Reports register catalog entries through Python entry points (`moneybin.packages`). Names, namespaces, response envelopes, and registry budgets defined here are inherited by every extension. |
 
@@ -796,17 +823,19 @@ These decisions and their rationale should be documented in the 12-month plan.
   `review_curation_history`, and `sync_review`. Their current contracts are in
   [`moneybin-mcp.md`](moneybin-mcp.md).
 - **Service layer packaging.** All services live in `src/moneybin/services/` (flat directory, one file per service class). This directory already exists with `categorization_service.py` and `import_service.py`. New services (`spending_service.py`, `transaction_service.py`, etc.) follow the same pattern. Revisit if adding major new domains makes the flat structure unwieldy.
-- **Privacy middleware implementation.** Decorator-based
-  (`@mcp_tool(sensitivity="medium")`) with a middleware class for
-  classification, critical-field masking, and response filtering. The global
-  consent gate remains a deferred extension of that architecture.
+- **Privacy middleware implementation.** The `@mcp_tool` decorator derives
+  static classification from typed payloads; projection-varying tools use
+  `dynamic_classification=True` with a declared `maximum_sensitivity`.
+  Middleware applies critical-field masking and response validation. The
+  global consent gate remains a deferred extension of that architecture.
 - **Tool count strategy (operating, promotion-pending).** The 47-tool standard
   registry is visible at connect with taxonomy-led discovery and stub gating.
-  Client-driven progressive disclosure remains retired. Generic clients receive
-  the complete registry; supported hosts may defer schemas from that same
-  registry without packs, profiles, or reconnect modes. Compatible projections,
-  target-state writes, batches, workflow umbrellas, and the generic `reports`
-  runner provide consolidation; materially different intent, safety,
-  authorization, sensitivity, confirmation, output, audit, or recovery
-  contracts keep separate identities. Promotion remains pending observed context
-  budget and host-native deferral evidence. See §3 and `.claude/rules/mcp.md`.
+  Server-driven progressive disclosure is absent. Generic clients receive the
+  complete registry; capable hosts may optionally defer schemas from that same
+  registry without packs, profiles, or reconnect modes. Compatible
+  projections, target-state writes, batches, workflow umbrellas, and the
+  generic `reports` runner provide consolidation; materially different intent,
+  safety, authorization, sensitivity, confirmation, output, audit, or recovery
+  contracts keep separate identities. Promotion remains pending observed
+  context budget and host-native deferral evidence. See §3 and
+  `.claude/rules/mcp.md`.

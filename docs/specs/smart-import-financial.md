@@ -49,7 +49,7 @@ OFX files carry four entity types in one document (institutions, accounts, balan
 12. Extracted data preserves the existing `source_transaction_id` semantics (FITID), and the matching engine continues to use it for cross-source dedup against tabular and Plaid. Exception: when an institution reuses one FITID for distinct transactions, the stored id is `<FITID>#<hash>` for the colliding rows so both survive (see `.claude/rules/identifiers.md` → "Source-Provided IDs → Exception").
 13. Scenario test coverage exists for: single-account, multi-account, QBO from Intuit, QBO from a bank, re-import idempotency, missing-institution-metadata fallback, and cross-source dedup against tabular.
 14. The synthetic data generator emits OFX *and* QBO variants for scenario fixtures.
-15. The CLI and MCP `import_files` surfaces (renamed from `import_file` singular; see `smart-import-transform.md`) gain no new flags beyond `--institution`. Detection, resolution, and the import-log lifecycle happen automatically.
+15. The CLI retains `--institution` as an override when metadata cannot be derived. MCP `import_files` keeps its live `paths`, `refresh`, and `force` inputs; detection, resolution, and the import-log lifecycle happen automatically.
 
 ---
 
@@ -138,7 +138,7 @@ Legacy rows imported before this change have `import_id = NULL`. They appear in 
 - `src/moneybin/utils/file.py` — `copy_to_raw()` accepts `qbo` (lands in `data/raw/ofx/`).
 - `src/moneybin/loaders/tabular_loader.py` — call sites for batch lifecycle migrate to `import_log` module; tabular-specific code stays.
 - `src/moneybin/cli/commands/import_cmd.py` — `--institution` flag changes contract (override-when-missing); `import revert` learns OFX dispatch.
-- `src/moneybin/mcp/tools/import_tools.py` — `import_files` MCP tool (renamed from `import_file` in the transform handoff PR) reflects new `institution` semantics.
+- `src/moneybin/mcp/tools/import_tools.py` — `import_files` uses automatic institution resolution without adding an MCP override property.
 - `src/moneybin/metrics/registry.py` — add `moneybin_ofx_import_*` metric counterparts.
 - `src/moneybin/testing/synthetic/models.py` — extend `source_type` literal as needed for QBO scenarios.
 - `src/moneybin/testing/synthetic/writer.py` — emit `.qbo` variants when scenarios request them.
@@ -284,13 +284,13 @@ Removed: `moneybin data extract ofx ...` (the legacy command path). Replaced by 
 
 ## MCP Interface
 
-`import_files` tool (renamed from singular `import_file` in the transform handoff PR) —
-existing tool gains:
-- Optional `institution: str | None` parameter (override-when-missing semantics).
-- Returns `import_id` per file so AI conversations can reference and revert.
-- Errors surface "institution could not be derived" with structured fields the prompt template can use to ask the user.
+Call `import_files(paths=["/path/to/statement.qfx"], refresh=True, force=False)`.
+The tool returns an `import_id` per file so conversations can reference and revert
+the batch. If institution metadata cannot be derived, the error explains that the
+CLI `--institution` override is required; the MCP request schema intentionally has
+no institution property.
 
-`import_status` (originally proposed as `import_history`; renamed at ship time) and
+`import_status` and
 `import_revert` tools — already exist for tabular; gain OFX support automatically via
 the shared `import_log` module.
 

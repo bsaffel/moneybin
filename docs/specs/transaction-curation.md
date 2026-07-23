@@ -46,7 +46,7 @@ This spec ships the bundle as a single coherent surface. It is the lead M1E spec
 | Manual transactions live in `raw.manual_transactions` (mirror tabular shape) | Existing pipeline runs unchanged; `source_type='manual'` discriminator drives matcher and auto-rule exemptions | §Data Model, §Pipeline Integration |
 | Curation tables stored relationally in `app.*`, presented as DuckDB nested types in `core.fct_transactions` | Write ergonomics from flat tables, consumer ergonomics from `LIST`/`LIST(STRUCT)` | §Architectural Pattern |
 | Notes are multi-note (extending existing `app.transaction_notes`) | Curator journaling needs history; audit log is wrong UX for that | §Data Model |
-| CLI imperative (`add`/`remove`/`edit`), MCP declarative (`*_set`) | Humans procedural, LLMs target-state — same service layer, asymmetric vocabulary | §Architectural Pattern, §CLI Interface, §MCP Interface |
+| CLI imperative (`add`/`remove`/`edit`), MCP target-state variants (`tags_set`, `splits_set`, `import_labels_set`) | Humans procedural, LLMs target-state — same service layer, asymmetric vocabulary | §Architectural Pattern, §CLI Interface, §MCP Interface |
 | `transactions_create` MCP tool is bulk (1–100 per call); CLI is single-txn | LLMs batch naturally; humans type interactively | §MCP Interface |
 
 ## Architectural Pattern
@@ -71,11 +71,11 @@ When write volume is low (e.g., import labels — once per batch, rarely edited)
 **The service layer is the source of truth for capability. CLI and MCP call into the same methods but expose different verb vocabularies to match how each surface is used.**
 
 - **CLI: imperative verbs** (`add`/`remove`/`edit`/`delete`/`clear`). Humans think procedurally; fine-grained ops compose into curator workflows. Example: `transactions tags add txn_x foo`, then `transactions tags remove txn_x bar`.
-- **MCP: declarative state-setters** (`*_set`) when the operation's semantic is "make state look like this." LLMs reason about target states more reliably than diffs. Example: `transactions_tags_set(transaction_id=x, tags=["foo","baz"])` — the service computes the diff and applies it.
+- **MCP: declarative state-setters** (`transactions_annotate` request kinds `tags_set` and `splits_set`, plus `import_labels_set`) when the operation's semantic is "make state look like this." LLMs reason about target states more reliably than diffs. Example: `transactions_annotate(requests=[{"kind": "tags_set", "transaction_id": "x", "tags": ["foo", "baz"]}])` — the service computes the diff and applies it.
 - **Symmetry contract**: any capability reachable from one surface is reachable from the other. The translation lives in the service layer, not in surface-specific business logic.
 - **When NOT to declarative-set**: when individual ops have distinct semantics that don't collapse into a target-state representation. Notes (`add`/`edit`/`delete` operate on individual `note_id`s with separate audit semantics) keep imperative verbs in both CLI and MCP.
 
-An MCP-vocabulary audit pass on the existing surface (Out-of-Scope §Follow-ups) was completed for `moneybin-mcp.md` v2. Account-management toggles consolidated into `accounts_set` (rename/include/archive/unarchive folded with a cascade rule). `categories_toggle` renamed to `categories_set` in the 2026-05-17 vocabulary sweep — verb-only change; no consolidation needed.
+An MCP-vocabulary audit pass on the existing surface (Out-of-Scope §Follow-ups) was completed for `moneybin-mcp.md` v2. Account-management toggles consolidate into `accounts_set` (rename/include/archive/unarchive folded with a cascade rule). Category target state is declared through `taxonomy_set(items=[...])`.
 
 ## Requirements
 
@@ -513,7 +513,7 @@ Three-verb surface. Labels on `app.imports.labels` (LIST(VARCHAR)). Browsing pas
 
 ### Function naming
 
-Per `feedback_cli_function_naming.md` and `.claude/rules/cli.md`: Typer subgroup commands follow `<group>_<verb>`. Examples: `transactions_create`, `transactions_notes_add`, `transactions_notes_edit`, `transactions_tags_add`, `transactions_tags_rename`, `transactions_splits_add`, `transactions_audit`, `system_audit_list`, `system_audit_show`, `import_labels_add`, `import_labels_list`.
+Per `feedback_cli_function_naming.md` and `.claude/rules/cli.md`, Typer subgroup commands use the imperative CLI form. Examples: `moneybin transactions create`, `moneybin transactions notes add`, `moneybin transactions notes edit`, `moneybin transactions tags add`, `moneybin transactions tags rename`, `moneybin transactions splits add`, `moneybin transactions audit`, `moneybin system audit list`, `moneybin system audit show`, `moneybin import labels add`, and `moneybin import labels list`.
 
 ## MCP Interface
 
@@ -527,10 +527,10 @@ consume an MCP tool slot.
 
 | Tool | Sensitivity | Shape |
 |---|---|---|
-| `transactions_create` | write | `(transactions: list[ManualEntryInput], 1 ≤ len ≤ 100) → list[ManualEntryResult]` — bulk, atomic, single `import_id` per call |
-| `transactions_annotate` | write | Atomic `requests` union: `note_add(transaction_id, text)`, `note_edit(note_id, text)`, `note_delete(note_id)`, declarative `tags_set` / `splits_set`, and global `tag_rename` |
-| `import_labels_set` | write | `(import_id, labels: list[str]) → list[str]` — declarative |
-| `system_audit` | medium | `(filters, limit) → list[AuditEvent]` — supports `audit_id` filter for show-equivalent (returns single-element list with full payload) |
+| `transactions_create` | maximum `low` | `(transactions: list[ManualEntryInput], 1 ≤ len ≤ 100) → list[ManualEntryResult]` — bulk, atomic, single `import_id` per call |
+| `transactions_annotate` | static `low` | Atomic `requests` union: `note_add(transaction_id, text)`, `note_edit(note_id, text)`, `note_delete(note_id)`, declarative `tags_set` / `splits_set`, and global `tag_rename`; the destructive-confirmation decision varies by request |
+| `import_labels_set` | maximum `medium` | `(import_id, labels: list[str]) → list[str]` — declarative |
+| `system_audit` | dynamic; maximum `high` | `view="events" | "history" | "detail"`, with `limit` and `cursor` for lists. `view="detail"` requires exactly one of `audit_id` or `operation_id`; list views reject both identifiers. |
 | (read tools) | — | Dropped — curation data is on `core.fct_transactions` LIST/STRUCT columns; LLM uses SQL via `moneybin://schema` |
 
 **Why the read tools were cut:** after this spec ships, `notes`, `tags`, and `splits` are columns on `core.fct_transactions`. The LLM writes `SELECT notes, tags, splits FROM core.fct_transactions WHERE transaction_id = ?` via the schema catalog. Adding dedicated read tools would duplicate token surface without adding capability.
@@ -555,28 +555,30 @@ those lifecycle semantics without spending three registered tool slots.
 
 ### Resources
 
-| URI | Content | Sensitivity |
-|---|---|---|
-| `moneybin://recent-curation` | Last 50 audit events across any target. For "what did I touch this week?" ambient awareness. | medium |
-| `moneybin://uncategorized-queue` (extended) | Existing planned resource. This spec adds `notes`, `tags` to the per-row payload so the LLM can see prior curator context when proposing categorizations. | medium |
-| `moneybin://schema` (extended) | Existing resource. This spec registers new curation columns and tables: `core.fct_transactions.{notes, note_count, tags, tag_count, splits, split_count, has_splits}`, `core.fct_transaction_lines`, `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits`, `app.imports`, `app.audit_log`. Includes example queries demonstrating LIST/STRUCT use (`'tax:business' = ANY(tags)`, `UNNEST(notes)`, `note_count > 0` rather than `len(notes) > 0`). | low |
-
-Per `feedback_mcp_resources_not_universal.md`, resources are enhancement-only. Critical reads have a tool path: `system_audit` is the tool equivalent of `moneybin://recent-curation`. The schema catalog has its `sql_schema` tool mirror per `mcp-sql-discoverability.md`.
+The current resource registry contains `moneybin://schema`. This spec registers
+the curation columns and interface tables there, with LIST/STRUCT example
+queries. `sql_schema` mirrors the catalog for clients without resource support;
+`system_audit` and `reviews(kind="categorization", ...)` cover curation history
+and queue reads. No dedicated curation resource identities are registered.
 
 ### Prompts
 
 | Prompt | Purpose |
 |---|---|
-| `prompts/curate_recent_transactions` | Walks the user through last-N-days transactions, surfacing untagged/unnoted rows and offering to add curator state. Calls `transactions` then one or more `transactions_annotate` batches. |
-| `prompts/review_curation_history` | Summarizes recent audit events ("In the last week, you re-tagged 12 transactions, added 4 splits, and labeled the Q1 batch."). Read-only. Calls `system_audit`. |
+| `curate_recent_transactions` | Walks the user through last-N-days transactions, surfacing untagged/unnoted rows and offering to add curator state. Calls `transactions` then one or more `transactions_annotate` batches. |
+| `review_curation_history` | Summarizes recent audit events ("In the last week, you re-tagged 12 transactions, added 4 splits, and labeled the Q1 batch."). Read-only. Calls `system_audit`. |
 
 Pure prompt content; no schema work. These two prompts wrap the curation-specific tools and remain in scope on their own merit (curator-segment ritual surfaces); the broader "monthly-ritual prompt set" idea was retired 2026-05-16 in favor of a tool-first `reports-anomaly-detection.md` (internal roadmap review).
 
 ### Privacy and sensitivity
 
-- All write tools (`transactions_*` and `import_labels_set`) follow the existing write-tool confirmation convention per `mcp-architecture.md`.
-- Read tools surfacing row-level data (`system_audit` returning before/after JSON) inherit medium-sensitivity behavior: aggregate-only response without `mcp-data-sharing` consent, full data with consent.
-- Critical-tier fields (account numbers, full descriptions, amounts) embedded in audit `before_value` / `after_value` JSON follow the existing redaction rules — `SanitizedLogFormatter` handles log emission; the response itself returns full data when consent is granted, summary-only without.
+- Curation writes use static sensitivity derived from their typed responses.
+  `transactions_annotate` is `low`; only its destructive-confirmation decision
+  varies by request, and destructive branches require payload-bound confirmation.
+- `system_audit` classifies dynamically up to `high`.
+- Critical fields are masked in responses and sanitized from logs. Global
+  consent enforcement is deferred, so this spec does not promise an automatic
+  aggregate-only response when consent is absent.
 
 ## Audit Emission Contract
 
@@ -628,13 +630,12 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 - `src/moneybin/sqlmesh/models/prep/stg_manual__transactions.sql` — staging view feeding `int_transactions__unioned`
 - `src/moneybin/sqlmesh/models/core/fct_transaction_lines.sql` — split-expanded grain
 - `src/moneybin/services/audit_service.py` — `AuditService.record_audit_event`, query methods
-- `src/moneybin/cli/commands/transactions/` (package) — `transactions_create`, `transactions_notes_*`, `transactions_tags_*`, `transactions_splits_*`, `transactions_audit`. (Shipped as a package, not a flat module — each subgroup is its own file inside the package.)
-- `src/moneybin/cli/commands/system/` (package) — `system_audit_list`, `system_audit_show`.
-- `src/moneybin/cli/commands/import_/` (package) — `import_labels_add`, `import_labels_remove`, `import_labels_list`.
-- `src/moneybin/mcp/tools/curation.py` — the 9 new MCP write/read tools
-- `src/moneybin/mcp/prompts/curate_recent_transactions.py`
-- `src/moneybin/mcp/prompts/review_curation_history.py`
-- `src/moneybin/mcp/resources/recent_curation.py`
+- `src/moneybin/cli/commands/transactions/` (package) — CLI commands for `moneybin transactions create`, `moneybin transactions notes`, `moneybin transactions tags`, `moneybin transactions splits`, and `moneybin transactions audit`. (Shipped as a package, not a flat module — each subgroup is its own file inside the package.)
+- `src/moneybin/cli/commands/system/` (package) — CLI commands for `moneybin system audit list` and `moneybin system audit show`.
+- `src/moneybin/cli/commands/import_/` (package) — CLI commands for `moneybin import labels add`, `moneybin import labels remove`, and `moneybin import labels list`.
+- `src/moneybin/mcp/tools/curation.py` — curation handlers for the registered umbrella tools
+- `src/moneybin/mcp/prompts.py` — `curate_recent_transactions` and
+  `review_curation_history` prompt registrations
 - `tests/scenarios/personas/curator.yaml` — new synthetic persona that adds notes, tags, and splits to ~30% of generated transactions; ground-truth fields document expected curation state
 - `tests/scenarios/scenario_manual_entry_dedup.yaml`
 - `tests/scenarios/scenario_manual_entry_auto_rule_training.yaml`
@@ -676,7 +677,7 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 | Tag table shape | Flat M:N with slug-pattern VARCHAR (`namespace:value` optional) |
 | Import labels shape | Single consolidated `app.imports` row with `LIST(VARCHAR)` labels column |
 | MCP bulk vs single | Bulk `transactions_create` (1–100); CLI stays single-txn |
-| MCP declarative-set | Tags, splits, import labels use `*_set`; notes stay stable-ID imperative inside `transactions_annotate` |
+| MCP declarative-set | Tags and splits use the `tags_set` / `splits_set` variants inside `transactions_annotate`; import labels use `import_labels_set`; notes stay stable-ID imperative inside `transactions_annotate` |
 | Service organization | Extend existing `TransactionService` and `ImportService`; new cross-cutting `AuditService` |
 
 ## Synthetic Data Requirements
@@ -740,7 +741,11 @@ All four scenarios use the new `curator` persona where applicable.
 
 ### Tier 5 — MCP integration (`tests/e2e/test_e2e_mcp.py`)
 
-Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resource, and 2 extended resources: tool registration, response envelope shape, sensitivity-tier behavior (medium tools degrade without consent), `transactions_create`'s `pipeline_summary` in response, declarative-set diff correctness for `transactions_tags_set`.
+Existing test file extended to cover the curation MCP surface, two prompts, and
+the schema resource additions: tool registration, response envelope shape,
+dynamic sensitivity and masking, `transactions_create`'s `pipeline_summary` in
+response, and declarative-set diff correctness for the `tags_set` variant of
+`transactions_annotate`.
 
 ## Dependencies
 
@@ -765,6 +770,6 @@ Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resou
 
 ### Follow-ups
 
-- This spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift. The MCP-vocabulary audit pass for v2 closed: account-management toggles folded into `accounts_set`; `categories_toggle` renamed to `categories_set` (verb-only, no consolidation needed).
+- This spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift. The MCP-vocabulary audit pass for v2 closed: account-management toggles fold into `accounts_set`; category target state is declared through `taxonomy_set(items=[...])`.
 - Future `mcp-ux-standards.md` (in `moneybin-cli.md`'s "Future Specs to Add") lifts the declarative-set principle from this spec's §Architectural Pattern.
 - Future `architecture-shared-primitives.md` formalizes the `app.*` schema layer in `AGENTS.md` and the LIST/STRUCT presentation pattern in `.claude/rules/database.md`.

@@ -83,7 +83,7 @@ so the remaining capacity belongs to the user's combined MCP configuration.
 | LibreChat | stdio, sse, streamable-http | `librechat.yaml` / in-app panel | T2 | |
 | Warp | stdio, SSE URL | UI add; auto-detects `.warp/.mcp.json` + reads Claude Code/Codex config | T2 | Often works with zero MoneyBin effort via config pickup |
 | Open WebUI | streamable-http (native ≥0.6.31); stdio via `mcpo` | admin config | T2 | Localhost streamable-http intersects our `--insecure` gate — document carefully |
-| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | MoneyBin's current 47-tool standard registry fits its 100-active-tool combined cap. Document only; revisit when client momentum justifies release-gated support |
+| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | Works via stdio. Its 100-active-tool global cap accommodates all 47 MoneyBin tools and leaves 53 tool slots for other servers. Document only; revisit if momentum warrants release-gated support |
 | claude.ai web + mobile (custom connectors) | remote MCP (OAuth optional platform-side) | Settings → Connectors (Free capped at 1) | **T3** | M3D. Available on all plans incl. Free |
 | ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it | **T1** | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension |
 | ChatGPT web (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Web doesn't read local Codex config. **Mobile MCP support undocumented** (Jul 2026). Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-tiering ambiguous — re-verify at M3D |
@@ -108,9 +108,10 @@ works.
   Antigravity, Cursor, VS Code/Copilot, Claude Desktop, and Gemini CLI have a
   concrete installation path and a client surface we will smoke-test each
   release. Gemini CLI remains T1 through its transition to Antigravity CLI.
-- **Windsurf → T2.** Momentum does not justify release-gated support today.
-  Stdio configuration remains documented. The current 47-tool standard registry
-  fits its 100-tool combined cap; revisit the tier when client momentum changes.
+- **Windsurf → T2.** Its 100-active-tool global cap accommodates all 47
+MoneyBin tools and leaves 53 tool slots for other servers. Stdio
+configuration remains documented; the tier reflects product momentum and
+release-gating cost, not a current compatibility defect.
 - **Antigravity → T1.** It supports the transports MoneyBin needs and provides
   a first-party desktop and CLI path. Its configuration is still evolving, so
   each release verifies the supported path before publishing it.
@@ -143,15 +144,11 @@ Stale guidance found during the review; all are routine fixes:
 4. **File the upstream Claude Desktop bug**: connector toggle ON in Chat with
    tools never reaching the model (observed 2026-07-10) contradicts Anthropic's
    documented behavior — file with logs against claude-ai-mcp.
-5. **Historical measurement (2026-07-10): Windsurf exposed the former registry
-   overflow.** Progressive disclosure was retired (`mcp-architecture.md` §3),
-   so the former 105-tool registry counted in full against Cascade's hard
-   100-active-tool ceiling. The live served surface reported 105 registered and
-   zero hidden tools; PR #315 pinned that measurement and warned at install
-   time. M3K.2 subsequently replaced it with the current 47-tool standard
-   registry under MoneyBin's hard 50-tool limit. The historical measurement is
-   retained as the reason the bounded-registry work began, not as current
-   operating guidance.
+5. **Keep Windsurf headroom current.** The full 47-tool standard registry is
+   visible at connect. Cascade's hard 100-active-tool global ceiling therefore
+   leaves 53 tool slots for every other connected server. Derive the MoneyBin
+   count from `STANDARD_TOOL_NAMES` and the rendered standard snapshot; do not
+   preserve a second compatibility count in install code or prose.
 6. **`docs/features.md` and `docs/specs/user-facing-doc-polish.md` are CORRECT
    about ChatGPT Desktop — do not "fix" them.** Both say the ChatGPT desktop app
    takes a local stdio server, and item 17 keeps a Desktop-vs-web/mobile split;
@@ -318,10 +315,10 @@ first public release). Content decisions:
   peer to Codex and Claude Code — supports stdio MCP, and its CLI succeeds the
   sunsetting Gemini CLI. T1 targets the stable desktop + CLI surfaces and
   re-verifies the config path each release while the surfaces settle.
-- **Windsurf → T2** (was OQ1). Momentum faded after the Cognition acquisition,
-  so release-gated support is not justified for a distant follower. The current
-  47-tool standard registry fits the client's 100-active-tool combined cap.
-  Documented, not release-gated; revisit on a momentum change.
+- **Windsurf → T2** (was OQ1). Its 100-active-tool global cap accommodates all
+  47 MoneyBin tools and leaves 53 tool slots for other servers. The client
+  remains documented rather than release-gated because its momentum does not
+  justify the recurring validation cost. Revisit on a momentum change.
 - **Ship the Claude Code distribution plugin in M3B** (was OQ6). It is a
   server-distribution vector (`/plugin install moneybin` via a self-hosted
   marketplace, no review) — distinct from, and additive to, the M3I
