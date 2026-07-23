@@ -440,8 +440,8 @@ response behavior.
 | Sensitivity | Data characteristics | Consent-enforcement target | Example tools |
 |---|---|---|---|
 | `low` | Counts and structural metadata | None | catalog mode of `reports` |
-| `medium` | User-authored labels or contextual records without financial amounts | Future policy-dependent gate | `system_status` (dynamic, maximum medium); selected review and taxonomy projections |
-| `high` | Financial amounts, balances, descriptions, dates, or merchant data | Future `mcp-data-sharing` gate | `transactions` (static high); executed financial reports |
+| `medium` | Descriptions, merchant names, dates, user notes, and contextual records without financial amounts | Future policy-dependent gate | `system_status` (dynamic, maximum medium); selected review and taxonomy projections |
+| `high` | Financial amounts and balances | Future `mcp-data-sharing` gate | `transactions` (static high); executed financial reports |
 | `critical` | Account/routing identifiers and equivalent direct identifiers | Always mask critical fields; future gate is additional | `accounts` (dynamic, maximum critical); `reports` (dynamic, maximum critical) |
 
 ### Target sensitivity behavior by tier (not yet enforced)

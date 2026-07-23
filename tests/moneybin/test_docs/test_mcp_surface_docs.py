@@ -554,6 +554,10 @@ def _split_top_level_arguments(arguments: str) -> list[str]:
     for index, char in enumerate(arguments):
         if quote is not None:
             if escaped:
+                if char == quote:
+                    after_quote = arguments[index + 1 :].lstrip()
+                    if not after_quote or after_quote[0] in ",)]}":
+                        quote = None
                 escaped = False
             elif char == "\\":
                 escaped = True
@@ -584,6 +588,10 @@ def _top_level_keyword(part: str) -> tuple[str, str] | None:
     for index, char in enumerate(part):
         if quote is not None:
             if escaped:
+                if char == quote:
+                    after_quote = part[index + 1 :].lstrip()
+                    if not after_quote or after_quote[0] in ",)]}":
+                        quote = None
                 escaped = False
             elif char == "\\":
                 escaped = True
@@ -1472,6 +1480,16 @@ def test_features_documents_the_executable_manual_batch_contract() -> None:
     assert "not yet wired" not in manual_line
 
 
+def test_mcp_architecture_sensitivity_tiers_match_runtime_taxonomy() -> None:
+    text = ARCHITECTURE_SPEC.read_text()
+
+    assert (
+        "| `medium` | Descriptions, merchant names, dates, user notes, and "
+        "contextual records without financial amounts |"
+    ) in text
+    assert "| `high` | Financial amounts and balances |" in text
+
+
 def test_cli_spec_describes_outcome_parity_without_input_identity() -> None:
     text = CLI_SPEC.read_text()
 
@@ -2210,6 +2228,15 @@ def test_mcp_contract_scan_validates_assigned_calls() -> None:
     ],
 )
 def test_mcp_contract_scan_accepts_live_properties_and_enums(text: str) -> None:
+    assert _mcp_contract_violations(text, Path("docs/example.md")) == []
+
+
+def test_mcp_contract_scan_accepts_escaped_quotes_in_multi_argument_calls() -> None:
+    text = (
+        r'{"actions":["Use reports(report_id=\"core:spending\", '
+        r'parameters={\"granularity\": \"month\"})"]}'
+    )
+
     assert _mcp_contract_violations(text, Path("docs/example.md")) == []
 
 
