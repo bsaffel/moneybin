@@ -28,13 +28,14 @@ from moneybin.exports.manifest import (
 )
 from moneybin.exports.models import ExportDestination, ExportReceipt
 from moneybin.exports.renderers import (
+    decode_csv_cell,
     normalize_tabular_cell,
     render_csv,
     render_parquet,
     render_xlsx,
     workbook_worksheet_names,
 )
-from moneybin.exports.snapshot import PreparedExport
+from moneybin.exports.snapshot import PreparedExport, PreparedTable
 from moneybin.services.request_lifetime import (
     RequestLifetime,
     current_request_lifetime,
@@ -239,6 +240,7 @@ def validate_bundle(
             raise ValueError("export table checksum validation failed")
         if _table_row_count(artifact_path, format) != len(table.rows):
             raise ValueError("export table row count validation failed")
+        _validate_table_content(artifact_path, table, format)
 
     expected_manifest = build_local_manifest(
         snapshot,
@@ -381,6 +383,43 @@ def _table_row_count(path: Path, format: Literal["csv", "parquet"]) -> int:
     if row is None:
         raise ValueError("Parquet row count validation returned no result")
     return cast(int, row[0])
+
+
+def _validate_table_content(
+    path: Path,
+    table: PreparedTable,
+    format: Literal["csv", "parquet"],
+) -> None:
+    """Round-trip each emitted table against its prepared schema and values."""
+    expected_headers = tuple(column.name for column in table.columns)
+    if format == "csv":
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = tuple(csv.reader(handle))
+        headers, *data_rows = rows
+        expected_rows = tuple(
+            tuple(
+                None if value is None else str(normalize_tabular_cell(value))
+                for value in row
+            )
+            for row in table.rows
+        )
+        actual_rows = tuple(
+            tuple(decode_csv_cell(value) for value in row) for row in data_rows
+        )
+    else:
+        relation = duckdb.read_parquet(str(path))
+        headers = tuple(relation.columns)
+        actual_rows = tuple(relation.fetchall())
+        expected_rows = table.rows
+    actual_headers = (
+        tuple(decode_csv_cell(header) for header in headers)
+        if format == "csv"
+        else tuple(headers)
+    )
+    if actual_headers != expected_headers:
+        raise ValueError("export table column validation failed")
+    if actual_rows != expected_rows:
+        raise ValueError("export table cell validation failed")
 
 
 def _validated_bundle_layout(

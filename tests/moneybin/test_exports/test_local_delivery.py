@@ -201,6 +201,56 @@ def test_tampered_staging_bundle_is_not_published_or_left_behind(
     assert not list(exports_root.glob(".staging-*"))
 
 
+@pytest.mark.parametrize("format", ["csv", "parquet"])
+@pytest.mark.parametrize(
+    ("drift", "failure"),
+    [("rows", "cell"), ("columns", "column")],
+)
+def test_renderer_content_drift_is_not_published(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    format: LocalExportFormat,
+    drift: str,
+    failure: str,
+) -> None:
+    """Receipts cannot make a renderer payload drift from the snapshot publishable."""
+    snapshot = make_snapshot()
+    table = snapshot.tables[0]
+    wrong_table = (
+        replace(table, rows=((999, *table.rows[0][1:]), *table.rows[1:]))
+        if drift == "rows"
+        else replace(
+            table,
+            columns=(
+                replace(table.columns[0], name="wrong_entry_id"),
+                *table.columns[1:],
+            ),
+        )
+    )
+    rendered_snapshot = replace(
+        snapshot,
+        tables=(wrong_table,),
+    )
+    renderer = (
+        local_delivery.render_csv if format == "csv" else local_delivery.render_parquet
+    )
+
+    def render_wrong_snapshot(
+        _snapshot: PreparedExport, staging_root: Path
+    ) -> RenderedArtifact:
+        return renderer(rendered_snapshot, staging_root)
+
+    monkeypatch.setattr(local_delivery, f"render_{format}", render_wrong_snapshot)
+
+    with pytest.raises(ValueError, match=failure):
+        LocalExportPublisher(tmp_path / "exports").publish(
+            snapshot, format=format, compress_zip=False
+        )
+
+    assert not list((tmp_path / "exports").glob("export-*"))
+    assert not list((tmp_path / "exports").glob(".staging-*"))
+
+
 def test_unexpected_bundle_directory_is_not_published(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
