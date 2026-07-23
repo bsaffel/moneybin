@@ -178,40 +178,29 @@ WITH positions AS (
   FROM core.fct_investment_transactions
   WHERE
     type = 'split'
-), broker_covered_accounts AS (
-  /* An account is broker-covered when it is known to a Plaid item — through EITHER
-     investment staging view — and that item has a current snapshot receipt. Without
-     this scope the phantom clause below would fire on every manual-only account, whose
-     provider claim is NULL simply because no broker reports it — silently unvaluing
-     every manually-tracked position in the database.
+), ever_reported_positions AS (
+  /* Every (account, security) the broker has EVER carried in a holdings snapshot — read
+     across ALL snapshots, not only the newest. The phantom clause requires this: "the
+     broker stopped reporting this position" is only meaningful for a position the broker
+     once reported. A position that never appears in any snapshot is a manual holding, and
+     withholding it would tell the user their share count is wrong when it is not.
 
-     The UNION with the transactions view is load-bearing, and mirrors the
-     investment_phantom_holdings doctor check: a LIQUIDATED account writes no holdings
-     rows at all, so a holdings-only scope drops the one account whose every position is
-     a phantom — the 100%-overstated account is exactly the one the narrower scope
-     filters out. The account survives in the transactions view, which is what supplies
-     its coverage. This is the same blind spot newest_snapshot avoids by reading
-     receipts rather than rows, one level down.
+     security_id here is the CANONICAL id (prep.stg_plaid__investment_holdings resolves the
+     provider key through the accepted 'plaid_security_id' link), so it joins to
+     positions.security_id below. A holdings row exists only for a broker-covered account,
+     so this position-level gate strictly implies account coverage and replaces the older
+     account-level scope entirely — one precise check rather than two overlapping ones.
 
-     Joined on source_origin alone, NOT on source_file: coverage is a property of the
-     ITEM, and requiring the account to appear in the newest snapshot itself would make
-     the phantom clause unreachable — a position dropped from that snapshot is exactly
-     the case being detected. */
+     Known limitation: a Plaid security id that churned across a corporate action, whose
+     OLD id was bound and reported, still resolves to the same canonical id and so still
+     withholds here. That case wants the new id bound, not a "share count wrong" claim; it
+     is a named limitation this gate does not fix. */
   SELECT DISTINCT
-    ai.account_id
-  FROM (
-    SELECT DISTINCT
-      account_id,
-      source_origin
-    FROM prep.stg_plaid__investment_holdings
-    UNION
-    SELECT DISTINCT
-      account_id,
-      source_origin
-    FROM prep.stg_plaid__investment_transactions
-  ) AS ai
-  JOIN newest_snapshot AS ns
-    ON ns.source_origin = ai.source_origin
+    account_id,
+    security_id
+  FROM prep.stg_plaid__investment_holdings
+  WHERE
+    NOT security_id IS NULL
 ), withheld AS (
   /* Three clauses, none redundant — each guards a failure the others miss, and all
      three are quantity-specific: market value is quantity x price and does not depend
@@ -220,11 +209,13 @@ WITH positions AS (
      on unmapped_subtype and transfer_direction_underivable too) would withhold a
      correct number for unrelated reasons.
 
-     The third is not covered by the first: when a fresh snapshot omits a position the
+     The third is not covered by the first: when the newest snapshot omits a position the
      ledger still carries, provider_reported_quantity is NULL, so
      `quantity <> provider_reported_quantity` evaluates to UNKNOWN rather than true and
      the position would slip through — publishing a market value for shares the broker
-     says are gone and overstating net worth by exactly that amount. */
+     says are gone. It fires ONLY when the broker once reported this position
+     (ever_reported_positions): a position never in any snapshot is a manual holding, not
+     a phantom, and withholding it would falsely claim the share count is wrong. */
   SELECT
     pos.account_id,
     pos.security_id,
@@ -249,12 +240,14 @@ WITH positions AS (
         )
     )
     OR (
-      pos.account_id IN (
+      pr.provider_reported_quantity IS NULL
+      AND EXISTS(
         SELECT
-          account_id
-        FROM broker_covered_accounts
+          1
+        FROM ever_reported_positions AS erp
+        WHERE
+          erp.account_id = pos.account_id AND erp.security_id = pos.security_id
       )
-      AND pr.provider_reported_quantity IS NULL
     ) AS is_withheld
   FROM positions AS pos
   LEFT JOIN provider_reported AS pr

@@ -57,13 +57,8 @@ def _expected_status(elapsed_days: int) -> str:
     return "valued" if elapsed_days == 0 else "carried_forward"
 
 
-def _seed_position(
-    db: Database,
-    *,
-    security_id: str = _DEFAULT_SECURITY_ID,
-    currency_code: str = "USD",
-) -> None:
-    """10 units at 100.00, cost basis 1000.00, in account acc_1."""
+def _seed_security(db: Database, *, security_id: str = _DEFAULT_SECURITY_ID) -> None:
+    """The canonical catalog row — needed for any position, manual or broker-derived."""
     db.execute(
         """
         INSERT INTO app.securities (security_id, name, security_type, ticker)
@@ -71,6 +66,16 @@ def _seed_position(
         """,  # noqa: S608  # test fixture, not executing user SQL
         [security_id],
     )
+
+
+def _seed_position(
+    db: Database,
+    *,
+    security_id: str = _DEFAULT_SECURITY_ID,
+    currency_code: str = "USD",
+) -> None:
+    """A MANUAL position: 10 units at 100.00, cost basis 1000.00, in account acc_1."""
+    _seed_security(db, security_id=security_id)
     db.execute(
         """
         INSERT INTO raw.manual_investment_transactions (
@@ -189,28 +194,6 @@ def _seed_liquidated_snapshot(db: Database) -> None:
         ) VALUES ('item_1', 'sync_job_liquidated', CURRENT_DATE, 0,
                   DATE '2026-01-01', 'plaid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
-    )
-
-
-def _seed_plaid_buy(db: Database, *, account_id: str) -> None:
-    """One ordinary Plaid buy: the row that keeps a liquidated account known to its item.
-
-    A buy, NOT a split: ``split_underivable`` would trip the split clause too, and a
-    fixture that satisfies two guards isolates neither — the test would stay green with
-    the phantom clause removed entirely.
-    """
-    db.execute(
-        """
-        INSERT INTO raw.plaid_investment_transactions (
-            investment_transaction_id, account_id, security_id,
-            investment_transaction_type, investment_transaction_subtype,
-            transaction_date, quantity, price, amount, fees, iso_currency_code,
-            source_file, source_type, source_origin, extracted_at, loaded_at
-        ) VALUES (?, ?, ?, 'buy', 'buy', DATE '2026-01-10',
-                  1, 100.00, -100.00, 0.00, 'USD', 'sync_job_liquidated', 'plaid',
-                  'item_1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
-        [f"itx_buy_{account_id}", account_id, _DEFAULT_PROVIDER_KEY],
     )
 
 
@@ -638,13 +621,63 @@ def test_quantity_divergence_withholds(db: Database) -> None:
 
 @pytest.mark.slow
 def test_phantom_position_withholds(db: Database) -> None:
-    """A fresh snapshot omits a position the ledger still carries.
+    """The broker reported this position, then a newer snapshot dropped it.
 
-    Clause 1 cannot catch this: provider_reported_quantity is NULL, so
-    `quantity <> provider_reported_quantity` is UNKNOWN rather than true and the
-    position slips through — publishing a market value for shares the broker says are
-    gone. The snapshot covers acc_1 (so the account is broker-covered) but reports a
-    different, unbound security, leaving the VTI position absent from the claim.
+    The position is broker-derived: the first snapshot's holdings seed a 10-unit opening
+    lot (sync-plaid-investments.md § Opening-lot bootstrap), so the ledger carries shares
+    the broker once reported. A newer snapshot then omits VTI, so
+    provider_reported_quantity is NULL and clause 1 cannot catch it —
+    `quantity <> provider_reported_quantity` is UNKNOWN rather than true, so the position
+    would slip through and publish a market value for shares the broker says are gone. The
+    PRIOR snapshot that carried VTI is what makes this a genuine phantom rather than a
+    manual holding (contrast test_manual_position_in_covered_account_still_values, whose
+    only difference is that VTI was never reported).
+    """
+    anchor = _db_today(db)
+    _seed_security(db)
+    _seed_price(db, price_date=anchor, close="120.00")
+    # First snapshot: the broker reports VTI. This both seeds the opening-lot position AND
+    # is the prior evidence that makes the drop below a phantom, not a manual holding.
+    _seed_broker_snapshot(
+        db, account_id="acc_1", quantity="10", source_file="sync_job_1"
+    )
+    # Newer snapshot: VTI is gone, replaced by a different unbound security.
+    _seed_broker_snapshot(
+        db,
+        account_id="acc_1",
+        quantity="7",
+        security_id="sec_unbound",
+        source_file="sync_job_2",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    _assert_withheld_publishes_nothing(_holding(db))
+    assert _resolved_close(db, anchor) == Decimal("120.0000000000"), (
+        "a close resolved; the NULLs above are the withhold"
+    )
+
+    quantity, claimed = _acc_1_quantities(db)
+    assert quantity == Decimal("10.0000000000"), (
+        "the ledger carries the broker's opening lot the newest snapshot now omits"
+    )
+    assert claimed is None, (
+        "the newest snapshot omits this position — that NULL is the signal"
+    )
+
+
+@pytest.mark.slow
+def test_manual_position_in_covered_account_still_values(db: Database) -> None:
+    """A hand-tracked position in a broker-linked account values — the broker never had it.
+
+    The account is broker-covered (a snapshot reports a different, unbound security) and
+    VTI is absent from that snapshot exactly as in the phantom case above — but here the
+    broker has NEVER reported VTI in any snapshot, so it is a manual holding, not a
+    phantom, and withholding it would falsely claim the share count is wrong. This is the
+    adversarial partner to test_phantom_position_withholds: identical coverage and an
+    identical missing claim, the ONLY difference being the prior VTI snapshot that case
+    has and this one does not — so it isolates the ever_reported_positions gate.
     """
     anchor = _db_today(db)
     _seed_position(db)
@@ -656,34 +689,41 @@ def test_phantom_position_withholds(db: Database) -> None:
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    _assert_withheld_publishes_nothing(_holding(db))
-    assert _resolved_close(db, anchor) == Decimal("120.0000000000"), (
-        "a close resolved; the NULLs above are the withhold"
+    elapsed = (_db_today(db) - anchor).days
+    market_value, _gain, _pd, _src, _days, status = _holding(db)
+    assert status == _expected_status(elapsed), (
+        "the broker never reported this position — it is manual, not a phantom"
     )
-
-    _quantity, claimed = _acc_1_quantities(db)
-    assert claimed is None, "the snapshot omits this position — that NULL is the signal"
+    assert market_value == Decimal("1200.00")
 
 
 @pytest.mark.slow
-def test_liquidated_account_absent_from_holdings_still_withholds(db: Database) -> None:
-    """The maximal-harm phantom: the broker reports nothing and the ledger reports 11 units.
+def test_liquidated_position_absent_from_newest_snapshot_withholds(
+    db: Database,
+) -> None:
+    """A genuine liquidation: the broker reported VTI, then a pull reports nothing.
 
-    The pull that liquidates an item writes a receipt with ``holdings_count = 0`` and no
-    holdings rows at all, so an account whose coverage is derived from HOLDINGS rows
-    drops out of broker_covered_accounts entirely — and the 100%-overstated account is
-    exactly the one that narrower scope filters out. The account stays known to its item
-    through the transactions staging view, which is the union leg that supplies coverage
-    here; ``core.dim_holdings`` withholds only because it reads both.
+    The position is broker-derived: the first snapshot's holdings seed a 10-unit opening
+    lot. The pull that liquidates the item then writes a receipt with
+    ``holdings_count = 0`` and no holdings rows at all. newest_snapshot must pick that
+    EMPTY receipt (it reads receipts, not rows) so the provider claim reads NULL; a
+    row-derived newest snapshot would miss the liquidating pull, keep the prior non-empty
+    one, and value shares the broker says are gone. The prior snapshot that reported VTI
+    is what makes this a phantom rather than a manual holding.
 
-    Ledger quantity is 11 (10 manual + 1 Plaid buy) against a close of 120.00, so a
-    regression publishes $1,320.00 of shares the broker says are gone.
+    Ledger quantity is 10 against a close of 120.00, so a regression publishes $1,200.00
+    of shares the broker no longer reports.
     """
     anchor = _db_today(db)
-    _seed_position(db)
+    _seed_security(db)
     _seed_price(db, price_date=anchor, close="120.00")
+    # First snapshot: the broker reports VTI. Seeds the opening-lot position AND is the
+    # prior evidence that makes the liquidation below a phantom, not a manual holding.
+    _seed_broker_snapshot(
+        db, account_id="acc_1", quantity="10", source_file="sync_job_1"
+    )
+    # Liquidating pull: a receipt reporting zero holdings and not a single holdings row.
     _seed_liquidated_snapshot(db)
-    _seed_plaid_buy(db, account_id="acc_1")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
@@ -694,7 +734,7 @@ def test_liquidated_account_absent_from_holdings_still_withholds(db: Database) -
     )
 
     quantity, claimed = _acc_1_quantities(db)
-    assert quantity == Decimal("11.0000000000"), (
+    assert quantity == Decimal("10.0000000000"), (
         "the ledger still carries the position the broker no longer reports"
     )
     assert claimed is None, (
@@ -707,8 +747,8 @@ def test_manual_account_without_a_snapshot_still_values(db: Database) -> None:
     """A manual-only position stays valued: no broker snapshot, nothing to diverge from.
 
     Divergence detection is inert without a snapshot, and the phantom clause must not
-    read a missing claim as an omitted position — dropping the broker_covered_accounts
-    scope silently unvalues every manually-tracked position in the database.
+    read a missing claim as an omitted position — dropping the ever_reported_positions
+    gate silently unvalues every manually-tracked position in the database.
     """
     anchor = _db_today(db)
     _seed_position(db)
