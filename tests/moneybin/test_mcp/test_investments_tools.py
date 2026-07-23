@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 from unittest.mock import patch
 
 import pytest
@@ -160,6 +160,12 @@ def _investment_result(
                     cost_basis=Decimal("1"),
                     average_cost=Decimal("1"),
                     currency_code="USD",
+                    market_value=None,
+                    unrealized_gain=None,
+                    price_date=None,
+                    price_source=None,
+                    days_since_observed=None,
+                    valuation_status="unpriced",
                 )
                 for row_id in ids
             ],
@@ -1219,3 +1225,271 @@ class TestInvestmentsLotsSelect:
         parsed = result.to_dict()
         assert parsed["status"] == "error"
         assert parsed["error"]["code"] == "mutation_invalid_input"
+
+
+# ---------------------------------------------------------------------------
+# Holdings valuation (Pillar C price feeds) — through the coarse read
+# ---------------------------------------------------------------------------
+
+
+class _Holding(NamedTuple):
+    """One ``core.dim_holdings`` fixture row (valuation defaults to unpriced)."""
+
+    account_id: str
+    security_id: str
+    quantity: str = "10"
+    cost_basis: str = "1000.00"
+    average_cost: str | None = "100.00"
+    currency_code: str = "USD"
+    market_value: str | None = None
+    unrealized_gain: str | None = None
+    price_date: str | None = None
+    price_source: str | None = None
+    days_since_observed: str | None = None
+    valuation_status: str = "unpriced"
+
+
+def _replace_holdings_view(rows: list[_Holding]) -> None:
+    """Override the empty core.dim_holdings stub with literal test rows.
+
+    Mirrors ``test_investment_service.py``'s helper of the same name — values
+    are literal test data, not user input (security.md's test-fixture
+    exception).
+    """
+    parts: list[str] = []
+    for h in rows:
+        avg_sql = (
+            "CAST(NULL AS DECIMAL(28,10))"
+            if h.average_cost is None
+            else f"{h.average_cost}::DECIMAL(28,10)"
+        )
+        mv_sql = (
+            "CAST(NULL AS DECIMAL(18,2))"
+            if h.market_value is None
+            else f"{h.market_value}::DECIMAL(18,2)"
+        )
+        ug_sql = (
+            "CAST(NULL AS DECIMAL(18,2))"
+            if h.unrealized_gain is None
+            else f"{h.unrealized_gain}::DECIMAL(18,2)"
+        )
+        pd_sql = (
+            "CAST(NULL AS DATE)" if h.price_date is None else f"DATE '{h.price_date}'"
+        )
+        ps_sql = (
+            "CAST(NULL AS VARCHAR)" if h.price_source is None else f"'{h.price_source}'"
+        )
+        dso_sql = (
+            "CAST(NULL AS INT)"
+            if h.days_since_observed is None
+            else f"{h.days_since_observed}::INT"
+        )
+        parts.append(
+            f"SELECT '{h.account_id}' AS account_id, "
+            f"'{h.security_id}' AS security_id, "
+            f"{h.quantity}::DECIMAL(28,10) AS quantity, "
+            f"{h.cost_basis}::DECIMAL(18,2) AS cost_basis, "
+            f"{avg_sql} AS average_cost, '{h.currency_code}' AS currency_code, "
+            f"{mv_sql} AS market_value, {ug_sql} AS unrealized_gain, "
+            f"{pd_sql} AS price_date, {ps_sql} AS price_source, "
+            f"{dso_sql} AS days_since_observed, "
+            f"'{h.valuation_status}' AS valuation_status"
+        )
+    select_sql = " UNION ALL ".join(parts)
+    with get_database(read_only=False) as db:
+        db.execute(  # noqa: S608  # test fixture view, literal test data only
+            f"CREATE OR REPLACE VIEW core.dim_holdings AS {select_sql}"
+        )
+
+
+class TestHoldingsValuation:
+    """Valuation semantics as the agent sees them via investments(view='holdings')."""
+
+    @pytest.mark.unit
+    async def test_empty_result_is_high_sensitivity_and_unwarned(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_investment_core()
+        result = await investments_coarse(view="holdings")
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "high"
+        assert parsed["data"]["warnings"] == []
+
+    @pytest.mark.unit
+    async def test_returns_seeded_rows_with_valuation(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec,
+                quantity="15",
+                cost_basis="2475.00",
+                average_cost="165.00",
+                market_value="2700.00",
+                unrealized_gain="225.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+        ])
+        result = await investments_coarse(view="holdings")
+        rows = result.data.rows
+        assert len(rows) == 1
+        assert rows[0].quantity == Decimal("15")
+        assert rows[0].cost_basis == Decimal("2475.00")
+        # Pillar C: the agent sees the value, not a "no price feed" caveat.
+        assert rows[0].market_value == Decimal("2700.00")
+        assert rows[0].unrealized_gain == Decimal("225.00")
+        assert rows[0].valuation_status == "valued"
+        assert result.data.warnings == []
+
+    @pytest.mark.unit
+    async def test_withheld_row_reports_null_value_and_a_counted_warning(
+        self, mcp_db: Path
+    ) -> None:
+        """A withheld position must not surface as zero — null plus a count."""
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([_Holding(_ACCOUNT, sec, valuation_status="withheld")])
+        result = await investments_coarse(view="holdings")
+        assert result.data.rows[0].market_value is None
+        assert result.data.rows[0].unrealized_gain is None
+        assert "1" in result.data.warnings[0]
+
+    @pytest.mark.unit
+    async def test_stale_portfolio_discloses_its_age_not_a_warning(
+        self, mcp_db: Path
+    ) -> None:
+        """A four-month-old close publishes its age; no warning is raised."""
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec,
+                market_value="2700.00",
+                unrealized_gain="225.00",
+                price_date="2026-03-02",
+                price_source="plaid",
+                days_since_observed="135",
+                valuation_status="carried_forward",
+            ),
+        ])
+        result = await investments_coarse(view="holdings")
+        assert result.data.max_days_since_observed == 135
+        assert result.data.warnings == []
+
+    @pytest.mark.unit
+    async def test_max_days_since_observed_is_null_when_nothing_is_priced(
+        self, mcp_db: Path
+    ) -> None:
+        """Null, not 0 — a 0 would read as "every close is today's"."""
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([_Holding(_ACCOUNT, sec, valuation_status="unpriced")])
+        result = await investments_coarse(view="holdings")
+        assert result.data.max_days_since_observed is None
+
+    @pytest.mark.unit
+    async def test_single_currency_portfolio_publishes_a_total(
+        self, mcp_db: Path
+    ) -> None:
+        """The common case: one currency, one summable total."""
+        _seed_investment_core()
+        sec_a = _add_security(security_id="sec_usd_a", ticker="AAA")
+        sec_b = _add_security(security_id="sec_usd_b", ticker="BBB")
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec_a,
+                currency_code="USD",
+                market_value="1200.00",
+                unrealized_gain="200.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+            _Holding(
+                _ACCOUNT,
+                sec_b,
+                currency_code="USD",
+                market_value="800.00",
+                unrealized_gain="-200.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+        ])
+        result = await investments_coarse(view="holdings")
+        assert result.data.total_market_value == Decimal("2000.00")
+        assert result.data.market_value_by_currency == {"USD": Decimal("2000.00")}
+
+    @pytest.mark.unit
+    async def test_mixed_currency_portfolio_publishes_no_total(
+        self, mcp_db: Path
+    ) -> None:
+        """No single figure an agent could report as "the portfolio value"."""
+        _seed_investment_core()
+        sec_a = _add_security(security_id="sec_usd", ticker="AAA")
+        sec_b = _add_security(security_id="sec_eur", ticker="BBB")
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec_a,
+                currency_code="USD",
+                market_value="1200.00",
+                unrealized_gain="200.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+            _Holding(
+                _ACCOUNT,
+                sec_b,
+                currency_code="EUR",
+                market_value="900.00",
+                unrealized_gain="100.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+        ])
+        result = await investments_coarse(view="holdings")
+        assert result.data.total_market_value is None
+        assert result.data.market_value_by_currency == {
+            "USD": Decimal("1200.00"),
+            "EUR": Decimal("900.00"),
+        }
+
+
+class TestHoldingsDescription:
+    """The coarse `investments` description is the agent's only tool-time contract."""
+
+    @pytest.mark.unit
+    async def test_description_explains_the_staleness_number(self) -> None:
+        srv = FastMCP("test")
+        register_investment_coarse_reads(srv)
+        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        tool = next(t for t in tools if t.name == "investments")
+        assert tool.description is not None
+        assert "max_days_since_observed" in tool.description
+
+    @pytest.mark.unit
+    async def test_description_scopes_currency_to_holdings_rows(self) -> None:
+        """market_value is per-row; the coarse currency line must carve holdings out."""
+        srv = FastMCP("test")
+        register_investment_coarse_reads(srv)
+        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        tool = next(t for t in tools if t.name == "investments")
+        assert tool.description is not None
+        # display_currency still applies to the other four views...
+        assert "summary.display_currency" in tool.description
+        # ...but holdings is explicitly carved out as per-row currency.
+        assert "except holdings" in tool.description
+        assert "each row's" in tool.description

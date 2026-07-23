@@ -144,7 +144,16 @@ class InvestmentEventsPayload:
 
 @dataclass(frozen=True, slots=True)
 class InvestmentHoldingRow:
-    """One current position — cost basis only (Pillar C adds market value)."""
+    """One current position — cost basis plus the Pillar-C valuation.
+
+    The six valuation fields mirror the ``core.dim_holdings`` classifications in
+    ``privacy/taxonomy.py``: ``market_value``/``unrealized_gain`` are BALANCE
+    (a held "stock" figure, like ``cost_basis``); ``price_date``/
+    ``days_since_observed`` are TIMESTAMP_OBSERVABILITY (a public close's date,
+    and a value bijective with it); ``price_source``/``valuation_status`` are
+    TXN_TYPE (routing tags). None of them raises the payload's derived tier —
+    ``cost_basis`` already carries BALANCE.
+    """
 
     account_id: Annotated[str, DataClass.RECORD_ID]
     security_id: Annotated[str, DataClass.RECORD_ID]
@@ -152,6 +161,12 @@ class InvestmentHoldingRow:
     cost_basis: Annotated[Decimal, DataClass.BALANCE]
     average_cost: Annotated[Decimal | None, DataClass.BALANCE]
     currency_code: Annotated[str, DataClass.CURRENCY]
+    market_value: Annotated[Decimal | None, DataClass.BALANCE]
+    unrealized_gain: Annotated[Decimal | None, DataClass.BALANCE]
+    price_date: Annotated[date | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    price_source: Annotated[str | None, DataClass.TXN_TYPE]
+    days_since_observed: Annotated[int | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    valuation_status: Annotated[str, DataClass.TXN_TYPE]
 
     @classmethod
     def from_row(cls, row: HoldingRow) -> InvestmentHoldingRow:
@@ -163,16 +178,37 @@ class InvestmentHoldingRow:
             cost_basis=row.cost_basis,
             average_cost=row.average_cost,
             currency_code=row.currency_code,
+            market_value=row.market_value,
+            unrealized_gain=row.unrealized_gain,
+            price_date=row.price_date,
+            price_source=row.price_source,
+            days_since_observed=row.days_since_observed,
+            valuation_status=row.valuation_status,
         )
 
 
 @dataclass(frozen=True, slots=True)
 class InvestmentHoldingsPayload:
-    """Payload for ``investments_holdings``."""
+    """Payload for ``investments_holdings``.
+
+    ``max_days_since_observed`` mirrors the row field's
+    TIMESTAMP_OBSERVABILITY classification — it is the maximum of that column
+    across the priced rows, so it carries no more than the rows already do.
+    ``total_market_value`` and ``market_value_by_currency`` are BALANCE for the
+    same reason: they are sums of the rows' BALANCE ``market_value``, and
+    classifying a portfolio total AGGREGATE would under-classify real money.
+    """
 
     rows: list[InvestmentHoldingRow]
     # AGGREGATE (Tier.LOW) — rationale in the module-level comment above.
     warnings: Annotated[list[str], DataClass.AGGREGATE] = field(default_factory=list)
+    max_days_since_observed: Annotated[
+        int | None, DataClass.TIMESTAMP_OBSERVABILITY
+    ] = None
+    total_market_value: Annotated[Decimal | None, DataClass.BALANCE] = None
+    market_value_by_currency: Annotated[dict[str, Decimal], DataClass.BALANCE] = field(
+        default_factory=dict
+    )
 
     @classmethod
     def from_result(cls, result: HoldingsResult) -> InvestmentHoldingsPayload:
@@ -180,6 +216,9 @@ class InvestmentHoldingsPayload:
         return cls(
             rows=[InvestmentHoldingRow.from_row(r) for r in result.rows],
             warnings=result.warnings,
+            max_days_since_observed=result.max_days_since_observed,
+            total_market_value=result.total_market_value,
+            market_value_by_currency=result.market_value_by_currency,
         )
 
 
@@ -379,13 +418,25 @@ class InvestmentsEventsView(BaseModel):
 
 
 class InvestmentsHoldingsView(BaseModel):
-    """Paginated current positions."""
+    """Paginated current positions with portfolio-level valuation.
+
+    The three portfolio fields mirror ``InvestmentHoldingsPayload``'s (same
+    classifications, same rationale). They are computed over the full position
+    set, so a paginated ``rows`` page does not change them.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     kind: Literal["holdings"] = "holdings"
     rows: list[InvestmentHoldingRow]
     warnings: Annotated[list[str], DataClass.AGGREGATE]
+    max_days_since_observed: Annotated[
+        int | None, DataClass.TIMESTAMP_OBSERVABILITY
+    ] = None
+    total_market_value: Annotated[Decimal | None, DataClass.BALANCE] = None
+    market_value_by_currency: Annotated[dict[str, Decimal], DataClass.BALANCE] = Field(
+        default_factory=dict
+    )
 
 
 class InvestmentsLotsView(BaseModel):

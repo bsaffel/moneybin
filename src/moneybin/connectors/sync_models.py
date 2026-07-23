@@ -9,9 +9,38 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    SecretStr,
+    model_validator,
+)
+
+
+def _blank_to_none(value: object) -> object:
+    """A currency code that is empty or whitespace-only means absent, not ''."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+CurrencyCode = Annotated[str | None, BeforeValidator(_blank_to_none)]
+"""An optional ISO/unofficial currency code, with blanks normalised to None.
+
+Plaid returns ``""`` for a currency it does not carry, and the two consumers of
+these fields collapse the iso/unofficial pair differently: Python's ``or``
+treats ``""`` as absent and falls through, while SQL ``COALESCE`` only falls
+through on NULL and yields ``""``. Left unnormalised, one security's price row
+stores ``'USD'`` while its own lot yields ``''``, the valuation join on
+``quote_currency`` finds nothing, and the position reports ``unpriced`` with a
+"no close resolved" warning while that exact close sits queryable in
+``core.fct_security_prices``. Normalising at the boundary makes both sides
+agree, so neither has to know about the other's fall-through rule.
+"""
 
 # ---- Server response models ----
 
@@ -113,7 +142,7 @@ class SyncTransaction(BaseModel):
     category: str | None = None
     pending: bool = False
     original_description: str | None = None
-    iso_currency_code: str | None = None
+    iso_currency_code: CurrencyCode = None
     authorized_date: date | None = None
     pending_transaction_id: str | None = None
     payment_channel: str | None = None
@@ -137,8 +166,8 @@ class SyncBalance(BaseModel):
     balance_date: date
     current_balance: Decimal | None = None
     available_balance: Decimal | None = None
-    iso_currency_code: str | None = None
-    unofficial_currency_code: str | None = None
+    iso_currency_code: CurrencyCode = None
+    unofficial_currency_code: CurrencyCode = None
 
 
 class SyncSecurity(BaseModel):
@@ -160,8 +189,8 @@ class SyncSecurity(BaseModel):
     security_type: str | None = Field(default=None, alias="type")
     close_price: Decimal | None = None
     close_price_as_of: date | None = None
-    iso_currency_code: str | None = None
-    unofficial_currency_code: str | None = None
+    iso_currency_code: CurrencyCode = None
+    unofficial_currency_code: CurrencyCode = None
     cusip: str | None = None
     isin: str | None = None
     is_cash_equivalent: bool | None = None
@@ -187,8 +216,8 @@ class SyncInvestmentTransaction(BaseModel):
     amount: Decimal
     price: Decimal | None = None
     fees: Decimal | None = None
-    iso_currency_code: str | None = None
-    unofficial_currency_code: str | None = None
+    iso_currency_code: CurrencyCode = None
+    unofficial_currency_code: CurrencyCode = None
     investment_transaction_type: str | None = Field(default=None, alias="type")
     investment_transaction_subtype: str | None = Field(default=None, alias="subtype")
 
@@ -220,8 +249,8 @@ class SyncHolding(BaseModel):
     institution_value: Decimal | None = None
     cost_basis: Decimal | None = None
     quantity: Decimal | None = None
-    iso_currency_code: str | None = None
-    unofficial_currency_code: str | None = None
+    iso_currency_code: CurrencyCode = None
+    unofficial_currency_code: CurrencyCode = None
     vested_quantity: Decimal | None = None
     vested_value: Decimal | None = None
     tax_lots: list[SyncHoldingTaxLot] = Field(default_factory=list)
@@ -299,6 +328,7 @@ class PullResult(BaseModel):
     investment_transactions_loaded: int = 0
     holdings_loaded: int = 0
     holding_lots_loaded: int = 0
+    security_prices_loaded: int = 0
     institutions: list[InstitutionResult]
     transforms_applied: bool = False
     transforms_duration_seconds: float | None = None

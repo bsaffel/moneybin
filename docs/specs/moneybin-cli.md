@@ -249,11 +249,11 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 +-- investments                    -- Investment ledger, positions, tax lots, realized gains, and
 |                                     the manually-maintained securities catalog. Defined in
 |                                     investments-data-model.md (Pillars A+B, implemented).
-|                                     Cost basis only in v1; market value / net-worth integration
-|                                     await price feeds (Pillars C/D, planned).
+|                                     Positions carry market value from the broker-supplied close
+|                                     (Pillar C.1); net-worth integration awaits Pillar D.
 |   +-- add                        -- Record an investment event (buy/sell/dividend/transfer/...)
 |   +-- list                       -- List ledger events
-|   +-- holdings                   -- Current positions (cost basis; market value when price feeds land)
+|   +-- holdings                   -- Current positions (cost basis + market value, unrealized gain, price age)
 |   +-- lots [--open|--all]        -- Tax lots with remaining quantity + basis
 |   |   +-- select <disposal_id> --lot <lot_id>:<qty> [--lot ...]  -- Replace lot selection (declarative set; multi-lot)
 |   +-- gains                      -- Realized gain/loss (the 1099-B surface)

@@ -11,6 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Brokerage positions now carry a market value.** `moneybin investments holdings`
+  reports `market_value` and `unrealized_gain` for every position priced by the close
+  your broker already sends through `sync pull` — no new network calls, no credentials.
+  Each row states the date of the price it used and how many days old that price is.
+  A position with no usable price reports no value rather than zero, and one whose
+  share count is known to be wrong — a split the broker reported but MoneyBin could
+  not derive — withholds its value instead of publishing a number wrong by the split
+  factor. Previously `investments holdings` reported cost basis alone. A security no
+  connected broker prices stays unvalued until external feeds land, and positions do
+  not yet fold into net worth. (#347)
 - **An AI assistant can now resolve a credit-card PDF's sign inversion
   without you leaving the chat.** `import_preview(file_path=...)` followed by
   `import_confirm(preview_id=...)` shows you the statement's evidence and

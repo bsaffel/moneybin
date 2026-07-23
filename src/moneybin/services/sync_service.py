@@ -219,6 +219,7 @@ class SyncService:
             investment_transactions_loaded=load_result.investment_transactions_loaded,
             holdings_loaded=load_result.holdings_loaded,
             holding_lots_loaded=load_result.holding_lots_loaded,
+            security_prices_loaded=load_result.security_prices_loaded,
             institutions=sync_data.metadata.institutions,
             investment_source_overlap_accounts=overlap,
             security_resolution=resolution,
@@ -234,6 +235,11 @@ class SyncService:
         # the refresh and dim_holdings keeps serving the previous, non-empty
         # snapshot, so the emptied broker still reads as holding its old
         # positions: the exact phantom the receipt exists to expose.
+        # Price observations: raw.security_prices is append-only, so this counts
+        # only the closes actually written. Today they ride along with a
+        # securities upsert, but nothing structural guarantees that — a price
+        # source that does not is a durable raw write whose rows would never
+        # reach core.fct_security_prices without this term.
         # Security-resolution writes: resolve_all() sweeps the whole raw
         # securities table, not this pull's delta, so a pull that loads nothing
         # can still bind a security an earlier pull stranded. That binding is
@@ -251,6 +257,7 @@ class SyncService:
             + load_result.holdings_loaded
             + load_result.holding_lots_loaded
             + load_result.holdings_snapshots_loaded
+            + load_result.security_prices_loaded
             + resolution_writes
         )
         if refresh and rows_changed > 0:

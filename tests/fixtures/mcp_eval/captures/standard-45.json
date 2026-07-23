@@ -4,9 +4,9 @@
   "model": "deterministic",
   "run_date": "2026-07-19",
   "evidence_kind": "contract_fixture",
-  "registry_sha256": "0146b0bd2ff044b989181f628c4c6547f3674eed688fc00fb4ef9112a7d2025d",
-  "metadata_bytes": 47111,
-  "metadata_tokens": 11778,
+  "registry_sha256": "6d1a1f33bfc005bfc7d38136679ff487b857f74610c877cacc748de31a6ed763",
+  "metadata_bytes": 47684,
+  "metadata_tokens": 11921,
   "metadata_token_method": "deterministic_estimate:ceil(canonical_registry_utf8_bytes/4)",
   "context_window_tokens": null,
   "responses": [
@@ -15,11 +15,18 @@
       "calls": [
         {
           "name": "system_status",
-          "arguments": {"sections": ["overview", "doctor"]}
+          "arguments": {
+            "sections": [
+              "overview",
+              "doctor"
+            ]
+          }
         },
         {
           "name": "accounts",
-          "arguments": {"view": "summary"}
+          "arguments": {
+            "view": "summary"
+          }
         }
       ],
       "completed": true,
@@ -52,7 +59,10 @@
     {
       "case_id": "discover-and-run-spending-report",
       "calls": [
-        {"name": "reports", "arguments": {}},
+        {
+          "name": "reports",
+          "arguments": {}
+        },
         {
           "name": "reports",
           "arguments": {
@@ -73,15 +83,21 @@
       "calls": [
         {
           "name": "import_preview",
-          "arguments": {"file_path": "/Users/example/import.csv"}
+          "arguments": {
+            "file_path": "/Users/example/import.csv"
+          }
         },
         {
           "name": "import_confirm",
-          "arguments": {"preview_id": "preview_demo_001"}
+          "arguments": {
+            "preview_id": "preview_demo_001"
+          }
         },
         {
           "name": "import_status",
-          "arguments": {"import_id": "import_demo_001"}
+          "arguments": {
+            "import_id": "import_demo_001"
+          }
         }
       ],
       "completed": true,
@@ -199,12 +215,16 @@
       "calls": [
         {
           "name": "privacy",
-          "arguments": {"view": "status"}
+          "arguments": {
+            "view": "status"
+          }
         },
         {
           "name": "privacy_consent_set",
           "arguments": {
-            "categories": ["mcp-data-sharing"],
+            "categories": [
+              "mcp-data-sharing"
+            ],
             "state": "granted",
             "mode": "persistent"
           }
@@ -219,11 +239,15 @@
       "calls": [
         {
           "name": "privacy",
-          "arguments": {"view": "status"}
+          "arguments": {
+            "view": "status"
+          }
         },
         {
           "name": "accounts",
-          "arguments": {"view": "summary"}
+          "arguments": {
+            "view": "summary"
+          }
         }
       ],
       "completed": true,
@@ -242,7 +266,9 @@
         },
         {
           "name": "system_audit_undo",
-          "arguments": {"operation_id": "op_demo_001"}
+          "arguments": {
+            "operation_id": "op_demo_001"
+          }
         }
       ],
       "completed": true,
@@ -254,7 +280,9 @@
       "calls": [
         {
           "name": "sql_schema",
-          "arguments": {"table": "core.fct_transactions"}
+          "arguments": {
+            "table": "core.fct_transactions"
+          }
         },
         {
           "name": "sql_query",

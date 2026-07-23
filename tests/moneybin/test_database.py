@@ -382,6 +382,46 @@ class TestIngestDataframe:
         assert row[1] == "hello"
         assert row[2] is not None  # DEFAULT applied
 
+    def test_returns_rows_written_per_mode(self, db: Database) -> None:
+        """Every mode reports what the database wrote, so callers can count it."""
+        import polars as pl
+
+        df = pl.DataFrame({"id": [1, 2], "name": ["alice", "bob"], "score": [9.5, 8.0]})
+        assert db.ingest_dataframe("test_items", df, on_conflict="insert") == 2
+        assert db.ingest_dataframe("test_items", df, on_conflict="replace") == 2
+
+        db.execute("CREATE TABLE keyed_items (id INTEGER PRIMARY KEY, val VARCHAR)")
+        keyed = pl.DataFrame({"id": [1, 2], "val": ["a", "b"]})
+        assert db.ingest_dataframe("keyed_items", keyed, on_conflict="upsert") == 2
+
+    def test_ignore_mode_returns_only_the_rows_it_actually_wrote(
+        self, db: Database
+    ) -> None:
+        """The conflicting rows INSERT OR IGNORE drops must not be counted.
+
+        This is the whole reason the method reports a count: raw.security_prices
+        is append-only, so a re-offered batch writes nothing. A caller using
+        len(df) for its metric would report a healthy write rate while the
+        upstream price feed sat completely stalled.
+        """
+        import polars as pl
+
+        db.execute("CREATE TABLE ignore_items (id INTEGER PRIMARY KEY, val VARCHAR)")
+        first = pl.DataFrame({"id": [1, 2], "val": ["a", "b"]})
+        assert db.ingest_dataframe("ignore_items", first, on_conflict="ignore") == 2
+
+        assert db.ingest_dataframe("ignore_items", first, on_conflict="ignore") == 0, (
+            "a fully re-offered batch writes nothing"
+        )
+
+        overlapping = pl.DataFrame({"id": [2, 3], "val": ["b", "c"]})
+        assert (
+            db.ingest_dataframe("ignore_items", overlapping, on_conflict="ignore") == 1
+        ), "only the genuinely new row counts"
+
+        rows = db.execute("SELECT COUNT(*) FROM ignore_items").fetchone()
+        assert rows == (3,)
+
     def test_invalid_on_conflict_raises(self, db: Database) -> None:
         """ValueError raised for unknown on_conflict value."""
         import polars as pl

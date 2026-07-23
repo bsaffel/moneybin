@@ -22,6 +22,7 @@ from moneybin.tables import (
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_REALIZED_GAINS,
+    FCT_SECURITY_PRICES,
     FCT_TRANSACTION_LINES,
     FCT_TRANSACTIONS,
     IMPORTS,
@@ -88,6 +89,7 @@ EXPECTED_INTERFACE = {
     FCT_INVESTMENT_LOTS.full_name,
     FCT_REALIZED_GAINS.full_name,
     DIM_HOLDINGS.full_name,
+    FCT_SECURITY_PRICES.full_name,
 }
 
 
@@ -132,6 +134,7 @@ def test_investment_table_refs() -> None:
     assert FCT_INVESTMENT_LOTS.full_name == "core.fct_investment_lots"
     assert FCT_REALIZED_GAINS.full_name == "core.fct_realized_gains"
     assert DIM_HOLDINGS.full_name == "core.dim_holdings"
+    assert FCT_SECURITY_PRICES.full_name == "core.fct_security_prices"
     # M1G.4 Plaid investment sync raw tables
     assert PLAID_SECURITIES.full_name == "raw.plaid_securities"
     assert (
@@ -150,7 +153,7 @@ def test_investment_table_refs() -> None:
     assert SECURITY_LINK_DECISIONS.full_name == "app.security_link_decisions"
     # M1G.4 Seed table for MIC normalization
     assert SEED_EXCHANGE_MIC_MAP.full_name == "seeds.exchange_mic_map"
-    # The five core investment models are audience="interface" (SQLMesh models +
+    # The six core investment models are audience="interface" (SQLMesh models +
     # schema-catalog examples have landed, satisfying the INTERFACE_TABLES live
     # catalog contract). app.* and raw.* investment tables stay internal —
     # they're application-managed / ingest-only, not curated query surfaces.
@@ -159,5 +162,6 @@ def test_investment_table_refs() -> None:
     assert FCT_INVESTMENT_TRANSACTIONS.audience == "interface"
     assert FCT_INVESTMENT_LOTS.audience == "interface"
     assert FCT_REALIZED_GAINS.audience == "interface"
+    assert FCT_SECURITY_PRICES.audience == "interface"
     assert SECURITIES.audience == "internal"
     assert MANUAL_INVESTMENT_TRANSACTIONS.audience == "internal"
