@@ -331,6 +331,39 @@ Both styles reach DuckDB's catalog: SQLMesh applies them on every `sqlmesh run` 
 
 Every `core.*` model exposes an `updated_at` column whose value is the `MAX` of timestamps from inputs that change *per row*. Inputs that change *per model* (seeds, reference tables) contribute `NULL` and are surfaced through `meta.model_freshness`. `CURRENT_TIMESTAMP AS updated_at` inside a model is an anti-pattern — it evaluates at write time only for `FULL` tables and at query time for views, so it never reliably means "this row's freshness." See [`core-updated-at-convention.md`](core-updated-at-convention.md) for per-model formulas.
 
+### Observation staleness
+
+`updated_at` above answers "when did MoneyBin last compute this row." A separate
+question — "how old is the real-world observation this value rests on" — belongs
+to every domain that values something it does not continuously watch: investment
+holdings priced from a market close, physical assets priced from a periodic
+appraisal. Both resolve it through `src/moneybin/staleness.py`, never a
+domain-local copy.
+
+The vocabulary is three names, and the same three appear in both domains:
+
+| Name | Meaning |
+|---|---|
+| `days_since_observed` | Calendar age of the observation a value rests on, published on the valued row. NULL when nothing was ever observed. |
+| per-type default | Threshold table keyed by security type or asset type. Absorbs the domain's ordinary observation gap — market closure for securities, appraisal cadence for property. |
+| `*_staleness_default_days` | Nested per-domain config fallback for a type the table does not name. |
+
+Resolution is two tiers — per-type default, then global config — via
+`resolve_threshold_days(entity_type, type_defaults=…, global_default=…)`.
+Judgement is `is_stale(days, threshold)`, strictly greater-than: an observation
+sitting exactly on its threshold is still within it.
+
+Two rules the shared helper exists to keep identical across domains. Staleness
+is **informational** — it never removes a value from a total, because a figure
+the user can see and judge beats a hole they cannot. And **stale is not
+unobserved**: a NULL age is `unpriced`, whose remedy is a price source, not a
+refresh. Collapsing them tells the user something is missing without telling
+them what to do about it.
+
+A per-entity override tier is specified in `investments-price-feeds.md` and
+`asset-tracking.md` but deliberately unbuilt in both; it is an additive column
+whenever a user asks for it.
+
 ### Model and seed naming details
 
 - `stg_*` uses double-underscore to separate source from entity: `stg_ofx__transactions`, `stg_tabular__accounts`.
@@ -463,6 +496,7 @@ Two narrow naming changes rode along with this spec landing — both shipped. Re
 - `src/moneybin/secrets.py` — `SecretStore`, `SecretNotFoundError`, `SecretStorageUnavailableError`.
 - `src/moneybin/config.py` — `MoneyBinSettings` and nested config sections.
 - `src/moneybin/tables.py` — `TableRef` constants and the `INTERFACE_TABLES` derivation.
+- `src/moneybin/staleness.py` — `resolve_threshold_days`, `is_stale`, `SECURITY_TYPE_STALENESS_DAYS`; the observation-age vocabulary shared by every valuation domain (see "Observation staleness" below).
 - `src/moneybin/protocol/envelope.py` — `ResponseEnvelope`, `SummaryMeta`, `build_envelope`, `build_error_envelope`.
 - `src/moneybin/mcp/decorator.py` — `mcp_tool` decorator.
 - `src/moneybin/mcp/privacy.py` — `Sensitivity` enum, `validate_read_only_query`, `validate_managed_write`, `truncate_result`.

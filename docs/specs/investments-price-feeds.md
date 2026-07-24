@@ -577,16 +577,34 @@ evaluate is not a disclosure — and a number that later has to be retracted cos
 more trust than a NULL that named its reason from the start.
 
 Staleness reuses the vocabulary `asset-tracking.md` establishes:
-`days_since_observed` on the valued row, `staleness_threshold_days` resolving
-per-security, then per-security-type default, then
-`MoneyBinSettings.investments.price_staleness_default_days`. This spec is the
-first implementation of that vocabulary; the shape it lands is the one physical
-assets inherit.
+`days_since_observed` on the valued row, judged against a threshold that
+resolves per-security-type, then `MoneyBinSettings.investments.
+price_staleness_default_days` (4). This spec is the first implementation of that
+vocabulary; the shape it lands is the one physical assets inherit, so the
+resolution itself lives in `moneybin.staleness` — one helper both domains call,
+parameterized by their own type table and global default. A second
+implementation of one rule is the coherence failure `design-principles.md` names
+as the largest source of rot.
+
+Both documents originally specified a third, innermost tier: a per-entity
+`staleness_threshold_days` override column. It is deliberately unbuilt. No user
+has asked to grant one security a longer leash than its type, the per-type
+default is what tracks market reality, and a nullable column is an additive
+migration whenever someone does ask. Building the override surface first would
+be configurability nobody requested.
 
 `days_since_observed` counts calendar days. Type defaults absorb ordinary market
 closure: 4 days for `equity`, `etf`, `mutual_fund`, and `bond`; 1 day for
 `crypto`, which trades continuously. A Monday reading three days stale on an
-equity is a normal weekend, not a fault.
+equity is a normal weekend, not a fault. `cash` and `other` carry no entry and
+fall through to the global default — a bespoke number for a type neither
+document specifies would be a guess wearing the authority of a constant.
+
+The comparison is strictly greater-than, matching `asset-tracking.md`'s "exceeds
+its staleness threshold": an observation sitting exactly on its threshold is
+still within it. A security never observed at all is `unpriced`, not stale —
+distinct statuses because the first wants a price source and the second wants a
+refresh.
 
 ---
 

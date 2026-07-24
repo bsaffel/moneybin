@@ -699,6 +699,25 @@ class CategorizationSettings(BaseModel):
         return self
 
 
+class InvestmentsSettings(BaseModel):
+    """Holdings valuation configuration (`investments-price-feeds.md`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    price_staleness_default_days: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Age in days beyond which a security's last close is reported "
+            "stale, for security types `moneybin.staleness."
+            "SECURITY_TYPE_STALENESS_DAYS` does not name (`cash`, `other`). "
+            "Defaults to the exchange-traded value because it absorbs an "
+            "ordinary weekend; a tighter global default would fire on most "
+            "days and train the reader to ignore the warning."
+        ),
+    )
+
+
 class MoneyBinSettings(BaseSettings):
     """Main application settings with environment variable integration.
 
@@ -724,6 +743,7 @@ class MoneyBinSettings(BaseSettings):
     sync: SyncConfig = Field(default_factory=SyncConfig)
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
     doctor: DoctorSettings = Field(default_factory=DoctorSettings)
+    investments: InvestmentsSettings = Field(default_factory=InvestmentsSettings)
     categorization: CategorizationSettings = Field(
         default_factory=CategorizationSettings
     )
