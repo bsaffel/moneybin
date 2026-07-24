@@ -44,6 +44,7 @@ _RETRY_BACKOFF_BASE_SECONDS = 1.5
 _SHEETS_NULL = r"\N"
 _SHEETS_EMPTY = r"\E"
 _SHEETS_ESCAPE = "\\"
+_MAX_SHEETS_CELL_TEXT_LENGTH = 16_000
 SHEETS_ENCODING = {
     "scheme": "moneybin.sheets-cell",
     "version": 1,
@@ -178,6 +179,8 @@ class SheetsExportPublisher:
                     lifetime=lifetime,
                 )
                 _validate_values(actual, item.values)
+                if item.is_receipt:
+                    _validate_json_receipt(actual, item.values)
 
             renames = tuple(
                 SheetRename(sheet=identity, new_name=item.visible_name)
@@ -298,6 +301,7 @@ class _PlannedSheet:
     staging_name: str
     visible_name: str
     values: tuple[tuple[object, ...], ...]
+    is_receipt: bool = False
 
 
 def validate_managed_tab_prefix(prefix: str) -> str:
@@ -365,8 +369,8 @@ def _planned_sheets(
     manifest["format"] = "sheets"
     manifest["destination_kind"] = "sheets"
     manifest["sheets_encoding"] = deepcopy(SHEETS_ENCODING)
-    manifest_values = (("JSON",), (_json_text(manifest),))
-    dictionary_values = (("JSON",), (_json_text(snapshot.data_dictionary),))
+    manifest_values = _json_sheet_values(manifest)
+    dictionary_values = _json_sheet_values(snapshot.data_dictionary)
     result.append(
         _PlannedSheet(
             _unique_managed_title(
@@ -374,6 +378,7 @@ def _planned_sheets(
             ),
             _unique_managed_title(used_names, prefix, kind, "Manifest"),
             manifest_values,
+            is_receipt=True,
         )
     )
     result.append(
@@ -383,6 +388,7 @@ def _planned_sheets(
             ),
             _unique_managed_title(used_names, prefix, kind, "Dictionary"),
             dictionary_values,
+            is_receipt=True,
         )
     )
     return tuple(result)
@@ -472,6 +478,48 @@ def _validate_values(
     normalized_expected = [row + [""] * (width - len(row)) for row in expected_text]
     if normalized_actual != normalized_expected:
         raise GSheetAPIError("Google Sheets staging validation failed")
+
+
+def _json_sheet_values(value: object) -> tuple[tuple[object, ...], ...]:
+    """Split receipt JSON into bounded, one-cell rows for Google Sheets."""
+    text = _json_text(value)
+    return (
+        ("JSON",),
+        *(
+            (text[start : start + _MAX_SHEETS_CELL_TEXT_LENGTH],)
+            for start in range(0, len(text), _MAX_SHEETS_CELL_TEXT_LENGTH)
+        ),
+    )
+
+
+def _validate_json_receipt(
+    actual: list[list[str]], expected: tuple[tuple[object, ...], ...]
+) -> None:
+    """Reassemble receipt chunks and verify their JSON payload round-trips."""
+    try:
+        actual_receipt = _json_receipt_from_values(actual)
+        expected_receipt = _json_receipt_from_values(expected)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise GSheetAPIError("Google Sheets receipt validation failed") from exc
+    if actual_receipt != expected_receipt:
+        raise GSheetAPIError("Google Sheets receipt validation failed")
+
+
+def _json_receipt_from_values(
+    values: tuple[tuple[object, ...], ...] | list[list[str]],
+) -> object:
+    """Reassemble a receipt value grid after checking its stable header shape."""
+    if not values or tuple(values[0]) != ("JSON",):
+        raise TypeError("receipt header is invalid")
+    chunks = [row[0] for row in values[1:]]
+    if not chunks:
+        raise TypeError("receipt chunks are invalid")
+    text_chunks: list[str] = []
+    for chunk in chunks:
+        if not isinstance(chunk, str):
+            raise TypeError("receipt chunks are invalid")
+        text_chunks.append(chunk)
+    return json.loads("".join(text_chunks))
 
 
 def _json_text(value: object) -> str:

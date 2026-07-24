@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import unicodedata
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any, Never
 from unittest.mock import MagicMock, patch
 
@@ -31,7 +32,7 @@ from moneybin.exports.sheets import (
     _table_values,  # pyright: ignore[reportPrivateUsage]  # white-box validation test
     _validate_values,  # pyright: ignore[reportPrivateUsage]  # white-box validation test
 )
-from moneybin.exports.snapshot import PreparedExport
+from moneybin.exports.snapshot import PreparedExport, ReportExportProvenance
 from moneybin.exports.workbook_roles import workbook_role_lease
 from moneybin.repositories.export_destinations_repo import (
     ExportDestinationSpreadsheetConflictError,
@@ -285,6 +286,42 @@ def test_sheets_validation_rejects_dropped_terminal_empty_string_row() -> None:
 
     with pytest.raises(GSheetAPIError, match="staging validation failed"):
         _validate_values([["note"], ["value"]], expected)
+
+
+def test_publish_chunks_large_manifest_and_dictionary_receipts(db: Database) -> None:
+    """Receipt JSON round-trips when it exceeds a Sheets cell's safe capacity."""
+    snapshot = replace(
+        make_snapshot(report=True),
+        provenance=ReportExportProvenance(
+            report_id="test:activity",
+            receipt={"lineage": ["reports.activity"], "sql": "x" * 60_000},
+        ),
+        _data_dictionary={"receipt": "y" * 60_000},
+    )
+    publisher, client = _publisher(db)
+
+    _publish(db, publisher, snapshot)
+
+    receipts: dict[str, object] = {}
+    for sheet_name in ("MB Report Manifest", "MB Report Dictionary"):
+        values = client.read_sheet_values("output-sheet", sheet_name)
+        assert len(values) > 2
+        assert all(len(row[0]) <= 16_000 for row in values[1:])
+        receipts[sheet_name] = json.loads("".join(row[0] for row in values[1:]))
+
+    assert receipts["MB Report Manifest"] == {
+        **snapshot.manifest,
+        "format": "sheets",
+        "destination_kind": "sheets",
+        "sheets_encoding": {
+            "scheme": "moneybin.sheets-cell",
+            "version": 1,
+            "null": r"\N",
+            "empty": r"\E",
+            "escape": "\\",
+        },
+    }
+    assert receipts["MB Report Dictionary"] == snapshot.data_dictionary
 
 
 def test_publish_uses_write_capability_for_output_metadata_and_validation(
