@@ -108,9 +108,13 @@ privacy path.
 ### R3 — Redaction is an explicit per-run decision
 
 The surfaces make the per-run choice differently. Interactive CLI omission
-prompts on every run; `--yes` and non-TTY execution select the safe redacted
+prompts on every run; `--yes` and non-TTY execution select the redacted
 default. `--unredacted` selects unredacted output affirmatively. No destination
-stores a remembered redaction preference.
+stores a remembered redaction preference. In v1, `redacted` applies MoneyBin's
+existing privacy redaction engine: it masks CRITICAL-class identifiers, while
+lower-tier fields such as amounts, dates, merchant names, and descriptions
+remain in the artifact. It is protection against critical-identifier exposure,
+not a claim that the artifact is fully anonymized.
 
 MCP callers supply `redaction_mode="redacted"` or
 `redaction_mode="unredacted"`. An explicit `redaction_mode` does not prompt.
@@ -307,7 +311,7 @@ an `ExportDestinationsRepo`. The table contains:
 |---|---|---|
 | `destination_id` | `VARCHAR PRIMARY KEY` | Opaque truncated UUID. |
 | `name` | `VARCHAR UNIQUE` | Stable user-facing reference. |
-| `destination_kind` | `VARCHAR` | Closed v1 set: `local` or `sheets`. |
+| `kind` | `VARCHAR` | Closed v1 set: `local` or `sheets`. |
 | `local_path` | `VARCHAR NULL` | Absolute root for a local destination only. |
 | `spreadsheet_id` | `VARCHAR NULL` | Stable Google workbook identity for Sheets only. |
 | `managed_tab_prefix` | `VARCHAR NULL` | MoneyBin-owned Sheets tab namespace. |

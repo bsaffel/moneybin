@@ -14,8 +14,11 @@ from urllib.parse import urlparse
 import typer
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
+from moneybin import error_codes
 from moneybin.cli.output import (
+    ExportDestinationSetOutput,
     ExportDestinationsOutput,
+    ExportDestinationStateOutput,
     ExportDestinationStatusOutput,
     ExportReceiptOutput,
     OutputFormat,
@@ -25,6 +28,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
+from moneybin.errors import UserError
 from moneybin.exports.models import (
     ExportCommand,
     ExportDestination,
@@ -207,6 +211,55 @@ def _parse_sheets_workbook_id(url: str) -> str:
     workbook_url = urlparse(url)._replace(fragment="gid=0").geturl()
     spreadsheet_id, _ = parse_sheet_url(workbook_url)
     return spreadsheet_id
+
+
+def _render_destination_mutation(
+    *,
+    event: Any,
+    kind: typing.Literal["local", "sheets"],
+    name: str,
+    state: typing.Literal["present", "absent"],
+    output: OutputFormat,
+    text: str,
+    cli_actor: str,
+) -> None:
+    """Render every saved-destination mutation through the MCP-equivalent shape."""
+    payload = ExportDestinationSetOutput(
+        destination=ExportDestinationStateOutput(
+            destination_id=event.target_id,
+            kind=kind,
+            name=name,
+            state=state,
+        ),
+        operation_id=event.operation_id,
+    )
+
+    def _render_text(_: ResponseEnvelope[Any]) -> None:
+        typer.echo(text)
+
+    render_or_json(
+        build_envelope(data=payload),
+        output,
+        render_fn=_render_text,
+        cli_actor=cli_actor,
+    )
+
+
+def _ambiguous_destination_error(candidate_ids: tuple[str, ...]) -> UserError:
+    """Return the shared safe error for an ambiguous saved destination reference."""
+    return UserError(
+        "Export destination reference is ambiguous.",
+        code=error_codes.MUTATION_AMBIGUOUS,
+        details={"candidate_ids": list(candidate_ids)},
+    )
+
+
+def _removed_destination_kind(event: Any) -> typing.Literal["local", "sheets"]:
+    """Read the removed target kind from its audited before-state."""
+    before = cast(dict[str, object] | None, event.before_value)
+    if before is not None and before.get("kind") in {"local", "sheets"}:
+        return cast(typing.Literal["local", "sheets"], before["kind"])
+    return "local"
 
 
 def _run_export(
@@ -445,6 +498,7 @@ def destination_list(
 def destination_add_local(
     name: str = typer.Argument(..., help="Unique saved destination name."),
     path: Path = typer.Argument(..., help="Local directory used for new artifacts."),
+    output: OutputFormat = output_option,
 ) -> None:
     """Add or replace a local artifact destination."""
     from moneybin.database import get_database  # noqa: PLC0415
@@ -453,20 +507,32 @@ def destination_add_local(
     )
 
     resolved_path = path.expanduser().resolve()
-    with handle_cli_errors(cli_actor="export_destination_add_local"):
+    with handle_cli_errors(
+        cli_actor="export_destination_add_local",
+        payload_type=ExportDestinationSetOutput,
+    ):
         with get_database(read_only=False) as db:
-            ExportDestinationsRepo(db).set_local(
+            event = ExportDestinationsRepo(db).set_local(
                 name=name,
                 local_path=resolved_path,
                 actor=_ACTOR,
             )
-    typer.echo(f"Saved local destination {name}: {resolved_path}")
+    _render_destination_mutation(
+        event=event,
+        kind="local",
+        name=name,
+        state="present",
+        output=output,
+        text=f"Saved local destination {name}: {resolved_path}",
+        cli_actor="export_destination_add_local",
+    )
 
 
 @destination_add_app.command("sheets")
 def destination_add_sheets(
     name: str = typer.Argument(..., help="Unique saved destination name."),
     url: str = typer.Argument(..., help="Google Sheets workbook URL."),
+    output: OutputFormat = output_option,
 ) -> None:
     """Authorize and add or replace a Google Sheets destination."""
     from moneybin.connectors.gsheet.service_factory import (  # noqa: PLC0415
@@ -474,27 +540,37 @@ def destination_add_sheets(
     )
     from moneybin.exports.service import ExportService  # noqa: PLC0415
 
-    with handle_cli_errors(cli_actor="export_destination_add_sheets"):
+    with handle_cli_errors(
+        cli_actor="export_destination_add_sheets",
+        payload_type=ExportDestinationSetOutput,
+    ):
         spreadsheet_id = _parse_sheets_workbook_id(url)
-        ExportService.set_sheets_destination(
+        event = ExportService.set_sheets_destination(
             name=name,
             spreadsheet_id=spreadsheet_id,
             managed_tab_prefix=_SHEETS_TAB_PREFIX,
             actor=_ACTOR,
             oauth_client=build_oauth_client(),
         )
-    typer.echo(f"Saved Sheets destination {name}.")
+    _render_destination_mutation(
+        event=event,
+        kind="sheets",
+        name=name,
+        state="present",
+        output=output,
+        text=f"Saved Sheets destination {name}.",
+        cli_actor="export_destination_add_sheets",
+    )
 
 
 @destination_app.command("remove")
 def destination_remove(
     name: str = typer.Argument(..., help="Saved destination name or ID."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+    output: OutputFormat = output_option,
 ) -> None:
     """Remove MoneyBin configuration without deleting destination content."""
-    from moneybin import error_codes  # noqa: PLC0415
     from moneybin.database import get_database  # noqa: PLC0415
-    from moneybin.errors import UserError  # noqa: PLC0415
     from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
         ExportDestinationsRepo,
     )
@@ -502,12 +578,30 @@ def destination_remove(
     if not yes and not typer.confirm(f"Remove destination configuration {name!r}?"):
         raise typer.Exit(0)
 
-    with handle_cli_errors(cli_actor="export_destination_remove"):
+    from moneybin.services.entity_reference import (  # noqa: PLC0415
+        AmbiguousEntity,
+        MissingEntity,
+    )
+
+    with handle_cli_errors(
+        cli_actor="export_destination_remove",
+        payload_type=ExportDestinationSetOutput,
+    ):
         with get_database(read_only=False) as db:
             event = ExportDestinationsRepo(db).remove(name, actor=_ACTOR)
-            if event is None:
+            if isinstance(event, MissingEntity):
                 raise UserError(
                     "Export destination not found.",
                     code=error_codes.MUTATION_NOT_FOUND,
                 )
-    typer.echo(f"Removed destination configuration for {name}.")
+            if isinstance(event, AmbiguousEntity):
+                raise _ambiguous_destination_error(event.candidate_ids)
+    _render_destination_mutation(
+        event=event,
+        kind=_removed_destination_kind(event),
+        name=name,
+        state="absent",
+        output=output,
+        text=f"Removed destination configuration for {name}.",
+        cli_actor="export_destination_remove",
+    )

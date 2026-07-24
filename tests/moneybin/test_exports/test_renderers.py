@@ -357,6 +357,25 @@ def test_bundle_manifest_and_sidecars_come_from_the_prepared_snapshot(
     )
 
 
+def test_bundle_normalizes_colon_bearing_report_table_name_for_portable_path(
+    tmp_path: Path,
+) -> None:
+    snapshot = make_snapshot(report=True)
+    table = replace(snapshot.tables[0], name="test:activity")
+    report_snapshot = replace(
+        snapshot,
+        tables=(table,),
+        _data_dictionary=build_data_dictionary((table,)),
+    )
+
+    rendered = render_csv(report_snapshot, tmp_path / "bundle")
+
+    assert rendered.table_files == {
+        "test:activity": rendered.path / "tables" / "test_activity.csv"
+    }
+    assert rendered.manifest["tables"][0]["file"] == "tables/test_activity.csv"  # type: ignore[index]
+
+
 def test_xlsx_contains_data_and_visible_receipt_sheets(tmp_path: Path) -> None:
     rendered = render_xlsx(make_snapshot(report=True), tmp_path)
 

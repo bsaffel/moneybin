@@ -25,12 +25,12 @@ from moneybin.exports.manifest import (
     LocalExportFormat,
     build_local_manifest,
     bundle_table_path,
+    safe_table_identifier,
 )
 from moneybin.exports.snapshot import PreparedExport, PreparedTable
 
 _MANIFEST_SHEET = "MoneyBin Manifest"
 _DICTIONARY_SHEET = "MoneyBin Data Dictionary"
-_INVALID_SHEET_CHARACTERS = re.compile(r"[\\/*?:\[\]]")
 _FORMULA_PREFIXES = ("=", "+", "-", "@")
 _DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$")
 _XLSX_EMPTY = r"\E"
@@ -338,7 +338,7 @@ def workbook_worksheet_names(snapshot: PreparedExport) -> dict[str, str]:
 
 
 def _worksheet_name(name: str, used_casefolded: set[str]) -> str:
-    base = _INVALID_SHEET_CHARACTERS.sub("_", name).strip("'") or "Table"
+    base = safe_table_identifier(name)
     base = base[:31]
     candidate = base
     suffix = 2

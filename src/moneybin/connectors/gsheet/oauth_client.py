@@ -149,10 +149,10 @@ class GoogleOAuthClient:
         requested_scope = (
             GOOGLE_SHEETS_WRITE_SCOPE if require_write else GOOGLE_SHEETS_READ_SCOPE
         )
-        flow = InstalledAppFlow.from_client_config(  # type: ignore[reportUnknownMemberType]
-            client_config, [requested_scope]
-        )
         try:
+            flow = InstalledAppFlow.from_client_config(  # type: ignore[reportUnknownMemberType]
+                client_config, [requested_scope]
+            )
             # Google recommends incremental authorization in context. The
             # combined grant applies to refreshes even when an upgrade omits a
             # replacement refresh token, so we retain the existing token below:

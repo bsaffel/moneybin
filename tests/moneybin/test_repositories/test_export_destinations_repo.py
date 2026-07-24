@@ -190,7 +190,7 @@ def test_remove_deletes_configuration_only_and_emits_one_audit_row(
     assert destination_id is not None
 
     removed = repo.remove("removable", actor="cli")
-    assert removed is not None
+    assert not isinstance(removed, (MissingEntity, AmbiguousEntity))
     assert removed.target_id == destination_id
     assert repo.resolve("removable") == MissingEntity(reference="removable")
     assert visible_dir.is_dir()
@@ -432,6 +432,30 @@ def test_resolve_returns_structured_ambiguity_for_normalized_name_collisions(
     assert first.target_id is not None
     assert second.target_id is not None
     assert result.candidate_ids == tuple(sorted([first.target_id, second.target_id]))
+
+
+def test_remove_returns_structured_ambiguity_without_deleting_a_destination(
+    repo: ExportDestinationsRepo,
+) -> None:
+    """Removal preserves an ambiguous reference for the caller to report."""
+    first = repo.set_local(
+        name=" Checking ",
+        local_path=Path("visible/first"),
+        actor="cli",
+    )
+    second = repo.set_local(
+        name="checking  ",
+        local_path=Path("visible/second"),
+        actor="cli",
+    )
+
+    result = repo.remove("checking", actor="cli")
+
+    assert isinstance(result, AmbiguousEntity)
+    assert first.target_id is not None
+    assert second.target_id is not None
+    assert result.candidate_ids == tuple(sorted([first.target_id, second.target_id]))
+    assert len(repo.list()) == 2
 
 
 def test_repository_table_rejects_invalid_destination_shapes(

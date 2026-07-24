@@ -6,6 +6,7 @@ import json
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import replace
+from decimal import Decimal
 from typing import Any, Never
 from unittest.mock import MagicMock, patch
 
@@ -16,7 +17,12 @@ from moneybin.connectors.gsheet.errors import (
     GSheetAuthError,
     GSheetRateLimitError,
 )
-from moneybin.connectors.gsheet.sheets_api import SheetsClient, WorkbookMetadata
+from moneybin.connectors.gsheet.sheets_api import (
+    SheetIdentity,
+    SheetInfo,
+    SheetsClient,
+    WorkbookMetadata,
+)
 from moneybin.connectors.gsheet.testing.fake_oauth_client import TestOAuthClient
 from moneybin.connectors.gsheet.testing.fake_sheets_client import (
     FakeSheetTab,
@@ -29,6 +35,7 @@ from moneybin.exports.service import ExportService
 from moneybin.exports.sheets import (
     SheetsExportPublisher,
     SheetsPublishError,
+    _managed_replacements,  # pyright: ignore[reportPrivateUsage]  # white-box namespace test
     _table_values,  # pyright: ignore[reportPrivateUsage]  # white-box validation test
     _validate_values,  # pyright: ignore[reportPrivateUsage]  # white-box validation test
 )
@@ -286,6 +293,29 @@ def test_sheets_validation_rejects_dropped_terminal_empty_string_row() -> None:
 
     with pytest.raises(GSheetAPIError, match="staging validation failed"):
         _validate_values([["note"], ["value"]], expected)
+
+
+def test_sheets_validation_accepts_equivalent_numeric_readback() -> None:
+    """Sheets' unformatted numeric values need not preserve decimal spellings."""
+    _validate_values(
+        [["whole", "decimal"], ["1", "1"]],
+        (("whole", "decimal"), (1, Decimal("1.0"))),
+    )
+
+
+def test_managed_replacements_match_normalized_tab_titles() -> None:
+    """Managed tabs remain replaceable after Sheets-equivalent title normalization."""
+    sheet = SheetInfo(
+        name="ｍｂ bundle 20260721t184233z activity",
+        gid=7,
+        row_count=3,
+        col_count=1,
+        managed_prefix="MB",
+    )
+
+    assert _managed_replacements((sheet,), prefix="MB", subject_kind="bundle") == (
+        SheetIdentity(name=sheet.name, gid=sheet.gid, managed_prefix="MB"),
+    )
 
 
 def test_publish_chunks_large_manifest_and_dictionary_receipts(db: Database) -> None:
@@ -647,6 +677,27 @@ def test_set_sheets_destination_explicitly_upgrades_write_scope(
     assert isinstance(destination, ExportDestination)
 
 
+def test_set_sheets_destination_reuses_persisted_write_grant(
+    db: Database,
+) -> None:
+    """A valid write grant configures a destination without another browser flow."""
+    oauth = TestOAuthClient(write_authorized=True)
+
+    _set_sheets_destination(
+        db,
+        name="dashboard",
+        spreadsheet_id="output-sheet",
+        managed_tab_prefix="MB",
+        actor="cli",
+        oauth_client=oauth,
+    )
+
+    assert oauth.authorize_called == 0
+    assert isinstance(
+        ExportDestinationsRepo(db).resolve("dashboard"), ExportDestination
+    )
+
+
 def test_set_sheets_destination_releases_database_before_oauth(
     db: Database,
     monkeypatch: pytest.MonkeyPatch,
@@ -708,6 +759,10 @@ def test_set_sheets_destination_does_not_persist_when_write_grant_fails(
     db: Database,
 ) -> None:
     class RejectingOAuth:
+        def is_authorized(self, *, require_write: bool = False) -> bool:
+            _ = require_write
+            return False
+
         def authorize(self, *, require_write: bool = False) -> Never:
             raise GSheetAuthError("write authorization declined")
 

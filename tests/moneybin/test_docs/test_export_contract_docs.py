@@ -70,6 +70,18 @@ def test_export_docs_lock_per_run_redaction_and_sheets_separation() -> None:
     assert "preserve the last known-good visible state" in spec
 
 
+def test_export_spec_matches_destination_schema_kind_column() -> None:
+    destination_table = EXPORT_SPEC.read_text().partition(
+        "### `app.export_destinations`"
+    )[2]
+    destination_table = destination_table.partition("### Artifact manifest")[0]
+
+    assert "| `kind` | `VARCHAR` | Closed v1 set: `local` or `sheets`. |" in (
+        destination_table
+    )
+    assert "destination_kind" not in destination_table
+
+
 def test_export_docs_match_runtime_redaction_selection() -> None:
     spec = _flat(EXPORT_SPEC).lower()
     cli = _flat(CLI_GUIDE).lower()
@@ -77,8 +89,12 @@ def test_export_docs_match_runtime_redaction_selection() -> None:
 
     for text in (spec, cli):
         assert "interactive cli omission prompts on every run" in text
-        assert "`--yes` and non-tty execution select the safe redacted default" in text
+        assert "`--yes` and non-tty execution select the" in text
+        assert "redacted default" in text
         assert "`--unredacted` selects unredacted output affirmatively" in text
+    assert "safe redacted default" not in spec
+    assert "masks critical-class identifiers" in spec
+    assert "not a claim that the artifact is fully anonymized" in spec
     for text in (spec, mcp):
         assert "explicit `redaction_mode` does not prompt" in text
         assert "`mutation_redaction_choice_required`" in text

@@ -21,6 +21,8 @@ from moneybin.exports.service import (
     ExportDestinationReadiness,
     ExportReadinessStatus,
 )
+from moneybin.services.audit_service import AuditEvent
+from moneybin.services.entity_reference import AmbiguousEntity
 
 runner = CliRunner()
 
@@ -536,6 +538,58 @@ def test_export_destination_add_local_resolves_the_saved_path(tmp_path: Path) ->
     assert "✅" not in result.stdout
 
 
+def test_export_destination_add_local_json_matches_the_mutation_envelope(
+    tmp_path: Path,
+) -> None:
+    configured_path = tmp_path / "archive"
+    event = AuditEvent(
+        audit_id="audit_1",
+        occurred_at="",
+        actor="cli",
+        action="export_destination.set_local",
+        target_schema="app",
+        target_table="export_destinations",
+        target_id="dst_local_1",
+        before_value=None,
+        after_value=None,
+        parent_audit_id=None,
+        operation_id="operation_1",
+    )
+
+    with (
+        patch("moneybin.database.get_database") as get_database,
+        patch(
+            "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.set_local",
+            return_value=event,
+        ),
+    ):
+        get_database.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(
+            app,
+            [
+                "export",
+                "destination",
+                "add",
+                "local",
+                "archive",
+                str(configured_path),
+                "--output",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"] == {
+        "destination": {
+            "destination_id": "dst_local_1",
+            "kind": "local",
+            "name": "archive",
+            "state": "present",
+        },
+        "operation_id": "operation_1",
+    }
+
+
 def test_export_destination_add_sheets_uses_service_write_oauth() -> None:
     oauth_client = MagicMock()
     url = "https://docs.google.com/spreadsheets/d/sheet_abc/edit#gid=0"
@@ -594,6 +648,59 @@ def test_export_destination_add_sheets_accepts_workbook_url_without_gid() -> Non
     assert set_sheets.call_args.kwargs["spreadsheet_id"] == "sheet_abc"
 
 
+def test_export_destination_add_sheets_json_matches_the_mutation_envelope() -> None:
+    oauth_client = MagicMock()
+    event = AuditEvent(
+        audit_id="audit_1",
+        occurred_at="",
+        actor="cli",
+        action="export_destination.set_sheets",
+        target_schema="app",
+        target_table="export_destinations",
+        target_id="dst_sheet_1",
+        before_value=None,
+        after_value=None,
+        parent_audit_id=None,
+        operation_id="operation_1",
+    )
+    url = "https://docs.google.com/spreadsheets/d/sheet_abc/edit#gid=0"
+
+    with (
+        patch(
+            "moneybin.connectors.gsheet.service_factory.build_oauth_client",
+            return_value=oauth_client,
+        ),
+        patch(
+            "moneybin.exports.service.ExportService.set_sheets_destination",
+            return_value=event,
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "export",
+                "destination",
+                "add",
+                "sheets",
+                "dashboard",
+                url,
+                "--output",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"] == {
+        "destination": {
+            "destination_id": "dst_sheet_1",
+            "kind": "sheets",
+            "name": "dashboard",
+            "state": "present",
+        },
+        "operation_id": "operation_1",
+    }
+
+
 def test_export_destination_remove_requires_confirmation() -> None:
     with (
         patch("moneybin.database.get_database") as get_database,
@@ -630,6 +737,124 @@ def test_export_destination_remove_deletes_configuration_only_with_yes() -> None
     remove.assert_called_once_with("dashboard", actor="cli")
     assert "configuration" in result.stdout.lower()
     assert "✅" not in result.stdout
+
+
+def test_export_destination_remove_json_matches_the_mutation_envelope() -> None:
+    event = AuditEvent(
+        audit_id="audit_1",
+        occurred_at="",
+        actor="cli",
+        action="export_destination.remove",
+        target_schema="app",
+        target_table="export_destinations",
+        target_id="dst_local_1",
+        before_value=None,
+        after_value=None,
+        parent_audit_id=None,
+        operation_id="operation_1",
+    )
+    with (
+        patch("moneybin.database.get_database") as get_database,
+        patch(
+            "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.remove",
+            return_value=event,
+        ),
+    ):
+        get_database.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(
+            app,
+            [
+                "export",
+                "destination",
+                "remove",
+                "archive",
+                "--yes",
+                "--output",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"] == {
+        "destination": {
+            "destination_id": "dst_local_1",
+            "kind": "local",
+            "name": "archive",
+            "state": "absent",
+        },
+        "operation_id": "operation_1",
+    }
+
+
+def test_export_destination_remove_json_preserves_the_removed_kind() -> None:
+    event = AuditEvent(
+        audit_id="audit_1",
+        occurred_at="",
+        actor="cli",
+        action="export_destination.remove",
+        target_schema="app",
+        target_table="export_destinations",
+        target_id="dst_sheet_1",
+        before_value={"kind": "sheets"},
+        after_value=None,
+        parent_audit_id=None,
+        operation_id="operation_1",
+    )
+    with (
+        patch("moneybin.database.get_database") as get_database,
+        patch(
+            "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.remove",
+            return_value=event,
+        ),
+    ):
+        get_database.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(
+            app,
+            [
+                "export",
+                "destination",
+                "remove",
+                "dashboard",
+                "--yes",
+                "--output",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"]["destination"]["kind"] == "sheets"
+
+
+def test_export_destination_remove_reports_ambiguous_reference() -> None:
+    ambiguous = AmbiguousEntity(
+        reference="archive",
+        candidate_ids=("dst_local_1", "dst_local_2"),
+    )
+    with (
+        patch("moneybin.database.get_database") as get_database,
+        patch(
+            "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.remove",
+            return_value=ambiguous,
+        ),
+    ):
+        get_database.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(
+            app,
+            [
+                "export",
+                "destination",
+                "remove",
+                "archive",
+                "--yes",
+                "--output",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 1, result.output
+    error = json.loads(result.stdout)["error"]
+    assert error["code"] == "mutation_ambiguous"
+    assert error["details"] == {"candidate_ids": ["dst_local_1", "dst_local_2"]}
 
 
 def test_export_service_errors_are_safe_stderr_with_nonzero_exit(

@@ -142,6 +142,24 @@ class ExportDestinationsOutput:
     destinations: list[ExportDestinationStatusOutput]
 
 
+@dataclass(frozen=True, slots=True)
+class ExportDestinationStateOutput:
+    """Observed target state after one destination mutation."""
+
+    destination_id: Annotated[str | None, DataClass.RECORD_ID]
+    kind: Annotated[Literal["local", "sheets"], DataClass.TXN_TYPE]
+    name: Annotated[str, DataClass.USER_NOTE]
+    state: Annotated[Literal["present", "absent"], DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class ExportDestinationSetOutput:
+    """Audited receipt for one destination target-state assertion."""
+
+    destination: ExportDestinationStateOutput
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+
+
 def render_or_json(
     envelope: ResponseEnvelope[Any],
     output: OutputFormat,

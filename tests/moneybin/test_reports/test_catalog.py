@@ -452,6 +452,46 @@ def test_service_report_dispatch_uses_same_result_contract() -> None:
     db.execute.assert_not_called()
 
 
+def test_catalog_resolve_request_validates_service_parameters_without_execution() -> (
+    None
+):
+    executor = MagicMock()
+    validator = MagicMock()
+    report = replace(_service_report(executor), validator=validator)
+    catalog = ReportCatalog((report,))
+
+    resolved, parameters = catalog.resolve_request(
+        report_id="summary",
+        parameters={"year": 2026},
+        limit=None,
+    )
+
+    assert resolved is report
+    assert parameters == {"year": 2026}
+    validator.assert_called_once_with({"year": 2026})
+    executor.assert_not_called()
+
+
+def test_catalog_execute_raw_returns_unredacted_execution() -> None:
+    report = _sql_report()
+    catalog = ReportCatalog((report,))
+    db = _db_with_rows((7,))
+
+    resolved, execution = catalog.execute_raw(
+        db,
+        report_id="summary",
+        parameters={"count": 7, "label": "private label"},
+        limit=100,
+    )
+
+    assert resolved is report
+    assert isinstance(execution, CatalogReportExecution)
+    assert execution.parameters == {"count": 7, "label": "private label"}
+    assert execution.records == [{"value": 7}]
+    assert execution.columns == ["value"]
+    cast(MagicMock, db.execute).assert_called_once_with("SELECT ? AS value", [7])
+
+
 @pytest.mark.parametrize(
     "sensitive_class",
     [

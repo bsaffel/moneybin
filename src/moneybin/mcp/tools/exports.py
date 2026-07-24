@@ -371,30 +371,6 @@ def _missing_destination() -> UserError:
     )
 
 
-def _remove_destination(
-    repo: ExportDestinationsRepo,
-    target: LocalDestinationTarget | SheetsDestinationTarget,
-) -> AuditEvent:
-    resolved = repo.resolve(target.name)
-    if isinstance(resolved, MissingEntity):
-        raise _missing_destination()
-    if isinstance(resolved, AmbiguousEntity):
-        raise UserError(
-            "Export destination reference is ambiguous.",
-            code=error_codes.MUTATION_AMBIGUOUS,
-            details={"candidate_ids": list(resolved.candidate_ids)},
-        )
-    if resolved.kind != target.kind:
-        raise UserError(
-            f"Export destination is configured as {resolved.kind}, not {target.kind}.",
-            code=error_codes.MUTATION_INVALID_INPUT,
-        )
-    event = repo.remove(target.name, actor=_ACTOR)
-    if event is None:
-        raise _missing_destination()
-    return event
-
-
 def _removal_binding(
     target: LocalDestinationTarget | SheetsDestinationTarget,
     destination: ExportDestination,
@@ -461,8 +437,14 @@ def _remove_destination_confirmed(
             actor=_ACTOR,
             verify=lambda live: grant.verify(_removal_binding(target, live)),
         )
-    if event is None:
+    if isinstance(event, MissingEntity):
         raise _missing_destination()
+    if isinstance(event, AmbiguousEntity):
+        raise UserError(
+            "Export destination reference is ambiguous.",
+            code=error_codes.MUTATION_AMBIGUOUS,
+            details={"candidate_ids": list(event.candidate_ids)},
+        )
     return event
 
 
@@ -478,12 +460,10 @@ def _set_destination(
         )
     with get_database(read_only=False) as db:
         repo = ExportDestinationsRepo(db)
-        if target.state == "absent":
-            return _remove_destination(repo, target)
         if isinstance(target, LocalDestinationTarget):
             return repo.set_local(
                 name=target.name,
-                local_path=Path(cast(str, target.local_path)),
+                local_path=Path(cast(str, target.local_path)).expanduser().resolve(),
                 actor=_ACTOR,
             )
         raise RuntimeError("Unsupported export destination target")

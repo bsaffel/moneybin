@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Literal, cast
-from urllib.parse import quote
 
 from moneybin.exports.snapshot import PreparedExport
 
@@ -31,14 +31,20 @@ CSV_ENCODING = {
         "＠",
     ],
 }
+_INVALID_IDENTIFIER_CHARACTERS = re.compile(r"[\\/*?:\[\]]")
+
+
+def safe_table_identifier(name: str) -> str:
+    """Return the shared safe identifier used for exported table names."""
+    return _INVALID_IDENTIFIER_CHARACTERS.sub("_", name).strip("'") or "Table"
 
 
 def bundle_table_path(name: str, format: Literal["csv", "parquet"]) -> str:
     """Return one safe, deterministic bundle-relative table path."""
-    encoded = quote(name, safe="-_.")
-    if encoded in {"", ".", ".."}:
+    if name in {"", ".", ".."}:
         raise ValueError("prepared table name cannot be represented safely")
-    return f"tables/{encoded}.{format}"
+    normalized = safe_table_identifier(name)
+    return f"tables/{normalized}.{format}"
 
 
 def build_local_manifest(

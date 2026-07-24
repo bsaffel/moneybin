@@ -575,6 +575,15 @@ def test_sheets_client_promote_rejects_unmanaged_identity_before_api_call(
 # -- _map_error ---------------------------------------------------------------
 
 
+def test_sheets_client_preserves_oauth_auth_error() -> None:
+    """OAuth failures remain actionable when service construction is wrapped."""
+    oauth = MagicMock()
+    oauth.get_access_token.side_effect = GSheetAuthError("refresh token revoked")
+
+    with pytest.raises(GSheetAuthError, match="refresh token revoked"):
+        SheetsClient(oauth=oauth).get_workbook_metadata("spreadsheet-id")
+
+
 def test_map_error_401_to_auth_error() -> None:
     mapped = _map_error(_http_error(401))
     assert isinstance(mapped, GSheetAuthError)

@@ -332,6 +332,30 @@ def test_google_oauth_authorize_raises_when_client_id_empty() -> None:
     store.set_key.assert_not_called()
 
 
+def test_google_oauth_authorize_sanitizes_google_auth_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real Google auth exception must not expose OAuth state to callers."""
+    from google.auth.exceptions import RefreshError
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    leaked_detail = "refresh_token=secret-token&state=csrf-fragment"
+    monkeypatch.setattr(
+        InstalledAppFlow,
+        "from_client_config",
+        MagicMock(side_effect=RefreshError(leaked_detail)),
+    )
+
+    with pytest.raises(GSheetAuthError) as raised:
+        GoogleOAuthClient(MagicMock(), _make_settings()).authorize()
+
+    assert leaked_detail not in str(raised.value)
+    assert (
+        str(raised.value)
+        == "OAuth authorization failed. See application logs for detail."
+    )
+
+
 def test_google_oauth_get_access_token_refreshes_when_expired_token_no_client_id() -> (
     None
 ):

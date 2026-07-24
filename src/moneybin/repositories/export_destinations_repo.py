@@ -393,11 +393,11 @@ class ExportDestinationsRepo(BaseRepo):
         verify: Callable[[ExportDestination], None] | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
-    ) -> AuditEvent | None:
+    ) -> AuditEvent | AmbiguousEntity | MissingEntity:
         """Remove saved configuration only; never delete destination content."""
         destination = self.resolve(reference)
         if not isinstance(destination, ExportDestination):
-            return None
+            return destination
         destination_id = destination.destination_id
         if destination_id is None:
             raise ValueError("Saved destination is missing destination_id")

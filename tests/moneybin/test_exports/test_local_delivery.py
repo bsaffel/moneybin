@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import stat
+import threading
 from dataclasses import replace
 from pathlib import Path
 from zipfile import ZipFile
@@ -17,7 +18,7 @@ import moneybin.exports.local as local_delivery
 from moneybin.exports.local import LocalExportPublisher
 from moneybin.exports.manifest import LocalExportFormat
 from moneybin.exports.renderers import RenderedArtifact
-from moneybin.exports.snapshot import PreparedExport
+from moneybin.exports.snapshot import PreparedExport, build_data_dictionary
 from moneybin.services.request_lifetime import (
     PublicationCancelledError,
     RequestLifetime,
@@ -116,6 +117,29 @@ def test_empty_snapshot_publishes_required_restrictive_bundle_layout(
     assert (receipt.artifact_path / "checksums.sha256").read_text() == ""
 
 
+def test_publish_uses_portable_filename_for_colon_bearing_report_table(
+    tmp_path: Path,
+) -> None:
+    snapshot = make_snapshot(report=True)
+    table = replace(snapshot.tables[0], name="test:activity")
+    report_snapshot = replace(
+        snapshot,
+        tables=(table,),
+        _data_dictionary=build_data_dictionary((table,)),
+    )
+
+    receipt = LocalExportPublisher(tmp_path / "exports").publish(
+        report_snapshot,
+        format="csv",
+        compress_zip=False,
+    )
+
+    assert receipt.artifact_path is not None
+    manifest = json.loads((receipt.artifact_path / "manifest.json").read_text())
+    assert manifest["tables"][0]["file"] == "tables/test_activity.csv"
+    assert (receipt.artifact_path / "tables" / "test_activity.csv").exists()
+
+
 def test_publish_never_overwrites_a_successful_collision(tmp_path: Path) -> None:
     exports_root = tmp_path / "exports"
     publisher = LocalExportPublisher(exports_root)
@@ -163,6 +187,54 @@ def test_cancelled_local_publish_cleans_staging_before_visible_output(
 
     assert not list(exports_root.glob("export-*"))
     assert not list(exports_root.glob(".staging-*"))
+
+
+def test_request_lifetime_waits_for_entered_publication_barrier_to_drain() -> None:
+    """Cancellation waits for an in-flight final publication before returning."""
+
+    class ObservedLifetime(RequestLifetime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancelled = threading.Event()
+
+        def cancel(self) -> None:
+            super().cancel()
+            self.cancelled.set()
+
+    lifetime = ObservedLifetime()
+    entered = threading.Event()
+    release = threading.Event()
+    worker_done = threading.Event()
+    cancellation_done = threading.Event()
+
+    def publish() -> None:
+        with lifetime.publication_barrier():
+            entered.set()
+            assert release.wait(timeout=1)
+        worker_done.set()
+
+    def cancel() -> None:
+        lifetime.cancel_and_wait()
+        cancellation_done.set()
+
+    worker = threading.Thread(target=publish)
+    worker.start()
+    assert entered.wait(timeout=1)
+
+    canceller = threading.Thread(target=cancel)
+    canceller.start()
+    assert lifetime.cancelled.wait(timeout=1)
+    assert not cancellation_done.wait(timeout=0.05)
+
+    release.set()
+    worker.join(timeout=1)
+    canceller.join(timeout=1)
+
+    assert worker_done.is_set()
+    assert cancellation_done.is_set()
+    with pytest.raises(PublicationCancelledError):
+        with lifetime.publication_barrier():
+            pass
 
 
 def test_local_destination_file_collision_is_rejected(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ import unicodedata
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Protocol, TypeVar
 
 from moneybin.connectors.gsheet.errors import (
@@ -66,6 +67,10 @@ class OAuthGrantLike(Protocol):
 
 class SheetsAuthorization(Protocol):
     """OAuth interaction required to configure a Sheets destination."""
+
+    def is_authorized(self, *, require_write: bool = False) -> bool:
+        """Return whether a persisted grant permits the requested capability."""
+        ...
 
     def authorize(self, *, require_write: bool = False) -> OAuthGrantLike:
         """Establish or upgrade the persisted grant."""
@@ -455,7 +460,7 @@ def _available_sheet_gid(name: str, used: set[int]) -> int:
 def _managed_replacements(
     sheets: tuple[SheetInfo, ...], *, prefix: str, subject_kind: str
 ) -> tuple[SheetIdentity, ...]:
-    subject_namespace = (
+    subject_namespace = normalized_sheet_title(
         f"{prefix} Bundle " if subject_kind == "bundle" else f"{prefix} Report "
     )
     return tuple(
@@ -465,19 +470,38 @@ def _managed_replacements(
             managed_prefix=sheet.managed_prefix,
         )
         for sheet in sheets
-        if sheet.managed_prefix == prefix and sheet.name.startswith(subject_namespace)
+        if sheet.managed_prefix == prefix
+        and normalized_sheet_title(sheet.name).startswith(subject_namespace)
     )
 
 
 def _validate_values(
     actual: list[list[str]], expected: tuple[tuple[object, ...], ...]
 ) -> None:
-    expected_text = [[str(cell) for cell in row] for row in expected]
-    width = max((len(row) for row in expected_text), default=0)
+    width = max((len(row) for row in expected), default=0)
     normalized_actual = [row + [""] * (width - len(row)) for row in actual]
-    normalized_expected = [row + [""] * (width - len(row)) for row in expected_text]
-    if normalized_actual != normalized_expected:
+    normalized_expected = [row + ("",) * (width - len(row)) for row in expected]
+    if len(normalized_actual) != len(normalized_expected) or any(
+        len(actual_row) != len(expected_row)
+        or any(
+            not _sheets_cells_equal(actual_cell, expected_cell)
+            for actual_cell, expected_cell in zip(actual_row, expected_row, strict=True)
+        )
+        for actual_row, expected_row in zip(
+            normalized_actual, normalized_expected, strict=True
+        )
+    ):
         raise GSheetAPIError("Google Sheets staging validation failed")
+
+
+def _sheets_cells_equal(actual: str, expected: object) -> bool:
+    """Compare native numeric readback without requiring matching spellings."""
+    if isinstance(expected, (int, float, Decimal)) and not isinstance(expected, bool):
+        try:
+            return Decimal(actual) == Decimal(str(expected))
+        except InvalidOperation:
+            return False
+    return actual == str(expected)
 
 
 def _json_sheet_values(value: object) -> tuple[tuple[object, ...], ...]:

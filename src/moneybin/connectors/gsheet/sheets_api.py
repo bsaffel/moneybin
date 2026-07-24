@@ -15,6 +15,7 @@ from typing import Any, Protocol, cast
 from moneybin.connectors.gsheet.errors import (
     GSheetAPIError,
     GSheetAuthError,
+    GSheetError,
     GSheetRateLimitError,
     GSheetUnreachableError,
 )
@@ -500,6 +501,9 @@ def _map_error(exc: Exception) -> Exception:
     error-envelope construction would leak them. Full detail is logged
     internally via ``logger.debug(..., exc_info=True)``.
     """
+    if isinstance(exc, GSheetError):
+        return exc
+
     from googleapiclient.errors import HttpError
 
     if isinstance(exc, HttpError):

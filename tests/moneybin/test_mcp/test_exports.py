@@ -427,6 +427,48 @@ async def test_exports_set_delegates_target_state_to_normal_owner(
     assert mutate.call_count == 1
 
 
+async def test_exports_set_canonicalizes_local_destination_path_before_persisting(
+    tmp_path: Path,
+    mcp_db: object,
+) -> None:
+    from moneybin.mcp.tools.exports import register_export_tools
+    from moneybin.services.audit_service import AuditEvent
+
+    supplied_path = tmp_path / "exports" / ".." / "archive"
+    event = AuditEvent(
+        audit_id="audit_1",
+        occurred_at="",
+        actor="mcp",
+        action="export_destination.set_local",
+        target_schema="app",
+        target_table="export_destinations",
+        target_id="dst_local_1",
+        before_value=None,
+        after_value=None,
+        parent_audit_id=None,
+        operation_id="operation_1",
+    )
+    with patch(
+        "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.set_local",
+        return_value=event,
+    ) as set_local:
+        response = await call_tool_raw(
+            isolated_server(register_export_tools),
+            "exports_set",
+            {
+                "target": {
+                    "kind": "local",
+                    "state": "present",
+                    "name": "archive",
+                    "local_path": str(supplied_path),
+                }
+            },
+        )
+
+    assert response.isError is False
+    assert set_local.call_args.kwargs["local_path"] == supplied_path.resolve()
+
+
 async def test_exports_set_requires_confirmation_before_removing_configuration(
     mcp_db: object,
 ) -> None:
