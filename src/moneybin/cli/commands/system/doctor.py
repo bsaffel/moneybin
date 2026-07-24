@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 import typer
@@ -100,9 +101,10 @@ def doctor_command(
             # Unlike a typical error envelope, doctor's payload IS the diagnosis
             # — the per-invariant results and their recovery actions are what the
             # caller ran the command for. build_error_envelope zeroes `data` by
-            # contract, so restore it here.
-            envelope.data = data
-            envelope.summary = base.summary
+            # contract, so restore it here. `dataclasses.replace` rather than
+            # assignment, for the same reason mark_total_failure uses it: fields
+            # derived in __post_init__ only settle when the envelope is rebuilt.
+            envelope = dataclasses.replace(envelope, data=data, summary=base.summary)
         else:
             envelope = base
         render_or_json(envelope, output, cli_actor="doctor_command")

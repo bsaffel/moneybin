@@ -163,20 +163,19 @@ class ResponseEnvelope[T]:
     recovery_actions: list[RecoveryAction] | None = None
     # Derived in __post_init__, never caller-supplied — see the method's docstring.
     status: Literal["ok", "error"] = "ok"
-    # Per-call DataClass names for dynamic-SQL tools, read by the @mcp_tool
-    # decorator to log accurate classes_returned. `to_dict()` omits it, but
-    # `to_dict()` is not the wire: FastMCP serializes this dataclass directly,
-    # so the field DOES reach the MCP wire. Treat it as observability metadata
-    # that happens to be visible, not as private state.
+    # Internal observability only: per-call DataClass names for dynamic-SQL
+    # tools, read by the @mcp_tool decorator to log accurate classes_returned.
+    # NOT part of the wire contract — `to_dict()` omits it, and `to_dict()` is
+    # what `_wire_result_adapter` sends, so it never reaches the MCP wire.
     classes_returned: list[str] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Derive `status` from `error` so the two can never disagree.
 
-        `status` is a real field rather than a `to_dict()` computation because
-        FastMCP serializes this dataclass directly; anything computed only in
-        `to_dict()` never reaches the wire. Any caller-supplied value is
-        overwritten on purpose.
+        `status` is a real field rather than a `to_dict()` computation so that
+        every consumer of the envelope — the wire, direct dataclass readers,
+        and tests — sees one value from one source. Any caller-supplied value
+        is overwritten on purpose.
         """
         self.status = "error" if self.error is not None else "ok"
 
