@@ -6,15 +6,19 @@ import csv
 import hashlib
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from openpyxl import load_workbook
 
 import moneybin.exports.renderers as renderers
+from moneybin.exports.local import validate_xlsx
 from moneybin.exports.renderers import (
     decode_csv_cell,
     normalize_tabular_cell,
@@ -270,6 +274,41 @@ def test_parquet_round_trips_native_typed_values_through_duckdb(
     assert relation.fetchall() == list(make_snapshot().tables[0].rows)
 
 
+def test_parquet_schema_follows_prepared_columns_for_empty_values(
+    tmp_path: Path,
+) -> None:
+    """All-null columns retain their declared DuckDB-compatible types."""
+    snapshot = make_snapshot()
+    columns = (
+        PreparedColumn("entry_id", "INTEGER", DataClass.AGGREGATE),
+        PreparedColumn("amount", "DECIMAL(18,2)", DataClass.TXN_AMOUNT),
+        PreparedColumn("note", "VARCHAR", DataClass.DESCRIPTION),
+    )
+    rows = ((None, None, None),)
+    table = PreparedTable(
+        name="empty",
+        source=TableRef("reports", "empty"),
+        columns=columns,
+        rows=rows,
+        checksum_sha256=prepared_table_checksum(columns, rows),
+    )
+    empty_snapshot = replace(
+        snapshot,
+        tables=(table,),
+        _data_dictionary=build_data_dictionary((table,)),
+    )
+
+    rendered = render_parquet(empty_snapshot, tmp_path / "bundle")
+
+    assert pq.read_schema(  # type: ignore[reportUnknownMemberType]  # pyarrow lacks complete type stubs
+        rendered.table_files["empty"]
+    ) == pa.schema([
+        pa.field("entry_id", pa.int32()),
+        pa.field("amount", pa.decimal128(18, 2)),
+        pa.field("note", pa.string()),
+    ])
+
+
 def test_parquet_rendering_never_uses_duckdb_default_connection(tmp_path: Path) -> None:
     """Rendering an in-memory snapshot must not create a DuckDB spill path."""
     assert not hasattr(renderers, "duckdb")
@@ -352,6 +391,14 @@ def test_xlsx_formula_leading_strings_remain_exact_literal_text(tmp_path: Path) 
 
     assert [cell.value for cell in cells] == list(values)
     assert [cell.data_type for cell in cells] == ["s", "s", "s", "s"]
+
+
+def test_xlsx_preserves_empty_strings_distinct_from_null(tmp_path: Path) -> None:
+    """XLSX validation decodes a reversible empty-string representation."""
+    snapshot = make_text_snapshot(("", None, r"\E"))
+    rendered = render_xlsx(snapshot, tmp_path)
+
+    validate_xlsx(rendered.path, snapshot)
 
 
 def test_xlsx_worksheet_names_avoid_case_insensitive_and_receipt_collisions(

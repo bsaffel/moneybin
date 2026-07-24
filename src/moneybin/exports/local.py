@@ -29,6 +29,7 @@ from moneybin.exports.manifest import (
 from moneybin.exports.models import ExportDestination, ExportReceipt
 from moneybin.exports.renderers import (
     decode_csv_cell,
+    decode_xlsx_cell,
     normalize_tabular_cell,
     render_csv,
     render_parquet,
@@ -306,6 +307,9 @@ def validate_xlsx(path: Path, snapshot: PreparedExport) -> _ValidatedArtifact:
             if sheet.max_row - 1 != len(prepared_table.rows):
                 raise ValueError("XLSX row count validation failed")
             actual_rows = tuple(sheet.iter_rows(min_row=2, values_only=True))
+            actual_rows = tuple(
+                tuple(decode_xlsx_cell(value) for value in row) for row in actual_rows
+            )
             expected_rows = tuple(
                 tuple(normalize_tabular_cell(value) for value in row)
                 for row in prepared_table.rows

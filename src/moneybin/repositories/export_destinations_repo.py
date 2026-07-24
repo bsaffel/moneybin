@@ -185,10 +185,23 @@ class ExportDestinationsRepo(BaseRepo):
             with self._transaction(in_outer_txn=in_outer_txn):
                 before = event.before_value
                 if before is not None and before.get("kind") == "sheets":
+                    name = cast(str | None, before.get("name"))
                     spreadsheet_id = cast(str | None, before.get("spreadsheet_id"))
-                    if spreadsheet_id is None:
-                        raise ValueError("Audit image lacks a Sheets spreadsheet ID")
-                    self.assert_not_inbound_connection(spreadsheet_id)
+                    managed_tab_prefix = cast(
+                        str | None, before.get("managed_tab_prefix")
+                    )
+                    if (
+                        name is None
+                        or spreadsheet_id is None
+                        or managed_tab_prefix is None
+                    ):
+                        raise ValueError("Audit image lacks Sheets destination fields")
+                    self._validate_destination(
+                        name=name,
+                        kind="sheets",
+                        spreadsheet_id=spreadsheet_id,
+                        managed_tab_prefix=managed_tab_prefix,
+                    )
                 return super().undo_event(event, actor=actor, in_outer_txn=True)
 
     def list(self) -> list[ExportDestination]:

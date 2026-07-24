@@ -270,6 +270,29 @@ def test_undo_destination_restore_rechecks_inbound_workbook_role(
         UndoService(db).undo(removal_operation, actor="cli")
 
 
+def test_undo_destination_restore_rechecks_normalized_tab_namespace(
+    db: Database, repo: ExportDestinationsRepo
+) -> None:
+    """Undo may not restore a prefix that collides after normalization."""
+    repo.set_sheets(
+        name="dashboard",
+        spreadsheet_id="shared-workbook",
+        managed_tab_prefix="MoneyBin",
+        actor="cli",
+    )
+    with operation() as removal_operation:
+        repo.remove("dashboard", actor="cli")
+    repo.set_sheets(
+        name="replacement",
+        spreadsheet_id="shared-workbook",
+        managed_tab_prefix="moneybin",
+        actor="cli",
+    )
+
+    with pytest.raises(ExportDestinationNamespaceConflictError):
+        UndoService(db).undo(removal_operation, actor="cli")
+
+
 def test_list_and_resolve_treat_an_unmigrated_export_table_as_empty(
     db: Database,
 ) -> None:

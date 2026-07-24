@@ -32,6 +32,9 @@ _MANIFEST_SHEET = "MoneyBin Manifest"
 _DICTIONARY_SHEET = "MoneyBin Data Dictionary"
 _INVALID_SHEET_CHARACTERS = re.compile(r"[\\/*?:\[\]]")
 _FORMULA_PREFIXES = ("=", "+", "-", "@")
+_DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$")
+_XLSX_EMPTY = r"\E"
+_XLSX_ESCAPE = "\\"
 
 type TabularCell = bool | int | float | str | None
 
@@ -75,6 +78,7 @@ def render_xlsx(snapshot: PreparedExport, staging_root: Path) -> RenderedArtifac
                 sheet,
                 row_index,
                 [normalize_tabular_cell(value) for value in row],
+                encode_empty_strings=True,
             )
 
     manifest = build_local_manifest(
@@ -162,14 +166,53 @@ def _write_csv(table: PreparedTable, path: Path) -> None:
 
 
 def _write_parquet(table: PreparedTable, path: Path) -> None:
+    schema = parquet_schema_for(table)
     arrow_table = pa.Table.from_arrays(
         [
-            pa.array([row[index] for row in table.rows])
-            for index, _column in enumerate(table.columns)
+            pa.array([row[index] for row in table.rows], type=field.type)
+            for index, field in enumerate(schema)
         ],
-        names=[column.name for column in table.columns],
+        schema=schema,
     )
     pq.write_table(arrow_table, path)  # type: ignore[reportUnknownMemberType]  # pyarrow lacks complete type stubs
+
+
+def parquet_schema_for(table: PreparedTable) -> pa.Schema:
+    """Build the exact Arrow schema promised by prepared DuckDB columns."""
+    return pa.schema([
+        pa.field(column.name, _arrow_type(column.duckdb_type))
+        for column in table.columns
+    ])
+
+
+def _arrow_type(duckdb_type: str) -> pa.DataType:
+    """Map the closed prepared-export DuckDB type vocabulary to Arrow."""
+    normalized = duckdb_type.upper().strip()
+    simple_types = {
+        "BOOLEAN": pa.bool_(),
+        "TINYINT": pa.int8(),
+        "SMALLINT": pa.int16(),
+        "INTEGER": pa.int32(),
+        "BIGINT": pa.int64(),
+        "UTINYINT": pa.uint8(),
+        "USMALLINT": pa.uint16(),
+        "UINTEGER": pa.uint32(),
+        "UBIGINT": pa.uint64(),
+        "FLOAT": pa.float32(),
+        "DOUBLE": pa.float64(),
+        "VARCHAR": pa.string(),
+        "TEXT": pa.string(),
+        "STRING": pa.string(),
+        "DATE": pa.date32(),
+        "TIMESTAMP": pa.timestamp("us"),
+        "TIMESTAMP WITH TIME ZONE": pa.timestamp("us", tz="UTC"),
+    }
+    if normalized in simple_types:
+        return simple_types[normalized]
+    decimal = _DECIMAL_TYPE.fullmatch(normalized)
+    if decimal is not None:
+        return pa.decimal128(int(decimal.group(1)), int(decimal.group(2)))
+    raise ValueError(f"Unsupported Parquet column type: {duckdb_type}")
 
 
 def _csv_payload_cell(value: object) -> object:
@@ -276,8 +319,29 @@ def _write_xlsx_row(
     sheet: Worksheet,
     row: int,
     values: Sequence[TabularCell],
+    *,
+    encode_empty_strings: bool = False,
 ) -> None:
-    for column, value in enumerate(values, start=1):
+    for column, raw_value in enumerate(values, start=1):
+        value = _xlsx_payload_cell(raw_value) if encode_empty_strings else raw_value
         cell = sheet.cell(row=row, column=column, value=value)
         if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
             cell.data_type = "s"
+
+
+def _xlsx_payload_cell(value: TabularCell) -> TabularCell:
+    """Encode empty strings without conflating them with blank XLSX cells."""
+    if value == "":
+        return _XLSX_EMPTY
+    if isinstance(value, str) and value.startswith(_XLSX_ESCAPE):
+        return f"{_XLSX_ESCAPE}{value}"
+    return value
+
+
+def decode_xlsx_cell(value: object) -> object:
+    """Decode the reversible XLSX empty-string representation."""
+    if value == _XLSX_EMPTY:
+        return ""
+    if isinstance(value, str) and value.startswith(f"{_XLSX_ESCAPE}{_XLSX_ESCAPE}"):
+        return value[1:]
+    return value
