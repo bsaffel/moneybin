@@ -9,6 +9,7 @@ to the project's typed exception hierarchy via `_map_error`.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -361,16 +362,19 @@ class SheetsClient:
         deletes: tuple[SheetIdentity, ...],
     ) -> None:
         """Atomically replace exact old identities with staged identities."""
-        namespace = f"{managed_prefix} "
+        namespace = _normalized_sheet_title(f"{managed_prefix} ")
         identities = (*deletes, *(rename.sheet for rename in renames))
         promoted_names = tuple(rename.new_name for rename in renames)
         if not managed_prefix or any(
-            not sheet.name.startswith(namespace)
+            not _normalized_sheet_title(sheet.name).startswith(namespace)
             or sheet.managed_prefix != managed_prefix
             for sheet in identities
         ):
             raise ValueError("promotion identities must be in the managed namespace")
-        if any(not name.startswith(namespace) for name in promoted_names):
+        if any(
+            not _normalized_sheet_title(name).startswith(namespace)
+            for name in promoted_names
+        ):
             raise ValueError("promoted titles must be in the managed namespace")
         requests: list[dict[str, object]] = [
             {"deleteSheet": {"sheetId": sheet.gid}} for sheet in deletes
@@ -483,6 +487,11 @@ def _quote_a1_sheet_name(sheet_name: str) -> str:
     """
     escaped = sheet_name.replace("'", "''")
     return f"'{escaped}'"
+
+
+def _normalized_sheet_title(name: str) -> str:
+    """Return the Sheets title comparison key used by managed namespaces."""
+    return unicodedata.normalize("NFKC", name).casefold()
 
 
 def _map_error(exc: Exception) -> Exception:

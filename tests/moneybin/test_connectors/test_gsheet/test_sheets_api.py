@@ -572,6 +572,24 @@ def test_sheets_client_promote_rejects_unmanaged_identity_before_api_call(
     build.assert_not_called()
 
 
+def test_sheets_client_promote_accepts_normalized_managed_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A case-only managed-tab rename remains promotable."""
+    client = SheetsClient(oauth=MagicMock())
+    service = MagicMock()
+    monkeypatch.setattr(client, "_build_service", MagicMock(return_value=service))
+
+    client.promote_sheets(
+        "ss1",
+        managed_prefix="MB",
+        deletes=(SheetIdentity("mb Bundle prior", 7, "MB"),),
+        renames=(),
+    )
+
+    service.spreadsheets.return_value.batchUpdate.return_value.execute.assert_called_once()
+
+
 # -- _map_error ---------------------------------------------------------------
 
 
