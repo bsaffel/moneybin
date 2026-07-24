@@ -262,6 +262,14 @@ def _removed_destination_kind(event: Any) -> typing.Literal["local", "sheets"]:
     return "local"
 
 
+def _removed_destination_name(event: Any, fallback: str) -> str:
+    """Read the canonical removed name from its audited before-state."""
+    before = cast(dict[str, object] | None, event.before_value)
+    if before is not None and isinstance(before.get("name"), str):
+        return cast(str, before["name"])
+    return fallback
+
+
 def _run_export(
     *,
     subject_kind: typing.Literal["bundle", "report"],
@@ -599,7 +607,7 @@ def destination_remove(
     _render_destination_mutation(
         event=event,
         kind=_removed_destination_kind(event),
-        name=name,
+        name=_removed_destination_name(event, name),
         state="absent",
         output=output,
         text=f"Removed destination configuration for {name}.",

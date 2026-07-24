@@ -795,7 +795,7 @@ def test_export_destination_remove_json_preserves_the_removed_kind() -> None:
         target_schema="app",
         target_table="export_destinations",
         target_id="dst_sheet_1",
-        before_value={"kind": "sheets"},
+        before_value={"kind": "sheets", "name": "Finance Dashboard"},
         after_value=None,
         parent_audit_id=None,
         operation_id="operation_1",
@@ -822,7 +822,9 @@ def test_export_destination_remove_json_preserves_the_removed_kind() -> None:
         )
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["data"]["destination"]["kind"] == "sheets"
+    destination = json.loads(result.stdout)["data"]["destination"]
+    assert destination["kind"] == "sheets"
+    assert destination["name"] == "Finance Dashboard"
 
 
 def test_export_destination_remove_reports_ambiguous_reference() -> None:
