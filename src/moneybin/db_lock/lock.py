@@ -3,9 +3,7 @@
 The lock is a per-profile fcntl(LOCK_EX) on ``<db_path>.write.lock``. It does
 NOT replace DuckDB's own ATTACH-layer arbitration — it sits in front of
 writer-vs-writer contention only. Read-mode opens never call this. See
-``docs/specs/database-writer-coordination.md`` § "PR B hardening pass" and
-the design doc at
-``private/plans/2026-06-04-database-writer-coordination-pr-b-design.md``.
+``docs/specs/database-writer-coordination.md`` § "PR B hardening pass".
 """
 
 from __future__ import annotations

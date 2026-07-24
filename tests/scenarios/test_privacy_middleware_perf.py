@@ -15,8 +15,7 @@ budget.
 The test is marked ``@pytest.mark.perf`` (declared in pyproject.toml). The
 ``perf`` marker is opt-in — `make test` does not run it; the runner needs
 a populated persona DB and a profile selected via ``MONEYBIN_HOME`` +
-``MONEYBIN_PROFILE`` (per the Phase 9 instructions in
-``private/plans/privacy-middleware-pr2.md`` §Task 9.1 Step 2).
+``MONEYBIN_PROFILE``.
 
 If the test runs in an environment without a populated DB, it skips with
 a clear message rather than failing — the budget assertion is meaningful
