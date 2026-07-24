@@ -31,8 +31,17 @@ class RequestLifetime:
 
     def cancel_and_wait(self) -> None:
         """Cancel future publication and wait for an entered boundary to leave."""
+        self.cancel()
+        self.wait_for_publication()
+
+    def cancel(self) -> None:
+        """Synchronously stop any publication section not yet entered."""
         with self._condition:
             self._cancelled = True
+
+    def wait_for_publication(self) -> None:
+        """Wait for a publication section that was already entered to leave."""
+        with self._condition:
             while self._publishing:
                 self._condition.wait()
 

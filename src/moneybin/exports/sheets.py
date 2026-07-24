@@ -42,11 +42,13 @@ _INVALID_TITLE_CHARACTERS = re.compile(r"[\[\]:*?/\\]")
 _RETRY_MAX = 3
 _RETRY_BACKOFF_BASE_SECONDS = 1.5
 _SHEETS_NULL = r"\N"
+_SHEETS_EMPTY = r"\E"
 _SHEETS_ESCAPE = "\\"
 SHEETS_ENCODING = {
     "scheme": "moneybin.sheets-cell",
     "version": 1,
     "null": _SHEETS_NULL,
+    "empty": _SHEETS_EMPTY,
     "escape": _SHEETS_ESCAPE,
 }
 _T = TypeVar("_T")
@@ -399,6 +401,8 @@ def _sheets_payload_cell(value: object) -> object:
     if value is None:
         return _SHEETS_NULL
     normalized = normalize_tabular_cell(value)
+    if normalized == "":
+        return _SHEETS_EMPTY
     if isinstance(normalized, str) and normalized.startswith(_SHEETS_ESCAPE):
         return f"{_SHEETS_ESCAPE}{normalized}"
     return normalized
@@ -465,11 +469,7 @@ def _validate_values(
     expected_text = [[str(cell) for cell in row] for row in expected]
     width = max((len(row) for row in expected_text), default=0)
     normalized_actual = [row + [""] * (width - len(row)) for row in actual]
-    while normalized_actual and not any(normalized_actual[-1]):
-        normalized_actual.pop()
     normalized_expected = [row + [""] * (width - len(row)) for row in expected_text]
-    while normalized_expected and not any(normalized_expected[-1]):
-        normalized_expected.pop()
     if normalized_actual != normalized_expected:
         raise GSheetAPIError("Google Sheets staging validation failed")
 

@@ -25,7 +25,12 @@ from moneybin.connectors.gsheet.testing.fake_sheets_client import (
 from moneybin.database import Database
 from moneybin.exports.models import ExportDestination
 from moneybin.exports.service import ExportService
-from moneybin.exports.sheets import SheetsExportPublisher, SheetsPublishError
+from moneybin.exports.sheets import (
+    SheetsExportPublisher,
+    SheetsPublishError,
+    _table_values,  # pyright: ignore[reportPrivateUsage]  # white-box validation test
+    _validate_values,  # pyright: ignore[reportPrivateUsage]  # white-box validation test
+)
 from moneybin.exports.snapshot import PreparedExport
 from moneybin.exports.workbook_roles import workbook_role_lease
 from moneybin.repositories.export_destinations_repo import (
@@ -261,7 +266,7 @@ def test_publish_encodes_nulls_distinctly_from_empty_strings(db: Database) -> No
 
     assert client.read_sheet_values(
         "output-sheet", "MB Bundle 20260721T184233Z activity"
-    ) == [["note"], [r"\N"], [""], [r"\\N"], [r"\\literal"]]
+    ) == [["note"], [r"\N"], [r"\E"], [r"\\N"], [r"\\literal"]]
     manifest = json.loads(
         client.read_sheet_values("output-sheet", "MB Bundle Manifest")[1][0]
     )
@@ -269,8 +274,17 @@ def test_publish_encodes_nulls_distinctly_from_empty_strings(db: Database) -> No
         "scheme": "moneybin.sheets-cell",
         "version": 1,
         "null": r"\N",
+        "empty": r"\E",
         "escape": "\\",
     }
+
+
+def test_sheets_validation_rejects_dropped_terminal_empty_string_row() -> None:
+    """A Sheets readback may not omit an encoded terminal empty-string row."""
+    expected = _table_values(make_text_snapshot(("value", "")).tables[0])
+
+    with pytest.raises(GSheetAPIError, match="staging validation failed"):
+        _validate_values([["note"], ["value"]], expected)
 
 
 def test_publish_uses_write_capability_for_output_metadata_and_validation(

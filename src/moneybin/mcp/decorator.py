@@ -566,7 +566,8 @@ def mcp_tool(
                     await _emit_privacy_event(err_env)
                     return err_env
                 elapsed = time.monotonic() - started
-                await asyncio.to_thread(request_lifetime.cancel_and_wait)
+                request_lifetime.cancel()
+                await asyncio.to_thread(request_lifetime.wait_for_publication)
                 # Only reset THIS call's own connection. If the call timed out
                 # before acquiring one (e.g. queued behind another writer when
                 # tool_timeout < the write-lock wait), _conn_for_this_call[0] is
@@ -655,7 +656,8 @@ def mcp_tool(
                 # where a bare await inside the handler would be re-cancelled
                 # before the write lands. Then re-raise — cancellation must never
                 # be swallowed.
-                await asyncio.to_thread(request_lifetime.cancel_and_wait)
+                request_lifetime.cancel()
+                await asyncio.to_thread(request_lifetime.wait_for_publication)
                 try:
                     await asyncio.shield(
                         _emit_privacy_event(

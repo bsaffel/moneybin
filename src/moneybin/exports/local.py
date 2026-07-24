@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -267,6 +267,23 @@ def _require_export_id(manifest: dict[str, object]) -> None:
         raise ValueError("export artifact lacks export_id; re-export required")
 
 
+def _read_xlsx_json_sheet(sheet: Any) -> dict[str, object]:
+    """Reassemble a receipt JSON sheet written in bounded text-cell chunks."""
+    if not hasattr(sheet, "iter_rows"):
+        raise ValueError("XLSX receipt sheet is invalid")
+    rows = sheet.iter_rows(min_row=1, max_col=1, values_only=True)
+    try:
+        header = next(rows)
+    except StopIteration as exc:
+        raise ValueError("XLSX receipt sheet is empty") from exc
+    if header != ("JSON",):
+        raise ValueError("XLSX receipt sheet header is invalid")
+    chunks = [row[0] for row in rows]
+    if not chunks or any(not isinstance(chunk, str) for chunk in chunks):
+        raise ValueError("XLSX receipt sheet JSON is invalid")
+    return _parse_xlsx_json("".join(cast(list[str], chunks)))
+
+
 def validate_xlsx(path: Path, snapshot: PreparedExport) -> _ValidatedArtifact:
     """Read the workbook back and validate its visible data and receipts."""
     _validate_regular_file(path)
@@ -285,9 +302,9 @@ def validate_xlsx(path: Path, snapshot: PreparedExport) -> _ValidatedArtifact:
         ):
             raise ValueError("XLSX worksheets must all be visible")
 
-        manifest = _parse_xlsx_json(workbook["MoneyBin Manifest"]["A2"].value)
+        manifest = _read_xlsx_json_sheet(workbook["MoneyBin Manifest"])
         _require_export_id(manifest)
-        dictionary = _parse_xlsx_json(workbook["MoneyBin Data Dictionary"]["A2"].value)
+        dictionary = _read_xlsx_json_sheet(workbook["MoneyBin Data Dictionary"])
         if dictionary != snapshot.data_dictionary:
             raise ValueError("XLSX data dictionary does not match prepared snapshot")
         expected_manifest = build_local_manifest(

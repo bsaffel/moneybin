@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 
 import duckdb
 import pyarrow as pa
@@ -399,6 +400,71 @@ def test_xlsx_preserves_empty_strings_distinct_from_null(tmp_path: Path) -> None
     rendered = render_xlsx(snapshot, tmp_path)
 
     validate_xlsx(rendered.path, snapshot)
+
+
+def test_xlsx_splits_large_receipt_json_across_metadata_cells(tmp_path: Path) -> None:
+    snapshot = replace(
+        make_snapshot(report=True),
+        provenance=ReportExportProvenance(
+            report_id="test:activity",
+            receipt={"lineage": ["reports.activity"], "sql": "x" * 40_000},
+        ),
+    )
+
+    rendered = render_xlsx(snapshot, tmp_path)
+    workbook = load_workbook(rendered.path, data_only=True)
+
+    assert workbook["MoneyBin Manifest"].max_row > 2
+    validate_xlsx(rendered.path, snapshot)
+
+
+def test_parquet_supports_list_and_struct_prepared_columns(tmp_path: Path) -> None:
+    columns = (
+        PreparedColumn("tags", "VARCHAR[]", DataClass.DESCRIPTION),
+        PreparedColumn(
+            "splits",
+            "STRUCT(split_id VARCHAR, amount DECIMAL(18,2))[]",
+            DataClass.TXN_AMOUNT,
+        ),
+    )
+    rows = ((["work"], [{"split_id": "split-1", "amount": Decimal("12.30")}]),)
+    table = PreparedTable(
+        name="nested",
+        source=TableRef("reports", "nested"),
+        columns=columns,
+        rows=rows,
+        checksum_sha256="nested-checksum",
+    )
+    snapshot = replace(
+        make_snapshot(),
+        tables=(table,),
+        _data_dictionary=build_data_dictionary((table,)),
+    )
+
+    rendered = render_parquet(snapshot, tmp_path)
+    result = cast(
+        pa.Table,
+        pq.read_table(rendered.table_files["nested"]),  # type: ignore[reportUnknownMemberType]  # pyarrow has incomplete stubs
+    )
+
+    assert result.schema == pa.schema([
+        pa.field("tags", pa.list_(pa.string())),
+        pa.field(
+            "splits",
+            pa.list_(
+                pa.struct([
+                    pa.field("split_id", pa.string()),
+                    pa.field("amount", pa.decimal128(18, 2)),
+                ])
+            ),
+        ),
+    ])
+    assert result.to_pylist() == [
+        {
+            "tags": ["work"],
+            "splits": [{"split_id": "split-1", "amount": Decimal("12.30")}],
+        }  # fmt: skip
+    ]
 
 
 def test_xlsx_worksheet_names_avoid_case_insensitive_and_receipt_collisions(

@@ -35,6 +35,7 @@ _FORMULA_PREFIXES = ("=", "+", "-", "@")
 _DECIMAL_TYPE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$")
 _XLSX_EMPTY = r"\E"
 _XLSX_ESCAPE = "\\"
+_MAX_XLSX_CELL_TEXT_LENGTH = 16_000
 
 type TabularCell = bool | int | float | str | None
 
@@ -87,11 +88,9 @@ def render_xlsx(snapshot: PreparedExport, staging_root: Path) -> RenderedArtifac
         worksheets=worksheets,
     )
     manifest_sheet = workbook.create_sheet(_MANIFEST_SHEET)
-    manifest_sheet.append(["JSON"])
-    manifest_sheet.append([_json_text(manifest)])
+    _write_xlsx_json_sheet(manifest_sheet, manifest)
     dictionary_sheet = workbook.create_sheet(_DICTIONARY_SHEET)
-    dictionary_sheet.append(["JSON"])
-    dictionary_sheet.append([_json_text(snapshot.data_dictionary)])
+    _write_xlsx_json_sheet(dictionary_sheet, snapshot.data_dictionary)
 
     workbook_path = staging_root / "export.xlsx"
     workbook.save(workbook_path)
@@ -187,7 +186,17 @@ def parquet_schema_for(table: PreparedTable) -> pa.Schema:
 
 def _arrow_type(duckdb_type: str) -> pa.DataType:
     """Map the closed prepared-export DuckDB type vocabulary to Arrow."""
-    normalized = duckdb_type.upper().strip()
+    source = duckdb_type.strip()
+    normalized = source.upper()
+    if source.endswith("[]"):
+        return pa.list_(_arrow_type(source[:-2]))
+    if normalized.startswith("LIST(") and source.endswith(")"):
+        return pa.list_(_arrow_type(source[5:-1]))
+    if normalized.startswith("STRUCT(") and source.endswith(")"):
+        return pa.struct([
+            _arrow_struct_field(field)
+            for field in _split_duckdb_type_fields(source[7:-1])
+        ])
     simple_types = {
         "BOOLEAN": pa.bool_(),
         "TINYINT": pa.int8(),
@@ -213,6 +222,31 @@ def _arrow_type(duckdb_type: str) -> pa.DataType:
     if decimal is not None:
         return pa.decimal128(int(decimal.group(1)), int(decimal.group(2)))
     raise ValueError(f"Unsupported Parquet column type: {duckdb_type}")
+
+
+def _arrow_struct_field(field: str) -> pa.Field:
+    """Map one DuckDB ``STRUCT(name TYPE)`` field to Arrow."""
+    name, separator, duckdb_type = field.strip().partition(" ")
+    if not separator or not duckdb_type.strip():
+        raise ValueError(f"Unsupported Parquet struct field: {field}")
+    return pa.field(name.strip('"'), _arrow_type(duckdb_type))
+
+
+def _split_duckdb_type_fields(value: str) -> list[str]:
+    """Split comma-separated nested DuckDB type fields at their outer level."""
+    fields: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(value):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif character == "," and depth == 0:
+            fields.append(value[start:index])
+            start = index + 1
+    fields.append(value[start:])
+    return fields
 
 
 def _csv_payload_cell(value: object) -> object:
@@ -327,6 +361,14 @@ def _write_xlsx_row(
         cell = sheet.cell(row=row, column=column, value=value)
         if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
             cell.data_type = "s"
+
+
+def _write_xlsx_json_sheet(sheet: Worksheet, value: object) -> None:
+    """Write receipt JSON in cells that stay below Excel's text limit."""
+    sheet.append(["JSON"])
+    text = _json_text(value)
+    for start in range(0, len(text), _MAX_XLSX_CELL_TEXT_LENGTH):
+        sheet.append([text[start : start + _MAX_XLSX_CELL_TEXT_LENGTH]])
 
 
 def _xlsx_payload_cell(value: TabularCell) -> TabularCell:

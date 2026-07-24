@@ -228,6 +228,48 @@ async def test_async_tool_over_cap_returns_timeout_envelope(
 
 
 @pytest.mark.unit
+async def test_timeout_marks_request_cancelled_before_waiting_in_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Executor saturation cannot delay the cancellation signal itself."""
+    import moneybin.mcp.decorator as decorator
+
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.01)
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", MagicMock()
+    )
+
+    class TrackingLifetime:
+        instance: TrackingLifetime | None = None
+
+        def __init__(self) -> None:
+            self.cancelled = False
+            type(self).instance = self
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+        def wait_for_publication(self) -> None:
+            assert self.cancelled
+
+        def cancel_and_wait(self) -> None:
+            raise AssertionError("cancellation must be marked before executor wait")
+
+    monkeypatch.setattr(decorator, "RequestLifetime", TrackingLifetime)
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    async def slow_tool() -> ResponseEnvelope[Any]:
+        await asyncio.sleep(0.5)
+        return _ok_envelope()
+
+    result = await slow_tool()
+
+    assert result.error is not None
+    assert TrackingLifetime.instance is not None
+    assert TrackingLifetime.instance.cancelled
+
+
+@pytest.mark.unit
 async def test_timeout_logs_low_cardinality_line(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
