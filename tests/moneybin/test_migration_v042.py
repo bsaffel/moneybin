@@ -207,18 +207,32 @@ def test_v042_reversed_by_check_survives_rebuild(old_shape_db: Database) -> None
 
 
 def test_v042_leaves_the_decisions_queue_narrow(old_shape_db: Database) -> None:
-    """The sibling review queue is deliberately NOT widened.
+    """DECISION REVERSED 2026-07-24 — this test is scheduled for replacement.
 
-    ``app.security_link_decisions`` is the *provider-initiated* identity queue:
-    Plaid sends a security MoneyBin does not recognize, and the resolver
-    proposes a merge candidate for review. A market-feed key travels the
-    opposite direction — MoneyBin mints it from a security already in its own
-    catalog — so there is no provider claim to adjudicate and no decision row to
-    write. Widening this CHECK too would advertise a review path that nothing
-    populates.
+    It pins what V042 *currently* does, not what the design now calls for. Do
+    not read it as settled intent.
 
-    Pinned as behavior because the two tables carry an identical-looking
-    ``ref_kind`` CHECK, which makes "widen both" the tempting symmetric edit.
+    The original reasoning was that ``app.security_link_decisions`` is the
+    provider-initiated identity queue (Plaid sends a security MoneyBin does not
+    recognize; the resolver proposes a merge candidate for review), while a
+    market-feed key travels the opposite direction — minted from a security
+    already in the catalog — so nothing would ever write a decision row for one.
+
+    That missed a real property of investing data: a ticker is not a unique
+    identifier. The same symbol names different securities across exchanges
+    (BHP on NYSE vs ASX), share classes collide (GOOG vs GOOGL), and symbols get
+    recycled. So deriving a feed key from the catalog *can* be an ambiguous
+    inference, and ``design-principles.md`` ("Magic stays visible") requires a
+    weak inference to surface a confirm rather than act silently.
+
+    The replacement work, per the resolved design: widen this CHECK to admit
+    ``tiingo_ticker`` / ``coingecko_slug``, and bind silently ONLY on a
+    near-certain signal — a previously confirmed binding, a CUSIP/ISIN match, or
+    an exact ticker+exchange match resolving to exactly one security. Ambiguous
+    derivations route here; unmatched keys stay unbound and surface in the new
+    held-but-unpriced doctor check. The user requirement that constrains this:
+    a review entry per held position is unacceptable — no comparable tool asks
+    that, and near-certain bindings must never reach this queue.
     """
     run_migration(old_shape_db, migrate)
     with pytest.raises(duckdb.ConstraintException):

@@ -200,6 +200,17 @@ User marks. Written through a `SecurityPriceRepo` per Invariant 10.
 Primary key `(security_id, price_date, quote_currency)`. No provider write
 touches this table.
 
+`CHECK (close > 0)`, mirroring `raw.security_prices`. A mark is the one other row
+that can reach `core.fct_security_prices`, so without the floor the guarantee
+"an unpriced holding is NULL, never zero" has a hole on exactly the path a user
+controls. A genuinely worthless position is a ledger event — a disposal or
+write-off — not a zero price: that keeps "what is this worth" and "do I still
+own this" as separate questions, and it is what the tax treatment wants anyway.
+The alternative, admitting `0` as a distinct "worthless" value, would make
+*worthless* and *unknown* two states every downstream total, report, and doctor
+check has to tell apart, and a bug conflating them understates net worth
+silently — the exact failure the never-zero rule exists to prevent.
+
 ### New model: `prep.stg_security_prices`
 
 Staging view over `raw.security_prices`. Kind VIEW. Core models read staging,
@@ -220,6 +231,36 @@ comment reads "plaid (future: ofx institutions, ...)" — but its `ref_kind` CHE
 admits only `plaid_security_id` and `institution_security_id`. C.2 extends that
 CHECK with `tiingo_ticker` and `coingecko_slug` in a migration, and the adapters
 bind through `SecurityLinksRepo` exactly as the Plaid path does.
+
+**A feed key binds silently only on a near-certain signal.** A ticker is not an
+identifier: the same symbol names different securities across exchanges (BHP on
+NYSE and ASX), share classes collide (GOOG / GOOGL), and symbols are recycled
+after a delisting. `app.securities` already records this — `ticker` is commented
+"nullable, not unique (tickers get reused)" and `exchange` "disambiguates
+duplicate tickers." So deriving a feed key from the catalog is sometimes exact
+and sometimes a guess, and per `design-principles.md` ("Magic stays visible")
+those two cases cannot share a path.
+
+| Signal | Action |
+|---|---|
+| A binding the user already confirmed | Reuse it. Never re-ask. |
+| `cusip` or `isin` match | Bind silently — these are unique by construction, and Plaid supplies them for US-listed securities. |
+| Exact `ticker` + `exchange`, exactly one candidate | Bind silently. |
+| Bare ticker, no exchange, no CUSIP/ISIN, >1 candidate | Route to `app.security_link_decisions` for review. |
+| Ticker matches but the provider name diverges from the catalog name | Route to review. |
+| No match at all | Leave unbound. Nothing to propose, so no queue row — the held-but-unpriced doctor check is what surfaces it. |
+
+`app.security_link_decisions.ref_kind` is therefore widened alongside
+`app.security_links.ref_kind`. It carries a second *kind* of decision — a
+pull-side derivation MoneyBin proposes about its own catalog, rather than a
+push-side claim a provider made — so reviewer-facing text distinguishes the two.
+
+**The queue must stay near-empty in normal operation.** A review entry per held
+position is a design failure, not a safety feature: no comparable tool asks a
+user to ratify every holding, and a queue that noisy trains people to accept
+without reading, which is worse than not asking. If a real portfolio produces
+more than a handful of entries, the fix is a stronger derivation rule, not more
+confirming.
 
 The two alternatives were considered and rejected against existing rules.
 Resolving at fetch time, since the adapter already holds a canonical
@@ -254,6 +295,32 @@ fetched as `split_adjusted` in one year stops being correctly adjusted after the
 next split. That makes an adjusted price unusable as a durable historical fact.
 Adjusted rows are stored, visible, and excluded from valuation with the reason
 recorded, rather than silently valued.
+
+**`close` is classified by source, not by column.** C.1 classified this column
+`AGGREGATE` (LOW) on the rationale that a market close is public reference data —
+what a security's price *was* on a date — unlike
+`fct_investment_transactions.price`, which is what the user actually paid. That
+holds while `plaid` is the only source. C.2 breaks it by unioning in two sources
+that are personal facts:
+
+- **`trade_implied`** is derived from the user's own executions. It *is*
+  `fct_investment_transactions.price`, recomputed — the exact value the LOW
+  rationale names as its sensitive counterexample.
+- **`override`** on a security no feed covers — a restricted grant, a pre-IPO
+  position, a private fund — is the user's own valuation of a private holding,
+  and the only place that number exists. Those are precisely the cases the
+  override path was built to serve, so the exposure lands on the people using
+  the feature as designed.
+
+A single column-level class cannot express this. Raising the whole column to the
+strictest source masks genuinely public market data and degrades every
+price-bearing report — and over-masking is invisible, since no privacy test
+fails for it (`private/` follow-ups from #340 record three such regressions
+shipping unnoticed). Leaving it LOW knowingly leaks the private-security case.
+So provider rows keep the public class and the two derived sources carry a
+higher one, which requires source-aware classification rather than the static
+column map. Whichever mechanism lands, the PR must include an unaliased
+"ordinary public-price query still works" fixture alongside the masking test.
 
 ### Extended model: `core.dim_holdings`
 
@@ -442,6 +509,18 @@ The two are separate checks because their remedies differ — a discontinuity sa
 distrust a *day*, a disagreement says distrust a *feed* — and a single merged
 finding could not say which. It lands in C.2, the first phase in which a security
 can carry two sources at all.
+
+**Held but unpriced** is a third C.2 check. A position whose feed key never bound
+— an unrecognized ticker, a security no provider covers — values as `unpriced`
+and simply reads blank forever. `valuation_status` records it on the holdings
+view, but only where someone is already looking at that position; nothing
+surfaces it in the place users go to ask "is anything wrong with my data?"
+Earlier drafts of this spec pointed at "the unresolved-security backlog" for this
+case, but the check bearing that name (`investment_unresolved_securities`) scans
+the *transaction ledger* for events whose security never resolved and never
+examines price rows, so the safety net it implied does not exist. The new check
+closes that gap: an open position carrying no usable price on the current
+valuation date, reported with the securities affected.
 
 ### Trade-implied prices
 
@@ -789,15 +868,15 @@ two sources), the CLI surface, and the existing investment/report integration.
 - `src/moneybin/connectors/prices/coingecko.py`
 - `src/moneybin/services/price_service.py`
 - `src/moneybin/cli/commands/investments/prices.py`
-- `src/moneybin/sql/migrations/V042__widen_security_link_ref_kinds.py` (C.2) ✅ —
+- `src/moneybin/sql/migrations/V042__widen_security_link_ref_kinds.py` (C.2) —
   adds `tiingo_ticker` and `coingecko_slug` to the `app.security_links.ref_kind`
   CHECK. DuckDB cannot alter a CHECK in place, so it rebuilds the table on the
   V034/V035 idiom and `app_security_links.sql` carries the same widened CHECK for
-  fresh installs. The sibling `app.security_link_decisions.ref_kind` stays
-  narrow: that queue adjudicates a *provider's* claim about an unrecognized
-  security, and a market-feed key runs the other way — MoneyBin mints it from a
-  security already in its catalog — so nothing would write a decision row for
-  one.
+  fresh installs. **Outstanding:** the same widening is required on
+  `app.security_link_decisions.ref_kind` so an ambiguous derivation can be
+  queued (see the binding-certainty table above); the shipped migration and its
+  `test_v042_leaves_the_decisions_queue_narrow` test still encode the earlier,
+  reversed decision.
 
 ### Files to modify
 
