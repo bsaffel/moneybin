@@ -96,7 +96,7 @@ Related specs:
 flowchart LR
     subgraph fetch["Python — network"]
         P["plaid sync"]
-        S["stooq adapter"]
+        S["tiingo adapter"]
         C["coingecko adapter"]
     end
     subgraph rawl["raw — immutable"]
@@ -135,7 +135,7 @@ The provider cache. Immutable, append-only, one row per observation.
 | `provider_security_key` | VARCHAR | the provider's own identifier — Plaid's `security_id`, a ticker, a `coingecko_id` |
 | `price_date` | DATE | the date the price applies to |
 | `quote_currency` | VARCHAR | ISO 4217; the currency the price is expressed in |
-| `source` | VARCHAR | `plaid`, `stooq`, `coingecko` — provider observations only |
+| `source` | VARCHAR | `plaid`, `tiingo`, `coingecko` — provider observations only |
 | `source_origin` | VARCHAR | which connection produced it; `''` for single-tenant feeds |
 | `close` | DECIMAL(28,10) | price of one unit |
 | `price_basis` | VARCHAR | `raw`, `split_adjusted`, `split_and_dividend_adjusted` |
@@ -158,7 +158,7 @@ can each report a close for the same security on the same date. Without the
 column those are one row by identity, so an append-only table must either reject
 the second or lose it. `source_origin` mirrors the column
 `raw.plaid_securities` already carries. Feeds with a single global answer —
-stooq, CoinGecko — write `''`.
+Tiingo, CoinGecko — write `''`.
 
 **Only `close_price` becomes a price row.** Plaid carries two price-shaped
 fields, and they are not the same kind of fact. `close_price` on the security
@@ -213,12 +213,12 @@ staging — it is not dropped, and it appears once its security resolves.
 The unresolved-security backlog remains available through the current
 investment workflow; it does not add a separate MCP callback.
 
-**Every provider resolves the same way, including the keyless feeds.**
+**Every provider resolves the same way, market feeds included.**
 `app.security_links` is already provider-neutral by design — its header calls
 `(source_type, ref_kind, ref_value)` the strong-ref key and its `source_type`
 comment reads "plaid (future: ofx institutions, ...)" — but its `ref_kind` CHECK
 admits only `plaid_security_id` and `institution_security_id`. C.2 extends that
-CHECK with `stooq_ticker` and `coingecko_slug` in a migration, and the adapters
+CHECK with `tiingo_ticker` and `coingecko_slug` in a migration, and the adapters
 bind through `SecurityLinksRepo` exactly as the Plaid path does.
 
 The two alternatives were considered and rejected against existing rules.
@@ -362,7 +362,7 @@ date, which price applies?
 candidates = union of provider observations, overrides, and trade-implied prices
              where price_date <= as_of_date
                and price_basis = 'raw'
-               and (source not in ('plaid', 'stooq', 'coingecko')   -- non-provider
+               and (source not in ('plaid', 'tiingo', 'coingecko')  -- non-provider
                     or price_date >= first_available_price_on(security, source))
 
 winner     = first row ordered by
@@ -404,8 +404,8 @@ deterministic-resolution requirement.
 |---|---|---|
 | 1 | `override` | The user stated it. |
 | 2 | `plaid` | The institution holding the position reported it. |
-| 3 | `stooq` | A settled public close. |
-| 4 | `coingecko` | A settled public close; ranked below stooq only to break ties, since the two never cover the same security. |
+| 3 | `tiingo` | A settled public close. |
+| 4 | `coingecko` | A settled public close; ranked below tiingo only to break ties, since the two never cover the same security. |
 | 5 | `trade_implied` | An execution price reflects one order's size and spread. |
 
 A new adapter takes the next free rank. Where two providers disagree on the same
@@ -428,7 +428,7 @@ rather than resolving quietly.
 
 The check is `investment_price_disagreement`, a sibling to
 `investment_price_discontinuity`: it fires when two *provider* sources —
-`source IN ('plaid', 'stooq', 'coingecko')` — hold rows for the same
+`source IN ('plaid', 'tiingo', 'coingecko')` — hold rows for the same
 `(security_id, price_date, quote_currency)` differing by more than
 `price_disagreement_tolerance_pct` (a config field, following the staleness
 defaults). The comparison is deliberately restricted to provider closes, because
@@ -612,9 +612,14 @@ class PriceAdapter(Protocol):
     ) -> Sequence[PriceObservation]: ...
 ```
 
-- **`stooq.py`** — equities, ETFs, and funds. No credential.
+- **`tiingo.py`** — equities, ETFs, and mutual funds. Reads Tiingo's end-of-day
+  `close`, which its documentation defines as the as-traded close beside a
+  separate `adjClose`, so the adapter declares `price_basis = 'raw'`. Mutual
+  fund rows carry the day's NAV in the OHLC fields. Requires an API token, read
+  through `SecretStore` like every other credentialed connector.
 - **`coingecko.py`** — crypto, keyed by the `coingecko_id` already on
-  `app.securities`. No credential.
+  `app.securities`. No credential. Spot crypto has no splits or dividends, so
+  its closes are raw by construction.
 
 Which securities to fetch, and for which dates, derives from holdings: a security
 is fetched over the interval it was actually held, extended to today while the
@@ -708,7 +713,7 @@ that integration remains Pillar D.
 - **Unpriced** — a security with no source yields NULL market value, and a
   portfolio total reports the uncounted position.
 - **`price_basis` enforcement** — an adapter returning no basis fails ingest.
-- **Non-Plaid key binding** — a stooq ticker and a CoinGecko slug each bind
+- **Non-Plaid key binding** — a Tiingo ticker and a CoinGecko slug each bind
   through `SecurityLinksRepo` and resolve in `prep.stg_security_prices`; an
   unbound key leaves its row in `raw` and surfaces in the unresolved-security
   backlog rather than vanishing. The migration test
@@ -780,15 +785,19 @@ two sources), the CLI surface, and the existing investment/report integration.
 - `src/moneybin/sqlmesh/models/core/fct_holdings_daily.py`
 - `src/moneybin/connectors/prices/__init__.py`
 - `src/moneybin/connectors/prices/protocol.py`
-- `src/moneybin/connectors/prices/stooq.py`
+- `src/moneybin/connectors/prices/tiingo.py`
 - `src/moneybin/connectors/prices/coingecko.py`
 - `src/moneybin/services/price_service.py`
 - `src/moneybin/cli/commands/investments/prices.py`
-- `src/moneybin/sql/migrations/V0NN__extend_security_link_ref_kinds.py` (C.2) —
-  adds `stooq_ticker` and `coingecko_slug` to the `app.security_links.ref_kind`
-  CHECK. `V038` is the highest at the time of writing; take the next free number
-  when the work starts rather than reserving one now, since a migration that
-  collides with another branch's has to renumber anyway
+- `src/moneybin/sql/migrations/V042__widen_security_link_ref_kinds.py` (C.2) ✅ —
+  adds `tiingo_ticker` and `coingecko_slug` to the `app.security_links.ref_kind`
+  CHECK. DuckDB cannot alter a CHECK in place, so it rebuilds the table on the
+  V034/V035 idiom and `app_security_links.sql` carries the same widened CHECK for
+  fresh installs. The sibling `app.security_link_decisions.ref_kind` stays
+  narrow: that queue adjudicates a *provider's* claim about an unrecognized
+  security, and a market-feed key runs the other way — MoneyBin mints it from a
+  security already in its catalog — so nothing would write a decision row for
+  one.
 
 ### Files to modify
 
@@ -863,6 +872,21 @@ two sources), the CLI surface, and the existing investment/report integration.
   price is its correct multiplicand. Adjusted rows are stored and excluded with
   the reason recorded.
 
+- **The equity feed must publish an unadjusted series, which costs a credential.**
+  The rule above is a provider-selection constraint, not only a storage one: a
+  source whose sole product is an adjusted series can be ingested and can never
+  value a holding, so its adapter is inert the day it ships. This is what ruled
+  out stooq, the provider this spec originally named — it publishes adjusted
+  closes with no unadjusted series available, and separately offers no documented
+  programmatic interface. Tiingo publishes `close` and `adjClose` as distinct
+  documented fields, which is what lets an adapter declare its basis instead of
+  inferring it. Every provider that documents an unadjusted series requires an
+  API token; `SecretStore` already owns that path. The free tier allows 1,000
+  requests a day against a fetch scope of one request per held security, so a
+  thirty-position portfolio refreshing daily uses 3% of it. Tiingo's free tier is
+  internal-use-only, which does not constrain a local ledger but does bear on the
+  hosted-deployment question in Open questions below.
+
 - **Resolution is as-of and bounded.** The most recent close on or before the
   valuation date. Equality would leave holes on every non-trading day; unbounded
   lookahead would value a past date with a price observed later.
@@ -903,11 +927,12 @@ two sources), the CLI surface, and the existing investment/report integration.
 
 ## Open questions
 
-- **stooq coverage and terms.** Its equity and ETF breadth against a real
-  portfolio, and its terms for programmatic access, need checking before C.2 is
-  built. If coverage falls short for mutual funds, the override path covers the
-  remainder and the gap is visible rather than silent. Settled by: a coverage
-  probe against the author's own holdings.
+- **Tiingo coverage against a real portfolio.** Its documentation claims
+  equities, ETFs, and mutual-fund NAVs; that breadth has not been measured
+  against an actual holdings set. Where coverage falls short the override path
+  covers the remainder and the gap is visible rather than silent. Settled by: a
+  coverage probe against the author's own holdings, run with the real tickers
+  rather than a large-cap sample.
 
 - **Backfill depth on first fetch.** The proposal is each security's earliest
   acquisition date, bounded by a configurable cap. A fixed window is simpler and
@@ -916,4 +941,8 @@ two sources), the CLI surface, and the existing investment/report integration.
 
 - **Whether hosted deployments fetch prices for users.** This decides tier 3's
   shape: a server-side key with pooled rate limits, or per-user credentials. The
-  contract accommodates either. Settled by: the M3H hosted launch decision.
+  contract accommodates either. A hosted deployment also changes what the
+  provider's terms permit — Tiingo's free tier is internal-use-only and its
+  commercial tier is a separate licence, so a server fetching on a user's behalf
+  is a licensing decision, not only an architectural one. Settled by: the M3H
+  hosted launch decision.

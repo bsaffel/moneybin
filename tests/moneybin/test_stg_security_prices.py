@@ -133,8 +133,8 @@ def test_every_mapped_source_resolves_end_to_end(db: Database) -> None:
     """Every source the ref_kind CASE maps must actually reach staging.
 
     The mapped set is read from the model file, so this test grows itself: the day
-    someone adds `WHEN 'stooq' THEN 'stooq_ticker'` to the CASE, this test starts
-    seeding a stooq row and a stooq_ticker binding for it — and fails immediately,
+    someone adds `WHEN 'tiingo' THEN 'tiingo_ticker'` to the CASE, this test starts
+    seeding a tiingo row and a tiingo_ticker binding for it — and fails immediately,
     because app.security_links.ref_kind is CHECK-constrained to
     ('plaid_security_id', 'institution_security_id'). Extending the CASE alone does not
     make a source resolve; the constraint must be widened in the same change. Pinning
@@ -175,21 +175,21 @@ def test_an_unmapped_source_is_dropped_permanently_not_deferred(db: Database) ->
 
     This is the finding the COVERAGE block in the model documents, pinned as behavior.
     The binding here is *accepted* and its ref_value matches, so the row fails for one
-    reason only: `CASE p.source_type WHEN 'plaid' ... END` returns NULL for 'stooq', making
+    reason only: `CASE p.source_type WHEN 'plaid' ... END` returns NULL for 'tiingo', making
     `links.ref_kind = NULL` UNKNOWN and the INNER JOIN drop the row. That is unlike the
     unresolved-binding case, where the observation waits in raw and reappears once its
     security binds — no number of accepted bindings will ever surface this one.
 
-    Deliberately a tripwire: when a stooq adapter lands and extends the CASE, this test
+    Deliberately a tripwire: when a tiingo adapter lands and extends the CASE, this test
     goes red and forces whoever wrote it to confront the drop rather than discover it
     in production. Adjust it then; do not weaken it now.
     """
-    assert "stooq" not in _ref_kind_mapping(), (
-        "stooq now has a ref_kind mapping — this tripwire has done its job. Replace it "
-        "with a positive resolution test and move stooq into the covered set."
+    assert "tiingo" not in _ref_kind_mapping(), (
+        "tiingo now has a ref_kind mapping — this tripwire has done its job. Replace it "
+        "with a positive resolution test and move tiingo into the covered set."
     )
-    _insert_price(db, key="stooq_vti", close="214.55", source="stooq")
-    _accept_link(db, key="stooq_vti", canonical_id="canonvti0000001")
+    _insert_price(db, key="tiingo_vti", close="214.55", source="tiingo")
+    _accept_link(db, key="tiingo_vti", canonical_id="canonvti0000001")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)

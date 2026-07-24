@@ -13,7 +13,7 @@ MODEL (
    catches one carrying modeled transactions. A price-only observation for a security
    that is neither held nor transacted has no doctor coverage — it simply waits in raw.
 
-   ref_kind is mapped per source rather than hardcoded, so C.2's stooq_ticker and
+   ref_kind is mapped per source rather than hardcoded, so C.2's tiingo_ticker and
    coingecko_slug extend the CASE instead of forking a second resolution path.
 
    COVERAGE — read this before adding a price adapter. The CASE below maps exactly
@@ -30,13 +30,14 @@ MODEL (
    someone edits this file.
 
    Nothing upstream prevents it: raw.security_prices.source_type carries no CHECK constraint
-   (unlike price_basis), its own schema comment names stooq and coingecko as expected
-   values, and core.fct_security_prices already ranks override, stooq, coingecko, and
+   (unlike price_basis), its own schema comment names tiingo and coingecko as expected
+   values, and core.fct_security_prices already ranks override, tiingo, coingecko, and
    trade_implied. So a new adapter MUST extend this CASE in the SAME change that starts
-   writing its rows — and, because app.security_links.ref_kind is itself CHECK-
-   constrained to ('plaid_security_id', 'institution_security_id'), must widen that
-   constraint in the same change too. tests/moneybin/test_stg_security_prices.py drives
-   this CASE's mapped set directly and fails if either half is missing.
+   writing its rows. V042 already widened app.security_links.ref_kind to admit
+   tiingo_ticker and coingecko_slug, so the binding half is in place and this CASE is the
+   remaining half — a market-feed row still resolves to nothing until its source_type is
+   mapped here. tests/moneybin/test_stg_security_prices.py drives this CASE's mapped set
+   directly and fails if it is missing.
 
    No close-positivity filter follows: raw.security_prices enforces CHECK (close > 0) at
    write, so a zero or negative close can never reach this view — the guard lives at the

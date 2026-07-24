@@ -73,7 +73,7 @@ WITH ranked AS (
       THEN 1
       WHEN 'plaid'
       THEN 2
-      WHEN 'stooq'
+      WHEN 'tiingo'
       THEN 3
       WHEN 'coingecko'
       THEN 4
@@ -97,7 +97,7 @@ SELECT
   price_date, /* The date this close applies to (grain) */
   quote_currency, /* ISO 4217 the close is expressed in (grain); this model converts nothing — M1K.2 owns FX */
   close, /* The winning close for one unit, in quote_currency */
-  source_type, /* Which source supplied the winning close: plaid today; override, stooq, coingecko, and trade_implied are planned — see docs/specs/investments-price-feeds.md */
+  source_type, /* Which source supplied the winning close: plaid today; override, tiingo, coingecko, and trade_implied are planned — see docs/specs/investments-price-feeds.md */
   price_basis, /* Always 'raw' here; adjusted observations are excluded upstream and stay visible in prep.stg_security_prices */
   extracted_at AS updated_at /* When the winning observation was served by its provider */
 FROM ranked

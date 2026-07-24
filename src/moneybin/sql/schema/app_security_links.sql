@@ -12,8 +12,8 @@
 CREATE TABLE IF NOT EXISTS app.security_links (
     link_id VARCHAR NOT NULL,                  -- uuid4[:12] primary key for this binding
     security_id VARCHAR NOT NULL,              -- canonical app.securities entry this provider ref maps to
-    ref_kind VARCHAR NOT NULL                  -- which kind of provider reference this row carries
-        CHECK (ref_kind IN ('plaid_security_id', 'institution_security_id')),
+    ref_kind VARCHAR NOT NULL                  -- which kind of provider reference this row carries; market-feed keys (tiingo_ticker, coingecko_slug) bind here too so every provider resolves by one audited path
+        CHECK (ref_kind IN ('plaid_security_id', 'institution_security_id', 'tiingo_ticker', 'coingecko_slug')),
     ref_value VARCHAR NOT NULL,                -- the provider ref; institution rows store '{institution_id}:{institution_security_id}'
     source_type VARCHAR NOT NULL,              -- issuing provider: plaid (future: ofx institutions, ...)
     status VARCHAR NOT NULL                    -- accepted (live) or reversed (undone)

@@ -149,7 +149,7 @@ MoneyBin is built on the assumption that you'll want to track your money your wa
 These are visible gaps a migrant or agent author will notice. See [Roadmap](roadmap.md) for the full milestone view.
 
 - **Budgeting** — Monthly budgets, target-vs-actual, rollovers. Planned.
-- **External price feeds and net-worth integration** — Stooq and CoinGecko feeds plus manual price overrides, so a security no connected broker prices can still be valued; a daily valued-holdings series; and folding investment positions into net worth. The ledger, tax lots, four-method cost basis, realized gain/loss (1099-B surface), and broker-carried market value already shipped — see [Investments](#investments) above. Planned (core, not a package).
+- **External price feeds and net-worth integration** — Tiingo and CoinGecko feeds plus manual price overrides, so a security no connected broker prices can still be valued; a daily valued-holdings series; and folding investment positions into net worth. The ledger, tax lots, four-method cost basis, realized gain/loss (1099-B surface), and broker-carried market value already shipped — see [Investments](#investments) above. Planned (core, not a package).
 - **Multi-currency** — Original currency is now captured correctly from OFX and Plaid instead of being silently assumed USD, and every transaction and balance resolves its currency from its own source or its account's setting. A home-currency setting, display conversion, a guard against silently blending currencies in reports, and FX gain/loss are still planned.
 - **Web UI dashboard** — Local web UI plus Streamable HTTP MCP transport (so remote clients like ChatGPT web can reach MoneyBin). Planned.
 - **Hosted tier** — Same code, hosted. Planned.

@@ -13,7 +13,7 @@ pytestmark = pytest.mark.integration
 
 # source_rank is the first ORDER BY key, but it cannot be mutation-tested across two
 # source_type values yet: only 'plaid' resolves to a canonical security_id through
-# prep.stg_security_prices' 'plaid_security_id' link, so a second source (stooq,
+# prep.stg_security_prices' 'plaid_security_id' link, so a second source (tiingo,
 # coingecko) has no binding to reach this core model. That cross-source ordering test
 # lands with C.2's adapters and their ref_kind bindings. Until then every fixture here
 # is source='plaid' and source_rank is exercised only as a constant. Tracked for C.2.
