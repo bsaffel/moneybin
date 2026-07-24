@@ -1255,9 +1255,14 @@ def import_confirm_command(
             param_hint="'--accept' or '--mapping'",
         )
 
-    if not file_path.exists():
-        logger.error(f"❌ File not found: {file_path}")
-        raise typer.Exit(1)
+    # Third site with this shape, wrapped for the same reason as the `import
+    # files` and `import preview` preflights: `Path.exists()` raises under a
+    # macOS TCC denial instead of returning False, so an unwrapped check
+    # tracebacks rather than classifying.
+    with handle_cli_errors():
+        if not file_path.exists():
+            logger.error(f"❌ File not found: {file_path}")
+            raise typer.Exit(1)
 
     bridge_response_data: dict[str, Any] | None = None
     if bridge_response is not None:
@@ -1790,9 +1795,14 @@ def import_preview(
 
     source = Path(file_path)
 
-    if not source.exists():
-        logger.error(f"❌ File not found: {source}")
-        raise typer.Exit(1)
+    # Wrapped for the same reason as the `import files` preflight: `Path.exists()`
+    # raises rather than returning False under a macOS TCC denial, so an
+    # unwrapped check turns the documented `import preview ~/Documents/...`
+    # scenario into a traceback instead of the Full Disk Access guidance.
+    with handle_cli_errors():
+        if not source.exists():
+            logger.error(f"❌ File not found: {source}")
+            raise typer.Exit(1)
 
     if source.suffix.lower() == ".pdf":
         # Routed before the tabular stages below: none of format detection,

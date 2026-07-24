@@ -122,7 +122,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
     The macOS branch requires the full conjunction. `EPERM` alone is not proof of a TCC denial — immutable (`uchg`) flags and sandbox denials raise it too — and sending someone to System Settings for one of those is a confidently wrong answer, which is worse than an honest vague one.
 
-    `details` carries `errno` and `platform` on every permission failure, plus `protected_root` (`Documents` / `Desktop` / `Downloads`) when the macOS branch fires. Those are the fields an agent branches on.
+    `details` carries `errno` and `platform` on every permission failure, plus `protected_root` (`~/Documents` / `~/Desktop` / `~/Downloads` — the `~/` prefix is on the wire) when the macOS branch fires. Those are the fields an agent branches on.
 
     The macOS remedy is delivered via `hint`, **not** `recovery_actions`: a `RecoveryAction` requires a `tool` naming an MCP tool (`min_length=1`, `extra="forbid"`), so the type cannot express an action the user must take outside the app. Extending it to do so is explicitly out of scope — smuggling human instructions into `rationale` while naming an unrelated tool is a strained one-off, not a convention to promote.
 

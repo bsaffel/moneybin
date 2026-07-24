@@ -317,3 +317,61 @@ def test_preview_stays_quiet_when_no_tabular_flags_are_passed(
 
     assert result.exit_code == 0, result.output
     assert "Ignored for a PDF" not in caplog.text
+
+
+def test_tcc_denied_preview_is_classified_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`import preview` on a TCC-blocked file must give the recovery hint.
+
+    Twin of the `import files` preflight: `import_preview` ran its own
+    `source.exists()` check before entering `handle_cli_errors()`, and
+    `Path.exists()` raises under a TCC denial rather than returning False. That
+    made the documented `import preview ~/Documents/...` scenario emit an
+    unhandled traceback — the same defect, one command over.
+    """
+    target = Path.home() / "Documents" / "chase_statement.pdf"
+    real_exists = Path.exists
+
+    def _deny(self: Path, **kwargs: object) -> bool:
+        if self == target:
+            raise PermissionError(1, "Operation not permitted", str(target))
+        return real_exists(self, **kwargs)  # pyright: ignore[reportCallIssue,reportArgumentType]
+
+    monkeypatch.setattr(Path, "exists", _deny)
+
+    result = runner.invoke(app, ["preview", str(target)])
+
+    # `preview` is text-only (no --output), so the classified error surfaces
+    # through handle_cli_errors' log path rather than a JSON envelope.
+    assert result.exit_code == 1, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        f"unhandled exception leaked: {result.exception!r}"
+    )
+
+
+def test_tcc_denied_confirm_is_classified_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`import confirm` is the third command with this preflight shape.
+
+    Same defect as `import files` and `import preview`: an `exists()` check
+    outside `handle_cli_errors()`. Covered here so the fix isn't re-discovered
+    one command per review round.
+    """
+    target = Path.home() / "Documents" / "statement.pdf"
+    real_exists = Path.exists
+
+    def _deny(self: Path, **kwargs: object) -> bool:
+        if self == target:
+            raise PermissionError(1, "Operation not permitted", str(target))
+        return real_exists(self, **kwargs)  # pyright: ignore[reportCallIssue,reportArgumentType]
+
+    monkeypatch.setattr(Path, "exists", _deny)
+
+    result = runner.invoke(app, ["confirm", str(target), "--accept"])
+
+    assert result.exit_code == 1, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        f"unhandled exception leaked: {result.exception!r}"
+    )

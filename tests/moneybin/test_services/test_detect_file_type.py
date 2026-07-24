@@ -1,6 +1,7 @@
 """Tests for _detect_file_type, including magic-byte sniffing."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -70,7 +71,7 @@ class TestDetectFileTypePermission:
     """An unreadable file must not be reported as an unsupported one."""
 
     def test_unreadable_extensionless_file_raises_permission_not_unsupported(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Being unable to read a file is not evidence that it is not OFX.
 
@@ -79,12 +80,23 @@ class TestDetectFileTypePermission:
         that produces `ValueError: Unsupported file type` — blaming the file for
         a permission problem the user can fix. Same shape as the OFX read
         boundary, one function earlier.
+
+        The denial is injected rather than done with `chmod(0o000)`: a runner
+        executing as root reads a mode-000 file happily, which would silently
+        turn this into a no-op test on some CI images.
         """
+        import builtins
+
         target = tmp_path / "statement"
         target.write_bytes(b"OFXHEADER:100")
-        target.chmod(0o000)
-        try:
-            with pytest.raises(PermissionError):
-                _detect_file_type(target)
-        finally:
-            target.chmod(0o600)
+        real_open = builtins.open
+
+        def _deny(file: object, *args: object, **kwargs: object) -> Any:
+            if str(file) == str(target):
+                raise PermissionError(1, "Operation not permitted", str(target))
+            return real_open(file, *args, **kwargs)  # pyright: ignore[reportCallIssue,reportArgumentType]
+
+        monkeypatch.setattr(builtins, "open", _deny)
+
+        with pytest.raises(PermissionError):
+            _detect_file_type(target)

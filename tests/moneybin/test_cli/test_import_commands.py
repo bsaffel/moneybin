@@ -233,10 +233,15 @@ class TestImportFilesCommand:
         traceback instead of the Full Disk Access guidance the affordance
         exists to give.
 
-        The path sits under `~/Documents` because that is what selects the
-        Full-Disk-Access branch of `permission_advice`; an EPERM elsewhere
-        correctly gets generic advice instead.
+        The path sits under `~/Documents` and the platform is pinned to Darwin
+        because together those select the Full-Disk-Access branch of
+        `permission_advice` — an EPERM on another platform, or elsewhere on
+        macOS, correctly gets generic advice instead. Pinning rather than
+        skipping keeps this running on Linux CI: like
+        `test_permission_advice.py`, it asserts OUR branching for a given
+        platform, not the host's actual behavior.
         """
+        monkeypatch.setattr("moneybin.errors.platform.system", lambda: "Darwin")
         target = Path.home() / "Documents" / "statement.qfx"
         real_exists = Path.exists
 
