@@ -32,6 +32,22 @@
     "exemption": null
   },
   {
+    "capability_id": "exports.delivery.run",
+    "mcp_tools": ["export_run"],
+    "cli_commands": ["export bundle", "export report"],
+    "service_methods": ["moneybin.exports.service.ExportService.run"],
+    "observable_outcomes": ["the same subject, destination kind, redaction mode, format, row counts, checksums, receipt identity, and safe failures"],
+    "exemption": null
+  },
+  {
+    "capability_id": "exports.destinations.set",
+    "mcp_tools": ["system_status", "exports_set"],
+    "cli_commands": ["export destination list", "export destination add local", "export destination add sheets", "export destination remove"],
+    "service_methods": ["moneybin.exports.service.ExportService.status", "moneybin.exports.service.ExportService.set_sheets_destination", "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.set_local", "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.remove"],
+    "observable_outcomes": ["named destination readiness and typed local or Sheets target state agree across surfaces"],
+    "exemption": null
+  },
+  {
     "capability_id": "accounts.read",
     "mcp_tools": ["accounts"],
     "cli_commands": ["accounts list", "accounts get", "accounts summary", "accounts resolve"],

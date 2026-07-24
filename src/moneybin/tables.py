@@ -84,6 +84,7 @@ PROPOSED_RULES = TableRef("app", "proposed_rules")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
 VERSIONS = TableRef("app", "versions")
 GSHEET_CONNECTIONS = TableRef("app", "gsheet_connections")
+EXPORT_DESTINATIONS = TableRef("app", "export_destinations")
 AI_CONSENT_GRANTS = TableRef("app", "ai_consent_grants")
 
 # -- App tabular tables --

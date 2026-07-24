@@ -25,10 +25,10 @@ from scripts.mcp_eval import (
 FIXTURES = Path(__file__).parents[2] / "fixtures"
 CASES_PATH = FIXTURES / "mcp_eval/cases.json"
 BASELINE_CAPTURE_PATH = FIXTURES / "mcp_eval/captures/baseline-105.json"
-STANDARD_CAPTURE_PATH = FIXTURES / "mcp_eval/captures/standard-45.json"
+STANDARD_CAPTURE_PATH = FIXTURES / "mcp_eval/captures/standard-47.json"
 COMPARISON_PATH = FIXTURES / "mcp_eval/results/comparison-2026-07-17.json"
 BASELINE_INVENTORY_PATH = FIXTURES / "mcp_surface/baseline-2026-07-17.json"
-STANDARD_INVENTORY_PATH = FIXTURES / "mcp_surface/standard-45.json"
+STANDARD_INVENTORY_PATH = FIXTURES / "mcp_surface/standard-47.json"
 REQUIRED_WORKFLOWS = {
     "first-contact-orientation-financial-pulse",
     "account-transaction-lookup",
@@ -70,7 +70,7 @@ def _valid_case_payload() -> list[dict[str, object]]:
             "prompt": "Give me a financial pulse.",
             "expectations": {
                 "baseline-105": expectation,
-                "standard-45": expectation,
+                "standard-47": expectation,
             },
             "workflow": ["first-contact-orientation-financial-pulse"],
             "safety": ["local-read"],
@@ -116,7 +116,7 @@ def test_every_case_has_ordered_expectations_for_both_surfaces() -> None:
 
     assert len(cases) >= len(REQUIRED_WORKFLOWS)
     for case in cases:
-        assert tuple(case.expectations) == ("baseline-105", "standard-45")
+        assert tuple(case.expectations) == ("baseline-105", "standard-47")
         for expectation in case.expectations.values():
             assert isinstance(expectation.calls, tuple)
 
@@ -125,7 +125,7 @@ def test_every_expected_call_validates_against_its_surface_schema() -> None:
     cases = load_cases(CASES_PATH)
     inventories = {
         "baseline-105": _load_inventory(BASELINE_INVENTORY_PATH),
-        "standard-45": _load_inventory(STANDARD_INVENTORY_PATH),
+        "standard-47": _load_inventory(STANDARD_INVENTORY_PATH),
     }
 
     invalid: list[str] = []
@@ -532,7 +532,7 @@ def test_standard_contract_fixture_matches_snapshot_and_same_run_identity() -> N
     candidate = load_capture(STANDARD_CAPTURE_PATH)
     inventory = _load_inventory(STANDARD_INVENTORY_PATH)
 
-    assert candidate.surface_id == "standard-45"
+    assert candidate.surface_id == "standard-47"
     assert candidate.evidence_kind == "contract_fixture"
     assert (candidate.host, candidate.model) == (baseline.host, baseline.model)
     assert candidate.registry_sha256 == inventory.sha256

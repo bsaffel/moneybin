@@ -1,12 +1,12 @@
 {
-  "surface_id": "standard-45",
+  "surface_id": "standard-47",
   "host": "contract-fixture",
   "model": "deterministic",
   "run_date": "2026-07-19",
   "evidence_kind": "contract_fixture",
-  "registry_sha256": "6d1a1f33bfc005bfc7d38136679ff487b857f74610c877cacc748de31a6ed763",
-  "metadata_bytes": 47684,
-  "metadata_tokens": 11921,
+  "registry_sha256": "04a3817f8d42adfe0b4dcbf950c16650740d3cd04cae20bea1f3e5bc889e53d7",
+  "metadata_bytes": 51951,
+  "metadata_tokens": 12988,
   "metadata_token_method": "deterministic_estimate:ceil(canonical_registry_utf8_bytes/4)",
   "context_window_tokens": null,
   "responses": [

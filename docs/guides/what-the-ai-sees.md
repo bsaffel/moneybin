@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-20 -->
+<!-- Last reviewed: 2026-07-21 -->
 # What the AI Provider Sees
 
 When you drive MoneyBin with an AI agent, some of your financial data reaches
@@ -68,9 +68,18 @@ envelope contains once it reaches the model.
 | Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app` (amounts, descriptions, merchants, dates, locations) | Account/routing numbers (by column classification) | Per-call event |
 | Categorization assist (`transactions_categorize_assist`) | Scrubbed description (**merchant kept**, amount as a sign) + structural fields incl. `check_number` | Amount value, date, account ID, locations, embedded PII | Per-call event |
 | Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |
+| Exports (`export_run`, `exports_set`) | Export configuration and the receipt (destination, format, row counts, checksums, and export ID) | Account/routing numbers in the receipt | Per-call event; destination changes also create an audit row |
 | Errors / timeouts | A generic message; no row content, no SQL text | — | Per-call event |
 
 The rest of this page expands each column.
+
+An export writes a durable artifact outside the MCP response. Local exports write
+to the selected local destination; a Sheets export sends the selected rows to the
+Google Sheets API. Each run asks for `redacted` (the default) or `unredacted`.
+Redacted exports use the same column-classification masking as other MoneyBin
+responses: account and routing numbers are masked, while balances, amounts,
+merchant names, descriptions, and dates remain present. Unredacted export is an
+explicit per-run choice and bypasses that masking.
 
 ---
 
@@ -82,14 +91,13 @@ the MCP tools and the CLI `--output json` surface alike:
 - **Account identifiers** → `****1234` (last four kept).
 - **Routing numbers** → `*****` (fully masked).
 
-This is enforced by **field classification**, not convention. Every one of
-MoneyBin's 45 standard tools must declare the privacy class of each field it
+This is enforced by **field classification**, not convention. Every tool in
+MoneyBin's 47-tool standard registry must declare the privacy class of each field it
 returns, or it fails to register at startup; a field **typed as** an account or
 routing number is always masked. The two dynamic surfaces reach the same result
 two different ways: `sql_query` traces each output column back to its source
 column through the SQL and masks by the resolved class (a column it can't resolve
-**fails closed** to
-the most-sensitive treatment), while the report views mask by a **declared
+**fails closed** to the most-sensitive treatment), while the report views mask by a **declared
 per-report column→class map** — lineage tracing is deliberately *not* used there
 (a `reports.*` view is `SELECT * FROM <internal table>`, so tracing would classify
 the pointer and leak; per ADR-013). Either way raw SQL is not a bypass: `SELECT

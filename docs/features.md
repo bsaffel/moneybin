@@ -83,9 +83,26 @@ The six SQL-runner routes use declarative `@report` definitions; the two service
 - **`reports.large_transactions`** — Outlier filter for human review.
 - **`reports.balance_drift`** — Drift between asserted and computed balances.
 
+## Data export
+
+- **Canonical export delivery** — `moneybin export bundle` publishes a closed
+  13-table portability catalog to redacted CSV by default under
+  `~/Documents/MoneyBin/<profile>/exports/`. Local CSV and Parquet bundles carry
+  a manifest, checksums, and generated data dictionary; XLSX carries the same
+  contract in one workbook. Each local run is immutable, ZIP is limited to CSV
+  and Parquet, and `--unredacted` is an explicit per-run choice. `moneybin export
+  report <report-id>` executes one complete catalog report once and retains its
+  parameters and SQL provenance. Named local and output-only Sheets destinations are managed
+  under `moneybin export destination`; Sheets replaces only MoneyBin-managed
+  tabs, keeps bundle/report metadata separate, and preserves the latest good
+  state on failure. MCP exposes the same
+  outcomes through `export_run`, `exports_set`, and
+  `system_status(sections=["exports"])`. -> [CLI reference](guides/cli-reference.md)
+  · [MCP server guide](guides/mcp-server.md)
+
 ## MCP server
 
-- **Bounded tool registry** — One 45-tool standard registry spans 11 user-facing domain groups across 14 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md).
+- **Bounded tool registry** — One 47-tool standard registry spans 11 user-facing domain groups across 14 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots; 50 tools is the hard limit. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md).
 - **Transport** — stdio today. Streamable HTTP transport ships with the web UI milestone (see [roadmap](roadmap.md)).
 - **Auth and session model** — Each MCP session inherits the profile unlocked by `moneybin db unlock`. `moneybin db lock` clears the stored key so no new session can open the profile; sessions already running keep their in-memory key until they exit (`moneybin db kill` is the confirmation-gated command that terminates them).
 - **Concurrency** — Reads coexist freely; writes are serialized per profile (single-writer rule). Two agents can read concurrently; only one can mutate at a time.
@@ -97,7 +114,7 @@ The six SQL-runner routes use declarative `@report` definitions; the two service
 - **Read-only SQL — privacy-safe on both surfaces** — `sql_query` (MCP) and `moneybin sql query` (CLI) run read-only `SELECT`/`WITH`/`DESCRIBE`/`SHOW`/`PRAGMA`/`EXPLAIN` against the `core` and `app` schemas, sharing one enforcement primitive: writes and file-access functions are blocked, and each output column is classified via sqlglot lineage so CRITICAL fields (account/routing numbers) are masked (`****<last4>`) — raw SQL is not a privacy bypass on either surface. App-state mutations (notes, tags, splits, rules) flow through dedicated tools, not raw SQL. (`moneybin db query`/`shell`/`ui` are raw, unmasked operator access.)
 - **MCP install across eight clients** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex (CLI / Desktop / IDE), and the ChatGPT desktop app (which hosts Codex and shares its config). `moneybin mcp install --client <name>` writes the client config. ChatGPT on the **web/mobile** cannot reach a local stdio server; remote MCP transport is planned on the [roadmap](roadmap.md). -> [MCP clients guide](guides/mcp-clients.md)
 - **First-run setup, in session** — Connect before creating a profile and MoneyBin sets itself up on the first tool call instead of failing. Elicitation-capable clients (e.g. Claude Desktop) are prompted for a profile name and the encrypted profile is created in place — no terminal step, no restart; tools-only clients get one clear message pointing at `moneybin profile create`. -> [MCP server guide](guides/mcp-server.md)
-- **Pre-v1 contract record** — Tool and envelope changes are recorded in the CHANGELOG. The current docs and checked-in surface snapshot define the 45-tool registry; no deprecated MCP aliases are advertised.
+- **Pre-v1 contract record** — Tool and envelope changes are recorded in the CHANGELOG. The current docs and checked-in surface snapshot define the 47-tool registry; no deprecated MCP aliases are advertised.
 
 ## CLI
 
@@ -131,7 +148,6 @@ MoneyBin is built on the assumption that you'll want to track your money your wa
 
 These are visible gaps a migrant or agent author will notice. See [Roadmap](roadmap.md) for the full milestone view.
 
-- **Plaintext export** — `moneybin export` (CSV / Excel / Sheets) for data exit.
 - **Budgeting** — Monthly budgets, target-vs-actual, rollovers. Planned.
 - **External price feeds and net-worth integration** — Stooq and CoinGecko feeds plus manual price overrides, so a security no connected broker prices can still be valued; a daily valued-holdings series; and folding investment positions into net worth. The ledger, tax lots, four-method cost basis, realized gain/loss (1099-B surface), and broker-carried market value already shipped — see [Investments](#investments) above. Planned (core, not a package).
 - **Multi-currency** — Original currency is now captured correctly from OFX and Plaid instead of being silently assumed USD, and every transaction and balance resolves its currency from its own source or its account's setting. A home-currency setting, display conversion, a guard against silently blending currencies in reports, and FX gain/loss are still planned.

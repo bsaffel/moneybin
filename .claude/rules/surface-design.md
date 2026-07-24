@@ -360,7 +360,7 @@ When adding or modifying a tool / command / endpoint:
 
 ## Registry budget
 
-The operating contract is one 45-tool standard registry. Generic clients
+The operating contract is one 47-tool standard registry. Generic clients
 receive it in full; capable hosts may optionally defer schemas from that same
 registry without reconnect, packs, or profiles. Reports never consume tool
 slots. The deterministic comparison passed, but promotion remains unready

@@ -1,6 +1,6 @@
 # MCP Architecture & Design
 
-> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`moneybin-mcp.md`](moneybin-mcp.md) (concrete tool/prompt/resource definitions), [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md) (M3K.2’s 45-tool standard registry and promotion evidence), [`extension-contracts.md`](extension-contracts.md) (contributor-facing surface — packages and reports register capabilities into this server via entry points), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
+> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`moneybin-mcp.md`](moneybin-mcp.md) (concrete tool/prompt/resource definitions), [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md) (M3K.2’s 47-tool standard registry and promotion evidence), [`extension-contracts.md`](extension-contracts.md) (contributor-facing surface — packages and reports register capabilities into this server via entry points), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
 > Supersedes: `mcp-tier1-tools.md` (prototype-era tool list), [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
@@ -186,7 +186,7 @@ into user-facing domains: 14 prefixes compose 11 domain groups.
 
 Tools land on the FastMCP server through two discovery paths. Both will produce the same registered shape — the agent cannot distinguish them, and the surface-discipline, taxonomy, and sensitivity rules above apply identically to each.
 
-1. **In-tree imports.** Core MoneyBin tools live under `src/moneybin/mcp/` and are wired in by explicit `register_*_tools(mcp)` calls in `mcp/server.py`. This is the path for the current standard-45 snapshot.
+1. **In-tree imports.** Core MoneyBin tools live under `src/moneybin/mcp/` and are wired in by explicit `register_*_tools(mcp)` calls in `mcp/server.py`. This is the path for the current standard-47 snapshot.
 2. **Entry-point discovery and registration.** The package framework implements `discover_packages()` over the `moneybin.packages` entry-point group and `register_package()` for manifest, capability, prefix, and quality-scale validation before a package hook is imported. Installed package entries therefore remain subject to explicit registration and the same public-surface admission record; installation alone does not create a tool slot or bypass the exact standard registry. An admitted operational package tool must be included in the evaluated registry snapshot. Report extensions instead register a stable report-catalog entry, `TableRef` wiring, and an ergonomic CLI command from one `@report` runner; MCP executes them through the single admitted `reports` tool, never an additional tool. See `extension-contracts.md` §"Auto-generation of report surfaces".
 
 The naming conventions above are load-bearing for path 2: a package named `assets` may only register tools prefixed `assets_*`, and registration will refuse to start when a package's tool names violate its declared prefix. This is how the taxonomy will stay coherent as the registered set grows beyond what `mcp/server.py` imports directly.
@@ -211,7 +211,7 @@ For the consuming agent there is one surface, governed by one set of rules. The 
 
 ### Tool disclosure: full surface, taxonomy-led
 
-**Current registry.** The operating surface is one 45-tool standard registry.
+**Current registry.** The operating surface is one 47-tool standard registry.
 Generic clients receive every tool. Capable hosts may optionally defer schemas
 from that same registry without reconnect, packs, or profiles; names,
 annotations, approvals, allowlists, and audit identity do not change. Reports
@@ -828,7 +828,7 @@ These decisions and their rationale should be documented in the 12-month plan.
   `dynamic_classification=True` with a declared `maximum_sensitivity`.
   Middleware applies critical-field masking and response validation. The
   global consent gate remains a deferred extension of that architecture.
-- **Tool count strategy (operating, promotion-pending).** The 45-tool standard
+- **Tool count strategy (operating, promotion-pending).** The 47-tool standard
   registry is visible at connect with taxonomy-led discovery and stub gating.
   Server-driven progressive disclosure is absent. Generic clients receive the
   complete registry; capable hosts may optionally defer schemas from that same

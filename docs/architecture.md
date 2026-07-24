@@ -72,7 +72,7 @@ never rename or retype in place; deprecate-then-remove across two releases.
 
 ## Surfaces
 
-Query it three ways: the CLI, raw SQL, or a 45-tool MCP server for Claude,
+Query it three ways: the CLI, raw SQL, or a 47-tool MCP server for Claude,
 Cursor, VS Code, Gemini CLI, Codex, and other clients. Every surface reads the
 same tables.
 
@@ -80,7 +80,7 @@ The CLI and MCP server are thin formatters around the service layer. The SQL lay
 
 ### MCP registry
 
-The MCP server exposes one 45-tool standard registry across 11 user-facing
+The MCP server exposes one 47-tool standard registry across 11 user-facing
 domain groups over stdio. Those groups organize 14 literal tool-name prefixes;
 for example, `identity_*` belongs to Reviews and `gsheet_*` belongs to Sync.
 The generic `reports` catalog and runner lists and executes registered reports;

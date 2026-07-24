@@ -10,7 +10,7 @@
 ## Status
 
 - **Type:** Architecture
-- **Status:** in-progress — the 45-tool registry is operating, but promotion is
+- **Status:** in-progress — the 47-tool registry is operating, but promotion is
   blocked on observed context-budget and host-native-deferral evidence
 - **Address:** M3K.2 — second work item under M3K (CLI / MCP UX standards)
 - **Origin:** July 2026 MCP surface review. ADR-016 records the measured
@@ -27,7 +27,7 @@ smallest possible tool count and not a marketing-friendly headline.
 
 ## Decision summary
 
-MoneyBin operates one bounded 45-tool standard registry.
+MoneyBin operates one bounded 47-tool standard registry.
 
 - Every standard client receives the complete registered surface. There are no
   core capability packs, hidden expert tools, or reconnect-only modes.
@@ -53,15 +53,14 @@ MoneyBin operates one bounded 45-tool standard registry.
   for selection, arguments, workflow completion, and safety.
 
 ADR-016 records why a connection-profile model was rejected. The operating
-contract has one registry and one generic report runner.
-
-The 45-tool standard registry is now the operating reality. Promotion remains
-open for observed context-budget and host-native-deferral evidence.
+contract has one registry and one generic report runner. The 47-tool standard
+registry is now the operating reality. Promotion remains open for observed
+context-budget and host-native-deferral evidence.
 
 ## Why now
 
-The operating registry contains 45 tools, stays below Windsurf's
-100-active-tool global cap, and leaves 55 tool slots for other connected
+The operating registry contains 47 tools, stays below Windsurf's
+100-active-tool global cap, and leaves 53 tool slots for other connected
 servers. Its rendered metadata, tool identities, and zero advertised output
 schemas are frozen in the standard snapshot below.
 
@@ -290,8 +289,8 @@ CI rejects duplicate description openings and enforces description budgets.
 
 ## Standard registry
 
-The 45-tool registry below is the live public contract. Generic clients receive
-all 45 tools; capable hosts may optionally defer schemas from that same
+The 47-tool registry below is the live public contract. Generic clients receive
+all 47 tools; capable hosts may optionally defer schemas from that same
 registry without reconnect, packs, or profiles. The registry selection has
 passed its deterministic contract comparison, but promotion remains open until
 the observed-evidence gates below close.
@@ -308,6 +307,7 @@ the observed-evidence gates below close.
 | Import | `import_files`, `import_preview`, `import_confirm`, `import_status`, `import_revert`, `import_inbox_sync`, `import_labels_set` | Batch/staged ingest, status/formats/inbox, recovery, labels |
 | Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect`, `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | Mediated bank sync and user-controlled Google Sheets flows |
 | Privacy | `privacy`, `privacy_consent_set` | Consent/audit status and declarative consent |
+| Exports | `export_run`, `exports_set` | Canonical bundle/report delivery events and named destination target state |
 | Platform | `refresh_run`, `sql_query`, `sql_schema` | Derived-state refresh and the two core SQL capabilities |
 
 ### Review decision persistence
@@ -419,11 +419,14 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 ### Standard-registry carrying-weight evidence
 
 The deterministic current
-[`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json) snapshot
-contains 45 tools, 47,684 bytes of serialized metadata, zero advertised output
-schemas, and registry SHA-256
-`6d1a1f33bfc005bfc7d38136679ff487b857f74610c877cacc748de31a6ed763`.
-The deterministic estimate is 11,921 metadata tokens; a percentage of context is
+[`standard-47.json`](../../tests/fixtures/mcp_surface/standard-47.json) snapshot
+contains 47 tools, 51,951 bytes of serialized metadata, zero advertised output schemas,
+and registry SHA-256
+`04a3817f8d42adfe0b4dcbf950c16650740d3cd04cae20bea1f3e5bc889e53d7`.
+The frozen baseline is 90,734 bytes with SHA-256
+`ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
+The delta is -38,783 bytes (-42.7%). The deterministic estimate is 12,988
+metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
 
@@ -492,24 +495,25 @@ the four record classes above.
 The frozen pre-cutover surface fixture lives at
 [`tests/fixtures/mcp_surface/baseline-2026-07-17.json`](../../tests/fixtures/mcp_surface/baseline-2026-07-17.json).
 ADR-016 owns its measured interpretation. The current registry fixture is
-[`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json).
+[`standard-47.json`](../../tests/fixtures/mcp_surface/standard-47.json).
 
 The 50-tool maximum and 40-tool carrying-weight review threshold are durable
 policy. Both hard-limit and description-budget enforcement apply to the
-operating 45-tool registry.
+operating 47-tool registry.
 
 The persisted comparison records `contract_passed: true` and
 `promotion_ready: false`: context budget: not_observed; host-native deferral:
 not_observed. Deterministic fixtures cannot establish either fact. These are
 the remaining promotion blockers, not reasons to misstate the operating
-45-tool registry.
+47-tool registry.
 
 Evaluate:
 
-1. the exact 45-tool standard registry;
-2. individual consolidation alternatives where schema size or accuracy is
+1. the frozen pre-cutover surface;
+2. the exact 47-tool standard registry;
+3. individual consolidation alternatives where schema size or accuracy is
    uncertain;
-3. optional host-native deferred loading from that same registry.
+4. optional host-native deferred loading from that same registry.
 
 ### Corpus
 
@@ -619,7 +623,7 @@ is a bounded domain runner, not an execution proxy.
 
 This spec remains `in-progress` and must not move to `implemented` until:
 
-- observed model-context evidence is persisted for the 45-tool registry;
+- observed model-context evidence is persisted for the 47-tool registry;
 - optional host-native deferral is observed against that same registry; and
 - ADR-016 is accepted after those evidence gates close.
 

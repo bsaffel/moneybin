@@ -29,7 +29,12 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     ReportSpec,
 )
-from moneybin.reports._framework.execute import CatalogReportResult, run_report
+from moneybin.reports._framework.execute import (
+    CatalogReportExecution,
+    CatalogReportResult,
+    execute_catalog_report,
+    redact_catalog_execution,
+)
 
 _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 
@@ -46,7 +51,9 @@ class ServiceReportSpec:
     semantics: ReportSemantics
     classes: Mapping[str, DataClass]
     examples: tuple[str, ...]
-    executor: Callable[[Database, Mapping[str, JsonValue], int], CatalogReportResult]
+    executor: Callable[
+        [Database, Mapping[str, JsonValue], int | None], CatalogReportExecution
+    ]
     validator: Callable[[Mapping[str, JsonValue]], None] | None = None
 
     def __post_init__(self) -> None:
@@ -115,7 +122,48 @@ class ReportCatalog:
         limit: int,
     ) -> CatalogReportResult:
         """Validate parameters, then dispatch through the selected report kind."""
-        if limit < 0:
+        spec, execution = self.execute_raw(
+            db,
+            report_id=report_id,
+            parameters=parameters,
+            limit=limit,
+        )
+        return redact_catalog_execution(spec, execution)
+
+    def execute_raw(
+        self,
+        db: Database,
+        *,
+        report_id: str,
+        parameters: Mapping[str, JsonValue],
+        limit: int | None,
+    ) -> tuple[RegisteredReport, CatalogReportExecution]:
+        """Validate and execute one report without terminal redaction."""
+        spec, validated = self.resolve_request(
+            report_id=report_id,
+            parameters=parameters,
+            limit=limit,
+        )
+        if isinstance(spec, ReportSpec):
+            execution = execute_catalog_report(
+                spec,
+                db,
+                max_rows=limit,
+                **validated,
+            )
+        else:
+            execution = spec.executor(db, validated, limit)
+        return spec, execution
+
+    def resolve_request(
+        self,
+        *,
+        report_id: str,
+        parameters: Mapping[str, JsonValue],
+        limit: int | None,
+    ) -> tuple[RegisteredReport, dict[str, JsonValue]]:
+        """Resolve and validate one request without executing its report."""
+        if limit is not None and limit < 0:
             raise UserError(
                 "Report limit must be non-negative.",
                 code="REPORT_LIMIT_INVALID",
@@ -123,11 +171,9 @@ class ReportCatalog:
             )
         spec = self.resolve(report_id)
         validated = _validate_parameters(spec, parameters)
-        if isinstance(spec, ReportSpec):
-            return run_report(spec, db, max_rows=limit, **validated)
-        if spec.validator is not None:
+        if isinstance(spec, ServiceReportSpec) and spec.validator is not None:
             spec.validator(validated)
-        return spec.executor(db, validated, limit)
+        return spec, validated
 
 
 def _parameter_specs(spec: RegisteredReport) -> tuple[ParamSpec, ...]:

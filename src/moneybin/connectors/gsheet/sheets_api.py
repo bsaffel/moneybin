@@ -1,4 +1,4 @@
-"""Google Sheets API v4 wrapper. Read-only.
+"""Typed Google Sheets API v4 wrapper.
 
 Exposes a thin Protocol (`SheetsAPI`) implemented by both the production
 `SheetsClient` (real google-api-python-client calls) and `TestSheetsClient`
@@ -9,17 +9,21 @@ to the project's typed exception hierarchy via `_map_error`.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from moneybin.connectors.gsheet.errors import (
     GSheetAPIError,
     GSheetAuthError,
+    GSheetError,
     GSheetRateLimitError,
     GSheetUnreachableError,
 )
 
 logger = logging.getLogger(__name__)
+
+MANAGED_SHEET_METADATA_KEY = "moneybin.managed_prefix"
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,7 @@ class SheetInfo:
     gid: int
     row_count: int
     col_count: int
+    managed_prefix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -40,13 +45,49 @@ class WorkbookMetadata:
     sheets: tuple[SheetInfo, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SheetIdentity:
+    """Stable identity of one tab, safe across title changes."""
+
+    name: str
+    gid: int
+    managed_prefix: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SheetCreate:
+    """One grid tab to create in a structural batch."""
+
+    name: str
+    row_count: int
+    col_count: int
+    gid: int | None = None
+    managed_prefix: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SheetValueWrite:
+    """One rectangular value grid targeting a known sheet identity."""
+
+    sheet: SheetIdentity
+    values: tuple[tuple[object, ...], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SheetRename:
+    """One stable sheet identity and its promoted title."""
+
+    sheet: SheetIdentity
+    new_name: str
+
+
 class OAuthCredentialsProvider(Protocol):
     """Minimal interface SheetsClient needs from any OAuth client.
 
     Satisfied structurally by Task 11's `GoogleOAuthClient`.
     """
 
-    def get_access_token(self) -> str:
+    def get_access_token(self, *, require_write: bool = False) -> str:
         """Return a current OAuth access token, refreshing if needed."""
         ...
 
@@ -54,14 +95,43 @@ class OAuthCredentialsProvider(Protocol):
 class SheetsAPI(Protocol):
     """Interface implemented by both `SheetsClient` and `TestSheetsClient`."""
 
-    def get_workbook_metadata(self, spreadsheet_id: str) -> WorkbookMetadata:
+    def get_workbook_metadata(
+        self, spreadsheet_id: str, *, require_write: bool = False
+    ) -> WorkbookMetadata:
         """Fetch workbook title and per-tab metadata."""
         ...
 
     def read_sheet_values(
-        self, spreadsheet_id: str, sheet_name: str
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        *,
+        require_write: bool = False,
     ) -> list[list[str]]:
         """Read all cell values from one tab as rows of strings."""
+        ...
+
+    def create_sheets(
+        self, spreadsheet_id: str, sheets: tuple[SheetCreate, ...]
+    ) -> tuple[SheetIdentity, ...]:
+        """Create grid tabs atomically and return their stable identities."""
+        ...
+
+    def write_sheet_values(
+        self, spreadsheet_id: str, writes: tuple[SheetValueWrite, ...]
+    ) -> None:
+        """Write rectangular raw value grids to named tabs in one batch."""
+        ...
+
+    def promote_sheets(
+        self,
+        spreadsheet_id: str,
+        *,
+        managed_prefix: str,
+        renames: tuple[SheetRename, ...],
+        deletes: tuple[SheetIdentity, ...],
+    ) -> None:
+        """Atomically delete exact old identities and rename staged tabs."""
         ...
 
 
@@ -91,13 +161,14 @@ class SheetsClient:
         # pull_all_healthy with N connections that's 2N rebuilds per
         # refresh. Rebuild only when the token rotates (the only input to
         # _build_service that changes between calls).
-        self._cached_service: Any = None
-        self._cached_token: str | None = None
+        self._cached_services: dict[bool, tuple[str, Any]] = {}
 
-    def get_workbook_metadata(self, spreadsheet_id: str) -> WorkbookMetadata:
+    def get_workbook_metadata(
+        self, spreadsheet_id: str, *, require_write: bool = False
+    ) -> WorkbookMetadata:
         """Fetch workbook title and per-tab metadata."""
         try:
-            service = self._build_service()
+            service = self._build_service(require_write=require_write)
             meta = (
                 service
                 .spreadsheets()
@@ -113,17 +184,22 @@ class SheetsClient:
                 gid=s["properties"]["sheetId"],
                 row_count=s["properties"]["gridProperties"]["rowCount"],
                 col_count=s["properties"]["gridProperties"]["columnCount"],
+                managed_prefix=_managed_prefix(s.get("developerMetadata", [])),
             )
             for s in meta["sheets"]
         )
         return WorkbookMetadata(title=meta["properties"]["title"], sheets=sheets)
 
     def read_sheet_values(
-        self, spreadsheet_id: str, sheet_name: str
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        *,
+        require_write: bool = False,
     ) -> list[list[str]]:
         """Read all cell values from a single tab as rows of strings."""
         try:
-            service = self._build_service()
+            service = self._build_service(require_write=require_write)
             result = (
                 service
                 .spreadsheets()
@@ -140,7 +216,198 @@ class SheetsClient:
         except Exception as exc:
             raise _map_error(exc) from exc
 
-    def _build_service(self) -> Any:
+    def create_sheets(
+        self, spreadsheet_id: str, sheets: tuple[SheetCreate, ...]
+    ) -> tuple[SheetIdentity, ...]:
+        """Create grid tabs atomically and return their API-assigned IDs."""
+        if not sheets:
+            return ()
+        if any(sheet.row_count < 1 or sheet.col_count < 1 for sheet in sheets):
+            raise ValueError("created sheets require positive grid dimensions")
+        requests: list[dict[str, object]] = []
+        for sheet in sheets:
+            properties: dict[str, object] = {
+                "title": sheet.name,
+                "gridProperties": {
+                    "rowCount": sheet.row_count,
+                    "columnCount": sheet.col_count,
+                },
+            }
+            if sheet.gid is not None:
+                properties["sheetId"] = sheet.gid
+            requests.append({"addSheet": {"properties": properties}})
+            if sheet.managed_prefix is not None:
+                if sheet.gid is None:
+                    raise ValueError("managed sheets require a preassigned sheet ID")
+                requests.append({
+                    "createDeveloperMetadata": {
+                        "developerMetadata": {
+                            "metadataKey": MANAGED_SHEET_METADATA_KEY,
+                            "metadataValue": sheet.managed_prefix,
+                            "location": {"sheetId": sheet.gid},
+                            "visibility": "DOCUMENT",
+                        }
+                    }
+                })
+        body = {"requests": requests}
+        try:
+            service = self._build_service(require_write=True)
+            # Official request contracts (request bodies kept exact here):
+            # https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate
+            # https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/request#CreateDeveloperMetadataRequest
+            # create: {"requests":[
+            #   {"addSheet":{"properties":{"title":...,"sheetId":...,
+            #     "gridProperties":{"rowCount":...,"columnCount":...}}}},
+            #   {"createDeveloperMetadata":{"developerMetadata":{
+            #     "metadataKey":"moneybin.managed_prefix","metadataValue":...,
+            #     "location":{"sheetId":...},"visibility":"DOCUMENT"}}}]}
+            # promote: {"requests":[{"deleteSheet":{"sheetId":...}},
+            #   {"updateSheetProperties":{"properties":{"sheetId":...,
+            #   "title":...},"fields":"title"}}]}
+            # https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/batchUpdate
+            # values: {"valueInputOption":"RAW","data":[{"range":...,
+            #   "majorDimension":"ROWS","values":[[...]]}]}
+            # Sheet IDs are immutable even when titles change:
+            # https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/sheets#SheetProperties
+            response = (
+                service
+                .spreadsheets()
+                .batchUpdate(spreadsheetId=spreadsheet_id, body=body)
+                .execute()
+            )
+        except Exception as exc:
+            raise _map_error(exc) from exc
+        try:
+            if not isinstance(response, dict):
+                raise TypeError("invalid create response")
+            response_map = cast(dict[str, object], response)
+            replies_value = response_map.get("replies", [])
+            if not isinstance(replies_value, list):
+                raise TypeError("invalid create replies")
+            reply_objects = cast(list[object], replies_value)
+            if len(reply_objects) != len(requests) or any(
+                not isinstance(reply, dict) for reply in reply_objects
+            ):
+                raise TypeError("invalid create replies")
+            replies = cast(list[dict[str, Any]], reply_objects)
+            identities: list[SheetIdentity] = []
+            reply_index = 0
+            for sheet in sheets:
+                properties = replies[reply_index]["addSheet"]["properties"]
+                gid = properties["sheetId"]
+                if not isinstance(gid, (int, str)):
+                    raise TypeError("invalid sheet ID")
+                name = properties["title"]
+                if not isinstance(name, str):
+                    raise TypeError("invalid sheet title")
+                if name != sheet.name or (
+                    sheet.gid is not None and int(gid) != sheet.gid
+                ):
+                    raise ValueError("mismatched sheet identity")
+                identities.append(
+                    SheetIdentity(
+                        name=name,
+                        gid=int(gid),
+                        managed_prefix=sheet.managed_prefix,
+                    )
+                )
+                reply_index += 2 if sheet.managed_prefix is not None else 1
+            return tuple(identities)
+        except (IndexError, KeyError, TypeError, ValueError) as exc:
+            raise GSheetAPIError(
+                "Google Sheets returned an invalid create response"
+            ) from exc
+
+    def write_sheet_values(
+        self, spreadsheet_id: str, writes: tuple[SheetValueWrite, ...]
+    ) -> None:
+        """Write one or more rectangular grids using RAW value semantics."""
+        if not writes:
+            return
+        data: list[dict[str, object]] = []
+        for write in writes:
+            width = _rectangular_width(write.values)
+            if width == 0:
+                raise ValueError("sheet value writes require at least one column")
+            row_count = len(write.values)
+            data.append({
+                "range": (
+                    f"{_quote_a1_sheet_name(write.sheet.name)}!"
+                    f"A1:{_column_name(width)}{row_count}"
+                ),
+                "majorDimension": "ROWS",
+                "values": [list(row) for row in write.values],
+            })
+        try:
+            service = self._build_service(require_write=True)
+            (
+                service
+                .spreadsheets()
+                .values()
+                .batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={"valueInputOption": "RAW", "data": data},
+                )
+                .execute()
+            )
+        except Exception as exc:
+            raise _map_error(exc) from exc
+
+    def promote_sheets(
+        self,
+        spreadsheet_id: str,
+        *,
+        managed_prefix: str,
+        renames: tuple[SheetRename, ...],
+        deletes: tuple[SheetIdentity, ...],
+    ) -> None:
+        """Atomically replace exact old identities with staged identities."""
+        namespace = _normalized_sheet_title(f"{managed_prefix} ")
+        identities = (*deletes, *(rename.sheet for rename in renames))
+        promoted_names = tuple(rename.new_name for rename in renames)
+        if not managed_prefix or any(
+            not _normalized_sheet_title(sheet.name).startswith(namespace)
+            or sheet.managed_prefix != managed_prefix
+            for sheet in identities
+        ):
+            raise ValueError("promotion identities must be in the managed namespace")
+        if any(
+            not _normalized_sheet_title(name).startswith(namespace)
+            for name in promoted_names
+        ):
+            raise ValueError("promoted titles must be in the managed namespace")
+        requests: list[dict[str, object]] = [
+            {"deleteSheet": {"sheetId": sheet.gid}} for sheet in deletes
+        ]
+        requests.extend(
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": rename.sheet.gid,
+                        "title": rename.new_name,
+                    },
+                    "fields": "title",
+                }
+            }
+            for rename in renames
+        )
+        if not requests:
+            return
+        try:
+            service = self._build_service(require_write=True)
+            (
+                service
+                .spreadsheets()
+                .batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={"requests": requests},
+                )
+                .execute()
+            )
+        except Exception as exc:
+            raise _map_error(exc) from exc
+
+    def _build_service(self, *, require_write: bool = False) -> Any:
         """Build (or reuse) the Google Sheets v4 service.
 
         Reuses the cached service while the access token is unchanged;
@@ -151,9 +418,10 @@ class SheetsClient:
         from google.oauth2.credentials import Credentials  # noqa: PLC0415
         from googleapiclient.discovery import build  # noqa: PLC0415
 
-        token = self._oauth.get_access_token()
-        if self._cached_service is not None and token == self._cached_token:
-            return self._cached_service
+        token = self._oauth.get_access_token(require_write=require_write)
+        cached = self._cached_services.get(require_write)
+        if cached is not None and token == cached[0]:
+            return cached[1]
 
         creds = Credentials(token=token)
         timeout = self._timeout_seconds
@@ -170,9 +438,41 @@ class SheetsClient:
             http=httplib2.Http(timeout=timeout),
         )
         service = build("sheets", "v4", http=http_with_timeout, cache_discovery=False)
-        self._cached_service = service
-        self._cached_token = token
+        self._cached_services[require_write] = (token, service)
         return service
+
+
+def _managed_prefix(metadata: list[dict[str, object]]) -> str | None:
+    """Return the single valid MoneyBin ownership marker for a tab."""
+    values: set[str] = set()
+    for item in metadata:
+        value = item.get("metadataValue")
+        if (
+            item.get("metadataKey") == MANAGED_SHEET_METADATA_KEY
+            and item.get("visibility") == "DOCUMENT"
+            and isinstance(value, str)
+        ):
+            values.add(value)
+    return next(iter(values)) if len(values) == 1 else None
+
+
+def _rectangular_width(values: tuple[tuple[object, ...], ...]) -> int:
+    """Return a rectangular grid width, rejecting ragged or empty input."""
+    if not values:
+        return 0
+    width = len(values[0])
+    if any(len(row) != width for row in values):
+        raise ValueError("sheet value writes must be rectangular")
+    return width
+
+
+def _column_name(index: int) -> str:
+    """Convert a one-based column index to its A1 column label."""
+    letters = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters
 
 
 def _quote_a1_sheet_name(sheet_name: str) -> str:
@@ -187,6 +487,11 @@ def _quote_a1_sheet_name(sheet_name: str) -> str:
     """
     escaped = sheet_name.replace("'", "''")
     return f"'{escaped}'"
+
+
+def _normalized_sheet_title(name: str) -> str:
+    """Return the Sheets title comparison key used by managed namespaces."""
+    return unicodedata.normalize("NFKC", name).casefold()
 
 
 def _map_error(exc: Exception) -> Exception:
@@ -205,6 +510,9 @@ def _map_error(exc: Exception) -> Exception:
     error-envelope construction would leak them. Full detail is logged
     internally via ``logger.debug(..., exc_info=True)``.
     """
+    if isinstance(exc, GSheetError):
+        return exc
+
     from googleapiclient.errors import HttpError
 
     if isinstance(exc, HttpError):

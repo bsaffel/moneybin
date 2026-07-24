@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import FastMCP
@@ -23,7 +26,7 @@ from tests.moneybin.test_mcp.schema_assertions import (
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
 
-@pytest.mark.parametrize("section", ["overview", "doctor", "categorization"])
+@pytest.mark.parametrize("section", ["overview", "doctor", "categorization", "exports"])
 async def test_system_status_coarse_dispatches_each_section(section: str) -> None:
     response = await system_status_coarse(sections=[section])  # pyright: ignore[reportArgumentType]
 
@@ -37,7 +40,118 @@ async def test_system_status_coarse_defaults_to_fixed_section_order() -> None:
         "overview",
         "doctor",
         "categorization",
+        "exports",
     ]
+    assert response.summary.sensitivity == "medium"
+
+
+async def test_system_status_exports_uses_typed_privacy_safe_readiness(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.export_destinations (
+                destination_id, name, kind, local_path, spreadsheet_id,
+                managed_tab_prefix, created_at, updated_at
+            ) VALUES (
+                'local-1', 'archive', 'local', '/private/export/path', NULL, NULL,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    response = await system_status_coarse(sections=["exports"])
+
+    section = response.data.sections[0]
+    assert section.kind == "exports"
+    assert [
+        (item.name, item.kind, item.ready, item.write_capable)
+        for item in section.destinations
+    ] == [
+        ("local:exports", "local", True, True),
+        ("archive", "local", False, False),
+    ]
+    assert section.destinations[1].reasons == ["local_path_not_writable"]
+    serialized = response.to_dict()
+    assert serialized["summary"]["sensitivity"] == "medium"
+    assert "/private/export/path" not in str(serialized)
+    assert "local-1" not in str(serialized)
+
+
+@pytest.mark.unit
+async def test_system_status_exports_yields_during_synchronous_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.exports.service import ExportReadinessStatus, ExportService
+
+    loop_thread = threading.get_ident()
+    entered = threading.Event()
+    release = threading.Event()
+    yielded = threading.Event()
+    worker_threads: list[int] = []
+    lifecycle: list[str] = []
+    yielded_before_return: list[bool] = []
+
+    class DatabaseContext:
+        def __enter__(self) -> MagicMock:
+            worker_threads.append(threading.get_ident())
+            lifecycle.append("enter")
+            return MagicMock()
+
+        def __exit__(self, *_args: object) -> None:
+            lifecycle.append("exit")
+
+    def blocking_status(_service: ExportService) -> ExportReadinessStatus:
+        lifecycle.append("status")
+        entered.set()
+        release.wait(timeout=0.5)
+        yielded_before_return.append(yielded.is_set())
+        return ExportReadinessStatus(destinations=())
+
+    async def concurrent_tick() -> None:
+        while not entered.is_set():
+            await asyncio.sleep(0)
+        yielded.set()
+        release.set()
+
+    def fake_get_database(*, read_only: bool) -> DatabaseContext:  # noqa: ARG001
+        return DatabaseContext()
+
+    monkeypatch.setattr(
+        "moneybin.database.get_database",
+        fake_get_database,
+    )
+    monkeypatch.setattr(ExportService, "status", blocking_status)
+
+    status_task = asyncio.create_task(system_status_coarse(sections=["exports"]))
+    await concurrent_tick()
+    response = await status_task
+
+    assert response.error is None
+    assert yielded_before_return == [True]
+    assert len(worker_threads) == 1
+    assert worker_threads[0] != loop_thread
+    assert lifecycle == ["enter", "status", "exit"]
+
+
+def test_system_status_export_names_use_user_note_classification() -> None:
+    from moneybin.privacy.introspection import extract_data_classes
+    from moneybin.privacy.payloads.system import ExportsStatus
+    from moneybin.privacy.taxonomy import DataClass
+
+    assert DataClass.USER_NOTE in extract_data_classes(ExportsStatus)
+
+
+async def test_system_status_coarse_rejects_unknown_section() -> None:
+    response = await system_status_coarse(
+        sections=["unknown"],  # pyright: ignore[reportArgumentType]
+    )
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
 
 
 async def test_system_status_coarse_rejects_explicit_empty_sections() -> None:

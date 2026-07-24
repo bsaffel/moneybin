@@ -5,7 +5,11 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.contract import ReportQuery, ReportSpec
-from moneybin.reports._framework.execute import ReportResult, run_report
+from moneybin.reports._framework.execute import (
+    ReportResult,
+    execute_catalog_report,
+    run_report,
+)
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.tables import TableRef
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
@@ -24,6 +28,8 @@ def _summary(db: Database, *, top: int = 50) -> ReportQuery:
         "SELECT account_id, amount, txn_count FROM reports.test_summary "
         "ORDER BY account_id LIMIT ?",
         [top],
+        actions=("reports.next",),
+        period="all time",
     )
 
 
@@ -73,3 +79,26 @@ def test_run_report_passes_params_to_runner(reports_db: Database) -> None:
     result = run_report(_spec(), reports_db, max_rows=50, top=1)
     assert len(result.records) == 1  # runner bound LIMIT 1
     assert result.truncated is False
+
+
+def test_execute_catalog_report_exposes_raw_execution_before_public_redaction(
+    reports_db: Database,
+) -> None:
+    spec = _spec()
+
+    raw = execute_catalog_report(spec, reports_db, max_rows=10, top=1)
+    public = run_report(spec, reports_db, max_rows=10, top=1)
+
+    assert raw.report_id == "test:summary"
+    assert raw.parameters == {"top": 1}
+    assert raw.sql is not None
+    assert raw.sql.startswith("SELECT account_id, amount, txn_count")
+    assert raw.columns == ["account_id", "amount", "txn_count"]
+    assert raw.column_types == ["VARCHAR", "DECIMAL(38,2)", "BIGINT"]
+    assert raw.output_classes == public.output_classes
+    assert raw.records[0]["account_id"] == "acct_11112222"
+    assert public.records[0]["account_id"] == "****2222"
+    assert raw.actions == ["reports.next"]
+    assert raw.period == "all time"
+    assert raw.semantics is spec.semantics
+    assert raw.provenance == ("reports.test_summary",)

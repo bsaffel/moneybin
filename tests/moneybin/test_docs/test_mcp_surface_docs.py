@@ -37,11 +37,13 @@ PROMPTS = ROOT / "src/moneybin/mcp/prompts.py"
 CHANGELOG = ROOT / "CHANGELOG.md"
 CLIENT_GUIDE = ROOT / "docs/guides/mcp-clients.md"
 MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
+WHAT_AI_SEES_GUIDE = ROOT / "docs/guides/what-the-ai-sees.md"
+AI_CLIENT_SPEC = ROOT / "docs/specs/ai-client-compatibility.md"
+STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-47.json"
 FEATURES = ROOT / "docs/features.md"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 REPORT_RECIPE_SPEC = ROOT / "docs/specs/reports-recipe-library.md"
 QUERYABLE_INTERNAL_SCHEMAS_SPEC = ROOT / "docs/specs/queryable-internal-schemas.md"
-STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-45.json"
 BASELINE_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/baseline-2026-07-17.json"
 BASELINE_EVAL_CAPTURE = ROOT / "tests/fixtures/mcp_eval/captures/baseline-105.json"
 HISTORICAL_TOOL_HEADINGS = (
@@ -1408,9 +1410,9 @@ def test_client_compatibility_records_current_windsurf_headroom() -> None:
     )
 
     for current_fact in (
-        "45 MoneyBin tools",
+        "47 MoneyBin tools",
         "100-active-tool",
-        "55 tool slots",
+        "53 tool slots",
     ):
         assert current_fact in text
         assert current_fact in index_row
@@ -1551,10 +1553,13 @@ def test_governance_describes_one_current_registry_and_future_admission() -> Non
         SURFACE_RULE,
         CLIENT_GUIDE,
         MCP_SERVER_GUIDE,
+        RESOURCES,
     ):
         text = " ".join(path.read_text().split())
-        assert "45-tool standard registry" in text, path
+        assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in text, path
         assert "same registry" in text, path
+        assert "45-tool standard registry" not in text, path
+        assert "standard-45" not in text, path
 
     adr = " ".join(ADR.read_text().split())
     rule = " ".join(MCP_RULE.read_text().split())
@@ -1607,7 +1612,7 @@ def test_current_mcp_guidance_uses_only_standard_tool_names() -> None:
     assert "accounts_balances" in prompt_text
     assert "accounts(view='balances')" not in prompt_text
     assert "sql_query" in resource_text
-    assert "45-tool standard registry" in resource_text
+    assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in resource_text
 
 
 def test_runtime_mcp_modules_do_not_point_to_removed_spec_sections() -> None:
@@ -1626,7 +1631,7 @@ def test_changelog_records_prelaunch_surface_cutover() -> None:
 
     text = CHANGELOG.read_text()
 
-    assert "45-tool standard registry" in text
+    assert "47-tool standard registry" in text
     assert "pre-launch" in text
     assert "reports" in text
 
@@ -1637,7 +1642,7 @@ def test_spec_index_describes_the_current_mcp_contract() -> None:
     )
 
     for current_fact in (
-        "45-tool standard registry",
+        f"{STANDARD_TOOL_COUNT}-tool standard registry",
         "seven prompts",
         "single `reports` catalog",
         "outcome parity",
@@ -1647,6 +1652,25 @@ def test_spec_index_describes_the_current_mcp_contract() -> None:
         assert current_fact in row
     assert "`reports_*`" not in row
     assert "sync + transform" not in row
+
+
+def test_chatgpt_desktop_support_is_documented_as_shipped_t1() -> None:
+    text = AI_CLIENT_SPEC.read_text()
+    row = next(
+        line
+        for line in text.splitlines()
+        if line.startswith("| ChatGPT desktop app (Codex host) |")
+    )
+
+    assert "`mcp install --client chatgpt-desktop` writes it" in row
+    assert "| **T1** |" in row
+    for stale_claim in (
+        "pending #315",
+        "Until #315 merges",
+        "manual-config only",
+        "still in `_NO_INSTALL_CLIENTS`",
+    ):
+        assert stale_claim not in text
 
 
 def test_spec_index_keeps_deferred_loading_optional() -> None:
@@ -2824,7 +2848,7 @@ def test_final_review_architecture_and_current_prose_match_runtime() -> None:
     extensions = (ROOT / "docs/specs/extension-contracts.md").read_text()
 
     assert "observable outcomes" in architecture
-    assert "45-tool standard registry" in architecture
+    assert "47-tool standard registry" in architecture
     assert "domain metadata does not control disclosure" in architecture
     assert "refresh_run()" in recovery
     assert '`system_audit(view="history"' in account_identity

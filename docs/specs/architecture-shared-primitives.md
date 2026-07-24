@@ -218,7 +218,7 @@ Sensitivity tiers and the `ResponseEnvelope` are MoneyBin-specific primitives. T
 
 **Every new tool, prompt, or resource must satisfy both layers.** The MoneyBin layer (sensitivity, envelope, exposure principle) is reviewed against this spec; the protocol layer is reviewed against the [protocol-standard capability coverage matrix in `moneybin-mcp.md`](moneybin-mcp.md#protocol-standard-capability-coverage-matrix). Reject changes that update one without the other. The intent is that no future protocol capability is silently overlooked or surface-shipped without explicit account.
 
-MoneyBin operates one **45-tool standard registry**. Generic clients receive that
+MoneyBin operates one **47-tool standard registry**. Generic clients receive that
 registry in full. A capable host may optionally defer schemas from the same registry,
 but it does not receive a second profile and `domain` metadata does not choose what is
 disclosed. New operations require the bounded-registry admission record before they

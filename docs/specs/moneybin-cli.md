@@ -403,7 +403,20 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- set <category> <amount>
 |   +-- delete <category>
 |
-+-- export                         -- (future spec) Export to CSV / Excel / Sheets
++-- export                         -- Canonical bundle and registered-report delivery
+|   +-- bundle
+|   |     [--format csv|parquet|xlsx] [--to local:<name>|sheets:<name>]
+|   |     [--compress zip] [--unredacted] [-y|--yes] [--output text|json]
+|   +-- report <report-id>
+|   |     [--param key=value] [--format csv|parquet|xlsx]
+|   |     [--to local:<name>|sheets:<name>] [--compress zip]
+|   |     [--unredacted] [-y|--yes] [--output text|json]
+|   +-- destination
+|       +-- list [--output text|json] [--quiet]
+|       +-- add
+|       |   +-- local <name> <path>
+|       |   +-- sheets <name> <url>
+|       +-- remove <name>
 |
 +-- logs
 |   +-- clean --older-than <duration> [--dry-run]
@@ -475,6 +488,22 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
     +-- info <name>                -- Show manifest, declared capabilities, Quality Scale tier, verification status
     +-- search [--include-unverified] -- List installed packages (verified-only by default)
 ```
+
+The shipped export leaves are exactly:
+
+```text
+moneybin export bundle
+moneybin export report <report-id>
+moneybin export destination list
+moneybin export destination add local <name> <path>
+moneybin export destination add sheets <name> <url>
+moneybin export destination remove <name>
+```
+
+Bundle and report delivery default to redacted CSV at `local:exports`.
+`--unredacted` applies to one run only. Sheets destinations use their native
+format and reject `--format` and `--compress`; ZIP is limited to local CSV and
+Parquet bundles.
 
 #### Package-contributed subgroups
 
@@ -901,7 +930,6 @@ Reserve the namespace. Users see the command in `--help` but get a clear message
 | `track budget` | `budget-tracking.md` |
 | `track recurring` | Future spec |
 | `investments` | [`investments-data-model.md`](investments-data-model.md) (draft) |
-| `export` | Future spec |
 | `stats` | `observability.md` (depends on metrics tables) |
 | `db migrate` | `database-migration.md` |
 
@@ -919,7 +947,7 @@ These commands are fully implemented when their owning spec is implemented. The 
 | `track recurring *` | Future spec | Recurring transaction detection |
 | `investments add/list/holdings/lots/gains/securities` | [`investments-data-model.md`](investments-data-model.md) | Top-level group (was placeholder `accounts investments`); implementation lands with the foundation child |
 | `sync login/logout/connect/disconnect/pull/status/schedule/rotate-key` | `sync-overview.md` | Full sync implementation |
-| `export *` | Future spec | Export to CSV, Excel, Google Sheets |
+| `export bundle`, `export report`, `export destination *` | [`export.md`](export.md) | Canonical bundle, one registered report, and named destination management shipped in M1O |
 | `stats` | `observability.md` | Depends on metrics tables and instrumentation |
 | `db migrate apply/status` | `database-migration.md` | Depends on migration framework |
 | `import file` pipeline orchestration (auto match + categorize) | `smart-import-tabular.md` | Detection engine + pipeline wiring |
@@ -947,7 +975,6 @@ These were identified during design and should be added to the spec index:
 
 | Spec | Type | Summary |
 |---|---|---|
-| `export.md` | Feature | Export analysis results to CSV, Excel, Google Sheets. First-class citizen for getting data out. |
 | `cli-ux-standards.md` | Architecture | CLI interaction patterns: progressive disclosure, review queues, status command conventions, output formatting. Revisit after implementing `import` and `profile` to learn from real usage. |
 | `mcp-ux-standards.md` | Architecture | MCP interaction patterns: tool naming, error surfaces, prompt design, resource conventions. Revisit after MCP tools are in production use. |
 

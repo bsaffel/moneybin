@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-07-21 -->
 
 # Changelog
 
@@ -11,6 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Canonical bundle and registered-report export delivery (M1O).**
+  `moneybin export bundle` and `moneybin export report` publish redacted CSV by
+  default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named
+  local destinations, and output-only Google Sheets targets also supported.
+  `export_run`, `exports_set`, and `system_status(sections=["exports"])` expose
+  the same service outcomes to MCP; unredacted output is an explicit per-run
+  choice. Report artifacts always contain the complete registered-report result,
+  receipts identify the selected format, bundle/report Sheets metadata remain
+  independently verifiable, and cancellable publication runs without holding
+  the global DuckDB writer lock over filesystem or Google API I/O.
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.
@@ -622,9 +632,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   M3B), and documents two failures that look like bugs but aren't: Cowork's *remote*
   sessions can never see a local MCP server, and managed-org policy flags
   (`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled`) can disable local MCP
-  outright. The Windsurf section now warns that **MoneyBin's 105 tools exceed
+  outright. At that point, MoneyBin's **then-105-tool registry exceeded
   Cascade's hard 100-active-tool ceiling** — Windsurf gives no signal when tools are
-  dropped, so users must disable some by hand. The Gemini CLI section explains why
+  dropped, so users had to disable some by hand. The later M3K.2 cut established
+  the current 47-tool standard registry. The Gemini CLI section explains why
   MoneyBin never sets `trust: true` (it bypasses *all* tool-call confirmations, and
   our surface includes write tools). (#315)
 - **Accepting a link merge now requires a human confirm on every surface.** The

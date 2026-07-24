@@ -62,13 +62,15 @@ STANDARD_TOOL_NAMES = frozenset({
     "gsheet_connect",
     "gsheet_pull",
     "gsheet_disconnect",
+    "export_run",
+    "exports_set",
     "privacy",
     "privacy_consent_set",
     "refresh_run",
     "sql_query",
     "sql_schema",
 })
-STANDARD_TOOL_COUNT = 45
+STANDARD_TOOL_COUNT = 47
 VISIBLE_TOOL_COUNT = STANDARD_TOOL_COUNT
 HARD_TOOL_LIMIT = 50
 CARRYING_WEIGHT_REVIEW_AT = 40

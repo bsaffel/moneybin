@@ -82,6 +82,59 @@ async def test_sync_tool_over_cap_returns_timeout_envelope(
 
 
 @pytest.mark.unit
+async def test_timed_out_local_export_cannot_publish_after_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A surviving worker cannot cross the final publication boundary."""
+    from moneybin.exports.local import LocalExportPublisher
+    from tests.moneybin.test_exports.test_renderers import make_snapshot
+
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.05)
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", MagicMock()
+    )
+    render_started = threading.Event()
+    release_render = threading.Event()
+    worker_finished = threading.Event()
+    publisher = LocalExportPublisher(tmp_path / "exports")
+    render = publisher._render  # pyright: ignore[reportPrivateUsage]
+
+    def blocked_render(*args: Any, **kwargs: Any) -> Path:
+        render_started.set()
+        assert release_render.wait(timeout=5.0)
+        return render(*args, **kwargs)
+
+    monkeypatch.setattr(publisher, "_render", blocked_render)
+
+    def publish_worker() -> None:
+        try:
+            publisher.publish(
+                make_snapshot(),
+                format="csv",
+                compress_zip=False,
+            )
+        finally:
+            worker_finished.set()
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    async def export_tool() -> ResponseEnvelope[Any]:
+        await asyncio.to_thread(publish_worker)
+        return _ok_envelope()
+
+    result = await export_tool()
+
+    assert render_started.is_set()
+    assert result.error is not None
+    assert result.error.code == error_codes.INFRA_TIMED_OUT
+    assert not list((tmp_path / "exports").glob("export-*"))
+
+    release_render.set()
+    assert await asyncio.to_thread(worker_finished.wait, 5.0)
+    assert not list((tmp_path / "exports").glob("export-*"))
+
+
+@pytest.mark.unit
 async def test_timed_out_tool_resets_only_its_own_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -172,6 +225,48 @@ async def test_async_tool_over_cap_returns_timeout_envelope(
     result = await slow_tool()
     assert result.error is not None
     assert result.error.code == error_codes.INFRA_TIMED_OUT
+
+
+@pytest.mark.unit
+async def test_timeout_marks_request_cancelled_before_waiting_in_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Executor saturation cannot delay the cancellation signal itself."""
+    import moneybin.mcp.decorator as decorator
+
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.01)
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", MagicMock()
+    )
+
+    class TrackingLifetime:
+        instance: TrackingLifetime | None = None
+
+        def __init__(self) -> None:
+            self.cancelled = False
+            type(self).instance = self
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+        def wait_for_publication(self) -> None:
+            assert self.cancelled
+
+        def cancel_and_wait(self) -> None:
+            raise AssertionError("cancellation must be marked before executor wait")
+
+    monkeypatch.setattr(decorator, "RequestLifetime", TrackingLifetime)
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    async def slow_tool() -> ResponseEnvelope[Any]:
+        await asyncio.sleep(0.5)
+        return _ok_envelope()
+
+    result = await slow_tool()
+
+    assert result.error is not None
+    assert TrackingLifetime.instance is not None
+    assert TrackingLifetime.instance.cancelled
 
 
 @pytest.mark.unit

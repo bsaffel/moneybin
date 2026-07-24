@@ -17,12 +17,13 @@ have changed:
 
 1. The former registry contained 105 visible tools and serialized to 90,734
    bytes before host wrapping.
-2. MoneyBin alone exceeds Windsurf Cascade's 100-tool global ceiling.
+2. The former MoneyBin registry exceeded Windsurf Cascade's 100-tool global
+   ceiling.
 3. Planned domains and extensions would continue growing the surface.
 4. Modern hosts increasingly support tool search or deferred schema loading
    without requiring server-side list mutation.
 5. A carrying-weight review found that MoneyBin can preserve capability parity
-   through the exact 45-tool intent-shaped standard registry.
+   through the exact 47-tool intent-shaped standard registry.
 6. A proposed 44-tool universal / 48-tool complete split hid too little to
    justify profiles, packs, reconnect behavior, and workflow-closure rules.
 7. A generic read-only report registry prevents every new report from adding a
@@ -85,16 +86,16 @@ service-layer contract, or CLI-first operator exemptions.
 
 ## Current evidence
 
-The operating contract is the 45-tool standard registry. Its deterministic
-comparison records 47,684 candidate metadata bytes, SHA-256
-`6d1a1f33bfc005bfc7d38136679ff487b857f74610c877cacc748de31a6ed763`, against
+The operating contract is the 47-tool standard registry. Its deterministic
+comparison records 51,951 candidate metadata bytes, SHA-256
+`04a3817f8d42adfe0b4dcbf950c16650740d3cd04cae20bea1f3e5bc889e53d7`, against
 the 90,734-byte frozen baseline, SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`: a
--43,050-byte (-47.4%) delta. It advertises zero output schemas and has
+-38,783-byte (-42.7%) delta. It advertises zero output schemas and has
 `contract_passed: true`.
 
 This ADR remains **Proposed**. `promotion_ready: false`: context budget and
-host-native deferral are both `not_observed`. Generic clients receive all 45
+host-native deferral are both `not_observed`. Generic clients receive all 47
 tools, and supported hosts may defer schemas from that same registry without
 reconnect, packs, or profiles. Those not-observed facts prevent acceptance,
 not operation of the selected registry.
@@ -121,7 +122,7 @@ not operation of the selected registry.
 
 ## Alternatives considered
 
-### Keep the 105-tool surface
+### Keep the former 105-tool surface
 
 Rejected. It already fails a documented client ceiling and cannot absorb
 planned growth.
@@ -158,19 +159,19 @@ runner, not an arbitrary tool proxy.
 
 ### Universal detailed output schemas
 
-Rejected without a consumer. Full schemas for the existing 105 tools increased
-serialized metadata from 90,734 to 861,301 bytes; output schemas alone accounted
-for 768,887 bytes. MCP defines `outputSchema` as optional, and MoneyBin retains
-canonical `structuredContent`, internal typed payloads, and transport tests
-without advertising it. Selective future adoption remains available through
-the explicit admission record.
+Rejected without a consumer. Full schemas for the former 105-tool registry
+increased serialized metadata from 90,734 to 861,301 bytes; output schemas alone
+accounted for 768,887 bytes. MCP defines `outputSchema` as optional, and
+MoneyBin retains canonical `structuredContent`, internal typed payloads, and
+transport tests without advertising it. Selective future adoption remains
+available through the explicit admission record.
 
 ## Acceptance trigger
 
 Promote this ADR to **Accepted** when:
 
 - the governing spec reaches `implemented`;
-- the exact 45-tool contract reconciles with live code;
+- the exact 47-tool contract reconciles with live code;
 - canonical structured transport and generic reports are proven;
 - the initial standard registry advertises zero output schemas, or every
   exception has an approved consumer-driven admission record;

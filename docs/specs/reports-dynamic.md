@@ -620,7 +620,7 @@ not sit a second dispatcher beside it.
 | Inspect | Unadmitted capability; MCP identity remains unnamed | `moneybin reports explain` |
 | Downgrade a class | Unadmitted capability; MCP identity remains unnamed | `moneybin reports reclassify` |
 
-**The MCP registry remains the operating 45-tool contract.** This draft does
+**The MCP registry remains the operating 47-tool contract.** This draft does
 not reserve three identities or count them against the hard maximum of 50. The
 implementing PR must first try an existing projection, method, batch, target
 state, report entry, or workflow umbrella, then complete the seven-question

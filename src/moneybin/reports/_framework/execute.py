@@ -89,6 +89,26 @@ class CatalogReportResult(ReportResult):
     provenance: tuple[str, ...]
 
 
+@dataclass(frozen=True, kw_only=True)
+class CatalogReportExecution:
+    """One raw catalog-runner execution before terminal redaction."""
+
+    report_id: str
+    parameters: Mapping[str, JsonValue]
+    sql: str | None
+    records: list[dict[str, Any]]
+    columns: list[str]
+    column_types: list[str]
+    output_classes: dict[str, DataClass]
+    tier: Tier
+    total_count: int
+    truncated: bool
+    actions: list[str]
+    period: str | None
+    semantics: ReportSemantics
+    provenance: tuple[str, ...]
+
+
 class _CatalogSpec(Protocol):
     """The result-building fields shared by SQL and service report specs."""
 
@@ -133,7 +153,7 @@ def _redact_and_freeze_parameter(
     return cast(FrozenJsonValue, redacted)
 
 
-def _parameter_metadata(
+def redact_report_parameters(
     spec: _CatalogSpec,
     parameters: Mapping[str, JsonValue],
 ) -> Mapping[str, FrozenJsonValue]:
@@ -156,30 +176,111 @@ def build_catalog_result(
     period: str | None = None,
 ) -> CatalogReportResult:
     """Redact and truncate tabular rows using the shared report rules."""
-    truncated = len(records) > max_rows
-    limited = records[:max_rows]
+    execution = build_catalog_execution(
+        spec,
+        parameters=parameters,
+        sql=None,
+        records=records,
+        columns=columns,
+        column_types=[],
+        max_rows=max_rows,
+        actions=actions,
+        period=period,
+    )
+    return redact_catalog_execution(spec, execution)
+
+
+def build_catalog_execution(
+    spec: _CatalogSpec,
+    *,
+    parameters: Mapping[str, JsonValue],
+    sql: str | None,
+    records: list[dict[str, Any]],
+    columns: list[str],
+    column_types: list[str],
+    max_rows: int | None,
+    actions: list[str] | None = None,
+    period: str | None = None,
+) -> CatalogReportExecution:
+    """Build one raw, classified execution from already-fetched rows."""
+    truncated = max_rows is not None and len(records) > max_rows
+    limited = records if max_rows is None else records[:max_rows]
 
     # ServiceReportSpec intentionally matches the classification-facing subset
     # of ReportSpec. The cast keeps classify_columns' existing public signature
     # stable while both kinds use its fail-closed undeclared-column behavior.
     col_classes = classify_columns(cast(ReportSpec, spec), columns)
-    redacted = redact_records(limited, col_classes, consent=None)
-
-    return CatalogReportResult(
+    return CatalogReportExecution(
         report_id=spec.report_id,
-        parameters=_parameter_metadata(spec, parameters),
-        semantics=spec.semantics,
-        provenance=spec.semantics.provenance,
-        records=redacted,
+        parameters=MappingProxyType(dict(parameters)),
+        sql=sql,
+        records=limited,
         columns=columns,
+        column_types=column_types,
         output_classes=col_classes,
         tier=derive_query_tier(col_classes),
-        # Match SQL execution: when capped, report "at least one more" without
-        # paying for an exact count over a potentially expensive data product.
-        total_count=max_rows + 1 if truncated else len(redacted),
+        total_count=(max_rows + 1)
+        if truncated and max_rows is not None
+        else len(limited),
         truncated=truncated,
         actions=actions or [],
         period=period,
+        semantics=spec.semantics,
+        provenance=spec.semantics.provenance,
+    )
+
+
+def redact_catalog_execution(
+    spec: _CatalogSpec,
+    execution: CatalogReportExecution,
+) -> CatalogReportResult:
+    """Apply the existing terminal report redaction to a raw execution."""
+    redacted = redact_records(
+        execution.records,
+        execution.output_classes,
+        consent=None,
+    )
+
+    return CatalogReportResult(
+        report_id=execution.report_id,
+        parameters=redact_report_parameters(spec, execution.parameters),
+        semantics=execution.semantics,
+        provenance=execution.provenance,
+        records=redacted,
+        columns=execution.columns,
+        output_classes=execution.output_classes,
+        tier=execution.tier,
+        total_count=execution.total_count,
+        truncated=execution.truncated,
+        actions=execution.actions,
+        period=execution.period,
+    )
+
+
+def execute_catalog_report(
+    spec: ReportSpec, db: Database, *, max_rows: int | None, **params: Any
+) -> CatalogReportExecution:
+    """Execute a catalog runner once; do not apply terminal redaction."""
+    rq = spec.runner(db, **params)
+    cursor = db.execute(rq.sql, list(rq.params))
+    descriptions = cursor.description or []
+    columns = [str(description[0]) for description in descriptions]
+    column_types = [
+        str(description[1]) if len(description) > 1 else "UNKNOWN"
+        for description in descriptions
+    ]
+    rows = cursor.fetchall() if max_rows is None else cursor.fetchmany(max_rows + 1)
+    records = [dict(zip(columns, row, strict=False)) for row in rows]
+    return build_catalog_execution(
+        spec,
+        parameters=cast(Mapping[str, JsonValue], params),
+        sql=rq.sql,
+        records=records,
+        columns=columns,
+        column_types=column_types,
+        actions=list(rq.actions),
+        period=rq.period,
+        max_rows=max_rows,
     )
 
 
@@ -191,18 +292,5 @@ def run_report(
     Fetches one extra row to detect truncation, classifies each output column
     via the report's view, and masks CRITICAL columns before returning.
     """
-    rq = spec.runner(db, **params)
-    cursor = db.execute(rq.sql, list(rq.params))
-    columns = [d[0] for d in cursor.description] if cursor.description else []
-    rows = cursor.fetchmany(max_rows + 1)
-    records = [dict(zip(columns, r, strict=False)) for r in rows]
-
-    return build_catalog_result(
-        spec,
-        parameters=cast(Mapping[str, JsonValue], params),
-        records=records,
-        columns=columns,
-        actions=list(rq.actions),
-        period=rq.period,
-        max_rows=max_rows,
-    )
+    execution = execute_catalog_report(spec, db, max_rows=max_rows, **params)
+    return redact_catalog_execution(spec, execution)

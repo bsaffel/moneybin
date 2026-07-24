@@ -3,7 +3,7 @@
 > **Status:** implemented
 
 This spec defines parity between MoneyBin's two active user surfaces. Parity
-means that the CLI and the 45-tool standard registry can produce the same
+means that the CLI and the 47-tool standard registry can produce the same
 durable user outcome. It does not require similar command or tool names.
 Generic clients receive the full registry; a capable host may optionally defer
 schemas from that same registry. Observed host-native deferral evidence remains
@@ -22,7 +22,7 @@ Every map row contains:
 | Field | Meaning |
 |---|---|
 | `capability_id` | Stable domain-oriented identifier; unique across the map |
-| `mcp_tools` | Exact names in the standard 45-tool MCP registry |
+| `mcp_tools` | Exact names in the standard 47-tool MCP registry |
 | `cli_commands` | Exact space-delimited executable Typer paths |
 | `service_methods` | Importable callables that own the behavior |
 | `observable_outcomes` | Stable rows, states, counts, audit operations, or results used to judge equivalence |
@@ -42,12 +42,12 @@ coverage catalog.
 
 As implemented in July 2026, the map contains:
 
-- 45 non-exempt capability rows covering all 45 standard MCP tools.
-- 172 implemented Typer paths, including hidden compatibility aliases, with
+- 47 non-exempt capability rows covering all 47 standard MCP tools.
+- 178 implemented Typer paths, including hidden compatibility aliases, with
   exact equality against the live command tree after explicit unimplemented
   stubs are removed.
 - 7 policy-exempt rows.
-- 10 reserved Typer paths that are still explicit `_not_implemented` stubs.
+- 9 reserved Typer paths that are still explicit `_not_implemented` stubs.
 
 The stub list is executable, not documentary: every excluded path is invoked
 with valid minimal arguments and must return the not-implemented outcome.
@@ -60,6 +60,8 @@ is added.
 |---|---|---|---|
 | System and audit | `system_status`, `system_audit`, `system_audit_undo` | `system status`, `system audit *`, `transactions matches undo` | Same health state, audit history, and reversible operation |
 | Reports | `reports` | `reports networth`, `reports spending`, and other registered reports | Same catalog runner, rows, period, provenance, and truncation |
+| Export delivery | `export_run` | `export bundle`, `export report` | Same `ExportService.run` subject, named destination, redaction mode, format, row counts, checksums, receipt identity, and safe failures |
+| Export destination target state | `exports_set`; readiness through `system_status(sections=["exports"])` | `export destination list`, `export destination add local`, `export destination add sheets`, `export destination remove` | Same `ExportService`/repository-owned named destination readiness and typed local or Sheets state |
 | Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert` | `accounts list/get/summary/set`, `accounts balance *` | Same account projections, settings, observations, and assertions |
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` | `investments *` | Same ledger, holdings, lots, securities, and gains |
 | Transactions | `transactions`, `transactions_create`, `transactions_annotate` | `transactions list/create`, notes, tags, and splits | Same transaction rows, stable-ID note lifecycle, and complete tag/split target state |

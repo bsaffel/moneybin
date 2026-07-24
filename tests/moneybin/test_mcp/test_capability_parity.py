@@ -46,7 +46,6 @@ OUTCOME_MAP_PATH = (
 UNIMPLEMENTED_CLI_INVOCATIONS = {
     "budget delete": ("Food",),
     "budget set": ("Food", "100"),
-    "export run": (),
     "sync key rotate": (),
     "sync schedule remove": (),
     "sync schedule set": (),

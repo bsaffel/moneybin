@@ -173,7 +173,7 @@ moneybin accounts set <account_id>
 
 ## MCP Interface
 
-The 45-tool registry uses coarse domain operations with typed projections and
+The 47-tool registry uses coarse domain operations with typed projections and
 view selectors. Account reads therefore share `accounts(view=...)`; the separate
 `accounts_set` operation retains the account target-state mutation boundary.
 

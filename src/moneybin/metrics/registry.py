@@ -225,6 +225,20 @@ SQLMESH_RUN_DURATION_SECONDS = Histogram(
     ["model"],
 )
 
+# ── Export delivery ──────────────────────────────────────────────────────────
+
+EXPORT_RUNS_TOTAL = Counter(
+    "moneybin_export_runs_total",
+    "Export run outcomes.",
+    ["subject_kind", "format", "destination_kind", "redaction_mode", "outcome"],
+)
+
+EXPORT_DURATION_SECONDS = Histogram(
+    "moneybin_export_duration_seconds",
+    "Export run duration.",
+    ["subject_kind", "format", "destination_kind", "redaction_mode"],
+)
+
 # ── Deduplication ─────────────────────────────────────────────────────────────
 
 DEDUP_MATCHES_TOTAL = Counter(

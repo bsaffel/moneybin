@@ -16,7 +16,7 @@ from mcp.types import Tool
 
 from moneybin.mcp.surface_inventory import SurfaceInventory
 
-_SURFACE_IDS = ("baseline-105", "standard-45")
+_SURFACE_IDS = ("baseline-105", "standard-47")
 _EVIDENCE_KINDS = ("contract_fixture", "observed")
 _FIXTURE_TOKEN_METHOD = "deterministic_estimate:ceil(canonical_registry_utf8_bytes/4)"  # noqa: S105  # Metadata accounting label, not a credential.
 _DEFAULT_INVENTORY = (
@@ -24,7 +24,7 @@ _DEFAULT_INVENTORY = (
 )
 _DEFAULT_BASELINE_INVENTORY = _DEFAULT_INVENTORY
 _DEFAULT_CANDIDATE_INVENTORY = (
-    Path(__file__).parents[1] / "tests/fixtures/mcp_surface/standard-45.json"
+    Path(__file__).parents[1] / "tests/fixtures/mcp_surface/standard-47.json"
 )
 _CONTEXT_BUDGET_LIMIT = 0.02
 

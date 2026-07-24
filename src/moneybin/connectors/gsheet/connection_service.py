@@ -249,14 +249,14 @@ class GSheetConnectionService:
 
     def connect(self, req: ConnectionRequest, *, actor: str = "cli") -> ConnectResult:
         """Detect, persist, and optionally pull the initial snapshot."""
-        if not self._oauth.is_authorized():
-            self._oauth.authorize()
-
         try:
             spreadsheet_id, gid = parse_sheet_url(req.url)
         except ValueError as exc:
             raise GSheetError(f"Invalid Google Sheets URL: {exc}") from exc
-        meta = self._sheets.get_workbook_metadata(spreadsheet_id)
+        self._repo.assert_not_export_destination(spreadsheet_id)
+        if not self._oauth.is_authorized(require_write=False):
+            self._oauth.authorize(require_write=False)
+        meta = self._sheets.get_workbook_metadata(spreadsheet_id, require_write=False)
         sheet = next((s for s in meta.sheets if s.gid == gid), None)
         if sheet is None:
             # Use the workbook title, not spreadsheet_id: the raw id uniquely
@@ -266,7 +266,9 @@ class GSheetConnectionService:
                 f"gid={gid} not found in workbook {meta.title!r}"
             )
 
-        rows = self._sheets.read_sheet_values(spreadsheet_id, sheet.name)
+        rows = self._sheets.read_sheet_values(
+            spreadsheet_id, sheet.name, require_write=False
+        )
         if not rows:
             raise GSheetError("Sheet has no data")
 
@@ -658,7 +660,7 @@ class GSheetConnectionService:
         # Resolve the current tab title by gid — sheet_name on the stored row
         # may be stale if the user renamed the tab between connect and reconnect.
         spreadsheet_id = existing["spreadsheet_id"]
-        meta = self._sheets.get_workbook_metadata(spreadsheet_id)
+        meta = self._sheets.get_workbook_metadata(spreadsheet_id, require_write=False)
         sheet = next((s for s in meta.sheets if s.gid == existing["sheet_gid"]), None)
         if sheet is None:
             # Workbook title, not spreadsheet_id — see connect() for why the
@@ -667,7 +669,9 @@ class GSheetConnectionService:
                 f"gid={existing['sheet_gid']} no longer present in workbook "
                 f"{meta.title!r}; the tab was deleted"
             )
-        rows = self._sheets.read_sheet_values(spreadsheet_id, sheet.name)
+        rows = self._sheets.read_sheet_values(
+            spreadsheet_id, sheet.name, require_write=False
+        )
         if not rows:
             raise GSheetError("Sheet has no data")
         df = rows_to_df(rows)

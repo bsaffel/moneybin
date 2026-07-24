@@ -1,7 +1,7 @@
-<!-- Last reviewed: 2026-07-19 -->
+<!-- Last reviewed: 2026-07-21 -->
 # MCP Server
 
-MoneyBin exposes one **45-tool standard registry** to every generic MCP client.
+MoneyBin exposes one **47-tool standard registry** to every generic MCP client.
 A capable host may optionally defer schemas from that same registry to reduce prompt cost,
 but tool names, approvals, allowlists, annotations, and audit identity do not
 change. Reports are registered catalog entries behind the single `reports`
@@ -34,6 +34,28 @@ then call `reports(report_id=..., parameters=...)` for a selected report.
 `sql_schema` and the `moneybin://schema` resource explain the curated
 read-only SQL surface; `sql_query` is the operator escape hatch.
 
+## Export data
+
+The 47-tool standard registry stays below the 50-tool hard limit and uses
+exactly two export-specific tools:
+
+- `export_run` publishes the closed 13-table canonical bundle or one registered
+  report to a named local or Google Sheets destination. Supply
+  `redaction_mode="redacted"` or `redaction_mode="unredacted"` on every run. If
+  the value is omitted, clients with elicitation ask; other clients receive a
+  structured `mutation_redaction_choice_required` refusal. An explicit `redaction_mode`
+  does not prompt.
+- `exports_set` asserts one named local or Sheets destination's target state.
+  It creates, updates, or removes MoneyBin configuration; removal does not
+  delete existing files, workbooks, or tabs, and requires a payload-bound
+  confirmation token when elicitation is unavailable.
+
+Call `system_status(sections=["exports"])` to inspect destination readiness
+without adding a third export tool. Sheets destinations are output-only and
+cannot be the same workbook as an inbound `gsheet` connection. MoneyBin stages
+and validates its managed tabs before promotion, preserves the latest good
+visible tabs on failure, and never touches user-owned tabs.
+
 ## Data handling
 
 The server runs locally, while a cloud-hosted MCP client can send prompts and
@@ -47,7 +69,7 @@ records, connector egress, and local-model use.
 
 ## Contract status
 
-The 45-tool registry is operating. It advertises zero output schemas and has
+The 47-tool registry is operating. It advertises zero output schemas and has
 passed its deterministic contract check. Observed host-native deferral evidence remains absent.
 Promotion remains blocked until both observed context-budget evidence and observed
 host-native-deferral evidence exist. Do not add a tool, report

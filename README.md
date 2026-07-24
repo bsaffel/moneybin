@@ -24,7 +24,7 @@
 MoneyBin imports bank files (CSV, OFX/QFX/QBO, Excel, Parquet, selectable-text
 PDF), syncs Plaid-linked accounts, and connects Google Sheets — all into one
 AES-256-GCM-encrypted [DuckDB](https://duckdb.org) file. Query it three ways:
-the CLI, raw SQL, or a 45-tool MCP server for Claude, Cursor, VS Code, Gemini
+the CLI, raw SQL, or a 47-tool MCP server for Claude, Cursor, VS Code, Gemini
 CLI, Codex, and other clients. Every surface reads the same tables.
 
 <!-- markdownlint-disable MD033 -->

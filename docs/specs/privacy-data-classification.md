@@ -158,6 +158,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (app, budgets) | monthly_amount | TXN_AMOUNT | budget target dollar amount; not a transaction per se but matches the same HIGH-tier monetary sensitivity. |
 | (app, categorization_rules) | merchant_pattern | MERCHANT_NAME | pattern matched against transaction description; reveals which merchants the user tracks. Same on `proposed_rules` and `user_merchants.raw_pattern`. |
 | (app, categorization_rules) | name | USER_NOTE | human-readable rule label; user-authored free text. |
+| (app, export_destinations) | name, managed_tab_prefix | USER_NOTE | user-authored labels can reveal the export's purpose; mask them by default. |
+| (app, export_destinations) | destination_id, local_path, spreadsheet_id | RECORD_ID | opaque generated ID and storage/provider references; local paths follow `import_previews.file_path`. |
 | (app, imports) | labels | USER_NOTE | LIST of user-applied slug labels; user-authored, treat as USER_NOTE for parity with `transaction_tags.tag`. |
 | (app, import_previews) | file_path | RECORD_ID | Local source provenance, matching the existing `source_file` classification; never exposed as account identity. |
 | (app, import_previews) | snapshot_json | TXN_AMOUNT | Complete preview payload can contain exact sample amounts and descriptions; classify by its highest-sensitivity possible content. |

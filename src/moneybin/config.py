@@ -936,6 +936,11 @@ class MoneyBinSettings(BaseSettings):
         return self.import_.inbox_root / self.profile
 
     @property
+    def profile_exports_dir(self) -> Path:
+        """Active profile's visible export directory."""
+        return self.import_.inbox_root / self.profile / "exports"
+
+    @property
     def profile_dir(self) -> Path:
         """Active profile's directory: <base>/profiles/<profile>/.
 
