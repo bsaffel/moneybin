@@ -64,3 +64,27 @@ class TestDetectFileType:
         f = tmp_path / "statement.pdf"
         f.write_bytes(b"%PDF-1.4 fake header for routing test")
         assert _detect_file_type(f) == "pdf"
+
+
+class TestDetectFileTypePermission:
+    """An unreadable file must not be reported as an unsupported one."""
+
+    def test_unreadable_extensionless_file_raises_permission_not_unsupported(
+        self, tmp_path: Path
+    ) -> None:
+        """Being unable to read a file is not evidence that it is not OFX.
+
+        The sniff swallowed every OSError and returned False, so an unreadable
+        file fell through to the extension checks. With no recognized suffix
+        that produces `ValueError: Unsupported file type` — blaming the file for
+        a permission problem the user can fix. Same shape as the OFX read
+        boundary, one function earlier.
+        """
+        target = tmp_path / "statement"
+        target.write_bytes(b"OFXHEADER:100")
+        target.chmod(0o000)
+        try:
+            with pytest.raises(PermissionError):
+                _detect_file_type(target)
+        finally:
+            target.chmod(0o600)

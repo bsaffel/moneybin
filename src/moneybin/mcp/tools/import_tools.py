@@ -458,8 +458,9 @@ def import_files(
         positive=income; transfers exempt. Display currency is set
         in summary.display_currency.
     """
+    from moneybin.protocol.import_envelope import mark_total_failure
     from moneybin.services.import_confirmation import ImportConfirmationRequiredError
-    from moneybin.services.import_service import ImportService, mark_total_failure
+    from moneybin.services.import_service import ImportService
 
     # Validate all paths upfront so a bad path fails before any service call.
     validated = [_validate_file_path(p) for p in paths]

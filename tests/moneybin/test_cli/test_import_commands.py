@@ -219,6 +219,49 @@ class TestImportFilesCommand:
         result = runner.invoke(app, ["files", "/nonexistent/file.ofx"])
         assert result.exit_code == 1
 
+    def test_single_file_tcc_denial_is_classified_not_a_traceback(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The headline scenario: a TCC-blocked single-file import.
+
+        `Path.exists()` is itself a raising call — pathlib only swallows
+        ENOENT/ENOTDIR/EBADF/ELOOP, so a macOS TCC denial (EPERM) propagates
+        out of the preflight check. When that check sat outside
+        `handle_cli_errors`, this exact invocation produced an unhandled
+        traceback instead of the Full Disk Access guidance the affordance
+        exists to give.
+
+        The path sits under `~/Documents` because that is what selects the
+        Full-Disk-Access branch of `permission_advice`; an EPERM elsewhere
+        correctly gets generic advice instead.
+        """
+        target = Path.home() / "Documents" / "statement.qfx"
+        real_exists = Path.exists
+
+        def _deny(self: Path, **kwargs: Any) -> bool:
+            # Scoped to the target so the privacy-log writer's own path checks
+            # keep working — a blanket denial makes this test log write failures.
+            if self == target:
+                raise PermissionError(1, "Operation not permitted", str(target))
+            return real_exists(self, **kwargs)
+
+        monkeypatch.setattr(Path, "exists", _deny)
+
+        result = runner.invoke(app, ["files", str(target), "--output", "json"])
+
+        assert result.exit_code == 1, result.output
+        assert result.exception is None or isinstance(result.exception, SystemExit), (
+            f"unhandled exception leaked: {result.exception!r}"
+        )
+        import json
+
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "infra_permission_denied"
+        assert "Full Disk Access" in payload["error"]["hint"]
+
     def test_import_files_batch_continues_past_missing_file(
         self,
         runner: CliRunner,

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import ErrorDetail, UserError, classify_user_error
+from moneybin.errors import UserError, classify_user_error
 from moneybin.extractors.confidence import Confidence
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
 from moneybin.extractors.tabular.account_label import parse_account_label
@@ -47,7 +47,6 @@ from moneybin.metrics.registry import (
     TABULAR_DETECTION_CONFIDENCE,
     TABULAR_FORMAT_MATCHES,
 )
-from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
@@ -235,58 +234,6 @@ class BatchImportResult:
     def total_count(self) -> int:
         """Total number of files attempted in this batch."""
         return len(self.per_file)
-
-
-def mark_total_failure(
-    envelope: ResponseEnvelope[Any], batch: BatchImportResult
-) -> ResponseEnvelope[Any]:
-    """Flip the envelope to status="error" when nothing in the batch imported.
-
-    Partial success is genuine success — a batch with at least one import (or a
-    file still awaiting confirmation) stays "ok". Only an all-failed batch is a
-    failure, and reporting it as "ok" made a totally failed import look like it
-    worked.
-
-    Lives here rather than in either adapter because `import_files` reaches the
-    user through both the MCP tool and `moneybin import files --output json`.
-    Parity is functional: "every file failed" must produce the same status and
-    the same non-zero disposition on both surfaces, so the gate is one function
-    both call rather than two implementations that can drift.
-
-    `dataclasses.replace` rather than assignment: `status` is derived from
-    `error` in `__post_init__`, so it only updates when the envelope is rebuilt.
-    `build_error_envelope` is deliberately not used here — it forces `data=[]`,
-    which would discard the per-file `files` payload precisely when the caller
-    needs it to see what broke.
-    """
-    failed = [r for r in batch.per_file if r.status == "failed"]
-    if not failed or len(failed) != len(batch.per_file):
-        return envelope
-
-    # The batch's own message names the count instead of hoisting one file's
-    # reason: with several distinct causes, the first file's message would
-    # over-claim for all of them. Per-file message + code stay in data.files[].
-    first_code = failed[0].error_code
-    # Same first-entry rule as the code: the hint is advice, so a wrong-but-
-    # plausible one is worse than none. It stays paired with the code it was
-    # classified alongside, and every file's own hint stays in data.files[].
-    first_hint = failed[0].hint
-    message = (
-        f"Import failed for all {len(failed)} file(s); "
-        "see data.files[] for each file's error, error_code, and hint."
-    )
-    return dataclasses.replace(
-        envelope,
-        # An unclassified failure has no code of its own. IMPORT_PARSE_ERROR is
-        # the honest fallback: the domain is right and the claim is only that
-        # the file could not be processed — data.files[].error carries whatever
-        # detail is actually known.
-        error=ErrorDetail(
-            message=message,
-            code=first_code or error_codes.IMPORT_PARSE_ERROR,
-            hint=first_hint,
-        ),
-    )
 
 
 # Routing reasons where Phase 2b escalates `import_preview` to the bridge.
@@ -696,6 +643,13 @@ def _sniff_ofx_content(file_path: Path) -> bool:
     try:
         with open(file_path, "rb") as f:
             head = f.read(1024)
+    except PermissionError:
+        # "Could not look" is not "is not OFX". Returning False here sends an
+        # unreadable file on to the extension checks, where a missing or unknown
+        # suffix reports "Unsupported file type" — blaming the file for a
+        # permission problem the caller can actually fix. Let it propagate so
+        # `classify_user_error` produces the permission code and its hint.
+        raise
     except OSError:
         return False
     head_lstripped = head.lstrip()
@@ -963,10 +917,18 @@ class ImportService:
         # internally. These files are small — the duplicate parse is fine and
         # avoids leaking a parser-internal type into the extractor signature.
         # Wrap read+parse failures as ValueError so MCP's error envelope catches
-        # them; otherwise PermissionError/OSError leak as internal tool errors.
+        # them; otherwise OSError leaks as an internal tool error.
+        # PermissionError is deliberately re-raised intact: `classify_user_error`
+        # keys the `infra_permission_denied` code and its Full-Disk-Access hint
+        # off the exception type, so flattening it to ValueError here would
+        # downgrade a TCC/chmod denial to `infra_invalid_input` with no recovery
+        # advice — the affordance would work for tabular files but not OFX.
         try:
             with open(canonical_path, "rb") as f:
                 content = f.read().decode("utf-8", errors="replace")
+        except PermissionError:
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
+            raise
         except OSError as e:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
             raise ValueError(f"Could not read OFX file: {e}") from e

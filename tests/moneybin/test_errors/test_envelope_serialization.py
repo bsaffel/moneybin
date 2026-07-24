@@ -13,7 +13,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from moneybin import error_codes
-from moneybin.errors import UserError
+from moneybin.errors import ErrorDetail, UserError
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     SummaryMeta,
@@ -105,3 +105,44 @@ def _assert_projection(
             )
         else:
             assert dumped[key] == value, f"{path}{key} diverges from the dataclass"
+
+
+def test_with_error_serializes_and_keeps_the_payload() -> None:
+    """The regression: attaching an error to a payload-carrying envelope.
+
+    `dataclasses.replace(envelope, error=UserError(...))` type-checks (replace
+    is `**changes: Any`) but raises AttributeError inside `to_dict()`, because
+    only `ErrorDetail` has `model_dump`. That turned `--output json` partial
+    failures into empty stdout. `with_error` is typed, so the wrong call is a
+    pyright error instead of a runtime one.
+    """
+    envelope = ResponseEnvelope(
+        summary=SummaryMeta(total_count=2, returned_count=2),
+        data={"error_details": [{"transaction_id": "t1", "reason": "bad id"}]},
+    )
+    failed = envelope.with_error(
+        ErrorDetail(message="1 item(s) failed", code="categorization_errors")
+    )
+
+    assert failed.status == "error"
+    dumped = failed.to_dict()
+    assert dumped["status"] == "error"
+    assert dumped["error"]["code"] == "categorization_errors"
+    # Payload-carrying error envelopes keep their data — that is the whole
+    # reason these call sites don't use build_error_envelope.
+    assert dumped["data"]["error_details"][0]["transaction_id"] == "t1"
+    _assert_projection(dumped, _dump(failed))
+
+
+def test_with_error_leaves_the_original_untouched() -> None:
+    """It returns a copy; `status` is re-derived rather than mutated in place."""
+    envelope = ResponseEnvelope(
+        summary=SummaryMeta(total_count=0, returned_count=0), data=[]
+    )
+    failed = envelope.with_error(
+        ErrorDetail(message="boom", code=error_codes.INFRA_IO_ERROR)
+    )
+
+    assert envelope.status == "ok"
+    assert envelope.error is None
+    assert failed.status == "error"

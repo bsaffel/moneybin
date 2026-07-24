@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, cast
@@ -178,6 +178,19 @@ class ResponseEnvelope[T]:
         is overwritten on purpose.
         """
         self.status = "error" if self.error is not None else "ok"
+
+    def with_error(self, error: ErrorDetail) -> ResponseEnvelope[T]:
+        """Return a copy carrying `error`, with `status` re-derived.
+
+        Use this instead of `dataclasses.replace(envelope, error=...)`.
+        `replace` is typed `**changes: Any`, so it silently accepts a
+        `UserError` — which then raises `AttributeError` inside `to_dict()`
+        at serialization time, turning a structured partial-failure response
+        into an empty one. This signature makes pyright reject that at the
+        call site instead. Rebuilding (rather than assigning) is required
+        regardless: `status` is derived in `__post_init__`.
+        """
+        return replace(self, error=error)  # pyright: ignore[reportUnknownArgumentType]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization.

@@ -323,15 +323,25 @@ def import_files_command(
     from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.protocol.envelope import build_envelope
-    from moneybin.services.import_service import ImportService, mark_total_failure
+    from moneybin.protocol.import_envelope import mark_total_failure
+    from moneybin.services.import_service import ImportService
 
     # Single-file invocations keep fast-fail on missing paths (typo
     # detection). Multi-file batches defer to ImportService.import_files()
     # which records per-file FileNotFoundError as PerFileResult so the
     # batch contract ("per-file failures do not abort the batch") holds.
-    if len(file_paths) == 1 and not file_paths[0].exists():
-        logger.error(f"❌ File not found: {file_paths[0]}")
-        raise typer.Exit(1)
+    #
+    # Wrapped in `handle_cli_errors` because `Path.exists()` is itself a
+    # classified-error site: pathlib only swallows ENOENT/ENOTDIR/EBADF/ELOOP,
+    # so a macOS TCC denial (EPERM) propagates out of `.exists()` rather than
+    # returning False. Unwrapped, the single-file TCC case — the one this
+    # affordance exists for — would surface a raw traceback instead of the
+    # Full Disk Access guidance. `handle_cli_errors` re-raises `typer.Exit`
+    # untouched, so the fast-fail below still exits 1 directly.
+    with handle_cli_errors():
+        if len(file_paths) == 1 and not file_paths[0].exists():
+            logger.error(f"❌ File not found: {file_paths[0]}")
+            raise typer.Exit(1)
 
     # --mapping is an alias for --override; merge both into one dict.
     combined_override = list(override or []) + list(mapping or [])
