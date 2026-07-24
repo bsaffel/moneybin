@@ -461,7 +461,6 @@ def destination_add_local(
                 actor=_ACTOR,
             )
     typer.echo(f"Saved local destination {name}: {resolved_path}")
-    typer.echo("✅ Destination saved.")
 
 
 @destination_add_app.command("sheets")
@@ -485,7 +484,6 @@ def destination_add_sheets(
             oauth_client=build_oauth_client(),
         )
     typer.echo(f"Saved Sheets destination {name}.")
-    typer.echo("✅ Destination saved.")
 
 
 @destination_app.command("remove")
@@ -513,4 +511,3 @@ def destination_remove(
                     code=error_codes.MUTATION_NOT_FOUND,
                 )
     typer.echo(f"Removed destination configuration for {name}.")
-    typer.echo("✅ Destination removed.")

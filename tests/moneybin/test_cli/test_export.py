@@ -533,6 +533,7 @@ def test_export_destination_add_local_resolves_the_saved_path(tmp_path: Path) ->
         actor="cli",
     )
     assert str(configured_path.resolve()) in result.stdout
+    assert "✅" not in result.stdout
 
 
 def test_export_destination_add_sheets_uses_service_write_oauth() -> None:
@@ -566,6 +567,7 @@ def test_export_destination_add_sheets_uses_service_write_oauth() -> None:
     assert "dashboard" in result.stdout
     assert url not in result.output
     assert "sheet_abc" not in result.output
+    assert "✅" not in result.stdout
 
 
 def test_export_destination_add_sheets_accepts_workbook_url_without_gid() -> None:
@@ -627,6 +629,7 @@ def test_export_destination_remove_deletes_configuration_only_with_yes() -> None
     assert result.exit_code == 0, result.output
     remove.assert_called_once_with("dashboard", actor="cli")
     assert "configuration" in result.stdout.lower()
+    assert "✅" not in result.stdout
 
 
 def test_export_service_errors_are_safe_stderr_with_nonzero_exit(
