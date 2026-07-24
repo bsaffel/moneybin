@@ -29,6 +29,7 @@ from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
+from moneybin.repositories.security_price_repo import SecurityPriceRepo
 from moneybin.repositories.tabular_formats_repo import TabularFormatsRepo
 from moneybin.repositories.transaction_categories_repo import (
     TransactionCategoriesRepo,
@@ -37,6 +38,7 @@ from moneybin.repositories.user_categories_repo import UserCategoriesRepo
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.doctor_service import (
     _BALANCE_ASSERTIONS_PK_EXPR,
+    _SECURITY_PRICE_OVERRIDES_PK_EXPR,
     DoctorService,
 )
 from moneybin.tables import (
@@ -51,6 +53,7 @@ from moneybin.tables import (
     PDF_FORMATS,
     PROPOSED_RULES,
     SECURITIES,
+    SECURITY_PRICE_OVERRIDES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     USER_CATEGORIES,
@@ -1091,3 +1094,67 @@ def test_pdf_formats_fingerprint_shape_passes_for_repo_saved_row(
     _save_pdf_format(PdfFormatsRepo(db), name="good_fp")
     result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
     assert result.status == "pass"
+
+
+def _bypass_price_override(db: Database, *, security_id: str) -> None:
+    """Insert a price mark WITHOUT an audit row (simulated bypass)."""
+    db.execute(
+        "INSERT INTO app.security_price_overrides "  # noqa: S608  # test input, not executing user SQL
+        "(security_id, price_date, quote_currency, close, note) "
+        "VALUES (?, DATE '2026-07-12', 'USD', 214.55, 'sneaky')",
+        [security_id],
+    )
+
+
+def test_audit_coverage_flags_price_override_bypass(db: Database) -> None:
+    """A raw write to the price-mark table must be caught by the composite pk_expr.
+
+    ``app.security_price_overrides`` is protected under Invariant 10, and its
+    three-column PK means coverage only works if the check projects the same
+    composite ``target_id`` ``SecurityPriceRepo`` emits. Registering the table
+    with the single-column fallback would silently never match.
+    """
+    _bypass_price_override(db, security_id="bypasssec001")
+    result = DoctorService(db)._run_app_audit_coverage(
+        SECURITY_PRICE_OVERRIDES,
+        "security_id",
+        pk_expr=_SECURITY_PRICE_OVERRIDES_PK_EXPR,
+    )
+    assert result.status == "fail"
+    assert "bypasssec001|2026-07-12|USD" in result.affected_ids
+
+
+def test_audit_coverage_passes_for_repo_mutated_price_override(db: Database) -> None:
+    SecurityPriceRepo(db).set(
+        "abc123def456",
+        date(2026, 7, 12),
+        "USD",
+        close=Decimal("214.55"),
+        note=None,
+        actor="cli",
+    )
+    result = DoctorService(db)._run_app_audit_coverage(
+        SECURITY_PRICE_OVERRIDES,
+        "security_id",
+        pk_expr=_SECURITY_PRICE_OVERRIDES_PK_EXPR,
+    )
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def test_price_override_coverage_is_registered_in_the_app_integrity_sweep(
+    db: Database,
+) -> None:
+    """The check must run as part of the sweep, not only when called directly.
+
+    Registering the pk_expr in the allowlist without adding the call site would
+    leave the table uncovered in every real ``doctor`` run while the two tests
+    above still passed.
+    """
+    _bypass_price_override(db, security_id="sweepsec0001")
+    names = {
+        r.name
+        for r in DoctorService(db)._run_app_integrity(full=True)
+        if r.status == "fail"
+    }
+    assert "app_audit_coverage_security_price_overrides" in names

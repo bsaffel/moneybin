@@ -43,6 +43,7 @@ from moneybin.tables import (
     PROPOSED_RULES,
     SECURITIES,
     SECURITY_LINKS,
+    SECURITY_PRICE_OVERRIDES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
@@ -63,6 +64,14 @@ _BALANCE_ASSERTIONS_PK_EXPR = (
     f"CAST({exp.to_identifier('assertion_date', quoted=True).sql('duckdb')} AS VARCHAR)"
 )
 
+# app.security_price_overrides keys on (security_id, price_date, quote_currency);
+# mirrors SecurityPriceRepo._target_id.
+_SECURITY_PRICE_OVERRIDES_PK_EXPR = (
+    f"{exp.to_identifier('security_id', quoted=True).sql('duckdb')} || '|' || "
+    f"CAST({exp.to_identifier('price_date', quoted=True).sql('duckdb')} AS VARCHAR)"
+    f" || '|' || {exp.to_identifier('quote_currency', quoted=True).sql('duckdb')}"
+)
+
 # Raw-interpolated SQL expressions allowed in `_run_app_audit_coverage`. Both
 # `updated_expr` and `pk_expr` are spliced into SQL unsanitized (a multi-column
 # expression can't be sqlglot-quoted as a single identifier), so each must be a
@@ -70,7 +79,10 @@ _BALANCE_ASSERTIONS_PK_EXPR = (
 # code-supplied-literal contract per `.claude/rules/security.md` (allowlist
 # dynamic SQL), closing the door before a future caller passes a tainted value.
 _ALLOWED_UPDATED_EXPRS = frozenset({"GREATEST(decided_at, reversed_at)"})
-_ALLOWED_PK_EXPRS = frozenset({_BALANCE_ASSERTIONS_PK_EXPR})
+_ALLOWED_PK_EXPRS = frozenset({
+    _BALANCE_ASSERTIONS_PK_EXPR,
+    _SECURITY_PRICE_OVERRIDES_PK_EXPR,
+})
 
 _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
 
@@ -268,7 +280,8 @@ class DoctorService:
         writers ``tabular_formats``, ``match_decisions``, ``imports``, the
         account-identity tables ``account_links``, ``account_link_decisions``,
         ``transaction_id_aliases``, and the investments tables ``securities``,
-        ``lot_selections``); later repository PRs append one coverage call per
+        ``lot_selections``, ``security_price_overrides``); later repository PRs
+        append one coverage call per
         newly-wrapped table plus that table's FK/orphan specifics.
 
         Tables without an ``updated_at`` column pass their natural watermark:
@@ -309,6 +322,12 @@ class DoctorService:
                 BALANCE_ASSERTIONS,
                 "account_id",
                 pk_expr=_BALANCE_ASSERTIONS_PK_EXPR,
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                SECURITY_PRICE_OVERRIDES,
+                "security_id",
+                pk_expr=_SECURITY_PRICE_OVERRIDES_PK_EXPR,
                 full=full,
             ),
             self._run_app_audit_coverage(BUDGETS, "budget_id", full=full),

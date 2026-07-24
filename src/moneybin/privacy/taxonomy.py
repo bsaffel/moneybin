@@ -458,6 +458,20 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "reversed_by": DataClass.TXN_TYPE,
     },
+    ("app", "security_price_overrides"): {
+        "security_id": DataClass.RECORD_ID,
+        # A user mark states what a security was worth on a date — the same
+        # public-reference shape as core.fct_security_prices.price_date/close,
+        # which this table feeds. Classifying the source stricter than the
+        # resolved column it flows into would be incoherent: the value is
+        # declassified downstream either way.
+        "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
+        "quote_currency": DataClass.CURRENCY,
+        "close": DataClass.AGGREGATE,
+        "note": DataClass.USER_NOTE,
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "seed_source_priority"): {
         "priority": DataClass.AGGREGATE,
         "source_type": DataClass.TXN_TYPE,
