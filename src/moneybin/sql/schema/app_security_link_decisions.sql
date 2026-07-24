@@ -8,8 +8,8 @@
    SecurityLinkDecisionsRepo (Invariant 10). */
 CREATE TABLE IF NOT EXISTS app.security_link_decisions (
     decision_id VARCHAR NOT NULL,              -- uuid4[:12]
-    ref_kind VARCHAR NOT NULL                  -- provider-ref kind under review
-        CHECK (ref_kind IN ('plaid_security_id', 'institution_security_id')),
+    ref_kind VARCHAR NOT NULL                  -- provider-ref kind under review; an ambiguous market-feed key derivation (tiingo_ticker, coingecko_slug) queues here rather than binding silently
+        CHECK (ref_kind IN ('plaid_security_id', 'institution_security_id', 'tiingo_ticker', 'coingecko_slug')),
     ref_value VARCHAR NOT NULL,                -- the unbound provider ref under review
     source_type VARCHAR NOT NULL,              -- issuing provider
     provider_ticker VARCHAR,                   -- Plaid ticker_symbol (reviewer display + match basis)

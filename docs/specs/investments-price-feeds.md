@@ -869,20 +869,21 @@ two sources), the CLI surface, and the existing investment/report integration.
 - `src/moneybin/services/price_service.py`
 - `src/moneybin/cli/commands/investments/prices.py`
 - `src/moneybin/sql/migrations/V042__widen_security_link_ref_kinds.py` (C.2) —
-  adds `tiingo_ticker` and `coingecko_slug` to the `app.security_links.ref_kind`
-  CHECK. DuckDB cannot alter a CHECK in place, so it rebuilds the table on the
-  V034/V035 idiom and `app_security_links.sql` carries the same widened CHECK for
-  fresh installs. **Outstanding:** the same widening is required on
-  `app.security_link_decisions.ref_kind` so an ambiguous derivation can be
-  queued (see the binding-certainty table above); the shipped migration and its
-  `test_v042_leaves_the_decisions_queue_narrow` test still encode the earlier,
-  reversed decision.
+  adds `tiingo_ticker` and `coingecko_slug` to the `ref_kind` CHECK on both
+  `app.security_links` (where a feed key binds) and `app.security_link_decisions`
+  (where an ambiguous derivation is queued for review, per the binding-certainty
+  table above). DuckDB cannot alter a CHECK in place, so it rebuilds each table
+  on the V034/V035 idiom, guarding the two independently so the migration stays
+  idempotent on a database where only one has been widened; both schema DDL files
+  carry the same widened CHECKs for fresh installs.
 
 ### Files to modify
 
 - `src/moneybin/sqlmesh/models/core/dim_holdings.sql` — valuation columns
-- `src/moneybin/sql/schema/app_security_links.sql` — widen the `ref_kind` CHECK
-  to match the migration, so a fresh database and a migrated one agree
+- `src/moneybin/sql/schema/app_security_links.sql` and
+  `src/moneybin/sql/schema/app_security_link_decisions.sql` — widen each
+  `ref_kind` CHECK to match the migration, so a fresh database and a migrated one
+  agree
 - `src/moneybin/extractors/plaid/extractor.py` — append `close_price` keyed by
   Plaid's own security key to `raw.security_prices` during ingestion, before the
   upsert overwrites it and before the resolver has minted a canonical id
