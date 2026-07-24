@@ -32,6 +32,7 @@ column (``user``/``auto``). The caller supplies both.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -87,6 +88,16 @@ class PendingSecurityLinkGroup:
     provider_ticker: str | None
     provider_name: str | None
     candidates: tuple[PendingSecurityLinkCandidate, ...]
+
+
+@dataclass(frozen=True)
+class SecurityLinkAcceptImpact:
+    """Stable identities and physical rows touched by a security merge."""
+
+    provisional_security_id: str
+    candidate_security_id: str
+    lot_selection_disposal_ids: tuple[str, ...]
+    blast_radius: dict[str, int]
 
 
 class SecurityLinksService:
@@ -163,9 +174,101 @@ class SecurityLinksService:
             )
         return result
 
-    def history(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def history(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
         """All decisions (any status) newest-first by ``decided_at``. Read-only."""
         return self._decisions.history(limit=limit)
+
+    def decision_by_id(self, decision_id: str) -> dict[str, Any] | None:
+        """Return one exact decision row by ID."""
+        return self._decisions.fetch_by_id(decision_id)
+
+    def accept_impact(
+        self,
+        decision_id: str,
+        *,
+        into: str,
+    ) -> SecurityLinkAcceptImpact:
+        """Preview stable identities and rows the security merge will mutate."""
+        decision = self._require_pending(decision_id)
+        if into != decision["candidate_security_id"]:
+            raise UserError(
+                "into does not match the candidate named in decision "
+                f"{decision_id!r}; pass the decision's own "
+                "candidate_security_id as a confirming safety check.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        survivor = str(decision["candidate_security_id"])
+        provisional = self._links.lookup(
+            ref_kind=decision["ref_kind"],
+            ref_value=decision["ref_value"],
+            source_type=decision["source_type"],
+        )
+        if provisional is None:
+            raise UserError(
+                "No accepted binding exists for the provider ref under review; "
+                f"decision {decision_id!r} has nothing to merge away.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+        if provisional == survivor:
+            raise UserError(
+                f"The ref in decision {decision_id!r} is already bound to the "
+                "candidate security; there is nothing to merge.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+        if self._security_created_by(provisional) != "plaid":
+            raise UserError(
+                f"The security bound to decision {decision_id!r} is "
+                "user-authored; user-authored securities are never merged away.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+        if not self._security_exists(survivor):
+            raise UserError(
+                f"No security found for id {survivor!r}.",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        plan = self._plan_lot_selections(provisional, survivor)
+        lot_selection_count = sum(
+            len(self._lot_selections.list_for_disposal(disposal_id))
+            for disposal_id in plan
+        )
+        link_count_row = self._db.execute(
+            f"SELECT COUNT(*) FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE security_id = ? AND status = 'accepted'",
+            [provisional],
+        ).fetchone()
+        sibling_count_row = self._db.execute(
+            f"""
+            SELECT COUNT(*) FROM {SECURITY_LINK_DECISIONS.full_name}
+            WHERE source_type = ?
+              AND ref_kind = ?
+              AND ref_value = ?
+              AND decision_id != ?
+              AND status = 'pending'
+              AND reversed_at IS NULL
+            """,  # noqa: S608  # TableRef constants + parameterized values
+            [
+                decision["source_type"],
+                decision["ref_kind"],
+                decision["ref_value"],
+                decision_id,
+            ],
+        ).fetchone()
+        return SecurityLinkAcceptImpact(
+            provisional_security_id=provisional,
+            candidate_security_id=survivor,
+            lot_selection_disposal_ids=tuple(sorted(plan)),
+            blast_radius={
+                "securities": 2,
+                "security_links": int(link_count_row[0]) if link_count_row else 0,
+                "security_link_decisions": (
+                    1 + int(sibling_count_row[0]) if sibling_count_row else 1
+                ),
+                "lot_selections": lot_selection_count,
+                "manual_investment_transactions": len(
+                    self._manual_events.list_ids_for_security(provisional)
+                ),
+            },
+        )
 
     def _security_display(self, security_id: str) -> tuple[str | None, str | None]:
         """(ticker, name) for ``security_id`` from ``app.securities``; ``(None, None)`` if absent."""
@@ -180,7 +283,13 @@ class SecurityLinksService:
     # Mutations
     # ------------------------------------------------------------------
 
-    def reject_merge(self, decision_id: str, *, decided_by: str = "user") -> None:
+    def reject_merge(
+        self,
+        decision_id: str,
+        *,
+        decided_by: str = "user",
+        in_outer_txn: bool = False,
+    ) -> None:
         """Reject one merge proposal; the provisional security is kept.
 
         The reviewer is asserting the provider security genuinely is a distinct
@@ -196,7 +305,8 @@ class SecurityLinksService:
 
         Raises ``UserError`` when the decision is unknown or not pending.
         """
-        self._db.begin()
+        if not in_outer_txn:
+            self._db.begin()
         try:
             self._require_pending(decision_id)
             self._decisions.update_status(
@@ -206,10 +316,14 @@ class SecurityLinksService:
                 actor=self._actor,
                 in_outer_txn=True,
             )
-            self._db.commit()
+            if not in_outer_txn:
+                self._db.commit()
         except BaseException:
-            self._db.rollback()
+            if not in_outer_txn:
+                self._db.rollback()
             raise
+        if in_outer_txn:
+            return
         SECURITY_LINK_DECISION_OUTCOMES_TOTAL.labels(outcome="rejected").inc()
         logger.info(f"security merge rejected: decision={decision_id}")
 
@@ -220,8 +334,24 @@ class SecurityLinksService:
 
         refresh_security_link_pending_gauge(self._db)
 
+    def record_committed_outer_outcomes(self, outcomes: tuple[str, ...]) -> None:
+        """Record metrics after an enclosing transaction commits."""
+        for outcome in outcomes:
+            SECURITY_LINK_DECISION_OUTCOMES_TOTAL.labels(outcome=outcome).inc()
+        from moneybin.services.security_resolver import (  # noqa: PLC0415
+            refresh_security_link_pending_gauge,
+        )
+
+        refresh_security_link_pending_gauge(self._db)
+
     def accept_merge(
-        self, decision_id: str, *, into: str, decided_by: str = "user"
+        self,
+        decision_id: str,
+        *,
+        into: str,
+        decided_by: str = "user",
+        verify_accept: Callable[[SecurityLinkAcceptImpact], None] | None = None,
+        in_outer_txn: bool = False,
     ) -> None:
         """Merge the provisional security into the decision's candidate, atomically.
 
@@ -276,7 +406,8 @@ class SecurityLinksService:
         - A lot selection cannot be remapped, or ``core`` is not materialized and
           selections exist (MUTATION_CONSTRAINT_VIOLATION).
         """
-        self._db.begin()
+        if not in_outer_txn:
+            self._db.begin()
         try:
             decision = self._require_pending(decision_id)
             if into != decision["candidate_security_id"]:
@@ -324,6 +455,8 @@ class SecurityLinksService:
             # Plan (and validate) BEFORE the first write: a blocked merge should
             # not depend on rollback to leave the database untouched.
             plan = self._plan_lot_selections(provisional, survivor)
+            if verify_accept is not None:
+                verify_accept(self.accept_impact(decision_id, into=into))
 
             event = self._decisions.update_status(
                 decision_id,
@@ -363,10 +496,14 @@ class SecurityLinksService:
                 parent_audit_id=parent_audit_id,
                 in_outer_txn=True,
             )
-            self._db.commit()
+            if not in_outer_txn:
+                self._db.commit()
         except BaseException:
-            self._db.rollback()
+            if not in_outer_txn:
+                self._db.rollback()
             raise
+        if in_outer_txn:
+            return
 
         SECURITY_LINK_DECISION_OUTCOMES_TOTAL.labels(outcome="accepted").inc()
         logger.info(

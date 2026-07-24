@@ -31,7 +31,7 @@ declaration covers.
 > this spec proposed *deriving* internal-schema classes automatically via
 > the `sql_lineage` graph, "self-maintaining, no hand-authored registry."
 > [ADR-013](../decisions/013-report-classification-declared.md) already
-> rejected exactly that, verified against all eight real report views:
+> rejected exactly that. As a current runtime invariant, seven SQLMesh report views back eight report routes:
 > SQLMesh deploys every `kind VIEW` model as `SELECT * FROM
 > <internal physical table>`, so runtime lineage classifies the pointer,
 > not the logic, and CRITICAL columns **leak in the clear**; and lineage
@@ -49,8 +49,8 @@ declaration covers.
 (`_ALLOWED_QUERY_SCHEMAS` in `privacy/sql_query.py`). The reason is
 sound: CRITICAL columns (account/routing numbers) are masked by
 resolving each output column's `DataClass`, and only `core`/`app` are in
-the `CLASSIFICATION` registry. An unclassified-schema query hits the
-`_fallback_class` default of `AGGREGATE` (unmasked) and would return
+the `CLASSIFICATION` registry. An unclassified-schema query hits
+`_conservative_floor`'s `AGGREGATE` default (unmasked) and would return
 account numbers in the clear — the module docstring flags this.
 
 ### Two problems the fence creates
@@ -79,7 +79,7 @@ account numbers in the clear — the module docstring flags this.
 
 ### Curated reports aren't queryable either
 `reports.*` views already carry declared privacy classes (ADR-013) and
-back the `reports_*` tools, but `sql_query` still refuses the `reports`
+back entries in the `reports` catalog, but `sql_query` still refuses the `reports`
 schema — so an agent can't join a report against `core` or filter it
 ad hoc.
 

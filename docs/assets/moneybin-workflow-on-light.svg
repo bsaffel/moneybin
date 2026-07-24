@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" role="img" aria-labelledby="title description">
+  <title id="title">MoneyBin data flow</title>
+  <desc id="description">Downloaded Files, Linked Accounts, and Connected Sheets flow into an Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#8A6A1C"/>
+    </marker>
+    <style>
+      /* Light-theme tokens (design-system/tokens/colors.css [data-theme="light"]) */
+      .box { fill: #FDFCF9; stroke: #C9C3B6; stroke-width: 1.5; }
+      .core { fill: #EFE6CF; stroke: #8A6A1C; stroke-width: 2; }
+      .label { fill: #1C1A16; font: 600 19px system-ui, sans-serif; text-anchor: middle; }
+      .core-label { fill: #1C1A16; font: 600 24px system-ui, sans-serif; text-anchor: middle; }
+      .sub { fill: #5C564C; font: 15px system-ui, sans-serif; text-anchor: middle; }
+      .arrow { fill: none; stroke: #8A6A1C; stroke-width: 2; stroke-linecap: round; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect class="box" x="35" y="60" width="230" height="80" rx="12"/>
+  <text class="label" x="150" y="92">Downloaded Files</text>
+  <text class="sub" x="150" y="117">CSV · OFX · PDF</text>
+  <rect class="box" x="35" y="210" width="230" height="80" rx="12"/>
+  <text class="label" x="150" y="242">Linked Accounts</text>
+  <text class="sub" x="150" y="267">Plaid</text>
+  <rect class="box" x="35" y="360" width="230" height="80" rx="12"/>
+  <text class="label" x="150" y="392">Connected Sheets</text>
+  <text class="sub" x="150" y="417">Google Sheets</text>
+  <rect class="core" x="395" y="190" width="210" height="120" rx="14"/>
+  <text class="core-label" x="500" y="239">Encrypted Local</text>
+  <text class="core-label" x="500" y="271">DuckDB</text>
+  <rect class="box" x="735" y="60" width="230" height="80" rx="12"/>
+  <text class="label" x="850" y="108">CLI</text>
+  <rect class="box" x="735" y="210" width="230" height="80" rx="12"/>
+  <text class="label" x="850" y="258">SQL</text>
+  <rect class="box" x="735" y="360" width="230" height="80" rx="12"/>
+  <text class="label" x="850" y="408">MCP</text>
+  <path class="arrow" d="M265,100 H285 C345,100 315,215 375,215 H395"/>
+  <path class="arrow" d="M265,250 H395"/>
+  <path class="arrow" d="M265,400 H285 C345,400 315,285 375,285 H395"/>
+  <path class="arrow" d="M605,215 H625 C685,215 655,100 715,100 H735"/>
+  <path class="arrow" d="M605,250 H735"/>
+  <path class="arrow" d="M605,285 H625 C685,285 655,400 715,400 H735"/>
+</svg>

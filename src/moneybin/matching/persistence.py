@@ -179,7 +179,7 @@ def get_rejected_pairs(
 
 
 def get_match_log(
-    db: Database, *, limit: int = 50, match_type: str | None = None
+    db: Database, *, limit: int | None = 50, match_type: str | None = None
 ) -> list[dict[str, Any]]:
     """Return recent match *decisions* for display.
 
@@ -194,13 +194,16 @@ def get_match_log(
             raise ValueError(f"Invalid match_type: {match_type!r}")
         where += " AND match_type = ?"
         params.append(match_type)
-    params.append(limit)
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = "LIMIT ?"
+        params.append(limit)
     rows = db.execute(
         f"""
         SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
         {where}
-        ORDER BY decided_at DESC
-        LIMIT ?
+        ORDER BY decided_at DESC, match_id DESC
+        {limit_clause}
         """,  # noqa: S608 — match_type validated above; limit is parameterized
         params,
     ).fetchall()

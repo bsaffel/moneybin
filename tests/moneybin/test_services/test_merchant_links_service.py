@@ -16,7 +16,10 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.repositories.merchant_link_decisions_repo import MerchantLinkDecisionsRepo
 from moneybin.repositories.merchant_links_repo import MerchantLinksRepo
-from moneybin.services.merchant_links_service import MerchantLinksService
+from moneybin.services.merchant_links_service import (
+    MerchantLinkAcceptImpact,
+    MerchantLinksService,
+)
 
 # ---------------------------------------------------------------------------
 # Seeded constants
@@ -82,6 +85,74 @@ def test_count_pending_one(db: Database, seeded_pending_decision: None) -> None:
     """One pending after seeding a single decision."""
     svc = MerchantLinksService(db)
     assert svc.count_pending() == 1
+
+
+# ---------------------------------------------------------------------------
+# accept_impact
+# ---------------------------------------------------------------------------
+
+
+def test_accept_impact_counts_binding_and_every_decision_row(
+    db: Database, seeded_pending_decision: None
+) -> None:
+    """Impact includes the inserted link and named plus sibling decisions."""
+    MerchantLinkDecisionsRepo(db).insert(
+        decision_id="d_sibling",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type=_SOURCE_TYPE,
+        candidate_merchant_id="mSibling",
+        confidence_score=0.4,
+        match_signals={"signal": "fuzzy_name", "value": "sibling"},
+        decided_by="auto",
+        actor="system",
+    )
+    _seed_merchants(db, _CANDIDATE_MERCHANT_ID)
+
+    impact = MerchantLinksService(db).accept_impact(
+        _DECISION_ID,
+        target_merchant_id=_CANDIDATE_MERCHANT_ID,
+    )
+
+    assert impact.candidate_merchant_id == _CANDIDATE_MERCHANT_ID
+    assert impact.blast_radius == {
+        "merchants": 1,
+        "merchant_links": 1,
+        "merchant_link_decisions": 2,
+    }
+
+
+def test_accept_verifier_receives_live_impact_and_failure_rolls_back(
+    db: Database, seeded_pending_decision: None
+) -> None:
+    """Verification sees live counts before the link or decision is written."""
+    _seed_merchants(db, _CANDIDATE_MERCHANT_ID)
+    verified = False
+
+    def refuse(impact: MerchantLinkAcceptImpact) -> None:
+        nonlocal verified
+        verified = True
+        assert impact.blast_radius == {
+            "merchants": 1,
+            "merchant_links": 1,
+            "merchant_link_decisions": 1,
+        }
+        decision = MerchantLinkDecisionsRepo(db).fetch_by_id(_DECISION_ID)
+        assert decision is not None and decision["status"] == "pending"
+        assert MerchantLinksRepo(db).lookup(_SOURCE_TYPE, _REF_VALUE) is None
+        raise UserError("Confirmation mismatch", code="mutation_confirmation_mismatch")
+
+    with pytest.raises(UserError, match="Confirmation mismatch"):
+        MerchantLinksService(db).set(
+            _DECISION_ID,
+            target_merchant_id=_CANDIDATE_MERCHANT_ID,
+            verify_accept=refuse,
+        )
+
+    assert verified
+    decision = MerchantLinkDecisionsRepo(db).fetch_by_id(_DECISION_ID)
+    assert decision is not None and decision["status"] == "pending"
+    assert MerchantLinksRepo(db).lookup(_SOURCE_TYPE, _REF_VALUE) is None
 
 
 # ---------------------------------------------------------------------------

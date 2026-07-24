@@ -1,12 +1,27 @@
 """Tests for the generic import_log module."""
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import Database
 from moneybin.loaders import import_log
 from moneybin.services.import_service import ImportService
+
+
+def test_get_import_history_preserves_legacy_started_at_only_query() -> None:
+    """The live import-status helper keeps its frozen ordering behavior."""
+    db = MagicMock(spec=Database)
+    db.execute.return_value.fetchall.return_value = []
+
+    import_log.get_import_history(db, limit=7)
+
+    query, params = db.execute.call_args.args
+    assert "ORDER BY started_at DESC\n            LIMIT ?" in query
+    assert "import_id DESC" not in query
+    assert "OFFSET" not in query
+    assert params == [7]
 
 
 class TestBeginImport:

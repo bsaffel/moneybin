@@ -10,9 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 
 from moneybin.database import get_database
+from moneybin.mcp.surface import ADMITTED_OUTPUT_SCHEMA_NAMES, STANDARD_TOOL_COUNT
 from moneybin.mcp.tools.accounts import accounts, register_accounts_tools
 from moneybin.mcp.tools.reports import register_reports_tools
 from moneybin.mcp.tools.sql import register_sql_tools, sql_query, sql_schema
@@ -40,24 +41,24 @@ _INSERT_TRANSACTIONS = """
 class TestToolRegistration:
     """Verify tools register correctly and produce envelope responses."""
 
+    @pytest.mark.integration
+    async def test_live_registry_advertises_no_output_schemas(self) -> None:
+        from moneybin.mcp.server import init_db, mcp
+
+        init_db()
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+
+        assert len(tools) == STANDARD_TOOL_COUNT
+        advertised = frozenset(tool.name for tool in tools if tool.outputSchema)
+        assert advertised == ADMITTED_OUTPUT_SCHEMA_NAMES
+
     @pytest.mark.unit
     async def test_reports_tools_register(self) -> None:
         srv = FastMCP("test")
         register_reports_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        assert "reports_networth" in names
-        assert "reports_networth_history" in names
-        assert "reports_spending" in names
-        assert "reports_cashflow" in names
-        assert "reports_recurring" in names
-        assert "reports_merchants" in names
-        assert "reports_large_transactions" in names
-        assert "reports_balance_drift" in names
-        # reports_uncategorized removed — use transactions_categorize_pending instead
-        assert "reports_uncategorized" not in names
-        # Removed v1 tools should be gone
-        assert "reports_spending_summary" not in names
-        assert "reports_spending_by_category" not in names
+        assert names == {"reports"}
 
     @pytest.mark.unit
     async def test_accounts_tools_register(self) -> None:
@@ -65,28 +66,21 @@ class TestToolRegistration:
         srv = FastMCP("test")
         register_accounts_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        # v2 entity tools (rename/include/archive/unarchive folded into accounts_set)
-        assert "accounts" in names
-        assert "accounts_get" in names
-        assert "accounts_summary" in names
-        assert "accounts_set" in names
-        # v2 balance tools
-        assert "accounts_balances" in names
-        assert "accounts_balance_history" in names
-        assert "accounts_balance_reconcile" in names
-        assert "accounts_balance_assertions" in names
-        assert "accounts_balance_assert" in names
-        assert "accounts_balance_assertion_delete" in names
+        assert names == {
+            "accounts",
+            "accounts_set",
+            "accounts_balances",
+            "accounts_balance_assert",
+        }
 
     @pytest.mark.unit
     async def test_accounts_returns_envelope(self, mcp_db: object) -> None:
 
-        result = await accounts()
+        result = accounts()
         parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
-        # AccountSummary has account_id: ACCOUNT_IDENTIFIER → Tier.CRITICAL
-        assert parsed["summary"]["sensitivity"] == "critical"
+        assert parsed["summary"]["sensitivity"] == "low"
         # data is now a typed payload dict with a "rows" key
         assert len(parsed["data"]["rows"]) == 2  # 2 accounts from mcp_db fixture
 
@@ -95,7 +89,7 @@ class TestToolRegistration:
         self, mcp_db: object
     ) -> None:
         """Middleware handles CRITICAL masking; the service always returns full fields."""
-        result = await accounts()
+        result = accounts()
         parsed = result.to_dict()
         # All AccountSummary rows have last_four and credit_limit fields present
         for account in parsed["data"]["rows"]:

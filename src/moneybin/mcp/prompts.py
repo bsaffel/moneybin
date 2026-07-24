@@ -4,14 +4,14 @@ Goal-oriented prompts that guide AI assistants through financial workflows.
 Each defines a goal, relevant tools, guardrails, and decision points —
 not step-by-step scripts.
 
-See ``moneybin-mcp.md`` section 14.
+See ``docs/specs/moneybin-mcp.md`` for the current prompt and resource contract.
 """
 
 from __future__ import annotations
 
 import textwrap
 
-from .server import mcp
+from fastmcp import FastMCP
 
 
 def _dedent(text: str) -> str:
@@ -19,7 +19,6 @@ def _dedent(text: str) -> str:
     return textwrap.dedent(text).strip()
 
 
-@mcp.prompt()
 def monthly_review() -> str:
     """Monthly financial review — spending, budget status, and trends."""
     return _dedent("""
@@ -29,18 +28,18 @@ def monthly_review() -> str:
         that needs attention.
 
         **Relevant tools:**
-        - reports_spending — monthly spending trend with MoM/YoY deltas
-        - reports_cashflow — inflow/outflow/net per account x category
+        - reports(report_id='core:spending') — monthly spending trend
+        - reports(report_id='core:cashflow') — inflow/outflow/net
         - accounts_balances — current account balances
-        - reports_recurring — subscription/recurring charge review
+        - reports(report_id='core:recurring') — recurring charge review
 
         **Workflow:**
-        1. Start with reports_spending for the last 1-2 months
-        2. If spending is above average, drill into reports_spending with a
-           specific ``category`` filter, or use reports_cashflow for an
-           account-and-category breakdown
+        1. Start with reports(report_id='core:spending') for the last 1-2 months
+        2. If spending is above average, rerun reports with
+           report_id='core:spending' and a category parameter, or use
+           report_id='core:cashflow' for an account-and-category breakdown
         3. Review accounts_balances for current position
-        4. Optionally check reports_recurring for subscription review
+        4. Optionally run reports(report_id='core:recurring')
 
         **Guardrails:**
         - Present totals and trends, not individual transaction details unless asked
@@ -50,7 +49,6 @@ def monthly_review() -> str:
     """)
 
 
-@mcp.prompt()
 def categorization_organize() -> str:
     """Organize uncategorized transactions into categories."""
     return _dedent("""
@@ -60,18 +58,20 @@ def categorization_organize() -> str:
         using a mix of rules and direct categorization.
 
         **Relevant tools:**
-        - transactions_categorize_stats — check current categorization coverage
-        - transactions_categorize_pending — fetch uncategorized transactions
-        - categories — see available categories
+        - system_status(sections=['categorization']) — check coverage
+        - reviews(kind='categorization', status='pending') — fetch the queue
+        - taxonomy(view='categories') — see available categories
         - transactions_categorize_commit — commit accepted categorizations
-        - transactions_categorize_rules_create — create rules for recurring patterns
-        - merchants_create — map merchant names to categories
+        - transactions_categorize_rules_set — create recurring rules
+        - taxonomy_set — create or update merchant mappings
 
         **Workflow:**
-        1. Check transactions_categorize_stats to see how many are uncategorized
-        2. Fetch a batch with transactions_categorize_pending (limit ~20)
+        1. Check system_status(sections=['categorization'])
+        2. Fetch a batch with reviews(kind='categorization',
+           status='pending', limit=20)
         3. Group similar transactions by description pattern
-        4. For repeating patterns, suggest a rule (transactions_categorize_rules_create)
+        4. For repeating patterns, suggest a rule and submit its full target
+           state with transactions_categorize_rules_set
         5. For one-offs, use transactions_categorize_commit directly
         6. Repeat until coverage is acceptable
 
@@ -83,39 +83,42 @@ def categorization_organize() -> str:
     """)
 
 
-@mcp.prompt()
 def review_auto_rules() -> str:
-    """Review proposed auto-categorization rules and approve or reject them."""
+    """Review persisted categorization rules and apply confirmed state changes."""
     return _dedent("""
-        Help me review proposed auto-categorization rules. Show pending
-        proposals with sample transactions, explain the pattern, and let
-        me approve or reject them.
+        Help me review the persisted categorization rules that MoneyBin can
+        currently read and change.
 
-        **Goal:** Walk the user through pending auto-rule proposals so
-        they can promote useful rules to active and reject noisy ones.
+        **Goal:** Audit active rule behavior and prior rule changes, then apply
+        only the full target states the user confirms.
 
         **Relevant tools:**
-        - transactions_categorize_stats(include_auto=True) — pending proposal count and rule health
-        - transactions_categorize_auto_review — list pending proposals with samples
-        - transactions_categorize_auto_accept — batch approve/reject proposals by ID
-        - transactions_categorize_rules — review currently active rules
+        - system_status(sections=['categorization'], detail='full') — coverage
+          and aggregate automatic-rule health
+        - transactions_categorize_rules(view='active') — current active rules
+        - transactions_categorize_rules(view='history') — prior rule state changes
+        - transactions_categorize_rules_set — declare confirmed target states
+        - transactions_categorize_run — apply active rules to uncategorized rows
 
         **Workflow:**
-        1. Check transactions_categorize_stats(include_auto=True) for pending proposal count
-        2. Fetch proposals with transactions_categorize_auto_review
-        3. For each proposal, show the merchant pattern, suggested
-           category, sample matching transactions, and trigger count
-        4. Group user decisions and submit them with transactions_categorize_auto_accept
+        1. Check system_status(sections=['categorization'], detail='full')
+        2. Read transactions_categorize_rules(view='active')
+        3. Use transactions_categorize_rules(view='history') when the user
+           needs context about a rule's prior changes
+        4. Explain each selected rule's matcher, category, priority, and state
+        5. Confirm the batch, then submit full target states with
+           transactions_categorize_rules_set
+        6. If requested, call transactions_categorize_run(methods=['rules'])
+           to apply the surviving active rules to uncategorized rows
 
         **Guardrails:**
-        - Always show sample transactions before asking for approval
-        - Flag proposals that seem overly broad or ambiguous
-        - Confirm batches with the user before submitting auto_accept
-        - Approved rules categorize matching transactions immediately
+        - Do not infer evidence that the rule read contract does not return
+        - Flag matchers that look overly broad or ambiguous
+        - Confirm every target-state batch before changing persisted rules
+        - Creating a rule and running the categorizer are separate operations
     """)
 
 
-@mcp.prompt()
 def onboarding() -> str:
     """First-time setup — import data and establish baseline."""
     return _dedent("""
@@ -126,17 +129,18 @@ def onboarding() -> str:
 
         **Relevant tools:**
         - import_files — import one or more financial data files
-        - import_formats — see supported formats
+        - import_status(sections=['formats']) — see supported formats
         - accounts — verify imported accounts
-        - transactions_categorize_stats — check categorization coverage
-        - reports_spending — first look at their data
+        - system_status(sections=['categorization']) — check coverage
+        - reports(report_id='core:spending') — first look at their data
 
         **Workflow:**
         1. Ask the user what files they have (OFX/QFX, CSV)
         2. Import the user's files in one call to import_files (pass a list of paths)
         3. Verify with accounts that accounts were created
-        4. Check transactions_categorize_stats — if many uncategorized, offer to help
-        5. Show reports_spending as their first financial snapshot
+        4. Check system_status(sections=['categorization']); if many are
+           uncategorized, offer to help
+        5. Show reports(report_id='core:spending') as the first snapshot
 
         Default categories are seeded automatically by `moneybin db init`
         and `moneybin transform apply`.
@@ -149,7 +153,6 @@ def onboarding() -> str:
     """)
 
 
-@mcp.prompt()
 def curate_recent_transactions() -> str:
     """Walk the user through curating recently-imported transactions."""
     return _dedent("""
@@ -160,22 +163,22 @@ def curate_recent_transactions() -> str:
         next analysis pass has consistent metadata.
 
         **Relevant tools:**
-        - transactions_get — fetch recent rows; pair with system_audit to
+        - transactions — fetch recent rows; pair with system_audit to
           spot gaps (no note.add / tag.add events on a transaction_id).
-        - transactions_tags_set — declarative tag replacement (idempotent).
-        - transactions_notes_add — append a curator note.
+        - transactions_annotate — batch stable-ID note lifecycle and tag states.
         - system_audit — sanity check what already happened.
 
         **Workflow:**
-        1. Call transactions_get with a recent date window (e.g., last 30 days,
+        1. Call transactions with a recent date window (e.g., last 30 days,
            limit 50). Preserve transaction_id, description, amount, account_id.
         2. For each row, propose a small set of slug-pattern tags
            (^[a-z0-9_-]+(:[a-z0-9_-]+)?$) and an optional note. Keep tags short
            and reusable; reuse existing tags when possible (a prior
-           system_audit with action_pattern='tag.%' helps here).
+           system_audit(view='events', limit=500) helps identify existing tag
+           activity; filter the returned events locally).
         3. Confirm the batch with the user before mutating.
-        4. Apply: transactions_tags_set per row, transactions_notes_add for any
-           row where a note adds context the description does not.
+        4. Apply one transactions_annotate batch containing the confirmed tag
+           target states and notes.
 
         **Guardrails:**
         - Tags are slugs — ASCII alnum + `_`/`-`, optional single namespace.
@@ -185,7 +188,6 @@ def curate_recent_transactions() -> str:
     """)
 
 
-@mcp.prompt()
 def review_curation_history() -> str:
     """Summarize the last 7 days of curation activity from the audit log."""
     return _dedent("""
@@ -197,25 +199,69 @@ def review_curation_history() -> str:
         last week without forcing them to read raw audit rows.
 
         **Relevant tools:**
-        - system_audit — pull recent events. Call with limit=500 and
-          filters['from'] set to seven days ago (ISO timestamp).
-        - The result `data[]` already includes action, actor, target_table,
+        - system_audit — pull recent events with
+          system_audit(view='events', limit=500).
+        - The result `data.events[]` already includes action, actor, target_table,
           target_id, before/after, parent_audit_id.
 
         **Workflow:**
-        1. Call system_audit with from = (now - 7 days) and limit=500.
-        2. Group by `action_pattern` prefix: note.*, tag.*, split.*,
+        1. Call system_audit(view='events', limit=500), then filter returned
+           events to the last seven days locally.
+        2. Group returned event actions locally by prefix: note.*, tag.*, split.*,
            import.*, manual.*, category.*.
         3. Report counts per group, top 3 actors, and any noteworthy
            outliers (parent tag.rename events, large split.clear bursts).
-        4. Offer drill-down via further system_audit calls
-           (e.g., action_pattern='tag.rename') if the user asks.
+        4. Offer drill-down with system_audit(view='detail', audit_id=...) or
+           system_audit(view='detail', operation_id=...) if the user asks.
 
         **Guardrails:**
         - Read-only — do not mutate state from this prompt.
         - Do not echo raw before/after values for high-sensitivity rows;
           summarize counts instead.
     """)
+
+
+def sync_review() -> str:
+    """Review sync health and suggest the next action."""
+    return _dedent("""
+        Review my MoneyBin sync state and flag anything that needs attention.
+
+        **Relevant tools:**
+        - sync_status — list connected institutions with last-sync time, status,
+          and error guidance.
+        - reports(report_id='core:spending') — optional,
+          aggregate context for recent transaction volume.
+
+        **Workflow:**
+        1. Call sync_status first.
+        2. Use reports(report_id='core:spending') only when
+           aggregate volume context would clarify an anomaly.
+        3. Report errors, stale institutions (last sync older than seven days),
+           and material volume anomalies. Quote the relevant action hint and
+           recommend one next action, or say no action is needed.
+
+        **Guardrails:**
+        - Do not include account numbers, balances, individual transaction
+          descriptions, or merchant names.
+        - Use counts, dates, status codes, and institution names only.
+    """)
+
+
+PROMPT_FUNCTIONS = (
+    monthly_review,
+    categorization_organize,
+    review_auto_rules,
+    onboarding,
+    curate_recent_transactions,
+    review_curation_history,
+    sync_review,
+)
+
+
+def register_prompts(mcp: FastMCP) -> None:
+    """Register the complete central prompt set on one MCP server."""
+    for prompt in PROMPT_FUNCTIONS:
+        mcp.prompt()(prompt)
 
 
 # tax_prep prompt removed alongside the W-2 extraction pipeline.

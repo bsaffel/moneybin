@@ -5,23 +5,59 @@ from __future__ import annotations
 import json
 from datetime import date
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
-from moneybin.privacy.payloads.networth import (
-    NetWorthAccountRow,
-    NetWorthHistoryPayload,
-    NetWorthSnapshotPayload,
-)
+from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.reports._framework.execute import ReportResult
 
 
 @pytest.fixture
 def runner() -> CliRunner:
     """Return a Typer/Click CliRunner."""
     return CliRunner()
+
+
+def _result(records: list[dict[str, object]]) -> ReportResult:
+    columns = list(records[0]) if records else []
+    return ReportResult(
+        records=records,
+        columns=columns,
+        output_classes=dict.fromkeys(columns, DataClass.AGGREGATE),
+        tier=Tier.LOW,
+        total_count=len(records),
+        truncated=False,
+    )
+
+
+def _snapshot_result(
+    *,
+    balance_date: date | None = date(2026, 1, 31),
+    net_worth: Decimal | None = Decimal("12500.00"),
+    total_assets: Decimal | None = Decimal("15000.00"),
+    total_liabilities: Decimal | None = Decimal("-2500.00"),
+    account_count: int = 3,
+    account_id: str | None = "****acct_a",
+    account_name: str | None = "Checking",
+    account_balance: Decimal | None = Decimal("5000.00"),
+    observation_source: str | None = "ofx",
+) -> ReportResult:
+    return _result([
+        {
+            "balance_date": balance_date,
+            "net_worth": net_worth,
+            "total_assets": total_assets,
+            "total_liabilities": total_liabilities,
+            "account_count": account_count,
+            "account_id": account_id,
+            "account_name": account_name,
+            "account_balance": account_balance,
+            "observation_source": observation_source,
+        }
+    ])
 
 
 class TestReportsHelp:
@@ -40,53 +76,30 @@ class TestReportsNetworth:
 
     @pytest.mark.unit
     def test_returns_snapshot(self, runner: CliRunner) -> None:
-        snapshot = NetWorthSnapshotPayload(
-            balance_date=date(2026, 1, 31),
-            net_worth=Decimal("12500.00"),
-            total_assets=Decimal("15000.00"),
-            total_liabilities=Decimal("-2500.00"),
-            account_count=3,
-            per_account=[
-                NetWorthAccountRow(
-                    account_id="acct_a",
-                    display_name="Checking",
-                    balance=Decimal("5000.00"),
-                    observation_source="ofx",
-                ),
-            ],
-        )
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
-                "moneybin.cli.commands.reports.networth.NetworthService"
-            ) as mock_service_class,
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
         ):
-            mock_service_class.return_value.current.return_value = snapshot
+            mock_catalog.return_value.execute.return_value = _snapshot_result()
             result = runner.invoke(app, ["reports", "networth", "--output", "json"])
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
         assert payload["status"] == "ok"
-        assert payload["data"]["account_count"] == 3
+        assert payload["data"][0]["account_count"] == 3
 
     @pytest.mark.unit
     def test_as_of_date(self, runner: CliRunner) -> None:
-        # Real typed payload — MagicMock would trigger PrivacyContractError in
-        # the JSON path's redaction gate, which has no Annotated metadata.
-        snapshot = NetWorthSnapshotPayload(
-            balance_date=date(2026, 1, 1),
-            net_worth=Decimal("0"),
-            total_assets=Decimal("0"),
-            total_liabilities=Decimal("0"),
-            account_count=0,
-            per_account=[],
-        )
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
-                "moneybin.cli.commands.reports.networth.NetworthService"
-            ) as mock_service_class,
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
         ):
-            mock_service_class.return_value.current.return_value = snapshot
+            mock_catalog.return_value.execute.return_value = _snapshot_result(
+                balance_date=date(2026, 1, 1)
+            )
             result = runner.invoke(
                 app,
                 [
@@ -99,25 +112,51 @@ class TestReportsNetworth:
                 ],
             )
         assert result.exit_code == 0, result.stderr
-        call_kwargs = mock_service_class.return_value.current.call_args.kwargs
-        assert call_kwargs.get("as_of_date") == date(2026, 1, 1)
+        call_kwargs = mock_catalog.return_value.execute.call_args.kwargs
+        assert call_kwargs["report_id"] == "core:networth"
+        assert call_kwargs["parameters"]["as_of"] == "2026-01-01"
+
+    @pytest.mark.unit
+    def test_no_data_renders_null_snapshot_coherently(self, runner: CliRunner) -> None:
+        snapshot = _snapshot_result(
+            balance_date=None,
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            account_count=0,
+            account_id=None,
+            account_name=None,
+            account_balance=None,
+            observation_source=None,
+        )
+        with (
+            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = snapshot
+            text_result = runner.invoke(app, ["reports", "networth"])
+            json_result = runner.invoke(
+                app,
+                ["reports", "networth", "--output", "json"],
+            )
+
+        assert text_result.exit_code == 0, text_result.stderr
+        assert text_result.stdout.strip() == "No net worth data available."
+        assert json_result.exit_code == 0, json_result.stderr
+        payload = json.loads(json_result.stdout)
+        assert payload["data"] == snapshot.records
 
     @pytest.mark.unit
     def test_account_filter(self, runner: CliRunner) -> None:
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
-                "moneybin.cli.commands.reports.networth.NetworthService"
-            ) as mock_service_class,
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
         ):
-            mock_service_class.return_value.current.return_value = MagicMock(
-                balance_date=date(2026, 1, 31),
-                net_worth=Decimal("0"),
-                total_assets=Decimal("0"),
-                total_liabilities=Decimal("0"),
-                account_count=0,
-                per_account=[],
-            )
+            mock_catalog.return_value.execute.return_value = _snapshot_result()
             result = runner.invoke(
                 app,
                 [
@@ -130,8 +169,8 @@ class TestReportsNetworth:
                 ],
             )
         assert result.exit_code == 0, result.stderr
-        call_kwargs = mock_service_class.return_value.current.call_args.kwargs
-        assert call_kwargs.get("account_ids") == ["acct_a", "acct_b"]
+        call_kwargs = mock_catalog.return_value.execute.call_args.kwargs
+        assert call_kwargs["parameters"]["account_ids"] == ["acct_a", "acct_b"]
 
 
 class TestReportsNetworthHistory:
@@ -144,7 +183,7 @@ class TestReportsNetworthHistory:
 
     @pytest.mark.unit
     def test_returns_series(self, runner: CliRunner) -> None:
-        mock_rows = [
+        mock_rows: list[dict[str, object]] = [
             {
                 "period": "2026-01-01",
                 "net_worth": Decimal("1000.00"),
@@ -161,10 +200,10 @@ class TestReportsNetworthHistory:
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
-                "moneybin.cli.commands.reports.networth.NetworthService"
-            ) as mock_service_class,
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
         ):
-            mock_service_class.return_value.history.return_value = mock_rows
+            mock_catalog.return_value.execute.return_value = _result(mock_rows)
             result = runner.invoke(
                 app,
                 [
@@ -188,12 +227,10 @@ class TestReportsNetworthHistory:
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),
             patch(
-                "moneybin.cli.commands.reports.networth.NetworthService"
-            ) as mock_service_class,
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
         ):
-            mock_service_class.return_value.history.return_value = (
-                NetWorthHistoryPayload(points=[])
-            )
+            mock_catalog.return_value.execute.return_value = _result([])
             result = runner.invoke(
                 app,
                 [
@@ -206,10 +243,6 @@ class TestReportsNetworthHistory:
                 ],
             )
         assert result.exit_code == 0, result.stderr
-        call_kwargs = mock_service_class.return_value.history.call_args.kwargs
-        if "interval" in call_kwargs:
-            assert call_kwargs["interval"] == "monthly"
-        else:
-            args = mock_service_class.return_value.history.call_args.args
-            if len(args) >= 3:
-                assert args[2] == "monthly"
+        call_kwargs = mock_catalog.return_value.execute.call_args.kwargs
+        assert call_kwargs["report_id"] == "core:networth_history"
+        assert call_kwargs["parameters"]["interval"] == "monthly"

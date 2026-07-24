@@ -3,7 +3,7 @@
 
 Covers three groups:
 - No-DB commands: profile list/show, import preview, logs, mcp config, db ps
-- Stub commands: sync/track/export stubs that print "not implemented"
+- Stub commands: reserved sync/budget commands that print "not implemented"
 - DB commands: read-only queries against the shared e2e_profile database
 """
 
@@ -155,7 +155,6 @@ class TestStubCommands:
             ["sync", "schedule", "remove"],
             ["budget", "set", "Food", "500"],
             ["budget", "delete", "Food"],
-            ["export", "run"],
         ],
         ids=lambda c: " ".join(c),
     )

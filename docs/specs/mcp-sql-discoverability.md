@@ -17,7 +17,7 @@ Existing assets this design builds on:
 
 - **`tables.py`** is the authoritative registry of `TableRef` constants.
 - **DuckDB catalog already carries column docs.** SQLMesh's `register_comments` propagates the inline `/* ... */` blocks on each model's final SELECT into `duckdb_columns().comment`. Schema DDL files apply table/column comments via `schema.py:_apply_comments()` on app startup. So `duckdb_tables()` and `duckdb_columns()` are the source of truth for both structure and prose — no parallel YAML to maintain.
-- **MCP resources** (`src/moneybin/mcp/resources.py`) already exist for `moneybin://status`, `moneybin://accounts`, `moneybin://privacy`. New resource follows the same pattern.
+- **MCP resources** (`src/moneybin/mcp/resources.py`) expose one client-requested resource: `moneybin://schema`.
 - **Architecture rule**: per `mcp-architecture.md`, consumers read from **core** (analytics) and **app** (user-authored state). Raw and prep are implementation details.
 
 ## Requirements
@@ -139,9 +139,9 @@ Key choices:
 
 - **No caching in v1.** `duckdb_tables()` / `duckdb_columns()` are catalog reads — microseconds. Add caching only if profiling shows it matters.
 - **Single bundled resource, not per-table resources.** Total payload is ~2-4K tokens for ~9 tables / ~95 columns. One fetch covers every subsequent query in the session; per-table would force the LLM to repeatedly fetch `fct_transactions` (used in most queries) plus a second table per join.
-- **JSON, not Markdown.** Structured output is sliceable for future tooling (e.g., a `sql_describe(table)` tool would call the same `build_schema_doc()` and project a single entry).
+- **JSON, not Markdown.** Structured output remains sliceable by clients. The current `sql_schema(table="core.fct_transactions")` call returns one table, while `sql_schema(table="*")` returns the full document.
 - **Drift coverage.** Two tests address two drift modes: a presence assertion catches stale `INTERFACE_TABLES` entries; an example-execution test catches column renames that examples missed. The "forgot to add a new interface table" case is not mechanically catchable — it relies on convention (a comment near the top of `tables.py`).
-- **Power-user path is `sql_query` against the catalog**, not a parameterized resource. Adding `moneybin://schema/all` later is trivial if real demand emerges.
+- **Power-user path is `sql_query(query="...")` against the catalog**, not another resource.
 - **Sensitivity is `low`.** Schema metadata — table names, column names, structural comments — is not PII. No consent gate; audit log entry on each read like other resources.
 
 ## CLI Interface
@@ -181,7 +181,7 @@ None. All required machinery (DuckDB catalog tables, FastMCP resources, `Databas
 ## Out of Scope
 
 - **Sibling `.examples.sql` files per model.** Considered and deferred. If example drift becomes a real maintenance problem (examples that reference dropped columns, examples that contradict model logic), revisit by parsing per-table sibling files at startup.
-- **Per-table resources** (`moneybin://schema/<table>`). Not needed at current size; revisit if `INTERFACE_TABLES` grows past ~20 tables or column count past ~300.
-- **`moneybin://schema/all`** (uncurated view). Power users get this via `sql_query` against the DuckDB catalog. Add only if real demand emerges.
+- **A future per-table resource projection.** It remains unnamed and requires bounded-surface admission if client demand justifies it.
+- **A future uncurated resource projection.** Power users currently use `sql_query` against the DuckDB catalog; any resource form remains unnamed until admitted.
 - **Caching the schema doc.** Catalog reads are sub-millisecond; not worth the invalidation cost in v1.
 - **Auto-extracting examples from existing test cases** (e.g., test_services queries). Would couple the LLM-facing surface to test internals; explicit hand-authored examples are clearer.

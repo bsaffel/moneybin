@@ -119,3 +119,47 @@ class BudgetsRepo(BaseRepo):
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
+
+    def delete(
+        self,
+        budget_id: str,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Delete one budget with its full audit before-image."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(self._fetch_row(budget_id), "budget_id", budget_id)
+            self._db.execute(
+                f"DELETE FROM {BUDGETS.full_name} WHERE budget_id = ?",  # noqa: S608  # TableRef + parameterized value
+                [budget_id],
+            )
+            return self._emit_audit(
+                action="budget.delete",
+                target=(*self._audit_target, budget_id),
+                before=self._serialize_for_audit(before),
+                after=None,
+                actor=actor,
+            )
+
+    def delete_by_category(
+        self,
+        category_id: str,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> list[AuditEvent]:
+        """Delete every budget using one category, with per-row audit."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            budget_ids = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"SELECT budget_id FROM {BUDGETS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    "WHERE category_id = ? ORDER BY budget_id",
+                    [category_id],
+                ).fetchall()
+            ]
+            return [
+                self.delete(budget_id, actor=actor, in_outer_txn=True)
+                for budget_id in budget_ids
+            ]

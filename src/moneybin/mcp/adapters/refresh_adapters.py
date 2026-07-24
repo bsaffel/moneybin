@@ -20,14 +20,19 @@ REFRESH_CATEGORIZE_FOLLOWUP_HINT = (
     "Run refresh_run(steps=['categorize']) to apply rules/merchants "
     "to newly-matched rows."
 )
+REFRESH_ACCOUNT_LINKS_REVIEW_HINT = (
+    'Review pending account identity proposals with reviews(kind="account_links").'
+)
+REFRESH_MERCHANT_LINKS_REVIEW_HINT = (
+    'Review pending merchant identity proposals with reviews(kind="merchant_links").'
+)
 
 
 def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
     """Build recovery actions for best-effort step crashes (matcher/categorizer).
 
     Ordered most-likely-correct first: the targeted retry(s), then a single
-    diagnostic ``system_doctor`` call. ``system_doctor`` takes no MCP
-    parameters, so ``arguments`` is empty — a recovery action must stay
+    diagnostic ``system_status`` doctor call. A recovery action must stay
     directly executable.
 
     Returns ``[]`` when the SQLMesh apply itself failed (``result.error``):
@@ -67,8 +72,8 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
     if actions:
         actions.append(
             RecoveryAction(
-                tool="system_doctor",
-                arguments={},
+                tool="system_status",
+                arguments={"sections": ["doctor"], "detail": "full"},
                 rationale=(
                     "Run pipeline integrity checks to diagnose what the "
                     "partial refresh left inconsistent."
@@ -107,6 +112,11 @@ def refresh_envelope(
         and "categorize" not in requested
     ):
         actions.append(REFRESH_CATEGORIZE_FOLLOWUP_HINT)
+    if result.error is None and "identity" in requested:
+        if "accounts" not in result.identity_errors:
+            actions.append(REFRESH_ACCOUNT_LINKS_REVIEW_HINT)
+        if "merchants" not in result.identity_errors:
+            actions.append(REFRESH_MERCHANT_LINKS_REVIEW_HINT)
     recovery = _step_crash_recovery_actions(result)
     # `or None` (omit the key when empty) is correct here: refresh always uses
     # build_envelope, whose ResponseEnvelope.error is None, so there is no
@@ -120,6 +130,7 @@ def refresh_envelope(
             error=result.error,
             matching_error=result.matching_error,
             categorization_error=result.categorization_error,
+            identity_errors=list(result.identity_errors),
             self_heal_actions=[
                 SelfHealActionRow(
                     recipe_id=r.recipe_id,

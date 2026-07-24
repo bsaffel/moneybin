@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-17 -->
+<!-- Last reviewed: 2026-07-21 -->
 # What the AI Provider Sees
 
 When you drive MoneyBin with an AI agent, some of your financial data reaches
@@ -63,14 +63,23 @@ envelope contains once it reaches the model.
 
 | Tool kind | Goes to the provider | Always masked first | Recorded locally |
 |---|---|---|---|
-| Transaction reads (`transactions_get`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
-| Report views (`reports_networth`, `reports_spending`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
+| Transaction reads (`transactions`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
+| Report views (`reports(report_id="core:networth")`, `reports(report_id="core:spending")`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
 | Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app` (amounts, descriptions, merchants, dates, locations) | Account/routing numbers (by column classification) | Per-call event |
 | Categorization assist (`transactions_categorize_assist`) | Scrubbed description (**merchant kept**, amount as a sign) + structural fields incl. `check_number` | Amount value, date, account ID, locations, embedded PII | Per-call event |
 | Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |
+| Exports (`export_run`, `exports_set`) | Export configuration and the receipt (destination, format, row counts, checksums, and export ID) | Account/routing numbers in the receipt | Per-call event; destination changes also create an audit row |
 | Errors / timeouts | A generic message; no row content, no SQL text | — | Per-call event |
 
 The rest of this page expands each column.
+
+An export writes a durable artifact outside the MCP response. Local exports write
+to the selected local destination; a Sheets export sends the selected rows to the
+Google Sheets API. Each run asks for `redacted` (the default) or `unredacted`.
+Redacted exports use the same column-classification masking as other MoneyBin
+responses: account and routing numbers are masked, while balances, amounts,
+merchant names, descriptions, and dates remain present. Unredacted export is an
+explicit per-run choice and bypasses that masking.
 
 ---
 
@@ -82,13 +91,13 @@ the MCP tools and the CLI `--output json` surface alike:
 - **Account identifiers** → `****1234` (last four kept).
 - **Routing numbers** → `*****` (fully masked).
 
-This is enforced by **field classification**, not convention. Every one of
-MoneyBin's ~105 tools must declare the privacy class of each field it returns, or
-it fails to register at startup; a field **typed as** an account or routing number
-is always masked. The two dynamic surfaces reach the same result two different
-ways: `sql_query` traces each output column back to its source column through the
-SQL and masks by the resolved class (a column it can't resolve **fails closed** to
-the most-sensitive treatment), while the report views mask by a **declared
+This is enforced by **field classification**, not convention. Every tool in
+MoneyBin's 47-tool standard registry must declare the privacy class of each field it
+returns, or it fails to register at startup; a field **typed as** an account or
+routing number is always masked. The two dynamic surfaces reach the same result
+two different ways: `sql_query` traces each output column back to its source
+column through the SQL and masks by the resolved class (a column it can't resolve
+**fails closed** to the most-sensitive treatment), while the report views mask by a **declared
 per-report column→class map** — lineage tracing is deliberately *not* used there
 (a `reports.*` view is `SELECT * FROM <internal table>`, so tracing would classify
 the pointer and leak; per ADR-013). Either way raw SQL is not a bypass: `SELECT
@@ -105,7 +114,7 @@ caught.** Three real cases, disclosed rather than hidden:
 - **Import samples** — `import_preview` / `import_files` return a `sample_values`
   preview of the file being imported, classified as description text; a raw
   account-number column in that file shows up in the sample.
-- **Audit snapshots** — `system_audit` / `system_audit_get` return the before/after
+- **Audit snapshots** — `system_audit` list and detail views return the before/after
   row of a change; if that change set an account's `last_four`, the snapshot
   carries the raw digits.
 
@@ -217,8 +226,8 @@ stays masked regardless of backend.)*
 
 ## Consent: what the ledger does, and doesn't
 
-MoneyBin has a consent ledger (`privacy_consent_grant` / `_revoke` /
-`privacy_status`). Today it is a **record**, not a **gate**:
+MoneyBin has a consent ledger (`privacy_consent_set` and
+`privacy(view="status")`). Today it is a **record**, not a **gate**:
 
 - Grants and revocations are stored and audited.
 - **Nothing is currently gated on them.** Granting or revoking `mcp-data-sharing`
@@ -238,14 +247,14 @@ provider, because it was.
 ## What MoneyBin records locally
 
 Two independent local records. Both are stored locally and neither is transmitted
-anywhere on its own — but note that both are exposed through their *own* MCP tools
-(`privacy_log`, `system_audit`), so an agent that calls those tools pulls the
+anywhere on its own — but note that both are exposed through MCP tools
+(`privacy(view="log")`, `system_audit`), so an agent that calls those tools pulls the
 records into a tool result, which then reaches the provider like any other. That
 matters most for `system_audit`, whose payload deliberately includes
 high-sensitivity before/after values. "Stored locally, not transmitted on their
 own" — not "the model can never see them."
 
-- **Per-call privacy log** (`privacy.log.jsonl`, `privacy_log` tool / `moneybin
+- **Per-call privacy log** (`privacy.log.jsonl`, `privacy(view="log")` / `moneybin
   privacy log`). One line per tool call — the tool name, its sensitivity tier,
   the data classes returned, and the row **count**. It records **no row content,
   no row identifiers, no filters, and no SQL text**. So it tells you *how many*

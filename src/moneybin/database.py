@@ -837,7 +837,7 @@ class Database:
         df: Any,
         *,
         on_conflict: Literal["insert", "replace", "upsert", "ignore"] = "insert",
-    ) -> None:
+    ) -> int:
         """Load a Polars (or Arrow-compatible) DataFrame into the database.
 
         Converts the DataFrame to Arrow (zero-copy for Polars) and writes
@@ -860,6 +860,13 @@ class Database:
                   then re-inserted (idempotent reload pattern).
                 - ``"ignore"`` — INSERT OR IGNORE; conflicting rows are silently
                   skipped (preserves the original row and its import_id).
+
+        Returns:
+            Rows the database actually wrote — which is NOT ``len(df)`` under
+            ``"ignore"``, where conflicting rows are dropped. Callers that
+            report "rows loaded" (metrics, log lines, per-table counts) must
+            use this, not the DataFrame height, or a re-offered batch reads as
+            fresh writes and a stalled upstream feed stays invisible.
 
         Raises:
             ValueError: If on_conflict is not a recognised value.
@@ -885,23 +892,27 @@ class Database:
         self.conn.register("_ingest_tmp", arrow_table)
         try:
             if on_conflict == "replace":
-                self.conn.execute(
+                result = self.conn.execute(
                     f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
             elif on_conflict == "upsert":
-                self.conn.execute(
+                result = self.conn.execute(
                     f"INSERT OR REPLACE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
             elif on_conflict == "ignore":
-                self.conn.execute(
+                result = self.conn.execute(
                     f"INSERT OR IGNORE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
             else:
-                self.conn.execute(
+                result = self.conn.execute(
                     f"INSERT INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
+            # DuckDB returns a single-row "Count" for each of these statements.
+            # It is read inside the try so the temp view is still registered.
+            written = result.fetchone()
         finally:
             self.conn.unregister("_ingest_tmp")
+        return int(written[0]) if written else 0
 
     @property
     def path(self) -> Path:
@@ -1121,6 +1132,7 @@ def get_database(
     read_only: bool,
     max_wait: float = DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS,
     operation_type: OperationType = "interactive",
+    require_existing: bool = False,
 ) -> "Database":
     """Create and return a new short-lived Database connection.
 
@@ -1144,6 +1156,11 @@ def get_database(
     open can also fail (and retry) when another process holds a write
     lock, and a write open can fail (and retry) when another process
     holds a read-only attach.
+
+    ``require_existing=True`` prevents a write-mode maintenance open from
+    initializing a missing database. The path is checked both before and after
+    acquiring the writer lock so a concurrent deletion cannot turn maintenance
+    into implicit database creation.
     """
     global _database_accessed, _database_written, _active_write_conn  # noqa: PLW0603
 
@@ -1153,6 +1170,11 @@ def get_database(
 
     settings = get_settings()
     db_path = settings.database.path
+    if require_existing and not db_path.exists():
+        raise DatabaseNotInitializedError(
+            f"Database not found at {db_path}.\n"
+            f"Run 'moneybin db init' to initialize it first."
+        )
     deadline = time.monotonic() + max_wait
     skip_upgrade = (
         read_only
@@ -1193,6 +1215,11 @@ def get_database(
         stack.enter_context(
             write_lock(db_path, deadline=deadline, operation_type=operation_type)
         )
+        if require_existing and not db_path.exists():
+            raise DatabaseNotInitializedError(
+                f"Database not found at {db_path}.\n"
+                f"Run 'moneybin db init' to initialize it first."
+            )
         db = _open_with_attach_retry(
             db_path=db_path,
             read_only=False,

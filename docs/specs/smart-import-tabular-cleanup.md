@@ -131,13 +131,13 @@ tabular import review and may have changed):
 
 ---
 
-## Stream B2: N+1 merchant lookup in `categorize_bulk`
+## Stream B2: N+1 merchant lookup in the bulk categorization path
 
 ### B2.1 Batch merchant resolution
 
-**Problem**: The bulk categorize path (originally `categorize_bulk()` in
-`src/moneybin/mcp/tools/categorize.py`; now `transactions_categorize_run()` in
-`src/moneybin/mcp/tools/transactions_categorize.py` per PR #171/#172 renames)
+**Problem**: The pre-standard bulk categorize path (now
+`transactions_categorize_run()` in
+`src/moneybin/mcp/tools/transactions_categorize.py`)
 resolves merchants one transaction at a time inside a loop. For each item it:
 1. Queries `fct_transactions` for the description
 2. Calls `match_merchant()` against all merchant mappings

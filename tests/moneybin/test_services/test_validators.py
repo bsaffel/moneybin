@@ -6,6 +6,7 @@ import pytest
 
 from moneybin.services._validators import (
     NOTE_MAX_LEN,
+    SLUG_MAX_LEN,
     InvalidSlugError,
     validate_currency_code,
     validate_note_text,
@@ -46,6 +47,12 @@ def test_validate_slug_accepts(good: str) -> None:
 def test_validate_slug_rejects(bad: str) -> None:
     with pytest.raises(InvalidSlugError):
         validate_slug(bad)
+
+
+def test_validate_slug_max_length() -> None:
+    validate_slug("x" * SLUG_MAX_LEN)
+    with pytest.raises(InvalidSlugError):
+        validate_slug("x" * (SLUG_MAX_LEN + 1))
 
 
 def test_validate_note_text_max_length() -> None:

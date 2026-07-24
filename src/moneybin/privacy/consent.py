@@ -14,16 +14,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from moneybin.vocabulary import CONSENT_FEATURE_CATEGORIES
+
 # The four starter feature categories from privacy-and-ai-trust.md §Tier 2.
 # The DB column is a free string (per-tool granularity is a deferred
 # enhancement); this set is the documented/validated vocabulary the
 # surfaces accept.
-FEATURE_CATEGORIES: frozenset[str] = frozenset({
-    "mcp-data-sharing",
-    "smart-import-parsing",
-    "ml-categorization",
-    "matching-overview",
-})
+FEATURE_CATEGORIES: frozenset[str] = CONSENT_FEATURE_CATEGORIES
 
 
 class ConsentMode(StrEnum):

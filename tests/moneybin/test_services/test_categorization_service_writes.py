@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
+from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization import (
     CategorizationRuleInput,
     CategorizationService,
+    CategoryStateTarget,
+    MerchantStateTarget,
+    RuleStateTarget,
     validate_rule_items,
 )
 from moneybin.services.categorization.applier import MatchApplier
@@ -1456,3 +1462,202 @@ class TestWriteCategorizationSourceType:
         ).fetchone()
         assert row is not None
         assert row[0] == "internal"
+
+
+def test_taxonomy_target_batch_rolls_back_late_failure(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late merchant failure rolls back the preceding category and audits."""
+    service = CategorizationService(db)
+    targets = [
+        CategoryStateTarget(
+            state="present",
+            category="Task 6 Atomic",
+        ),
+        MerchantStateTarget(
+            state="present",
+            raw_pattern="TASK 6 ATOMIC",
+            canonical_name="Task 6 Atomic",
+            category="Task 6 Atomic",
+        ),
+    ]
+
+    def fail_insert(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("late taxonomy failure")
+
+    monkeypatch.setattr(UserMerchantsRepo, "insert", fail_insert)
+    with pytest.raises(RuntimeError, match="late taxonomy failure"):
+        service.apply_taxonomy_targets(targets, actor="mcp")
+
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.user_categories WHERE category = 'Task 6 Atomic'"
+    ).fetchone() == (0,)
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.audit_log "
+        "WHERE action IN ('user_category.insert', 'user_merchant.insert') "
+        "AND actor = 'mcp'"
+    ).fetchone() == (0,)
+
+
+def test_rule_target_plan_rejects_ambiguous_natural_key(db: Database) -> None:
+    """Natural-key resolution never silently picks one duplicate rule."""
+    repo = CategorizationRulesRepo(db, audit=AuditService(db))
+    for name in ("Duplicate A", "Duplicate B"):
+        repo.insert(
+            name=name,
+            merchant_pattern="DUPLICATE MERCHANT",
+            match_type="contains",
+            min_amount=None,
+            max_amount=None,
+            account_id=None,
+            category="Shopping",
+            subcategory=None,
+            category_id=None,
+            priority=100,
+            created_by="user",
+            actor="test",
+        )
+
+    with pytest.raises(UserError) as exc_info:
+        CategorizationService(db).plan_rule_targets([
+            RuleStateTarget(
+                rule_id=None,
+                state="present",
+                merchant_pattern="DUPLICATE MERCHANT",
+                match_type="contains",
+                category="Shopping",
+                priority=100,
+            )
+        ])
+
+    assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+    assert exc_info.value.details is not None
+    assert exc_info.value.details["candidate_ids"] == sorted(
+        row[0]
+        for row in db.execute("SELECT rule_id FROM app.categorization_rules").fetchall()
+    )
+
+
+def test_rule_target_plan_properties_cover_only_mutations(db: Database) -> None:
+    """Plan metadata distinguishes no-ops, soft changes, and hard deletes."""
+    service = CategorizationService(db)
+    created = service.create_rules([
+        CategorizationRuleInput(
+            name="Unchanged",
+            merchant_pattern="UNCHANGED MERCHANT",
+            category="Shopping",
+        ),
+        CategorizationRuleInput(
+            name="Deactivate",
+            merchant_pattern="DEACTIVATE MERCHANT",
+            category="Shopping",
+        ),
+        CategorizationRuleInput(
+            name="Delete",
+            merchant_pattern="DELETE MERCHANT",
+            category="Shopping",
+        ),
+    ])
+    unchanged_id, deactivate_id, delete_id = created.rule_ids
+
+    plan = service.plan_rule_targets([
+        RuleStateTarget(
+            rule_id=unchanged_id,
+            state="present",
+            merchant_pattern="UNCHANGED MERCHANT",
+            match_type="contains",
+            category="Shopping",
+            priority=100,
+        ),
+        RuleStateTarget(rule_id=deactivate_id, state="inactive"),
+        RuleStateTarget(rule_id=delete_id, state="absent"),
+    ])
+
+    assert [item.action for item in plan.items] == [
+        "noop",
+        "deactivate",
+        "delete",
+    ]
+    assert plan.resolved_ids == (deactivate_id, delete_id)
+    assert plan.destructive is True
+
+
+def test_apply_rule_targets_replans_and_preserves_request_order(db: Database) -> None:
+    """Apply verifies the live plan and reports results in target order."""
+    service = CategorizationService(db)
+    created = service.create_rules([
+        CategorizationRuleInput(
+            name="Deactivate",
+            merchant_pattern="DEACTIVATE IN ORDER",
+            category="Shopping",
+        ),
+        CategorizationRuleInput(
+            name="Delete",
+            merchant_pattern="DELETE IN ORDER",
+            category="Shopping",
+        ),
+    ])
+    deactivate_id, delete_id = created.rule_ids
+    plan = service.plan_rule_targets([
+        RuleStateTarget(rule_id=deactivate_id, state="inactive"),
+        RuleStateTarget(rule_id=delete_id, state="absent"),
+        RuleStateTarget(rule_id="missing-rule", state="absent"),
+    ])
+    verified: list[tuple[str, ...]] = []
+
+    results = service.apply_rule_targets(
+        plan,
+        actor="test",
+        verify=lambda live: verified.append(live.resolved_ids),
+    )
+
+    assert verified == [(deactivate_id, delete_id)]
+    assert [(result.rule_id, result.state, result.changed) for result in results] == [
+        (deactivate_id, "inactive", True),
+        (delete_id, "absent", True),
+        (None, "absent", False),
+    ]
+    assert db.execute(
+        "SELECT is_active FROM app.categorization_rules WHERE rule_id = ?",
+        [deactivate_id],
+    ).fetchone() == (False,)
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.categorization_rules WHERE rule_id = ?",
+        [delete_id],
+    ).fetchone() == (0,)
+
+
+def test_taxonomy_target_plan_rejects_ambiguous_merchant_natural_key(
+    db: Database,
+) -> None:
+    """Natural-key taxonomy planning exposes every ambiguous merchant ID."""
+    repo = UserMerchantsRepo(db, audit=AuditService(db))
+    merchant_ids: list[str] = []
+    for _ in range(2):
+        event = repo.insert(
+            raw_pattern="AMBIGUOUS MERCHANT",
+            match_type="contains",
+            canonical_name="Ambiguous Merchant",
+            category=None,
+            subcategory=None,
+            category_id=None,
+            created_by="user",
+            exemplars=None,
+            actor="test",
+        )
+        assert event.target_id is not None
+        merchant_ids.append(event.target_id)
+
+    with pytest.raises(UserError) as exc_info:
+        CategorizationService(db).plan_taxonomy_targets([
+            MerchantStateTarget(
+                state="present",
+                raw_pattern="AMBIGUOUS MERCHANT",
+                match_type="contains",
+                canonical_name="Ambiguous Merchant",
+            )
+        ])
+
+    assert exc_info.value.code == error_codes.MUTATION_AMBIGUOUS
+    assert exc_info.value.details == {"candidate_ids": sorted(merchant_ids)}

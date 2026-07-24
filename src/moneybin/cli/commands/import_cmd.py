@@ -546,6 +546,7 @@ def import_files_command(
                 # "Validation failed" prefix (this is a proposal, not a failure).
                 if outcome.error_message:
                     confirm_actions.append(outcome.error_message)
+                proposed_sign, prior_sign = _sign_direction(outcome)
                 confirm_actions.extend(
                     _sign_recovery_commands(
                         file_path_str,
@@ -555,6 +556,8 @@ def import_files_command(
                         save_format=save_format,
                         account_id=account_id,
                         account_name=account_name,
+                        proposed_sign=proposed_sign,
+                        prior_sign=prior_sign,
                     )
                 )
             else:
@@ -820,15 +823,25 @@ def _sign_recovery_commands(
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
     account_metadata: dict[str, dict[str, str]] | None = None,
+    proposed_sign: str | None = None,
+    prior_sign: str | None = None,
 ) -> list[str]:
-    """The two honest recoveries for a card sign-convention confirmation.
+    """The two honest recoveries for a sign-convention confirmation.
 
-    A card statement proposes inverting every amount (charges → expenses,
-    payments → credits). The user decides by re-running with the convention they
-    intend, never by blind-accepting a proposed mapping.
-    Shared by the JSON ``actions[]`` and the interactive prompt so the CLI never
-    drifts from the terminal command the gate's ``error_message`` already names.
-    Mirrors the MCP ``_sign_confirm_actions`` recovery.
+    The user decides by re-running with the convention they intend, never by
+    blind-accepting a proposed mapping. Shared by the JSON ``actions[]`` and the
+    interactive prompt so the CLI never drifts from the terminal command the
+    gate's ``error_message`` already names. Mirrors the MCP
+    ``_sign_confirm_actions`` recovery.
+
+    ``prior_sign`` decides the framing, because the two cases pose different
+    questions. Without one this is a first-contact card inference: the proposal
+    is always ``negative_is_income`` and the alternative always
+    ``negative_is_expense``, so "is this a credit card?" is both accurate and the
+    only question the user can actually answer. With one, a self-healed recipe
+    re-derived to the opposite polarity — which can run *either* direction, so
+    the card question may be exactly backwards. There the honest framing names
+    both conventions and what each does.
     """
     if channel == "tabular":
         approve_command = _tabular_confirmation_command(
@@ -862,13 +875,44 @@ def _sign_recovery_commands(
 
     import shlex  # noqa: PLC0415
 
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415
+        sign_convention_effect,
+    )
+
     quoted = shlex.quote(file_path_str)
+    if prior_sign is None:
+        return [
+            f"If it IS a credit card: moneybin import files {quoted} --confirm "
+            "(records charges as expenses, payments as credits).",
+            f"If it is NOT a credit card: moneybin import files {quoted} "
+            "--sign negative_is_expense (records amounts exactly as printed).",
+        ]
+
+    accepted = proposed_sign or "the re-derived convention"
     return [
-        f"If it IS a credit card: moneybin import files {quoted} --confirm "
-        "(records charges as expenses, payments as credits).",
-        f"If it is NOT a credit card: moneybin import files {quoted} "
-        "--sign negative_is_expense (records amounts exactly as printed).",
+        f"Accept the change — {sign_convention_effect(accepted)}: "
+        f"moneybin import files {quoted} --confirm.",
+        f"Keep the previous convention — {sign_convention_effect(prior_sign)}: "
+        f"moneybin import files {quoted} --sign {prior_sign}.",
     ]
+
+
+def _sign_direction(
+    outcome: ConfirmationRequired,
+) -> tuple[str | None, str | None]:
+    """The (proposed, prior) conventions for the recovery renderers.
+
+    ``(None, None)`` when the outcome isn't a sign proposal, which keeps the
+    default first-contact framing.
+    """
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415  # module-scope import is TYPE_CHECKING-only (cold-start hygiene)
+        SignConventionProposal,
+    )
+
+    proposed = outcome.proposed
+    if not isinstance(proposed, SignConventionProposal):
+        return (None, None)
+    return (proposed.sign_convention, proposed.prior_sign_convention)
 
 
 def _render_sign_convention_prompt(
@@ -894,10 +938,20 @@ def _render_sign_convention_prompt(
     """
     typer.echo("\n👀  Sign convention confirmation required")
     typer.echo(f"   File: {file_path_str}")
-    typer.echo(
-        "   Recording it with this convention inverts every amount's sign — "
-        "negative values become income and positive values become expenses."
-    )
+    if proposed.prior_sign_convention is None:
+        typer.echo(
+            "   Recording it with this convention inverts every amount's sign — "
+            "negative values become income and positive values become expenses."
+        )
+    else:
+        # A repaired recipe can flip EITHER way, so the fixed sentence above
+        # describes the wrong direction half the time. Name both conventions.
+        typer.echo(
+            f"   This layout recorded amounts as "
+            f"{proposed.prior_sign_convention!r} before; the re-derived version "
+            f"records them as {proposed.sign_convention!r}. Every amount's sign "
+            f"flips relative to earlier imports of this format."
+        )
     if proposed.evidence:
         typer.echo(f"\n   Inference evidence: {', '.join(proposed.evidence)}")
     if proposed.sample_rows:
@@ -919,6 +973,8 @@ def _render_sign_convention_prompt(
         account_name=account_name,
         account_bindings=account_bindings,
         account_metadata=account_metadata,
+        proposed_sign=proposed.sign_convention,
+        prior_sign=proposed.prior_sign_convention,
     ):
         typer.echo(f"     {line}")
     typer.echo()
@@ -1077,7 +1133,12 @@ def import_confirm_command(
     confirm_sign: bool = typer.Option(
         False,
         "--confirm-sign",
-        help="Explicitly approve an inferred tabular sign inversion.",
+        help=(
+            "Explicitly approve an inferred tabular sign inversion (pair with "
+            "--accept). For a PDF statement use `import files <path> --confirm`; "
+            "the MCP equivalent is import_confirm(confirm_pdf_sign=True), which "
+            "asks the human rather than asserting their approval."
+        ),
     ),
     sign: SignConventionType | None = typer.Option(
         None,
@@ -1266,6 +1327,7 @@ def import_confirm_command(
         if outcome.error_message:
             confirm_actions.append(f"Validation failed: {outcome.error_message}")
         if outcome.reason == "sign_convention":
+            proposed_sign, prior_sign = _sign_direction(outcome)
             confirm_actions.extend(
                 _sign_recovery_commands(
                     str(file_path),
@@ -1277,6 +1339,8 @@ def import_confirm_command(
                     account_name=account_name,
                     account_bindings=parsed_bindings,
                     account_metadata=parsed_metadata,
+                    proposed_sign=proposed_sign,
+                    prior_sign=prior_sign,
                 )
             )
         elif outcome.reason == "account_confirmation":
@@ -1576,6 +1640,100 @@ def import_revert(
         )
 
 
+def _preview_pdf(source: Path) -> None:
+    """Inspect a PDF statement without importing it.
+
+    PDFs never reach the tabular detector's format/read/column-map stages — a
+    statement's structure is derived by the recipe rung, not by column mapping —
+    so preview routes them to the same ``ImportService.pdf_preview`` the MCP
+    ``import_preview`` tool uses. Without this branch the detector rejected
+    ``.pdf`` outright and the whole PDF debug loop was MCP-only.
+
+    ``read_only=False`` matches the MCP path: a bridge escalation writes the
+    Req 14 egress audit row before raising.
+    """
+    from moneybin.database import (  # noqa: PLC0415
+        DatabaseKeyError,
+        database_key_error_hint,
+        get_database,
+    )
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415
+        ImportConfirmationRequiredError,
+        SignConventionProposal,
+    )
+    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+
+    try:
+        with get_database(read_only=False) as db:
+            preview = ImportService(db).pdf_preview(source)
+    except DatabaseKeyError as e:
+        # The tabular branch degrades to built-in formats when there's no
+        # database; a PDF cannot — the recipe rung reads app.pdf_formats. Say so
+        # rather than dumping a traceback on a fresh install.
+        #
+        # This one exception covers both "never initialized" and "locked":
+        # read_only=False never raises DatabaseNotInitializedError (that path is
+        # read_only=True only), so a fresh install arrives here via
+        # SecretNotFoundError. database_key_error_hint() is what picks the right
+        # recovery — a hardcoded "db unlock" strands a fresh install on the one
+        # command that cannot work, since there is no salt to re-derive from.
+        logger.error(f"❌ Can't open the database, so {source.name} wasn't read: {e}")
+        logger.info(database_key_error_hint())
+        raise typer.Exit(1) from e
+    except PermissionError as e:
+        # Statements routinely live under ~/Documents or ~/Desktop, where macOS
+        # TCC denies reads until the terminal is granted access — pdfplumber's
+        # open() then raises from deep in the extractor. Without this the user
+        # gets a full traceback for what is a one-click OS permission fix.
+        logger.error(f"❌ Cannot read {source.name}: {e.strerror or e}")
+        logger.info(
+            "💡 On macOS, grant your terminal access to this folder under "
+            "System Settings → Privacy & Security → Files and Folders."
+        )
+        raise typer.Exit(1) from e
+    except ImportConfirmationRequiredError as e:
+        # pdf_preview signals both the sign gate and a bridge escalation by
+        # raising. Preview's job is to report what is pending, not to resolve
+        # it, so this is a successful inspection — not an error exit.
+        outcome = e.outcome
+        proposed = outcome.proposed
+        if isinstance(proposed, SignConventionProposal):
+            # Reuses the shared renderer rather than logging the proposal:
+            # sample rows carry merchant descriptions and bare amounts, and
+            # SanitizedLogFormatter masks neither (_DOLLAR_PATTERN requires a
+            # literal "$"; nothing matches descriptions). Logging them would
+            # persist transaction detail to the session log, which
+            # `.claude/rules/security.md` forbids. typer.echo is the correct
+            # channel for user-facing proposal output, and the shared renderer
+            # also emits the real recovery commands.
+            _render_sign_convention_prompt(proposed, str(source), channel="pdf")
+        else:
+            logger.info(
+                f"Deterministic extraction escalated to the assisted reader: "
+                f"{source.name} (reason: {outcome.reason})"
+            )
+            logger.info(
+                "💡 The assisted-reader path runs through an AI agent driving the "
+                "MCP server; from the CLI, apply its result with "
+                "'moneybin import confirm <file> --bridge-response <file>.json'."
+            )
+        return
+
+    verdict = "deterministic" if preview.deterministic else "NOT deterministic"
+    logger.info(f"PDF preview: {source.name}")
+    logger.info(f"  Extraction: {verdict} (reason: {preview.decision_reason})")
+    logger.info(f"  Rows:       {preview.row_count}")
+    logger.info(f"  Confidence: {preview.confidence:.2f}")
+    if preview.fingerprint:
+        issuer = preview.fingerprint.get("issuer", "unknown")
+        logger.info(f"  Layout:     issuer={issuer}")
+    if not preview.deterministic:
+        logger.info(
+            "💡 This statement would be stored as an unparsed seed rather than "
+            "transactions."
+        )
+
+
 @app.command("preview")
 def import_preview(
     file_path: str = typer.Argument(..., help="File to preview"),
@@ -1602,12 +1760,18 @@ def import_preview(
 ) -> None:
     """Preview file structure without importing.
 
-    Runs detection and column-mapping stages without loading any data into
-    the database. Shows detected format, column mapping, and sample rows.
+    Tabular files (CSV/Excel/Parquet): runs detection and column-mapping
+    stages without loading any data. Shows detected format, column mapping,
+    and sample rows.
+
+    PDF statements: runs the deterministic recipe rung and reports whether
+    the statement extracts cleanly, how many rows it would yield, and any
+    pending sign-convention confirmation. Nothing is imported either way.
 
     Examples:
         moneybin import preview ~/Downloads/chase_activity.csv
         moneybin import preview ~/Downloads/transactions.xlsx --sheet Sheet1
+        moneybin import preview ~/Downloads/chase_statement.pdf
     """
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.extractors.tabular.column_mapper import map_columns
@@ -1619,6 +1783,32 @@ def import_preview(
     if not source.exists():
         logger.error(f"❌ File not found: {source}")
         raise typer.Exit(1)
+
+    if source.suffix.lower() == ".pdf":
+        # Routed before the tabular stages below: none of format detection,
+        # read_file, or column mapping apply to a statement PDF.
+        ignored = [
+            flag
+            for flag, value in (
+                ("--format", format_name),
+                ("--sheet", sheet),
+                ("--delimiter", delimiter),
+                ("--encoding", encoding),
+                ("--override", override),
+            )
+            if value
+        ]
+        if ignored:
+            # Say so rather than no-op silently: an agent that passed --format
+            # and got a clean report would otherwise conclude the flag was
+            # honoured, and repeat it on the import that follows.
+            logger.warning(
+                f"⚠️  Ignored for a PDF (tabular-only): {', '.join(ignored)}. "
+                f"A statement's structure comes from its recipe, not a column "
+                f"mapping."
+            )
+        _preview_pdf(source)
+        return
 
     overrides = _parse_overrides(override)
 
@@ -1755,11 +1945,11 @@ def formats_list(
         moneybin import formats list --type=tabular --output json
     """
     from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
 
     try:
         with get_database(read_only=True) as db:
-            all_formats, builtin = _load_all_formats(db)
-            pdf_formats = _load_pdf_formats(db)
+            all_formats, builtin, pdf_formats = ImportService(db).list_formats()
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in / empty PDF
         all_formats, builtin = _load_all_formats(None)
         pdf_formats = _load_pdf_formats(None)
@@ -1872,11 +2062,11 @@ def formats_show(
         moneybin import formats show chase_a1b2c3d4e5f6
     """
     from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
 
     try:
         with get_database(read_only=True) as db:
-            all_formats, _ = _load_all_formats(db)
-            pdf_formats_list = _load_pdf_formats(db)
+            all_formats, _, pdf_formats_list = ImportService(db).list_formats()
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in / empty PDF
         all_formats, _ = _load_all_formats(None)
         pdf_formats_list = _load_pdf_formats(None)
@@ -2014,32 +2204,41 @@ def formats_delete(
         moneybin import formats delete my_custom_format
         moneybin import formats delete my_custom_format --yes
     """
+    from moneybin import error_codes
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
-    from moneybin.extractors.tabular.formats import (
-        delete_format_from_db,
-        load_builtin_formats,
-    )
+    from moneybin.errors import UserError
+    from moneybin.extractors.tabular.formats import load_builtin_formats
+    from moneybin.services.import_service import ImportService
 
-    # Check if it's a built-in format
-    builtin = load_builtin_formats()
-    if name in builtin:
+    if name in load_builtin_formats():
         logger.error(f"❌ {name!r} is a built-in format and cannot be deleted")
         raise typer.Exit(1)
 
-    if not yes:
-        confirmed = typer.confirm(f"Delete format {name!r}?")
-        if not confirmed:
-            logger.info("Delete cancelled")
-            raise typer.Exit(0)
-
     with handle_cli_errors():
-        with get_database(read_only=False) as db:
-            deleted = delete_format_from_db(db, name, actor="cli")
+        with get_database(read_only=True) as db:
+            reviewed_plan = ImportService(db).plan_saved_format_delete(name)
 
-    if not deleted:
-        logger.error(f"❌ Format {name!r} not found")
-        raise typer.Exit(1)
+        if not yes:
+            confirmed = typer.confirm(f"Delete format {name!r}?")
+            if not confirmed:
+                logger.info("Delete cancelled")
+                raise typer.Exit(0)
+
+        def verify(live_plan: object) -> None:
+            if live_plan != reviewed_plan:
+                raise UserError(
+                    "Saved format changed after confirmation; review and retry.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                )
+
+        with get_database(read_only=False) as db:
+            ImportService(db).delete_saved_format_confirmed(
+                name,
+                actor="cli",
+                verify=verify,
+            )
+
     logger.info(f"✅ Deleted format {name!r}")
 
 

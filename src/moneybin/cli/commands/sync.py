@@ -72,10 +72,12 @@ def sync_login(
 
 @app.command("logout")
 def sync_logout() -> None:
-    """Clear stored JWT from keychain (or fallback file)."""
+    """Clear stored JWTs and any in-progress device authorization sessions."""
+    from moneybin.connectors.sync_auth import SyncAuthService
+
     with handle_cli_errors():
         client = _build_sync_client()
-        client.logout()
+        SyncAuthService(client=client).logout()
         typer.echo("✅ Logged out.")
 
 
@@ -370,12 +372,17 @@ def sync_pull(
             result.securities_loaded
             + result.investment_transactions_loaded
             + result.holdings_loaded
+            + result.security_prices_loaded
         )
         if investments_total:
+            # Prices are reported even at 0: raw.security_prices is append-only,
+            # so a pull that re-reports closes it already stored writes nothing,
+            # and "0 new closes" is the signal that the feed has not advanced.
             typer.echo(
                 f"   Investments: {result.securities_loaded} securities, "
                 f"{result.investment_transactions_loaded} transactions, "
-                f"{result.holdings_loaded} holdings."
+                f"{result.holdings_loaded} holdings, "
+                f"{result.security_prices_loaded} new closes."
             )
         if result.opening_bootstrap_rows:
             # opening_bootstrap_rows is a cumulative, standing count (every

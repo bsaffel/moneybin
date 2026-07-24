@@ -173,13 +173,44 @@ class TestCurrent:
         assert result.net_worth == Decimal("1000.00")
 
     @pytest.mark.unit
-    def test_current_empty_returns_zero(self, db: Database) -> None:
+    def test_current_empty_returns_explicit_no_data(self, db: Database) -> None:
         _seed_reports_net_worth(db, [])
         _seed_dim_accounts(db, [])
         _seed_fct_balances_daily(db, [])
         svc = NetworthService(db)
         result = svc.current()
-        assert result.net_worth == Decimal("0")
+        assert result.balance_date is None
+        assert result.net_worth is None
+        assert result.total_assets is None
+        assert result.total_liabilities is None
+        assert result.account_count == 0
+        assert result.per_account == []
+
+    @pytest.mark.unit
+    def test_current_before_first_row_returns_explicit_no_data(
+        self, db: Database
+    ) -> None:
+        _seed_reports_net_worth(
+            db,
+            [
+                {
+                    "balance_date": date(2026, 2, 1),
+                    "net_worth": Decimal("1500.00"),
+                    "account_count": 1,
+                    "total_assets": Decimal("1500.00"),
+                    "total_liabilities": Decimal("0.00"),
+                },
+            ],
+        )
+        _seed_dim_accounts(db, [])
+        _seed_fct_balances_daily(db, [])
+
+        result = NetworthService(db).current(as_of_date=date(2026, 1, 1))
+
+        assert result.balance_date is None
+        assert result.net_worth is None
+        assert result.total_assets is None
+        assert result.total_liabilities is None
         assert result.account_count == 0
         assert result.per_account == []
 

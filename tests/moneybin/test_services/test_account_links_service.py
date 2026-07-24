@@ -18,7 +18,10 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
-from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.account_links_service import (
+    AccountLinkAcceptImpact,
+    AccountLinksService,
+)
 from tests.moneybin.db_helpers import create_core_tables
 
 # ---------------------------------------------------------------------------
@@ -275,6 +278,74 @@ def test_pending_display_name_absent_dim_is_empty_string(
     g = groups[0]
     assert g.provisional_display_name == ""
     assert g.candidates[0].candidate_display_name == ""
+
+
+# ---------------------------------------------------------------------------
+# accept_impact
+# ---------------------------------------------------------------------------
+
+
+def test_accept_impact_counts_every_row_the_merge_will_mutate(
+    seeded: AccountLinksService, db: Database
+) -> None:
+    """Impact includes all accepted links and decisions touching the provisional."""
+    AccountLinksRepo(db).insert(
+        link_id="link_prov1_pt0",
+        account_id=_PROV1,
+        ref_kind="persistent_token",
+        ref_value="opaque-token",
+        source_type="plaid",
+        source_origin="plaid_bank",
+        decided_by="auto",
+        actor="system",
+    )
+    _insert_decision(
+        db,
+        decision_id="qp_dec000001",
+        provisional_account_id=_PROV2,
+        candidate_account_id=_PROV1,
+    )
+
+    impact = seeded.accept_impact(_DEC1, target_account_id=_CAND_A)
+
+    assert impact.provisional_account_id == _PROV1
+    assert impact.candidate_account_id == _CAND_A
+    assert impact.blast_radius == {
+        "accounts": 2,
+        "account_links": 2,
+        "account_link_decisions": 3,
+    }
+
+
+def test_accept_verifier_receives_live_impact_and_failure_rolls_back(
+    seeded: AccountLinksService, db: Database
+) -> None:
+    """Verification runs inside the transaction immediately before any write."""
+    verified = False
+
+    def refuse(impact: AccountLinkAcceptImpact) -> None:
+        nonlocal verified
+        verified = True
+        assert impact.blast_radius == {
+            "accounts": 2,
+            "account_links": 1,
+            "account_link_decisions": 2,
+        }
+        assert _decision_status(db, _DEC1) == "pending"
+        assert _link_rows(db, link_id=_LINK_PROV1)[0][4] == "accepted"
+        raise UserError("Confirmation mismatch", code="mutation_confirmation_mismatch")
+
+    with pytest.raises(UserError, match="Confirmation mismatch"):
+        seeded.set(
+            _DEC1,
+            target_account_id=_CAND_A,
+            verify_accept=refuse,
+        )
+
+    assert verified
+    assert _decision_status(db, _DEC1) == "pending"
+    assert _decision_status(db, _DEC2) == "pending"
+    assert _link_rows(db, link_id=_LINK_PROV1)[0][4] == "accepted"
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
-<!-- Last reviewed: 2026-05-24 -->
+<!-- Last reviewed: 2026-07-21 -->
 # CLI Reference
 
-MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions_get`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
+MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
 
 This page covers the full user-facing surface. Per-command flag detail lives in `moneybin <cmd> --help`. `--help` is always side-effect free — it does not touch profiles, open the database, or hit the network.
 
@@ -119,7 +119,7 @@ The CLI has a few task-shaped overlaps; this section disambiguates the common on
 
 **"Refresh / transform / categorize run — which?"**
 
-- **`moneybin refresh`** — the right answer 99% of the time. Runs matching → SQLMesh apply → categorization in order; idempotent.
+- **`moneybin refresh`** — the right answer 99% of the time. Runs gsheet → match → transform → categorize → identity in order; idempotent.
 - **`transform <verb>`** — drop here only for SQLMesh-only operator work (debugging a model, restating a date range, validating SQL).
 - **`transactions categorize run`** — drop here only when you want to re-run categorization engines without touching transforms (e.g., after editing rules).
 
@@ -156,7 +156,7 @@ Top-level orientation: where the data lives, whether it's healthy, what the audi
 | `system audit list` | List audit-log events with filters (`--actor`, `--action`, `--target-table`, `--target-id`, `--from`, `--to`, `--limit`). |
 | `system audit show <audit-id>` | Show one audit event plus any chained children. |
 
-**Related guides:** [`profiles-and-multi-user.md`](profiles-and-multi-user.md).
+**Related guides:** [`profiles.md`](profiles.md).
 
 ## Ingestion
 
@@ -199,15 +199,15 @@ Pull transactions from external services through the moneybin-sync proxy. **`syn
 | `sync schedule show` | Show the active sync schedule. | — |
 | `sync schedule remove` | Disable scheduled sync. | — |
 
-**Related guides:** [`data-import.md`](data-import.md), [`watched-inbox.md`](watched-inbox.md), [`sync-server.md`](sync-server.md).
+**Related guides:** [`data-import.md`](data-import.md), [`data-pipeline.md`](data-pipeline.md).
 
 ## Refresh pipeline
 
-`refresh` is the always-visible umbrella entry point for the post-load pipeline: matching → SQLMesh apply → categorization. CLI peer of the `refresh_run` MCP tool.
+`refresh` is the always-visible umbrella entry point for the post-load pipeline: gsheet → match → transform → categorize → identity. CLI peer of the `refresh_run` MCP tool.
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `refresh` | Run the full cascade. Idempotent — safe to retry. Matching and categorization are best-effort; only SQLMesh apply errors fail the command. | `--step {match,transform,categorize}` (repeatable; default = full cascade) |
+| `refresh` | Run the full cascade. Idempotent — safe to retry. Matching, categorization, and identity are best-effort; only SQLMesh apply errors fail the command. | `--step {match,transform,categorize,identity}` (repeatable; default = full cascade; gsheet runs in the unscoped default) |
 
 The `transform` group below is the lower-level operator path. Reach for `refresh` first.
 
@@ -296,7 +296,7 @@ Categorization workflow. Engines: deterministic rules + merchant mappings (local
 | `transactions categorize stats` | Categorization coverage summary (total / categorized / pct / by-source breakdown). | — |
 | `transactions categorize rules list` | List active categorization rules. | — |
 | `transactions categorize rules create <name>` | Create a rule (single or `--from-file <path>` for batch). | `--pattern`, `--match-type {exact,contains,regex}`, `--category`, `--subcategory`, `--priority`, `--reapply` |
-| `transactions categorize rules apply` | Re-apply active rules to existing transactions. | `--reapply` |
+| `transactions categorize rules apply` | Apply only active rules to uncategorized transactions. | — |
 | `transactions categorize rules delete <rule-id>` | Delete a rule. | `--reapply` |
 | `transactions categorize auto review` | List pending auto-rule proposals with sample transactions. | `--limit` |
 | `transactions categorize auto accept <proposal-id>` | Accept one auto-rule proposal. | `--all` |
@@ -349,7 +349,7 @@ Account entities (dim records) plus per-account workflows.
 
 `accounts set` cascades atomically: `--archive` also sets `--exclude` for net-worth in the same write; `--unarchive` does NOT auto-restore `--include`.
 
-**Related guides:** [`account-management.md`](account-management.md).
+**Related guides:** [`profiles.md`](profiles.md), [`data-pipeline.md`](data-pipeline.md).
 
 ### `assets`
 
@@ -363,7 +363,7 @@ Investment ledger, positions, tax lots, realized gains, and the manually-maintai
 |---|---|---|
 | `investments add` | Record one ledger event. `--type reinvest` writes the acquisition + paired income row atomically. | `--account`, `--type`, `--date`, `--security`, `--quantity`, `--price`, `--amount`, `--fees`, `--subtype`, `--acquired`, `--basis`, `--event-group`, `--currency`, `--description` |
 | `investments list` | List ledger events from `core.fct_investment_transactions`. | `--account`, `--security`, `--type`, `--from`, `--to` |
-| `investments holdings` | Current positions: quantity, cost basis, average cost. (Market value awaits price feeds — Pillar C.) | `--account` |
+| `investments holdings` | Current positions: quantity, cost basis, average cost, market value, unrealized gain, and the date and age of the close used. A position with no usable price shows `-`, never a zero. | `--account` |
 | `investments gains` | Realized gain/loss (the 1099-B surface) from `core.fct_realized_gains`. | `--account`, `--security`, `--from`, `--to`, `--term {short,long}` |
 | `investments lots list` | Tax lots with remaining quantity and basis. Open lots only by default. | `--account`, `--security`, `--open/--all` |
 | `investments lots select <disposal-txn-id>` | Set the full specific-identification lot selection for a disposal (declarative replace). `--clear` reverts to FIFO. | `--lot LOT_ID:QTY` (repeatable), `--clear` |
@@ -393,7 +393,7 @@ Cross-domain analytical views. All commands support `--output json` and return t
 | `reports large-transactions` | Large transactions, optionally anomaly-filtered. | `--top`, `--anomaly {none,account,category}` |
 | `reports balance-drift` | Where computed balance diverges from asserted balance. | `--account`, `--status {drift,warning,clean,no-data,all}`, `--since` |
 
-**Related guides:** [`reports.md`](reports.md).
+**Related guides:** [`../features.md`](../features.md#reports).
 
 ## Budget
 
@@ -437,7 +437,7 @@ Lifecycle, exploration, and key management on the encrypted database.
 | `db migrate apply` | Apply pending schema migrations. | `--dry-run` |
 | `db migrate status` | Show applied migrations and pending ones. | — |
 
-**Related guides:** [`database-management.md`](database-management.md), [`threat-model.md`](threat-model.md).
+**Related guides:** [`database-security.md`](database-security.md), [`threat-model.md`](threat-model.md).
 
 ## Integrations
 
@@ -448,7 +448,7 @@ MCP server lifecycle and client install.
 | Command | Purpose | Key flags |
 |---|---|---|
 | `mcp serve` | Start the MCP server (stdio by default). Non-stdio transports are unauthenticated and refuse to start without `--insecure`. | `-t, --transport {stdio,sse,streamable-http}`, `--insecure` |
-| `mcp install` | Install MoneyBin into an MCP client's config. Supported clients: claude-desktop, claude-code, codex, chatgpt-desktop, vscode, cursor, windsurf, gemini-cli. (`chatgpt-desktop` shares Codex's `~/.codex/config.toml`; ChatGPT on the web needs remote MCP — M3D.) | `-c, --client`, `-p, --profile`, `--print`, `-y, --yes` |
+| `mcp install` | Install MoneyBin into an MCP client's config. Supported clients: claude-desktop, claude-code, codex, chatgpt-desktop, vscode, cursor, windsurf, gemini-cli. (`chatgpt-desktop` shares Codex's `~/.codex/config.toml`; ChatGPT on the web cannot reach a local stdio server.) | `-c, --client`, `-p, --profile`, `--print`, `-y, --yes` |
 | `mcp list-tools` | List every registered MCP tool with its sensitivity tier. | `-o, --output` |
 | `mcp list-prompts` | List every registered MCP prompt. | `-o, --output` |
 | `mcp config` | Show active MCP server configuration (profile, database path, max-rows, max-chars). | — |
@@ -458,11 +458,39 @@ MCP server lifecycle and client install.
 
 ### `export`
 
-CSV / Excel / Sheets export. Group is reserved; commands ship with `export.md`.
+Publish a closed 13-table canonical bundle or one registered report. Local
+delivery defaults to redacted CSV under
+`~/Documents/MoneyBin/<profile>/exports/`; every completed local run is a new
+immutable artifact with a manifest, checksums, and data dictionary. Pass
+`--unredacted` affirmatively as an explicit per-run choice. Interactive CLI
+omission prompts on every run; `--yes` and non-TTY execution select the safe
+redacted default. `--unredacted` selects unredacted output affirmatively.
+Destination configuration never remembers a redaction choice.
 
-| Command | Purpose |
-|---|---|
-| `export run` 🚧 | Export financial data to a file (stub). |
+| Command | Purpose | Key flags |
+|---|---|---|
+| `moneybin export bundle` | Publish the canonical bundle. Defaults to CSV and `local:exports`. | `--format {csv,parquet,xlsx}`, `--to local:<name>\|sheets:<name>`, `--compress zip`, `--unredacted`, `-y, --yes`, `--output {text,json}` |
+| `moneybin export report <report-id>` | Execute one catalog report once, retain its parameters and SQL provenance, and publish that result. | Repeat `--param key=value`; delivery flags match `bundle`. |
+| `moneybin export destination list` | List the built-in and named destinations with readiness. | `--output {text,json}`, `--quiet` |
+| `moneybin export destination add local <name> <path>` | Add or replace a named local root. | — |
+| `moneybin export destination add sheets <name> <url>` | Add or replace an output-only workbook and request Sheets write authorization. | — |
+| `moneybin export destination remove <name>` | Remove configuration without deleting files, workbooks, or tabs. | — |
+
+CSV and Parquet are directory bundles. `--compress zip` publishes a ZIP beside
+the completed bundle; ZIP is the only compression format. XLSX is one workbook
+with data, manifest, and dictionary worksheets and rejects `--compress` because
+it is already a ZIP container. Sheets uses its native format and rejects both
+`--format` and `--compress`.
+
+Inbound and output Sheets are separate contracts. MoneyBin refuses a
+destination workbook already configured as a `gsheet` input, replaces only its
+own managed tabs after staging and validation, and preserves the latest good
+visible state if publication fails. Local artifacts retain history; Sheets is
+managed latest state.
+
+MCP reaches the same service outcomes through `export_run`, `exports_set`, and
+the existing `system_status(sections=["exports"])` readiness view. Command and
+tool names are intentionally not required to map 1:1.
 
 ## Diagnostics
 
@@ -591,6 +619,6 @@ moneybin system status --output json | jq -e '.summary.total_count > 0' \
 
 - [`data-import.md`](data-import.md) — import formats and the import lifecycle
 - [`categorization.md`](categorization.md) — rules, merchants, LLM-assist
-- [`reports.md`](reports.md) — what each report shows
+- [`../features.md`](../features.md#reports) — what each report shows
 - [`mcp-server.md`](mcp-server.md) — the MCP peer surface
-- [`database-management.md`](database-management.md) — encryption, backups, migrations
+- [`database-security.md`](database-security.md) — encryption, backups, migrations

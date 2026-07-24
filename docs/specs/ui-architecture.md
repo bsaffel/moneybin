@@ -25,7 +25,11 @@ Two facts make a shared UI architecture the right foundation today:
 
 ### The reuse thesis
 
-Competitors treat their UI as the product and MCP as a bolt-on. MoneyBin is the inverse: a mature MCP contract (response envelope, sensitivity tiers, action hints, audit/undo) is the primary surface. That makes MoneyBin structurally able to ship an MCP App as a *coherent extension* of its primary surface — and to render the same components in a browser. This spec exists so that capability is built once, cleanly, instead of as two parallel frontends that drift.
+MoneyBin already has a mature MCP contract: response envelopes, sensitivity
+tiers, action hints, and audit/undo. The visual surfaces should consume that
+contract rather than re-create product behavior in a separate frontend layer.
+This spec makes that reuse structural so the MCP App and browser UI cannot
+silently drift into parallel implementations.
 
 ## Non-Goals
 
@@ -210,7 +214,7 @@ Charts are **house-built SVG primitives on `d3-scale` / `d3-shape`**, wrapped in
 
 **Cost note.** In agentic development the cost driver is iteration loops, not lines of code, which flattens build-vs-buy: hand-rolled SVG is deterministic, while fighting a library's defaults is discovery. The house-primitive delta over a library lands almost entirely on the cheap plumbing layer — a small fraction of the total UI build; the expensive interaction/provenance layer (the bulk of charting) is custom either way. The charting layer is bounded (closed grammar, small-n) — not a month-scale token sink.
 
-**Reserved forms.** The ten-form grammar is correctly scoped for today's domains; a competitor-form survey found exactly three additions to make **when their consuming domain UI is built** (tracked as follow-up work): **treemap** (allocation with many items — investments / detailed spending, where the donut's six-slice cap bites), a **budget/goal progress** form (a linear bullet extending the §03 rollup-bar's marker convention, not a radial gauge — gauges are space-inefficient and off-brand), and **stacked-area over time** (marginal — only if stacked-bar proportion proves insufficient). Adding a form is a thin SVG component + a `charts.md` specimen card + one row in the report→form table — cheap, and a reason not to expand the grammar pre-emptively.
+**Reserved forms.** The ten-form grammar is correctly scoped for today's domains; three additions are reserved **for when their consuming domain UI is built** (tracked as follow-up work): **treemap** (allocation with many items — investments / detailed spending, where the donut's six-slice cap bites), a **budget/goal progress** form (a linear bullet extending the §03 rollup-bar's marker convention, not a radial gauge — gauges are space-inefficient and off-brand), and **stacked-area over time** (marginal — only if stacked-bar proportion proves insufficient). Adding a form is a thin SVG component + a `charts.md` specimen card + one row in the report→form table — cheap, and a reason not to expand the grammar pre-emptively.
 
 ## Testing strategy
 

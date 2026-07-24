@@ -29,24 +29,22 @@ Three forces pull in different directions:
    group changes whenever group membership changes, which orphans curation on
    every merge, not just at migration.
 
-Prior art (Actual, Firefly III, Maybe, GnuCash, Plaid) is near-unanimous on one
-point: **content must not *be* the identity** — every tool keeps a stable id and
-a *separate, demoted* dedup/match key (FITID, `imported_id`, `import_hash`,
-`plaid_id`); Firefly states the motive directly — source ids and capitalization
-mutate, so hashes are brittle. But two nuances decide the MoneyBin-specific
-answer:
+A bare content hash cannot provide stable references: source identity can be
+enriched or corrected, while group membership changes as observations merge. But
+MoneyBin's derived `core` layer cannot obtain a stable surrogate for free: it
+would need a persisted per-transaction registry that survives every rebuild,
+adding hot mutable state to the highest-volume entity and weakening
+derive-from-raw where it matters most.
 
-- Those tools **mutate records in place**, so a surrogate id persists for free.
-  MoneyBin **derives** `core`, so a stable surrogate would require a *persisted
-  per-transaction identity registry that survives every rebuild* — hot mutable
-  app-state for the highest-volume entity, weakening derive-from-raw where it
-  matters most.
-- **Plaid — the closest analog** (an API serving canonical records from messy
-  bank feeds) — deliberately does **not** keep the id stable across the
-  pending→posted enrichment. It mints a new `transaction_id` and ships a
-  **forwarding pointer** (`pending_transaction_id`) plus a removal signal, so
-  consumers relink. External-reference durability is achieved by **resolution,
-  not immutability** — and far more cheaply.
+The instability is a source-protocol fact, not a hypothetical: Plaid mints a
+new `transaction_id` when a pending transaction posts, forwarding the old one
+via `pending_transaction_id` — so even a provider-assigned id does not survive
+the pending→posted boundary.
+
+The durable alternative is forwarding. When a source record changes identity
+as it moves from pending to posted, the old reference must resolve to the new
+one. External-reference durability is therefore achieved by **resolution, not
+immutability**, through a cheap append-only alias map.
 
 This is pattern-establishing: future canonical entities (securities, merchants)
 will inherit whichever identity model we choose here, and the "why" (the
@@ -93,10 +91,9 @@ For transactions:
    fact about how an id is derived; it does not drift as sources are added or
    priorities are retuned.
 3. **An alias map (`old_id → new_id`) records every id-changing merge.** SQL,
-   agent, external, and curation-FK references resolve through it — the Plaid
-   `pending_transaction_id` model. Brittleness in any one source key (a mutated
-   FITID, the description-bearing CSV per-source hash) thus degrades to a
-   forwarding pointer, never an orphan.
+   agent, external, and curation-FK references resolve through it. Brittleness
+   in any one source key (a mutated FITID or a description-bearing CSV
+   per-source hash) thus degrades to a forwarding pointer, never an orphan.
 
 For accounts (decided in the same spec, recorded here for the contrast): a
 **minted opaque surrogate `account_id`** with a `app.account_links` registry —
@@ -121,8 +118,8 @@ reference durability.
   `old_id → new_id` via the alias map; the user never sees the id and loses no
   annotation.
 - **Reference durability is by resolution, not immutability** — a documented
-  contract (like Plaid's): a consumer holding an old id must resolve it through
-  the alias map. The `moneybin://schema` / `sql_query` docs must state this.
+  contract: a consumer holding an old id must resolve it through the alias map.
+  The `moneybin://schema` / `sql_query` docs must state this.
 - **Churn is bounded** to transactions whose dedup-group membership actually
   changes, and minimized further by stability-class anchoring: a new lower-stability
   twin joining causes no re-key; only a more-stable source arriving later flips the
@@ -136,16 +133,15 @@ reference durability.
 
 ## Alternatives considered
 
-- **(B) Stable surrogate `transaction_id` + identity registry** (the Actual /
-  GnuCash model). Rejected: it adds hot mutable app-state for the
-  highest-volume entity and makes transaction identity backup/recovery-critical,
-  weakening derive-from-raw precisely where it is most load-bearing — to buy an
-  immutability guarantee that alias forwarding reaches by resolution at a
-  fraction of the cost.
+- **(B) Stable surrogate `transaction_id` + identity registry.** Rejected: it
+  adds hot mutable app-state for the highest-volume entity and makes transaction
+  identity backup/recovery-critical, weakening derive-from-raw precisely where
+  it is most load-bearing — to buy an immutability guarantee that alias
+  forwarding reaches by resolution at a fraction of the cost.
 - **(A) Plain content-hash with no alias map** (the original draft). Rejected:
-  dominated by (C) — external/SQL references break on merge for the want of a
-  cheap append-only alias table, and the prior art is unanimous that bare
-  content-as-identity is brittle.
+  dominated by (C) — external and SQL references break on merge for the want of
+  a cheap append-only alias table; bare content-as-identity is brittle whenever
+  its inputs change.
 
 ## Change history
 

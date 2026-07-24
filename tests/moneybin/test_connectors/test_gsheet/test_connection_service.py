@@ -25,6 +25,10 @@ from moneybin.connectors.gsheet.testing.fake_sheets_client import (
 )
 from moneybin.database import Database
 from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+from moneybin.repositories.export_destinations_repo import ExportDestinationsRepo
+from moneybin.repositories.gsheet_connections_repo import (
+    GSheetConnectionExportDestinationConflictError,
+)
 
 
 def _confirmation_count(outcome: str) -> float:
@@ -46,6 +50,31 @@ def _make_service(
     sheets = TestSheetsClient()
     svc = GSheetConnectionService(db=db, sheets_client=sheets, oauth_client=oauth)
     return svc, sheets, oauth
+
+
+def test_connect_rejects_export_overlap_before_oauth_or_sheets_api(
+    in_memory_db: Database,
+) -> None:
+    ExportDestinationsRepo(in_memory_db).set_sheets(
+        name="dashboard",
+        spreadsheet_id="ss-output",
+        managed_tab_prefix="MB",
+        actor="test",
+    )
+    service, sheets, oauth = _make_service(in_memory_db)
+    oauth.revoke()
+    sheets.inject_error_for("metadata", AssertionError("API must not be called"))
+
+    with pytest.raises(
+        GSheetConnectionExportDestinationConflictError, match="export destination"
+    ):
+        service.connect(
+            ConnectionRequest(
+                url="https://docs.google.com/spreadsheets/d/ss-output/edit#gid=0"
+            )
+        )
+
+    assert oauth.authorize_called == 0
 
 
 def _tiller_workbook() -> FakeWorkbook:
@@ -886,6 +915,94 @@ def test_disconnect_purge_drops_view_and_deletes_rows(
     ).fetchone()
     assert view_check is not None
     assert view_check[0] == 0
+
+
+def test_purge_plan_captures_complete_connection_and_raw_rows(
+    in_memory_db: Database,
+) -> None:
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ss-plan", _seed_workbook())
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ss-plan/edit#gid=99",
+            adapter="seed",
+            alias="purge_plan",
+            yes=True,
+        )
+    )
+
+    plan = svc.plan_purge(result.connection.connection_id)
+
+    assert plan.connection_id == result.connection.connection_id
+    assert plan.connection_before_state["spreadsheet_id"] == "ss-plan"
+    assert plan.connection_before_state["column_mapping"]
+    assert len(plan.raw_before_state) == 1
+    assert plan.raw_before_state[0]["connection_id"] == result.connection.connection_id
+    assert plan.blast_radius == {"connections": 1, "raw_rows": 1, "views": 1}
+
+
+def test_confirmed_purge_revalidates_inside_transaction(
+    in_memory_db: Database,
+) -> None:
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ss-revalidate", _seed_workbook())
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ss-revalidate/edit#gid=99",
+            adapter="seed",
+            alias="revalidate",
+            yes=True,
+        )
+    )
+    connection_id = result.connection.connection_id
+    expected = svc.plan_purge(connection_id)
+    in_memory_db.execute(
+        """
+        UPDATE raw.gsheet_seeds
+        SET data = '{"Name":"Changed"}'::JSON
+        WHERE connection_id = ?
+        """,
+        [connection_id],
+    )
+
+    def verify(live: object) -> None:
+        assert live == expected
+
+    with pytest.raises(AssertionError):
+        svc.purge_confirmed(connection_id, verify=verify, actor="mcp")
+
+    assert svc.get(connection_id) is not None
+    assert in_memory_db.execute(
+        "SELECT COUNT(*) FROM raw.gsheet_seeds WHERE connection_id = ?",
+        [connection_id],
+    ).fetchone() == (1,)
+
+
+def test_confirmed_purge_applies_exact_verified_plan(
+    in_memory_db: Database,
+) -> None:
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ss-confirmed", _seed_workbook())
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ss-confirmed/edit#gid=99",
+            adapter="seed",
+            alias="confirmed",
+            yes=True,
+        )
+    )
+    connection_id = result.connection.connection_id
+    expected = svc.plan_purge(connection_id)
+    observed: list[object] = []
+
+    svc.purge_confirmed(
+        connection_id,
+        verify=lambda live: observed.append(live),
+        actor="mcp",
+    )
+
+    assert observed == [expected]
+    assert svc.get(connection_id) is None
 
 
 class TestGSheetPartialMergeColumnMapping:

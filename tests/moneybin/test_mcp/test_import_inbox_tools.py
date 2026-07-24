@@ -51,9 +51,8 @@ class TestImportInboxSync:
         patch_service.sync.return_value = InboxSyncResult(
             processed=[{"filename": "a.csv", "transactions": 3}],
         )
-        envelope = await import_inbox_sync()
-        # ImportInboxSyncPayload has failed/transforms_error: DESCRIPTION → MEDIUM
-        assert envelope.summary.sensitivity == "medium"
+        envelope = import_inbox_sync()
+        assert envelope.summary.sensitivity == "low"
         assert envelope.data.processed[0]["filename"] == "a.csv"
 
     async def test_account_confirmation_pending_includes_binding_hint(
@@ -71,7 +70,7 @@ class TestImportInboxSync:
                 }
             ],
         )
-        envelope = await import_inbox_sync()
+        envelope = import_inbox_sync()
         assert any("inbox/<account-slug>" in a for a in envelope.actions)
         # account_confirmation pairs --accept (ratifies the settled mapping) with
         # --account-binding; it never offers a standalone --mapping override.
@@ -86,7 +85,7 @@ class TestImportInboxSync:
         patch_service.sync.return_value = InboxSyncResult(
             processed=[{"filename": "a.csv", "transactions": 1}],
         )
-        envelope = await import_inbox_sync()
+        envelope = import_inbox_sync()
         assert not any("inbox/<account-slug>" in a for a in envelope.actions)
 
     async def test_categorize_hint_appears_when_above_threshold(
@@ -100,7 +99,7 @@ class TestImportInboxSync:
             "moneybin.mcp.tools.import_inbox._uncategorized_count",
             lambda: 50,
         )
-        envelope = await import_inbox_sync()
+        envelope = import_inbox_sync()
         assert any("categorize_assist" in a for a in envelope.actions)
         assert any("50" in a for a in envelope.actions)
 
@@ -115,7 +114,7 @@ class TestImportInboxSync:
             "moneybin.mcp.tools.import_inbox._uncategorized_count",
             lambda: 0,
         )
-        envelope = await import_inbox_sync()
+        envelope = import_inbox_sync()
         assert not any("categorize_assist" in a for a in envelope.actions)
 
 
@@ -126,6 +125,6 @@ class TestImportInboxPending:
         patch_service.enumerate.return_value = InboxListResult(
             would_process=[{"filename": "a.csv", "account_hint": None}],
         )
-        envelope = await import_inbox_pending()
+        envelope = import_inbox_pending()
         assert envelope.summary.sensitivity == "low"
         assert envelope.data.would_process[0]["filename"] == "a.csv"

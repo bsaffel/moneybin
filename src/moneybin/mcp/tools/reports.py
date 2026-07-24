@@ -1,109 +1,82 @@
-"""Reports namespace tools.
-
-Cross-domain analytical views (read-only). The view-backed reports
-(spending, cashflow, recurring, merchants, large_transactions, balance_drift)
-are generated from ``@report`` runners in ``moneybin.reports.definitions`` and
-registered via ``register_reports_mcp``. ``networth`` / ``networth_history``
-are NetworthService-backed (not single reports.* view reads) and stay
-hand-written — a documented exception. (``reports_budget`` was removed: it
-synthesized from ``BudgetService`` rather than a ``reports.*`` view; it returns
-through the framework once M3C ships a ``reports.budget`` view.)
-"""
+"""Generic catalog and runner for registered read-only reports."""
 
 from __future__ import annotations
 
-from datetime import date as _date
+from typing import Annotated
 
 from fastmcp import FastMCP
+from pydantic import Field, JsonValue
 
 from moneybin.database import get_database
-from moneybin.mcp._registration import register
+from moneybin.errors import UserError
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.privacy.payloads.networth import (
-    NetWorthHistoryPayload,
-    NetWorthSnapshotPayload,
-)
+from moneybin.mcp.privacy import Sensitivity, get_max_rows, tier_to_sensitivity
+from moneybin.privacy.payloads.reports import ReportsPayload
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.reports._framework.registry import register_reports_mcp
-from moneybin.reports.definitions import ALL_REPORTS
-from moneybin.services.networth_service import NetworthService
+from moneybin.reports._framework.catalog import (
+    catalog_to_payload,
+    get_report_catalog,
+    result_to_payload,
+)
 
 
-@mcp_tool()
-def reports_networth(
-    as_of_date: str | None = None, account_ids: list[str] | None = None
-) -> ResponseEnvelope[NetWorthSnapshotPayload]:
-    """Current or as-of net worth snapshot with per-account breakdown.
-
-    Net worth = sum of balances across accounts where include_in_net_worth=True
-    AND archived=False. Excluded/archived accounts do not contribute.
-
-    Args:
-        as_of_date: ISO date (YYYY-MM-DD); shows networth on or before this
-            date. Default: latest available.
-        account_ids: Filter the per-account breakdown to specific account IDs.
-            The headline net_worth total still reflects all included accounts.
-    """
-    parsed_date = _date.fromisoformat(as_of_date) if as_of_date else None
-    with get_database(read_only=True) as db:
-        snapshot = NetworthService(db).current(
-            as_of_date=parsed_date, account_ids=account_ids
+@mcp_tool(
+    dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.CRITICAL,
+    domain="reports",
+)
+def reports(
+    report_id: str | None = None,
+    parameters: dict[str, JsonValue] | None = None,
+    limit: Annotated[int, Field(strict=True, ge=1)] | None = None,
+) -> ResponseEnvelope[ReportsPayload]:
+    """Browse the report catalog or execute one registered read-only report."""
+    catalog = get_report_catalog()
+    if report_id is None:
+        if parameters is not None or limit is not None:
+            raise UserError(
+                "parameters and limit require report_id",
+                code="REPORT_ID_REQUIRED",
+            )
+        payload = catalog_to_payload(catalog)
+        return build_envelope(
+            data=payload,
+            sensitivity="low",
+            total_count=len(payload.reports),
+            returned_count=len(payload.reports),
+            classes_returned=["aggregate"],
         )
-    return build_envelope(
-        data=snapshot,
-        actions=[
-            "Use reports_networth_history(from_date, to_date) for the time series",
-            "Use accounts_balance_history(account_id=...) to drill into one account",
-            "Use accounts to see archived / excluded accounts not counted here",
-        ],
-    )
 
+    if limit is not None and limit < 1:
+        raise UserError(
+            "limit must be at least 1",
+            code="REPORT_LIMIT_INVALID",
+        )
 
-@mcp_tool()
-def reports_networth_history(
-    from_date: str, to_date: str, interval: str = "monthly"
-) -> ResponseEnvelope[NetWorthHistoryPayload]:
-    """Net worth history time series with period-over-period change.
-
-    Args:
-        from_date: ISO date (YYYY-MM-DD); inclusive start
-        to_date: ISO date (YYYY-MM-DD); inclusive end
-        interval: 'daily' | 'weekly' | 'monthly' (default: monthly)
-
-    Returns a list of {period, net_worth, change_abs, change_pct} dicts.
-    The first period has change_abs=None and change_pct=None (no prior period).
-    """
-    parsed_from = _date.fromisoformat(from_date)
-    parsed_to = _date.fromisoformat(to_date)
+    session_max = get_max_rows()
+    max_rows = session_max if limit is None else min(limit, session_max)
     with get_database(read_only=True) as db:
-        payload = NetworthService(db).history(parsed_from, parsed_to, interval=interval)
+        result = catalog.execute(
+            db,
+            report_id=report_id,
+            parameters=parameters or {},
+            limit=max_rows,
+        )
+    payload = result_to_payload(result)
     return build_envelope(
         data=payload,
-        actions=[
-            "Use reports_networth(as_of_date=...) for a single-date snapshot with per-account breakdown",
-            "Switch `interval` to 'daily' or 'weekly' for finer resolution",
-        ],
+        sensitivity=tier_to_sensitivity(result.tier).value,
+        total_count=result.total_count,
+        returned_count=len(payload.rows),
+        classes_returned=result.classes_returned,
+        actions=result.actions or None,
+        period=result.period,
+        display_currency=result.display_currency,
     )
 
 
 def register_reports_tools(mcp: FastMCP) -> None:
-    """Register all reports namespace tools with the FastMCP server.
+    """Register the single standard report catalog and runner."""
+    from moneybin.reports._framework.registry import register_generic_reports_tool
 
-    The view-backed reports register from ``ALL_REPORTS`` via the framework;
-    the NetworthService-backed tools register by hand.
-    """
-    register(
-        mcp,
-        reports_networth,
-        "reports_networth",
-        "Current or historical net worth snapshot with per-account breakdown. "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
-    register(
-        mcp,
-        reports_networth_history,
-        "reports_networth_history",
-        "Net worth time series with period-over-period change (daily/weekly/monthly). "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
-    register_reports_mcp(ALL_REPORTS, mcp)
+    register_generic_reports_tool(mcp)

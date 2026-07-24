@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -67,6 +68,14 @@ class PendingMerchantLinkGroup:
     source_type: str
     provider_merchant_name: str | None
     candidates: tuple[PendingMerchantLinkCandidate, ...]
+
+
+@dataclass(frozen=True)
+class MerchantLinkAcceptImpact:
+    """Stable target and physical rows touched by a merchant binding."""
+
+    candidate_merchant_id: str
+    blast_radius: dict[str, int]
 
 
 class MerchantLinksService:
@@ -152,12 +161,62 @@ class MerchantLinksService:
             )
         return result
 
-    def history(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def history(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
         """All decisions (any status) newest-first by ``decided_at``. Read-only.
 
         Delegates to the repo; empty list when the table is absent.
         """
         return self._decisions.history(limit=limit)
+
+    def decision_by_id(self, decision_id: str) -> dict[str, Any] | None:
+        """Return one exact decision row by ID."""
+        return self._decisions.fetch_by_id(decision_id)
+
+    def accept_impact(
+        self,
+        decision_id: str,
+        *,
+        target_merchant_id: str,
+    ) -> MerchantLinkAcceptImpact:
+        """Preview stable target and rows the merchant binding will mutate."""
+        decision = self._fetch_decision(decision_id)
+        if decision is None or decision["status"] != "pending":
+            raise UserError(
+                f"No pending merchant-link decision {decision_id!r}.",
+                code=error_codes.MUTATION_NOTHING_TO_DO,
+            )
+        if target_merchant_id != decision["candidate_merchant_id"]:
+            raise UserError(
+                "target_merchant_id does not match the candidate named in "
+                f"decision {decision_id!r}; pass the decision's own "
+                "candidate_merchant_id as a confirming safety check.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        if not self._merchant_exists(target_merchant_id):
+            raise UserError(
+                f"No merchant found for id {target_merchant_id!r}.",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        sibling_count_row = self._db.execute(
+            f"""
+            SELECT COUNT(*) FROM {MERCHANT_LINK_DECISIONS.full_name}
+            WHERE ref_value = ?
+              AND source_type = ?
+              AND decision_id != ?
+              AND status = 'pending'
+              AND reversed_at IS NULL
+            """,  # noqa: S608  # TableRef constant + parameterized values
+            [decision["ref_value"], decision["source_type"], decision_id],
+        ).fetchone()
+        sibling_count = int(sibling_count_row[0]) if sibling_count_row else 0
+        return MerchantLinkAcceptImpact(
+            candidate_merchant_id=str(decision["candidate_merchant_id"]),
+            blast_radius={
+                "merchants": 1,
+                "merchant_links": 1,
+                "merchant_link_decisions": 1 + sibling_count,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -243,12 +302,24 @@ class MerchantLinksService:
         )
         return result
 
+    def record_committed_outer_outcomes(self, outcomes: tuple[str, ...]) -> None:
+        """Record metrics after an enclosing transaction commits."""
+        for outcome in outcomes:
+            MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome=outcome).inc()
+        from moneybin.services.merchant_resolver import (  # noqa: PLC0415
+            refresh_merchant_link_pending_gauge,
+        )
+
+        refresh_merchant_link_pending_gauge(self._db)
+
     def set(  # noqa: A003  # mirrors the existing set_status verb shape; "set" is the surface verb
         self,
         decision_id: str,
         *,
         target_merchant_id: str | None,
         decided_by: str = "user",
+        verify_accept: Callable[[MerchantLinkAcceptImpact], None] | None = None,
+        in_outer_txn: bool = False,
     ) -> None:
         """Accept or reject a pending merchant-link decision atomically.
 
@@ -294,7 +365,9 @@ class MerchantLinksService:
         - The provider entity id is already bound to a different merchant
           (MUTATION_CONSTRAINT_VIOLATION).
         """
-        self._db.begin()
+        outcome = "accepted" if target_merchant_id is not None else "rejected"
+        if not in_outer_txn:
+            self._db.begin()
         try:
             decision = self._fetch_decision(decision_id)
             if decision is None:
@@ -326,6 +399,13 @@ class MerchantLinksService:
                         f"No merchant found for id {target_merchant_id!r}.",
                         code=error_codes.MUTATION_NOT_FOUND,
                     )
+                if verify_accept is not None:
+                    verify_accept(
+                        self.accept_impact(
+                            decision_id,
+                            target_merchant_id=target_merchant_id,
+                        )
+                    )
                 try:
                     self._links.insert(
                         link_id=uuid.uuid4().hex[:12],
@@ -353,7 +433,6 @@ class MerchantLinksService:
                     actor=self._actor,
                     in_outer_txn=True,
                 )
-                MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome="accepted").inc()
                 self._reject_pending_siblings(
                     ref_value,
                     source_type=decision["source_type"],
@@ -376,7 +455,6 @@ class MerchantLinksService:
                     actor=self._actor,
                     in_outer_txn=True,
                 )
-                MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome="rejected").inc()
                 self._reject_pending_siblings(
                     ref_value,
                     source_type=decision["source_type"],
@@ -384,12 +462,17 @@ class MerchantLinksService:
                     decided_by=decided_by,
                 )
 
-            self._db.commit()
+            if not in_outer_txn:
+                self._db.commit()
         except BaseException:
-            self._db.rollback()
+            if not in_outer_txn:
+                self._db.rollback()
             raise
+        if in_outer_txn:
+            return
 
         # Accept/reject changed the pending count — refresh the gauge.
+        MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome=outcome).inc()
         from moneybin.services.merchant_resolver import (  # noqa: PLC0415
             refresh_merchant_link_pending_gauge,
         )

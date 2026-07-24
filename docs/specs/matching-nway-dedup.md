@@ -5,7 +5,7 @@
 > Parent: [`matching-overview.md`](matching-overview.md) (pillars A + C)
 > Enhances: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — supersedes its Requirement 3 (1:1 bipartite assignment)
 > Refined by: [`matching-exact-key-dedup.md`](matching-exact-key-dedup.md) — adds a `(source_type, source_origin, source_file)` cardinality guard to the Requirement 2 / Algorithm edge-add rule, and the cross-source exact-key confidence floor supersedes the "No change to scoring" out-of-scope note for Tier 3
-> Prerequisites (merged): matching-model reconciliation (#204, activated the `dedup_reconciliation` doctor check) and agent-callable match accept/reject (#209, the `transactions_matches_set` / `_pending` surface Req 11–12 build on)
+> Prerequisites (merged): matching-model reconciliation (#204, activated the `dedup_reconciliation` doctor check) and agent-callable match accept/reject (#209, the `reviews` / `reviews_decide` surface in Req 11–12 builds on)
 > Companions: `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (recursive CTE syntax, column naming), `.claude/rules/surface-design.md` (review-surface shapes), `docs/specs/moneybin-doctor.md` (`dedup_reconciliation`)
 
 ## Goal
@@ -50,7 +50,7 @@ N-way dedup is therefore predominantly a **matcher** problem: make the matcher e
 | Matcher shape | Union-find spanning forest | Smallest change that is correct; subsumes 1:1 exactly when every group has size 2 |
 | `app.match_decisions` semantics | **Pairwise edges, groups derived downstream** — no schema change | The component is a view over currently-accepted edges; accept/reject/undo stay per-edge and groups re-split for free. A stored group entity is a one-way-door schema change with no current need (YAGNI) |
 | Group confidence | **MIN (weakest link)** | The merged row is only as trustworthy as its shakiest accepted edge — honest about "is this all one transaction" |
-| Review/accept UX | **Presentation-layer grouping + edge-level mutation** | The accept/reject surface already exists (#209): `MatchingService.set_status` / `get_pending` / `accept_all_pending`; MCP `transactions_matches_set` / `_pending`; CLI `matches set` + `review --confirm/--reject/--confirm-all`. N-way only adds component clustering to the *read* side. A group-id mutation is rejected: `match_group_id` is derived (changes each transform) and has no place in a public mutation contract |
+| Review/accept UX | **Presentation-layer grouping + edge-level mutation** | The accept/reject surface already exists (#209): `MatchingService.set_status` / `get_pending` / `accept_all_pending`; MCP `reviews(kind="matches", status="pending")` / `reviews_decide(decisions=[...])`; CLI `matches set` + `review --confirm/--reject/--confirm-all`. N-way only adds component clustering to the *read* side. A group-id mutation is rejected: `match_group_id` is derived (changes each transform) and has no place in a public mutation contract |
 | Tier interaction | Shared component set across 2b and 3, seeded from existing active edges | A row matched in 2b can still gain a cross-source edge in 3 when it connects a new component |
 | Prep fold | Recursive-CTE transitive closure | Robust for any group topology; the two-pass breaks at 4-node chains |
 | Transfer interaction | Exclude all non-primary component members | Generalizes the current "lower side of the pair" exclusion to groups |
@@ -85,8 +85,8 @@ This **applies** the existing dedup and medallion patterns rather than establish
 
 The accept/reject surface shipped in #209; this requirement adds component clustering to the read side only.
 
-11. The pending-match read path (`MatchingService.get_pending` → MCP `transactions_matches_pending`, CLI `transactions review --type matches`, `matches history`) **clusters pending dedup edges by their connected component** and presents each cluster as a unit (e.g., "3 copies of −$42.00 on 2024-03-15 across ofx/csv/sources"). Components are computed from the same accepted+pending edge graph the matcher seeds from.
-12. "Accept group" / "reject group" expand to per-edge `MatchingService.set_status(match_id, status)` calls (MCP `transactions_matches_set`, CLI `matches set` / `review --confirm/--reject`) over the pending edges in the cluster; `accept_all_pending` already covers the whole-queue case. The edge-level mutation contract from #209 is unchanged. Re-split is automatic via Requirement 6.
+11. The pending-match read path (`MatchingService.get_pending` → MCP `reviews(kind="matches", status="pending")`, CLI `transactions review --type matches`, `matches history`) **clusters pending dedup edges by their connected component** and presents each cluster as a unit (e.g., "3 copies of −$42.00 on 2024-03-15 across ofx/csv/sources"). Components are computed from the same accepted+pending edge graph the matcher seeds from.
+12. "Accept group" / "reject group" expand to per-edge `MatchingService.set_status(match_id, status)` calls (MCP `reviews_decide(decisions=[...])`, CLI `matches set` / `review --confirm/--reject`) over the pending edges in the cluster; `accept_all_pending` already covers the whole-queue case. The edge-level mutation contract from #209 is unchanged. Re-split is automatic via Requirement 6.
 
 ### Doctor / `dedup_reconciliation`
 

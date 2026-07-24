@@ -16,11 +16,18 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Mapping
+from contextlib import ExitStack
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
+from moneybin import error_codes
+from moneybin.errors import UserError
+from moneybin.exports.workbook_roles import workbook_role_lease
 from moneybin.repositories.base import BaseRepo, quote_ident
-from moneybin.tables import GSHEET_CONNECTIONS
+from moneybin.services.audit_service import AuditEvent
+from moneybin.services.request_lifetime import current_request_lifetime
+from moneybin.tables import EXPORT_DESTINATIONS, GSHEET_CONNECTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +81,18 @@ Status = Literal[
 ]
 
 
+class GSheetConnectionExportDestinationConflictError(UserError):
+    """Raised when an inbound connection would reuse an export workbook."""
+
+    def __init__(self) -> None:
+        """Build a user-safe workbook-role conflict."""
+        super().__init__(
+            "This spreadsheet is already configured as an export destination and "
+            "cannot also be an inbound connection.",
+            code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+        )
+
+
 def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
     """Map a fetched row to a column → value dict, decoding JSON columns."""
     out: dict[str, Any] = {}
@@ -83,6 +102,22 @@ def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
         else:
             out[col] = val
     return out
+
+
+def _audit_workbook_ids(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    """Return every workbook role affected by an audited connection replay."""
+    return tuple(
+        sorted({
+            spreadsheet_id
+            for image in (before, after)
+            if image is not None
+            for spreadsheet_id in [cast(str | None, image.get("spreadsheet_id"))]
+            if spreadsheet_id is not None
+        })
+    )
 
 
 class GSheetConnectionsRepo(BaseRepo):
@@ -118,6 +153,44 @@ class GSheetConnectionsRepo(BaseRepo):
             decode=_decode_row,
         )
 
+    def assert_not_export_destination(self, spreadsheet_id: str) -> None:
+        """Reject a workbook already assigned to the output role."""
+        conflict = self._db.execute(
+            f"SELECT 1 FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE spreadsheet_id = ? LIMIT 1",
+            [spreadsheet_id],
+        ).fetchone()
+        if conflict is not None:
+            raise GSheetConnectionExportDestinationConflictError()
+
+    def undo_event(
+        self,
+        event: AuditEvent,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent | None:
+        """Restore an inbound connection only while its workbook stays outbound-free."""
+        with ExitStack() as stack:
+            for workbook_id in _audit_workbook_ids(
+                event.before_value, event.after_value
+            ):
+                stack.enter_context(
+                    workbook_role_lease(
+                        self._db.path,
+                        workbook_id,
+                        lifetime=current_request_lifetime(),
+                    )
+                )
+            with self._transaction(in_outer_txn=in_outer_txn):
+                before = event.before_value
+                if before is not None:
+                    spreadsheet_id = cast(str | None, before.get("spreadsheet_id"))
+                    if spreadsheet_id is None:
+                        raise ValueError("Audit image lacks an inbound spreadsheet ID")
+                    self.assert_not_export_destination(spreadsheet_id)
+                return super().undo_event(event, actor=actor, in_outer_txn=True)
+
     # ------------------------------------------------------------------
     # Mutations
     # ------------------------------------------------------------------
@@ -146,47 +219,53 @@ class GSheetConnectionsRepo(BaseRepo):
     ) -> str:
         """Insert a new connection row + audit. Returns the generated id."""
         connection_id = uuid.uuid4().hex[:12]
-        with self._transaction(in_outer_txn=in_outer_txn):
-            self._db.execute(
-                f"""
-                INSERT INTO {GSHEET_CONNECTIONS.full_name} (
-                    connection_id, spreadsheet_id, sheet_gid, sheet_name,
-                    workbook_name, adapter, account_id, account_name,
-                    column_mapping, header_signature,
-                    date_format, sign_convention, number_format,
-                    skip_rows, skip_trailing_patterns, alias
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,  # noqa: S608  # TableRef + parameterized values
-                [
-                    connection_id,
-                    spreadsheet_id,
-                    sheet_gid,
-                    sheet_name,
-                    workbook_name,
-                    adapter,
-                    account_id,
-                    account_name,
-                    json.dumps(column_mapping),
-                    json.dumps(header_signature),
-                    date_format,
-                    sign_convention,
-                    number_format,
-                    skip_rows,
-                    json.dumps(skip_trailing_patterns)
-                    if skip_trailing_patterns is not None
-                    else None,
-                    alias,
-                ],
-            )
-            after = self._fetch_full_row(connection_id)
-            self._emit_audit(
-                action="gsheet_connection.insert",
-                target=(*self._audit_target, connection_id),
-                before=None,
-                after=self._serialize_for_audit(after),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
+        with workbook_role_lease(
+            self._db.path,
+            spreadsheet_id,
+            lifetime=current_request_lifetime(),
+        ):
+            with self._transaction(in_outer_txn=in_outer_txn):
+                self.assert_not_export_destination(spreadsheet_id)
+                self._db.execute(
+                    f"""
+                    INSERT INTO {GSHEET_CONNECTIONS.full_name} (
+                        connection_id, spreadsheet_id, sheet_gid, sheet_name,
+                        workbook_name, adapter, account_id, account_name,
+                        column_mapping, header_signature,
+                        date_format, sign_convention, number_format,
+                        skip_rows, skip_trailing_patterns, alias
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,  # noqa: S608  # TableRef + parameterized values
+                    [
+                        connection_id,
+                        spreadsheet_id,
+                        sheet_gid,
+                        sheet_name,
+                        workbook_name,
+                        adapter,
+                        account_id,
+                        account_name,
+                        json.dumps(column_mapping),
+                        json.dumps(header_signature),
+                        date_format,
+                        sign_convention,
+                        number_format,
+                        skip_rows,
+                        json.dumps(skip_trailing_patterns)
+                        if skip_trailing_patterns is not None
+                        else None,
+                        alias,
+                    ],
+                )
+                after = self._fetch_full_row(connection_id)
+                self._emit_audit(
+                    action="gsheet_connection.insert",
+                    target=(*self._audit_target, connection_id),
+                    before=None,
+                    after=self._serialize_for_audit(after),
+                    actor=actor,
+                    parent_audit_id=parent_audit_id,
+                )
         logger.info(
             f"gsheet_connection.insert connection_id={connection_id} actor={actor}"
         )

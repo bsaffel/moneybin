@@ -17,10 +17,11 @@ promotion.
 
 MoneyBin's MCP server should reach users through the **vendor-blessed install
 path of every AI client worth supporting** — as close to one-click as each
-client allows — and should support every client that any major competitor
-supports, more ergonomically. This spec fixes the support matrix (which
-clients, at which tier, via which mechanism), corrects stale install guidance,
-and sequences the build plan onto the milestone grid.
+client allows. A client is supported when its transport, installation, tool
+surface, and security constraints can be tested and documented concretely. This
+spec fixes the support matrix (which clients, at which tier, via which
+mechanism), corrects stale install guidance, and sequences the build plan onto
+the milestone grid.
 
 Findings are grounded in a July 2026 review of vendor primary docs
 (code.claude.com, support.claude.com, claude.com/docs/connectors,
@@ -46,6 +47,11 @@ marketplaces on the Anthropic side, the Apps SDK directory on the OpenAI side,
 GitHub's registry for VS Code, and per-client marketplaces (Cursor deep links,
 Windsurf, Cline). The official MCP Registry is a preview-stage metadata
 backbone that aggregators consume — publish to it, but don't build on it.
+
+MoneyBin exposes one current 47-tool standard registry with a hard 50-tool
+project limit. Reports extend the single catalog runner and consume no tool
+slots. Windsurf's separate 100-tool cap applies across all connected servers,
+so the remaining capacity belongs to the user's combined MCP configuration.
 
 ## Support matrix
 
@@ -77,9 +83,9 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | LibreChat | stdio, sse, streamable-http | `librechat.yaml` / in-app panel | T2 | |
 | Warp | stdio, SSE URL | UI add; auto-detects `.warp/.mcp.json` + reads Claude Code/Codex config | T2 | Often works with zero MoneyBin effort via config pickup |
 | Open WebUI | streamable-http (native ≥0.6.31); stdio via `mcpo` | admin config | T2 | Localhost streamable-http intersects our `--insecure` gate — document carefully |
-| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | **Demoted from T1 2026-07-11**: works via stdio, but momentum faded post-Cognition-acquisition (~$82M ARR vs Cursor ~$2B) and the **100-active-tool cap vs our 105** is a per-release headroom tax not worth paying. Document only; revisit if it re-enters the momentum tier |
+| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | Works via stdio. Its 100-active-tool global cap accommodates all 47 MoneyBin tools and leaves 53 tool slots for other servers. Document only; revisit if momentum warrants release-gated support |
 | claude.ai web + mobile (custom connectors) | remote MCP (OAuth optional platform-side) | Settings → Connectors (Free capped at 1) | **T3** | M3D. Available on all plans incl. Free |
-| ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it (PR #315) | **T1** (pending #315) | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension. **Until #315 merges, `chatgpt-desktop` is manual-config only** (still in `_NO_INSTALL_CLIENTS` on `main`) |
+| ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it | **T1** | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension |
 | ChatGPT web (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Web doesn't read local Codex config. **Mobile MCP support undocumented** (Jul 2026). Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-tiering ambiguous — re-verify at M3D |
 | Cowork remote sessions | remote MCP via connectors | claude.ai connectors | **T3** | Same M3D unlock |
 | Claude Connectors Directory / ChatGPT Apps SDK (→ "Plugins") | hosted remote + review | vendor submission portals | **T3 (M3O)** | Both require org accounts + human review; see M3O |
@@ -89,7 +95,7 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | GitHub Copilot cloud coding agent | no OAuth remote MCP | — | **✗** | Revisit: OAuth support lands |
 | SSE / WebSocket transports | deprecated / no-OAuth niche | — | **✗** | We ship `--transport sse` today: deprecate the flag at M3D, remove per the CLI deprecation policy |
 
-## Tiering rationale (momentum review, 2026-07-11)
+## Tiering rationale (support review, 2026-07-11)
 
 Nearly every serious client speaks **local stdio MCP**, so the marginal cost of
 *coverage* is near zero — one MoneyBin server + a documented config snippet
@@ -98,25 +104,20 @@ automation we smoke-test every release (T1) plus quirks like tool caps. So the
 tier line is drawn on *momentum × tax*, not on whether a client technically
 works.
 
-- **T1 = the frontier-lab agent surfaces + reach leaders.** Each major lab now
-  ships a first-party agent surface: **Codex** (OpenAI), **Claude Code**
-  (Anthropic), **Antigravity** (Google) — all T1, for coherence. Plus **Cursor**
-  (~$2B ARR, revenue leader), **VS Code / Copilot** (largest install base),
-  **Claude Desktop** (our consumer home), and **Gemini CLI** (T1 through its
-  sunset into Antigravity CLI).
-- **Windsurf → T2.** A top-3 name in 2024/early-2025, but Google poached its
-  founders and Cognition acquired the remainder (Dec 2025); it now trails badly
-  on adoption (~$82M vs Cursor's ~$2B ARR). Combined with the 100-tool-cap tax
-  against our 105-tool surface, it doesn't earn a release-gated T1 commitment.
-  Still documented (stdio works); revisit on a momentum change.
-- **Antigravity → T1.** Google-backed, MCP over stdio/SSE/HTTP, its CLI inherits
-  Gemini CLI's large base. Adoption is early and its surfaces are still moving,
-  so T1 targets the stable desktop + CLI and re-verifies config each release.
+- **T1 = stable first-party paths we can release-gate.** Codex, Claude Code,
+  Antigravity, Cursor, VS Code/Copilot, Claude Desktop, and Gemini CLI have a
+  concrete installation path and a client surface we will smoke-test each
+  release. Gemini CLI remains T1 through its transition to Antigravity CLI.
+- **Windsurf → T2.** Its 100-active-tool global cap accommodates all 47
+MoneyBin tools and leaves 53 tool slots for other servers. Stdio
+configuration remains documented; the tier reflects product momentum and
+release-gating cost, not a current compatibility defect.
+- **Antigravity → T1.** It supports the transports MoneyBin needs and provides
+  a first-party desktop and CLI path. Its configuration is still evolving, so
+  each release verifies the supported path before publishing it.
 
-Sources: AI-coding market-share reviews (Cursor ~$2B ARR / Claude Code most-loved
-/ Copilot largest base), Cognition–Windsurf acquisition coverage, and the
-Antigravity 2.0 four-surface launch (Google I/O 2026) confirming stdio MCP. Full
-session research: `private/research/2026-07-10-ai-client-compatibility.md`.
+Sources: vendor documentation for each client, verified during the support
+review. Recheck client capabilities before implementing a later milestone.
 
 ## Blessed-path corrections (Phase 0 — immediate)
 
@@ -127,11 +128,11 @@ Stale guidance found during the review; all are routine fixes:
    manual JSON as legacy (still supported). Rewrite the section; add the
    Cowork caveat (remote sessions never see local MCP; local sessions do) and
    the managed-org flags (`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled`).
-2. **`mcp install --client chatgpt-desktop` should write the shared Codex TOML
-   config, not a remote-only disclaimer.** The ChatGPT desktop app hosts Codex
+2. **`mcp install --client chatgpt-desktop` writes the shared Codex TOML
+   config.** The ChatGPT desktop app hosts Codex
    and reads `~/.codex/config.toml` — the same file `mcp install --client codex`
    writes — so it takes an ordinary local stdio server (Settings → MCP servers →
-   Add → STDIO). Write that config, as **PR #315** implements. Only ChatGPT
+   Add → STDIO). This support shipped in **PR #315**. Only ChatGPT
    **web/mobile** is remote-only (needs M3D). *(Corrects an earlier draft of this
    spec that wrongly called all ChatGPT surfaces remote-only — its evidence was
    the Apps SDK / Developer Mode "apps in ChatGPT" path, a different feature from
@@ -143,17 +144,11 @@ Stale guidance found during the review; all are routine fixes:
 4. **File the upstream Claude Desktop bug**: connector toggle ON in Chat with
    tools never reaching the model (observed 2026-07-10) contradicts Anthropic's
    documented behavior — file with logs against claude-ai-mcp.
-5. **Windsurf tool-cap overflow is a shipped defect, not informational.**
-   Progressive disclosure was retired (`mcp-architecture.md` §3): the full
-   registered surface is visible at connect, so all **105** tools count against
-   Cascade's hard **100-active-tool ceiling**. Count confirmed against the live
-   served surface — `moneybin mcp list-tools` → `list_tools()` reports
-   `total_count: 105`, `0 hidden`. (Static `@mcp_tool`-decorator counts undercount
-   — e.g. 100 if you subtract the intentionally-unregistered budget/transform
-   modules — because the served surface includes tools registered outside those
-   modules; only a live `list_tools()` is authoritative.) We are 2 over. **PR
-   #315** warns at install time and pins the count with a test; the durable fix
-   is getting the served surface back under 100.
+5. **Keep Windsurf headroom current.** The full 47-tool standard registry is
+   visible at connect. Cascade's hard 100-active-tool global ceiling therefore
+   leaves 53 tool slots for every other connected server. Derive the MoneyBin
+   count from `STANDARD_TOOL_NAMES` and the rendered standard snapshot; do not
+   preserve a second compatibility count in install code or prose.
 6. **`docs/features.md` and `docs/specs/user-facing-doc-polish.md` are CORRECT
    about ChatGPT Desktop — do not "fix" them.** Both say the ChatGPT desktop app
    takes a local stdio server, and item 17 keeps a Desktop-vs-web/mobile split;
@@ -220,11 +215,8 @@ portable `[A-Za-z0-9_-]` tool names; the response envelope; `mcp install`
 config-writing, which remains a fully current pattern (Anthropic's
 `claude mcp add` and FastMCP's `fastmcp install` do the same).
 
-The discrete execution breakdown of this ladder for the Tier-1 clients (the
-W1–W11 build inventory: what ships, in what order, with dependencies) lives in
-`private/strategy/distribution-roadmap.md` §1.0 — kept out of this tracked spec
-because it churns monthly and gets a full `writing-plans` decomposition only when
-M3B executes.
+The public contract is the distribution ladder above. Its release sequencing and
+implementation breakdown are intentionally not part of this document.
 
 ## M3D — remote MCP + auth (design inputs sharpened)
 
@@ -295,17 +287,15 @@ opt-in with visible consent. The unauthenticated transports stay behind
 live profile) is ever documented as a recommended path — dev-only, ephemeral,
 demo data.
 
-## Competitive bar
+## Distribution target
 
-Wealthfolio sets the best-in-class install story (MCP embedded in the app the
-user already runs — zero external server). Copilot Money ships the hosted
-read-only pattern (waitlisted). The AI-native cluster (Finlynq, Syllogic,
-Alderfi, Tuskledger) treats first-party MCP as core design but installs via
-Docker+config. Nobody in the category has: one-click `.mcpb`, a plugin
-marketplace presence, registry listings, *and* an authenticated hosted tier.
-Rungs 1–4 alone put MoneyBin ahead of every incumbent's install ergonomics;
-M3D+M3O match the only two hosted plays while keeping the local-first
-posture they lack.
+Local installation should require no manual server process management after the
+initial package install. The supported paths should cover one-click client
+bundles where available, plugin and registry discovery, deterministic
+configuration for generic clients, and an authenticated remote path only after
+the required consent and security controls exist. Each rung must be testable on
+a clean machine and documented without implying support for an unverified
+client or transport.
 
 ## Out of scope
 
@@ -325,11 +315,10 @@ first public release). Content decisions:
   peer to Codex and Claude Code — supports stdio MCP, and its CLI succeeds the
   sunsetting Gemini CLI. T1 targets the stable desktop + CLI surfaces and
   re-verifies the config path each release while the surfaces settle.
-- **Windsurf → T2** (was OQ1). Momentum faded after the Cognition acquisition,
-  and the 100-active-tool cap vs our 105 is a per-release headroom tax not worth
-  paying for a distant follower. Documented, not release-gated; no headroom
-  policy. Revisit on a momentum change. (The Phase-0 item to *verify* the visible
-  count stays — still worth knowing — but it no longer gates a T1 commitment.)
+- **Windsurf → T2** (was OQ1). Its 100-active-tool global cap accommodates all
+  47 MoneyBin tools and leaves 53 tool slots for other servers. The client
+  remains documented rather than release-gated because its momentum does not
+  justify the recurring validation cost. Revisit on a momentum change.
 - **Ship the Claude Code distribution plugin in M3B** (was OQ6). It is a
   server-distribution vector (`/plugin install moneybin` via a self-hosted
   marketplace, no review) — distinct from, and additive to, the M3I

@@ -230,9 +230,7 @@ class TestTagRenameAuditChain:
         events: list[dict[str, Any]] = _loads(result.stdout)["data"]
         assert isinstance(events, list)
 
-        rename_parents = [
-            e for e in events if str(e.get("action", "")).startswith("tag.rename")
-        ]
+        rename_parents = [e for e in events if e.get("action") == "tag.rename"]
         assert len(rename_parents) >= 1, events
         parent = rename_parents[0]
         parent_id = parent["audit_id"]

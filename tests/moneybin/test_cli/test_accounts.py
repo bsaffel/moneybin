@@ -14,6 +14,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountResolutionItem,
     AccountResolvePayload,
     AccountSummary,
+    AccountSummaryStats,
 )
 from moneybin.services.account_service import CLEAR
 
@@ -192,6 +193,46 @@ class TestAccountsList:
         svc.list_accounts.assert_called_once_with(
             include_archived=False, type_filter="CHECKING"
         )
+
+
+class TestAccountsSummary:
+    """Tests for the aggregate account summary command."""
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.commands.accounts.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_summary_json_uses_shared_service_and_returns_aggregates(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        mock_get_db.return_value = MagicMock()
+        mock_svc_cls.return_value.summary.return_value = AccountSummaryStats(
+            total_accounts=3,
+            count_by_type={"DEPOSITORY": 2, "CREDIT": 1},
+            count_by_subtype={"checking": 1, "savings": 1, "credit card": 1},
+            count_archived=1,
+            count_excluded_from_net_worth=1,
+            count_with_recent_activity=2,
+        )
+
+        result = runner.invoke(app, ["accounts", "summary", "--output", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["data"] == {
+            "total_accounts": 3,
+            "count_by_type": {"DEPOSITORY": 2, "CREDIT": 1},
+            "count_by_subtype": {
+                "checking": 1,
+                "savings": 1,
+                "credit card": 1,
+            },
+            "count_archived": 1,
+            "count_excluded_from_net_worth": 1,
+            "count_with_recent_activity": 2,
+        }
+        mock_svc_cls.return_value.summary.assert_called_once_with()
 
 
 class TestAccountsGet:

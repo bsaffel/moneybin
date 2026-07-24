@@ -6,26 +6,24 @@ implemented
 
 ## Goal
 
-Close the agent-driven ingest loop. An agent (Claude Code, Codex CLI, MCP client) that imports files today cannot complete the pipeline that makes the data queryable via dim-joined reports: `transform_*` MCP tools are stubs, `import_file` is single-shot, and `system_status` provides no signal that derived tables are stale. This spec ships (a) the four MCP `transform_*` read tools the surface spec documents as planned (`status`, `plan`, `validate`, `audit`) — `transform_apply` was subsequently folded into the `refresh_run(steps=["transform"])` umbrella (PR #173), (b) a batch-shaped `import_files` tool/CLI that runs the refresh pipeline once at end-of-batch, and (c) a `transforms` block on `system_status` so staleness is observable without a separate call.
+Close the agent-driven ingest loop. An agent (Claude Code, Codex CLI, MCP client) imports files through the batch-shaped `import_files` entry, which runs the refresh pipeline once at end-of-batch. `system_status` reports whether derived tables are stale, and `refresh_run(steps=["transform"])` is the MCP path for an explicit SQLMesh apply.
 
 ## Background
 
 - **Originating finding:** After importing 5 OFX accounts, `core.dim_accounts` showed only 3 of the 5 — the materialized FULL dim hadn't been refreshed since the most recent imports. `core.fct_transactions` (a view) correctly showed all 5. No surface warning; the FK audit only runs on `sqlmesh run`.
-- **MCP-tool-surface spec §1530:** All five transform tools (`status`, `plan`, `validate`, `audit`, `apply`) were originally documented as planned MCP exposure. After ship, PR #173 folded `transform_apply` into the `refresh_run(steps=["transform"])` umbrella and dropped the dedicated `transform_apply` MCP tool; the four read tools remain registered. `transform_restate` stays CLI-only per existing operator-territory policy.
-- **Stub's stated blocker (incorrect):** `src/moneybin/mcp/tools/transform.py` claims "SQLMesh prints to stdout rather than returning structured data; capturing that for MCP envelope shape requires a service layer that's out of scope here." This was pessimistic — SQLMesh's Python API exposes `Plan` objects with `directly_modified`/`indirectly_modified`/`added`/`removed` model sets, plus structured audit results. The service layer is reasonable scope; stdout capture is not required.
-- **Existing primitive:** `core.dim_accounts.updated_at` is already set to `CURRENT_TIMESTAMP` at SQLMesh refresh time. Because the table is materialized FULL, every `transform_apply` rewrites every row, so `MAX(updated_at)` ≈ "last transform apply finished at." Comparing that to `MAX(app.import_log.completed_at)` is the staleness heuristic — no SQLMesh-internal coupling required.
+- **Existing primitive:** `core.dim_accounts.updated_at` is already set to `CURRENT_TIMESTAMP` at SQLMesh refresh time. Because the table is materialized FULL, every SQLMesh apply rewrites every row, so `MAX(updated_at)` approximates the last completed apply. Comparing that to `MAX(app.import_log.completed_at)` is the staleness heuristic — no SQLMesh-internal coupling required.
 - **Related rules:** `.claude/rules/mcp.md` (thin tools over services, response envelope, sensitivity tiers), `.claude/rules/cli.md` (CLI is a first-class agent surface; `--output json` parity; non-interactive flag parity), `AGENTS.md` (`run_transforms()` lives in `ImportService` today; moves to the new `TransformService`).
 
 ## Requirements
 
-1. Four MCP `transform_*` read tools (`status`, `plan`, `validate`, `audit`) return structured response envelopes per `mcp.md`. The `transform_apply` MCP tool was retired in PR #173 in favor of `refresh_run(steps=["transform"])`; `transform_restate` stays CLI-only. The CLI keeps `moneybin transform apply` as an operator entry point.
-2. `import_file` MCP tool is renamed to `import_files` and accepts `paths: list[str]`. The legacy singular name is removed (pre-1.0; surface-change discipline applied via CHANGELOG and `moneybin-mcp.md` updates).
-3. `import_files` runs the refresh pipeline (matching + SQLMesh apply + categorization) once at end-of-batch by default via `services/refresh.py`. Caller opts out by passing `refresh=False`. (Originally specified as running `transform_apply` only; expanded to the full refresh cascade in PR #151/#165.)
+1. `refresh_run(steps=["transform"])` returns the standard response envelope for an explicit SQLMesh apply. The CLI keeps `moneybin transform apply` as an operator entry point.
+2. `import_files` accepts `paths: list[str]`.
+3. `import_files` runs the full `gsheet → match → transform → categorize → identity` refresh pipeline once at end-of-batch by default via `services/refresh.py`. Caller opts out by passing `refresh=False`.
 4. Per-file failures inside an `import_files` call do not abort the batch. The refresh runs if at least one file succeeded; skipped if zero succeeded.
 5. If the refresh itself fails after successful imports, raw rows stay durable; the envelope reports `transforms_applied=false` with a generic error message and an action hint to retry.
 6. `import_inbox_sync` internally builds the discovered-file list and calls the same batch path. New `refresh` parameter on the MCP tool and `--no-refresh` flag on the CLI.
 7. CLI command renamed to `moneybin import files PATHS...` (variadic). `--output json` parity for all transform commands and the renamed import command per `cli.md`.
-8. `system_status` adds a `transforms` block: `{"pending": bool, "last_apply_at": iso|None}`. Pending heuristic: `MAX(app.import_log.completed_at WHERE status='complete') > MAX(core.dim_accounts.updated_at)`. When pending, `actions` includes a hint to run `refresh_run` (originally `transform_apply`; updated after PR #173). No SQLMesh Context init on the `system_status` hot path.
+8. `system_status` adds a `transforms` block: `{"pending": bool, "last_apply_at": iso|None}`. Pending heuristic: `MAX(app.import_log.completed_at WHERE status='complete') > MAX(core.dim_accounts.updated_at)`. When pending, `actions` includes a hint to run `refresh_run`. No SQLMesh Context init on the `system_status` hot path.
 9. A new `TransformService` owns SQLMesh interaction. `TransformService.apply()` replaces the prior inline transform call; source-priority seeding and `refresh_views` calls migrate with it. `ImportService` invokes the full refresh pipeline via `services.refresh.refresh(db)` at end-of-batch (PR #151), which calls `TransformService(db).apply()` along with matching and categorization steps. `ImportService.run_transforms()` is retained as a thin compatibility shim.
 10. A scenario test imports multiple files and asserts `MAX(dim_accounts.updated_at)` advances and all imported accounts appear in `accounts` — regression guard for the originating finding.
 11. Metrics: a new `IMPORT_BATCH_SIZE` histogram per `AGENTS.md` observability requirement. The existing `SQLMESH_RUN_DURATION_SECONDS` is reused; no per-pending gauge (derived signal, not state to scrape).
@@ -42,32 +40,32 @@ No schema changes. The spec leans on three existing columns/tables:
 
 - `core.dim_accounts.updated_at` — already `CURRENT_TIMESTAMP` at SQLMesh refresh.
 - `app.import_log.completed_at` (with `status='complete'` filter) — already populated per import.
-- SQLMesh state tables — read by `transform_status` only, via SQLMesh's Python API (Context), never on the `system_status` hot path.
+- SQLMesh state tables — read by the refresh service via SQLMesh's Python API (Context), never on the `system_status` hot path.
 
 ## Implementation Plan
 
 ### Files to Create
 
-- `src/moneybin/services/transform_service.py` — `TransformService` with `freshness()`, `status()`, `plan()`, `validate()`, `audit()`, `apply()` methods. Owns SQLMesh Context lifecycle for the four state-reading methods; `freshness()` deliberately bypasses Context to keep it cheap.
-- `src/moneybin/services/refresh.py` — `refresh()` umbrella that runs matching + `TransformService.apply()` + categorization in canonical order (PR #151). Re-exposed at the MCP layer as `refresh_run` (PR #165) with optional `steps=` scoping (PR #173).
+- `src/moneybin/services/transform_service.py` — `TransformService` with `freshness()` and `apply()` methods. Owns SQLMesh Context lifecycle for apply; `freshness()` deliberately bypasses Context to keep it cheap.
+- `src/moneybin/services/refresh.py` — `refresh()` umbrella that runs `gsheet → match → transform → categorize → identity` in canonical order. Re-exposed at the MCP layer as `refresh_run` with optional `steps=` scoping.
 - `src/moneybin/mcp/tools/refresh.py` — `refresh_run` MCP tool wrapping the refresh umbrella (PR #165/#173).
 - `tests/moneybin/test_services/test_transform_service.py` — unit + integration tests for the new service.
-- `tests/moneybin/test_mcp/test_transform_tools.py` — envelope-shape and error-path tests for the five MCP tools.
+- `tests/moneybin/test_mcp/test_transform_tools.py` — envelope-shape and error-path tests for the refresh-backed MCP path.
 - `tests/moneybin/test_mcp/test_import_files.py` — list-shape, per-file results, transforms_applied flag.
 - `tests/moneybin/test_mcp/test_system_status_transforms.py` — pending/last_apply_at semantics.
 - `tests/moneybin/test_cli/test_import_files_cli.py` — variadic, `--no-refresh`, `--output json` parity.
-- `tests/moneybin/test_cli/test_transform_json_output.py` — `--output json` parity for the five transform commands.
+- `tests/moneybin/test_cli/test_transform_json_output.py` — `--output json` parity for the transform CLI commands.
 - `tests/scenarios/test_scenario_import_dim_freshness.py` — regression test for the originating finding.
 - `tests/integration/test_schema_drift.py` — upgrade-path test: build SQLMesh-applied DB, drop a column, start server, assert `SchemaDriftError`.
 - `tests/moneybin/test_db_helpers_parity.py` — fixture-parity test: `EXPECTED_CORE_COLUMNS` matches `CORE_*_DDL` strings in `tests/moneybin/db_helpers.py`.
 
 ### Files to Modify
 
-- `src/moneybin/mcp/tools/transform.py` — replace the four read stubs (`status`, `plan`, `validate`, `audit`) with thin wrappers over `TransformService`. The `transform_apply` MCP tool was removed in PR #173; its functionality lives in `src/moneybin/mcp/tools/refresh.py` as `refresh_run(steps=["transform"])`.
-- `src/moneybin/mcp/tools/import_tools.py` — rename `import_file` → `import_files`, take `paths: list[str]`, add `refresh: bool = True`, return per-file rows.
+- `src/moneybin/mcp/tools/refresh.py` — expose the refresh umbrella as `refresh_run(steps=["transform"])` for SQLMesh-only runs.
+- `src/moneybin/mcp/tools/import_tools.py` — expose `import_files` with `paths: list[str]`, `refresh: bool = True`, and per-file rows.
 - `src/moneybin/mcp/tools/system.py` — extend `system_status` envelope with the `transforms` block; add the pending-state action hint.
-- `src/moneybin/mcp/server.py` — instructions text edits if it names `import_file` directly (per `mcp.md` Server Instructions Field rule).
-- `src/moneybin/services/import_service.py` — split `import_file()` into `_import_one()` (private) and `import_files()` (public batch). End-of-batch refresh routes through `services.refresh.refresh(self._db)` (PR #151), which invokes `TransformService.apply()` along with matching and categorization. `run_transforms()` retained as a thin compatibility wrapper.
+- `src/moneybin/mcp/server.py` — keep server instructions aligned with the batch import entry (per `mcp.md` Server Instructions Field rule).
+- `src/moneybin/services/import_service.py` — end-of-batch refresh routes through `services.refresh.refresh(self._db)`, which invokes `TransformService.apply()` along with matching and categorization.
 - `src/moneybin/services/system_service.py` — `SystemStatus` gains `transforms_pending: bool` and `transforms_last_apply_at: datetime | None`. `status()` calls `TransformService(self._db).freshness()`. Also surfaces `schema_drift` info (queried via the boot-time check's cached state or re-run on demand).
 - `src/moneybin/database.py` — add `SchemaDriftError`, `EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]]` constant, and a `check_core_schema_drift(db) -> dict[str, list[str]]` function that returns a mapping of `table_name -> list of missing columns` (empty dict means no drift). Constant is the source of truth for each FULL-materialized `core.*` table's expected column set, captured manually from the final SELECT of `src/moneybin/sqlmesh/models/core/*.sql`; NOT parsed at runtime.
 - `src/moneybin/mcp/server.py` — invoke `check_core_schema_drift()` at FastMCP startup; on mismatch, run one `TransformService.apply()` self-heal, then re-verify and raise `SchemaDriftError` only if drift persists. Leave a `# TODO multi-tenant:` comment noting degraded-mode is the alternative if we ever go multi-tenant.
@@ -75,17 +73,17 @@ No schema changes. The spec leans on three existing columns/tables:
 - `src/moneybin/cli/commands/transform.py` — switch from inline `sqlmesh_context` blocks to `TransformService` calls; add `--output json` to each command using the standard envelope.
 - `src/moneybin/cli/commands/import_cmd.py` — rename leaf command, accept variadic paths, add `--no-refresh`.
 - `src/moneybin/metrics/registry.py` — add `IMPORT_BATCH_SIZE` histogram.
-- `docs/specs/moneybin-mcp.md` — §1530 status update (transform_* shipped); §import_* renamed entry.
+- `docs/specs/moneybin-mcp.md` — status update for the refresh-backed transform workflow and batch import entry.
 - `docs/specs/INDEX.md` — new row under MCP section, status `draft` → `ready` → `in-progress` → `implemented` across the lifecycle.
 - `docs/roadmap.md` — entry under the current milestone.
 - `docs/features.md` — MCP tools list + CLI list.
-- `CHANGELOG.md` — Added (transform_* tools, system_status transforms block), Changed (`import_file` → `import_files` rename).
+- `CHANGELOG.md` — record the batch import entry and `system_status` transforms block.
 
 ### Key Decisions
 
 | Decision | Why |
 |---|---|
-| Rename MCP `import_file` → `import_files` and CLI `import file` → `import files` | Contract change is real (batch + auto-apply). Agents reading two names get a footgun if surfaces diverge. Pre-1.0 cost of rename is bounded. |
+| Batch-shaped MCP and CLI import | The list-shaped contract runs one refresh at the batch boundary and keeps both surfaces aligned. |
 | Auto-apply transforms at end-of-batch by default | Honors "data immediately query-ready" without paying latency per-file. Matches the finding's intent: the agent's mental model is the batch, not the file. |
 | Batch boundary = the list passed in one call | Multi-file batches pay one transform cost. Single-file calls still pay it (one-element list). Agents that want to defer pass `refresh=False`. |
 | Continue past per-file failures; apply for what succeeded | Matches existing inbox-sync tolerance. One corrupt statement shouldn't block 49 good ones. |
@@ -100,7 +98,6 @@ No schema changes. The spec leans on three existing columns/tables:
 moneybin import files PATHS...
   PATHS                              One or more files to import
   --no-refresh              Skip end-of-batch transform apply
-  --interactive                      Prompt for ambiguous account mappings
   -o, --output {text,json}           Output format (json mirrors MCP envelope)
   -q, --quiet                        Suppress informational output
 
@@ -118,46 +115,20 @@ moneybin transform restate           (unchanged; remains operator-territory)
 ## MCP Interface
 
 ```python
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(read_only=False, idempotent=False)
 def import_files(
     paths: list[str],
     refresh: bool = True,
-    interactive: bool = False,
+    force: bool = False,
 ) -> ResponseEnvelope:
-    """Import one or more files. Applies transforms once at end of batch by default."""
+    """Import one or more files. Applies refresh once at the batch boundary."""
 
 
-@mcp_tool(sensitivity="low")
-def transform_status() -> ResponseEnvelope: ...
+@mcp_tool(read_only=False)
+def refresh_run(steps: list[str] | None = None) -> ResponseEnvelope: ...
 
 
-# data: {environment, initialized, last_apply_at, pending, latest_import_at}
-
-
-@mcp_tool(sensitivity="low")
-def transform_plan() -> ResponseEnvelope: ...
-
-
-# data: {has_changes, directly_modified[], indirectly_modified[], added[], removed[]}
-
-
-@mcp_tool(sensitivity="low")
-def transform_validate() -> ResponseEnvelope: ...
-
-
-# data: {valid, errors[{model, message}]}
-
-
-@mcp_tool(sensitivity="low")
-def transform_audit(start: str, end: str) -> ResponseEnvelope: ...
-
-
-# data: {passed, failed, audits[{name, status, detail}]}
-
-
-# transform_apply was retired in PR #173; callers run the apply step via
-#   refresh_run(steps=["transform"])
-# which wraps the same TransformService.apply() under the refresh umbrella.
+# steps=["transform"] limits the refresh umbrella to SQLMesh apply.
 ```
 
 `import_inbox_sync` gains the same `refresh: bool = True` parameter for symmetry. No other shape changes to that tool.
@@ -182,7 +153,7 @@ def transform_audit(start: str, end: str) -> ResponseEnvelope: ...
 
 The `transforms` action appears only when `pending=true`. The `schema_drift` action appears only when drift is detected.
 
-**Failure mode of schema drift.** When the materialized snapshot of a core table lacks columns that current service code SELECTs (e.g., `AccountService.list_accounts()` references `display_name`/`last_four`/`archived` after a model revision), DuckDB raises a binder error and `accounts` / `reports_networth` / `accounts_resolve` all fail with opaque "Error calling tool …" envelopes. Drift detection makes the problem loud and actionable at boot rather than surfacing as one-off tool failures.
+**Failure mode of schema drift.** When the materialized snapshot of a core table lacks columns that current service code selects (for example, an account projection needs `display_name`, `last_four`, and `archived` after a model revision), DuckDB raises a binder error and user-facing reads fail with opaque envelopes. Drift detection makes the problem loud and actionable at boot rather than surfacing as one-off tool failures.
 
 ## Data Flow
 
@@ -214,11 +185,11 @@ flowchart TD
 | Layer | Test file | Verifies |
 |---|---|---|
 | Unit | `test_services/test_transform_service.py` | `freshness()` returns correct pending/last_apply_at under controlled `dim_accounts.updated_at` and `import_log.completed_at`. Includes "dim_accounts schema missing" edge case. |
-| Integration | `test_services/test_transform_service.py` | `apply()`, `plan()`, `validate()`, `audit()` against a real SQLMesh context. `apply()` increments `MAX(dim_accounts.updated_at)`. |
+| Integration | `test_services/test_transform_service.py` | SQLMesh apply against a real context increments `MAX(dim_accounts.updated_at)`. |
 | Service | `test_services/test_import_service.py` (extended) | `import_files([good, bad, good])` returns 2 imported + 1 failed, transforms ran once, partial failures don't block apply. `refresh=False` skips. Empty-success skips. Transform-fails-after-import path. |
 | CLI | `test_cli/test_import_files_cli.py` | Variadic `import files a b c`, `--no-refresh`, `--output json` envelope matches MCP. |
-| CLI | `test_cli/test_transform_json_output.py` | `--output json` parity for the five transform commands. |
-| MCP | `test_mcp/test_transform_tools.py` | All five `transform_*` envelope shapes, sensitivities, error paths. |
+| CLI | `test_cli/test_transform_json_output.py` | `--output json` parity for the transform CLI commands. |
+| MCP | `test_mcp/test_transform_tools.py` | `refresh_run(steps=["transform"])` returns the refresh-backed apply envelope and error paths. |
 | MCP | `test_mcp/test_import_files.py` | List-shaped `paths`, per-file result rows, `transforms_applied` summary flag. |
 | MCP | `test_mcp/test_system_status_transforms.py` | Pending=true when raw is newer; pending=false after apply; action hint appears only when pending. |
 | Scenario | `tests/scenarios/test_scenario_import_dim_freshness.py` | **Regression guard for the finding.** Import N files, verify `MAX(dim_accounts.updated_at)` advances and all N accounts appear in `accounts`. |
@@ -235,11 +206,10 @@ flowchart TD
 
 - `prep.stg_plaid__accounts` errors when the Plaid raw schema is empty/absent. Tracked separately as a staging-view-resilience follow-up.
 - Adding `updated_at` row metadata to `fct_transactions`, `dim_categories`, `dim_merchants` for consistency with `dim_accounts`. Tracked separately; not needed by this spec (only `dim_accounts.updated_at` is read).
-- `transform_restate` MCP exposure — remains CLI-only per existing operator-territory policy in `moneybin-mcp.md`.
-- `transform_apply` MCP exposure — retired in PR #173. The user-intent path is `refresh_run` (full cascade) or `refresh_run(steps=["transform"])` (SQLMesh apply only); the operator-territory path is `moneybin transform apply` CLI.
+- Separate transform MCP identities. The user-intent path is `refresh_run` (full cascade) or `refresh_run(steps=["transform"])` (SQLMesh apply only); the operator-territory path is `moneybin transform apply` CLI.
 - Scheduled/cron-style transform reruns — not needed once batch-boundary auto-apply works.
 - Capturing SQLMesh stdout. The Python API provides structured objects; stdout capture is neither attempted nor required.
-- Auto-running transforms on schema-drift detection. The `transform_apply` MCP/CLI surface this spec ships is the remediation path; drift detection only makes the problem loud and actionable.
+- Auto-running transforms on schema-drift detection. The refresh MCP path and `moneybin transform apply` CLI command are the remediation paths; drift detection only makes the problem loud and actionable.
 - Parsing SQLMesh model SQL at runtime to derive `EXPECTED_CORE_COLUMNS`. The constant is captured manually from the final SELECT of each `src/moneybin/sqlmesh/models/core/*.sql`; the fixture-parity test guards against drift between the constant and the test DDL.
 - Drift detection on `raw.*`, `prep.*`, or `app.*` schemas. Only `core.*` is checked — `raw`/`prep` aren't read by services, and `app.*` schema changes flow through the migrations subsystem.
 - Multi-tenant degraded-mode (per-request `schema_drift` error envelopes instead of refusing to boot). Leave a `# TODO multi-tenant:` comment; don't build it.

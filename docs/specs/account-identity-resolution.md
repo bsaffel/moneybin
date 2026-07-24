@@ -93,72 +93,25 @@ note above also understates aggregator exports: Monarch/Tiller account labels
 often embed the last4 (`Daily Expense (...1789)`). Decision 8's capture table is
 authoritative.
 
-## Prior art
+## Identity evidence
 
-Parallel research across seven well-documented players (GnuCash, Plaid,
-SnapTrade, Firefly III, Actual Budget, Maybe, Beancount/hledger) converges hard:
+The source data establishes the constraints directly:
 
-**Every serious tool keeps a canonical account distinct from per-source ids.**
-- **Actual Budget** — internal account UUID `id` + the provider's external
-  `account_id` / `official_name` / `account_sync_source` stored on the same row;
-  a one-time "Link Account" step, then remembered. Transaction dedup is a
-  separate layer keyed on `imported_id` (OFX FITID), with a 5-day / exact-amount
-  / fuzzy-payee fallback.
-- **GnuCash** — canonical Chart-of-Accounts account + an attached **"Online ID"**
-  (OFX `BANKID`+`ACCTID`); first import shows an account-selection dialog, then
-  re-imports auto-route silently; mappings editable later in an "Import Map
-  Editor."
-- **Firefly III** — asset account matched by **IBAN / account number**
-  auto-match ("if the IBAN matches you have no choice"); only genuinely ambiguous
-  rows fall to the manual mapping dropdown; resolution persisted in a reusable
-  config.
-- **Plaid `persistent_account_id`** / **SnapTrade `institution_account_id`** —
-  purpose-built *stable cross-link keys*, distinct from the ephemeral
-  connection-scoped id, specifically to trace the same account across re-links.
-- **Beancount / hledger** — the cautionary counter-examples: the account *name*
-  **is** the identity, with no cross-source layer, so they structurally **cannot**
-  auto-collapse the same account across sources.
-
-A second round of research focused on the **import-time interaction** —
-how each tool learns *which account/institution a file belongs to* — found an
-even stronger convergence: **the account is a binding the user makes, not a fact
-detected from the file.**
-
-- **Actual Budget** — you open an account, then import *into* it; the file's own
-  identity is irrelevant.
-- **GnuCash** — the CSV assistant has a base **"Account" dropdown** (pick the
-  target up front); OFX binds bank-id→account once, then remembers it.
-- **Firefly III** — auto-matches on IBAN/number, and when the file lacks them
-  falls back to a user-picked **"Default import account."**
-- **hledger / beancount** — one rules-file / importer **bound to one account**
-  (`account1`, `account()`), reused silently.
-- **Maybe** — a per-distinct-value account-mapping review (match-by-name or
-  **"create new account"**), remembered as a reusable template.
-
-And **institution is not a concept at import time in any of them** — it folds
-into "the account." Only Tiller's CSV carries an `Institution` column; only the
-aggregator *connect* flows (Plaid Link's institution picker) select it
-explicitly.
-
-Lessons that drive this design:
-
-1. **GnuCash's defining limitation is exactly our core requirement.** GnuCash
-   stores only **one** Online ID per account, so it can't collapse the same
-   account arriving under different source keys. We must support **many native
-   refs → one canonical account (1:N)**. This is the single most transferable
-   idea: a canonical account + a *set* of attached native identity keys.
-2. **Plaid's dedup guidance demotes `institution + last4` to a candidate** — with
-   a hard warning: *"Never detect duplicates by matching a mask with an account
-   number"* (a `mask` is usually but not always the last 4); treat a
-   composite-only match as a **candidate requiring confirmation, not an
-   auto-merge**.
-3. **The account is bound, not detected — so confirm at first contact, then
-   remember.** The reliable path is: auto-resolve on a remembered ref or a strong
-   confirmer; otherwise *ask once* (at import, with candidates and a "new account"
-   escape) and remember the binding. This is the universal first-contact pattern,
-   and it maps directly onto MoneyBin's existing `import_preview`→`import_confirm`
-   seam — which today confirms *columns* and must be extended to confirm the
-   *account* (see [§Decision 7](#decision-7--import-time-ux--ax-detect--confirm--remember)).
+1. **A canonical account has no universal natural key.** A full number reaches
+   some file imports but not every provider; a provider token is source-specific;
+   and a display name is mutable and collision-prone. One real account can arrive
+   under many native references, so MoneyBin needs **many native refs → one
+   canonical account (1:N)**.
+2. **`institution + last4` is evidence, not identity.** A mask is often—but not
+   always—the last four digits, and the same combination can describe more than
+   one account. A composite-only match therefore creates a review candidate; it
+   never auto-merges accounts.
+3. **The account is bound, not detected.** Auto-resolve only on a remembered ref
+   or a strong confirmer. At first contact, otherwise ask once with candidates
+   and a "new account" escape, then remember the accepted binding. This extends
+   the existing `import_preview`→`import_confirm` seam from column confirmation
+   to account confirmation (see
+   [§Decision 7](#decision-7--import-time-ux--ax-detect--confirm--remember)).
 
 ## Decision 1 — Canonical `account_id` is an opaque, minted, non-PII surrogate
 
@@ -248,8 +201,7 @@ the existing repo-enforced-invariant pattern):**
   source_origin, ref_value)` is unique among `accepted` rows where
   `ref_kind='source_native'`. Scoping by `source_origin` prevents cross-
   institution slug collisions (two banks each with a "checking" CSV → distinct
-  `source_origin` → distinct keys). This is what makes re-import idempotent (the
-  "remembered mapping" of GnuCash / Actual / Firefly).
+  `source_origin` → distinct keys). This is what makes re-import idempotent.
 - **Strong-ref uniqueness** — `(ref_kind, ref_value)` is unique among `accepted`
   rows where `ref_kind ∈ {full_number, persistent_token}`: one strong ref → one
   canonical account.
@@ -352,7 +304,7 @@ the transaction matcher's blocking → score → accept/review/reject. Ordered b
 signal reliability:
 
 0. **Explicit binding.** Caller pinned identity (`--account-id` /
-   `import_confirm(account_bindings=…)` / "import into account X") → **adopt** that
+   `import_confirm(preview_id=..., account_bindings=...)` / "import into account X") → **adopt** that
    canonical id, write/refresh the accepted `source_native` mapping. Deterministic
    override above all detection (Decision 6/7).
 1. **Strong-confirmer / idempotency pass.** Look up `accepted` `account_links` by
@@ -372,7 +324,7 @@ signal reliability:
      *future* imports.
    - **≥1 candidate** → write one `pending` `account_link_decisions` row per
      candidate, surfaced for confirmation: at first contact via the import-confirm
-     seam (Decision 7) when interactive, else the `accounts_links` review queue.
+     seam (Decision 7) when interactive, else the account-link review queue.
      **Never auto-merge on `institution+last4` or name** (Plaid's mask≠number
      warning + last4-collision risk — two distinct WF accounts could share `4267`).
 
@@ -411,7 +363,7 @@ COALESCE-across-group** that preserves the best non-null value:
   by **source strength** (`ofx > plaid > tabular` — the `MatchingSettings.source_priority`
   ordering, which governs field merging only and is decoupled from transaction
   identity; see the `transaction_id` stability section above) then recency.
-- `institution_name`, `account_type` — first non-null by recency.
+- `institution_name`, `account_type` — first non-null by recency. `account_type` is normalized to one canonical vocabulary by the staging views (`seeds.account_type_map`) before it reaches this merge, so the comparison is like-for-like; before that normalization a later `depository` could out-rank an earlier `CHECKING` for the same account and silently rename it.
 - `source_type` / `source_file` — record the contributing set (the winning row's
   for display; the union is recoverable from `app.account_links`).
 
@@ -419,7 +371,7 @@ This is the same "golden-record merge across sources" rule
 [`matching-same-record-dedup.md`](matching-same-record-dedup.md) applies to
 transactions, lifted to the account grain. `display_name`'s
 `RIGHT(account_id, 4)` fallback is dropped (the id is now opaque); the default
-becomes `institution_name || ' ' || account_type || ' …' || last_four`, where
+becomes `institution_name || ' ' || account_subtype || ' …' || last_four`, where
 `last_four` is `COALESCE(`user-set `app.account_settings.last_four`, per-source
 **derived** last4`)` — **not user-set only** (corrected in Decision 8; the
 user-set-only reading is the live display + bridge bug).
@@ -433,14 +385,13 @@ gold key and the unmatched fallback. If `transaction_id` keeps depending on
 `account_id`, every account re-mint or merge re-hashes every affected
 `transaction_id`, orphaning all `app.*` curation keyed on it.
 
-The field is near-unanimous (Actual, Firefly, Maybe, GnuCash, Plaid): **content
-must not *be* identity** — identity is stable, the source key is a separate dedup
-key. But those tools *mutate in place*; MoneyBin *derives* `core`. A true stable
+A bare content hash cannot provide stable references when source identity is
+enriched or observations merge. But MoneyBin *derives* `core`; a true stable
 surrogate would need a per-transaction identity registry that survives every
-rebuild — hot app-state at transaction volume, weakening derive-from-raw where it
-matters most. Plaid (the closest analog) instead re-mints on the pending→posted
-enrichment and ships a **forwarding pointer** (`pending_transaction_id`). Full
-analysis + the account-vs-transaction asymmetry: [ADR-015](../decisions/015-transaction-identity-content-derived.md).
+rebuild—hot app-state at transaction volume, weakening derive-from-raw where it
+matters most. The required contract is a **forwarding pointer** when an id
+changes. Full analysis and the account-vs-transaction asymmetry are in
+[ADR-015](../decisions/015-transaction-identity-content-derived.md).
 
 **Decision: content-derived id + alias forwarding (not a surrogate).**
 
@@ -479,10 +430,10 @@ analysis + the account-vs-transaction asymmetry: [ADR-015](../decisions/015-tran
    transactions hash their own identity.
 3. **Alias map for reference durability.** A new `app.transaction_id_aliases`
    (`old_id → new_id`, append-only, written only on id-changing merges) lets SQL,
-   agent, external, and curation-FK references resolve old→new — the Plaid pointer
-   model. `transaction_id` is exposed via `sql_query` / `moneybin://schema`, so
-   this resolution contract is documented there: a held id stays *resolvable*,
-   not necessarily byte-stable.
+   agent, external, and curation-FK references resolve old→new.
+   `transaction_id` is exposed via `sql_query` / `moneybin://schema`, so this
+   resolution contract is documented there: a held id stays *resolvable*, not
+   necessarily byte-stable.
 
 Brittleness in any one source key (a mutated FITID; CSV's description-bearing
 per-source hash) thus degrades to a forwarding pointer, never an orphan. Two
@@ -490,28 +441,30 @@ follow-ups (not blocking): hardening the CSV per-source content hash (drop
 `description`; `identifiers.md` territory) and the alias-chain-collapse rule
 across successive merges.
 
-## Decision 5 — Surfaces: `accounts_links_*` + top-level `review`
+## Decision 5 — Surfaces: account-link review + the standard review projection
 
 The review queue reads `app.account_link_decisions` (the proposals); the object
 the user reviews is "a proposed account link," so it lives under the `accounts`
-noun, **mirroring `transactions_matches_*`** so the match-review mental model
-transfers (`surface-design.md`; `identifiers.md` Guard-2 free-text resolution):
+noun. The standard review projection keeps that same match-review mental model
+without adding a domain-specific MCP identity (`surface-design.md`; `identifiers.md`
+Guard-2 free-text resolution):
 
 | Operation | CLI | MCP |
 |---|---|---|
-| List pending link proposals (grouped by provisional account) | `accounts links pending` | `accounts_links_pending` |
-| Resolve one — **merge** into a candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | `accounts_links_set(decision_id, action="accept", target_account_id=…)` — the merge is gated by an MCP elicitation (no agent self-accept) / `accounts_links_set(decision_id, action="reject")` |
-| Reverse a prior decision | `accounts links undo <id>` | (CLI-only, matching today's `matches undo`) |
-| Decision history | `accounts links history` | `accounts_links_history` |
-| Run resolution over unlinked accounts (backfill) | `accounts links run` | `accounts_links_run` |
+| List pending link proposals (grouped by provisional account) | `accounts links pending` | `reviews(kind="account_links", status="pending")` |
+| Resolve one — **merge** into a candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | Accept with `identity_links_decide(decisions=[{"kind":"account_link","decision_id":"<id>","decision":"accept","target_id":"<account_id>"}])`; reject omits `target_id`. An accepted merge is gated by MCP elicitation; reject decisions do not prompt. |
+| Reverse a prior decision | `accounts links undo <id>` | Find the operation with `system_audit(view="history", limit=50)`, optionally inspect it with `system_audit(view="detail", operation_id=...)`, then call `system_audit_undo(operation_id=...)`. |
+| Decision history | `accounts links history` | `reviews(kind="account_links", status="history")` |
+| Run resolution over unlinked accounts (backfill) | `accounts links run` | `refresh_run(steps=["identity"])` |
 
-- **Decide step takes a merge target.** Mirrors the matches review *pattern*
-  (list → decide → undo) but not its exact signature: a provisional account has
-  *N* candidate proposals, where a transaction match is pairwise. `…set(decision_id,
-  target_account_id=Y)` accepts the proposal naming `Y` (re-points the
-  provisional's mapping onto `Y`, auto-rejects siblings); `target_account_id=None`
-  confirms **standalone**. The envelope, sensitivity tier (low — `ref_value`
-  masked/omitted), and `actions[]` follow `mcp.md`.
+- **Decide step takes a merge target.** A provisional account has *N* candidate
+  proposals, where a transaction match is pairwise. Each
+  `identity_links_decide` item is
+  `{kind: "account_link", decision_id, decision, target_id}`: `decision="accept"`
+  requires `target_id` and re-points the provisional mapping onto that candidate,
+  auto-rejecting siblings; `decision="reject"` forbids `target_id`. The envelope,
+  sensitivity tier (low — `ref_value` masked/omitted), and `actions[]` follow
+  `mcp.md`.
 - **Status lifecycle.** `account_links`: `accepted` (live) / `reversed` (undone).
   `account_link_decisions`: `pending` (awaiting review) → `accepted` (merged onto
   the named candidate) / `rejected` (declined pairing — not re-proposed) /
@@ -520,14 +473,16 @@ transfers (`surface-design.md`; `identifiers.md` Guard-2 free-text resolution):
   need review"* and point at the queue — exactly how `matches run` ends with *"Run
   review when ready."* The primary, least-astonishing discovery path: you're told
   the moment proposals are created.
-- **Orientation → promote to a top-level `review`.** Today `transactions_review`
-  (MCP) / `transactions review` (CLI) aggregates the two *transaction* queues
-  (matches + categorize) via `ReviewService`. Generalize it to a domain-neutral
-  **`review`** (CLI `moneybin review`, MCP `review`) aggregating **all** queues —
-  matches, categorize, **account-links**, future — so a single "what needs my
+- **Orientation → promote to a top-level review surface.** The former
+  transaction-only CLI command `moneybin transactions review` aggregates the two
+  *transaction* queues (matches + categorize) via `ReviewService`. Generalize it
+  to a domain-neutral CLI `moneybin review` plus MCP
+  `reviews(kind="summary")`, aggregating **all**
+  queues — matches, categorize, **account-links**, future — so a single "what needs my
   attention?" sweep can't silently miss the account-link backlog. Keep
-  `transactions_review` / `transactions review` as a **deprecated alias for one
-  minor release** (`design-principles.md` CLI/MCP evolution). `ReviewService`
+  `moneybin transactions review` as a **deprecated CLI alias for one minor
+  release** (`design-principles.md` CLI/MCP evolution).
+  `ReviewService`
   gains `account_links_pending` in its count.
 
 ## Decision 6 — AX: a stable non-PII handle to pin account identity
@@ -536,7 +491,8 @@ The opaque canonical `account_id` **is** the agent-reachable, stable, non-PII
 handle the masked `****4267` could never be (the session's top AX finding: today
 there is no unmasked agent handle, and `****4267` is ambiguous across sources).
 
-- `accounts_resolve` / `accounts_get` return the canonical id; agents pass it to
+- `accounts(view="resolve", query=...)` / `accounts(view="detail", reference=...)`
+  return the canonical id; agents pass it to
   filters, `import_confirm`, and sync to pin identity deterministically.
 - **Privacy-taxonomy reclassification (required).** The opaque `account_id` must
   move from the PII-masked `ACCOUNT_IDENTIFIER` class to a **record-id tier** in
@@ -574,7 +530,7 @@ flowchart TD
     D -->|one or more| PROPOSE[Write pending decisions; surface for confirm]
     PROPOSE --> E{Interactive / first contact?}
     E -->|human, or agent| CONFIRM[import_confirm: merge into candidate, or keep standalone]
-    E -->|deferred / non-interactive| QUEUE[accounts_links pending queue]
+    E -->|deferred / non-interactive| QUEUE[account-link pending queue]
     ADOPT --> REMEMBER[Accepted mapping remembered]
     AUTO --> REMEMBER
     STANDALONE --> REMEMBER
@@ -601,7 +557,7 @@ display_name, confidence, signal}]}`) plus `actions[]`. The agent (a) returns an
 using the Decision-6 handle; (b) self-accepts **only a strong-confirmer adoption**
 when `self_accept` is enabled for its `actor_kind` (both defined in M1H,
 [`smart-import-confirmation.md`](smart-import-confirmation.md) §"Agent autonomy &
-recovery"); or (c) leaves proposals for the `accounts_links` queue. The agent
+recovery"); or (c) leaves proposals for the account-link queue. The agent
 never disambiguates a masked `****4267`.
 
 **Fallback candidates at the gate (decision support, not auto-merge).** The
@@ -650,7 +606,7 @@ name, currency from a Tiller column / OFX `CURDEF`) pre-fill the confirm; the us
 adjusts. Capturing `last_four` + institution here is also what makes the
 candidate pass (Decision 3) able to find this account on a *later* import.
 
-**Catch-all.** The post-hoc `accounts_links` review queue (Decision 5) handles
+**Catch-all.** The post-hoc account-link review queue (Decision 5) handles
 everything that bypassed the confirm — agent-deferred proposals, non-interactive/
 inbox imports, links later found wrong. Confirm-at-import is primary; the queue is
 the safety net.
@@ -899,9 +855,10 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
   `import_confirm` with the per-account binding facet (proposals + candidates +
   `account_bindings`); human confirm + agent self-accept/envelope paths; new-
   account metadata capture.
-- **M1S.5** — surfaces: `accounts_links_*` (CLI + MCP), inline discovery on
-  import/sync, `review` orientation promotion (+ `transactions_review` deprecation
-  alias).
+- **M1S.5** — surfaces: account-link CLI commands plus `reviews`,
+  `identity_links_decide`, and `refresh_run` for MCP; inline discovery on
+  import/sync, `moneybin review` orientation promotion (+ the deprecated CLI
+  `moneybin transactions review` alias).
 - **M1S.6** — scenario + the import-validation gate re-run.
 - **M1S.7** — **capture layer + capture contract (Decision 8):** derive
   `dim_accounts.last_four` (+ institution) per source (OFX `RIGHT(number,4)`,

@@ -35,7 +35,7 @@ The schemas correspond exactly to the directories under `src/moneybin/sqlmesh/mo
 | `prep` | Views | SQLMesh | SQLMesh core | Light cleaning, type casting, source unioning; internal to the pipeline |
 | `core` | Views and tables | SQLMesh | All consumers (CLI, MCP, SQL shell, reports) | Canonical, deduplicated, multi-source; one table per real-world entity |
 | `app` | Tables | Services, managed-write MCP, migrations | Services and `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
-| `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports_*`, future HTTP | Curated presentation models, one per report surface; read-only by design |
+| `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports(report_id=...)`, future HTTP | Curated presentation models, one per report surface; read-only by design |
 | `meta` | Tables and views | SQLMesh | Reconciliation tooling, freshness probes | Cross-source provenance and pipeline metadata |
 | `seeds` | Tables | SQLMesh seeds (from CSV) | `prep`, `core`, services | Reference data shipped in-repo (e.g., the category taxonomy) |
 
@@ -123,6 +123,7 @@ Owned by SQLMesh. Mix of views and tables. **One canonical table per real-world 
 | `core.fct_transaction_lines` | One row per transaction line | Splits expanded for line-level analysis |
 | `core.fct_balances` | One row per balance snapshot | Snapshot balances from `raw.*_balances` reconciled across sources |
 | `core.fct_balances_daily` | One row per (account, date) | End-of-day balance, gap-filled (Python model, not SQL) |
+| `core.uncategorized_queue` | One row per uncategorized transaction | Curator-impact queue (`ABS(amount) × age_days`); service-internal — reached via `moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`, not a `reports.*` view |
 
 **Identity:** `transaction_id` is a deterministic SHA-256 hash. For unmatched rows, it's a hash of `(source_type, source_transaction_id, account_id)`. For matched groups, it's a hash of the sorted set of those tuples — so reimporting the same two sources produces the same `transaction_id` every time. See `.claude/rules/identifiers.md` for the full strategy.
 
@@ -157,14 +158,13 @@ One view per CLI/MCP report. Read-only by design; the privacy middleware enforce
 
 | View | Powers |
 |---|---|
-| `reports.net_worth` | `moneybin reports networth` / `reports_networth` |
-| `reports.cash_flow` | `moneybin reports cashflow` / `reports_cashflow` |
-| `reports.spending_trend` | `moneybin reports spending` / `reports_spending` |
-| `reports.recurring_subscriptions` | `moneybin reports recurring` / `reports_recurring` |
-| `reports.uncategorized_queue` | `moneybin reports uncategorized` / `reports_uncategorized` |
-| `reports.large_transactions` | `moneybin reports large` / `reports_large_transactions` |
-| `reports.merchant_activity` | `moneybin reports merchants` / `reports_merchant_activity` |
-| `reports.balance_drift` | `moneybin reports balance-drift` / `reports_balance_drift` |
+| `reports.net_worth` | `moneybin reports networth` / `reports(report_id='core:networth')` |
+| `reports.cash_flow` | `moneybin reports cashflow` / `reports(report_id='core:cashflow')` |
+| `reports.spending_trend` | `moneybin reports spending` / `reports(report_id='core:spending')` |
+| `reports.recurring_subscriptions` | `moneybin reports recurring` / `reports(report_id='core:recurring')` |
+| `reports.large_transactions` | `moneybin reports large` / `reports(report_id='core:large_transactions')` |
+| `reports.merchant_activity` | `moneybin reports merchants` / `reports(report_id='core:merchants')` |
+| `reports.balance_drift` | `moneybin reports balance-drift` / `reports(report_id='core:balance_drift')` |
 
 ### `meta.*` and `seeds.*`
 
@@ -190,7 +190,7 @@ Trace a single transaction end to end, starting from a CSV row.
 
 1. **The CSV lands in the inbox or you run `moneybin import files`.** The tabular importer detects delimiter, header, and sign convention; matches columns against the alias dictionary; resolves the account.
 2. **The loader writes `raw.tabular_transactions`** via `Database.ingest_dataframe()`. Each row carries a content-hash `transaction_id` (SHA-256 of `date|amount|description|account_id`, truncated to 16 hex, prefixed by source — see `.claude/rules/identifiers.md`). A row also lands in `raw.import_log` capturing the file hash, batch ID, and source path.
-3. **`refresh` runs automatically after the import** (unless you passed `--no-refresh`). The cascade is matching → SQLMesh apply → categorization, in that order.
+3. **`refresh` runs automatically after the import** (unless you passed `--no-refresh`). The cascade is gsheet → match → transform → categorize → identity, in that order.
 4. **`prep.stg_tabular__transactions`** projects the raw row into the canonical staging shape: casts types, trims strings, normalizes column names. Still one row per source row.
 5. **`prep.int_transactions__unioned`** unions OFX, tabular, manual, and Plaid staging views. The CSV row sits alongside any other source rows with their own source-specific `transaction_id`s.
 6. **The matcher writes `app.match_decisions`** for any new dedup candidates (e.g., the CSV row matched against an existing OFX row from the same statement). Decisions persist; on a future `refresh`, the matcher replays accepted decisions rather than re-running scoring.
@@ -255,13 +255,14 @@ Both share the `app.match_decisions` table — `match_type = 'dedup'` versus `ma
 
 ## `refresh` — the canonical command
 
-`refresh` is the post-load cascade: matching → SQLMesh apply → categorization. Idempotent. Safe to retry. It's the right answer 99% of the time when you want derived state to catch up with new raw data.
+`refresh` is the post-load cascade: gsheet → match → transform → categorize → identity. Idempotent. Safe to retry. It's the right answer 99% of the time when you want derived state to catch up with new raw data.
 
 ```bash
 moneybin refresh                         # full cascade
 moneybin refresh --step match            # matcher only
 moneybin refresh --step transform        # SQLMesh apply only
 moneybin refresh --step categorize       # categorization engines only
+moneybin refresh --step identity         # identity proposal backfill only
 moneybin refresh --step match --step transform   # subset, in order
 ```
 
@@ -272,7 +273,21 @@ moneybin refresh --step match --step transform   # subset, in order
 - You ran `import files --no-refresh` to chain many imports, and now want to settle the pipeline once.
 - A scheduled job (cron, `launchd`, `systemd`) drives it on a cadence.
 
-On the MCP side the peer tool is `refresh_run`, with the same `steps` parameter. Matching and categorization are best-effort — only a SQLMesh apply error causes a non-zero exit.
+Both surfaces default to the full cascade, but their selectable step spellings
+intentionally differ:
+
+- MCP default: `gsheet → match → transform → categorize → identity`.
+  `refresh_run(steps=[...])` accepts any subset of all five stages, including
+  `gsheet`.
+- CLI selectable steps: `match → transform → categorize → identity`.
+  `moneybin refresh --step ...` omits `gsheet`; use the dedicated
+  `moneybin gsheet pull` command to request a sheet pull from the CLI.
+
+Matching, categorization, and identity are best-effort. Their failures do not
+populate `data.error` or make the CLI exit non-zero, but they are surfaced in
+the response payload and as CLI warnings. Only a SQLMesh apply error populates
+`data.error` and causes a non-zero CLI exit; `ResponseEnvelope.error` remains
+empty because refresh returns a result payload rather than an error envelope.
 
 ### Concurrency and locking
 
@@ -282,17 +297,22 @@ There is no per-step progress signaling today. `refresh_run` returns when the ca
 
 ### What `refresh_run` returns
 
-The response envelope follows the standard shape ([`mcp-server.md`](mcp-server.md)). Today:
+The response envelope follows the standard shape
+([`mcp-server.md`](mcp-server.md)):
 
-| Outcome | `summary.applied` | Exit / error |
+| Outcome | `data.applied` | Surface contract |
 |---|---|---|
-| All three steps succeed | `true` | success |
-| Matching fails (e.g., views missing on first load) | `true` if transform later succeeds | logged; **not** surfaced in the envelope |
-| SQLMesh apply fails | `false` | `error` field populated; CLI exits non-zero |
-| Categorization fails | `true` | logged; **not** surfaced in the envelope |
-| `--step` omits `transform` | `false` (with `duration_seconds = null`) | success — explicit signal that no apply happened |
+| All five default stages succeed | `true` | Success; all error fields are empty. |
+| A Google Sheets pull is non-complete | Depends on transform | Warning in logs; query `gsheet(view="status")` for per-connection detail. |
+| Matching crashes | `true` if transform later succeeds | `matching_error` plus executable `recovery_actions` for a match-only retry and doctor diagnosis. |
+| SQLMesh apply fails | `false` | `data.error` is populated; CLI exits non-zero. Later categorization and identity stages do not run. |
+| Categorization crashes | `true` | `categorization_error` plus executable `recovery_actions` for a categorize-only retry and doctor diagnosis. |
+| An identity domain fails | Depends on transform | `identity_errors` contains `accounts` and/or `merchants`; successful domains still complete. |
+| A scoped call omits `transform` | `false` (with `duration_seconds = null`) | Success; this explicitly means SQLMesh apply did not run. |
 
-This is deliberate: SQLMesh apply is the only step that can leave the warehouse in a broken-shape state. Matching and categorization are restartable on the next refresh, so their failures are best-effort and log-only. If you need per-step accountability today, watch the logs; structured per-step status in the envelope is a known gap.
+The CLI's `--output json` path and MCP `refresh_run` share this payload. A
+first-load missing-view precondition is not treated as a matching or
+categorization crash, so it leaves the corresponding error field empty.
 
 The lower-level `moneybin transform` group exposes individual SQLMesh operations (`apply`, `plan`, `status`, `validate`, `audit`, `restate`). Reach for those when debugging a specific model or restating a date range; for normal post-load work, `refresh` is the entry point.
 
@@ -321,9 +341,9 @@ All read commands accept `--output json` and emit the standard response envelope
 
 ### From MCP
 
-The `sql_query` tool runs read-only DuckDB against `core.*` and `reports.*` (DDL and writes are rejected). For discovery, the `moneybin://schema` resource enumerates the *interface set* — the consumer-facing tables and views in `core.*` and `reports.*` declared as `TableRef` constants in code — with column-level descriptions auto-derived from SQLMesh model comments. Domain-specific tools (`transactions_get`, `reports_networth`, etc.) are the higher-affordance path; `sql_query` is the escape hatch.
+The `sql_query` tool runs read-only DuckDB against `core.*` and `reports.*` (DDL and writes are rejected). For discovery, the `moneybin://schema` resource enumerates the *interface set* — the consumer-facing tables and views in `core.*` and `reports.*` declared as `TableRef` constants in code — with column-level descriptions auto-derived from SQLMesh model comments. Domain-specific tools (`transactions`, `reports(report_id=...)`, and `accounts`) are the higher-affordance path; `sql_query` is the escape hatch.
 
-Sensitivity tiers are declared per tool: aggregates return at `low`; row-level data with merchant and amount returns at `medium`; account numbers and PII-adjacent fields return at `high`. Tiers drive consent flows and redaction.
+Sensitivity classification and critical-field masking are wired today. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred; tools must not rely on a consent gate yet.
 
 ## What can go wrong
 
@@ -343,7 +363,7 @@ A few invariants that the codebase enforces, but worth knowing as the contract:
 
 - **Don't write to `core.*`.** It's derived. The MCP privacy middleware rejects `INSERT`/`UPDATE`/`DELETE` outside `app.*` and `raw.*`; the CLI doesn't expose any direct-write paths into `core`. Every shape you see in `core` traces back to a model in `src/moneybin/sqlmesh/models/core/` or a join into `app.*`.
 - **Don't read from `prep.*`.** Internal layer. Shape is unstable across releases. Read `core.*` instead — every column you'd want from `prep` is there or surfaced via the dimension joins.
-- **Use `TableRef` constants in code, not hardcoded names.** `TableRef.FCT_TRANSACTIONS` rather than `"core.fct_transactions"`. The `moneybin://schema` MCP resource is derived from the `TableRef` interface set, so what you can query via SQL is exactly what the agent sees.
+- **Use module-level `TableRef` constants in code, not hardcoded names.** Import `FCT_TRANSACTIONS` from `moneybin.tables` rather than spelling `"core.fct_transactions"`. The `moneybin://schema` MCP resource is derived from `INTERFACE_TABLES`, so what you can query via SQL is exactly what the agent sees.
 - **Parameterize SQL with `?` placeholders** for any user-supplied value. Identifier interpolation (when needed) goes through `TableRef`, an allowlist, or `sqlglot.exp.to_identifier(...)` — never bare f-strings. See `.claude/rules/security.md`.
 - **Money is `DECIMAL(18,2)`, never `FLOAT`.** Quantities and prices are `DECIMAL(18,8)`. See `.claude/rules/database.md` for the type table.
 

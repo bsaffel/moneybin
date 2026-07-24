@@ -9,7 +9,9 @@ consent.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from moneybin import error_codes
 from moneybin.config import get_settings
@@ -18,6 +20,7 @@ from moneybin.errors import UserError
 from moneybin.privacy.consent import FEATURE_CATEGORIES, ConsentMode, GrantInfo
 from moneybin.privacy.log import build_consent_event, write_privacy_event
 from moneybin.repositories.consent_repo import ConsentRepo
+from moneybin.services.mutation_context import operation
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +55,31 @@ class RevokeResult:
 
     backend: str
     count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ConsentTargetPlan:
+    """Complete no-write preflight for one declarative consent batch."""
+
+    categories: tuple[str, ...]
+    state: Literal["granted", "revoked"]
+    backend: str
+    mode: ConsentMode | None
+    before: tuple[GrantInfo, ...]
+    changed_categories: tuple[str, ...]
+
+    @property
+    def changed(self) -> bool:
+        """Return whether at least one grant must change."""
+        return bool(self.changed_categories)
+
+
+@dataclass(frozen=True, slots=True)
+class ConsentTargetResult:
+    """Committed consent target state and the effective backend set."""
+
+    plan: ConsentTargetPlan
+    effective_categories: tuple[str, ...]
 
 
 class ConsentService:
@@ -201,6 +229,126 @@ class ConsentService:
                 )
             )
         return len(revoked)
+
+    def plan_targets(
+        self,
+        categories: Sequence[str],
+        *,
+        state: Literal["granted", "revoked"],
+        backend: str | None,
+        mode: ConsentMode = ConsentMode.PERSISTENT,
+    ) -> ConsentTargetPlan:
+        """Normalize, resolve, and inspect a complete consent target set."""
+        normalized = tuple(sorted(category.strip() for category in categories))
+        if not normalized:
+            raise UserError(
+                "categories must contain at least one feature category.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        if len(set(normalized)) != len(normalized):
+            raise UserError(
+                "Each consent category may appear only once.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        for category in normalized:
+            self.validate_category(category)
+        resolved_backend = self.resolve_backend(backend)
+        active = {
+            grant.feature_category: grant
+            for grant in self._repo.list_active()
+            if grant.backend == resolved_backend
+            and grant.feature_category in normalized
+        }
+        before = tuple(
+            active[category] for category in normalized if category in active
+        )
+        changed_categories = tuple(
+            category
+            for category in normalized
+            if (category not in active) == (state == "granted")
+        )
+        return ConsentTargetPlan(
+            categories=normalized,
+            state=state,
+            backend=resolved_backend,
+            mode=mode if state == "granted" else None,
+            before=before,
+            changed_categories=changed_categories,
+        )
+
+    def apply_targets(
+        self,
+        plan: ConsentTargetPlan,
+        *,
+        actor: str,
+        operation_id: str,
+        verify: Callable[[ConsentTargetPlan], None] | None = None,
+    ) -> ConsentTargetResult:
+        """Revalidate and commit a consent set in one operation and transaction."""
+        changed: list[str] = []
+        with operation(operation_id):
+            self._db.begin()
+            try:
+                live = self.plan_targets(
+                    plan.categories,
+                    state=plan.state,
+                    backend=plan.backend,
+                    mode=plan.mode or ConsentMode.PERSISTENT,
+                )
+                if verify is not None:
+                    verify(live)
+                if not live.changed:
+                    raise UserError(
+                        "Every consent category already has its requested state.",
+                        code=error_codes.MUTATION_NOTHING_TO_DO,
+                    )
+                for category in live.changed_categories:
+                    if live.state == "granted":
+                        self._repo.grant(
+                            feature_category=category,
+                            backend=live.backend,
+                            consent_mode=live.mode or ConsentMode.PERSISTENT,
+                            grant_prompt=self._build_prompt(category, live.backend),
+                            actor=actor,
+                            in_outer_txn=True,
+                        )
+                    else:
+                        self._repo.revoke(
+                            feature_category=category,
+                            backend=live.backend,
+                            actor=actor,
+                            in_outer_txn=True,
+                        )
+                    changed.append(category)
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
+
+        for category in changed:
+            write_privacy_event(
+                build_consent_event(
+                    actor=actor,
+                    action=(
+                        "consent.grant" if plan.state == "granted" else "consent.revoke"
+                    ),
+                    feature_category=category,
+                    backend=plan.backend,
+                    consent_mode=(
+                        (plan.mode or ConsentMode.PERSISTENT).value
+                        if plan.state == "granted"
+                        else None
+                    ),
+                )
+            )
+        effective = tuple(
+            sorted(
+                grant.feature_category
+                for grant in self._repo.list_active()
+                if grant.backend == plan.backend
+            )
+        )
+        return ConsentTargetResult(plan=live, effective_categories=effective)
 
     def status(self) -> ConsentStatus:
         """Return the current ledger snapshot."""

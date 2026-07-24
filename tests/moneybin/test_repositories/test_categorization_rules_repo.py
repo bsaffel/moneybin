@@ -118,6 +118,65 @@ def test_deactivate_returns_none_for_missing_rule(db: Database) -> None:
     assert _audit_rows_for(db, "nope") == []
 
 
+def test_set_target_replaces_full_rule_and_audits_before_after(db: Database) -> None:
+    repo = CategorizationRulesRepo(db)
+    rid = _insert(repo).target_id
+    assert rid is not None
+
+    event = repo.set_target(
+        rid,
+        name="exact: STARBUCKS COFFEE → Food",
+        merchant_pattern="STARBUCKS COFFEE",
+        match_type="exact",
+        min_amount=1.5,
+        max_amount=25.0,
+        account_id="ACC001",
+        category="Food",
+        subcategory=None,
+        category_id="FOOD",
+        priority=5,
+        actor="mcp",
+    )
+
+    assert event.action == "categorization_rule.set"
+    audit = next(
+        row for row in _audit_rows_for(db, rid) if row[0] == "categorization_rule.set"
+    )
+    assert json.loads(audit[4])["merchant_pattern"] == "STARBUCKS"
+    after = json.loads(audit[5])
+    assert after["merchant_pattern"] == "STARBUCKS COFFEE"
+    assert after["match_type"] == "exact"
+    assert after["category"] == "Food"
+    assert after["priority"] == 5
+    assert after["is_active"] is True
+
+
+def test_delete_removes_rule_and_retains_full_audit_recovery_image(
+    db: Database,
+) -> None:
+    repo = CategorizationRulesRepo(db)
+    rid = _insert(repo).target_id
+    assert rid is not None
+
+    event = repo.delete(rid, actor="mcp")
+
+    assert event is not None
+    assert event.action == "categorization_rule.delete"
+    assert (
+        db.conn.execute(
+            "SELECT 1 FROM app.categorization_rules WHERE rule_id = ?", [rid]
+        ).fetchone()
+        is None
+    )
+    audit = next(
+        row
+        for row in _audit_rows_for(db, rid)
+        if row[0] == "categorization_rule.delete"
+    )
+    assert json.loads(audit[4])["rule_id"] == rid
+    assert audit[5] is None
+
+
 def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
     audit = MagicMock()
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")

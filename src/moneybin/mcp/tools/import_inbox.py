@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastmcp import FastMCP
-
 from moneybin.database import get_database
-from moneybin.mcp._registration import register
-from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.imports import (
     ImportInboxPendingPayload,
     ImportInboxSyncPayload,
@@ -51,7 +47,6 @@ def _tier_of(pending_entry: dict[str, object]) -> str:
     return tier if isinstance(tier, str) else "low"
 
 
-@mcp_tool(read_only=False, idempotent=False)
 def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncPayload]:
     """Drain the active profile's import inbox.
 
@@ -141,34 +136,22 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
     )
 
 
-@mcp_tool()
 def import_inbox_pending() -> ResponseEnvelope[ImportInboxPendingPayload]:
     """Preview pending items in the active profile's import inbox."""
-    service = InboxService.for_active_profile_no_db()
-    list_result = service.enumerate()
     return build_envelope(
-        data=ImportInboxPendingPayload(
-            would_process=list_result.would_process, ignored=list_result.ignored
-        ),
+        data=read_import_inbox_pending(),
         actions=["Use import_inbox_sync to drain the inbox"],
     )
 
 
-def register_inbox_tools(mcp: FastMCP) -> None:
-    """Register the two inbox tools with the MCP server."""
-    register(
-        mcp,
-        import_inbox_sync,
-        "import_inbox_sync",
-        "Drain the active profile's import inbox; move successes to "
-        "processed/ and failures to failed/ with structured error sidecars. "
-        "Runs the post-load refresh pipeline once at end-of-batch when any file succeeded; "
-        "pass refresh=false to defer the rebuild and call refresh_run later. "
-        "Writes to raw.* source tables and moves files within the inbox directory; revert by manually moving processed files back into inbox/<account-slug>/ and accepting that already-imported source rows are deduplicated on the next sync.",
+def read_import_inbox_pending() -> ImportInboxPendingPayload:
+    """Return the inbox preview payload without invoking a public tool wrapper."""
+    service = InboxService.for_active_profile_no_db()
+    list_result = service.enumerate()
+    return ImportInboxPendingPayload(
+        would_process=list_result.would_process,
+        ignored=list_result.ignored,
     )
-    register(
-        mcp,
-        import_inbox_pending,
-        "import_inbox_pending",
-        "Preview pending items in the active profile's import inbox without moving anything.",
-    )
+
+
+_LEGACY_INTERNAL_CALLBACKS = (import_inbox_pending,)

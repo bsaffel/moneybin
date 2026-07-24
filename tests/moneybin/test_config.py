@@ -5,6 +5,16 @@ import pytest
 from moneybin.config import MCPConfig
 
 
+def test_profile_exports_dir_is_profile_scoped() -> None:
+    """Exports live beside the active profile's inbox rather than the shared root."""
+    from moneybin.config import MoneyBinSettings
+
+    settings = MoneyBinSettings(profile="alex")
+    assert (
+        settings.profile_exports_dir == settings.import_.inbox_root / "alex" / "exports"
+    )
+
+
 @pytest.mark.unit
 def test_mcp_tool_timeout_default() -> None:
     cfg = MCPConfig()
@@ -62,6 +72,47 @@ def test_mcp_max_items_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     clear_settings_cache()
     s = MoneyBinSettings()
     assert s.mcp.max_items == 100
+
+
+@pytest.mark.unit
+def test_mcp_confirmation_ttl_default() -> None:
+    assert MCPConfig().confirmation_ttl_seconds == 300
+
+
+@pytest.mark.unit
+def test_mcp_confirmation_ttl_constants_define_inclusive_range() -> None:
+    from moneybin import config
+
+    assert config.MIN_CONFIRMATION_TTL_SECONDS == 30
+    assert config.DEFAULT_CONFIRMATION_TTL_SECONDS == 300
+    assert config.MAX_CONFIRMATION_TTL_SECONDS == 900
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("ttl_seconds", [30, 900])
+def test_mcp_confirmation_ttl_accepts_inclusive_bounds(ttl_seconds: int) -> None:
+    assert MCPConfig(confirmation_ttl_seconds=ttl_seconds).confirmation_ttl_seconds == (
+        ttl_seconds
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("ttl_seconds", [29, 901])
+def test_mcp_confirmation_ttl_rejects_out_of_range(ttl_seconds: int) -> None:
+    with pytest.raises(ValueError):
+        MCPConfig(confirmation_ttl_seconds=ttl_seconds)
+
+
+@pytest.mark.unit
+def test_mcp_confirmation_ttl_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.config import MoneyBinSettings, clear_settings_cache
+
+    monkeypatch.setenv("MONEYBIN_MCP__CONFIRMATION_TTL_SECONDS", "600")
+    clear_settings_cache()
+    settings = MoneyBinSettings()
+    assert settings.mcp.confirmation_ttl_seconds == 600
 
 
 def test_categorization_settings_defaults() -> None:

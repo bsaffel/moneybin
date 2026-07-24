@@ -10,7 +10,8 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
-from moneybin.privacy.taxonomy import CLASSIFICATION
+from moneybin.privacy.sql_lineage import reports_class_map
+from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 
 
 def _live_columns(db: Database) -> set[tuple[str, str, str]]:
@@ -57,3 +58,33 @@ def test_no_stale_registry_entries(populated_db: Database) -> None:
             f"schema:\n{pretty}\n"
             "Remove each from src/moneybin/privacy/taxonomy.py."
         )
+
+
+def test_unresolved_is_never_declared_as_a_column_class() -> None:
+    """``UNRESOLVED`` is the ABSENCE of a classification — never a declaration.
+
+    Writing it into ``CLASSIFICATION`` or a ``@report(classes=…)`` map would
+    make a column that nobody classified look classified, and both completeness
+    checks — the two above, and the reports-side derivation verification —
+    would then pass over the very gap they exist to surface. The class's
+    docstring in ``taxonomy.py`` asserts this; this test is what makes the
+    assertion true rather than aspirational.
+    """
+    declared = [
+        f"{schema}.{table}.{col}"
+        for (schema, table), cols in CLASSIFICATION.items()
+        for col, dc in cols.items()
+        if dc is DataClass.UNRESOLVED
+    ]
+    declared += [
+        f"{schema}.{table}.{col}"
+        for (schema, table), cols in reports_class_map().items()
+        for col, dc in cols.items()
+        if dc is DataClass.UNRESOLVED
+    ]
+    assert not declared, (
+        "DataClass.UNRESOLVED declared as a column class:\n"
+        + "\n".join(f"  {d}" for d in sorted(declared))
+        + "\nIt is the fail-closed marker for columns lineage could not "
+        "resolve. Classify these columns properly instead."
+    )

@@ -1201,3 +1201,91 @@ def test_shape_reconstruction_stops_at_end_anchor() -> None:
         ["01/05", "COFFEE SHOP", "25.00"],
         ["01/09", "BOOKSTORE", "40.00"],
     ]
+
+
+# ---------------------------------------------------------------------------
+# Sub-dollar amounts printed without a leading zero (real Chase FX statements)
+# ---------------------------------------------------------------------------
+
+
+def test_money_cell_accepts_sub_dollar_amount_without_leading_zero() -> None:
+    """Chase prints a $0.39 foreign-transaction fee as `.39` — no leading zero.
+
+    The money regex required at least one digit before the decimal point, so this
+    cell read as non-money. That made the whole fee row invisible to row-shape
+    collection AND to `execute_recipe`'s field match, dropping $0.39 from the
+    extracted total and failing the +/-1c reconciliation — the statement then
+    escalated to seed instead of deriving.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _is_money_cell,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert _is_money_cell(".39")
+    assert _is_money_cell("-.39")
+    # Regression guard: normal amounts must keep working.
+    assert _is_money_cell("0.39")
+    assert _is_money_cell("1,234.56")
+    # …and genuine non-money must still be rejected.
+    assert not _is_money_cell(".")
+    assert not _is_money_cell("EXCHG RATE")
+
+
+def test_shape_reconstruction_collects_leading_decimal_fee_row() -> None:
+    """A `.39` fee row is transaction-shaped and must not be silently skipped."""
+    from moneybin.extractors.pdf.auto_derive import (
+        _synthesize_tables_from_row_shape,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    doc = _make_text_only_doc([
+        "Date of",
+        "Transaction   Merchant Name or Transaction Description   $ Amount",
+        "11/16   PUBLIX #581 MIAMI FL   39.83",
+        "11/18   VTAS ABORDO EXP XC SOLIDARIDAD Q   13.12",
+        "11/19 MEXICAN PESO",
+        "240.00 X 0.054666666 (EXCHG RATE)",
+        "11/19   FOREIGN TRANSACTION FEE   .39",
+        "11/21   PURCHASE INTEREST CHARGE   55.87",
+    ])
+
+    tables = _synthesize_tables_from_row_shape(doc)
+
+    assert len(tables) == 1
+    amounts = [r[-1] for r in tables[0].rows]
+    assert amounts == ["39.83", "13.12", ".39", "55.87"]
+
+
+def test_derived_recipe_executes_a_sub_dollar_fee_row_end_to_end() -> None:
+    """The derived amount_pattern must also match a `.39` fee, not just the cell test.
+
+    Two independent sites had to change for the sub-dollar fix: the money-cell
+    predicate that decides a row is transaction-shaped, and the `amount_pattern`
+    that `execute_recipe` fullmatches at extraction time. The cell predicate is
+    pinned upstream by `test_shape_reconstruction_collects_leading_decimal_fee_row`,
+    which stops at table synthesis and never reaches `_build_fields` — so
+    reverting `amount_pattern` alone would leave the row collected and then
+    silently dropped at execution, exactly the failure this fix closes, with a
+    green suite. Driving derivation and execution together makes that revert fail.
+    """
+    from moneybin.extractors.pdf.recipe import execute_recipe
+
+    # The plain single-line-header shape on purpose: the only variable under
+    # test is the sub-dollar amount, so the fixture must not also exercise
+    # wrapped-header reconstruction.
+    text_lines = [
+        "Chase Bank",
+        "ACCOUNT ACTIVITY",
+        "Date         Description          Amount",
+        "01/02/2024   COFFEE SHOP          -4.50",
+        "01/05/2024   FOREIGN TXN FEE      .39",
+        "01/09/2024   GROCERY MART         -73.21",
+    ]
+    recipe = derive_recipe(_make_text_only_doc(text_lines), _EMPTY_META)
+    assert recipe is not None
+
+    rows = execute_recipe(recipe, "\n".join(text_lines))
+
+    amounts = [row["Amount"] for row in rows.rows]
+    assert amounts == [Decimal("-4.50"), Decimal("0.39"), Decimal("-73.21")], (
+        f"sub-dollar fee dropped at execution; extracted {amounts}"
+    )

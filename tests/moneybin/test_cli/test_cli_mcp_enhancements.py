@@ -846,8 +846,48 @@ class TestMCPServe:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The default stdio path is unaffected — it starts and emits no auth warning."""
-        with _mock_server_start() as mock_mcp:
+        with (
+            _mock_server_start() as mock_mcp,
+            patch("moneybin.mcp.server.purge_expired_import_previews_at_boot") as purge,
+        ):
             result = runner.invoke(app, ["serve"])
         assert result.exit_code == 0
+        purge.assert_not_called()
         mock_mcp.run.assert_called_once_with(transport="stdio")
         assert "authentication" not in caplog.text.lower()
+
+    def test_configured_startup_purges_expired_import_previews(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Configured server startup runs preview-retention maintenance."""
+        mock_mcp = MagicMock()
+        events: list[str] = []
+
+        def record_run(**_kwargs: object) -> None:
+            events.append("run")
+
+        with (
+            patch("moneybin.cli.commands.mcp.importlib"),
+            patch("moneybin.cli.commands.mcp._is_unconfigured", return_value=False),
+            patch(
+                "moneybin.config.get_database_path",
+                return_value=tmp_path / "moneybin-test.duckdb",
+            ),
+            patch("moneybin.config.get_current_profile", return_value="test"),
+            patch("moneybin.mcp.server.init_db"),
+            patch("moneybin.mcp.server.check_schema_at_boot") as check_schema,
+            patch("moneybin.mcp.server.purge_expired_import_previews_at_boot") as purge,
+            patch("moneybin.mcp.server.close_db"),
+            patch("moneybin.mcp.server.mcp", mock_mcp),
+            patch("moneybin.observability.setup_observability"),
+        ):
+            check_schema.side_effect = lambda: events.append("schema")
+            purge.side_effect = lambda: events.append("purge")
+            mock_mcp.run.side_effect = record_run
+            result = runner.invoke(app, ["serve"])
+
+        assert result.exit_code == 0
+        purge.assert_called_once_with()
+        mock_mcp.run.assert_called_once_with(transport="stdio")
+        assert events == ["schema", "purge", "run"]

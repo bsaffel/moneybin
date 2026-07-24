@@ -98,6 +98,16 @@ def test_orphan_note_is_flagged(db: Database) -> None:
     assert "note:orphan_n1" in result.affected_ids
 
 
+def test_each_orphan_note_is_flagged_by_note_id(db: Database) -> None:
+    create_core_tables(db)
+    _insert_note(db, note_id="orphan_n1", transaction_id="missing_txn")
+    _insert_note(db, note_id="orphan_n2", transaction_id="missing_txn")
+
+    result = DoctorService(db)._run_orphan_app_state()
+
+    assert result.affected_ids == ["note:orphan_n1", "note:orphan_n2"]
+
+
 def test_orphan_tag_is_flagged_once_per_transaction(db: Database) -> None:
     create_core_tables(db)
     # Two tag rows for the same orphan transaction — recipe will clear them
@@ -227,19 +237,10 @@ def test_run_all_populates_recovery_actions_for_orphan_app_state(
     orphan = orphan_results[0]
     assert orphan.status == "fail"
     assert orphan.recovery_actions is not None
-    tools = sorted(a.tool for a in orphan.recovery_actions)
-    assert tools == ["transactions_notes_delete", "transactions_tags_set"]
-    # Round-trip-executable spot-check: a notes-delete action carries
-    # exactly the note_id we seeded as an orphan. Confidence is "suggested"
-    # (not "certain") for notes because the single-id delete is not
-    # idempotent across a batch — see orphan_app_state recipe docstring.
-    notes_delete = next(
-        a for a in orphan.recovery_actions if a.tool == "transactions_notes_delete"
-    )
-    assert notes_delete.arguments == {"note_id": "orphan_n1"}
-    assert notes_delete.confidence == "suggested"
-    # The tag-clear action stays "certain" — setting tags to [] is idempotent.
-    tags_set = next(
-        a for a in orphan.recovery_actions if a.tool == "transactions_tags_set"
-    )
-    assert tags_set.confidence == "certain"
+    assert [action.tool for action in orphan.recovery_actions] == [
+        "transactions_annotate",
+        "transactions_annotate",
+    ]
+    assert {
+        action.arguments["requests"][0]["kind"] for action in orphan.recovery_actions
+    } == {"note_delete", "tags_set"}

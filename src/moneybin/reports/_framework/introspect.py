@@ -15,7 +15,9 @@ from typing import cast
 
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    OutputColumn,
     ParamSpec,
+    ReportSemantics,
     ReportSpec,
     Runner,
     TableRef,
@@ -59,18 +61,25 @@ def _section_tag(stripped: str) -> str | None:
 def build_spec(
     fn: Runner,
     *,
+    report_id: str,
     name: str,
     view: TableRef,
     classes: Mapping[str, DataClass],
+    parameter_classes: Mapping[str, DataClass],
+    columns: tuple[OutputColumn, ...],
+    semantics: ReportSemantics,
     domain: str | None = None,
+    class_downgrades: Mapping[str, str] | None = None,
 ) -> ReportSpec:
     """Introspect ``fn`` into a :class:`ReportSpec`.
 
     Raises:
         ValueError: if the runner has no docstring, its first parameter is not
             ``db``, any non-``db`` parameter is not keyword-only or collides with
-            a reserved CLI option (``output``/``quiet``), or ``classes`` is empty
-            (every report must declare its column privacy contract).
+            a reserved CLI option (``output``/``quiet``), ``classes`` is empty
+            (every report must declare its column privacy contract), or
+            ``class_downgrades`` names a column absent from ``classes`` or
+            carries an empty reason (a stale or unexplained downgrade).
     """
     if view.schema != "reports":
         raise ValueError(
@@ -82,6 +91,20 @@ def build_spec(
             f"Report {name!r} must declare a non-empty `classes` map "
             "(the output-column privacy contract)."
         )
+    downgrades = dict(class_downgrades or {})
+    for column, reason in downgrades.items():
+        if column not in classes:
+            raise ValueError(
+                f"Report {name!r} class_downgrades names {column!r}, which is "
+                "not in `classes` (a downgrade for a column that doesn't exist "
+                "is stale — remove it)."
+            )
+        if not reason.strip():
+            raise ValueError(
+                f"Report {name!r} class_downgrades[{column!r}] needs a non-empty "
+                "reason explaining why the declared class is genuinely safe "
+                "below its derived floor."
+            )
 
     doc = inspect.getdoc(fn)
     if not doc:
@@ -98,7 +121,6 @@ def build_spec(
 
     summary, arg_help, examples = _parse_docstring(doc)
 
-    param_specs: list[ParamSpec] = []
     for p in params[1:]:
         if p.kind is not inspect.Parameter.KEYWORD_ONLY:
             raise ValueError(
@@ -111,6 +133,15 @@ def build_spec(
                 "with a shared CLI option; rename it (reserved: "
                 f"{', '.join(sorted(_RESERVED_CLI_PARAMS))})."
             )
+
+    parameter_names = {parameter.name for parameter in params[1:]}
+    if set(parameter_classes) != parameter_names:
+        raise ValueError(
+            f"Report {name!r} `parameter_classes` must exactly cover runner parameters."
+        )
+
+    param_specs: list[ParamSpec] = []
+    for p in params[1:]:
         required = p.default is inspect.Parameter.empty
         param_specs.append(
             ParamSpec(
@@ -121,18 +152,23 @@ def build_spec(
                 default=None if required else p.default,
                 required=required,
                 help=arg_help.get(p.name, ""),
+                data_class=parameter_classes[p.name],
             )
         )
 
     return ReportSpec(
+        report_id=report_id,
         name=name,
         description=summary,
         view=view,
         runner=fn,
         classes=dict(classes),
+        columns=columns,
+        semantics=semantics,
         params=tuple(param_specs),
         examples=examples,
         domain=domain,
+        class_downgrades=downgrades,
     )
 
 

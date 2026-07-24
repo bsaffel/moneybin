@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -103,6 +104,16 @@ class ConnectResult:
     initial_pull: LoadResult | None
     initial_pull_status: str | None = None
     initial_pull_error: str | None = None
+
+
+@dataclass(frozen=True)
+class GSheetPurgePlan:
+    """Exact live state whose deletion requires confirmation."""
+
+    connection_id: str
+    connection_before_state: dict[str, Any]
+    raw_before_state: tuple[dict[str, Any], ...]
+    blast_radius: dict[str, int]
 
 
 def _inferred_sign_evidence_header(detection: DetectionResult) -> str | None:
@@ -238,14 +249,14 @@ class GSheetConnectionService:
 
     def connect(self, req: ConnectionRequest, *, actor: str = "cli") -> ConnectResult:
         """Detect, persist, and optionally pull the initial snapshot."""
-        if not self._oauth.is_authorized():
-            self._oauth.authorize()
-
         try:
             spreadsheet_id, gid = parse_sheet_url(req.url)
         except ValueError as exc:
             raise GSheetError(f"Invalid Google Sheets URL: {exc}") from exc
-        meta = self._sheets.get_workbook_metadata(spreadsheet_id)
+        self._repo.assert_not_export_destination(spreadsheet_id)
+        if not self._oauth.is_authorized(require_write=False):
+            self._oauth.authorize(require_write=False)
+        meta = self._sheets.get_workbook_metadata(spreadsheet_id, require_write=False)
         sheet = next((s for s in meta.sheets if s.gid == gid), None)
         if sheet is None:
             # Use the workbook title, not spreadsheet_id: the raw id uniquely
@@ -255,7 +266,9 @@ class GSheetConnectionService:
                 f"gid={gid} not found in workbook {meta.title!r}"
             )
 
-        rows = self._sheets.read_sheet_values(spreadsheet_id, sheet.name)
+        rows = self._sheets.read_sheet_values(
+            spreadsheet_id, sheet.name, require_write=False
+        )
         if not rows:
             raise GSheetError("Sheet has no data")
 
@@ -530,16 +543,64 @@ class GSheetConnectionService:
             self._repo.soft_disconnect(connection_id, actor=actor)
             return
 
+        self.purge_confirmed(connection_id, verify=None, actor=actor)
+
+    def _raw_before_state(self, conn: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+        """Return every raw row owned by one connection in canonical order."""
+        if conn["adapter"] == "seed":
+            cursor = self._db.execute(
+                f"""
+                SELECT *
+                FROM {GSHEET_SEEDS.full_name}
+                WHERE connection_id = ?
+                ORDER BY row_hash
+                """,  # noqa: S608  # TableRef + parameterized value
+                [conn["connection_id"]],
+            )
+        else:
+            cursor = self._db.execute(
+                f"""
+                SELECT *
+                FROM {TABULAR_TRANSACTIONS.full_name}
+                WHERE source_origin = ?
+                ORDER BY transaction_id, account_id, source_file
+                """,  # noqa: S608  # TableRef + parameterized value
+                [conn["connection_id"]],
+            )
+        columns = [str(column[0]) for column in cursor.description]
+        return tuple(dict(zip(columns, row, strict=True)) for row in cursor.fetchall())
+
+    def plan_purge(self, connection_id: str) -> GSheetPurgePlan:
+        """Snapshot the complete connection/raw before-state for confirmation."""
         conn = self._repo.get(connection_id)
         if conn is None:
             raise GSheetError(f"Unknown connection: {connection_id}")
+        raw_rows = self._raw_before_state(conn)
+        return GSheetPurgePlan(
+            connection_id=connection_id,
+            connection_before_state=conn,
+            raw_before_state=raw_rows,
+            blast_radius={
+                "connections": 1,
+                "raw_rows": len(raw_rows),
+                "views": int(conn["adapter"] == "seed" and bool(conn.get("alias"))),
+            },
+        )
 
-        # Atomic purge: DROP VIEW + raw DELETE + audited row DELETE all run
-        # inside one transaction. A failure at any step rolls back the
-        # whole purge so the connection row never desyncs from its raw
-        # data. repo.delete cooperates via in_outer_txn=True.
+    def purge_confirmed(
+        self,
+        connection_id: str,
+        *,
+        verify: Callable[[GSheetPurgePlan], None] | None,
+        actor: str = "cli",
+    ) -> None:
+        """Revalidate a purge plan and apply it inside one transaction."""
         self._db.begin()
         try:
+            live_plan = self.plan_purge(connection_id)
+            if verify is not None:
+                verify(live_plan)
+            conn = live_plan.connection_before_state
             if conn["adapter"] == "seed":
                 alias = conn.get("alias")
                 if alias:
@@ -599,7 +660,7 @@ class GSheetConnectionService:
         # Resolve the current tab title by gid — sheet_name on the stored row
         # may be stale if the user renamed the tab between connect and reconnect.
         spreadsheet_id = existing["spreadsheet_id"]
-        meta = self._sheets.get_workbook_metadata(spreadsheet_id)
+        meta = self._sheets.get_workbook_metadata(spreadsheet_id, require_write=False)
         sheet = next((s for s in meta.sheets if s.gid == existing["sheet_gid"]), None)
         if sheet is None:
             # Workbook title, not spreadsheet_id — see connect() for why the
@@ -608,7 +669,9 @@ class GSheetConnectionService:
                 f"gid={existing['sheet_gid']} no longer present in workbook "
                 f"{meta.title!r}; the tab was deleted"
             )
-        rows = self._sheets.read_sheet_values(spreadsheet_id, sheet.name)
+        rows = self._sheets.read_sheet_values(
+            spreadsheet_id, sheet.name, require_write=False
+        )
         if not rows:
             raise GSheetError("Sheet has no data")
         df = rows_to_df(rows)

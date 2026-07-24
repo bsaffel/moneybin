@@ -11,6 +11,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.consent import ConsentMode
 from moneybin.privacy.log import read_privacy_events
+from moneybin.repositories.consent_repo import ConsentRepo
 from moneybin.services.consent_service import ConsentService
 
 
@@ -227,3 +228,69 @@ def test_service_grant_one_time_mode_persists_until_revoked(db: Database) -> Non
     # Still active across repeated reads — no auto-revocation on access.
     assert svc.status().active_grants[0].consent_mode is ConsentMode.ONE_TIME
     assert len(svc.status().active_grants) == 1
+
+
+def test_consent_target_batch_rolls_back_late_failure(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A late revoke failure rolls back rows, audits, and privacy side effects."""
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir",
+        lambda: tmp_path,
+    )
+    svc = ConsentService(db)
+    for category in ("mcp-data-sharing", "matching-overview"):
+        svc.grant_consent(
+            feature_category=category,
+            backend="anthropic",
+            consent_mode=ConsentMode.PERSISTENT,
+            actor="test",
+        )
+    plan = svc.plan_targets(
+        ["mcp-data-sharing", "matching-overview"],
+        state="revoked",
+        backend="anthropic",
+    )
+    original = ConsentRepo.revoke
+    calls = 0
+
+    def fail_second(
+        repo: ConsentRepo,
+        *,
+        feature_category: str,
+        backend: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("late consent failure")
+        return original(
+            repo,
+            feature_category=feature_category,
+            backend=backend,
+            actor=actor,
+            parent_audit_id=parent_audit_id,
+            in_outer_txn=in_outer_txn,
+        )
+
+    monkeypatch.setattr(ConsentRepo, "revoke", fail_second)
+    with pytest.raises(RuntimeError, match="late consent failure"):
+        svc.apply_targets(
+            plan,
+            actor="mcp.privacy_consent_set",
+            operation_id="op_task6_consent",
+        )
+
+    assert {grant.feature_category for grant in svc.status().active_grants} == {
+        "mcp-data-sharing",
+        "matching-overview",
+    }
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'consent.revoke'"
+    ).fetchone() == (0,)
+    assert read_privacy_events({"action": "consent.revoke"}, max_rows=10) == []

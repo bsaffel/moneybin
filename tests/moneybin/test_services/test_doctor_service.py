@@ -732,11 +732,12 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + dedup_reconciliation + categorization + 27 app.* integrity
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 28 app.* integrity
     # checks (audit coverage for user_categories / category_overrides /
     # gsheet_connections / user_merchants / categorization_rules / proposed_rules /
     # transaction_categories / account_settings / balance_assertions / budgets /
-    # tabular_formats / match_decisions / imports / pdf_formats / securities /
+    # tabular_formats / match_decisions / imports / import_previews / pdf_formats /
+    # securities /
     # lot_selections + user_categories uniqueness + user_merchants orphans +
     # proposed_rules->rule FK + transaction_categories->fct FK +
     # account_settings->dim_accounts FK + balance_assertions->dim_accounts FK +
@@ -748,7 +749,7 @@ def test_run_all_returns_expected_invariants(
     # rejects, opening-lot review, unmodeled legs, holdings divergence,
     # source overlap, unresolved securities, conflicting security refs,
     # unreported holdings, phantom holdings).
-    assert len(report.invariants) == 45
+    assert len(report.invariants) == 46
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -764,6 +765,7 @@ def test_run_all_returns_expected_invariants(
     assert "app_audit_coverage_tabular_formats" in names
     assert "app_audit_coverage_match_decisions" in names
     assert "app_audit_coverage_imports" in names
+    assert "app_audit_coverage_import_previews" in names
     assert "app_audit_coverage_securities" in names
     assert "app_audit_coverage_lot_selections" in names
     assert "app_user_categories_uniqueness" in names
@@ -1528,12 +1530,12 @@ def test_unreported_holdings_only_considers_newest_snapshot(
 def _create_phantom_holdings_tables(db: Database) -> None:
     """Create the staging + core tables ``investment_phantom_holdings`` reads.
 
-    The check keys its stale-item guard on the ITEM (``source_origin``), so it
-    reads BOTH Plaid investment staging views: an account whose item reported
-    but which holds nothing is absent from the newest holdings snapshot and is
-    only discoverable through the transactions view. "Which snapshot is newest"
-    comes from the snapshot RECEIPTS view, never from the presence of holdings
-    rows — see ``_create_snapshot_receipts_table``.
+    The check reads ``prep.stg_plaid__investment_holdings`` (its position-level
+    ``ever_reported_positions`` gate) and ``core.dim_holdings``
+    (``provider_reported_quantity``). The receipts and transactions tables are created
+    here too — the check no longer reads them (decision 1 replaced the account-level
+    coverage scope with the position-level gate), but several tests still seed them to
+    document the coverage shapes the gate now correctly ignores.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
@@ -1556,20 +1558,22 @@ def _create_phantom_holdings_tables(db: Database) -> None:
 
 
 @pytest.mark.unit
-def test_phantom_holdings_warn_when_account_in_snapshot_but_position_isnt(
+def test_phantom_holdings_pass_when_position_never_reported_in_live_account(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A lot MoneyBin holds that the account's live snapshot omits must surface.
+    """A hand-tracked position in a broker-linked account is not a phantom.
 
-    Reproduces the phantom-position gap: an option assignment (or any
-    unmodeled leg) disposes of shares with no ledger quantity to close the
-    lot, so ``core.dim_holdings`` still shows it open while the broker's
-    fresh snapshot — which DOES report other positions for this account —
-    no longer reports this one.
+    The account is live and synced (its newest snapshot reports sec_other), and
+    sec_manual is an open lot the snapshot omits (provider_reported_quantity NULL) —
+    the exact shape ``test_phantom_holdings_warn_when_account_fully_liquidated`` flags.
+    The one difference: the broker has NEVER carried sec_manual in any holdings
+    snapshot, so it is a manual holding, not a phantom, and flagging it would tell the
+    user their share count is wrong when it is not. This is the adversarial partner to
+    that test, isolating the ``ever_reported_positions`` gate.
     """
     _create_phantom_holdings_tables(db)
-    # acc1's newest snapshot reports sec_other — the account IS live and
-    # synced — but says nothing about sec_phantom.
+    # acc1's newest snapshot reports sec_other — the account IS live and synced — but
+    # says nothing about sec_manual, which never appears in any holdings snapshot.
     db.execute(
         "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
         "('acc1', 'sec_other', 'plaid_sec_other', 5, 'item1', 'sync_1', "
@@ -1578,29 +1582,27 @@ def test_phantom_holdings_warn_when_account_in_snapshot_but_position_isnt(
     _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
     db.execute(
         "INSERT INTO core.dim_holdings VALUES "
-        "('acc1', 'sec_phantom', NULL), "
+        "('acc1', 'sec_manual', NULL), "
         "('acc1', 'sec_other', 5)"
     )
     result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
-    assert result.status == "warn"
-    # sec_other's provider_reported_quantity is populated (reported) — not
-    # flagged. sec_phantom's is NULL while the account is live — flagged.
-    assert result.affected_ids == ["acc1:sec_phantom"]
+    assert result.status == "pass"
+    assert result.affected_ids == []
 
 
 @pytest.mark.unit
-def test_phantom_holdings_warn_when_account_fully_liquidated(
+def test_phantom_holdings_warn_when_once_reported_position_dropped(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The worst phantom — an account the broker now reports as holding NOTHING.
+    """A genuine phantom: the broker reported the position, then a newer pull dropped it.
 
-    Plaid returns no holding entries for an account with no positions, so a
-    fully-liquidated account has ZERO rows in the item's newest snapshot while
-    MoneyBin still shows every lot open (the sells were option
-    assignment/exercise rows staging maps to NULL-quantity 'other'). An
-    account-keyed stale-item guard filters that account out entirely and
-    reports `pass` on a 100%-overstated account. The guard must key on whether
-    the ITEM reported, not whether the ACCOUNT did.
+    The prior snapshot (sync_1) carried sec_gone; the newest (sync_2) reports acc2 only,
+    so sec_gone is absent from the current claim (provider_reported_quantity NULL) while
+    MoneyBin still holds the lot open — the sells were option assignment/exercise rows
+    staging maps to NULL-quantity 'other'. Because the broker ONCE reported sec_gone
+    (``ever_reported_positions``), its disappearance is a real overstatement, not a
+    manual holding, and it surfaces. Contrast
+    ``test_phantom_holdings_pass_when_position_never_reported_in_live_account``.
     """
     _create_phantom_holdings_tables(db)
     # item1 covers acc1 and acc2. Its newest snapshot (sync_2) reports acc2
@@ -1632,15 +1634,17 @@ def test_phantom_holdings_warn_when_account_fully_liquidated(
 
 
 @pytest.mark.unit
-def test_phantom_holdings_warn_when_account_never_in_any_snapshot_but_item_reported(
+def test_phantom_holdings_pass_when_account_only_in_transactions(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An account known only from the transactions view still counts as reported.
+    """An account known only from the transactions view is not a broker-reported holding.
 
-    The item delivered a live snapshot (for a sibling account), so its
-    accounts are covered by a live pull. An account that has never appeared in
-    ANY holdings snapshot while MoneyBin holds open lots for it is a phantom,
-    not a stale item.
+    The item delivered a live snapshot for a sibling account (acc2), but acc1 appears
+    only in the transactions view — the broker has never carried acc1's sec_never in a
+    holdings snapshot. Under the position-level gate that is a never-reported holding,
+    not a phantom. The old account-level coverage that treated any transactions-known
+    account as reported is exactly what decision 1 (``dim_holdings.sql``'s
+    ``ever_reported_positions``) removed, because it flagged manual positions.
     """
     _create_phantom_holdings_tables(db)
     db.execute(
@@ -1655,29 +1659,27 @@ def test_phantom_holdings_warn_when_account_never_in_any_snapshot_but_item_repor
     )
     db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_never', NULL)")
     result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
-    assert result.status == "warn"
-    assert result.affected_ids == ["acc1:sec_never"]
+    assert result.status == "pass"
+    assert result.affected_ids == []
 
 
 @pytest.mark.unit
-def test_phantom_holdings_warn_when_item_reports_zero_holdings(
+def test_phantom_holdings_pass_when_item_only_ever_reported_zero_holdings(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The residual blind spot: an item whose pull returns NO holdings at all.
+    """A position the broker never once carried in a holdings snapshot is not flagged.
 
-    Every account at the broker is liquidated, so Plaid returns an empty
-    holdings array and the loader writes ZERO holdings rows for that pull.
-    A newest-snapshot derived from the presence of holdings ROWS therefore
-    cannot see this pull at all — the item either drops out of the guard
-    entirely (no rows ever) or silently keeps an earlier NON-EMPTY snapshot.
-    Either way the largest possible net-worth overstatement — a broker where
-    MoneyBin claims every position and the broker claims none — reads as
-    `pass`.
+    item1's only pull came back empty (``holdings_count = 0``, no holdings rows), so
+    sec_gone / sec_also_gone never appear in ``prep.stg_plaid__investment_holdings`` —
+    the accounts are known only through the transactions view. Under the position-level
+    gate these are never-reported holdings, not phantoms, so they do not surface.
 
-    The snapshot RECEIPT is the missing evidence: item1 reported (receipt for
-    sync_1), and what it reported was nothing (``holdings_count = 0``). Its
-    accounts are in scope, and every lot MoneyBin still holds for them is a
-    phantom.
+    This is the accepted cost of the narrow gate (decision 1): a position bought and
+    disposed via an unmodeled leg entirely between holdings pulls — never once in a
+    snapshot — is no longer flagged here, matching ``dim_holdings.sql`` (which values it
+    rather than withholding). The far more common shape — the broker reported the
+    position, then dropped it — still surfaces
+    (``test_phantom_holdings_warn_when_once_reported_position_dropped``).
     """
     _create_phantom_holdings_tables(db)
     # No holdings rows for item1 in ANY snapshot — the pull came back empty.
@@ -1693,23 +1695,20 @@ def test_phantom_holdings_warn_when_item_reports_zero_holdings(
         "('acc2', 'sec_also_gone', NULL)"
     )
     result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
-    assert result.status == "warn"
-    assert result.affected_ids == ["acc1:sec_gone", "acc2:sec_also_gone"]
+    assert result.status == "pass"
+    assert result.affected_ids == []
 
 
 @pytest.mark.unit
-def test_phantom_holdings_pass_when_item_has_no_receipt(
+def test_phantom_holdings_pass_when_only_a_sibling_position_is_reported(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No receipt = the item never reported. Absence of evidence, not evidence of absence.
+    """A never-reported position is not flagged even when the broker reports OTHER holdings.
 
-    The twin of ``test_phantom_holdings_warn_when_item_reports_zero_holdings``,
-    and the reason the receipt exists rather than a bare "treat every missing
-    snapshot as empty" rule. item1 has holdings rows from an earlier pull but
-    NO receipt for any pull — it never reported under the receipt regime (a
-    disconnected item, or rows that predate the receipt). Trading the false
-    negative for a false positive here would flag every position at a
-    disconnected broker as sold.
+    The broker carried sec_held for acc1, so the account is covered and that position is
+    ever_reported — but the open lot MoneyBin holds is sec_phantom, which never appeared
+    in any holdings snapshot. The gate is position-specific: a sibling reported position
+    does not make an unreported one a phantom.
     """
     _create_phantom_holdings_tables(db)
     db.execute(
@@ -1728,14 +1727,15 @@ def test_phantom_holdings_pass_when_item_has_no_receipt(
 
 
 @pytest.mark.unit
-def test_phantom_holdings_pass_when_item_stale_or_absent(
+def test_phantom_holdings_pass_when_position_item_never_reported_holdings(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A held lot must NOT be flagged when its ITEM never delivered a snapshot.
+    """A held lot whose item never delivered a holdings snapshot is not a phantom.
 
-    A stale/disconnected item whose snapshot never arrived would otherwise
-    make every position on the account look like a phantom — the item-liveness
-    guard exists precisely to rule this out.
+    Only item2 ever reported holdings (for acc2); acc1's item1 has transactions but
+    never a holdings snapshot, so acc1's sec_x has never been broker-reported. Under the
+    position-level gate that is a never-reported holding, not a phantom — the item-
+    liveness distinction the old account-level scope drew no longer changes the outcome.
     """
     _create_phantom_holdings_tables(db)
     # Only item2 ever delivered a snapshot. acc1 belongs to item1, which has

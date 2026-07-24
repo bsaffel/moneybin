@@ -68,6 +68,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_user_merchants.sql",
     "app_categorization_rules.sql",
     "app_transaction_categories.sql",
+    "app_categorization_decisions.sql",
     "app_budgets.sql",
     "app_transaction_notes.sql",
     "app_metrics.sql",
@@ -88,7 +89,10 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_transaction_tags.sql",
     "app_transaction_splits.sql",
     "app_imports.sql",
+    "app_import_previews.sql",
+    "raw_import_preview_snapshots.sql",
     "app_gsheet_connections.sql",
+    "app_export_destinations.sql",
     "app_ai_consent_grants.sql",
     "raw_gsheet_seeds.sql",
     "raw_pdf_seeds.sql",
@@ -98,6 +102,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_lot_selections.sql",
     "app_security_links.sql",
     "app_security_link_decisions.sql",
+    "raw_security_prices.sql",
 ]
 
 

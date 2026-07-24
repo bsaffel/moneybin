@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from decimal import Decimal
 
 from moneybin.database import Database
 from moneybin.privacy.payloads.networth import (
@@ -39,7 +38,7 @@ class NetworthService:
     ) -> NetWorthSnapshotPayload:
         """Latest net worth snapshot, optionally as-of a date.
 
-        Returns a zero-snapshot if no reports.net_worth rows exist.
+        Returns explicit null position fields when no row exists on/before the date.
         """
         as_of_clause = ""
         params: list[object] = []
@@ -56,10 +55,10 @@ class NetworthService:
         row = self._db.execute(sql, params).fetchone()
         if row is None:
             return NetWorthSnapshotPayload(
-                balance_date=date.today(),
-                net_worth=Decimal("0"),
-                total_assets=Decimal("0"),
-                total_liabilities=Decimal("0"),
+                balance_date=None,
+                net_worth=None,
+                total_assets=None,
+                total_liabilities=None,
                 account_count=0,
                 per_account=[],
             )

@@ -27,7 +27,9 @@ paths: ["src/moneybin/**/*.py", "**/*.sql"]
   db.execute(f"SELECT * FROM {safe_schema}.{safe_table} WHERE id = ?", [record_id])
 
   # CORRECT — compile-time allowlist
-  if table_name not in TableRef.ALL:
+  from moneybin.tables import INTERFACE_TABLES
+
+  if table_name not in {table.full_name for table in INTERFACE_TABLES}:
       raise ValueError(f"Unknown table: {table_name}")
   ```
   Never use bare f-string interpolation for identifiers, even after validation — always double-quote as defense in depth.

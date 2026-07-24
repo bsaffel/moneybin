@@ -104,17 +104,7 @@ class TestCurationToolRegistration:
         srv = FastMCP("test")
         register_curation_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        assert {
-            "transactions_create",
-            "transactions_notes_add",
-            "transactions_notes_edit",
-            "transactions_notes_delete",
-            "transactions_tags_set",
-            "transactions_tags_rename",
-            "transactions_splits_set",
-            "import_labels_set",
-            "system_audit",
-        } <= names
+        assert names == {"transactions_create"}
 
 
 # ---------- transactions_create ----------
@@ -178,17 +168,15 @@ class TestNotesLifecycle:
         _seed_transaction("TXN_NOTE_1")
 
         added = (
-            await transactions_notes_add(transaction_id="TXN_NOTE_1", text="hello")
+            transactions_notes_add(transaction_id="TXN_NOTE_1", text="hello")
         ).to_dict()
         note_id = added["data"]["note_id"]
         assert added["data"]["text"] == "hello"
 
-        edited = (
-            await transactions_notes_edit(note_id=note_id, text="world")
-        ).to_dict()
+        edited = (transactions_notes_edit(note_id=note_id, text="world")).to_dict()
         assert edited["data"]["text"] == "world"
 
-        deleted = (await transactions_notes_delete(note_id=note_id)).to_dict()
+        deleted = (transactions_notes_delete(note_id=note_id)).to_dict()
         assert deleted["data"] == {"note_id": note_id}
 
 
@@ -203,17 +191,17 @@ class TestTagsSetAndRename:
         _seed_transaction("TXN_TAG_1")
 
         first = (
-            await transactions_tags_set(transaction_id="TXN_TAG_1", tags=["a", "b"])
+            transactions_tags_set(transaction_id="TXN_TAG_1", tags=["a", "b"])
         ).to_dict()
         assert sorted(first["data"]["tags"]) == ["a", "b"]
 
         second = (
-            await transactions_tags_set(transaction_id="TXN_TAG_1", tags=["b", "c"])
+            transactions_tags_set(transaction_id="TXN_TAG_1", tags=["b", "c"])
         ).to_dict()
         assert sorted(second["data"]["tags"]) == ["b", "c"]
 
         third = (
-            await transactions_tags_set(transaction_id="TXN_TAG_1", tags=["b", "c"])
+            transactions_tags_set(transaction_id="TXN_TAG_1", tags=["b", "c"])
         ).to_dict()
         assert sorted(third["data"]["tags"]) == ["b", "c"]
 
@@ -233,10 +221,10 @@ class TestTagsSetAndRename:
     async def test_rename_tag(self, mcp_db: Path) -> None:
         _seed_transaction("TXN_REN_1")
         _seed_transaction("TXN_REN_2")
-        await transactions_tags_set(transaction_id="TXN_REN_1", tags=["old"])
-        await transactions_tags_set(transaction_id="TXN_REN_2", tags=["old"])
+        transactions_tags_set(transaction_id="TXN_REN_1", tags=["old"])
+        transactions_tags_set(transaction_id="TXN_REN_2", tags=["old"])
 
-        env = (await transactions_tags_rename(old_tag="old", new_tag="new")).to_dict()
+        env = (transactions_tags_rename(old_tag="old", new_tag="new")).to_dict()
         assert env["data"]["row_count"] == 2
         assert env["data"]["parent_audit_id"]
 
@@ -252,7 +240,7 @@ class TestSplitsSet:
         _seed_transaction("TXN_SPLIT_1", amount="-30.00")
 
         env = (
-            await transactions_splits_set(
+            transactions_splits_set(
                 transaction_id="TXN_SPLIT_1",
                 splits=[
                     {"amount": "-10.00", "category": "Food", "note": "lunch"},
@@ -277,13 +265,13 @@ class TestImportLabelsSet:
         import_id = _seed_import()
 
         first = (
-            await import_labels_set(import_id=import_id, labels=["q1", "needs-review"])
+            import_labels_set(import_id=import_id, labels=["q1", "needs-review"])
         ).to_dict()
         assert sorted(first["data"]["labels"]) == ["needs-review", "q1"]
 
         # Declarative replace.
         second = (
-            await import_labels_set(import_id=import_id, labels=["needs-review"])
+            import_labels_set(import_id=import_id, labels=["needs-review"])
         ).to_dict()
         assert second["data"]["labels"] == ["needs-review"]
 
@@ -297,14 +285,11 @@ class TestSystemAudit:
     @pytest.mark.unit
     async def test_filters_by_action_pattern(self, mcp_db: Path) -> None:
         _seed_transaction("TXN_AUDIT_1")
-        await transactions_tags_set(transaction_id="TXN_AUDIT_1", tags=["alpha"])
-        await transactions_notes_add(transaction_id="TXN_AUDIT_1", text="hello")
+        transactions_tags_set(transaction_id="TXN_AUDIT_1", tags=["alpha"])
+        transactions_notes_add(transaction_id="TXN_AUDIT_1", text="hello")
 
-        env = (
-            await system_audit(filters={"action_pattern": "tag.%"}, limit=50)
-        ).to_dict()
-        # SystemAuditEventPayload has TXN_AMOUNT fields → Tier.HIGH derived sensitivity
-        assert env["summary"]["sensitivity"] == "high"
+        env = (system_audit(filters={"action_pattern": "tag.%"}, limit=50)).to_dict()
+        assert env["summary"]["sensitivity"] == "low"
         events: list[dict[str, Any]] = env["data"]["events"]
         assert len(events) >= 1
         assert all(str(e["action"]).startswith("tag.") for e in events)
@@ -314,11 +299,9 @@ class TestSystemAudit:
         # MCP surface must carry operation_id like the CLI to_dict path — one
         # MCP call's writes share one op_<uuid4_hex> (REC-PR1 parity).
         _seed_transaction("TXN_AUDIT_OP")
-        await transactions_tags_set(transaction_id="TXN_AUDIT_OP", tags=["beta"])
+        transactions_tags_set(transaction_id="TXN_AUDIT_OP", tags=["beta"])
 
-        env = (
-            await system_audit(filters={"action_pattern": "tag.%"}, limit=50)
-        ).to_dict()
+        env = (system_audit(filters={"action_pattern": "tag.%"}, limit=50)).to_dict()
         events: list[dict[str, Any]] = env["data"]["events"]
         assert len(events) >= 1
         assert all(

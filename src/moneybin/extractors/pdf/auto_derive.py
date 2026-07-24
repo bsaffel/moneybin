@@ -95,8 +95,14 @@ _ANY_DATE_RE = _re.compile(
 # security posture established in recipe.py + metadata.py for any pattern
 # run against untrusted PDF cell text. (Req 9b dynamic bound)
 _NUMBER_PATTERN_TIMEOUT_SEC = 0.05  # 50 ms — these patterns run per sample cell
-_US_NUMBER_RE = _re.compile(r"^-?\$?(\d{1,3}(,\d{3})*|\d+)\.\d{2}$")
-_EUROPEAN_NUMBER_RE = _re.compile(r"^-?(\d{1,3}(\.\d{3})*|\d+),\d{2}$")
+# The integer part is OPTIONAL: real Chase statements print a sub-dollar fee as
+# ".39" with no leading zero. Requiring a digit before the separator made that
+# cell read as non-money, so the fee row was skipped by row-shape collection and
+# dropped by execute_recipe's field match — the extracted total then missed the
+# fee and failed +/-1c reconciliation, escalating the statement to seed.
+# The optional group still must START with a digit, so ",.39" stays rejected.
+_US_NUMBER_RE = _re.compile(r"^-?\$?(\d{1,3}(,\d{3})*|\d+)?\.\d{2}$")
+_EUROPEAN_NUMBER_RE = _re.compile(r"^-?(\d{1,3}(\.\d{3})*|\d+)?,\d{2}$")
 
 
 def _matches_us(sample: str) -> bool:
@@ -1248,8 +1254,12 @@ def _build_fields(
     number_format: Literal["us", "european"],
 ) -> list[FieldExtraction]:
     """Build one FieldExtraction per column."""
+    # Integer part optional (must start with a digit when present) so a sub-dollar
+    # fee printed as ".39" survives execute_recipe's fullmatch — see _US_NUMBER_RE.
     amount_pattern = (
-        r"-?\$?[\d,]+\.\d{2}" if number_format == "us" else r"-?[\d.]+,\d{2}"
+        r"-?\$?(?:\d[\d,]*)?\.\d{2}"
+        if number_format == "us"
+        else r"-?(?:\d[\d.]*)?,\d{2}"
     )
     result: list[FieldExtraction] = []
     for header in headers:

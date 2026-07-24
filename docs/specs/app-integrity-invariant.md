@@ -4,7 +4,7 @@
 
 ready
 
-> **Drift note (2026-05-17).** Bypass-map line numbers below reference the single-file `services/categorization_service.py` at HEAD `f13f3c7`. PR #155 (post-spec) split that module into a facade + collaborators under `src/moneybin/services/categorization/` (`__init__.py`, `_shared.py`, `applier.py`, `assist.py`, `matcher.py`, `orchestrator.py`, `queries.py`). The protected-tables list (Req 6), repository contract (Req 2–5), lint rule (Req 8), doctor invariants (Req 9), and PR ordering (Req 10) are unaffected — only the source file the implementation PRs will edit changes. Each PR-by-PR mutation-site call-out below should be re-located against the post-split files at implementation time; the mutations themselves (and their target tables) are unchanged. PR #166 (`categories_delete` cascade) and PR #174 (`category_id` FK migration) also landed post-spec; both touch the same `categorization_service` paths but do not change the bypass-map shape.
+> **Drift note (2026-05-17).** Bypass-map line numbers below reference the single-file `services/categorization_service.py` at HEAD `f13f3c7`. PR #155 (post-spec) split that module into a facade + collaborators under `src/moneybin/services/categorization/` (`__init__.py`, `_shared.py`, `applier.py`, `assist.py`, `matcher.py`, `orchestrator.py`, `queries.py`). The protected-tables list (Req 6), repository contract (Req 2–5), lint rule (Req 8), doctor invariants (Req 9), and PR ordering (Req 10) are unaffected — only the source file the implementation PRs will edit changes. Each PR-by-PR mutation-site call-out below should be re-located against the post-split files at implementation time; the mutations themselves (and their target tables) are unchanged. PR #166 (the category-delete cascade) and PR #174 (`category_id` FK migration) also landed post-spec; both touch the same `categorization_service` paths but do not change the bypass-map shape.
 
 > **Batch B reconciliation (2026-05-22).** Implementing PRs 3–5 (`UserMerchantsRepo`, `CategorizationRulesRepo`, `ProposedRulesRepo`, `TransactionCategoriesRepo`) surfaced four spec↔code drifts, resolved as follows:
 > - **`app.rule_deactivations` was dropped in migration V018** (post-spec). `RuleDeactivationsRepo` and its FK check are obsolete and removed from scope; the override-driven deactivation already emits an audit row via the `categorization_rules` repo (see below). Req 6's row and PR 4's bullet are struck through.
@@ -18,7 +18,7 @@ ready
 > - **`account_service` already had a non-audited `AccountSettingsRepository` data-access class** (load/upsert/delete) — a near-namesake of the new `AccountSettingsRepo`. Two repository-shaped classes for one table is the coherence smell Invariant 10 exists to retire, so the old class was removed: its `load` (a read) folded into `AccountService` directly (matching how `list_accounts`/`get_account`/`summary` already read), and its `upsert`/`delete` migrated to the audited `AccountSettingsRepo`. Its `delete` had **zero production callers** (test-only) but is retained on the repo per Req 6's protected-mutation contract.
 > - **`app.balance_assertions` has a composite primary key** `(account_id, assertion_date)`, but `audit_log.target_id` and the `_run_app_audit_coverage` helper assume a single key. The repo emits a composite `target_id` of `"{account_id}|{assertion_date ISO}"`; the coverage helper gained an optional `pk_expr` parameter (same generalize-the-helper precedent as Batch B's `updated_col`) so the doctor projects the matching composite key.
 > - **`app.budgets.category_id` is nullable** (NULL for orphaned legacy rows from V014's dual-write backfill), so the FK doctor check skips NULLs (`IS NOT NULL` guard, mirroring `_run_proposed_rules_rule_fk`).
-> - **The CLI `budget set` command is a stub** (`_not_implemented`); only the MCP `budget_set` tool calls `BudgetService.set_budget`, so `actor` is threaded from MCP only. The deprecated `AccountService` delegates (`rename`/`archive`/`unarchive`/`set_include_in_net_worth`) are test-only; they default `actor="system"` (the `MatchApplier.add_merchant` precedent for programmatic callers) while the canonical `settings_update` requires an explicit `actor`.
+> - **The CLI `budget set` command is a stub** (`_not_implemented`), and no budget mutation is admitted to the current MCP registry. `BudgetService.set_budget` remains an internal service boundary. The deprecated `AccountService` delegates (`rename`/`archive`/`unarchive`/`set_include_in_net_worth`) are test-only; they default `actor="system"` (the `MatchApplier.add_merchant` precedent for programmatic callers) while the canonical `settings_update` requires an explicit `actor`.
 > - **Audit actions follow the upsert `.set` verb, not `.insert`.** `account_settings.set`, `balance_assertion.set`, and `budget.set` (insert + update branches) all use `.set` — matching the existing `category.set` upsert taxonomy — with `.delete` for removals. (The earlier `balance_assertion.insert` working-name was dropped: the write is an `ON CONFLICT DO UPDATE` upsert, so `.set` is the accurate, coherent verb.)
 
 > **Batch D reconciliation (2026-05-22).** Implementing PRs 7, 8, 11 (the "edge" writers outside `services/`) surfaced these spec↔code drifts, resolved as follows:
@@ -150,7 +150,11 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 12. **No schema changes in Phase 1.** `app.audit_log` already has `before_value`, `after_value`, and `parent_audit_id` columns. The reversibility contract uses what's there. Phase 2 will add `revert_of_audit_id`; that schema migration ships with Phase 2. See [Data Model](#data-model).
 
-13. **Phase 2 (out of scope for this spec).** The `UndoService`, `revert(audit_event)` methods on each repository, the `moneybin undo` CLI group, and the `undo_*` MCP surface are explicitly deferred. The spec calls out the forward-compat contract Phase 1 must honor so that Phase 2 is a strictly additive feature.
+13. **Phase 2 (out of scope for this spec).** The undo consumer remained
+    deferred here and later shipped as `system_audit_undo` plus
+    `moneybin system audit undo`. This spec reserves no separate MCP family or
+    top-level CLI group. The forward-compat contract keeps that consumer
+    additive.
 
 ## Data Model
 
@@ -297,7 +301,11 @@ Per `.claude/rules/testing.md` test layers.
 
 ## Out of Scope
 
-- **Phase 2 — the undo consumer.** No `UndoService`, no `repository.revert(audit_event)`, no `moneybin undo {list,apply,session}` CLI surface, no `undo_*` MCP tools. The forward-compat data (full `before_value`, threaded `parent_audit_id`) is the entire Phase 1 contribution toward Phase 2.
+- **Phase 2 — the undo consumer.** The consumer implementation stayed outside
+  this spec. It later shipped through `system_audit_undo` and
+  `moneybin system audit undo`, without a separately named MCP family or
+  top-level CLI group. The forward-compat data (full `before_value`, threaded
+  `parent_audit_id`) is the entire Phase 1 contribution toward Phase 2.
 - **Cross-database / multi-tenant variants.** Phase 1 assumes the single-process, single-profile model documented in `architecture-shared-primitives.md` §Connection Lifecycle. Multi-tenant `app.*` integrity is an M3H concern and will revisit the contract then.
 - **Schema migration to add `revert_of_audit_id`.** Phase 2's schema change. Phase 1 does not write the column.
 - **Performance optimization of the doctor coverage check.** A sampled scan is fine for personal-volume profiles; if a future hosted-tier per-user check needs incremental verification, that's an M3H follow-up.

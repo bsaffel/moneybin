@@ -81,3 +81,23 @@ def test_rules_create_allow_broad_defaults_to_false(
     svc.create_rules.assert_called_once_with(
         [_EXPECTED_ITEM], reapply=False, actor="cli", allow_broad=False
     )
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_apply_runs_only_the_rules_engine(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """The rules subcommand must not apply merchants or provider-native data."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.categorize_run.return_value = {
+        "applied_by_method": {"rules": 2},
+        "total_applied": 2,
+    }
+
+    result = runner.invoke(app, ["rules", "apply"])
+
+    assert result.exit_code == 0, result.output
+    svc.categorize_run.assert_called_once_with(methods=["rules"])
+    svc.categorize_pending.assert_not_called()

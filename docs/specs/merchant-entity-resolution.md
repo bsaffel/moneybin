@@ -238,30 +238,32 @@ stays visible." Silent auto-action is allowed **only** on a near-certain signal:
   always surfaced to the review queue. This mirrors accounts auto-adopting only on
   strong signals and routing weak ones to review.
 
-## Decision 6 — Surfaces: `merchants_links_*` + the top-level `review` aggregator
+## Decision 6 — Surfaces: merchant-link review + the standard review projection
 
-Mirrors `accounts_links_*` (`account-identity-resolution.md` Decision 5). The
-object reviewed is "a proposed merchant link," so it lives under the `merchants`
-noun. CLI + MCP for parity (functional, not nominal).
+Mirrors the account-link contract in `account-identity-resolution.md` Decision 5.
+The object reviewed is "a proposed merchant link." CLI + MCP retain functional,
+not nominal, parity.
 
 | Operation | CLI | MCP |
 |---|---|---|
-| List pending link proposals (grouped by provider id) | `merchants links pending` | `merchants_links_pending` |
-| Resolve one — bind to a candidate, or mint **new** | `merchants links set <id> --into <merchant_id>` / `--new` | `merchants_links_set(decision_id, action="accept", target_merchant_id=…)` — the bind is gated by an MCP elicitation (no agent self-accept) / `merchants_links_set(decision_id, action="reject")` |
+| List pending link proposals (grouped by provider id) | `merchants links pending` | `reviews(kind="merchant_links", status="pending")` |
+| Resolve one — bind to a candidate, or mint **new** | `merchants links set <id> --into <merchant_id>` / `--new` | `identity_links_decide(decisions=[...])` — an accepted bind is gated by an MCP elicitation (no agent self-accept); reject decisions do not prompt |
 | Reverse a prior decision | `merchants links undo <id>` | (CLI-only, matching `matches undo` / `accounts links undo`) — **deferred to M1L** (audit-undo consumer) |
-| Decision history | `merchants links history` | `merchants_links_history` |
-| Run resolution / backfill over unbound ids | `merchants links run` | `merchants_links_run` |
+| Decision history | `merchants links history` | `reviews(kind="merchant_links", status="history")` |
+| Run resolution / backfill over unbound ids | `merchants links run` | `refresh_run(steps=["identity"])` |
 
-- **`…set(decision_id, target_merchant_id=Y)`** binds the id to merchant `Y`
-  (Y must equal the decision's own `candidate_merchant_id` — a confirming safety
-  check, consistent with the account-links twin); auto-rejects siblings.
-  `target_merchant_id=None` mints a new merchant for the id. Envelope,
-  sensitivity tier, and `actions[]` per [`mcp.md`](../../.claude/rules/mcp.md).
+- **Decision shape.** Each `identity_links_decide` item is
+  `{kind: "merchant_link", decision_id, decision, target_id}`.
+  `decision="accept"` requires `target_id`, which must equal the proposal's
+  `candidate_merchant_id`, then auto-rejects siblings. `decision="reject"`
+  forbids `target_id`. Envelope, sensitivity tier, and `actions[]` follow
+  [`mcp.md`](../../.claude/rules/mcp.md).
 - **Inline discovery.** Sync / categorization results report *"N merchant-link(s)
   need review"* and point at the queue — the least-astonishing discovery path.
-- **Aggregate into the top-level `review`.** `ReviewService` gains a
-  `merchant_links_pending` count so the domain-neutral `review` sweep (CLI
-  `moneybin review`, MCP `review`) can't silently miss the merchant-link backlog.
+- **Aggregate into the standard summary.** `ReviewService` gains a
+  `merchant_links_pending` count so the domain-neutral sweep (CLI
+  `moneybin review`, MCP `reviews(kind="summary")`) cannot silently miss the
+  merchant-link backlog.
 
 ## Decision 7 — Backfill + re-resolution: harvest, then forward; never flood the queue
 
@@ -328,7 +330,8 @@ Per [`observability.md`](observability.md) and `metrics/registry.py`, mirroring
 the `ACCOUNT_LINK_*` family:
 
 - `MERCHANT_LINK_REVIEW_PENDING` (gauge) — distinct provider ids with `pending`
-  decisions; refreshed at the resolver's propose pass and on `merchants_links_set`
+  decisions; refreshed at the resolver's propose pass and on
+  `identity_links_decide(decisions=[...])`
   accept/reject (kept honest in both directions, like
   `refresh_account_link_pending_gauge`).
 - `MERCHANT_RESOLUTION_OUTCOME_TOTAL` (counter, label `outcome ∈
@@ -366,7 +369,11 @@ the `ACCOUNT_LINK_*` family:
    uncategorized fetch.
 3. **Resolver ladder** — rung 0 in the merchant lookup; adopt / auto-bind / mint;
    bind-write through `MerchantLinksRepo`.
-4. **Review surface** — `merchants links *` CLI + `merchants_links_*` MCP;
+4. **Review surface** — `merchants links *` CLI plus separate
+   `reviews(kind="merchant_links", status="pending")` and
+   `reviews(kind="merchant_links", status="history")` reads in MCP. Accept with
+   `identity_links_decide(decisions=[{"kind":"merchant_link","decision_id":"<id>","decision":"accept","target_id":"<merchant_id>"}])`;
+   reject with `identity_links_decide(decisions=[{"kind":"merchant_link","decision_id":"<id>","decision":"reject"}])`;
    `ReviewService` aggregation; inline-discovery hints.
 5. **Backfill** — idempotent harvest + conflict detection in the resolver's first
    pass.

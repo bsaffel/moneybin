@@ -10,13 +10,14 @@ from moneybin import error_codes
 from moneybin.database import DatabaseKeyError
 from moneybin.errors import UserError
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope
 
 
 async def test_mcp_tool_converts_user_error_to_envelope() -> None:
     """A UserError raised inside a tool becomes an error envelope."""
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def failing_tool() -> ResponseEnvelope[Any]:
         raise UserError("not found", code="NOT_FOUND")
 
@@ -30,7 +31,7 @@ async def test_mcp_tool_converts_user_error_to_envelope() -> None:
 async def test_mcp_tool_converts_database_key_error_to_envelope() -> None:
     """DatabaseKeyError is a recognised classified exception."""
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def failing_tool() -> ResponseEnvelope[Any]:
         raise DatabaseKeyError("missing key")
 
@@ -47,7 +48,7 @@ async def test_mcp_tool_lets_unclassified_exceptions_propagate() -> None:
     server boundary.
     """
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def failing_tool() -> ResponseEnvelope[Any]:
         raise RuntimeError("internal detail leak")
 
@@ -62,7 +63,7 @@ async def test_mcp_tool_returns_response_envelope_directly() -> None:
     """
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def ok_tool() -> ResponseEnvelope[Any]:
         return build_envelope(data=[{"x": 1}])
 

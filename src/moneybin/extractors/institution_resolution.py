@@ -5,18 +5,39 @@ supply values present in the file. This module implements the resolution
 chain so the service layer can derive a canonical institution slug:
 
 1. parsed_ofx.fi.org (when populated)
-2. parsed_ofx.fi.fid → static lookup table
+2. parsed_ofx.fi.fid → the shared institution registry
 3. filename heuristic (regex against known patterns)
 4. CLI/MCP override (only when 1-3 yield nothing)
 5. interactive prompt (only when interactive=True)
 6. raise InstitutionResolutionError (non-interactive failure)
 
-The static FID lookup starts small and grows via PR contributions. Unknown
-FIDs fall through to step 3.
+The registry starts small and grows via PR contributions. Unknown FIDs fall
+through to step 3.
+
+The slug this returns becomes the import's ``source_origin``, which is an input
+to the ``transaction_id`` content hash, so changing what this function returns
+re-keys transactions. **Editing an existing slug** re-keys every transaction
+imported under it and needs a migration. **Adding a row** is safe only when no
+prior import of that FID resolved a *different* slug through a later step — a
+file that previously fell through to the filename heuristic (step 3) or a
+``--institution`` override (step 4) will start resolving via step 2 the moment
+its FID appears here, silently changing ``source_origin`` for that institution's
+next import. Check existing ``source_origin`` values for the FID before adding.
+
+Note also that step 1 wins over step 2, so a bank publishing
+any ``<ORG>`` never reaches the registry: Chase files resolve to ``b1``, not
+``chase``. That is deliberate and load-bearing, not an oversight — changing it
+would churn ledger identity. The registry's *display* half (used by
+core.dim_accounts via ``seeds.institutions``) is what fixes the user-visible
+"B1" without touching any of this.
 """
 
+import csv
+import io
 import logging
 import re
+from functools import lru_cache
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -27,15 +48,30 @@ class InstitutionResolutionError(ValueError):
     """Raised when institution cannot be derived in non-interactive mode."""
 
 
-# Static lookup: well-known OFX FID → institution slug.
-# Add entries here as PRs identify new institutions in the wild.
-_FID_TO_SLUG: dict[str, str] = {
-    "3000": "wells_fargo",
-    "10898": "chase",
-    "1601": "bank_of_america",
-    "10247": "citi",
-    "5950": "us_bank",
-}
+#: The shared institution registry, relative to the installed ``moneybin`` package.
+#: Ships via the ``sqlmesh/models/seeds/*.csv`` package-data glob.
+_REGISTRY_RESOURCE = "sqlmesh/models/seeds/institutions.csv"
+
+
+@lru_cache(maxsize=1)
+def _fid_to_slug() -> dict[str, str]:
+    """Well-known OFX FID → institution slug, from the shared registry.
+
+    Read from ``seeds/institutions.csv`` rather than a dict literal so the FID
+    mapping has exactly one home: the same CSV backs ``seeds.institutions``,
+    which core.dim_accounts joins to resolve a display name. Two copies would
+    drift the moment someone added a bank to one and not the other.
+
+    Loaded lazily and cached — the import path is already deferred for
+    cold-start, and this keeps a file read off module import.
+    """
+    raw = resources.files("moneybin").joinpath(_REGISTRY_RESOURCE).read_text()
+    return {
+        row["fid"]: row["slug"]
+        for row in csv.DictReader(io.StringIO(raw))
+        if row["fid"]
+    }
+
 
 # Filename heuristic: regex → slug.
 _FILENAME_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -78,10 +114,11 @@ def resolve_institution(
 
     # Step 2: <FI><FID> lookup.
     fid = _first_fid(parsed_ofx)
-    if fid and fid in _FID_TO_SLUG:
+    registry = _fid_to_slug()
+    if fid and fid in registry:
         if cli_override:
             logger.info(f"--institution argument ignored; using FID lookup for {fid!r}")
-        return _FID_TO_SLUG[fid]
+        return registry[fid]
 
     # Step 3: filename heuristic.
     for pattern, slug in _FILENAME_PATTERNS:

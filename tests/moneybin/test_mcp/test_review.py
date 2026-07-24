@@ -1,101 +1,2068 @@
-"""Tests for the top-level `review` MCP tool and deprecated `transactions_review` alias."""
+"""Tests for normalized review reads and decisions."""
 
 from __future__ import annotations
 
-import pytest
-from fastmcp import FastMCP
+import json
+import logging
+from collections.abc import Sequence
+from dataclasses import replace
+from datetime import UTC, datetime
+from typing import Any
+from unittest.mock import MagicMock, patch
 
-from moneybin.mcp.tools.transactions import (
-    register_transactions_tools,
-    review,
-    transactions_review,
+import pytest
+
+from moneybin import error_codes
+from moneybin.database import get_database
+from moneybin.mcp.tools import reviews as reviews_module
+from moneybin.mcp.tools.reviews import (
+    _identity_binding,  # pyright: ignore[reportPrivateUsage]
+    identity_links_decide_coarse,
+    register_review_coarse_reads,
+    register_review_coarse_writes,
+    reviews_coarse,
+    reviews_decide_coarse,
+)
+from moneybin.mcp.write_contracts import (
+    AccountLinkDecisionRequest,
+    CategorizationDecisionRequest,
+    MatchDecisionRequest,
+    MerchantLinkDecisionRequest,
+    OrdinaryReviewDecisionRequest,
+    SecurityLinkDecisionRequest,
+)
+from moneybin.repositories.categorization_decisions_repo import (
+    categorization_decision_id,
+)
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+from moneybin.repositories.securities_repo import SecuritiesRepo
+from moneybin.repositories.security_link_decisions_repo import (
+    SecurityLinkDecisionsRepo,
+)
+from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.auto_rule_service import (
+    AutoConfirmResult,
+    AutoReviewResult,
+    AutoRuleDecisionResult,
+    AutoRuleService,
+)
+from moneybin.services.categorization import CategorizationService
+from moneybin.services.merchant_links_service import MerchantLinksService
+from moneybin.services.review_decisions_service import (
+    IdentityDecisionPlan,
+    IdentityDecisionPlanItem,
+    ReviewDecisionsService,
+)
+from moneybin.services.undo_service import UndoService
+
+from .schema_assertions import (
+    assert_literal_values,
+    call_tool_raw,
+    isolated_server,
+    listed_tool,
 )
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
-
-@pytest.mark.unit
-async def test_review_returns_envelope(mcp_db: object) -> None:
-    """`review` returns a valid ResponseEnvelope."""
-    parsed = (await review()).to_dict()
-    assert "summary" in parsed
-    assert "data" in parsed
-    assert "actions" in parsed
-    assert parsed["summary"]["sensitivity"] == "low"
+_NOW = datetime.now(tz=UTC).isoformat()
 
 
-@pytest.mark.unit
-async def test_review_data_shape(mcp_db: object) -> None:
-    """Data carries the five queue counts and a total equal to their sum."""
-    data = (await review()).to_dict()["data"]
-    assert "matches_pending" in data
-    assert "categorize_pending" in data
-    assert "account_links_pending" in data
-    assert "merchant_links_pending" in data
-    assert "security_links_pending" in data
-    assert "total" in data
-    assert isinstance(data["account_links_pending"], int)
-    assert isinstance(data["merchant_links_pending"], int)
-    assert isinstance(data["security_links_pending"], int)
-    assert data["total"] == (
-        data["matches_pending"]
-        + data["categorize_pending"]
-        + data["account_links_pending"]
-        + data["merchant_links_pending"]
-        + data["security_links_pending"]
+def _identity_plan(
+    decisions: Sequence[
+        AccountLinkDecisionRequest
+        | MerchantLinkDecisionRequest
+        | SecurityLinkDecisionRequest
+    ],
+    *,
+    state_version: str = "initial",
+) -> IdentityDecisionPlan:
+    """Build a complete deterministic identity batch plan for boundary tests."""
+    items = tuple(
+        IdentityDecisionPlanItem(
+            request=request,
+            changed=True,
+            status="accepted" if request.decision == "accept" else "rejected",
+            source_id=f"{request.kind}-source",
+            target_id=request.target_id or f"{request.kind}-candidate",
+            group_key=(request.kind, request.decision_id),
+            before_state={"version": state_version, "index": index},
+            affected_ids={
+                "accounts": (f"account-{index}",)
+                if request.kind == "account_link"
+                else (),
+                "merchants": (f"merchant-{index}",)
+                if request.kind == "merchant_link"
+                else (),
+                "securities": (f"security-{index}",)
+                if request.kind == "security_link"
+                else (),
+                "transactions": (f"transaction-{index}",),
+                "lots": (f"lot-{index}",) if request.kind == "security_link" else (),
+            },
+        )
+        for index, request in enumerate(decisions)
+    )
+    return IdentityDecisionPlan(items=items)
+
+
+def _identity_decision_status(kind: str, decision_id: str) -> str:
+    table = {
+        "account_link": "app.account_link_decisions",
+        "merchant_link": "app.merchant_link_decisions",
+        "security_link": "app.security_link_decisions",
+    }[kind]
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            f"SELECT status FROM {table} WHERE decision_id = ?",  # noqa: S608  # table allowlist
+            [decision_id],
+        ).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+def _seed_identity_account(account_id: str, display_name: str) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.dim_accounts (
+                account_id, account_type, institution_name, display_name
+            ) VALUES (?, 'CHECKING', 'Test Bank', ?)
+            """,
+            [account_id, display_name],
+        )
+
+
+def _seed_identity_account_link(account_id: str, link_id: str) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.account_links (
+                link_id, account_id, ref_kind, ref_value, source_type,
+                source_origin, status, decided_by, decided_at
+            ) VALUES (
+                ?, ?, 'source_native', ?, 'csv', 'test-bank',
+                'accepted', 'auto', ?
+            )
+            """,
+            [link_id, account_id, f"key-{account_id}", _NOW],
+        )
+
+
+def _identity_account_setup(label: str) -> dict[str, str]:
+    provisional = f"PROV_{label}"
+    candidate = f"ACC_{label}"
+    decision_id = f"account-{label}"
+    _seed_identity_account(provisional, f"Imported {label}")
+    _seed_identity_account(candidate, f"Canonical {label}")
+    _seed_identity_account_link(provisional, f"link-{label}")
+    _insert_account_link_decision(
+        decision_id=decision_id,
+        provisional_account_id=provisional,
+        candidate_account_id=candidate,
+        status="pending",
+        decided_at=_NOW,
+    )
+    return {
+        "candidate": candidate,
+        "decision_id": decision_id,
+        "provisional": provisional,
+    }
+
+
+def _seed_identity_merchant(merchant_id: str) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.user_merchants (
+                merchant_id, match_type, canonical_name, created_by
+            ) VALUES (?, 'oneOf', ?, 'user')
+            """,
+            [merchant_id, f"Merchant {merchant_id}"],
+        )
+
+
+def _identity_merchant_setup(label: str) -> dict[str, str]:
+    decision_id = f"merchant-{label}"
+    merchant_id = f"merchant-target-{label}"
+    _seed_identity_merchant(merchant_id)
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.merchant_link_decisions (
+                decision_id, ref_kind, ref_value, source_type,
+                provider_merchant_name, candidate_merchant_id,
+                confidence_score, match_signals, status, decided_by, decided_at
+            ) VALUES (
+                ?, 'merchant_entity_id', ?, 'plaid', ?, ?, 0.62, '{}',
+                'pending', 'auto', ?
+            )
+            """,
+            [
+                decision_id,
+                f"entity-{label}",
+                f"Provider {label}",
+                merchant_id,
+                _NOW,
+            ],
+        )
+    return {"decision_id": decision_id, "merchant_id": merchant_id}
+
+
+def _mint_identity_security(
+    *,
+    name: str,
+    created_by: str,
+    ticker: str,
+) -> str:
+    with get_database(read_only=False) as db:
+        event = SecuritiesRepo(db).upsert(
+            security_id=None,
+            name=name,
+            security_type="etf",
+            ticker=ticker,
+            created_by=created_by,
+            actor="system" if created_by == "plaid" else "mcp",
+        )
+    assert event.target_id is not None
+    return event.target_id
+
+
+def _identity_security_setup(label: str) -> dict[str, str]:
+    survivor = _mint_identity_security(
+        name=f"Canonical security {label}",
+        created_by="user",
+        ticker=f"C{label[:4].upper()}",
+    )
+    provisional = _mint_identity_security(
+        name=f"Provider security {label}",
+        created_by="plaid",
+        ticker=f"P{label[:4].upper()}",
+    )
+    ref_value = f"security-ref-{label}"
+    decision_id = f"security-{label}"
+    with get_database(read_only=False) as db:
+        SecurityLinksRepo(db).insert(
+            security_id=provisional,
+            ref_kind="plaid_security_id",
+            ref_value=ref_value,
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+        )
+        SecurityLinkDecisionsRepo(db).insert(
+            decision_id=decision_id,
+            ref_kind="plaid_security_id",
+            ref_value=ref_value,
+            source_type="plaid",
+            candidate_security_id=survivor,
+            provider_ticker=f"P{label[:4].upper()}",
+            provider_name=f"Provider security {label}",
+            confidence_score=0.5,
+            match_reason="fuzzy_name",
+            actor="system",
+        )
+    return {
+        "decision_id": decision_id,
+        "provisional": provisional,
+        "survivor": survivor,
+    }
+
+
+def _seed_identity_merchant_transaction(
+    transaction_id: str,
+    merchant_id: str,
+) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                merchant_id, transaction_type, is_pending, currency_code,
+                source_type, source_extracted_at, loaded_at, transaction_year,
+                transaction_month, transaction_day, transaction_day_of_week,
+                transaction_year_month, transaction_year_quarter
+            ) VALUES (
+                ?, 'ACC001', '2026-07-18', -4.00, 4.00, 'expense',
+                'Existing merchant transaction', ?, 'DEBIT', false, 'USD',
+                'ofx', '2026-07-18', CURRENT_TIMESTAMP, 2026, 7, 18, 6,
+                '2026-07', '2026-Q3'
+            )
+            """,
+            [transaction_id, merchant_id],
+        )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "categorization",
+        "auto_rules",
+        "matches",
+        "account_links",
+        "merchant_links",
+        "security_links",
+    ],
+)
+async def test_review_queue_uses_one_envelope(kind: str) -> None:
+    response = await reviews_coarse(kind=kind, status="pending")  # type: ignore[arg-type]
+    assert response.data.kind == kind
+    assert response.data.status == "pending"
+
+
+async def test_review_summary_returns_exact_kind_status_matrix() -> None:
+    response = await reviews_coarse()
+
+    observed = {
+        (count.kind, count.status): count.count for count in response.data.counts
+    }
+    expected = {
+        (kind, status)
+        for kind in (
+            "categorization",
+            "auto_rules",
+            "matches",
+            "account_links",
+            "merchant_links",
+            "security_links",
+        )
+        for status in ("pending", "history")
+    }
+    assert set(observed) == expected
+    assert response.data.total == sum(observed.values())
+
+
+async def test_review_summary_counts_auto_rules_without_blast_radius_scan() -> None:
+    with (
+        patch.object(AutoRuleService, "count_pending_proposals", return_value=2),
+        patch.object(
+            AutoRuleService,
+            "count_proposal_history",
+            return_value=1,
+        ),
+        patch.object(
+            AutoRuleService,
+            "list_proposal_history",
+            side_effect=AssertionError("summary materialized proposal history"),
+        ),
+        patch.object(
+            AutoRuleService,
+            "review",
+            side_effect=AssertionError("summary ran transaction-wide blast scan"),
+        ),
+    ):
+        response = await reviews_coarse()
+
+    counts = {(item.kind, item.status): item.count for item in response.data.counts}
+    assert counts[("auto_rules", "pending")] == 2
+    assert counts[("auto_rules", "history")] == 1
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "code"),
+    [
+        ({"kind": "summary", "limit": 1}, "REVIEW_PAGINATION_NOT_ALLOWED"),
+        (
+            {"kind": "summary", "cursor": "anything"},
+            "REVIEW_PAGINATION_NOT_ALLOWED",
+        ),
+        ({"kind": "summary", "status": "history"}, "REVIEW_STATUS_NOT_ALLOWED"),
+    ],
+)
+async def test_review_summary_rejects_incompatible_arguments(
+    kwargs: dict[str, Any],
+    code: str,
+) -> None:
+    response = await reviews_coarse(**kwargs)  # type: ignore[arg-type]
+
+    assert response.error is not None
+    assert response.error.code == code
+
+
+def _insert_account_link_decision(
+    *,
+    decision_id: str,
+    provisional_account_id: str,
+    candidate_account_id: str,
+    status: str,
+    decided_at: str,
+) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.account_link_decisions (
+                decision_id, provisional_account_id, candidate_account_id,
+                confidence_score, match_signals, status, decided_by,
+                match_reason, decided_at
+            ) VALUES (?, ?, ?, 0.85, ?, ?, 'auto', NULL, ?)
+            """,  # noqa: S608  # test input, not executing SQL
+            [
+                decision_id,
+                provisional_account_id,
+                candidate_account_id,
+                json.dumps({"signal": "name"}),
+                status,
+                decided_at,
+            ],
+        )
+
+
+async def test_review_rows_expose_common_and_typed_fields(mcp_db: object) -> None:
+    _insert_account_link_decision(
+        decision_id="decision-common",
+        provisional_account_id="PROV-COMMON",
+        candidate_account_id="ACC001",
+        status="pending",
+        decided_at="2026-07-18T12:00:00",
+    )
+
+    response = await reviews_coarse(kind="account_links", status="pending")
+
+    assert response.summary.total_count == 1
+    assert response.summary.returned_count == 1
+    row = response.data.rows[0]
+    assert row.decision_id == "decision-common"
+    assert row.kind == "account_links"
+    assert row.status == "pending"
+    assert row.created_at == "2026-07-18 12:00:00"
+    assert row.summary
+    assert row.details.state == "pending"
+    assert row.details.candidates[0].decision_id == "decision-common"
+
+
+async def test_review_history_calls_history_not_pending() -> None:
+    with (
+        patch.object(AccountLinksService, "history", return_value=[]) as history,
+        patch.object(
+            AccountLinksService,
+            "pending",
+            side_effect=AssertionError("pending fallback used"),
+        ),
+    ):
+        response = await reviews_coarse(kind="account_links", status="history")
+
+    history.assert_called_once_with(limit=None)
+    assert response.data.status == "history"
+    assert response.data.rows == []
+
+
+async def test_auto_rule_review_preserves_proposal_blast_radius() -> None:
+    proposal = {
+        "proposed_rule_id": "proposal-1",
+        "merchant_pattern": "DEMO MARKET",
+        "match_type": "contains",
+        "category": "Groceries",
+        "subcategory": None,
+        "trigger_count": 3,
+        "sample_txn_ids": ["txn-1", "txn-2"],
+        "estimated_match_count": 27,
+        "is_broad": True,
+    }
+    with (
+        patch(
+            "moneybin.mcp.tools.reviews.AutoRuleService.count_pending_proposals",
+            return_value=1,
+        ),
+        patch(
+            "moneybin.mcp.tools.reviews.AutoRuleService.review",
+            return_value=AutoReviewResult(proposals=[proposal], total_count=1),
+        ) as review,
+    ):
+        response = await reviews_coarse(kind="auto_rules", status="pending")
+
+    review.assert_called_once_with(limit=1)
+    row = response.data.rows[0]
+    assert row.decision_id == "proposal-1"
+    assert row.kind == "auto_rules"
+    assert row.details.proposal.estimated_match_count == 27
+    assert row.details.proposal.is_broad is True
+    assert "reviews_decide" in " ".join(response.actions)
+
+
+def _pending_match(match_id: str) -> dict[str, Any]:
+    return {
+        "match_id": match_id,
+        "match_type": "dedup",
+        "match_tier": "exact",
+        "confidence_score": 0.9,
+        "source_type_a": "csv",
+        "source_transaction_id_a": f"{match_id}-a",
+        "source_type_b": "ofx",
+        "source_transaction_id_b": f"{match_id}-b",
+        "match_status": "pending",
+        "component_key": match_id,
+        "decided_by": "auto",
+        "decided_at": "2026-07-18T12:00:00",
+    }
+
+
+async def test_review_pagination_is_stable_filter_bound_and_executable() -> None:
+    rows = [_pending_match("match-b"), _pending_match("match-a")]
+    with patch(
+        "moneybin.mcp.tools.reviews.MatchingService.get_pending",
+        return_value=rows,
+    ):
+        first = await reviews_coarse(kind="matches", status="pending", limit=1)
+        assert [row.decision_id for row in first.data.rows] == ["match-a"]
+        assert first.next_cursor is not None
+        assert first.summary.total_count == 2
+        assert first.summary.has_more is True
+        assert (
+            "reviews(kind='matches', status='pending', limit=1, "
+            f"cursor='{first.next_cursor}')"
+        ) in " ".join(first.actions)
+
+        second = await reviews_coarse(
+            kind="matches",
+            status="pending",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+        assert [row.decision_id for row in second.data.rows] == ["match-b"]
+        assert second.next_cursor is None
+        assert second.summary.has_more is False
+
+        incompatible = await reviews_coarse(
+            kind="matches",
+            status="history",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+        assert incompatible.error is not None
+        assert incompatible.error.code == "REVIEW_CURSOR_INVALID"
+
+
+async def test_review_pending_continuation_does_not_skip_after_first_row_removed() -> (
+    None
+):
+    initial = [_pending_match("match-a"), _pending_match("match-b")]
+    after_decision = [_pending_match("match-b")]
+    with patch(
+        "moneybin.mcp.tools.reviews.MatchingService.get_pending",
+        side_effect=[initial, after_decision],
+    ):
+        first = await reviews_coarse(kind="matches", status="pending", limit=1)
+        second = await reviews_coarse(
+            kind="matches",
+            status="pending",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert [row.decision_id for row in first.data.rows] == ["match-a"]
+    assert [row.decision_id for row in second.data.rows] == ["match-b"]
+    assert second.next_cursor is None
+
+
+async def test_review_cursor_snapshot_excludes_prepends_and_preserves_total() -> None:
+    initial = [_pending_match("match-a"), _pending_match("match-b")]
+    prepended = _pending_match("match-new")
+    prepended["confidence_score"] = 1.0
+    with patch(
+        "moneybin.mcp.tools.reviews.MatchingService.get_pending",
+        side_effect=[initial, [prepended, *initial]],
+    ):
+        first = await reviews_coarse(kind="matches", status="pending", limit=1)
+        second = await reviews_coarse(
+            kind="matches",
+            status="pending",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert [row.decision_id for row in first.data.rows] == ["match-a"]
+    assert [row.decision_id for row in second.data.rows] == ["match-b"]
+    assert first.summary.total_count == second.summary.total_count == 2
+
+
+async def test_review_cursor_validates_key_shape_when_queue_is_empty() -> None:
+    from moneybin.mcp.pagination import encode_keyset_cursor
+
+    cursor = encode_keyset_cursor(
+        namespace="reviews",
+        scope={"kind": "matches", "status": "pending"},
+        snapshot=("not-a-confidence", "match-a"),
+        after=("still-not-a-confidence", "match-b"),
+        total=2,
+    )
+    with patch(
+        "moneybin.mcp.tools.reviews.MatchingService.get_pending",
+        return_value=[],
+    ):
+        response = await reviews_coarse(
+            kind="matches",
+            status="pending",
+            cursor=cursor,
+        )
+
+    assert response.error is not None
+    assert response.error.code == "REVIEW_CURSOR_INVALID"
+
+
+async def test_review_standard_registrar_renders_closed_contract() -> None:
+    mcp = isolated_server(register_review_coarse_reads)
+
+    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert {tool.name for tool in tools} == {"reviews"}
+    tool = await listed_tool(mcp, "reviews")
+    assert tool.outputSchema is None
+    assert_literal_values(
+        tool.inputSchema,
+        ("properties", "kind"),
+        {
+            "summary",
+            "categorization",
+            "auto_rules",
+            "matches",
+            "account_links",
+            "merchant_links",
+            "security_links",
+        },
+    )
+    assert_literal_values(
+        tool.inputSchema,
+        ("properties", "status"),
+        {"pending", "history"},
     )
 
 
-@pytest.mark.unit
-async def test_review_actions_mention_drill_down_queues(mcp_db: object) -> None:
-    """actions[] guides the agent to all five MCP-drillable queues, each with a drill-down tool.
+@pytest.mark.parametrize(
+    ("kind", "expected_sensitivity", "expected_classes"),
+    [
+        ("summary", "low", ["aggregate", "txn_type"]),
+        (
+            "auto_rules",
+            "medium",
+            [
+                "aggregate",
+                "category",
+                "merchant_name",
+                "record_id",
+                "timestamp_observability",
+                "txn_type",
+            ],
+        ),
+        (
+            "categorization",
+            "high",
+            [
+                "aggregate",
+                "category",
+                "description",
+                "record_id",
+                "timestamp_observability",
+                "txn_amount",
+                "txn_date",
+                "txn_type",
+            ],
+        ),
+        (
+            "matches",
+            "low",
+            ["aggregate", "record_id", "timestamp_observability", "txn_type"],
+        ),
+        (
+            "account_links",
+            "medium",
+            [
+                "aggregate",
+                "record_id",
+                "timestamp_observability",
+                "txn_type",
+                "user_note",
+            ],
+        ),
+        (
+            "merchant_links",
+            "medium",
+            [
+                "aggregate",
+                "merchant_name",
+                "record_id",
+                "timestamp_observability",
+                "txn_type",
+            ],
+        ),
+        (
+            "security_links",
+            "medium",
+            [
+                "aggregate",
+                "record_id",
+                "timestamp_observability",
+                "txn_type",
+                "user_note",
+            ],
+        ),
+    ],
+)
+async def test_review_raw_transport_is_canonical_and_uses_public_actor(
+    kind: str,
+    expected_sensitivity: str,
+    expected_classes: list[str],
+) -> None:
+    captured: list[dict[str, Any]] = []
+    mcp = isolated_server(register_review_coarse_reads)
 
-    All five review queues have dedicated drill-down tools:
-    - transactions_matches_pending for the matches queue
-    - transactions_categorize_pending for the categorize queue
-    - accounts_links_pending for the account-links queue
-    - merchants_links_pending for the merchant-links queue (added in M1T)
-    - investments_securities_links_pending for the security-links queue
-      (added M1G.4)
-    """
-    parsed = (await review()).to_dict()
-    actions_text = " ".join(parsed["actions"])
-    assert "transactions_matches_pending" in actions_text
-    assert "transactions_categorize_pending" in actions_text
-    assert "accounts_links_pending" in actions_text
-    assert "merchants_links_pending" in actions_text
-    assert "investments_securities_links_pending" in actions_text
+    with patch("moneybin.mcp.decorator.write_privacy_event", captured.append):
+        response = await call_tool_raw(
+            mcp,
+            "reviews",
+            {"kind": kind, "status": "pending"},
+        )
+
+    text = response.content[0]
+    assert hasattr(text, "text")
+    assert response.structuredContent is not None
+    assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
+    assert response.structuredContent["data"]["kind"] == kind
+    assert len(captured) == 1
+    assert captured[0]["actor"] == "mcp.reviews"
+    assert captured[0]["sensitivity"] == expected_sensitivity
+    assert captured[0]["classes_returned"] == expected_classes
 
 
-@pytest.mark.unit
-async def test_transactions_review_alias_returns_same_shape(mcp_db: object) -> None:
-    """`transactions_review` is a deprecated alias with the same data shape."""
-    data = (await transactions_review()).to_dict()["data"]
-    assert "matches_pending" in data
-    assert "categorize_pending" in data
-    assert "account_links_pending" in data
-    assert "merchant_links_pending" in data
-    assert "security_links_pending" in data
-    assert "total" in data
+async def test_review_cursor_error_is_canonical_and_sanitized() -> None:
+    mcp = isolated_server(register_review_coarse_reads)
+    invalid_cursor = "secret-account-1234"
 
-
-@pytest.mark.unit
-async def test_register_includes_review_and_alias() -> None:
-    """register_transactions_tools registers both `review` and `transactions_review`."""
-    srv = FastMCP("test")
-    register_transactions_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert "review" in names
-    assert "transactions_review" in names
-
-
-@pytest.mark.unit
-async def test_transactions_review_description_starts_with_deprecated() -> None:
-    """`transactions_review` description must start with 'DEPRECATED:'."""
-    srv = FastMCP("test")
-    register_transactions_tools(srv)
-    tools = {t.name: t for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    desc = tools["transactions_review"].description or ""
-    assert desc.startswith("DEPRECATED:"), (
-        f"transactions_review description must start with 'DEPRECATED:' but got: {desc[:80]!r}"
+    response = await call_tool_raw(
+        mcp,
+        "reviews",
+        {"kind": "matches", "cursor": invalid_cursor},
     )
+
+    text = response.content[0]
+    assert hasattr(text, "text")
+    assert response.structuredContent is not None
+    assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
+    assert response.structuredContent["error"]["code"] == "REVIEW_CURSOR_INVALID"
+    assert invalid_cursor not in text.text  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"kind": "unknown"},
+        {"status": "unknown"},
+        {"limit": "50"},
+        {"unknown": "value"},
+    ],
+)
+async def test_review_raw_transport_rejects_invalid_arguments(
+    arguments: dict[str, Any],
+) -> None:
+    mcp = isolated_server(register_review_coarse_reads)
+
+    response = await call_tool_raw(mcp, "reviews", arguments)
+
+    assert response.isError is True
+
+
+def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
+    transaction_id = "TX_REVIEW_DECIDE"
+    match_id = "MATCH_REVIEW_DECIDE"
+    category = "Task 5 Review"
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at, transaction_year,
+                transaction_month, transaction_day, transaction_day_of_week,
+                transaction_year_month, transaction_year_quarter
+            ) VALUES (
+                ?, 'ACC001', '2026-07-18', -12.00, 12.00, 'expense',
+                'Task 5 review decision', 'DEBIT', false, 'USD', 'ofx',
+                '2026-07-18', CURRENT_TIMESTAMP, 2026, 7, 18, 6,
+                '2026-07', '2026-Q3'
+            )
+            """,  # noqa: S608  # test fixture data
+            [transaction_id],
+        )
+        CategorizationService(db).create_category(category, actor="test")
+        db.execute(
+            """
+            CREATE OR REPLACE VIEW core.uncategorized_queue AS
+            SELECT
+                transaction_id,
+                account_id,
+                CAST(NULL AS VARCHAR) AS account_name,
+                transaction_date AS txn_date,
+                amount,
+                description,
+                CAST(NULL AS VARCHAR) AS merchant_id,
+                CAST(NULL AS VARCHAR) AS merchant_normalized,
+                CAST(1 AS INTEGER) AS age_days,
+                CAST(1 AS DOUBLE) AS priority_score,
+                source_type,
+                CAST(NULL AS VARCHAR) AS source_id
+            FROM core.fct_transactions AS tx
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM app.transaction_categories AS tc
+                WHERE tc.transaction_id = tx.transaction_id
+            )
+            """
+        )
+        MatchDecisionsRepo(db).insert(
+            match_id=match_id,
+            source_transaction_id_a="ordinary-a",
+            source_type_a="csv",
+            source_origin_a="fixture-a",
+            source_transaction_id_b="ordinary-b",
+            source_type_b="ofx",
+            source_origin_b="fixture-b",
+            account_id="ACC001",
+            confidence_score=0.9,
+            match_signals={"reason": "fixture"},
+            match_status="pending",
+            decided_by="auto",
+            actor="test",
+        )
+    return (
+        transaction_id,
+        categorization_decision_id(transaction_id),
+        match_id,
+        category,
+    )
+
+
+async def test_ordinary_decisions_route_by_kind_and_share_operation() -> None:
+    _transaction_id, categorization_id, match_id, category = _seed_ordinary_decisions()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+            ),
+            MatchDecisionRequest(
+                kind="match",
+                decision_id=match_id,
+                decision="reject",
+            ),
+        ]
+    )
+
+    assert [item.kind for item in response.data.results] == [
+        "categorization",
+        "match",
+    ]
+    assert response.data.applied_count == 2
+    assert response.data.operation_id
+    assert all(
+        item.operation_id == response.data.operation_id
+        for item in response.data.results
+    )
+
+
+async def test_auto_rule_decisions_route_through_existing_decision_tool() -> None:
+    request_type = reviews_module.AutoRuleDecisionRequest
+    decisions = [
+        request_type(
+            kind="auto_rule",
+            decision_id="proposal-accept",
+            decision="accept",
+            allow_broad=True,
+        ),
+        request_type(
+            kind="auto_rule",
+            decision_id="proposal-reject",
+            decision="reject",
+        ),
+    ]
+    with (
+        patch.object(
+            reviews_module.AutoRuleService,
+            "decide",
+            return_value=AutoRuleDecisionResult(
+                statuses={
+                    "proposal-accept": "pending",
+                    "proposal-reject": "rejected",
+                },
+                impact=AutoConfirmResult(
+                    approved=0,
+                    rejected=1,
+                    skipped=1,
+                    newly_categorized=4,
+                    rule_ids=[],
+                ),
+            ),
+        ) as decide,
+    ):
+        response = await reviews_decide_coarse(
+            decisions=decisions,
+        )
+
+    decide.assert_called_once_with(
+        expected_pending_ids=["proposal-accept", "proposal-reject"],
+        accept=["proposal-accept"],
+        reject=["proposal-reject"],
+        actor="mcp",
+        allow_broad_ids={"proposal-accept"},
+    )
+    assert [row.status for row in response.data.results] == [
+        "pending",
+        "rejected",
+    ]
+    assert response.data.applied_count == 1
+    assert response.data.auto_rule_impact is not None
+    assert response.data.auto_rule_impact.approved == 0
+    assert response.data.auto_rule_impact.rejected == 1
+    assert response.data.auto_rule_impact.skipped == 1
+    assert response.data.auto_rule_impact.newly_categorized == 4
+    assert response.data.auto_rule_impact.rule_ids == []
+
+
+def _seed_real_auto_rule_decisions() -> tuple[str, str, str]:
+    category = "Real Auto Rule Review"
+    with get_database(read_only=False) as db:
+        categorization = CategorizationService(db)
+        categorization.create_category(category, actor="test")
+        for transaction_id, description in (
+            ("auto-trigger-accept", "REAL ACCEPT SHOP"),
+            ("auto-trigger-reject", "REAL REJECT SHOP"),
+            ("auto-backfill-accept", "REAL ACCEPT SHOP"),
+            ("auto-backfill-reject", "REAL REJECT SHOP"),
+        ):
+            db.execute(
+                """
+                INSERT INTO core.fct_transactions (
+                    transaction_id, account_id, transaction_date, amount,
+                    description, source_type
+                ) VALUES (?, 'ACC001', DATE '2026-07-18', -7.00, ?, 'ofx')
+                """,
+                [transaction_id, description],
+            )
+        for transaction_id in ("auto-trigger-accept", "auto-trigger-reject"):
+            categorization.write_categorization(
+                transaction_id=transaction_id,
+                category=category,
+                subcategory=None,
+                categorized_by="user",
+            )
+        auto_rules = AutoRuleService(db)
+        accept_id = auto_rules.record_categorization(
+            "auto-trigger-accept",
+            category,
+        )
+        reject_id = auto_rules.record_categorization(
+            "auto-trigger-reject",
+            category,
+        )
+        assert accept_id is not None
+        assert reject_id is not None
+    return accept_id, reject_id, category
+
+
+async def test_real_auto_rule_success_reports_rows_and_aggregate_impact() -> None:
+    accept_id, reject_id, category = _seed_real_auto_rule_decisions()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            reviews_module.AutoRuleDecisionRequest(
+                kind="auto_rule",
+                decision_id=accept_id,
+                decision="accept",
+            ),
+            reviews_module.AutoRuleDecisionRequest(
+                kind="auto_rule",
+                decision_id=reject_id,
+                decision="reject",
+            ),
+        ]
+    )
+
+    assert response.error is None
+    assert [
+        (row.decision_id, row.status, row.changed) for row in response.data.results
+    ] == [
+        (accept_id, "approved", True),
+        (reject_id, "rejected", True),
+    ]
+    assert response.data.applied_count == 2
+    assert response.data.auto_rule_impact is not None
+    assert response.data.auto_rule_impact.approved == 1
+    assert response.data.auto_rule_impact.rejected == 1
+    assert response.data.auto_rule_impact.skipped == 0
+    assert response.data.auto_rule_impact.newly_categorized == 1
+    assert len(response.data.auto_rule_impact.rule_ids) == 1
+
+    with get_database(read_only=True) as db:
+        proposal_rows = db.execute(
+            """
+            SELECT proposed_rule_id, status, rule_id
+            FROM app.proposed_rules
+            WHERE proposed_rule_id IN (?, ?)
+            """,
+            [accept_id, reject_id],
+        ).fetchall()
+        assert {str(row[0]): (row[1], row[2]) for row in proposal_rows} == {
+            accept_id: (
+                "approved",
+                response.data.auto_rule_impact.rule_ids[0],
+            ),
+            reject_id: ("rejected", None),
+        }
+        accepted_backfill = db.execute(
+            """
+            SELECT category, categorized_by, rule_id
+            FROM app.transaction_categories
+            WHERE transaction_id = 'auto-backfill-accept'
+            """
+        ).fetchone()
+        rejected_backfill = db.execute(
+            """
+            SELECT category
+            FROM app.transaction_categories
+            WHERE transaction_id = 'auto-backfill-reject'
+            """
+        ).fetchone()
+    assert accepted_backfill == (
+        category,
+        "auto_rule",
+        response.data.auto_rule_impact.rule_ids[0],
+    )
+    assert rejected_backfill is None
+
+
+def test_auto_rule_reject_forbids_allow_broad() -> None:
+    with pytest.raises(ValueError, match="Reject forbids allow_broad"):
+        reviews_module.AutoRuleDecisionRequest(
+            kind="auto_rule",
+            decision_id="proposal-reject",
+            decision="reject",
+            allow_broad=True,
+        )
+
+
+async def test_ordinary_decisions_have_no_auto_rule_impact() -> None:
+    _transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+            )
+        ]
+    )
+
+    assert response.data.auto_rule_impact is None
+
+
+async def test_ordinary_batch_preflights_before_first_write() -> None:
+    transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+            ),
+            MatchDecisionRequest(
+                kind="match",
+                decision_id="missing-match",
+                decision="reject",
+            ),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.details is not None
+    assert response.error.details["errors"] == [
+        {
+            "index": 1,
+            "kind": "match",
+            "decision_id": "missing-match",
+            "code": "mutation_not_found",
+            "reason": "No match decision exists for this id.",
+        }
+    ]
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+            [transaction_id],
+        ).fetchone()
+    assert row is None
+
+
+async def test_ordinary_categorization_accept_preserves_commit_merchant_semantics() -> (
+    None
+):
+    _transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+                canonical_merchant_name="Task Five Merchant",
+            )
+        ]
+    )
+
+    assert response.error is None
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT canonical_name, category, exemplars "
+            "FROM app.user_merchants WHERE canonical_name = ?",
+            ["Task Five Merchant"],
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "Task Five Merchant"
+    assert row[1] == category
+    assert list(row[2]) == ["Task 5 review decision"]
+
+
+async def test_ordinary_batch_coalesces_shared_new_merchant_in_input_order() -> None:
+    _first_transaction_id, first_id, _match_id, category = _seed_ordinary_decisions()
+    second_transaction_id = "TX_REVIEW_DECIDE_SECOND"
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at, transaction_year,
+                transaction_month, transaction_day, transaction_day_of_week,
+                transaction_year_month, transaction_year_quarter
+            ) VALUES (
+                ?, 'ACC001', '2026-07-18', -18.00, 18.00, 'expense',
+                'Task 5 second review decision', 'DEBIT', false, 'USD', 'ofx',
+                '2026-07-18', CURRENT_TIMESTAMP, 2026, 7, 18, 6,
+                '2026-07', '2026-Q3'
+            )
+            """,  # noqa: S608  # test fixture data
+            [second_transaction_id],
+        )
+    second_id = categorization_decision_id(second_transaction_id)
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=first_id,
+                decision="accept",
+                category=category,
+                canonical_merchant_name="Shared Review Merchant",
+            ),
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=second_id,
+                decision="accept",
+                category=category,
+                canonical_merchant_name="Shared Review Merchant",
+            ),
+        ]
+    )
+
+    assert response.error is None
+    with get_database(read_only=True) as db:
+        merchants = db.execute(
+            "SELECT merchant_id, exemplars FROM app.user_merchants "
+            "WHERE canonical_name = ?",
+            ["Shared Review Merchant"],
+        ).fetchall()
+        decisions = db.execute(
+            "SELECT merchant_id, status FROM app.categorization_decisions "
+            "WHERE decision_id IN (?, ?) ORDER BY decision_id",
+            [first_id, second_id],
+        ).fetchall()
+    assert len(merchants) == 1
+    assert list(merchants[0][1]) == [
+        "Task 5 review decision",
+        "Task 5 second review decision",
+    ]
+    assert decisions == [
+        (merchants[0][0], "accepted"),
+        (merchants[0][0], "accepted"),
+    ]
+
+
+def test_ordinary_late_failure_rolls_back_state_audit_and_observability(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transaction_id, categorization_id, match_id, category = _seed_ordinary_decisions()
+    requests: list[OrdinaryReviewDecisionRequest] = [
+        CategorizationDecisionRequest(
+            kind="categorization",
+            decision_id=categorization_id,
+            decision="accept",
+            category=category,
+            canonical_merchant_name="Rolled Back Review Merchant",
+        ),
+        MatchDecisionRequest(
+            kind="match",
+            decision_id=match_id,
+            decision="reject",
+        ),
+    ]
+    with get_database(read_only=True) as db:
+        audit_before_row = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+    assert audit_before_row is not None
+    audit_before = int(audit_before_row[0])
+    caplog.clear()
+
+    with (
+        get_database(read_only=False) as db,
+        patch.object(
+            MatchDecisionsRepo,
+            "update_status",
+            side_effect=RuntimeError("late match failure"),
+        ),
+        patch(
+            "moneybin.services.categorization.applier.MERCHANT_EXEMPLAR_COUNT.labels"
+        ) as metric_labels,
+        pytest.raises(RuntimeError, match="late match failure"),
+    ):
+        with caplog.at_level(
+            logging.INFO,
+            logger="moneybin.services.categorization.applier",
+        ):
+            ReviewDecisionsService(db, actor="mcp").apply_ordinary(requests)
+
+    metric_labels.assert_not_called()
+    assert "Created user merchant" not in caplog.text
+    with get_database(read_only=True) as db:
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+                [transaction_id],
+            ).fetchone()
+            is None
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_merchants WHERE canonical_name = ?",
+                ["Rolled Back Review Merchant"],
+            ).fetchone()
+            is None
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.categorization_decisions WHERE decision_id = ?",
+                [categorization_id],
+            ).fetchone()
+            is None
+        )
+        audit_after_row = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+    assert audit_after_row is not None
+    audit_after = int(audit_after_row[0])
+    assert audit_after == audit_before
+
+
+async def test_ordinary_already_decided_ids_return_structured_errors() -> None:
+    _transaction_id, categorization_id, match_id, category = _seed_ordinary_decisions()
+    decisions = [
+        CategorizationDecisionRequest(
+            kind="categorization",
+            decision_id=categorization_id,
+            decision="accept",
+            category=category,
+        ),
+        MatchDecisionRequest(
+            kind="match",
+            decision_id=match_id,
+            decision="reject",
+        ),
+    ]
+
+    first = await reviews_decide_coarse(decisions=decisions)
+    assert first.error is None
+    second = await reviews_decide_coarse(decisions=decisions)
+
+    assert second.error is not None
+    assert second.error.code == "mutation_invalid_input"
+    assert second.error.details is not None
+    assert [
+        (error["kind"], error["decision_id"], error["code"])
+        for error in second.error.details["errors"]
+    ] == [
+        ("categorization", categorization_id, "mutation_constraint_violation"),
+        ("match", match_id, "mutation_constraint_violation"),
+    ]
+
+
+async def test_categorization_reject_persists_and_leaves_pending_queue() -> None:
+    transaction_id, categorization_id, _match_id, _category = _seed_ordinary_decisions()
+    pending = await reviews_coarse(kind="categorization", status="pending")
+    row = next(
+        item for item in pending.data.rows if item.decision_id == categorization_id
+    )
+    assert row.details.transaction.transaction_id == transaction_id
+
+    rejected = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="reject",
+            )
+        ]
+    )
+
+    assert rejected.error is None
+    assert rejected.data.results[0].status == "rejected"
+    pending_after = await reviews_coarse(kind="categorization", status="pending")
+    assert categorization_id not in {
+        item.decision_id for item in pending_after.data.rows
+    }
+    history = await reviews_coarse(kind="categorization", status="history")
+    history_row = next(
+        item for item in history.data.rows if item.decision_id == categorization_id
+    )
+    assert history_row.status == "rejected"
+
+
+async def test_categorization_history_uses_immutable_attempt_snapshot() -> None:
+    transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
+    accepted = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+            )
+        ]
+    )
+    assert accepted.error is None
+    with get_database(read_only=False) as db:
+        service = CategorizationService(db)
+        service.create_category("Changed Later", actor="test")
+        service.set_category(
+            transaction_id,
+            category="Changed Later",
+            actor="test",
+        )
+
+    history = await reviews_coarse(kind="categorization", status="history")
+    row = next(
+        item for item in history.data.rows if item.decision_id == categorization_id
+    )
+
+    assert row.details.category == category
+    assert row.details.category_id != "Changed Later"
+
+
+async def test_categorization_clear_projects_next_versioned_attempt() -> None:
+    transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
+    accepted = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+            )
+        ]
+    )
+    assert accepted.error is None
+    with get_database(read_only=False) as db:
+        CategorizationService(db).clear_category(transaction_id, actor="test")
+
+    pending = await reviews_coarse(kind="categorization", status="pending")
+
+    assert [item.decision_id for item in pending.data.rows] == [
+        categorization_decision_id(transaction_id, attempt_number=2)
+    ]
+
+
+async def test_categorization_accept_undo_preserves_history_and_new_attempt() -> None:
+    transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
+    accepted = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+            )
+        ]
+    )
+    assert accepted.error is None
+    with get_database(read_only=False) as db:
+        UndoService(db).undo(str(accepted.data.operation_id), actor="mcp")
+
+    history = await reviews_coarse(kind="categorization", status="history")
+    pending = await reviews_coarse(kind="categorization", status="pending")
+
+    assert categorization_id in {item.decision_id for item in history.data.rows}
+    assert [item.decision_id for item in pending.data.rows] == [
+        categorization_decision_id(transaction_id, attempt_number=2)
+    ]
+
+
+async def test_categorization_reject_undo_preserves_history_and_new_attempt() -> None:
+    transaction_id, categorization_id, _match_id, _category = _seed_ordinary_decisions()
+    rejected = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="reject",
+            )
+        ]
+    )
+    assert rejected.error is None
+    with get_database(read_only=False) as db:
+        UndoService(db).undo(str(rejected.data.operation_id), actor="mcp")
+
+    history = await reviews_coarse(kind="categorization", status="history")
+    pending = await reviews_coarse(kind="categorization", status="pending")
+
+    assert categorization_id in {item.decision_id for item in history.data.rows}
+    assert [item.decision_id for item in pending.data.rows] == [
+        categorization_decision_id(transaction_id, attempt_number=2)
+    ]
+
+
+async def test_categorization_pending_uses_batch_attempt_projection() -> None:
+    _seed_ordinary_decisions()
+
+    with patch.object(
+        CategorizationService,
+        "review_decision_for_transaction",
+        side_effect=AssertionError("per-row decision lookup"),
+    ):
+        response = await reviews_coarse(kind="categorization", status="pending")
+
+    assert response.error is None
+    assert len(response.data.rows) == 1
+
+
+async def test_identity_standard_boundary_accepts_and_rejects_each_domain() -> None:
+    account_accept = _identity_account_setup("accept")
+    account_reject = _identity_account_setup("reject")
+    merchant_accept = _identity_merchant_setup("accept")
+    merchant_reject = _identity_merchant_setup("reject")
+    security_accept = _identity_security_setup("accept")
+    security_reject = _identity_security_setup("reject")
+    cases = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account_accept["decision_id"],
+            decision="accept",
+            target_id=account_accept["candidate"],
+        ),
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account_reject["decision_id"],
+            decision="reject",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant_accept["decision_id"],
+            decision="accept",
+            target_id=merchant_accept["merchant_id"],
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant_reject["decision_id"],
+            decision="reject",
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=security_accept["decision_id"],
+            decision="accept",
+            target_id=security_accept["survivor"],
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=security_reject["decision_id"],
+            decision="reject",
+        ),
+    ]
+
+    for request in cases:
+        required = await identity_links_decide_coarse(decisions=[request])
+        response = required
+        if request.decision == "accept":
+            assert required.error is not None
+            assert required.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+            assert required.error.details is not None
+            response = await identity_links_decide_coarse(
+                decisions=[request],
+                confirmation_token=str(required.error.details["confirmation_token"]),
+            )
+
+        assert response.error is None
+        assert response.data.results[0].status == (
+            "accepted" if request.decision == "accept" else "rejected"
+        )
+        assert (
+            _identity_decision_status(request.kind, request.decision_id)
+            == response.data.results[0].status
+        )
+
+
+async def test_identity_account_persisted_state_mismatch_consumes_token() -> None:
+    setup = _identity_account_setup("state-mismatch")
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["candidate"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.details is not None
+    token = str(required.error.details["confirmation_token"])
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            UPDATE app.account_link_decisions
+            SET confidence_score = 0.61
+            WHERE decision_id = ?
+            """,
+            [setup["decision_id"]],
+        )
+
+    mismatched = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+    replayed = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+
+    assert mismatched.error is not None
+    assert mismatched.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert replayed.error is not None
+    assert replayed.error.code == error_codes.MUTATION_CONFIRMATION_REPLAYED
+    assert _identity_decision_status("account_link", setup["decision_id"]) == "pending"
+
+
+async def test_identity_security_persisted_state_mismatch_consumes_token() -> None:
+    setup = _identity_security_setup("state-mismatch")
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["survivor"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.details is not None
+    token = str(required.error.details["confirmation_token"])
+    with get_database(read_only=False) as db:
+        db.execute(
+            "UPDATE app.securities SET name = ? WHERE security_id = ?",
+            ["Changed after confirmation", setup["survivor"]],
+        )
+
+    mismatched = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+    replayed = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+
+    assert mismatched.error is not None
+    assert mismatched.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert replayed.error is not None
+    assert replayed.error.code == error_codes.MUTATION_CONFIRMATION_REPLAYED
+    assert _identity_decision_status("security_link", setup["decision_id"]) == "pending"
+
+
+async def test_identity_security_confirmation_ignores_unrelated_catalog_state() -> None:
+    setup = _identity_security_setup("stable")
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["survivor"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.details is not None
+    _mint_identity_security(
+        name="Unrelated security",
+        created_by="user",
+        ticker="OTHER",
+    )
+
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert response.error is None
+    assert _identity_decision_status("security_link", setup["decision_id"]) == (
+        "accepted"
+    )
+
+
+async def test_identity_confirmation_uses_exact_merchant_blast_radius() -> None:
+    setup = _identity_merchant_setup("blast")
+    _seed_identity_merchant_transaction(
+        "merchant-blast-existing",
+        setup["merchant_id"],
+    )
+    decisions = [
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["merchant_id"],
+        )
+    ]
+
+    required = await identity_links_decide_coarse(decisions=decisions)
+
+    assert required.error is not None
+    assert required.error.details is not None
+    assert required.error.details["blast_radius"] == {
+        "accounts": 0,
+        "merchants": 1,
+        "securities": 0,
+        "transactions": 0,
+        "lots": 0,
+    }
+    _seed_identity_merchant_transaction(
+        "merchant-blast-unrelated",
+        setup["merchant_id"],
+    )
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+    assert response.error is None
+
+
+async def test_identity_account_batch_rejects_intermediate_merge_graph() -> None:
+    first = _identity_account_setup("graph-a-b")
+    _seed_identity_account("GRAPH_C", "Graph account C")
+    _seed_identity_account_link("GRAPH_C", "link-graph-c-a")
+    _insert_account_link_decision(
+        decision_id="account-graph-c-a",
+        provisional_account_id="GRAPH_C",
+        candidate_account_id=first["provisional"],
+        status="pending",
+        decided_at=_NOW,
+    )
+
+    response = await identity_links_decide_coarse(
+        decisions=[
+            AccountLinkDecisionRequest(
+                kind="account_link",
+                decision_id=first["decision_id"],
+                decision="accept",
+                target_id=first["candidate"],
+            ),
+            AccountLinkDecisionRequest(
+                kind="account_link",
+                decision_id="account-graph-c-a",
+                decision="accept",
+                target_id=first["provisional"],
+            ),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == error_codes.MUTATION_INVALID_INPUT
+    assert response.error.details is not None
+    assert response.error.details["errors"][0]["index"] == 1
+    assert "intermediate" in response.error.details["errors"][0]["reason"]
+    assert _identity_decision_status("account_link", first["decision_id"]) == "pending"
+    assert _identity_decision_status("account_link", "account-graph-c-a") == "pending"
+
+
+async def test_identity_mixed_late_failure_rolls_back_then_shares_operation_id() -> (
+    None
+):
+    account = _identity_account_setup("atomic")
+    merchant = _identity_merchant_setup("atomic")
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account["decision_id"],
+            decision="reject",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant["decision_id"],
+            decision="reject",
+        ),
+    ]
+
+    with patch.object(
+        MerchantLinksService,
+        "set",
+        side_effect=RuntimeError("injected late failure"),
+    ):
+        with pytest.raises(RuntimeError, match="injected late failure"):
+            await identity_links_decide_coarse(decisions=decisions)
+
+    assert _identity_decision_status("account_link", account["decision_id"]) == (
+        "pending"
+    )
+    assert _identity_decision_status("merchant_link", merchant["decision_id"]) == (
+        "pending"
+    )
+
+    response = await identity_links_decide_coarse(decisions=decisions)
+
+    assert response.error is None
+    assert len({item.operation_id for item in response.data.results}) == 1
+    assert response.data.results[0].operation_id == response.data.operation_id
+    with get_database(read_only=True) as db:
+        audit_operation_ids = {
+            str(row[0])
+            for row in db.execute(
+                """
+                SELECT DISTINCT operation_id
+                FROM app.audit_log
+                WHERE target_id IN (?, ?)
+                """,
+                [account["decision_id"], merchant["decision_id"]],
+            ).fetchall()
+        }
+    assert audit_operation_ids == {response.data.operation_id}
+
+
+async def test_identity_standard_write_reports_low_sensitivity() -> None:
+    setup = _identity_merchant_setup("sensitivity")
+    captured: list[dict[str, Any]] = []
+    mcp = isolated_server(register_review_coarse_writes)
+
+    with patch("moneybin.mcp.decorator.write_privacy_event", captured.append):
+        response = await call_tool_raw(
+            mcp,
+            "identity_links_decide",
+            {
+                "decisions": [
+                    {
+                        "kind": "merchant_link",
+                        "decision_id": setup["decision_id"],
+                        "decision": "reject",
+                    }
+                ]
+            },
+        )
+
+    assert response.structuredContent is not None
+    assert response.structuredContent["status"] == "ok"
+    assert len(captured) == 1
+    assert captured[0]["sensitivity"] == "low"
+    assert captured[0]["classes_returned"] == [
+        "aggregate",
+        "record_id",
+        "txn_type",
+    ]
+
+
+def test_identity_confirmation_binds_order_state_ids_and_blast_radius() -> None:
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-target",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
+            decision="reject",
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id="security-decision",
+            decision="accept",
+            target_id="security-target",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+
+    binding = _identity_binding(decisions, plan)
+
+    assert binding.arguments["decisions"] == [
+        decision.model_dump(mode="json") for decision in decisions
+    ]
+    assert binding.arguments["before_state"] == [
+        {"version": "initial", "index": 0},
+        {"version": "initial", "index": 1},
+        {"version": "initial", "index": 2},
+    ]
+    assert binding.resolved_ids == (
+        "account-decision",
+        "account_link-source",
+        "account-target",
+        "merchant-decision",
+        "merchant_link-source",
+        "merchant_link-candidate",
+        "security-decision",
+        "security_link-source",
+        "security-target",
+    )
+    assert binding.blast_radius == {
+        "accounts": 1,
+        "merchants": 1,
+        "securities": 1,
+        "transactions": 3,
+        "lots": 1,
+    }
+
+
+def test_identity_plan_ignores_unchanged_accept_for_destructive_gate() -> None:
+    """Only an accept that will materially transition state needs confirmation."""
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="already-accepted",
+            decision="accept",
+            target_id="account-target",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="pending-reject",
+            decision="reject",
+        ),
+    ]
+    initial = _identity_plan(decisions)
+    plan = IdentityDecisionPlan(
+        items=(replace(initial.items[0], changed=False), initial.items[1])
+    )
+
+    assert plan.changed_count == 1
+    assert plan.destructive is False
+
+
+async def test_identity_confirmation_rechecks_live_state_and_consumes_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-target",
+        )
+    ]
+    initial = _identity_plan(decisions)
+    changed = _identity_plan(decisions, state_version="changed")
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation._active_context",
+        lambda: None,
+    )
+
+    with patch.object(
+        reviews_module, "_preview_identity_decisions", return_value=initial
+    ):
+        required = await identity_links_decide_coarse(decisions=decisions)
+
+    assert required.error is not None
+    assert required.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    assert required.error.details is not None
+    token = str(required.error.details["confirmation_token"])
+
+    def reject_changed_state(
+        requests: list[object],
+        *,
+        grant: object,
+        expected_binding: object,
+    ) -> IdentityDecisionPlan:
+        del expected_binding
+        assert grant is not None
+        grant.verify(_identity_binding(decisions, changed))  # type: ignore[attr-defined]
+        raise AssertionError("changed binding must be rejected")
+
+    with (
+        patch.object(
+            reviews_module,
+            "_preview_identity_decisions",
+            return_value=initial,
+        ),
+        patch.object(
+            reviews_module,
+            "_apply_identity_decisions",
+            side_effect=reject_changed_state,
+        ),
+    ):
+        mismatched = await identity_links_decide_coarse(
+            decisions=decisions,
+            confirmation_token=token,
+        )
+        replayed = await identity_links_decide_coarse(
+            decisions=decisions,
+            confirmation_token=token,
+        )
+
+    assert mismatched.error is not None
+    assert mismatched.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert replayed.error is not None
+    assert replayed.error.code == error_codes.MUTATION_CONFIRMATION_REPLAYED
+
+
+async def test_identity_reject_batch_uses_public_privacy_actor() -> None:
+    decisions = [
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
+            decision="reject",
+        )
+    ]
+    plan = _identity_plan(decisions)
+    captured: list[dict[str, Any]] = []
+    mcp = isolated_server(register_review_coarse_writes)
+
+    with (
+        patch.object(reviews_module, "_preview_identity_decisions", return_value=plan),
+        patch.object(reviews_module, "_apply_identity_decisions", return_value=plan),
+        patch("moneybin.mcp.decorator.write_privacy_event", captured.append),
+    ):
+        response = await call_tool_raw(
+            mcp,
+            "identity_links_decide",
+            {
+                "decisions": [
+                    decision.model_dump(mode="json", exclude_none=True)
+                    for decision in decisions
+                ]
+            },
+        )
+
+    assert response.structuredContent is not None
+    assert response.structuredContent["data"]["applied_count"] == 1
+    assert len(captured) == 1
+    assert captured[0]["actor"] == "mcp.identity_links_decide"
+
+
+def test_identity_batch_rolls_back_before_outcome_metrics_on_late_failure() -> None:
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="reject",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
+            decision="reject",
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id="security-decision",
+            decision="reject",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch(
+            "moneybin.services.review_decisions_service.MerchantLinksService"
+        ) as merchant_class,
+        patch(
+            "moneybin.services.review_decisions_service.SecurityLinksService"
+        ) as security_class,
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        account_service = account_class.return_value
+        merchant_service = merchant_class.return_value
+        security_service = security_class.return_value
+        merchant_service.set.side_effect = RuntimeError("late merchant failure")
+        with (
+            pytest.raises(RuntimeError, match="late merchant failure"),
+        ):
+            service.apply_identity(decisions, verify=lambda _: None)
+
+    db.begin.assert_called_once_with()
+    db.rollback.assert_called_once_with()
+    db.commit.assert_not_called()
+    account_service.record_committed_outer_decisions.assert_not_called()
+    merchant_service.record_committed_outer_outcomes.assert_not_called()
+    security_service.record_committed_outer_outcomes.assert_not_called()
+
+
+def test_identity_batch_emits_each_domain_metric_only_after_commit() -> None:
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="reject",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
+            decision="reject",
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id="security-decision",
+            decision="reject",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch(
+            "moneybin.services.review_decisions_service.MerchantLinksService"
+        ) as merchant_class,
+        patch(
+            "moneybin.services.review_decisions_service.SecurityLinksService"
+        ) as security_class,
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        result = service.apply_identity(decisions, verify=lambda _: None)
+
+    assert result is plan
+    db.commit.assert_called_once_with()
+    db.rollback.assert_not_called()
+    account_class.return_value.record_committed_outer_decisions.assert_called_once_with()
+    merchant_class.return_value.record_committed_outer_outcomes.assert_called_once_with((
+        "rejected",
+    ))
+    security_class.return_value.record_committed_outer_outcomes.assert_called_once_with((
+        "rejected",
+    ))
+
+
+async def test_review_standard_write_registrar_is_closed_and_max_risk() -> None:
+    mcp = isolated_server(register_review_coarse_writes)
+
+    tools = {
+        tool.name: tool
+        for tool in await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    }
+    assert set(tools) == {"reviews_decide", "identity_links_decide"}
+    reviews_tool = await listed_tool(mcp, "reviews_decide")
+    identity_tool = await listed_tool(mcp, "identity_links_decide")
+    assert reviews_tool.outputSchema is None
+    assert identity_tool.outputSchema is None
+    assert reviews_tool.annotations is not None
+    assert reviews_tool.annotations.destructiveHint is False
+    assert identity_tool.annotations is not None
+    assert identity_tool.annotations.destructiveHint is True

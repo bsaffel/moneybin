@@ -81,11 +81,11 @@ The user must trust that the server:
 - The Encrypted Sync tier is significantly better than most financial SaaS (which stores plaintext indefinitely).
 - Future TEE integration could further reduce the trust requirement.
 
-### Comparison
+### Where the trust boundary sits
 
-- **Better than** traditional financial aggregators (Mint, YNAB) -- they store plaintext indefinitely
-- **Similar to** email with PGP -- server handles the message, then encrypts
-- **Not as good as** true zero-knowledge services (Signal) -- but they don't handle third-party API data
+- Plaintext-at-rest aggregation retains raw transaction data server-side indefinitely; MoneyBin's sync tier handles plaintext only in transit through the broker.
+- The model is the PGP-mail shape: the server relays the message, the client holds the keys.
+- It is not zero-knowledge: third-party API data necessarily transits the broker readable before encryption.
 
 ## References
 

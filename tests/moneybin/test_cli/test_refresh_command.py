@@ -20,7 +20,7 @@ def runner() -> CliRunner:
 
 
 def test_refresh_json_success(runner: CliRunner) -> None:
-    """JSON output on success emits envelope with applied=true and no actions."""
+    """Full-refresh JSON success exposes identity review next steps."""
     fake_result = RefreshResult(applied=True, duration_seconds=4.2, error=None)
     with (
         patch("moneybin.services.refresh.refresh", return_value=fake_result),
@@ -37,7 +37,10 @@ def test_refresh_json_success(runner: CliRunner) -> None:
     # self_heal_actions is always emitted (empty until the safelist lands) so
     # agents see a stable key — guard that "always-present" contract.
     assert payload["data"]["self_heal_actions"] == []
-    assert payload["actions"] == []
+    assert payload["data"]["identity_errors"] == []
+    actions = " ".join(payload["actions"])
+    assert 'reviews(kind="account_links")' in actions
+    assert 'reviews(kind="merchant_links")' in actions
 
 
 def test_refresh_json_failure_includes_action_hint(runner: CliRunner) -> None:
@@ -97,6 +100,20 @@ def test_refresh_step_transform_only(runner: CliRunner) -> None:
 
     assert result.exit_code == 0
     assert svc.call_args.kwargs == {"steps": ["transform"]}
+
+
+def test_refresh_step_identity_only(runner: CliRunner) -> None:
+    """Identity proposal backfill is a selectable CLI refresh stage."""
+    fake_result = RefreshResult(applied=False, duration_seconds=None)
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result) as svc,
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh", "--step", "identity"])
+
+    assert result.exit_code == 0, result.output
+    assert svc.call_args.kwargs == {"steps": ["identity"]}
 
 
 def test_refresh_step_repeatable(runner: CliRunner) -> None:
@@ -173,9 +190,12 @@ def test_refresh_matcher_crash_surfaced_in_json(runner: CliRunner) -> None:
         result.stdout
     )  # stdout stays clean JSON (warning is on stderr)
     assert payload["data"]["matching_error"] == "matcher boom"
-    tools = [ra["tool"] for ra in payload["recovery_actions"]]
-    assert "refresh_run" in tools
-    assert "system_doctor" in tools
+    recovery = {ra["tool"]: ra["arguments"] for ra in payload["recovery_actions"]}
+    assert "refresh_run" in recovery
+    assert recovery["system_status"] == {
+        "sections": ["doctor"],
+        "detail": "full",
+    }
     # The crash is also surfaced as a stderr warning, not only in the payload.
     assert "Matching step failed" in result.output
 

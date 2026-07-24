@@ -19,7 +19,7 @@ def recipe(
     affected_ids: list[str],  # noqa: ARG001 — dedup audit doesn't carry per-row ids
     context: RecipeContext,  # noqa: ARG001 — pure recipe
 ) -> list[RecoveryAction]:
-    """Emit full refresh_run + system_doctor(full=True)."""
+    """Emit a full refresh followed by the standard doctor status section."""
     return [
         RecoveryAction(
             tool="refresh_run",
@@ -34,8 +34,8 @@ def recipe(
             idempotent=True,
         ),
         RecoveryAction(
-            tool="system_doctor",
-            arguments={"full": True},
+            tool="system_status",
+            arguments={"sections": ["doctor"], "detail": "full"},
             rationale=(
                 "Re-run all invariants in deep-scan mode to surface the "
                 "specific raw/core count delta that caused the mismatch."

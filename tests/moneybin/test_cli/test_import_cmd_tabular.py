@@ -16,9 +16,11 @@ import pytest
 from _pytest.logging import LogCaptureFixture
 from typer.testing import CliRunner
 
+from moneybin import error_codes
 from moneybin.cli.commands.import_cmd import app
 from moneybin.database import Database
-from moneybin.services.import_service import ImportResult
+from moneybin.errors import UserError
+from moneybin.services.import_service import ImportResult, SavedFormatDeletePlan
 
 runner = CliRunner()
 
@@ -323,12 +325,94 @@ class TestDeleteFormat:
     def test_unknown_format_exits_with_error(self, mocker: Any) -> None:
         """Attempting to delete an unknown user format exits 1."""
         mocker.patch("moneybin.database.get_database", return_value=MagicMock())
-        mocker.patch(
-            "moneybin.extractors.tabular.formats.delete_format_from_db",
-            return_value=False,
+        service = mocker.patch(
+            "moneybin.services.import_service.ImportService"
+        ).return_value
+        service.plan_saved_format_delete.side_effect = UserError(
+            "Saved format not found.",
+            code="saved_format_not_found",
         )
         result = runner.invoke(app, ["formats", "delete", "my_custom_format", "--yes"])
         assert result.exit_code == 1
+
+    def test_delete_uses_the_reviewed_plan_for_live_verification(
+        self,
+        mocker: Any,
+    ) -> None:
+        mocker.patch("moneybin.database.get_database", return_value=MagicMock())
+        service = mocker.patch(
+            "moneybin.services.import_service.ImportService"
+        ).return_value
+        plan = SavedFormatDeletePlan(
+            format_name="my_custom_format",
+            state_sha256="reviewed-state",
+        )
+        service.plan_saved_format_delete.return_value = plan
+
+        def verify_live(
+            _name: str,
+            *,
+            actor: str,
+            verify: Any,
+        ) -> str:
+            assert actor == "cli"
+            verify(plan)
+            return "op_delete"
+
+        service.delete_saved_format_confirmed.side_effect = verify_live
+
+        result = runner.invoke(
+            app,
+            ["formats", "delete", "my_custom_format", "--yes"],
+        )
+
+        assert result.exit_code == 0
+        service.plan_saved_format_delete.assert_called_once_with("my_custom_format")
+        service.delete_saved_format_confirmed.assert_called_once()
+
+    def test_delete_rejects_a_changed_live_plan_with_canonical_error(
+        self,
+        mocker: Any,
+    ) -> None:
+        mocker.patch("moneybin.database.get_database", return_value=MagicMock())
+        service = mocker.patch(
+            "moneybin.services.import_service.ImportService"
+        ).return_value
+        reviewed = SavedFormatDeletePlan(
+            format_name="my_custom_format",
+            state_sha256="reviewed-state",
+        )
+        live = SavedFormatDeletePlan(
+            format_name="my_custom_format",
+            state_sha256="changed-state",
+        )
+        service.plan_saved_format_delete.return_value = reviewed
+        seen_codes: list[str] = []
+
+        def verify_changed(
+            _name: str,
+            *,
+            actor: str,
+            verify: Any,
+        ) -> str:
+            assert actor == "cli"
+            try:
+                verify(live)
+            except UserError as error:
+                seen_codes.append(error.code)
+                raise
+            raise AssertionError("changed live plan was unexpectedly accepted")
+
+        service.delete_saved_format_confirmed.side_effect = verify_changed
+
+        result = runner.invoke(
+            app,
+            ["formats", "delete", "my_custom_format", "--yes"],
+        )
+
+        assert result.exit_code == 1
+        assert seen_codes == [error_codes.MUTATION_CONFIRMATION_MISMATCH]
+        service.delete_saved_format_confirmed.assert_called_once()
 
 
 class TestPreview:

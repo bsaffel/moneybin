@@ -51,12 +51,6 @@ LARGE_TXN_ANOMALIES: tuple[str, ...] = ("none", "account", "category")
 DRIFT_STATUSES: tuple[str, ...] = ("drift", "warning", "clean", "no-data", "all")
 
 
-_WIDEN_WINDOW_HINT = (
-    "Showing the last 12 months — pass from_month='YYYY-MM' and/or "
-    "to_month='YYYY-MM' to widen or shift the window."
-)
-
-
 def default_window(months: int = 12) -> tuple[str, str]:
     """Return (from_month, to_month) as YYYY-MM strings for the last N months.
 
@@ -76,7 +70,10 @@ def default_window(months: int = 12) -> tuple[str, str]:
 
 
 def resolve_window(
-    from_month: str | None, to_month: str | None
+    from_month: str | None,
+    to_month: str | None,
+    *,
+    report_id: str | None = None,
 ) -> tuple[str | None, str | None, str | None, str | None]:
     """Default to the last 12 months when both bounds are omitted.
 
@@ -103,4 +100,13 @@ def resolve_window(
         period = f"through {to_month}"
     else:
         period = None
-    return from_month, to_month, period, (_WIDEN_WINDOW_HINT if defaulted else None)
+    hint = None
+    if defaulted:
+        report_call = (
+            f"reports(report_id={report_id!r}, "
+            "parameters={'from_month': 'YYYY-MM', 'to_month': 'YYYY-MM'})"
+            if report_id is not None
+            else "reports with explicit from_month and to_month parameters"
+        )
+        hint = f"Rerun {report_call} to widen or shift the last 12 months"
+    return from_month, to_month, period, hint

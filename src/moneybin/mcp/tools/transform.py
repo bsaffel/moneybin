@@ -11,7 +11,6 @@ not registered on the MCP surface.
 from __future__ import annotations
 
 from moneybin.database import get_database
-from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.system import (
     TransformAuditPayload,
     TransformAuditRow,
@@ -23,7 +22,6 @@ from moneybin.privacy.payloads.system import (
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 
-@mcp_tool()
 def transform_status() -> ResponseEnvelope[TransformStatusPayload]:
     """Current SQLMesh model state and environment."""
     from moneybin.services.transform_service import TransformService
@@ -55,7 +53,6 @@ def transform_status() -> ResponseEnvelope[TransformStatusPayload]:
     )
 
 
-@mcp_tool()
 def transform_plan() -> ResponseEnvelope[TransformPlanPayload]:
     """Preview pending SQLMesh changes."""
     from moneybin.services.transform_service import TransformService
@@ -73,7 +70,6 @@ def transform_plan() -> ResponseEnvelope[TransformPlanPayload]:
     )
 
 
-@mcp_tool()
 def transform_validate() -> ResponseEnvelope[TransformValidatePayload]:
     """Check that model SQL parses and resolves."""
     from moneybin.services.transform_service import TransformService
@@ -93,7 +89,6 @@ def transform_validate() -> ResponseEnvelope[TransformValidatePayload]:
     )
 
 
-@mcp_tool(read_only=False)
 def transform_audit(start: str, end: str) -> ResponseEnvelope[TransformAuditPayload]:
     """Run SQLMesh data-quality audits over a date window.
 

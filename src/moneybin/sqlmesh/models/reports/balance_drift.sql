@@ -6,35 +6,53 @@ MODEL (
   kind VIEW
 );
 
+WITH positions AS (
+  SELECT
+    ba.account_id,
+    a.display_name AS account_name,
+    ba.assertion_date,
+    ba.balance AS asserted_balance,
+    CASE
+      WHEN NOT fbd.is_observed
+      THEN fbd.balance
+      WHEN NOT fbd.reconciliation_delta IS NULL
+      THEN fbd.balance - fbd.reconciliation_delta
+      ELSE NULL
+    END AS computed_balance
+  FROM app.balance_assertions AS ba
+  INNER JOIN core.dim_accounts AS a
+    ON ba.account_id = a.account_id
+  LEFT JOIN core.fct_balances_daily AS fbd
+    ON ba.account_id = fbd.account_id AND ba.assertion_date = fbd.balance_date
+  WHERE
+    NOT a.archived
+), deltas AS (
+  SELECT
+    account_id,
+    account_name,
+    assertion_date,
+    asserted_balance,
+    computed_balance,
+    asserted_balance - computed_balance AS drift
+  FROM positions
+)
 SELECT
-  ba.account_id, /* Joinable to core.dim_accounts */
-  a.display_name AS account_name, /* Account display name */
-  ba.assertion_date, /* User-asserted balance date */
-  ba.balance AS asserted_balance, /* User-entered balance for this date */
-  fbd.balance AS computed_balance, /* Carried-forward balance from core.fct_balances_daily; NULL if missing */
-  ba.balance - fbd.balance AS drift, /* asserted_balance - computed_balance */
-  ABS(ba.balance - fbd.balance) AS drift_abs, /* For default sort */
+  account_id, /* Joinable to core.dim_accounts */
+  account_name, /* Account display name */
+  assertion_date, /* User-asserted balance date */
+  asserted_balance, /* User-entered balance for this date */
+  computed_balance, /* Interpolated daily balance or observed balance minus its adjustment; NULL for a missing row or first observation */
+  drift, /* asserted_balance - computed_balance */
+  ABS(drift) AS drift_abs, /* For default sort */
+  CASE WHEN asserted_balance <> 0 THEN drift / asserted_balance ELSE NULL END AS drift_pct, /* drift / asserted_balance */
+  CAST(CURRENT_DATE - assertion_date AS INT) AS days_since_assertion, /* today - assertion_date */
   CASE
-    WHEN ba.balance <> 0
-    THEN (
-      ba.balance - fbd.balance
-    ) / ba.balance
-    ELSE NULL
-  END AS drift_pct, /* drift / asserted_balance */
-  CAST(CURRENT_DATE - ba.assertion_date AS INT) AS days_since_assertion, /* today - assertion_date */
-  CASE
-    WHEN fbd.balance IS NULL
+    WHEN computed_balance IS NULL
     THEN 'no-data'
-    WHEN ABS(ba.balance - fbd.balance) < 1.00
+    WHEN ABS(drift) < 1.00
     THEN 'clean'
-    WHEN ABS(ba.balance - fbd.balance) < 10.00
+    WHEN ABS(drift) < 10.00
     THEN 'warning'
     ELSE 'drift'
   END AS status /* clean (<$1) | warning (<$10) | drift (>=$10) | no-data (computed_balance NULL) */
-FROM app.balance_assertions AS ba
-INNER JOIN core.dim_accounts AS a
-  ON ba.account_id = a.account_id
-LEFT JOIN core.fct_balances_daily AS fbd
-  ON ba.account_id = fbd.account_id AND ba.assertion_date = fbd.balance_date
-WHERE
-  NOT a.archived
+FROM deltas

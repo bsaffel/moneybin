@@ -195,7 +195,11 @@ def _carve_region(text: str, anchors: RegionAnchors) -> str:
         # Transactions" rather than the auto-derive default of "Total:", so this
         # fallback fires routinely. Mid-table lines below the start are still
         # included but aren't transaction-shaped, so the executor skips them.
-        logger.warning(
+        # DEBUG, not WARNING: this is the expected path, not an anomaly. It fires
+        # on virtually every successful import, and a warning that's almost always
+        # benign trains operators to ignore the ones that aren't. The genuinely
+        # misconfigured case — a missing START anchor — still warns above.
+        logger.debug(
             f"row_region end_anchor {anchors.end_anchor!r} not found after start — "
             f"carving to end of document"
         )

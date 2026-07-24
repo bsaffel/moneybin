@@ -24,12 +24,10 @@ Five bugs, all confirmed against the current `main`:
 
 Bugs 1, 2, 5 are the same problem (field coverage). Bugs 3 and 4 are independent. Together they explain every "why didn't the snowball roll?" symptom from the live test.
 
-A cross-project survey of how Actual Budget, Firefly III, Maybe Finance, hledger, Beancount/smart_importer, and GnuCash handle matching at runtime informs the design choices below. Where this spec adopts a pattern verbatim from one of those projects, the source is cited.
-
 ## Design principles
 
-1. **Field coverage parity.** Whatever signal the LLM is allowed to see, the deterministic matcher also sees. Whatever the matcher operates on, the LLM also sees (subject to redaction). The two must never diverge — otherwise rules learned from LLM-categorized rows fail to fire on identical future rows.
-2. **Exemplars over patterns for system-created rules.** When the system (LLM-assist or import auto-rule) creates a merchant from a categorized row, store the exact normalized `match_text` as an exemplar in a `oneOf` set — never auto-generalize to a `contains` pattern. Generalization to `contains` / `regex` is a *user* action, deliberate and specific. (Adopted from Actual Budget's `imported_payee` rename pattern, which made the same trade-off after their auto-generalization caused over-matching.)
+1. **Field coverage parity.** Whatever signal the LLM is allowed to see, the deterministic matcher also sees. Whatever the matcher operates on, the LLM also sees (subject to redaction). The two must never diverge — otherwise a rule created from an LLM-categorized row can fail to fire on an identical future row.
+2. **Exemplars over patterns for system-created rules.** When the system (LLM-assist or import auto-rule) creates a merchant from a categorized row, store the exact normalized `match_text` as an exemplar in a `oneOf` set—never auto-generalize to a `contains` pattern. The live over-matching failure makes the reason concrete: generalization to `contains` / `regex` is a *user* action, deliberate and specific.
 3. **Source precedence is enforced on write, not on read.** Every categorization source has a numeric priority. Lower-priority sources cannot overwrite higher-priority assignments. The `transaction_categories.categorized_by` column is the lock; no separate lock table is required.
 4. **Apply runs after every commit, automatically.** When the LLM-assist tool commits a batch of categorizations (creating new merchants and rules along the way), `categorize_pending()` runs immediately to fan those new entries out to still-uncategorized rows. This is the snowball mechanism the cold-start spec promised but never implemented.
 5. **`is_transfer` is a signal, not a gate.** Per the matching subsystem's load-bearing principle in `matching-transfer-detection.md` ("`is_transfer` and categorization are independent metadata axes"), categorization runs on all transactions regardless of transfer status. The matcher and LLM see `is_transfer` as a feature; report layers filter on it.
@@ -108,7 +106,9 @@ Every merchant in `core.dim_merchants` is user-created or system-created on the 
 
 ### OP_SCORES specificity ranking
 
-Within a source, specificity is scored to break ties when multiple rules or merchants match the same row. Adopted verbatim from Actual Budget's `rules/rule-utils.ts`:
+Within a source, specificity is scored to break ties when multiple rules or
+merchants match the same row. Exact exemplars must outrank broad text matches
+so the system cannot turn a single correction into a broad, silent rule:
 
 | Match shape | Score |
 |---|---|
@@ -145,7 +145,7 @@ The previous behavior — creating a merchant with `raw_pattern = normalize_desc
 
 ### Invented-pattern floor (auto-rule proposals)
 
-A related but distinct machine-pattern path lives in the auto-rule proposer (`AutoRuleService`, [`categorization-auto-rules.md`](categorization-auto-rules.md)): when a categorized transaction has no associated merchant, the proposer falls back to a normalized `description`/`memo` as the rule pattern. `normalize_description()` can reduce a description to a 1–2 character token (a truncated "TRANSFER TO ..." becomes "TO"); as a `contains` pattern that token would match any description containing it — e.g. STORE, AUTO, TOTAL — not just the transactions that produced it. Below a configured floor (`auto_rule_min_contains_length`, default 4, in `CategorizationSettings`), the proposer emits `match_type='exact'` instead of `contains`: the evidence is preserved, but the rule can only fire on a description that IS the token. This floor governs only the proposer's machine-invented fallback pattern — a merchant's `raw_pattern` is always user-authored (see "What auto-merchant creation no longer does" above) and returns untouched.
+A related but distinct machine-pattern path lives in the auto-rule proposer (`AutoRuleService`, [`categorization-auto-rules.md`](categorization-auto-rules.md)): when a categorized transaction has no associated merchant, the proposer falls back to a normalized `description`/`memo` as the rule pattern. `normalize_description()` can reduce a description to a 1–2 character token (a truncated "TRANSFER TO ..." becomes "TO"); as a `contains` pattern that token would match any description containing it — e.g. STORE, AUTO, TOTAL — including transactions beyond the source rows. Below a configured floor (`auto_rule_min_contains_length`, default 4, in `CategorizationSettings`), the proposer emits `match_type='exact'` instead of `contains`: the evidence is preserved, but the rule can only fire on a description that IS the token. This floor governs only the proposer's machine-invented fallback pattern — a merchant's `raw_pattern` is always user-authored (see "What auto-merchant creation no longer does" above) and returns untouched.
 
 ## Source precedence
 
@@ -225,7 +225,7 @@ This is the entire locking primitive. No separate `app.locked_categorizations` t
 
 ### Reporting: the `merchant_map` stats bucket
 
-`categorized_by='rule'` is written by both the rule engine and merchant-pattern matching — the merchant-matcher path deliberately stamps `'rule'` rather than a distinct persisted value, so machine writes don't leak into the auto-rule override-detection query (`AutoRuleService.check_overrides`, which counts `'user'`/`'ai'` rows as human corrections). `transactions_categorize_stats`'s `by_source` breakdown splits these back apart for reporting only: a row is bucketed as `merchant_map` when `categorized_by='rule' AND rule_id IS NULL AND merchant_id IS NOT NULL`, and as `rule` otherwise, so the counts reconcile with `transactions_categorize_rules`' active rule list. The persisted `categorized_by` column is untouched — this is a read-time reclassification, not a new priority tier or a new `SOURCE_PRIORITY` value.
+`categorized_by='rule'` is written by both the rule engine and merchant-pattern matching — the merchant-matcher path deliberately stamps `'rule'` rather than a distinct persisted value, so machine writes don't leak into the auto-rule override-detection query (`AutoRuleService.check_overrides`, which counts `'user'`/`'ai'` rows as human corrections). `system_status(sections=["categorization"])` splits these back apart in its `by_source` breakdown for reporting only: a row is bucketed as `merchant_map` when `categorized_by='rule' AND rule_id IS NULL AND merchant_id IS NOT NULL`, and as `rule` otherwise, so the counts reconcile with `transactions_categorize_rules(view="active")`. The persisted `categorized_by` column is untouched — this is a read-time reclassification, not a new priority tier or a new `SOURCE_PRIORITY` value.
 
 ## Apply order
 
@@ -235,13 +235,15 @@ This is the entire locking primitive. No separate `app.locked_categorizations` t
 |---|---|---|
 | Import completes | `import_service.py` (existing) | All uncategorized rows from the import |
 | Rules CLI command | `cli/commands/transactions/categorize/rules.py` (existing) | All uncategorized rows |
-| **`transactions_categorize_commit` commits a batch** | `transactions_categorize_commit` MCP tool (renamed from `_apply` per PR #171) | All still-uncategorized rows |
-| **Edit op with `reapply=True`** | rule create/delete operations (`transactions_categorize_rules_create` / `_delete`) | Rows matching the edited entity |
+| **`transactions_categorize_commit` commits a batch** | `transactions_categorize_commit` MCP tool | All still-uncategorized rows |
+| **Rule target-state change** | `transactions_categorize_rules_set(rules=[...])`, then a separate `transactions_categorize_run(methods=["rules"])` call when an immediate cascade is required | All still-uncategorized rows |
 | **Categorize cascade** | `transactions_categorize_run(methods=[...])` umbrella (PR #171) — canonical `["rules","merchants"]` routes through `categorize_pending()`'s shared-scan path; non-canonical orders fall through to per-method invocations | All still-uncategorized rows |
 
 The third row is the snowball fix. After the LLM-assist batch's writes commit, `categorize_pending()` runs once. New merchants and rules from the batch fan out to remaining uncategorized rows in the same dataset. The next `categorize_assist` call sees only what's still genuinely uncategorized.
 
-The fourth row is opt-in via flag — not a new tool. Edit operations on merchants and rules accept a `reapply: bool = False` parameter; when `True`, the operation runs `categorize_pending()` scoped to that one entity's match set after the write.
+The fourth row is an explicit two-call workflow, not a mutation parameter. Set
+the rule target state, then call `transactions_categorize_run(methods=["rules"])`
+when the caller needs an immediate rules cascade.
 
 ### Convergence
 
@@ -311,7 +313,7 @@ No data migration is required — existing merchants retain their `raw_pattern` 
 > **Shipped via PRs #155, #171, #174.** All seven planned steps landed. The original step-by-step plan and file-modification checklist are retired as historical noise; the shipped artifacts are:
 >
 > - **Categorization package** at `src/moneybin/services/categorization/` (PR #155 split): `__init__.py` (facade), `assist.py` (`RedactedTransaction`, `categorize_assist`), `matcher.py` (`_match_text`, `_match_exemplar`, `_fetch_merchants`), `applier.py` (`write_categorization`, commit pipeline), `orchestrator.py` (exemplar accumulation, `categorize_pending`), `queries.py` (shared SQL), `_shared.py` (`MatchType`, `priority_case_sql`, `match_shape_case_sql`).
-> - **MCP tools** at `src/moneybin/mcp/tools/transactions_categorize.py`: `transactions_categorize_commit` (renamed from `_apply` in PR #171) calls `categorize_pending()` post-commit; `transactions_categorize_run` umbrella; `transactions_categorize_rules_create` / `_delete` accept `reapply`.
+> - **MCP tools** at `src/moneybin/mcp/tools/transactions_categorize.py`: `transactions_categorize_commit` calls `categorize_pending()` post-commit; `transactions_categorize_rules_set(rules=[...])` declares rule target state; callers invoke `transactions_categorize_run(methods=["rules"])` separately when immediate reapplication is required.
 > - **Schema migration** `V008__user_merchants_exemplars.py` added `exemplars VARCHAR[]` and dropped NOT NULL from `raw_pattern`.
 > - **`category_id` FK columns** added in V014 (PR #174) alongside `category`/`subcategory` on `app.user_merchants` / `app.transaction_categories` / `app.transaction_splits` — dual-write phase pending Phase 2 drop.
 
@@ -351,7 +353,9 @@ Per `.claude/rules/testing.md`, features that cross subsystem boundaries need co
 These came up during design and are explicitly out of scope. Each is tracked as follow-up work.
 
 1. **`transaction_type` canonicalization.** Today the column carries source-specific vocabulary (OFX `DEBIT`/`CREDIT`/`XFER`, Plaid `payment_channel` enum). When users start authoring rules like `transaction_type = 'check'`, source coupling becomes a problem. Defer until that workflow surfaces.
-2. **Field-prefix syntax** (`memo:youtube`, `payee:starbucks`). Firefly III and hledger support per-field rule patterns. This spec routes everything through concatenated `match_text`. Add prefix syntax only if a user reports false-positive matches caused by token bleed across fields.
+2. **Field-prefix syntax** (`memo:youtube`, `payee:starbucks`). This spec routes
+   everything through concatenated `match_text`. Add prefix syntax only if a
+   user reports false-positive matches caused by token bleed across fields.
 3. **Exemplar set graduation.** No cap in v1; the `merchant_exemplar_count` metric will surface any merchant approaching pathological size. Graduation to a generalized `contains` pattern (LLM-proposed or user-confirmed) is a follow-up spec.
 4. **Per-field locks.** v1 ships row-level precedence only. Per-field locks (lock `category` but allow `subcategory` automation) wait for a real workflow.
 5. **Convergence loop in `categorize_pending`.** v1 runs a single pass. Multi-pass with idempotence detection added if observability shows non-trivial cascades.

@@ -34,10 +34,10 @@ class NetWorthAccountRow:
 class NetWorthSnapshotPayload:
     """Net worth at a point in time + per-account breakdown."""
 
-    balance_date: Annotated[date, DataClass.TXN_DATE]
-    net_worth: Annotated[Decimal, DataClass.BALANCE]
-    total_assets: Annotated[Decimal, DataClass.BALANCE]
-    total_liabilities: Annotated[Decimal, DataClass.BALANCE]
+    balance_date: Annotated[date | None, DataClass.TXN_DATE]
+    net_worth: Annotated[Decimal | None, DataClass.BALANCE]
+    total_assets: Annotated[Decimal | None, DataClass.BALANCE]
+    total_liabilities: Annotated[Decimal | None, DataClass.BALANCE]
     account_count: Annotated[int, DataClass.AGGREGATE]
     per_account: list[NetWorthAccountRow] = field(default_factory=list)
 

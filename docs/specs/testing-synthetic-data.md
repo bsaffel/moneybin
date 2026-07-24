@@ -8,10 +8,9 @@ implemented (promoted from `src/moneybin/testing/synthetic/` to top-level `src/m
 
 Produce realistic, deterministic, multi-year financial histories for fictional personas
 — enabling integration testing, demos, feature development, and autonomous verification
-without real financial data. Modeled on Beancount's `bean-example`; targets Level 2
-realism (real 2026 brand names, log-normal distributions, seasonal patterns) with an
-architecture designed for Level 3 graduation through richer seed data, not engine
-rewrites.
+without real financial data. It targets Level 2 realism (real 2026 brand names,
+log-normal distributions, seasonal patterns) with an architecture designed for
+Level 3 graduation through richer seed data, not engine rewrites.
 
 ## Background
 
@@ -38,13 +37,13 @@ problem (data masking pipeline vs. financial life simulator), same output layer
 (`synthetic` schema, raw table writes). Designed in the same session to ensure
 architectural alignment.
 
-### Competitive context
+### Design requirements
 
-Most personal finance tools ship with no test data infrastructure. Beancount's
-`bean-example` is the gold standard — a single-persona generator that produces realistic
-ledger entries. MoneyBin's generator extends this model with multiple personas, ground-
-truth labels for ML scoring, deterministic seeding for reproducibility, and a declarative
-YAML architecture that separates financial life definitions from engine logic.
+The generator needs multiple personas, ground-truth labels for scoring,
+deterministic seeding for reproducibility, and a declarative YAML architecture
+that separates financial-life definitions from engine logic. Those properties
+let the same fixture support unit, integration, scenario, and agent-driven
+evaluation without exposing real financial data.
 
 ---
 
@@ -517,7 +516,7 @@ where doing so exercises real code paths. Columns not listed default to NULL.
 |---|---|
 | `account_id` | Synthetic source-system ID (`SYN100001`, etc.), seeded deterministically |
 | `routing_number` | NULL |
-| `account_type` | Mapped from persona YAML `type`: `checking`→`CHECKING`, `savings`→`SAVINGS`, `credit_card`→`CREDITLINE` |
+| `account_type` | Mapped from persona YAML `type`: `checking`→`CHECKING`, `savings`→`SAVINGS`, `credit_card`→`CREDITCARD`. These are raw OFX-side spellings; `prep` normalizes them to the canonical `depository`/`credit` via `seeds.account_type_map` |
 | `institution_org` | From persona YAML `institution` field |
 | `institution_fid` | NULL |
 | `source_file` | `synthetic://{persona}/{seed}/{account-slug}` |

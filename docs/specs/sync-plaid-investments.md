@@ -49,6 +49,8 @@ reach the ledger, everything downstream is existing machinery.
    are always a full snapshot; investment transactions are date-range queries
    with a server-owned watermark; there is no cursor) are server-internal per
    the "sync server is opaque" design principle.
+   MCP callers use `sync_pull`; `sync_status` remains the single status read
+   for connection health and link-session inspection.
 2. **Max-capture raw.** Four new tables — `raw.plaid_securities`,
    `raw.plaid_investment_transactions`, `raw.plaid_investment_holdings`, and
    `raw.plaid_investment_holding_lots` (the per-lot `tax_lots[]` detail) —
@@ -553,8 +555,9 @@ gains re-key onto the surviving security on the next transform. **Reject**
 keeps the minted security — the reviewer is asserting it genuinely is a
 distinct instrument — and records the declined pairing so the resolver never
 re-proposes it. **Undo** reverses. Sibling decisions for the same ref
-auto-reject on accept. Pending decisions surface through the domain-neutral
-`review` sweep as `security_links_pending`, mirroring `merchant_links_pending`.
+auto-reject on accept. Pending decisions surface through the domain-neutral CLI
+`moneybin review` sweep and MCP `reviews(kind="summary")` as
+`security_links_pending`, mirroring `merchant_links_pending`.
 
 **Accept must migrate specific-ID lot selections.** `app.lot_selections`
 references lots by `lot_id`, a content hash that **includes `security_id`**
@@ -789,23 +792,17 @@ The heaviest view in this spec. In order:
    `COALESCE(original_acquisition_date, trade_date)` falls back to the transfer
    date, **resetting the holding-period clock** and potentially misclassifying
    a long-held transferred position as short-term. Manual entry avoids this via
-   `--acquired DATE`; a transaction-only Plaid feed cannot. **This is the one
-   case the whole competitive field gets wrong**: a survey of shipped
-   brokerage-sync implementations found every one resets the acquisition date
-   on an external (ACATS) transfer-in — because the source lots aren't in their
-   database. But the per-lot acquisition date *is* available from Plaid, on the
-   **holdings** side: `Holding.tax_lots[]` exposes a per-lot
-   `original_purchase_datetime`, nullable where the institution doesn't
-   provide it —
-   and **no surveyed competitor consumes it**. v1 **does** capture it (§
-   `raw.plaid_investment_holding_lots`) and the Opening-lot bootstrap uses it,
-   so bootstrap-seeded lots for pre-window positions carry the *correct*
-   original acquisition date where the institution supplies it — the concrete
-   correctness edge over the field. The residual gap is narrower: an in-window
-   `transfer_in` *transaction* still has no acquisition date on the
-   transaction itself, so unless a matching `tax_lots[]` entry exists it falls
-   back to `trade_date`. Accepted, documented, and again caught by the 1099-B
-   tie-out on affected accounts.
+   `--acquired DATE`; a transaction-only Plaid feed cannot. The per-lot
+   acquisition date is available on the **holdings** side:
+   `Holding.tax_lots[]` exposes a per-lot `original_purchase_datetime`, nullable
+   where the institution does not provide it. v1 captures it in
+   `raw.plaid_investment_holding_lots`, and the opening-lot bootstrap uses it so
+   pre-window lots retain their original acquisition date where the source
+   supplies one. The residual gap is narrower: an in-window `transfer_in`
+   *transaction* still has no acquisition date on the transaction itself, so
+   unless a matching `tax_lots[]` entry exists it falls back to `trade_date`.
+   That limitation is accepted, documented, and caught by the 1099-B tie-out on
+   affected accounts.
 5. **Flip sign, normalize fee inclusion:** `-1 * amount AS amount` (Plaid
    positive = cash out → ledger negative = cash out); `quantity` passes
    through unflipped. The ledger contract requires `amount` fee-**inclusive**
@@ -876,8 +873,7 @@ acquiring transaction** in the window. With only the transaction pipeline
 feeding the ledger, that position never opens a lot — and a later Plaid *sale*
 of it is processed by the engine as an **oversold disposal**: zero cost basis,
 fully-taxed phantom gain, term forced short. This is not an edge case; it is
-the normal state of any established brokerage account on first connect, and
-every surveyed competitor gets it wrong (they reset or zero the basis).
+the normal state of any established brokerage account on first connect.
 
 **The fix — seed opening lots; the snapshot is authoritative for what's held.**
 Plaid's `tax_lots[]` describe the *shares still held*, so for anything currently
@@ -1188,11 +1184,11 @@ transactions), which also seed the golden files.
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
 | `src/moneybin/schema.py` | Add the two `app.security_link*` files to `_NON_PROVIDER_SCHEMA_FILES` (the four raw DDL files auto-discover from the Plaid extractor's schema dir — no edit needed) |
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
-| `src/moneybin/services/doctor_service.py` | **Eight** investment reconciliation checks: staging rows held out of the ledger for review (`split_underivable` / `unmapped_subtype`); opening-lot-bootstrap positions the bootstrap declined to synthesize (short/split/negative-gap); unmodeled legs stripped of ledger quantity (short/option/adjustment); engine-derived held lots diverging from the `tax_lots` snapshot; manual-and-Plaid source overlap on one account; unresolved (pending-review) securities; positions Plaid reports holding but the ledger never opened; and phantom holdings the ledger carries but the newest snapshot no longer reports |
+| `src/moneybin/services/doctor_service.py` | **Nine** investment reconciliation checks: staging rows held out of the ledger for review (`split_underivable` / `unmapped_subtype`); opening-lot-bootstrap positions the bootstrap declined to synthesize (short/split/negative-gap); unmodeled legs stripped of ledger quantity (short/option/adjustment); engine-derived held lots diverging from the `tax_lots` snapshot; manual-and-Plaid source overlap on one account; unresolved (pending-review) securities; one provider security bound to two canonical securities; positions Plaid reports holding but the ledger never opened; and phantom holdings the ledger carries but the newest snapshot no longer reports |
 | `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
 | `src/moneybin/connectors/sync_models.py` | `PullResult`: carry the per-outcome security-resolution counts (adopted / auto-bound / proposed / minted / pending) in the pull envelope — resolution is a reported stage, not a silent side effect |
 | `src/moneybin/cli/commands/sync.py` | `sync pull` output: render those counts, naming the pending-decision command whenever an identity is awaiting review |
-| Review sweep (CLI `review` / MCP) | Add `security_links_pending` count |
+| Review sweep (CLI `moneybin review` / MCP `reviews(kind="summary")`) | Add `security_links_pending` count |
 
 Server-side work (moneybin-sync: consent already requested at link time;
 endpoints to fetch/assemble the three arrays) is tracked in that repo — the
@@ -1239,11 +1235,10 @@ contract above is its specification.
   (`raw.plaid_investment_holdings_snapshots`), because the one pull that carries
   no rows — an item whose every account is liquidated — is the one whose omission
   matters most; keying "which snapshot is newest" on the rows themselves would
-  make that pull invisible and its stale predecessor look current. This matches the
-  best-in-class pattern from a survey of shipped brokerage-sync tools (dated
-  immutable snapshots); the alternative some ship — overwrite-in-place +
-  hard-delete of absent positions — forces fragile "did the broker sell it or
-  did the feed glitch?" heuristics we avoid entirely.
+  make that pull invisible and its stale predecessor look current. Dated,
+  immutable snapshots preserve the distinction between an empty pull and an
+  incomplete feed; overwrite-in-place with hard deletion would force fragile
+  "did the broker sell it or did the feed glitch?" heuristics.
 - **Refuse to merge on ambiguous identity; resolution is its own stage.** One
   identifier matching more than one catalog entry is a duplicate-catalog signal,
   not a match — so every tied candidate is surfaced as its own merge proposal and

@@ -69,7 +69,7 @@ first, implementing this shared shape rather than a PDF-only one.
 | **Confidence shapes ergonomics, not whether-to-confirm** | `high` → one-step accept; `medium` → flagged fields to eyeball; `low` → must supply the missing required fields. The engine already computes this signal; wasting it (advisory-only) was rejected. |
 | **One confidence contract across all three channels** | The headline coherence fix. Categorical `high/med/low` (tabular/gsheet) and continuous `0.7·required + 0.3·important` (PDF, ex-W-2) are unified into a normalized `score ∈ [0,1]` + derived `tier`. The score drives gating math; the tier drives ergonomics + autonomy. |
 | **Gate (`import_files`) and confirm (`import_confirm`) compose** | `import_files` stays the entry/fast-path and *detects* the gate; `import_confirm` is the data-carrying confirm step. Not either/or — the gated-establish ergonomics and the propose→confirm pair are the same workflow with two tools. Revives the originally-specced `import_confirm`. |
-| **gsheet keeps `connect`/`reconnect`** | They are `_connect`-family lifecycle verbs (establish a live binding), distinct from `import_*` (one-shot file). Coherence is the shared confidence contract + `resolve_or_confirm` primitive underneath, not identical tool names (functional parity, per project convention). |
+| **gsheet keeps `connect`/`reconnect`** | They are `_connect`-family lifecycle modes (establish a live binding), distinct from one-shot file import. Coherence is the shared confidence contract + `resolve_or_confirm` primitive underneath, not identical tool names (functional parity, per project convention). |
 | **Generous autonomy paid for by visible recovery** | Tiered agent autonomy (self-accept `high`) is the target, but ships **gated behind calibration** — we don't trust "high = auto-accept" until measured. The counterweight is recovery made obvious: every confirmed new-format import surfaces undo + re-map as `actions[]`. |
 | **`medium` gates on every channel** | Tabular's current "wave through with a log warning" is the odd one out and becomes a gate, matching gsheet. A behavior change to a shipped surface, justified by coherence. |
 | **Override is partial-merge, not whole-map** | A correction supplies only the fields it changes, merged over the detected mapping. Unifies tabular's per-field `--override` with gsheet's whole-map `--column-mapping` (coherence fix for gsheet). |
@@ -119,20 +119,18 @@ first, implementing this shared shape rather than a PDF-only one.
    not reconcile.
 6. **Known layouts reuse silently.** A recognized layout loads with no prompt
    (subject to the replay/validation guard, Requirement 9).
-7. **`import_confirm` is the confirm step.** It accepts the channel-appropriate payload —
-   `mapping={…}` / `accept=true` for tabular/gsheet, `recipe={…}, rows=[…]` for the PDF
-   bridge — validates it, saves the format, and loads. The CLI additionally accepts an
-   explicit human-owned tabular `--sign` override. `--confirm-sign` approves the inferred
-   `negative_is_income` inversion; `--sign negative_is_expense` rejects that inversion
-   and keeps the statement's printed signs. The two choices are mutually exclusive and
-   every recovery command replays the mapping, format-save, account identity, binding,
-   and metadata inputs because confirmation calls persist no partial state. It is the
-   terminal `_confirm` step of the propose→review→confirm workflow.
-8. **Override is partial-merge.** A supplied `mapping` overrides only the named
-   destination fields; unspecified fields fall back to the detected mapping. Validation
-   (reusing gsheet's `_validate_*_column_mapping`, generalized) rejects a mapping missing
-   a required destination field or naming a source column absent from the file, with a
-   message that names the offending field.
+7. **`import_confirm` is the confirm step.** It consumes an unchanged
+   `preview_id` and accepts only the staged-preview inputs: `account_bindings`,
+   `account_id`, `account_metadata`, `account_name`, `bridge_response`,
+   `confirmation_token`, and `save_format`. It validates, saves the format when
+   requested, and loads. The CLI additionally accepts an explicit human-owned
+   tabular `--sign` override. `--confirm-sign` approves the inferred
+   `negative_is_income` inversion; `--sign negative_is_expense` rejects that
+   inversion and keeps the statement's printed signs. It is the terminal
+   `_confirm` step of the propose→review→confirm workflow.
+8. **Staged previews are immutable.** A confirmation call cannot replace the
+   detected mapping or extraction. Correct a detection by creating a fresh
+   preview from the source file, then confirm that new `preview_id`.
 9. **A known format can still fail validation and re-surface.** Reuse, not just first
    contact, is guarded: tabular's running-balance / sign checks and PDF's balance
    reconciliation can fail on a recognized layout. On failure the import does not load
@@ -150,11 +148,10 @@ first, implementing this shared shape rather than a PDF-only one.
     tier + calibration decide who satisfies it.
 11. **Recovery is a first-class, surfaced step.** Every confirmed new-format import
     returns `actions[]` with the concrete recovery paths: undo the data load
-    (`import_revert <import_id>`), undo the format save / PDF recipe-version bump
-    (`system_audit_undo <operation_id>` per `data-recovery-contract.md`), and **re-map**
-    (re-call `import_confirm` with a corrected `mapping`). On a detection/transform
-    error, "re-run with an explicit mapping" is offered as the next action, never a dead
-    end (umbrella "graceful degradation").
+    (`import_revert(operation="revert_import", import_id=...)`), undo the format save / PDF recipe-version bump
+    (`system_audit_undo(operation_id=...)` per `data-recovery-contract.md`), and create a
+    fresh preview before a new confirmation. On a detection or transform error, the
+    source is previewed again rather than modifying a prior confirmation payload.
 
 ### Calibration
 
@@ -214,7 +211,7 @@ def resolve_or_confirm(
     *,
     confidence: Confidence,
     proposed: ProposedMapping | BridgePayload,
-    signal: Accept | Override | None,
+    human_approved: bool,
     self_accept_enabled: bool,  # calibration gate (Req 12)
     actor_kind: Literal["human", "agent"],
 ) -> Resolved | ConfirmationRequired: ...
@@ -227,16 +224,16 @@ flowchart TD
     G -- pass --> LOAD[load: tabular_transactions or seed]
     G -- "validation failed" --> RC
     B -- no --> RC[resolve_or_confirm]
-    RC --> D{signal present?}
-    D -- "accept / mapping" --> V{validate + tier allows?}
-    D -- none --> CR[ConfirmationRequired:\nproposed mapping / bridge payload\n+ Confidence + samples + actions]
+    RC --> D{human approval?}
+    D -- yes --> V{validate + tier allows?}
+    D -- no --> CR[ConfirmationRequired:\nproposed mapping / bridge payload\n+ Confidence + samples + actions]
     V -- ok --> SAVE[(save format:\ntabular_formats / pdf_formats / gsheet connection)]
     V -- "low or invalid" --> CR
     SAVE --> LOAD
     CR --> SURFACE{actor_kind}
     SURFACE -- human / CLI TTY --> PROMPT[interactive prompt: tier-shaped]
     SURFACE -- agent / MCP --> ENV[confirmation_required envelope + actions]
-    LOAD --> REC[actions: undo / re-map]
+    LOAD --> REC[actions: undo / fresh preview]
 ```
 
 - The known-layout lookup is the **channel's** job (tabular: header-signature match
@@ -245,14 +242,13 @@ flowchart TD
   `resolve_or_confirm`; the primitive is invoked only when a confirm decision is needed
   — an unknown layout, or a known layout whose validation guard failed (Req 9). It
   therefore takes no `is_known_layout` flag.
-- The validation-failure re-entry differs by channel in the `ConfirmationRequired` it
-  produces: PDF re-escalates to the bridge (per `smart-import-pdf.md`); tabular surfaces
-  the proposed mapping + the failing signal. Same diagram node, channel-specific payload.
-- `Resolved` carries the final mapping + saved-format reference; `ConfirmationRequired`
-  carries the proposed mapping/bridge payload, `Confidence`, and samples.
-- `ProposedMapping`, `BridgePayload`, `Accept`, `Override`, `Resolved`, and
-  `ConfirmationRequired` are defined at implementation; their shapes follow the payloads
-  described above (this is a design spec, not the type module).
+- Validation failure creates a fresh staged preview. PDF can re-escalate to the
+  bridge; tabular returns the new preview and its failing signal.
+- `Resolved` carries the confirmed result and saved-format reference;
+  `ConfirmationRequired` carries the proposed mapping/bridge payload,
+  `Confidence`, and samples.
+- `ProposedMapping`, `BridgePayload`, `Resolved`, and `ConfirmationRequired` are
+  defined at implementation; their shapes follow the payloads described above.
 - **Account-binding facet (M1S.4).** `ConfirmationRequired` carries a third,
   optional facet beyond the column mapping: `account_proposals` with
   `reason="account_confirmation"`. This covers two cases: (a) a source account
@@ -271,16 +267,16 @@ flowchart TD
 ## Surface Design
 
 Per [`surface-design.md`](../../.claude/rules/surface-design.md): **no new operation
-shapes or verbs.** The confirm flow is the existing `import_*` family plus the revived
+shapes or verbs.** The confirm flow uses the existing import tools plus
 `import_confirm`.
 
 | Tool / command | Shape | Role |
 |---|---|---|
-| `import_files(paths, …)` | Shape 3 (discrete event) | Entry + fast-path. Known layout → load. Unknown → `confirmation_required` (no data loaded) with `actions[]` → `import_confirm`. |
-| `import_preview(file)` | Shape 5 (read-projection) | Read-only inspect: proposed mapping, `Confidence`, samples, unmapped columns. For PDF, also emits the bridge payload (IR / page image + extraction request). |
-| `import_confirm(file, mapping?/accept?/recipe?/rows?, sign?, save_format=true)` | Shape 3, `_confirm` | Accept or override the proposed mapping/recipe: validate → save format → load. CLI `sign` is an explicit human override; MCP keeps sign agent-inaccessible and elicits the human instead. |
-| `import_formats(type?)` | Shape 5 | List learned formats (tabular + pdf). |
-| `gsheet_connect` / `gsheet_reconnect` | `_connect` lifecycle | Keep their inline `--yes` / `--column-mapping`; share the confidence bands + `resolve_or_confirm` primitive underneath. |
+| `import_files(paths=[...], ...)` | Shape 3 (discrete event) | Entry + fast-path. Known layout → load. Unknown → `confirmation_required` (no data loaded) with `actions[]` → `import_confirm`. |
+| `import_preview(file_path=...)` | Shape 3 (staged preview) | Persists encrypted preview state while returning the proposed mapping, `Confidence`, samples, and unmapped columns. Its live annotation is `readOnlyHint=false` and `idempotentHint=false`. For PDF, it also emits the bridge payload (IR / page image + extraction request). |
+| `import_confirm(preview_id=..., ...)` | Shape 3, `_confirm` | Atomically consume an unchanged staged preview and import its file. Optional keyword fields include account bindings and metadata, bridge response, confirmation token, and format retention. Sign inversion remains human-owned through elicitation. |
+| `import_status(sections=["formats"])` | Shape 5 | List learned formats (tabular + pdf). |
+| `gsheet_connect` | `_connect` lifecycle | Its `connection_id` mode re-detects and reconnects a binding; its `url` mode creates one. Both retain inline `confirm_mapping` / `column_mapping` and share the confidence bands + `resolve_or_confirm` primitive underneath. |
 
 **CLI (human, TTY).** `import files X` on a new layout prints the mapping + sample rows +
 flagged fields and prompts `[Y / edit / n]` (tier shapes the default: `high` → `[Y/n]`,
@@ -316,14 +312,15 @@ etc. — stay in `smart-import-pdf.md`; the table above is the cross-channel con
 
 ## Data Model
 
-Mostly reuse — the confidence contract is a code-level type, not a table.
-
-- **No new tables.** Confirmation state lives in the existing learned-format stores:
-  `app.tabular_formats`, `app.pdf_formats` (created by the PDF spec), and the gsheet
-  connection row.
+The confidence contract is a code-level type, while staged confirmation is durable,
+encrypted state. `import_preview` writes metadata to `app.import_previews` and staged
+bytes to `raw.import_preview_snapshots`; this is why its live annotation is
+`readOnlyHint=false`. Preview issuance, consumption, and expiry are audit events, and
+unconsumed rows expire after the configured preview TTL. Learned formats continue to
+live in `app.tabular_formats`, `app.pdf_formats`, and the gsheet connection row.
 - **Possible additive column (deferred):** persisting the confidence score at save time
   on `app.tabular_formats` / `app.pdf_formats` (`detected_confidence DECIMAL`) would let
-  `import_formats` show how a saved format was originally vetted. Out of scope for v1
+  `import_status(sections=["formats"])` show how a saved format was originally vetted. Out of scope for v1
   unless calibration shows it's needed; called out so a future additive migration has a
   home.
 - **Config:** `settings.import.confidence.t_high` / `t_med` (band thresholds);
@@ -339,8 +336,8 @@ signals:
 - **CLI:** `--sign` is the explicit human override. Without it, connect/reconnect
   fail before saving the connection or running a pull and name the exact command
   to re-run.
-- **MCP:** `gsheet_connect` and `gsheet_reconnect` do not accept `sign`. Their
-  wrappers surface the proposed inversion through `confirm_or_raise`; only a
+- **MCP:** `gsheet_connect` does not accept `sign`. Its `url` and `connection_id`
+  modes surface the proposed inversion through `confirm_or_raise`; only a
   successful human elicitation retry carries an internal confirmation signal to
   the service.
 
@@ -373,7 +370,7 @@ extractor, and tabular/gsheet adopt them in this spec's work.
   and returns a `Confidence` (keep `confidence` tier for back-compat consumers).
 - `src/moneybin/services/import_service.py` — `_import_tabular` routes through
   `resolve_or_confirm`; **`medium` now gates** (remove the wave-through warning);
-  partial-merge override; emit `confirmation_required` from `import_file(s)`.
+  partial-merge override; emit `confirmation_required` from `import_files`.
 - `src/moneybin/connectors/gsheet/connection_service.py` — `connect`/`reconnect` adopt
   the shared bands + `resolve_or_confirm`; keep inline `--yes`/`--column-mapping`.
 - `src/moneybin/mcp/tools/import_tools.py` — add `import_confirm`; `import_files` returns
@@ -410,22 +407,20 @@ extractor, and tabular/gsheet adopt them in this spec's work.
 
 ## Testing Strategy
 
-- **Unit:** `tier_for` banding; `resolve_or_confirm` across the matrix (known/unknown ×
-  tier × signal × actor_kind × self_accept_enabled); partial-merge validation
-  (missing-required, unknown-source rejections).
+- **Unit:** `tier_for` banding; `resolve_or_confirm` across the matrix
+  (known/unknown × tier × human approval × actor_kind × self_accept_enabled).
 - **Calibration harness:** per-tier field-exact precision over the YAML corpus; a test
   asserts the chosen `T_high` meets the precision bar and that `self_accept_high`
   defaults off until it does.
 - **Channel integration:** tabular `medium` now gates (regression — was a wave-through);
   gsheet medium/low behavior unchanged under the shared bands; PDF bridge confirm via
   `import_confirm` persists the format and loads (faked agent response, no real LLM).
-- **Recovery:** confirmed import → `import_revert` removes rows; `system_audit_undo`
-  reverses the format save; re-map via second `import_confirm` re-pins cleanly.
-- **CLI/MCP parity:** the `confirmation_required` envelope is identical shape on both
-  surfaces; `--confirm` / `--mapping` reproduce the interactive accept/override. CLI
-  sign recovery proves both shell-safe alternatives preserve every public confirmation
-  input and reach the service as either the private human approval or an explicit
-  `sign` override; MCP never receives the latter public input.
+- **Recovery:** confirmed import → `import_revert` removes rows;
+  `system_audit_undo` reverses the format save; a fresh preview begins another
+  confirmation attempt.
+- **CLI/MCP parity:** both surfaces preserve the staged-preview confirmation
+  boundary. CLI keeps its explicit mapping flags; MCP confirms the immutable
+  preview and never accepts a public sign or mapping override.
 
 ## Out of Scope
 
@@ -435,10 +430,10 @@ extractor, and tabular/gsheet adopt them in this spec's work.
   MCP performs its own human elicitation and retries internally. The shared
   invariant is the approval boundary, not an identical response shape.
 - **CLI `import files <single-file>` preserves fail-loud refresh.**
-  `ImportService.import_file(refresh=True)` raises `RuntimeError` when
+  the single-file service path raises `RuntimeError` when
   refresh fails after a successful raw load — the CLI exit code reflects
   the broken state. The MCP `import_files` path bypasses this for
-  single-file calls (round 6 fix: it calls `import_file(refresh=False)`
+  single-file calls (round 6 fix: it invokes the batch path with refresh disabled
   and runs `_refresh` separately so `import_id` survives a refresh
   failure for `import_revert`). The CLI fail-loud is intentional;
   `moneybin import status` exposes the orphaned raw load if recovery is

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-17 -->
+<!-- Last reviewed: 2026-07-21 -->
 
 # Changelog
 
@@ -10,7 +10,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Canonical bundle and registered-report export delivery (M1O).**
+  `moneybin export bundle` and `moneybin export report` publish redacted CSV by
+  default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named
+  local destinations, and output-only Google Sheets targets also supported.
+  `export_run`, `exports_set`, and `system_status(sections=["exports"])` expose
+  the same service outcomes to MCP; unredacted output is an explicit per-run
+  choice. Report artifacts always contain the complete registered-report result,
+  receipts identify the selected format, bundle/report Sheets metadata remain
+  independently verifiable, and cancellable publication runs without holding
+  the global DuckDB writer lock over filesystem or Google API I/O.
+- **Brokerage positions now carry a market value.** `moneybin investments holdings`
+  reports `market_value` and `unrealized_gain` for every position priced by the close
+  your broker already sends through `sync pull` — no new network calls, no credentials.
+  Each row states the date of the price it used and how many days old that price is.
+  A position with no usable price reports no value rather than zero, and one whose
+  share count is known to be wrong — a split the broker reported but MoneyBin could
+  not derive — withholds its value instead of publishing a number wrong by the split
+  factor. Previously `investments holdings` reported cost basis alone. A security no
+  connected broker prices stays unvalued until external feeds land, and positions do
+  not yet fold into net worth. (#347)
+- **An AI assistant can now resolve a credit-card PDF's sign inversion
+  without you leaving the chat.** `import_preview(file_path=...)` followed by
+  `import_confirm(preview_id=...)` shows you the statement's evidence and
+  printed-vs-recorded sample rows and asks you to approve; approving imports
+  the statement, and declining imports nothing. Clients without an in-chat
+  prompt receive a single-use confirmation token for retrying the same bound
+  request. The assistant cannot approve on your behalf, and if the statement
+  turns out to have no such question pending, nothing is imported. Previously
+  this one case sent you to a terminal, even though the same inversion already
+  asked you in place on spreadsheet and AI-extracted-PDF imports.
+
 ### Changed
+- **`reports.*` column privacy classes are now derived from each SQLMesh
+  model's source and verified in CI**, replacing a hand-maintained bridge
+  file. A report's declared `classes=` map is checked against an
+  independent, connectionless re-derivation of the same model on every
+  build; an undeclared or under-classified column now fails CI instead of
+  shipping quietly. (#330 follow-up)
+- **`core.uncategorized_queue` (the categorization curator queue) moved out
+  of the `reports` schema into `core`.** It was never a user-facing report —
+  its only reader is the categorization surface
+  (`transactions_categorize_pending`) — so it no longer appears under
+  `reports.*` in `sql_query` / `moneybin sql query` results. Query it as
+  `core.uncategorized_queue` instead.
+- **`transactions_categorize_pending`'s `age_days` field is now declared
+  `TXN_DATE` (MEDIUM) instead of `AGGREGATE` (LOW).** A declaration
+  correction, not a behavior change: both classes redact via the same
+  pass-through, and the response already carries HIGH-tier `amount`, so
+  masked output and the response's overall tier are unaffected.
+- **`sql_query` / `moneybin sql query` responses can now report `unresolved`
+  in `classes_returned`.** This is the fail-closed class for a column
+  reaching the caller without lineage having positively established what it
+  holds; seeing it always means the value was masked, not that something
+  broke.
+- **Your accounts now show the bank's name instead of its routing code.**
+  A Chase account read as `B1` and a Wells Fargo one as `WF`, because OFX
+  files carry a short institution code where you'd expect a name. Those now
+  resolve to `Chase` and `Wells Fargo`. Credit-card statements also no longer
+  come through untyped — a card that showed as `B1  …4387` now reads
+  `Chase credit card …4387`.
+- **`core.dim_accounts.account_type` now uses one vocabulary for every
+  source.** It previously carried whatever each source called things — OFX
+  said `CHECKING`/`CREDITLINE`, Plaid said `depository`/`credit`, a
+  spreadsheet said whatever was in the column — so `accounts --type credit`
+  silently missed accounts, the by-type summary split one concept into
+  several buckets, and an account could change its label when a different
+  source refreshed it. Values are now `depository`, `credit`, `loan`,
+  `investment`, `other` (`NULL` if the source spelling isn't recognized),
+  with the finer distinction kept in `account_subtype` (`checking`,
+  `savings`, `credit card`, ...). Account names are built from the subtype,
+  so they read `Wells Fargo checking …1789`, not `Wells Fargo depository
+  …1789`. Queries filtering on the old uppercase values need updating; run
+  `moneybin transform apply` to rebuild.
 - **`accounts_set`'s currency parameter is now `currency_code`, not
   `iso_currency_code`.** Aligns the account-currency parameter name with
   every other currency field in the schema. Pre-launch, so this is a direct
@@ -23,15 +96,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
-- **Error codes, hints, and `status` now actually reach MCP callers.** Every
-  tool's error response carried only the message: the envelope held the
-  exception object itself, which could not be serialized, so `error.code`,
-  `error.hint`, `error.details`, and the top-level `status` field were silently
-  dropped on the way out. Agents branching on `error.code` saw nothing to branch
-  on, and no test caught it — the one assertion that checked `error.code`
-  exercised a code path that rebuilt the envelope by hand rather than the one
-  tools actually return through. The envelope now carries a structured error
-  value and a real `status` field, so both arrive intact on every tool.
 - **A permission-denied import now tells you how to fix it.** Importing a file
   the OS refuses to open returns the new `infra_permission_denied` code with a
   hint matched to the actual cause: a file-mode problem says to check ownership
@@ -52,6 +116,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   text can embed file contents.
 - **`moneybin import preview` no longer prints a raw traceback on failure.** It
   now emits the same classified error every sibling import command does.
+- **The consolidated MCP surface now preserves the safety and recovery
+  contracts of the operations it replaces.** Permanent institution
+  disconnects require payload-bound confirmation; human import decisions keep
+  their 180-second window; PDF sign inversions can be approved over MCP against
+  immutable preview bytes; partial import/sync failures retain actionable
+  guidance; auto-rule proposals retain blast-radius review and proposal-scoped
+  approval; abandoned confirmation tokens are evicted after their TTL; bounded
+  account resolution remains confidence-ranked; investment and taxonomy
+  continuations stay within their initial high-water boundary;
+  transaction continuations retain their initial eligible-row count; multi-note
+  threads retain stable note identities; and orphan annotations and accepted
+  matches again expose executable recovery through the standard 45-tool
+  registry. (#344)
+- **Import preview parsing no longer drops rows or provenance at edge cases.**
+  Header detection counts physical CSV lines, UTF-8 probing tolerates a
+  multibyte character at the sample boundary, path-based detection stays
+  bounded instead of loading the whole file, oversized PDFs are rejected before
+  they can exhaust memory or inflate the encrypted snapshot store, and
+  completed preview-to-import records survive snapshot cleanup. (#344)
+- **Coarse reads no longer return plausible but incomplete results.** Balance
+  drift distinguishes interpolated days from first observations, transaction
+  account filters reject unresolved partial matches, archived accounts resolve
+  by exact ID, and report limits must be positive. (#344)
+- **`moneybin import preview` can now read a PDF statement.** It previously
+  rejected every PDF with `Unsupported file type: '.pdf'`, because preview
+  routed all files through the spreadsheet detector — so the only way to ask
+  "will this statement extract cleanly, and how many rows?" without importing
+  was through an AI assistant. The command now reports the extraction verdict,
+  row count, confidence, and any pending credit-card sign confirmation (with
+  the evidence and printed-vs-recorded samples behind it). An unreadable file
+  — common on macOS, where statements sit in a folder your terminal hasn't
+  been granted access to — now explains itself and names the fix instead of
+  printing a stack trace. On a machine with no database yet, it points at
+  `db init` rather than `db unlock` — the latter cannot work before a database
+  exists. Spreadsheet-only options (`--format`, `--sheet`, `--delimiter`,
+  `--encoding`, `--override`) now say they were ignored when passed with a PDF,
+  instead of silently doing nothing.
+- **When a repaired statement layout wants to reverse a direction you already
+  approved, the choices you're offered now match what the commands do.** The
+  prompt was written for the common case — "is this a credit card?" — where the
+  answer always points the same way. A self-repaired layout can also propose the
+  *opposite* flip, and there the card wording described `--confirm` as doing the
+  reverse of what it does, and offered no command at all for keeping the
+  direction you already had. Both choices are now named by what they do, in
+  whichever direction the repair actually goes — in the terminal, in the
+  approval an AI assistant puts in front of you, in its suggested next steps,
+  and in the inbox's pending-file notes.
+- **A saved statement layout that stops reading correctly now repairs itself
+  instead of failing forever.** MoneyBin remembers how to read each statement
+  layout the first time it sees one. That saved recipe was a frozen copy, so
+  when an extraction bug was fixed, every layout already saved kept the old
+  broken behavior — the fix could never reach it, and each new statement of that
+  layout landed as an unparsed dump. Now, when a saved layout stops balancing,
+  MoneyBin re-reads the statement from scratch and, if the fresh read balances to
+  the cent, imports it and updates the saved layout. Two things it will not do on
+  its own: replace a layout you or the assisted reader authored, or change a
+  statement's income/expense direction. A layout you authored is left alone
+  entirely; a direction change is shown to you with the evidence and the
+  printed-vs-recorded samples, and nothing is imported until you approve or
+  override it — in either direction, including when the re-read wants to *undo*
+  an inversion you approved earlier. The repair is recorded in the audit log and
+  can be undone.
+- **Replacing a statement while its approval prompt is open no longer applies
+  your answer to the new file.** Re-saving a corrected export over the same path
+  mid-prompt could previously reverse every amount in a document you never
+  reviewed; the import is now refused instead. Affects all three confirmation
+  paths (spreadsheet, AI-extracted PDF, and card statement).
+- **Choosing an account for a PDF import now fails loudly instead of quietly
+  doing something else.** Both PDF import paths only ever supported pinning by
+  account id, but passing `account_bindings` or `account_metadata` was accepted
+  and then ignored — the transactions landed in an account derived from the
+  statement or the filename while you believed you had chosen one. Those
+  parameters are now refused with a message naming the one that works.
 - **Real credit-card PDF statements now extract their transactions instead of
   falling back to a raw dump.** Chase card statements (and others shaped like
   them) print their transaction table in three ways no synthetic sample did: a
@@ -142,6 +279,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now states the truth: account/routing numbers are masked, all other fields
   reach the model provider as-is, and there is no consent gate yet.
 
+### Security
+- **Fixed a redaction bypass that returned bank routing numbers in the clear
+  through `sql_query` / `moneybin sql query` when a query carried two
+  statements.** Each statement in `SELECT 1; SELECT routing_number FROM
+  core.dim_accounts` is individually a legal read, so every existing gate
+  passed; the pair parsed to one `Block`, which the classifier did not
+  recognize as a data query and the caller therefore treated as metadata —
+  executing the string unclassified at LOW. DuckDB returns the last
+  statement's rows, so the class map described the first statement while the
+  caller received the second. Multi-statement input is now refused, and the
+  metadata path routes on a positive DESCRIBE/SHOW/PRAGMA/EXPLAIN allowlist
+  rather than on "not a data query", so an unrecognized statement kind fails
+  closed instead of executing unmasked — the same default-open fallback that
+  produced the `EXCEPT`/`INTERSECT` leak below. (#346)
+- **Closed a second route to the same leak, where a `--` comment hid the extra
+  statement.** The gates read the query with its whitespace collapsed, which
+  erased the newline that ends a `--` comment: in `SELECT 1 AS a; -- note`
+  followed by `SELECT routing_number AS a FROM core.dim_accounts`, the
+  classifier saw one harmless statement while DuckDB ran both and returned the
+  second's rows. Naming both columns `a` matched the classified column name,
+  so the fail-closed check that catches a shape mismatch never fired. Queries
+  are now parsed exactly as DuckDB receives them, which also stops the same
+  collapsing from rewriting spacing inside quoted identifiers and string
+  literals — a third way the classified and executed queries could differ.
+  Formatted multi-line SQL, trailing `; -- comment`, and `;;` still run. (#346)
+- **CVE fixes via dependency bumps:** `mcp` 1.27.1 → 1.28.1, `pillow`
+  12.2.0 → 12.3.0, `httplib2` 0.31.2 → 0.32.0, closing 12 advisories. The
+  `mcp` ones affect MoneyBin's own MCP server: HTTP transports served
+  session requests without verifying the authenticated principal
+  (CVE-2026-52869), experimental task handlers let any client read or
+  cancel another client's tasks (CVE-2026-52870), and the WebSocket
+  transport had no Host/Origin validation (CVE-2026-59950). `pillow`
+  (reached through PDF import) covers unvalidated PCF glyph dimensions and
+  an `ImageCms` heap-corruption path; `httplib2` (reached through the
+  Google Sheets connector) covers unbounded gzip/deflate decompression of
+  response bodies. `mcp` and `httplib2` are now declared as direct
+  dependencies, since MoneyBin imports both. (#335)
+- **Fixed several under-classification leaks that returned CRITICAL-tier
+  values (bank routing numbers) in the clear through `sql_query` /
+  `moneybin sql query`.** A CTE or derived table named after a real table,
+  CTE-nesting depth exhaustion, partial `UNION`-branch resolution,
+  `EXCEPT`/`INTERSECT` set operations, and opaque projection forms
+  (`COLUMNS(...)`, `PIVOT`, `UNPIVOT`, `SUMMARIZE`, the whole-row
+  pseudo-column, `UNNEST` of one) could each cause
+  `core.dim_accounts.routing_number` to resolve to `AGGREGATE` (LOW) instead
+  of its true `ROUTING_NUMBER` (CRITICAL) class, returning it unmasked. Most
+  of these were pre-existing defects in the SQL classifier already on
+  `main` — not introduced by this change — surfaced and fixed during an
+  audit prompted by the `reports.*` coverage-gap fix below. Any output
+  column an undeclared or unresolvable reference reaches now fails closed to
+  a new `DataClass.UNRESOLVED` (masked whole) instead of falling back to the
+  most-permissive class seen elsewhere in the query. (#330 follow-up)
+
 ### Changed
 - **Google Sheets MCP connections can no longer set an inferred sign convention
   themselves.** The agent-settable `sign` input was removed; an inferred
@@ -151,6 +341,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Bounded MCP standard registry.** The pre-launch MCP cutover now exposes
+  one 45-tool standard registry to every generic client; supported hosts may
+  defer schemas from that identical registry without reconnect, packs, or
+  profiles. Reports extend the `reports` catalog rather than consuming tool
+  slots, and future tools require the published admission record. The
+  deterministic comparison reduced metadata from 90,734 to 46,454 bytes;
+  promotion remains pending observed context-budget and host-deferral evidence.
+- **Executable CLI/MCP capability parity.** A checked outcome map now covers all
+  45 standard MCP tools and every implemented Typer path by service ownership
+  and durable result, replacing the old canonical-name drift test. It includes
+  isolated-state parity tests for refresh, reports, annotations, taxonomy,
+  consent, import, sync, and SQL. `accounts summary` is now available on the
+  CLI, and the formerly-placeholder category and merchant taxonomy commands
+  execute through the shared categorization service.
+- **Nonblocking MCP sync authentication within the existing four-tool
+  surface.** `sync_link(mode="login")` begins device authorization,
+  `sync_status(auth_session_id=...)` advances it with idempotent terminal
+  replay and local expiry enforcement, and `sync_disconnect(mode="logout")`
+  clears credentials plus pending profile-scoped sessions. Secret device codes
+  and tokens remain in `SecretStore`; MCP sees only safe user-facing fields.
+  Expired flows now shed device codes during any collection update, while the
+  newly created or currently addressed flow is preserved within a per-profile
+  ceiling of 16 pending and 16 terminal sessions so abandoned or bursty flows
+  cannot grow keychain state indefinitely.
+  `transactions_categorize_run(operation="improve_ai")` similarly absorbs the
+  provider-native AI-upgrade outcome without increasing the 45-tool surface.
 - **"What the AI Provider Sees" guide.** A precise, code-verified statement of
   what reaches the model provider when an agent drives MoneyBin — what's masked
   (account/routing numbers, enforced today), what isn't (amounts, descriptions,
@@ -236,8 +452,8 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   two-mortgage-category ambiguity in favour of `LNP-MTG`) and added 9 — 6 finer
   categories from the 29 unmapped Plaid detailed codes, plus a 3-category
   **Family & Kids** group (`FAM`/`FAM-ACT`/`FAM-SUP`) folded in after a
-  cross-aggregator comprehensiveness crosswalk against MX, Mint, Monarch, and
-  Maybe validated coverage; `class` reconciled end-to-end (no reclasses needed).
+  coverage audit identified the gap; `class` reconciled end-to-end (no
+  reclasses needed).
   Net 108 − 5 + 9 → 112 categories. Seed validation now
   enforces a valid-class invariant, an enumerated coverage report, and an orphan
   allowlist. Purely additive on the M1V bridge — no consumer query changes. (#298)
@@ -436,9 +652,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   M3B), and documents two failures that look like bugs but aren't: Cowork's *remote*
   sessions can never see a local MCP server, and managed-org policy flags
   (`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled`) can disable local MCP
-  outright. The Windsurf section now warns that **MoneyBin's 105 tools exceed
+  outright. At that point, MoneyBin's **then-105-tool registry exceeded
   Cascade's hard 100-active-tool ceiling** — Windsurf gives no signal when tools are
-  dropped, so users must disable some by hand. The Gemini CLI section explains why
+  dropped, so users had to disable some by hand. The later M3K.2 cut established
+  the current 47-tool standard registry. The Gemini CLI section explains why
   MoneyBin never sets `trust: true` (it bypasses *all* tool-call confirmations, and
   our surface includes write tools). (#315)
 - **Accepting a link merge now requires a human confirm on every surface.** The
@@ -954,6 +1171,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - `pyproject.toml` PyPI-publish-ready metadata (description, classifiers, URLs, keywords). Bumped setuptools floor to ≥77.0 for PEP 639 license metadata.
 
 ### Changed
+- **Public project documentation and branding refreshed.** The README, roadmap,
+  and public technical-reference index now focus on the local CLI, SQL, and MCP
+  workflows available today, with clearer navigation and updated project marks.
+  (#323)
 - **`sql_query` now reports per-query sensitivity instead of a fixed tier.**
   `summary.sensitivity` reflects the highest-tier data class present in the
   actual output columns (e.g. `"low"` for a pure `COUNT(*)` aggregate,
@@ -964,7 +1185,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **Refresh now surfaces matcher/categorizer crashes (M2D PR 6).** `refresh_run` and `moneybin refresh` previously swallowed best-effort matching/categorization failures at DEBUG, so a partial pipeline (cross-source dupes accumulating, rows left uncategorized) looked healthy. `RefreshResult` gains `matching_error`, `categorization_error`, and a `self_heal_actions` list; the response envelope now carries structured `recovery_actions` (targeted `refresh_run(steps=[…])` retry plus a `system_doctor` diagnostic) when a step crashes. Real crashes log at ERROR; a first-load missing-view precondition stays a quiet DEBUG so a fresh database's first refresh doesn't report a false failure. Best-effort crashes still don't abort the pipeline or fail the command.
 - **Renamed CLI `sync connect` → `sync link` and MCP `sync_connect` → `sync_link`** (with `sync_connect_status` → `sync_link_status`). Establishes the verb-split formalized in `connect-gsheet.md`: `_link` for mediated providers (Plaid-style, server holds tokens), `_connect` for user-controlled storage (direct OAuth). The Plaid sync surface keeps Plaid's "Link" mental model users already recognize. Old names retained as deprecated aliases that warn and forward; will be removed in the next minor release.
 - **Error code taxonomy renamed under prefix-grouped namespaces** (M2D PR 2 — data-recovery-contract foundation). Bare-string codes emitted by `classify_user_error` and the `@mcp_tool` decorator now use prefixed forms via the new `moneybin.error_codes` module. Renames an agent might be branching on: `database_not_initialized` → `infra_database_not_initialized`, `database_locked` → `infra_database_locked`, `wrong_key` → `infra_wrong_key`, `schema_drift` → `infra_schema_drift`, `file_not_found` → `infra_file_not_found`, `io_error` → `infra_io_error`, `invalid_input` → `infra_invalid_input` (read-path default; write callers should `raise UserError(code=MUTATION_INVALID_INPUT)` directly per the in-tree migration in PRs 9a–N), `not_found` → `infra_not_found` (read-path; same write-site override applies for `MUTATION_NOT_FOUND`), `too_many_items` → `infra_too_many_items`, `timed_out` → `infra_timed_out`, `sync_error` → `sync_error` (already prefixed). Agents matching code literals against the old strings must update to the new constants. The six recovery-contract prefixes (`import_*`, `mutation_*`, `audit_*`, `refresh_*`, `undo_*`, `recovery_*`) plus `infra_*` and `sync_*` for absorbed legacy codes are documented in `src/moneybin/error_codes.py` and `docs/specs/data-recovery-contract.md` Req 3.
-- **AI Code Review now emits tiered findings.** Every inline comment and summary bullet starts with 🔴 **MUST FIX** (correctness / security / breaking / missing tests, gates merge), 🟡 **CONSIDER** (substantive quality: design, refactoring, potential bugs), or 🔵 **NIT** (small consistency issues: docstring formatting, naming drift). Contributors get a scannable severity signal; agent consumers (the `fix-review` skill) can dispatch by tier — fixing all tiers on early review iterations, deferring 🟡/🔵 to `private/followups.md` on later iterations to avoid endless docstring-rewording cycles. See `CONTRIBUTING.md` § "Reading the AI review".
+- **AI Code Review now emits tiered findings.** Every inline comment and summary bullet starts with 🔴 **MUST FIX** (correctness / security / breaking / missing tests, gates merge), 🟡 **CONSIDER** (substantive quality: design, refactoring, potential bugs), or 🔵 **NIT** (small consistency issues: docstring formatting, naming drift). Contributors get a scannable severity signal; agent consumers (the `fix-review` skill) can dispatch by tier — fixing all tiers on early review iterations and recording lower-priority work for a later follow-up to avoid endless docstring-rewording cycles. See `CONTRIBUTING.md` § "Reading the AI review".
 - **Metrics persistence: 5-minute background flush timer removed.** MCP sessions flush inside `close_db()`; CLI sessions continue to flush via `atexit` (registered conditionally on `stream="cli"` in `setup_observability`). The in-process Prometheus registry and `moneybin stats` CLI are unchanged. Future PRs will wire persistence into write transactions instead of polling.
 - **Tabular CSV import: `--format chase_credit`, `--format citi_credit`, and `--format maybe` are no longer accepted** — those built-in format YAMLs were retired in favor of auto-detection, which handles the same shapes. Omit `--format` to let the detector run. As a consequence, `source_origin` for Chase/Citi/"Maybe" imports is now derived from `slugify(account_name)` instead of the format name; to preserve a stable origin across re-imports, pass `--account-name` explicitly (flows that rely only on `--account-id` will record `source_origin="unknown"`). Existing imports keep their historical `source_origin` values. (#181)
 - **`transactions_categorize_stats` gains `include_auto: bool = False`.** Pass `include_auto=True` to get auto-rule health metrics (`active_auto_rules`, `pending_proposals`, `transactions_categorized`) alongside the base coverage stats in a single call. The standalone `transactions_categorize_auto_stats` MCP tool is retired; `moneybin transactions categorize auto stats` CLI remains.
@@ -1007,7 +1228,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **`app.categories` and `app.merchants` views retired.** The resolved-dimension views (seeds + user state + overrides) now live as SQLMesh-managed `core.dim_categories` and `core.dim_merchants`. Consumer code already routed through the `TableRef` constants; no API change.
 - **Milestone taxonomy re-unified into phase-aligned milestones (2026-05-30).** Replaced the flat M0–M3F grid — where the numbers had stopped tracking the build sequence — with four phase milestones: **M0 Foundation, M1 Ingestion Core, M2 Analysis & Reports, M3 Productization & Distribution**, each with lettered increments (`M1J`) and `.N` work items, and each closed by a test-functionality gate. The phase *is* the gate, so testing batches at four milestones rather than per-increment. `docs/roadmap.md` carries the new scheme and the old→new mapping; dated CHANGELOG history keeps its original labels.
 - **Milestone terminology unified.** Retired "Level 0/1" + "Wave 2A/2B/2C/Wave 3" dual systems for one consistent **milestone** convention: M0, M1, M2A, M2B, M2C, M3A, M3B, M3C, M3D, M3E, Post-launch. M3 decomposes into sub-milestones because it has parallel domain (Plaid/investments/multi-currency) and surface (Web UI/hosted) tracks. M3E closing = launch.
-- **README significantly tightened** — from ~196 lines to ~115 lines. Storefront pattern: tagline preserved, status callout + Why-bullets + How-It-Works diagram + Quick Start + 5×5 ✓/✗ comparison + Documentation/Community/Contributing/License pointers. In-README roadmap matrix removed (lives in `docs/roadmap.md`); detailed feature inventory removed (lives in `docs/features.md`); 8-column comparison table replaced with tight 5×5 (full version in `docs/comparison.md`); License essay condensed (full rationale in `docs/licensing.md`). Modeled on Bitwarden, Plausible, DuckDB, SQLMesh peer-set conventions.
+- **README significantly tightened** — from ~196 lines to ~115 lines. Storefront pattern: tagline preserved, status callout + Why-bullets + How-It-Works diagram + Quick Start + 5×5 ✓/✗ comparison + Documentation/Community/Contributing/License pointers. In-README roadmap matrix removed (lives in `docs/roadmap.md`); detailed feature inventory removed (lives in `docs/features.md`); 8-column comparison table replaced with tight 5×5 (full version in `docs/comparison.md`); License essay condensed (full rationale in `docs/licensing.md`).
 - `.claude/rules/shipping.md` extended with the post-implementation checklist for `CHANGELOG.md`, `docs/roadmap.md`, `docs/features.md`. Documents what does and doesn't earn a CHANGELOG entry.
 - `CONTRIBUTING.md` "Where the strategy lives" expanded to include the new docs and a one-line CHANGELOG rule.
 - **Spec rename for surface symmetry.** `docs/specs/mcp-tool-surface.md` → `docs/specs/moneybin-mcp.md`; `docs/specs/cli-restructure.md` → `docs/specs/moneybin-cli.md`. Establishes the `moneybin-<surface>.md` naming pattern (extends to a future `moneybin-rest-api.md`). New cross-surface spec [`docs/specs/moneybin-capabilities.md`](docs/specs/moneybin-capabilities.md) maps user-facing capabilities to per-surface registered names; the `.claude/rules/mcp-server.md` "Surface change discipline" rule now requires every tool/command PR to update both the surface-specific spec AND the capabilities map. `git log --follow` works across the rename for history; bookmarks to the old paths should be updated.
@@ -1022,7 +1243,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **MCP tools `accounts_rename`, `accounts_include`, `accounts_archive`, `accounts_unarchive`** — folded into `accounts_set`.
 - **CLI commands `moneybin accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive`** — folded into `moneybin accounts set` with new flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`, `--clear-display-name`).
 - **Client-driven progressive disclosure retired.** Removed the `moneybin_discover` MCP meta-tool, the `MoneyBinSettings.mcp.progressive_disclosure` setting, and the `Visibility(False, tags=...)` server transform. The full registered tool surface is now visible at connect, with orientation delivered through the FastMCP `instructions` field and prefix-grouped tool names. Rationale: `tools/list_changed` client support is too uneven (Claude Desktop unreliable, most generic clients ignore) to design a portable disclosure mechanism around. The `@mcp_tool(domain=...)` decorator argument is preserved as dormant metadata. `moneybin://tools` resource shape simplified from `{core, extended, discover_tool}` to a flat `{namespaces}` list. Server `instructions` text trimmed from ~750 to ~180 tokens by dropping per-tool subsections already covered by tool descriptions. See `docs/specs/mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led".
-- **MCP tools `budget_set`, `tax_w2`, `tax_deductions` and the `tax_prep` prompt de-registered** under the new stub-gating rule in `.claude/rules/mcp-server.md`. `budget-tracking.md` is `draft` (today's `budget_set` is a partial slice of the planned set/status/delete + rollovers feature); there is no backing tax spec at all. Tool implementations remain in `src/moneybin/mcp/tools/budget.py` and `tools/tax.py` as dormant building blocks — only the `register_*_tools(mcp)` call is gated. **CLI counterparts (`moneybin budget set`, `moneybin tax w2`, `moneybin tax deductions`) are unaffected** and still work. Re-register when each backing spec reaches `in-progress` or `implemented`. Tracked in `moneybin-mcp.md` §17 "Dependency tracker".
+- **MCP tools `budget_set`, `tax_w2`, `tax_deductions` and the `tax_prep` prompt de-registered** under the new stub-gating rule in `.claude/rules/mcp-server.md`. `budget-tracking.md` is `draft` (the former `budget_set` was only a partial slice of the planned set/status/delete + rollovers feature); there is no backing tax spec at all. The partial budget MCP adapter was removed rather than retained as a decorated or manually registerable dormant callback; `BudgetService` and `moneybin budget set` remain implementation foundations. Re-admit the complete budget lifecycle only when its backing spec reaches `in-progress` or `implemented`. Tracked in `moneybin-mcp.md` §17 "Dependency tracker".
 - **W-2 PDF extraction removed entirely.** The `moneybin tax w2` CLI command, `tax_w2` MCP tool, W-2 extractor and loader, `raw.w2_forms` schema table, and `TaxService` are deleted. PDF parsing dependencies (`pdfplumber`, `pytesseract`, `pdf2image`, `pillow`) dropped from the package. The IRS form layout changes annually and LLM-mediated PDF parsing is likely a better primitive than pdfplumber/tesseract for tax data; architecture will be revisited in a future brainstorm. The `docs/specs/archived/w2-extraction.md` spec documents the removed design.
 - **MCP tool `transactions_recurring_list`** — duplicate of `reports_recurring` which is strictly richer (confidence scores, cadence, status filter, annualized cost). Consumers using `transactions_recurring_list` should call `reports_recurring` instead. Removed as a duplicate surface.
 - `transactions_search` MCP tool (superseded by `transactions_get`, which covers all its filters plus multi-account, multi-category, curation fields, and cursor-based pagination).
@@ -1055,6 +1276,8 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - CVE fixes via dependency bumps: `urllib3` 2.6.3 → 2.7.0 (PR #127); `pip` and `python-multipart` advisories addressed (PR #124).
 
 ---
+
+
 
 ## [M1] — 2026-05-04 (Data Integrity)
 

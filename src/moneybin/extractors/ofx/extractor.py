@@ -65,6 +65,53 @@ _FITID_SIGNATURE_FIELDS = (
 _FITID_COLLISION_MARKER = "#"
 
 
+def _none_if_blank(value: str | None) -> str | None:
+    """Normalize ofxparse's empty-string defaults to NULL.
+
+    ``ofxparse.Account.__init__`` seeds ``account_type``, ``routing_number`` and
+    ``branch_id`` with ``''`` and only overwrites them when the corresponding tag
+    is present. A credit-card statement uses ``<CCACCTFROM>``, which carries no
+    ``<ACCTTYPE>`` and no ``<BANKID>`` per the OFX spec, so both keep ``''``.
+    That is a value, not an absence: it survives the
+    ``FILTER(WHERE NOT account_type IS NULL)`` golden-record merge in
+    core.dim_accounts and can out-rank a real value from a stronger source on
+    recency. Absent fields must reach raw as NULL so the merge can skip them.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+#: Statement containers that state the account kind structurally instead of via
+#: ``<ACCTTYPE>``. Per the OFX spec neither ``<CCACCTFROM>`` (inside
+#: ``<CCSTMTRS>``) nor ``<INVACCTFROM>`` (inside ``<INVSTMTRS>``) carries that
+#: element — being wrapped in the container *is* the statement of type. ofxparse
+#: reports it as ``account.type`` while leaving ``account_type`` at ``''``.
+_CONTAINER_ACCOUNT_TYPES = {
+    ofxparse.AccountType.CreditCard: "CREDITCARD",
+    ofxparse.AccountType.Investment: "INVESTMENT",
+}
+
+
+def _ofx_account_type(account: Any) -> str | None:
+    """Account type from ``<ACCTTYPE>``, falling back to the statement container.
+
+    Reading only ``<ACCTTYPE>`` discards a distinction the file does state, just
+    in a different place — which left every credit-card and brokerage account
+    untyped. Values are emitted in the file's own uppercase vocabulary;
+    seeds.account_type_map is what maps them to the canonical ``credit`` /
+    ``investment``. An unrecognized container yields None rather than a guess.
+    """
+    declared = _none_if_blank(account.account_type)
+    if declared is not None:
+        return declared
+    container: Any = getattr(account, "type", None)
+    if container is None:
+        return None
+    return _CONTAINER_ACCOUNT_TYPES.get(container)
+
+
 def _fitid_content_signature(row: dict[str, Any]) -> str:
     """Unambiguous signature of the fields that make a transaction distinct.
 
@@ -442,16 +489,12 @@ class OFXExtractor:
             inst_org = account.institution.organization if account.institution else None
             account_info = {
                 "account_id": account.account_id,
-                "routing_number": account.routing_number
-                if hasattr(account, "routing_number")
-                else None,
-                "account_type": account.account_type
-                if hasattr(account, "account_type")
-                else None,
+                "routing_number": _none_if_blank(account.routing_number),
+                "account_type": _ofx_account_type(account),
                 "institution_org": inst_org or source_origin,
-                "institution_fid": account.institution.fid
-                if account.institution
-                else None,
+                "institution_fid": _none_if_blank(
+                    account.institution.fid if account.institution else None
+                ),
                 "source_file": source_file,
                 "extracted_at": extraction_timestamp.isoformat(),
                 "import_id": import_id,

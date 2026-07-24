@@ -82,6 +82,11 @@ class TabularFormatsRepo(BaseRepo):
             decode=_decode_row,
         )
 
+    def get(self, name: str) -> dict[str, Any] | None:
+        """Return the complete saved-format row used for exact mutation planning."""
+        row = self._fetch_row(name)
+        return None if row is None else dict(row)
+
     def set(
         self,
         *,

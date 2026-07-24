@@ -4,17 +4,22 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from decimal import Decimal
+from types import MappingProxyType
 
 import pytest
 
 from moneybin import error_codes
+from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import (
     DetailLevel,
     ResponseEnvelope,
     SummaryMeta,
     build_envelope,
 )
+from moneybin.reports._framework.contract import ReportSemantics
+from moneybin.reports._framework.execute import CatalogReportResult
 
 
 class TestDetailLevel:
@@ -66,9 +71,11 @@ class TestResponseEnvelope:
             summary=SummaryMeta(total_count=3, returned_count=3),
             data=[{"period": "2026-04", "income": 5200.00}],
             actions=["Use reports_spending_by_category for breakdown"],
+            classes_returned=["AMOUNT"],
         )
         d = envelope.to_dict()
         assert set(d.keys()) == {"status", "summary", "data", "actions"}
+        assert "classes_returned" not in d
         assert d["status"] == "ok"
         assert list(d.keys())[0] == "status"
         assert d["summary"]["total_count"] == 3
@@ -91,6 +98,71 @@ class TestResponseEnvelope:
         # see `_DecimalEncoder` docstring for the wire contract.
         assert parsed["data"][0]["amount"] == 42.5
         assert isinstance(parsed["data"][0]["amount"], float)
+
+    @pytest.mark.unit
+    def test_catalog_result_with_frozen_metadata_serializes_canonically(self) -> None:
+        result = CatalogReportResult(
+            report_id="core:networth",
+            parameters=MappingProxyType({
+                "account_map": MappingProxyType({
+                    "entry_count": 1,
+                    "redacted": True,
+                }),
+                "groupings": ("asset", "liability"),
+            }),
+            semantics=ReportSemantics(
+                unit="currency",
+                currency="summary.display_currency",
+                sign="signed position",
+                kind="position",
+                valuation_basis="resolved daily position",
+                fx_basis="no conversion",
+                time_basis="point in time",
+                denominator=None,
+                comparison_window=None,
+                exclusions=(),
+                provenance=("reports.net_worth",),
+            ),
+            provenance=("reports.net_worth",),
+            records=[
+                {
+                    "balance_date": date(2026, 7, 1),
+                    "net_worth": Decimal("1234.56000000"),
+                }
+            ],
+            columns=["balance_date", "net_worth"],
+            output_classes={
+                "balance_date": DataClass.TXN_DATE,
+                "net_worth": DataClass.BALANCE,
+            },
+            tier=Tier.HIGH,
+            total_count=1,
+            truncated=False,
+        )
+        envelope = build_envelope(data=result, sensitivity="high")
+
+        as_dict = envelope.to_dict()
+
+        assert as_dict["data"]["parameters"] == {
+            "account_map": {"entry_count": 1, "redacted": True},
+            "groupings": ["asset", "liability"],
+        }
+        assert "classes_returned" not in as_dict["data"]
+        assert as_dict["data"]["records"][0]["net_worth"] == Decimal("1234.56000000")
+        assert as_dict["data"]["records"][0]["balance_date"] == date(2026, 7, 1)
+
+        normalized = json.loads(envelope.to_json())
+        assert normalized["data"]["parameters"] == {
+            "account_map": {"entry_count": 1, "redacted": True},
+            "groupings": ["asset", "liability"],
+        }
+        assert normalized["data"]["records"] == [
+            {
+                "balance_date": "2026-07-01",
+                "net_worth": 1234.56,
+            }
+        ]
+        assert isinstance(normalized["data"]["records"][0]["net_worth"], float)
 
     @pytest.mark.unit
     def test_empty_actions_default(self) -> None:
@@ -178,6 +250,27 @@ class TestBuildEnvelope:
         assert envelope.summary.total_count == 200
         assert envelope.summary.returned_count == 50
         assert envelope.summary.has_more is True
+
+    @pytest.mark.unit
+    def test_explicit_returned_count_without_total_derives_total(self) -> None:
+        envelope = build_envelope(data={"rows": [1, 2]}, returned_count=2)
+
+        assert envelope.summary.returned_count == 2
+        assert envelope.summary.total_count == 2
+        assert envelope.summary.has_more is False
+
+    @pytest.mark.unit
+    def test_negative_explicit_returned_count_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="returned_count must be non-negative"):
+            build_envelope(data=[], returned_count=-1)
+
+    @pytest.mark.unit
+    def test_explicit_returned_count_cannot_exceed_total(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="total_count must be greater than or equal to returned_count",
+        ):
+            build_envelope(data=[], returned_count=2, total_count=1)
 
     @pytest.mark.unit
     def test_build_with_period(self) -> None:

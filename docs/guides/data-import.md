@@ -402,6 +402,10 @@ moneybin import formats delete my_custom_format    # remove a user-saved format 
 ```
 
 Pair any read command with `--output json` for machine-readable output — the same envelope shape the MCP server uses.
+On MCP, list formats with `import_status(sections=["formats"])` and remove a
+user-saved format with
+`import_revert(operation="delete_saved_format", format_name="...")`. The
+destructive tool rejects built-ins and records the deletion in the audit log.
 
 ## For scripts and agents
 

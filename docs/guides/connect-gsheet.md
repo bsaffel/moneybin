@@ -24,7 +24,7 @@ This is the first entry in the `connect-*` family. Future siblings — Airtable,
 MoneyBin has two verbs for "establish a relationship with an external data source":
 
 - **`sync_link`** (Plaid, future SimpleFIN/MX) — *mediated* third-party financial aggregators. Credentials are server-held; the client never speaks the bank's API directly.
-- **`gsheet_connect`** (and future `airtable_connect`, `smartsheet_connect`, `notion_connect`) — *direct* OAuth to data the user owns. Tokens live in the local `SecretStore`; no server mediation.
+- **`gsheet_connect`** — *direct* OAuth to data the user owns. Tokens live in the local `SecretStore`; no server mediation. Future direct-storage connectors remain unnamed until bounded-registry admission.
 
 The verb predicts the trust model. You should never need a qualifier to know which is which. Full rationale: [`.claude/rules/surface-design.md`](../../.claude/rules/surface-design.md) verb vocabulary.
 
@@ -120,12 +120,14 @@ flowchart LR
     C --> D[Insert new rows]
     C --> E[Update changed rows]
     C --> F[Soft-delete missing rows<br/>deleted_from_source_at = now]
-    D --> G[Run end-of-pull refresh<br/>matching → transform → categorize]
+    D --> G[Continue refresh<br/>match → transform → categorize → identity]
     E --> G
     F --> G
 ```
 
-Three things to know:
+The full `moneybin refresh` path continues through identity backfill. A
+dedicated `moneybin gsheet pull` runs the narrower live match → transform →
+categorize post-pull subset. Three things to know:
 
 1. **Edits in the sheet update the matching MoneyBin row.** A stable-key heuristic identifies "this is the same row" across pulls — edits don't create duplicate rows.
 2. **Deletions soft-delete.** A row removed from the sheet gets `deleted_from_source_at = NOW()` in `raw.tabular_transactions`. It disappears from reports by default but survives in the raw layer for audit.
@@ -187,18 +189,16 @@ Full spec coverage: [`connect-gsheet.md`](../specs/connect-gsheet.md) §CLI Inte
 
 ## MCP surface
 
-Mirror of the CLI minus `gsheet_auth` (which requires browser interaction). All return the standard `ResponseEnvelope`.
+MCP reaches the same outcomes with the bounded standard surface. All calls return the standard `ResponseEnvelope`.
 
 | Tool | Purpose |
 |------|---------|
-| `gsheet_connect` | Connect a sheet (triggers browser-side OAuth on first call). |
+| `gsheet_connect` | Authenticate, connect a sheet, or re-establish a drifted connection with `connection_id=...`. |
 | `gsheet_pull` | Pull one or all healthy connections. |
-| `gsheet` | List all connections (noun-only collection read). |
-| `gsheet_status` | Detailed status snapshot. |
-| `gsheet_reconnect` | Re-establish column mapping after drift. |
-| `gsheet_disconnect` | Soft disconnect; `purge=True` for hard delete. |
+| `gsheet` | List connections (`view='connections'`) or inspect their health (`view='status'`). |
+| `gsheet_disconnect` | Set a connection disconnected, or use the explicitly confirmed absent state to purge it. |
 
-Drift responses populate `actions[]` with `gsheet_status` and `gsheet_reconnect` hints. Auth-expired responses point at `moneybin gsheet auth` since the operator-territory OAuth flow has no MCP equivalent.
+Drift responses populate `actions[]` with a `gsheet_connect(connection_id=...)` hint. Auth-expired responses direct callers to `gsheet_connect(force_reauth=true)`; the same tool covers authentication, new connections, and reconnects.
 
 ## Limitations
 

@@ -1,4 +1,4 @@
-<!-- @dsCard group="Colors" viewport="700x150" subtitle="Sign is never color alone: explicit +/− and ▲/▼. Accounting convention: negative = expense." name="Income / expense semantics" -->
+<!-- @dsCard group="Colors" viewport="700x270" subtitle="Sign is never color alone: explicit +/− and ▲/▼. Accounting convention: negative = expense. The pair also carries error semantics in system chrome." name="Income / expense semantics" -->
 <!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css"><style>body{margin:0;font-family:var(--font-data)}</style></head>
 <body style="background:var(--bg-base);padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:center;">
 <div style="display:flex;justify-content:space-between;border:1px solid var(--border-hairline);border-radius:var(--r-control);padding:10px 14px;background:var(--bg-surface);">
@@ -9,4 +9,12 @@
   <span style="font-size:13px;color:var(--neg-expense)">−$428.60 ▼</span></div>
 <div style="font-size:10px;color:var(--text-faint)">pos-income #45B27B dark / #157A52 light</div>
 <div style="font-size:10px;color:var(--text-faint)">neg-expense #E0684F dark / #B03A24 light · transfers stay text-secondary with ⇄</div>
+
+<div style="grid-column:1/-1;border-top:1px solid var(--border-hairline);padding-top:12px;margin-top:2px;font-size:10px;color:var(--text-faint);letter-spacing:0.12em">ERROR SEMANTICS — SYSTEM CHROME ONLY</div>
+<div style="grid-column:1/-1;display:flex;gap:10px;flex-wrap:wrap">
+  <span style="font-size:11px;color:var(--pos-income);border:1px solid var(--border-hairline);border-radius:var(--r-chip);padding:4px 9px">HEADER ALIAS ✓</span>
+  <span style="font-size:11px;color:var(--accent-brass);border:1px solid var(--border-hairline);border-radius:var(--r-chip);padding:4px 9px">CONTENT MATCH · EYEBALL</span>
+  <span style="font-size:11px;color:var(--neg-expense);border:1px solid var(--border-hairline);border-radius:var(--r-chip);padding:4px 9px">MISSING REQUIRED</span>
+</div>
+<div style="grid-column:1/-1;font-size:10px;color:var(--text-faint);line-height:1.55">The money pair may also read as <strong style="color:var(--text-secondary);font-weight:400">error semantics</strong> in system chrome — green = a check passed (balance proof, a fixed row), brass = eyeball this, red = an error fact. A missing required field IS an error, which is why the pair fits. Never a graded confidence scale, and never the sole channel: the mono status vocabulary carries the meaning. Amounts on the same surface stay disambiguated by their explicit +/−.</div>
 </body></html>

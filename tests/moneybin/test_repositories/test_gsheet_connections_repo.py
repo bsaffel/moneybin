@@ -16,7 +16,13 @@ import pytest
 from prometheus_client import REGISTRY
 
 from moneybin.database import Database
-from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
+from moneybin.repositories.export_destinations_repo import ExportDestinationsRepo
+from moneybin.repositories.gsheet_connections_repo import (
+    GSheetConnectionExportDestinationConflictError,
+    GSheetConnectionsRepo,
+)
+from moneybin.services.mutation_context import operation
+from moneybin.services.undo_service import UndoService
 
 
 def _insert_default(
@@ -122,6 +128,24 @@ def test_insert_writes_connection_and_audit_row(db: Database) -> None:
         {"repository": "gsheet_connections", "action": "gsheet_connection.insert"},
     )
     assert (after_metric or 0.0) - before_metric == 1.0
+
+
+def test_insert_rejects_workbook_already_configured_for_exports(db: Database) -> None:
+    """Outbound-first workbook setup cannot become an inbound connection later."""
+    ExportDestinationsRepo(db).set_sheets(
+        name="outbound workbook",
+        spreadsheet_id="outbound_sheet",
+        managed_tab_prefix="MoneyBin",
+        actor="cli",
+    )
+
+    with pytest.raises(GSheetConnectionExportDestinationConflictError):
+        _insert_default(GSheetConnectionsRepo(db), spreadsheet_id="outbound_sheet")
+
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.gsheet_connections WHERE spreadsheet_id = ?",
+        ["outbound_sheet"],
+    ).fetchone() == (0,)
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +338,22 @@ def test_delete_writes_audit_row_with_before_value(db: Database) -> None:
     assert before_decoded["connection_id"] == cid
     assert before_decoded["spreadsheet_id"] == "ss_delete"
     assert after_value is None
+
+
+def test_undo_connection_restore_rechecks_export_workbook_role(db: Database) -> None:
+    repo = GSheetConnectionsRepo(db)
+    connection_id = _insert_default(repo, spreadsheet_id="shared-workbook")
+    with operation() as deletion_operation:
+        repo.delete(connection_id, actor="cli")
+    ExportDestinationsRepo(db).set_sheets(
+        name="dashboard",
+        spreadsheet_id="shared-workbook",
+        managed_tab_prefix="MB",
+        actor="cli",
+    )
+
+    with pytest.raises(GSheetConnectionExportDestinationConflictError):
+        UndoService(db).undo(deletion_operation, actor="cli")
 
 
 # ---------------------------------------------------------------------------

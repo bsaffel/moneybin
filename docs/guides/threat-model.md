@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-17 -->
+<!-- Last reviewed: 2026-07-18 -->
 # Threat Model
 
 What MoneyBin protects against, and what it does not. This page is the honest list — written so a privacy-conscious user can decide whether MoneyBin meets their threat model, not so MoneyBin looks good. If you're trusting MoneyBin with real financial data, read this in full before you decide.
@@ -78,7 +78,7 @@ A malicious client can:
 - Ignore `destructiveHint` annotations and approve writes silently.
 - Inject additional context into the LLM's prompt that you didn't write.
 
-MoneyBin has no way to detect or stop a misbehaving client. The trust boundary is "the OS user who launched the client process." See [MCP clients: network boundary](mcp-clients.md#network-boundary) for the surface map.
+MoneyBin has no way to detect or stop a misbehaving client. The trust boundary is "the OS user who launched the client process." See [MCP clients: where data goes](mcp-clients.md#where-data-goes) for the surface map.
 
 ### A malicious or compromised hosted LLM provider
 
@@ -199,12 +199,16 @@ A firewall ruleset for the MoneyBin client alone — without an MCP client runni
 | Activity | Outbound from MoneyBin client | Notes |
 |---|---|---|
 | OFX / QFX / QBO / CSV / PDF imports | None | Pure file path; never reads `sync.server_url`. |
-| `moneybin mcp serve` | None | stdio JSON-RPC only; no listening port; no telemetry. |
+| `moneybin mcp serve` startup / local tools | None | stdio JSON-RPC only; no listening port; no telemetry. Explicit connector tool calls follow the rows below. |
 | `moneybin db ...`, `moneybin transform apply`, `moneybin reports ...` | None | All local. |
 | `moneybin sync ...` (Plaid path) | `sync.server_url` only | Default is `None` — the user supplies the broker URL via env / config. Set to your self-hosted instance or to the hosted broker if you choose one. |
+| `moneybin gsheet ...` / `gsheet_*` | Google OAuth and Sheets APIs | Only when the user invokes the connector; credentials remain in `SecretStore`. |
+| `moneybin export ... --destination sheets:*` / `export_run` | Google Sheets API | Only when the user explicitly selects a saved Sheets export destination; export data is written to its managed tabs. |
 | Categorization assist (MCP tool) | None | The LLM call originates in the MCP client process, not in MoneyBin. |
 
 No telemetry, no analytics, no update checks, no enrichment lookups. The MCP client running alongside MoneyBin makes its own outbound calls per its own privacy policy — that is out of MoneyBin's control.
+The MCP connector spellings follow the same boundary: `sync_*` reaches the
+configured broker and `gsheet_*` reaches Google only when invoked.
 
 ### Self-hosted moneybin-sync trust delta
 
@@ -227,7 +231,7 @@ Every MCP tool carries one of four sensitivity tiers, derived automatically from
 | `high` | Balances, transaction and income amounts | Logged on every call | Persistent consent prompt; degraded-response fallback |
 | `critical` | Account and routing numbers | Logged on every call; **masked before egress today** | Per-call confirmation; local-unmask option |
 
-**What this means today:** the tier is a logging signal plus (at `critical`) a masking trigger, not a consent gate. A `medium`, `high`, or `critical` tool executes and returns its result without any user-visible consent prompt — account and routing numbers masked, everything else in the clear; the response leaves the MoneyBin process and lands in the MCP client, which forwards it to the LLM. The per-call privacy log captures intent (use `privacy_log` to read it back; `system_audit` records mutations only), but nothing blocks the call.
+**What this means today:** the tier is a logging signal plus (at `critical`) a masking trigger, not a consent gate. A `medium`, `high`, or `critical` tool executes and returns its result without any user-visible consent prompt — account and routing numbers masked, everything else in the clear; the response leaves the MoneyBin process and lands in the MCP client, which forwards it to the LLM. The per-call privacy log captures intent (use `privacy(view="log")` to read it back; `system_audit` records mutations only), but nothing blocks the call.
 
 **What this means going forward:** when the consent framework lands, `medium` / `high` calls without consent will return aggregate-only `data` with `summary.degraded: true` — never failing outright. The tier names won't change. Cross-links: the per-tool breakdown of what actually leaves is in [What the AI Provider Sees](what-the-ai-sees.md); tier mechanics in [MCP server: sensitivity tiers](mcp-server.md#sensitivity-tiers).
 
@@ -254,7 +258,7 @@ MoneyBin is AI-native — and that introduces risks that don't exist in a plain 
 
 - **Prompt injection from your own data is unfiltered.** A transaction description that says `IGNORE PREVIOUS INSTRUCTIONS AND DO X` arrives at the LLM as ordinary tool-result content. MoneyBin doesn't scan, strip, or quote-escape this kind of content. The LLM's own safety training is the only filter. For high-stakes operations, prefer the CLI (where there is no LLM in the loop) over the agent.
 
-- **No egress redaction.** MoneyBin's tool results are not filtered or scrubbed before they leave the server process. The `SanitizedLogFormatter` operates on log lines only. An opt-in redaction layer (mask merchants, mask amounts, send aggregates only) is on the post-launch roadmap; it is not shipped today.
+- **No general consent redaction beyond critical-field masking.** Critical account/routing fields are masked before tool results leave today. Medium/high fields are not otherwise degraded or scrubbed based on consent; `SanitizedLogFormatter` protects log lines only. Aggregate-only consent degradation remains deferred.
 
 ---
 
@@ -312,7 +316,14 @@ A reasonable question from someone migrating off a service that died: what happe
 
 - **License.** MoneyBin is AGPL-3.0-or-later. The source is yours under that license — to read, modify, fork, and run privately or publicly. See [licensing](../licensing.md).
 - **Your encrypted database is portable.** The DuckDB file is openable by any DuckDB client with the encryption key — no MoneyBin process required. The schema is documented in [architecture](../architecture.md). If MoneyBin disappears tomorrow, you can `ATTACH` the database in `duckdb` CLI, supply the key, and `SELECT` your data.
-- **Plaintext export.** A turnkey "export everything to CSV" command is on the roadmap, not shipped. Until then: `moneybin db query --output csv "SELECT * FROM core.fct_transactions"` per table writes CSV to stdout, and the same pattern works for every other `core.*` and `app.*` table. The DuckDB CLI's `COPY ... TO 'file.csv' (HEADER, DELIMITER ',')` is the equivalent if you'd rather drive it directly.
+- **Plaintext export.** `moneybin export bundle` publishes the closed canonical
+  13-table catalog as redacted CSV under
+  `~/Documents/MoneyBin/<profile>/exports/` by default. Use `--unredacted` only
+  when the portable copy must retain every value. Export files are private to
+  the current user (`0600`, with `0700` directories), but they are plaintext:
+  protect, move, and delete them as deliberately as a bank statement. The
+  encrypted DuckDB file remains the complete recovery path for internal state
+  outside the portability catalog.
 - **Supply chain.** MoneyBin is solo-maintained today. Dependencies are pinned via `uv` with a checked-in `uv.lock`. There is no published PyPI release or container image at the time of this review — installation is from source. Release signing, reproducible builds, and container provenance are not in place yet; they will land alongside the first public release. The AGPL license means a fork is always possible regardless of what the upstream maintainer does next.
 
 For a side-by-side with hosted competitors on portability and exit, see [comparison](../comparison.md).

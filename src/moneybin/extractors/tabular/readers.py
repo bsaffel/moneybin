@@ -8,6 +8,7 @@ downstream operates on DataFrames regardless of source format.
 import logging
 import re
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import polars as pl
@@ -16,7 +17,10 @@ from moneybin.extractors.tabular.date_detection import (
     detect_date_format,
     parse_amount_str,
 )
-from moneybin.extractors.tabular.format_detector import FormatInfo
+from moneybin.extractors.tabular.format_detector import (
+    FormatInfo,
+    _read_sample_lines,  # pyright: ignore[reportPrivateUsage]  # shared package helper
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +83,8 @@ def read_file(
     sheet: str | None = None,
     skip_trailing_patterns: list[str] | None = None,
     no_row_limit: bool = False,
+    source_bytes: bytes | None = None,
+    has_header: bool | None = None,
 ) -> ReadResult:
     """Read a file into a format-agnostic Polars DataFrame.
 
@@ -90,6 +96,8 @@ def read_file(
         skip_trailing_patterns: Regex patterns for trailing junk.
             None = use defaults, [] = no patterns.
         no_row_limit: If True, skip row count limits.
+        source_bytes: Already materialized source object to parse.
+        has_header: Persisted header decision; None runs detection.
 
     Returns:
         ReadResult with DataFrame and metadata.
@@ -103,13 +111,21 @@ def read_file(
             info,
             skip_rows=skip_rows,
             skip_trailing_patterns=skip_trailing_patterns,
+            source_bytes=source_bytes,
+            has_header=has_header,
         )
     elif info.file_type == "excel":
-        result = _read_excel(path, info, skip_rows=skip_rows, sheet=sheet)
+        result = _read_excel(
+            path,
+            info,
+            skip_rows=skip_rows,
+            sheet=sheet,
+            source_bytes=source_bytes,
+        )
     elif info.file_type == "parquet":
-        result = _read_parquet(path)
+        result = _read_parquet(path, source_bytes=source_bytes)
     elif info.file_type == "feather":
-        result = _read_feather(path)
+        result = _read_feather(path, source_bytes=source_bytes)
     else:
         raise ValueError(f"No reader for file type: {info.file_type}")
 
@@ -139,6 +155,8 @@ def _read_text(
     *,
     skip_rows: int | None = None,
     skip_trailing_patterns: list[str] | None = None,
+    source_bytes: bytes | None = None,
+    has_header: bool | None = None,
 ) -> ReadResult:
     """Read a text-based tabular file (CSV, TSV, pipe, semicolon).
 
@@ -147,6 +165,8 @@ def _read_text(
         info: Format detection result with delimiter and encoding.
         skip_rows: Explicit preamble rows to skip (overrides auto-detection).
         skip_trailing_patterns: Regex patterns for trailing junk rows.
+        source_bytes: Already materialized source object to parse.
+        has_header: Persisted header decision; None runs detection.
 
     Returns:
         ReadResult with the parsed DataFrame and metadata.
@@ -157,9 +177,16 @@ def _read_text(
     # Explicit skip_rows implies a header at that row; auto-detection both
     # locates the header and decides whether the file has one at all.
     explicit_skip = skip_rows is not None
-    has_header = True
+    resolved_has_header = True
     if skip_rows is None:
-        skip_rows, has_header = _detect_header(path, encoding, delimiter)
+        skip_rows, resolved_has_header = _detect_header(
+            path,
+            encoding,
+            delimiter,
+            source_bytes=source_bytes,
+        )
+    elif has_header is not None:
+        resolved_has_header = has_header
 
     # header_row_looks_like_data is defense-in-depth for the EXPLICIT skip_rows
     # path only (has_header is unconditionally True there — no safety check of
@@ -167,16 +194,20 @@ def _read_text(
     # as the header, so computing it there would always be False — skip the read.
     header_row_looks_like_data = False
     if explicit_skip:
-        header_row_looks_like_data = _row_looks_like_data_at(
-            path, encoding, delimiter, skip_rows
+        header_row_looks_like_data = resolved_has_header and _row_looks_like_data_at(
+            path,
+            encoding,
+            delimiter,
+            skip_rows,
+            source_bytes=source_bytes,
         )
 
     df = pl.read_csv(
-        path,
+        path if source_bytes is None else BytesIO(source_bytes),
         separator=delimiter,
         encoding=encoding if encoding != "utf-8-sig" else "utf8",
         skip_rows=skip_rows,
-        has_header=has_header,
+        has_header=resolved_has_header,
         infer_schema_length=0,
         truncate_ragged_lines=True,
     )
@@ -195,12 +226,18 @@ def _read_text(
         df=df,
         skip_rows=skip_rows,
         rows_skipped_trailing=rows_removed,
-        has_header=has_header,
+        has_header=resolved_has_header,
         header_row_looks_like_data=header_row_looks_like_data,
     )
 
 
-def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool]:
+def _detect_header(
+    path: Path,
+    encoding: str,
+    delimiter: str,
+    *,
+    source_bytes: bytes | None = None,
+) -> tuple[int, bool]:
     """Locate the header row, or determine the file is headerless.
 
     Scans up to the first 30 content rows and decides between two outcomes:
@@ -225,6 +262,7 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
         path: File path.
         encoding: File encoding.
         delimiter: Column delimiter.
+        source_bytes: Already materialized source object to inspect.
 
     Returns:
         ``(skip_rows, has_header)`` — rows to skip before the header (or
@@ -232,21 +270,15 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
         row is present.
     """
     enc = encoding if encoding != "utf-8-sig" else "utf-8"
-    lines: list[str] = []
-    try:
-        with open(path, encoding=enc, errors="replace") as f:  # noqa: PTH123 — standard file open
-            for i, line in enumerate(f):
-                if i >= 30:
-                    break
-                # lstrip a leading BOM: a utf-8-sig file opened as utf-8 keeps
-                # U+FEFF on physical line 0's first cell, which defeats
-                # detect_date_format there — so a BOM'd headerless CSV (Excel's
-                # "CSV UTF-8" export) would misread row 0 as a header and
-                # silently eat the first transaction. Only line 0 carries it;
-                # the lstrip is a no-op elsewhere.
-                lines.append(line.rstrip("\n\r").lstrip("\ufeff"))
-    except OSError:
-        return 0, True
+    lines = [
+        line.lstrip("\ufeff")
+        for line in _read_sample_lines(
+            path,
+            enc,
+            n=30,
+            source_bytes=source_bytes,
+        )
+    ]
 
     # Two passes (see docstring): find a label row followed by data, else fall
     # back to the first data row as headerless.
@@ -280,7 +312,12 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
 
 
 def _row_looks_like_data_at(
-    path: Path, encoding: str, delimiter: str, row_index: int
+    path: Path,
+    encoding: str,
+    delimiter: str,
+    row_index: int,
+    *,
+    source_bytes: bytes | None = None,
 ) -> bool:
     """Return True if the physical row at ``row_index`` parses as a transaction.
 
@@ -295,31 +332,25 @@ def _row_looks_like_data_at(
         encoding: File encoding.
         delimiter: Column delimiter.
         row_index: Zero-based physical line index to check.
+        source_bytes: Already materialized source object to inspect.
 
     Returns:
         True when the row at ``row_index`` parses as a transaction record.
     """
     enc = encoding if encoding != "utf-8-sig" else "utf-8"
-    try:
-        with open(path, encoding=enc, errors="replace") as f:  # noqa: PTH123 — standard file open
-            for i, line in enumerate(f):
-                if i == row_index:
-                    # lstrip a leading BOM: a utf-8-sig file is opened as utf-8
-                    # here (polars-compatible), so on physical line 0 the BOM
-                    # survives as U+FEFF on cell 0 and would defeat date
-                    # detection — masking exactly the row-0-is-data case this
-                    # guards. .strip()/.strip('"') don't remove it (not
-                    # whitespace, sits outside the quotes).
-                    parts = line.rstrip("\n\r").lstrip("\ufeff").split(delimiter)
-                    non_empty = [
-                        p.strip().strip('"').strip("'") for p in parts if p.strip()
-                    ]
-                    return _looks_like_data_row(non_empty) if non_empty else False
-                if i > row_index:
-                    break
-    except OSError:
+    lines = _read_sample_lines(
+        path,
+        enc,
+        n=row_index + 1,
+        source_bytes=source_bytes,
+    )
+    if row_index >= len(lines):
         return False
-    return False
+    # lstrip a leading BOM: a utf-8-sig file is decoded as utf-8 here
+    # (polars-compatible), so physical line 0 may retain it.
+    parts = lines[row_index].lstrip("\ufeff").split(delimiter)
+    non_empty = [p.strip().strip('"').strip("'") for p in parts if p.strip()]
+    return _looks_like_data_row(non_empty) if non_empty else False
 
 
 def _looks_like_data_row(cells: list[str]) -> bool:
@@ -448,6 +479,7 @@ def _read_excel(
     *,
     skip_rows: int | None = None,
     sheet: str | None = None,
+    source_bytes: bytes | None = None,
 ) -> ReadResult:
     """Read an Excel (.xlsx) file.
 
@@ -456,6 +488,7 @@ def _read_excel(
         info: Format detection result (unused for Excel, kept for API consistency).
         skip_rows: Rows to skip after header detection.
         sheet: Sheet name to read. If None, picks the sheet with the most rows.
+        source_bytes: Already materialized workbook object to parse.
 
     Returns:
         ReadResult with the parsed DataFrame and sheet metadata.
@@ -464,7 +497,11 @@ def _read_excel(
 
     sheet_used = sheet
     if sheet_used is None:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        wb = openpyxl.load_workbook(
+            path if source_bytes is None else BytesIO(source_bytes),
+            read_only=True,
+            data_only=True,
+        )
         try:
             best_sheet = wb.sheetnames[0]
             best_rows = 0
@@ -479,7 +516,7 @@ def _read_excel(
             wb.close()
 
     df = pl.read_excel(
-        path,
+        path if source_bytes is None else BytesIO(source_bytes),
         sheet_name=sheet_used,
         infer_schema_length=0,
     )
@@ -505,30 +542,32 @@ def _read_excel(
     )
 
 
-def _read_parquet(path: Path) -> ReadResult:
+def _read_parquet(path: Path, *, source_bytes: bytes | None = None) -> ReadResult:
     """Read a Parquet file.
 
     Args:
         path: File path.
+        source_bytes: Already materialized Parquet object to parse.
 
     Returns:
         ReadResult with the parsed DataFrame.
     """
-    df = pl.read_parquet(path)
+    df = pl.read_parquet(path if source_bytes is None else BytesIO(source_bytes))
     # Columnar formats carry column names in schema metadata — no data row is
     # consumed as a header, so has_header=False keeps rows_in_file == len(df).
     return ReadResult(df=df, has_header=False)
 
 
-def _read_feather(path: Path) -> ReadResult:
+def _read_feather(path: Path, *, source_bytes: bytes | None = None) -> ReadResult:
     """Read a Feather/Arrow IPC file.
 
     Args:
         path: File path.
+        source_bytes: Already materialized Feather object to parse.
 
     Returns:
         ReadResult with the parsed DataFrame.
     """
-    df = pl.read_ipc(path)
+    df = pl.read_ipc(path if source_bytes is None else BytesIO(source_bytes))
     # Schema-typed like parquet — column names are metadata, not a header row.
     return ReadResult(df=df, has_header=False)

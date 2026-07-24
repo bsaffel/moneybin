@@ -262,8 +262,10 @@ class UndoService:
         domain: str | None = None,
         since: str | None = None,
         actor: str | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
         include_undone: bool = False,
+        snapshot: tuple[str, str] | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[OperationSummary]:
         """Return recent operations grouped by ``operation_id``, newest first.
 
@@ -290,7 +292,22 @@ class UndoService:
             )
             params.append(f"{domain}.%")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(limit)
+        having_clauses: list[str] = []
+        if snapshot is not None:
+            having_clauses.append(
+                "(MAX(occurred_at) < ? OR (MAX(occurred_at) = ? AND operation_id <= ?))"
+            )
+            params.extend([snapshot[0], snapshot[0], snapshot[1]])
+        if after is not None:
+            having_clauses.append(
+                "(MAX(occurred_at) < ? OR (MAX(occurred_at) = ? AND operation_id < ?))"
+            )
+            params.extend([after[0], after[0], after[1]])
+        having = "HAVING " + " AND ".join(having_clauses) if having_clauses else ""
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = "LIMIT ?"
+            params.append(limit)
         rows = self._db.conn.execute(
             f"""
             SELECT operation_id,
@@ -304,13 +321,63 @@ class UndoService:
               FROM app.audit_log
               {where}
              GROUP BY operation_id
-             ORDER BY MAX(rowid) DESC
-             LIMIT ?
+             {having}
+             ORDER BY MAX(occurred_at) DESC, operation_id DESC
+             {limit_sql}
             """,  # noqa: S608  # WHERE built from literal clauses; values parameterized
             params,
         ).fetchall()
         liveness = self._build_undo_liveness()
         return [self._summarize(r, liveness) for r in rows]
+
+    def history_count(
+        self,
+        *,
+        domain: str | None = None,
+        since: str | None = None,
+        actor: str | None = None,
+        include_undone: bool = False,
+        snapshot: tuple[str, str] | None = None,
+    ) -> int:
+        """Count operations at or below an optional newest-first snapshot key."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if actor is not None:
+            clauses.append("actor = ?")
+            params.append(actor)
+        if since is not None:
+            clauses.append("occurred_at >= ?")
+            params.append(since)
+        if not include_undone:
+            clauses.append("is_undo = FALSE")
+        if domain is not None:
+            clauses.append(
+                "operation_id IN (SELECT operation_id FROM app.audit_log "
+                "WHERE action LIKE ?)"
+            )
+            params.append(f"{domain}.%")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        having = ""
+        if snapshot is not None:
+            having = (
+                "HAVING MAX(occurred_at) < ? OR "
+                "(MAX(occurred_at) = ? AND operation_id <= ?)"
+            )
+            params.extend([snapshot[0], snapshot[0], snapshot[1]])
+        row = self._db.conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT operation_id
+                FROM app.audit_log
+                {where}
+                GROUP BY operation_id
+                {having}
+            )
+            """,  # noqa: S608  # fixed predicate fragments; values parameterized
+            params,
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
 
     def get(self, operation_id: str) -> OperationDetail:
         """Return full before/after for every row of one operation.
@@ -377,8 +444,8 @@ class UndoService:
             code=error_codes.UNDO_OPERATION_NOT_FOUND,
             recovery_actions=[
                 RecoveryAction(
-                    tool="system_audit_history",
-                    arguments={},
+                    tool="system_audit",
+                    arguments={"view": "history"},
                     rationale="List recent operations to find a valid id.",
                     confidence="certain",
                     idempotent=True,

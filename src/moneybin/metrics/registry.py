@@ -112,6 +112,18 @@ PDF_REPLAY_GUARD_FAILURE_TOTAL = Counter(
     "Saved PDF format matched but reconciliation failed (recipe drift signal).",
 )
 
+# What happened AFTER a replay-guard failure. Without this, a fleet where every
+# failure self-heals is indistinguishable from one where every failure seeds —
+# PDF_REPLAY_GUARD_FAILURE_TOTAL fires before the repair is attempted, so it
+# counts the trigger, not the outcome. Cardinality is fixed at 5 by the literal
+# label set below.
+PDF_SELF_HEAL_TOTAL = Counter(
+    "moneybin_pdf_self_heal_total",
+    "Outcome of re-deriving a saved PDF recipe that stopped reconciling.",
+    ["outcome"],  # repaired | repaired_pending_sign | refused_not_detected
+    # | underivable | still_unreconciled
+)
+
 # Phase 1: cardinality bounded by distinct PDF aliases per user (~dozens).
 # Revisit before multi-user hosted launch (M3E).
 PDF_SEED_ROWS_TOTAL = Counter(
@@ -211,6 +223,20 @@ SQLMESH_RUN_DURATION_SECONDS = Histogram(
     "moneybin_sqlmesh_run_duration_seconds",
     "Duration of SQLMesh model runs in seconds",
     ["model"],
+)
+
+# ── Export delivery ──────────────────────────────────────────────────────────
+
+EXPORT_RUNS_TOTAL = Counter(
+    "moneybin_export_runs_total",
+    "Export run outcomes.",
+    ["subject_kind", "format", "destination_kind", "redaction_mode", "outcome"],
+)
+
+EXPORT_DURATION_SECONDS = Histogram(
+    "moneybin_export_duration_seconds",
+    "Export run duration.",
+    ["subject_kind", "format", "destination_kind", "redaction_mode"],
 )
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
@@ -607,6 +633,14 @@ SYNC_INVESTMENTS_RECORDS_LOADED = Counter(
 INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL = Counter(
     "moneybin_investment_amount_drift_rows_total",
     "Plaid investment rows whose |amount| reconciles under neither fee convention",
+)
+
+PRICE_ROWS_WRITTEN_TOTAL = Counter(
+    "moneybin_price_rows_written_total",
+    # Rows the append-only insert actually wrote — a re-reported observation is
+    # dropped and must not count, so a flat counter means a stalled price feed.
+    "Price observations written to raw.security_prices, by source_type",
+    ["source_type"],
 )
 
 SECURITY_LINK_OUTCOMES_TOTAL = Counter(

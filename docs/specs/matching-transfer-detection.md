@@ -1,6 +1,8 @@
 # Transfer Detection
 
-> Last updated: 2026-05-17 — CLI commands relocated to `moneybin transactions matches *` (PR #159); MCP names aligned to `transactions_matches_*` (phantom namespace per `moneybin-mcp.md` §17); `core.bridge_transfers` materialized as SQLMesh VIEW.
+> Last updated: 2026-07-21 — MCP matching uses the standard `reviews` and
+> `reviews_decide` contracts; CLI commands remain under `moneybin transactions matches *`;
+> `core.bridge_transfers` is materialized as a SQLMesh VIEW.
 > Status: implemented
 > Parent: [`matching-overview.md`](matching-overview.md) (pillar B)
 > Companions: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (sibling spec, pillars A+C), [`categorization-overview.md`](categorization-overview.md) (independent axis), `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
@@ -295,23 +297,26 @@ Designed alongside CLI. Implementation may be sequenced after CLI, but the data 
 
 ### Tools
 
-Currently a phantom namespace per `moneybin-mcp.md` §17 "Dependency tracker" — no `transactions_matches_*` tool is registered yet. Transfer detection reuses the same MCP tools as same-record dedup with `match_type` filtering. No new tools needed; names follow the `transactions_matches_*` prefix defined in `moneybin-mcp.md` §6:
+Transfer detection reuses the same standard review operations as same-record
+dedup. `reviews(kind="matches", status="pending")` returns the queue; its rows
+identify the match type. No separate transfer tool or filter is admitted:
 
 | Tool | Transfer usage |
 |---|---|
-| `transactions_matches_pending` | `match_type='transfer'` filter. Returns both sides of each pair with signal breakdown. |
-| `transactions_matches_confirm` | Accepts `match_ids` regardless of type. |
-| `transactions_matches_reject` | Rejects `match_ids` regardless of type. |
-| `transactions_matches_undo` | Reverses previously accepted matches. |
-| `transactions_matches_log` | `match_type='transfer'` filter. Signal breakdown per entry. |
+| `reviews(kind="matches", status="pending")` | Returns both sides of each transfer candidate with its signal breakdown. |
+| `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"accept"}])` | Accepts one transfer proposal. |
+| `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"reject"}])` | Rejects one transfer proposal. |
+| `system_audit_undo(operation_id=...)` | Reverses a previously accepted match operation. |
+| `reviews(kind="matches", status="history")` | Signal breakdown per prior decision. |
 
-### Prompt
+### Agent flow
 
-| Prompt | Purpose |
-|---|---|
-| `review_matches` | "Help me review pending transaction matches. Show dedup and transfer proposals, explain why each was proposed, and let me accept or reject them." |
-
-The AI can walk the user through the review queue conversationally — showing both sides of transfer pairs, explaining signal scores, and calling `transactions_matches_confirm` / `transactions_matches_reject` as the user decides.
+No dedicated match-review prompt is registered. The AI can walk the user
+through the review queue conversationally: read
+`reviews(kind="matches", status="pending")`, show both sides of each transfer
+pair and explain its signals, then issue one of the exact `reviews_decide`
+requests above. Prior decisions come from
+`reviews(kind="matches", status="history")`.
 
 ## Configuration
 

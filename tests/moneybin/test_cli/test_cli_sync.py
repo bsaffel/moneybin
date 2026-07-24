@@ -171,7 +171,10 @@ def test_sync_pull_text_output_shows_clean_investment_resolution(
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull"])
     assert result.exit_code == 0, result.output
-    assert "Investments: 3 securities, 4 transactions, 3 holdings." in result.stdout
+    assert (
+        "Investments: 3 securities, 4 transactions, 3 holdings, 0 new closes."
+        in result.stdout
+    )
     assert "Securities: 1 adopted, 1 auto-bound, 1 new." in result.stdout
     assert "awaiting" not in result.stdout
     assert "Review:" not in result.stdout

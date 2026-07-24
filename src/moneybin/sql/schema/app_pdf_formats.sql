@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS app.pdf_formats (
     sign_convention VARCHAR,             -- negative_is_expense | negative_is_income (credit cards, confirm-gated) | split_debit_credit (transactions)
     date_format VARCHAR,                 -- strftime format for date parsing
     number_format VARCHAR NOT NULL DEFAULT 'us', -- us | european | swiss_french | zero_decimal
-    source VARCHAR NOT NULL DEFAULT 'detected', -- detected (bridge-proposed + vetted) | manual
+    source VARCHAR NOT NULL DEFAULT 'detected', -- detected (machine auto-derive) | bridge (agent-authored, human-vetted) | manual (hand-authored/edited). Self-heal re-derives only 'detected' rows -- see extractors/pdf/routing.py::_attempt_self_heal
     version INTEGER NOT NULL DEFAULT 1,         -- Bumped on each recipe refresh via PdfFormatsRepo.bump_version (mutation audited per Invariant 10); prior versions recoverable through app.audit_log undo (Invariant 11, data-recovery-contract.md)
     times_used INTEGER NOT NULL DEFAULT 0,      -- Successful imports using this format
     last_used_at TIMESTAMP,                     -- Most recent successful use

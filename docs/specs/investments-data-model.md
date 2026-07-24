@@ -25,8 +25,9 @@ lot/holding derivation.
 
 The crucial scoping insight (from the overview): **realized gain/loss is computed
 entirely from the ledger** — a sale's proceeds versus the cost of the lots it
-consumes, both recorded events — so it requires no market price. Only *unrealized*
-gain/loss needs a current price, which is Pillar C's job.
+consumes, both recorded events — so it requires no market price. *Unrealized*
+gain/loss uses the broker-carried close shipped in Pillar C.1; external feeds and
+the daily valued series remain later Pillar C work.
 
 Related specs:
 - [`investments-overview.md`](investments-overview.md) — umbrella; vision, pillars, cross-cutting contracts
@@ -50,8 +51,8 @@ Related specs:
    absorbs unanticipated instruments without one.
 3. **Identity resolution chain.** Free-text or partial security references resolve to
    a `security_id` via CUSIP/ISIN → ticker+exchange → name fuzzy, mirroring the
-   institution-resolution chain in `smart-import-financial.md`. Three rules adopted
-   from Portfolio Performance's battle-tested `SecurityCache` (127 broker importers):
+   institution-resolution chain in `smart-import-financial.md`. Three rules keep
+   the chain deterministic against real broker-export identifier quirks:
    ticker resolution tries the full reference as a stored ticker first — so a
    dotted ticker like `BRK.B` resolves by its own ticker — and only then falls back
    to stripping an exchange suffix (`UMAX.AX` → `UMAX`, disambiguated by the
@@ -79,10 +80,9 @@ Related specs:
    `other`. `deposit`/`withdrawal` are *external* cash funding events (NULL
    `security_id`; move net contribution), kept distinct from
    `transfer_in`/`transfer_out`, which are *internal*, basis-preserving position
-   moves — collapsing the two breaks net-contribution/time-weighted-return math
-   (a bug class two shipped competitors hit independently). The `type` is the
-   engine-dispatch contract; two companion columns keep it from being overloaded
-   (the Rotki lesson — one enum must not serve mechanics, reporting, and display):
+   moves—collapsing the two breaks net-contribution and time-weighted-return
+   math. The `type` is the engine-dispatch contract; two companion columns keep
+   one enum from serving mechanics, reporting, and display:
    - **`subtype`** (nullable) — closed per-type refinement vocabulary carrying tax
      character and provenance detail: `qualified`/`non_qualified` on `dividend`;
      `short_term`/`long_term` on `capital_gain_distribution`; `tax_withheld` on
@@ -143,7 +143,8 @@ Related specs:
     (deferred to M1K). Named **`currency_code`** per `multi-currency.md`'s canonical
     column-name decision (matching `core.fct_transactions` / `core.dim_accounts`).
 16. **CLI commands** under a top-level `investments` group (see CLI Interface).
-17. **MCP tools** under the `investments_*` namespace (see MCP Interface).
+17. **MCP reads** through `investments(view=...)`, plus the three admitted
+    investment write tools (see MCP Interface).
 18. **All commands support `--output json`** for non-interactive / agent parity.
 
 ## Data Model
@@ -371,12 +372,24 @@ Columns:
   cost_basis        DECIMAL(18,2)    -- Total open basis (Σ cost_basis_remaining)
   average_cost      DECIMAL(28,10)   -- cost_basis / quantity; (28,10) not Rule-6 (18,8) on purpose — crypto fractional-unit precision propagates through the ratio
   currency_code     VARCHAR          -- Denominating currency
+  market_value      DECIMAL(18,2)    -- quantity × the resolved close; NULL (never zero) unless valuation_status is valued or carried_forward
+  unrealized_gain   DECIMAL(18,2)    -- market_value − cost_basis; signed, negative below cost; NULL whenever market_value is
+  price_date        DATE             -- Date of the close used, which may be earlier than today; NULL when no close resolved
+  price_source      VARCHAR          -- Which source supplied the close (see core.fct_security_prices); NULL when no close resolved
+  days_since_observed INT            -- Calendar days between price_date and today; 0 on a same-day close; NULL when no close resolved
+  valuation_status  VARCHAR          -- valued | carried_forward | unpriced | withheld
   updated_at        TIMESTAMP        -- Row freshness
 ```
 
-> **Unrealized gain/loss** (`quantity × current_price − cost_basis`) is intentionally
-> absent here — it requires a price, which Pillar C (`investments-price-feeds.md`)
-> supplies. `dim_holdings` v1 carries cost basis only.
+> **Unrealized gain/loss** arrived with Pillar C phase C.1
+> (`investments-price-feeds.md`), computed against the close a connected broker
+> already sends. `valuation_status` says which figure the reader is holding:
+> `valued` (the close is today's), `carried_forward` (the most recent close is
+> older), `unpriced` (no close resolved), or `withheld` (the share count is known
+> wrong — an unreconciled split or broker divergence). The last two publish NULL
+> rather than zero, so a total never silently absorbs a position it could not
+> value. External feeds and manual overrides (C.2) and the daily valued series
+> `core.fct_holdings_daily` (C.3) remain designed.
 
 ## Cost-Basis Engine
 
@@ -388,13 +401,11 @@ and consuming them on disposals.
 > `cost_basis_method` `CHECK` (on `app.securities` and `app.account_settings`) allows
 > only `fifo`, `hifo`, `specific`, `average` on purpose — electing a method the engine
 > does not implement would silently miscompute basis, so the constraint is a guard,
-> not an oversight (a shipped competitor declares LIFO/WAC and hard-errors on both;
-> declared-but-unimplemented is the worst state). **LIFO stays out absent real
-> demand**: three surveyed cost-basis engines ship HIFO and zero PFM ships LIFO for
-> brokerage. Mechanically, ordering methods are consumption-order variants of the
-> same engine (the shipped FIFO/LIFO/HIFO trio in Rotki differ only by sort key), so
-> adding LIFO later is a sort key + a lightweight `CHECK`-widening migration — the
-> same deliberate trade-off as `security_type`. Build order within this child:
+> not an oversight. Declaring a method the engine cannot execute is worse than
+> omitting it. **LIFO stays out absent real demand.** Mechanically, ordering
+> methods are consumption-order variants of the same engine, so adding LIFO later
+> is a sort key plus a lightweight `CHECK`-widening migration—the same deliberate
+> trade-off as `security_type`. Build order within this child:
 > FIFO → HIFO (same machinery, different sort key) → specific-ID → average.
 
 ### Short-term / long-term split (shared across all methods)
@@ -448,14 +459,13 @@ The ST/LT split still walks lots oldest-first (only the basis is averaged). Vali
 to `mutual_fund` / `etf` security types. This is the one genuinely distinct
 computation; it adds a single derived path, not a parallel system.
 
-**Implementation note (learned from shipped engines):** compute the pool as two
-running scalars — remaining pooled cost and remaining pooled units, rescaled
-multiplicatively on every disposal — the approach Rotki ships and tests
-(CRA/HMRC pooled-average formula). Do NOT implement average cost as runtime
-lot-merging inside the consumption machinery: that is the design Beancount
-attempted and left disabled behind dead code for ~15 years ("fairly tricky to
-implement"). The lots are still traversed oldest-first for holding-period
-attribution; only the basis number comes from the pool.
+**Implementation note:** compute the pool as two running scalars—remaining
+pooled cost and remaining pooled units—rescaled multiplicatively on every
+disposal. Do not implement average cost as runtime lot-merging inside the
+consumption machinery: it couples pooled-basis arithmetic to lot identity and
+makes partial disposals harder to reason about. The lots are still traversed
+oldest-first for holding-period attribution; only the basis number comes from
+the pool.
 
 **`core.fct_realized_gains` grain under average cost.** There is no lot-specific
 basis when pooling, but the table keeps its uniform (disposal × consumed lot) grain:
@@ -474,10 +484,9 @@ adjustments. Those are out of scope (wash sales belong to the `us_tax` package).
 ### Corporate actions
 
 Single-security actions are **typed ledger events applied at lot derivation** —
-never rewrites of historical rows (the pattern that left Portfolio Performance
-unable to model anything beyond splits for a decade) and never user-computed
-zero-and-refill pairs (the Beancount recipe whose own docs concede it destroys
-holding-period continuity):
+never rewrites of historical rows (rewrites destroy replayability and cap the
+action vocabulary at whatever the rewrite encodes) and never user-computed
+zero-and-refill pairs (which destroy holding-period continuity):
 
 - `split` carries the split **multiplier** `M` (new shares per old share — `2`
   for 2:1, `1.5` for 3:2, `0.5` for a 1:2 reverse split) in its `quantity`
@@ -500,9 +509,8 @@ holding-period continuity):
   without proceeds (no realized gain).
 
 **Two-security actions** (merger, spin-off, crypto-to-crypto trade) are expressed
-as **decomposed leg pairs sharing an `event_group_id`** — the shape Rotki ships
-(paired SPEND/RECEIVE with a group identifier) and Portfolio Performance's 2026
-corporate-action redesign converges on (linked N-ary entry, ratio-derived basis):
+as **decomposed leg pairs sharing an `event_group_id`** — paired out/in legs
+carrying a group identifier, with basis derived from the exchange ratio:
 
 - **Merger / share-class conversion**: `transfer_out` of the old security +
   `transfer_in` of the new, basis carried via `--basis`, holding period via
@@ -546,12 +554,11 @@ data is incomplete, on either side of a lot's life:
   oversold disposal would.
 
 CLI/MCP surfaces flag both conditions (`investments lots`/`investments gains`
-warnings + response-envelope `warnings`). This adopts the pattern Rotki ships
-(structured missing-acquisition records surfaced to review) over the
-log-and-continue degradation Portfolio Performance uses. Watch their documented
-false-positive class: the same economic security arriving under two
-identifiers — which the surrogate-key resolution
-chain exists to prevent.
+warnings + response-envelope `warnings`). Structured missing-acquisition
+records surfaced for review beat log-and-continue degradation: silent
+degradation hides basis errors until tax time. The known false-positive
+class — the same economic security arriving under two identifiers — is
+exactly what the surrogate-key resolution chain exists to prevent.
 
 ## Plaid Investments Readiness
 
@@ -673,8 +680,10 @@ moneybin investments list [--account <id|name>] [--security <ticker|name>] \
 ```
 moneybin investments holdings [--account <id|name>] [--output json|table]
 ```
-- Current positions: quantity, cost basis, average cost. *(Market value / unrealized
-  gain appear once Pillar C ships; v1 shows cost basis only and says so.)*
+- Current positions: quantity, cost basis, average cost, market value, unrealized
+  gain, and the date and age of the close each value rests on. A position with no
+  usable price, or one whose share count is known wrong, renders `-` rather than a
+  zero; its status column says which.
 
 ```
 moneybin investments lots [--account <id|name>] [--security <ticker|name>] \
@@ -735,13 +744,18 @@ moneybin investments securities set <security_id> [--name ...] [--ticker ...] \
 ```
 $ moneybin investments holdings --account fidelity_brokerage
 
-Security   Qty      Cost Basis   Avg Cost   Method
-AAPL       15.000   $2,475.00    $165.00    fifo
-VTSAX      210.450  $24,800.00   $117.84    average
-BTC        0.500    $18,000.00   $36,000.00 specific
+a3f19c02b8e1 qty=15.0000000000 cost_basis=2475.00 avg_cost=165.0000000000 market_value=2850.00 unrealized_gain=375.00 USD status=valued as_of=2026-07-19 (0d)
+7d40be91c5a2 qty=200.0000000000 cost_basis=23400.00 avg_cost=117.0000000000 market_value=25000.00 unrealized_gain=1600.00 USD status=carried_forward as_of=2026-07-16 (3d)
+c81a5f6039db qty=0.5000000000 cost_basis=18000.00 avg_cost=36000.0000000000 market_value=- unrealized_gain=- USD status=unpriced
+portfolio market_value=27850.00 USD max_days_since_observed=3
 
-  ℹ️  Market value and unrealized gain require price feeds (coming in Pillar C).
+⚠️  1 position(s) report no market value — see each row's valuation_status: 'unpriced' (no close resolved) or 'withheld' (the share count is known wrong).
 ```
+
+The first column is `security_id` (a 12-hex catalog id), not a ticker. Each row
+carries its own currency code after the money figures. An absent figure renders
+`-`, matching `avg_cost`'s existing NULL rendering — a blank column reads as zero,
+and NULL here means "no number", not "worth nothing".
 
 ```
 $ moneybin investments gains --account fidelity_brokerage --from 2024-01-01
@@ -755,30 +769,33 @@ Date         Security  Qty     Proceeds    Basis       Gain/Loss   Term
 
 ## MCP Interface
 
-Namespace `investments_*`, following [`mcp-architecture.md`](mcp-architecture.md)
-conventions (response envelope, sensitivity tiers). Functional parity with the CLI
-(same outcomes reachable), not 1:1 naming.
+The `investments` tool selects a read projection with `view`, following
+[`mcp-architecture.md`](mcp-architecture.md) conventions (response envelope,
+sensitivity tiers). Functional parity with the CLI means the same outcomes are
+reachable, not that callback names mirror command names.
 
 ### Read tools
 
-**`investments`** — List ledger events.
-- Params: `account` (optional), `security` (optional), `type` (optional), `from`/`to` (optional DATE)
+**`investments(view="events", ...)`** — List ledger events.
+- Params: `account` (optional), `security` (optional), `start`/`end` (optional DATE), `limit`, and `cursor`
 - Sensitivity: `high` (derived from field classification — quantity/price/amount/fees are `TXN_AMOUNT`)
 
-**`investments_holdings`** — Current positions with cost basis.
-- Params: `account` (optional)
+**`investments(view="holdings", ...)`** — Current positions with cost basis and
+broker-carried valuation fields.
+- Params: `account` (optional), `security` (optional), `limit`, and `cursor`
 - Sensitivity: `high` (cost basis / average cost are `BALANCE`-classified)
 
-**`investments_lots`** — Open/closed lots.
-- Params: `account` (optional), `security` (optional), `open_only` (BOOLEAN, default true)
+**`investments(view="lots", ...)`** — Open/closed lots.
+- Params: `account` (optional), `security` (optional), `open_only` (optional
+  BOOLEAN; defaults to `true` when omitted), `limit`, and `cursor`
 - Sensitivity: `high` (cost basis fields are `BALANCE`-classified)
 
-**`investments_gains`** — Realized gain/loss (1099-B surface).
-- Params: `account` (optional), `security` (optional), `from`/`to` (optional DATE), `term` (optional)
+**`investments(view="gains", ...)`** — Realized gain/loss (1099-B surface).
+- Params: `account` (optional), `security` (optional), `start`/`end` (optional DATE), `limit`, and `cursor`
 - Sensitivity: `high` (proceeds/cost basis/gain-loss are `BALANCE`-classified)
 
-**`investments_securities`** — The catalog.
-- Params: `security_type` (optional)
+**`investments(view="securities", ...)`** — The catalog.
+- Params: `security` (optional), `limit`, and `cursor`
 - Sensitivity: `low` (reference data, no amounts)
 
 ### Write tools
@@ -796,33 +813,39 @@ so a retry cannot double-insert. The one soft exception is an unresolved or
 ambiguous *security* ref: that event is skipped and reported in `error_details`,
 and the rest of the batch still commits.
 
+Registered top-level schema: `investments_record(events=[...])`. `events` is
+the sole required top-level field and must be an array; no other top-level
+fields are accepted. Each event uses the item contract above (`account`, `type`,
+and `date` required; the remaining event fields are optional by event type).
+
 **`investments_securities_set`** — Shape 1b (entity upsert). Create-or-update one
 catalog entry, including its `cost_basis_method` per-security override.
+
+Registered top-level schema: `coingecko_id`, `cost_basis_method`,
+`currency_code`, `cusip`, `exchange`, `figi`, `is_cash_equivalent`, `isin`,
+`name`, `security_id`, `security_type`, and `ticker`. All 12 fields are optional
+in the tool schema and no other top-level fields are accepted. Creating a row
+(`security_id` omitted) requires `name` and `security_type`; updating an
+existing row uses `security_id` and forbids changing `security_type`.
 
 **`investments_lots_select`** — Shape 1a (collection state-set). Set the full set of
 `(lot_id, quantity)` selections for one disposal (delete by omission); an empty
 `selections=[]` clears all overrides and reverts the disposal to FIFO.
+
+Registered top-level schema:
+`investments_lots_select(disposal_txn_id=..., selections=[...])`. Both fields
+are required and no other top-level fields are accepted. Each selection is a
+`{"lot_id": ..., "quantity": "..."}` object.
 
 The **per-account default** cost-basis method is a field on `accounts_set`
 (`default_cost_basis_method`), not a separate tool — same reasoning as the CLI.
 
 ### Response envelope
 
-Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
-`investments_holdings`:
-
-```json
-{
-  "summary": {
-    "total_count": 3,
-    "sensitivity": "high",
-    "display_currency": "USD",
-    "warnings": ["Market value/unrealized gain unavailable until price feeds ship"]
-  },
-  "data": [...],
-  "actions": ["Use investments_lots for per-lot basis", "Use investments_gains for realized gain/loss"]
-}
-```
+`investments(view="holdings")` returns the standard envelope from
+[`mcp-architecture.md`](mcp-architecture.md), with typed result rows and runtime
+warnings or next-action hints where applicable. The current registry advertises no
+output schema, so this spec does not freeze a JSON response object.
 
 ## Testing Strategy
 
@@ -889,7 +912,7 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 
 ## Out of Scope
 
-- **Market-price valuation / unrealized gain** — Pillar C (`investments-price-feeds.md`).
+- **External price feeds, manual overrides, and daily valuation history** — Pillar C.2/C.3 (`investments-price-feeds.md`); broker-carried close valuation shipped in C.1.
 - **Holdings in net worth** — Pillar D (`investments-net-worth.md`).
 - **Plaid / OFX import** — separate children; each adds its own provider-shaped raw table + staging model into the core union (Requirement 7).
 - **Options, margin, short positions, derivatives** — future.
@@ -919,7 +942,7 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - `src/moneybin/services/investment_service.py` — security resolution, manual entry, method election, lot selection (composes the repos)
 - `src/moneybin/privacy/payloads/investments.py` — response payload shapes backing the field-classification-derived sensitivity tiers (MCP Interface)
 - `src/moneybin/cli/commands/investments/` — `investments` command group (`__init__.py` for `add`/`list`/`holdings`/`gains`, `securities.py`, `lots.py`)
-- `src/moneybin/mcp/tools/investments.py` — `investments_*` tools
+- `src/moneybin/mcp/tools/investments.py` — investment MCP handlers
 - `tests/moneybin/test_services/test_investment_service.py`, `tests/moneybin/test_cli/test_investments.py`,
   `tests/moneybin/test_investments/test_cost_basis_engine.py`, `tests/moneybin/test_investments/test_sqlmesh_loader.py`,
   `tests/moneybin/test_investments/test_investment_models_transform.py`, `tests/moneybin/test_investments_schema.py`,
@@ -938,7 +961,8 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - `src/moneybin/sql/schema/app_account_settings.sql` — add the `default_cost_basis_method` column for fresh installs (the migration covers existing databases)
 - `src/moneybin/repositories/account_settings_repo.py` — extend `AccountSettingsRepo.set()` and `_ACCOUNT_SETTINGS_COLUMNS` with the new column
 - `src/moneybin/tables.py` — add table constants (`DIM_SECURITIES`, `FCT_INVESTMENT_TRANSACTIONS`, `FCT_INVESTMENT_LOTS`, `FCT_REALIZED_GAINS`, `DIM_HOLDINGS`)
-- `src/moneybin/privacy/taxonomy.py` — field classifications backing the `investments_*` tools' sensitivity tiers
+- `src/moneybin/privacy/taxonomy.py` — field classifications backing the
+  investment MCP handlers' sensitivity tiers
 - `src/moneybin/metrics/registry.py` — instrumentation for ingestion + cost-basis runs (per `observability.md`)
 - `docs/specs/account-management.md` — document the `accounts set` / `accounts_set` cost-basis-method extension + the new `app.account_settings` column
 - `docs/specs/INDEX.md`, `docs/roadmap.md` — status + milestone rows
@@ -975,8 +999,8 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
     semantics across manual/Plaid/OFX; the entry surfaces write the pair
     atomically. Income reports sum income types only.
 11. **Two-security corporate actions are event-grouped leg pairs**, not new
-    enum values — the shape shipped by Rotki and converged on by Portfolio
-    Performance's redesign after their split-as-rewrite dead end.
+    enum values — grouping keeps the action enum closed and the basis math
+    replayable from the ledger.
 12. **Per-provider raw tables** (`raw.manual_investment_transactions` now;
     provider tables in importer children) — coherent with the cash-transaction
     pipeline; a shared generic raw table was a documented-pattern miss in the

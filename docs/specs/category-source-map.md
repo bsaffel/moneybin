@@ -219,6 +219,14 @@ consumer as planned — [`category-taxonomy-audit.md`](category-taxonomy-audit.m
 
 ## Scope
 
+### MCP taxonomy boundary
+
+Agents read the canonical category and merchant catalog through
+`taxonomy(view="categories")` or `taxonomy(view="merchants")`. They declare
+category or merchant target state through `taxonomy_set(items=[...])`; each
+item is discriminated by `kind` and `state`. The provider-code bridge remains
+an internal categorization input, not a separate MCP mutation surface.
+
 **In scope (this PR / M1V):** the three tables + view + two-tier contract;
 the `class` column on the category dim (available on `core.dim_categories`
 and the dict-based `get_active_categories()`); verified-taxonomy

@@ -10,14 +10,27 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import logging
 import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal, Protocol
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
+from moneybin.mcp.write_contracts import (
+    AnnotationRequest,
+    NoteAdd,
+    NoteDelete,
+    NoteEdit,
+    SplitsSet,
+    TagRename,
+    TagsSet,
+)
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
@@ -28,10 +41,12 @@ from moneybin.services._validators import (
 )
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import resolve_category_id
+from moneybin.services.mutation_context import operation
 from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
     MANUAL_TRANSACTIONS,
+    TRANSACTION_NOTES,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,7 +62,12 @@ _MANUAL_SOURCE_TYPE = "manual"
 # raw.manual_transactions.source_origin is always 'user' (schema DEFAULT) and is
 # the manual native account key's scope; both feed the transaction_id hash.
 _MANUAL_SOURCE_ORIGIN = "user"
-_MIN_ACCOUNT_FUZZY_CONFIDENCE = 0.4
+
+
+def _state_digest(value: object) -> str:
+    """Hash live preflight state without exposing annotation contents."""
+    encoded = json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def _predict_manual_gold_key(source_transaction_id: str, account_id: str) -> str:
@@ -120,6 +140,14 @@ class TransactionGetResult:
     next_cursor: str | None
 
 
+@dataclass(slots=True)
+class OperationalTransactionResult:
+    """Resolved operational query page with an exact filtered total."""
+
+    transactions: list[Transaction]
+    total_count: int
+
+
 @dataclass(frozen=True, slots=True)
 class ManualEntryRawResult:
     """Raw-write outcome for a single manual entry.
@@ -149,6 +177,157 @@ class TagRenameResult:
 
     parent_audit_id: str
     row_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotationOutcome:
+    """One annotation request's material outcome."""
+
+    kind: Literal[
+        "note_add",
+        "note_edit",
+        "note_delete",
+        "tags_set",
+        "splits_set",
+        "tag_rename",
+    ]
+    target_ids: tuple[str, ...]
+    changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotationBatchResult:
+    """Ordered outcomes from one atomic annotation batch."""
+
+    operation_id: str
+    outcomes: tuple[AnnotationOutcome, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedTagsSet:
+    """Resolved tag target-state diff shared by coarse and granular writes."""
+
+    transaction_id: str
+    desired: tuple[str, ...]
+    to_add: tuple[str, ...]
+    to_remove: tuple[str, ...]
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.to_add or self.to_remove)
+
+    @property
+    def destructive(self) -> bool:
+        return bool(self.to_remove)
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedSplit:
+    """One validated split with its canonical category identity."""
+
+    amount: Decimal
+    category: str | None
+    subcategory: str | None
+    category_id: str | None
+    note: str | None
+
+
+class _SplitTargetLike(Protocol):
+    """Common shape accepted by the shared split preparation engine."""
+
+    @property
+    def amount(self) -> Decimal: ...
+
+    @property
+    def category(self) -> str | None: ...
+
+    @property
+    def subcategory(self) -> str | None: ...
+
+    @property
+    def note(self) -> str | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _GranularSplitTarget:
+    """Legacy granular adapter input after its original validation."""
+
+    amount: Decimal
+    category: Any
+    subcategory: Any
+    note: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedSplitsSet:
+    """Resolved split target-state diff shared by coarse and granular writes."""
+
+    transaction_id: str
+    current: tuple[_PreparedSplit, ...]
+    desired: tuple[_PreparedSplit, ...]
+    changed: bool
+    destructive: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedTagRename:
+    """Resolved global tag rename shared by coarse and granular writes."""
+
+    old_name: str
+    new_name: str
+    target_ids: tuple[str, ...]
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.target_ids)
+
+
+PreparedMutation = _PreparedTagsSet | _PreparedSplitsSet | _PreparedTagRename
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedAnnotation:
+    """A fully resolved annotation request, ready for a single write transaction."""
+
+    request: AnnotationRequest
+    target_ids: tuple[str, ...] = ()
+    changed: bool = False
+    destructive: bool = False
+    mutation: PreparedMutation | None = None
+    state_digest: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotationPlan:
+    """Stable preflight snapshot used for confirmation and atomic execution."""
+
+    items: tuple[_PreparedAnnotation, ...]
+
+    @property
+    def destructive(self) -> bool:
+        """Return whether any changed item removes or replaces live state."""
+        return any(item.destructive for item in self.items if item.changed)
+
+    @property
+    def changed_count(self) -> int:
+        """Return the number of material annotation changes."""
+        return sum(item.changed for item in self.items)
+
+    @property
+    def resolved_ids(self) -> tuple[str, ...]:
+        """Return exact resolved targets and opaque live-state fingerprints."""
+        targets = tuple(
+            sorted({
+                f"{item.request.kind}:{target_id}"
+                for item in self.items
+                for target_id in item.target_ids
+            })
+        )
+        states = tuple(
+            f"state:{index}:{item.state_digest}"
+            for index, item in enumerate(self.items)
+        )
+        return targets + states
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,14 +376,308 @@ class TransactionService:
         self._tags_repo = TransactionTagsRepo(db, audit=self._audit)
         self._splits_repo = TransactionSplitsRepo(db, audit=self._audit)
 
-    def _resolve_account_ids(self, accounts: list[str]) -> list[str]:
-        """Resolve display names or IDs to account_id strings.
+    def apply_annotations(
+        self,
+        requests: Sequence[AnnotationRequest],
+        *,
+        actor: str,
+        operation_id: str,
+        verify: Callable[[AnnotationPlan], None] | None = None,
+    ) -> AnnotationBatchResult:
+        """Apply one atomic annotation batch after full preflight."""
+        with operation(operation_id):
+            self._db.begin()
+            try:
+                plan = self.preview_annotations(requests)
+                if verify is not None:
+                    verify(plan)
+                outcomes = tuple(
+                    self._apply_prepared_annotation(item, actor=actor)
+                    for item in plan.items
+                )
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
+        return AnnotationBatchResult(operation_id=operation_id, outcomes=outcomes)
 
-        Batches exact account_id lookups in one query, then fuzzy-matches any
-        remaining entries via AccountService. Unresolvable entries are silently
-        skipped.
-        """
-        from moneybin.services.account_service import AccountService
+    def preview_annotations(
+        self,
+        requests: Sequence[AnnotationRequest],
+    ) -> AnnotationPlan:
+        """Resolve an exact annotation plan without mutating state."""
+        prepared = tuple(self._prepare_annotation(request) for request in requests)
+        self._reject_composed_annotations(prepared)
+        plan = AnnotationPlan(items=prepared)
+        if plan.changed_count == 0:
+            raise UserError(
+                "The requested annotation states are already current.",
+                code=error_codes.MUTATION_NOTHING_TO_DO,
+            )
+        return plan
+
+    def _prepare_annotation(self, request: AnnotationRequest) -> _PreparedAnnotation:
+        """Resolve every batch target before writes begin."""
+        if isinstance(request, NoteAdd):
+            validate_note_text(request.text)
+            self._annotation_transaction_amount(request.transaction_id)
+            return _PreparedAnnotation(
+                request=request,
+                target_ids=(request.transaction_id,),
+                changed=True,
+                state_digest=_state_digest({"transaction_id": request.transaction_id}),
+            )
+
+        if isinstance(request, (NoteEdit, NoteDelete)):
+            if isinstance(request, NoteEdit):
+                validate_note_text(request.text)
+            current = self._annotation_note(request.note_id)
+            changed = (
+                current.text != request.text if isinstance(request, NoteEdit) else True
+            )
+            return _PreparedAnnotation(
+                request=request,
+                target_ids=(request.note_id,),
+                changed=changed,
+                destructive=isinstance(request, NoteDelete),
+                state_digest=_state_digest(current),
+            )
+
+        if isinstance(request, TagsSet):
+            mutation = self._prepare_tags_set(request.transaction_id, request.tags)
+            if request.tags or not mutation.to_remove:
+                self._annotation_transaction_amount(request.transaction_id)
+            return _PreparedAnnotation(
+                request=request,
+                target_ids=(request.transaction_id,),
+                changed=mutation.changed,
+                destructive=mutation.destructive,
+                mutation=mutation,
+                state_digest=_state_digest({
+                    "to_add": mutation.to_add,
+                    "to_remove": mutation.to_remove,
+                }),
+            )
+
+        if isinstance(request, SplitsSet):
+            transaction_amount = self._annotation_transaction_amount(
+                request.transaction_id
+            )
+            mutation = self._prepare_splits_set(
+                request.transaction_id,
+                request.splits,
+                expected_total=transaction_amount,
+                require_categories=True,
+            )
+            return _PreparedAnnotation(
+                request=request,
+                target_ids=(request.transaction_id,),
+                changed=mutation.changed,
+                destructive=mutation.destructive,
+                mutation=mutation,
+                state_digest=_state_digest({
+                    "changed": mutation.changed,
+                    "destructive": mutation.destructive,
+                    "current": mutation.current,
+                    "desired": mutation.desired,
+                }),
+            )
+
+        mutation = self._prepare_tag_rename(request.old_name, request.new_name)
+        return _PreparedAnnotation(
+            request=request,
+            target_ids=mutation.target_ids,
+            changed=mutation.changed,
+            destructive=mutation.changed,
+            mutation=mutation,
+            state_digest=_state_digest(mutation.target_ids),
+        )
+
+    def _reject_composed_annotations(
+        self,
+        prepared: tuple[_PreparedAnnotation, ...],
+    ) -> None:
+        """Reject batches whose independently resolved diffs alter each other."""
+        seen: set[tuple[str, str]] = set()
+        earlier_tag_effects: list[tuple[str, str]] = []
+        for item in prepared:
+            request = item.request
+            mutation = item.mutation
+            if isinstance(request, TagRename):
+                key = (request.kind, f"{request.old_name}:{request.new_name}")
+            elif isinstance(request, NoteAdd):
+                key = None
+            elif isinstance(request, (NoteEdit, NoteDelete)):
+                key = ("note", request.note_id)
+            else:
+                key = (request.kind, request.transaction_id)
+            if key is not None and key in seen:
+                raise UserError(
+                    "Annotation requests overlap the same target state.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            if key is not None:
+                seen.add(key)
+
+            if isinstance(mutation, _PreparedTagRename):
+                targets = set(mutation.target_ids)
+                if any(
+                    tag == mutation.old_name
+                    or (tag == mutation.new_name and transaction_id in targets)
+                    for transaction_id, tag in earlier_tag_effects
+                ):
+                    raise UserError(
+                        "Annotation requests overlap because an earlier tag "
+                        "mutation changes a later prepared rename.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                earlier_tag_effects.extend(
+                    (transaction_id, tag)
+                    for transaction_id in mutation.target_ids
+                    for tag in (mutation.old_name, mutation.new_name)
+                )
+                continue
+
+            if isinstance(mutation, _PreparedTagsSet):
+                if any(
+                    transaction_id == mutation.transaction_id
+                    for transaction_id, _tag in earlier_tag_effects
+                ):
+                    raise UserError(
+                        "Annotation requests overlap because an earlier tag "
+                        "mutation changes a later prepared tag set.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                earlier_tag_effects.extend(
+                    (mutation.transaction_id, tag)
+                    for tag in (*mutation.to_add, *mutation.to_remove)
+                )
+
+    def _annotation_transaction_amount(self, transaction_id: str) -> Decimal:
+        """Resolve one annotation transaction and return its signed amount."""
+        row = self._db.conn.execute(
+            f"SELECT amount FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",  # noqa: S608  # TableRef constant
+            [transaction_id],
+        ).fetchone()
+        if row is None:
+            raise UserError(
+                "The transaction reference did not match a transaction.",
+                code="TRANSACTION_REFERENCE_NOT_FOUND",
+            )
+        amount = row[0]
+        return amount if isinstance(amount, Decimal) else Decimal(str(amount))
+
+    def _annotation_note(self, note_id: str) -> Note:
+        """Resolve one note for a coarse lifecycle mutation."""
+        row = self._db.conn.execute(
+            f"""
+            SELECT note_id, transaction_id, text, author, created_at
+              FROM {TRANSACTION_NOTES.full_name}
+             WHERE note_id = ?
+            """,  # noqa: S608  # TableRef constant
+            [note_id],
+        ).fetchone()
+        if row is None:
+            raise UserError(
+                "The note reference did not match a note.",
+                code="NOTE_REFERENCE_NOT_FOUND",
+            )
+        return _row_to_note(row)
+
+    def _apply_prepared_annotation(
+        self,
+        prepared: _PreparedAnnotation,
+        *,
+        actor: str,
+    ) -> AnnotationOutcome:
+        """Apply one preflighted annotation inside the caller's transaction."""
+        request = prepared.request
+        if isinstance(request, NoteAdd):
+            note_id = uuid.uuid4().hex[:12]
+            self._notes_repo.add(
+                transaction_id=request.transaction_id,
+                note_id=note_id,
+                text=request.text,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            return AnnotationOutcome(
+                kind=request.kind,
+                target_ids=(note_id,),
+                changed=True,
+            )
+
+        if isinstance(request, NoteEdit):
+            if prepared.changed:
+                self._notes_repo.edit(
+                    note_id=request.note_id,
+                    text=request.text,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+            return AnnotationOutcome(
+                kind=request.kind,
+                target_ids=prepared.target_ids,
+                changed=prepared.changed,
+            )
+
+        if isinstance(request, NoteDelete):
+            self._notes_repo.delete(
+                note_id=request.note_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            return AnnotationOutcome(
+                kind=request.kind,
+                target_ids=prepared.target_ids,
+                changed=True,
+            )
+
+        if isinstance(request, TagsSet):
+            mutation = prepared.mutation
+            if not isinstance(mutation, _PreparedTagsSet):
+                raise RuntimeError("Prepared tags mutation is missing")
+            self._apply_tags_set(mutation, actor=actor, in_outer_txn=True)
+            return AnnotationOutcome(
+                kind=request.kind,
+                target_ids=prepared.target_ids,
+                changed=mutation.changed,
+            )
+
+        if isinstance(request, SplitsSet):
+            mutation = prepared.mutation
+            if not isinstance(mutation, _PreparedSplitsSet):
+                raise RuntimeError("Prepared splits mutation is missing")
+            self._apply_splits_set(mutation, actor=actor, in_outer_txn=True)
+            return AnnotationOutcome(
+                kind=request.kind,
+                target_ids=prepared.target_ids,
+                changed=mutation.changed,
+            )
+
+        mutation = prepared.mutation
+        if not isinstance(mutation, _PreparedTagRename):
+            raise RuntimeError("Prepared tag rename mutation is missing")
+        self._apply_tag_rename(mutation, actor=actor, in_outer_txn=True)
+        return AnnotationOutcome(
+            kind=request.kind,
+            target_ids=prepared.target_ids,
+            changed=mutation.changed,
+        )
+
+    def _resolve_account_ids(self, accounts: list[str]) -> list[str]:
+        """Resolve every account reference exactly without partial results."""
+        from moneybin.services.account_service import (
+            AccountNotFoundError,
+            AccountService,
+            AmbiguousAccountError,
+        )
+        from moneybin.services.entity_reference import (
+            AmbiguousEntity,
+            EntityCandidate,
+            MissingEntity,
+            resolve_entity_reference,
+        )
 
         placeholders = ", ".join("?" * len(accounts))
         exact_rows = self._db.execute(
@@ -213,20 +686,55 @@ class TransactionService:
         ).fetchall()
         exact_ids = {str(r[0]) for r in exact_rows}
 
-        resolved: list[str] = []
-        unmatched: list[str] = []
-        for a in accounts:
-            (resolved if a in exact_ids else unmatched).append(a)
+        rows = (
+            AccountService(self._db)
+            .list_accounts(
+                include_archived=False,
+                type_filter=None,
+            )
+            .rows
+        )
+        candidates = [
+            EntityCandidate(
+                entity_id=row.account_id,
+                display_name=row.display_name or row.account_id,
+                aliases=tuple(
+                    value
+                    for value in (
+                        row.institution_name,
+                        row.account_type,
+                        row.account_subtype,
+                    )
+                    if value is not None
+                ),
+            )
+            for row in rows
+        ]
+        names = {
+            candidate.entity_id: candidate.display_name for candidate in candidates
+        }
 
-        if unmatched:
-            service = AccountService(self._db)
-            for entry in unmatched:
-                payload = service.resolve(entry, limit=1)
-                if (
-                    payload.matches
-                    and payload.matches[0].confidence >= _MIN_ACCOUNT_FUZZY_CONFIDENCE
-                ):
-                    resolved.append(payload.matches[0].account_id)
+        resolved: list[str] = []
+        for account in accounts:
+            if account in exact_ids:
+                resolved.append(account)
+                continue
+            resolution = resolve_entity_reference(account, candidates)
+            if isinstance(resolution, MissingEntity):
+                raise AccountNotFoundError(
+                    account,
+                    [
+                        (candidate.entity_id, candidate.display_name)
+                        for candidate in candidates
+                    ],
+                )
+            if isinstance(resolution, AmbiguousEntity):
+                raise AmbiguousAccountError(
+                    account,
+                    list(resolution.candidate_ids),
+                    [names[account_id] for account_id in resolution.candidate_ids],
+                )
+            resolved.append(resolution.entity_id)
         return resolved
 
     def get(
@@ -247,9 +755,9 @@ class TransactionService:
 
         Reads from core.fct_transactions, which already joins curation columns
         (notes, tags, splits) from the app schema. Account entries in `accounts`
-        are resolved: exact account_id matches are used directly; everything else
-        is fuzzy-matched against display names via AccountService. Unresolvable
-        entries are silently skipped.
+        are resolved as exact account IDs or unambiguous normalized names and
+        aliases. Any unresolved entry rejects the whole filter instead of
+        returning a partial result.
 
         Pagination is offset-based internally; the cursor is base64(str(offset))
         so callers treat it as opaque.
@@ -266,89 +774,23 @@ class TransactionService:
         else:
             offset = 0
 
-        conditions: list[str] = []
-        params: list[object] = []
-
+        account_ids: list[str] | None = None
         if accounts:
             account_ids = self._resolve_account_ids(accounts)
-            if not account_ids:
-                return TransactionGetResult(transactions=[], next_cursor=None)
-            placeholders = ", ".join("?" * len(account_ids))
-            conditions.append(f"account_id IN ({placeholders})")
-            params.extend(account_ids)
-
-        if date_from:
-            conditions.append("transaction_date >= ?")
-            params.append(date_from)
-        if date_to:
-            conditions.append("transaction_date <= ?")
-            params.append(date_to)
-
-        if categories:
-            placeholders = ", ".join("?" * len(categories))
-            conditions.append(f"category IN ({placeholders})")
-            params.extend(categories)
-
-        if amount_min is not None:
-            conditions.append("amount >= ?")
-            params.append(amount_min)
-        if amount_max is not None:
-            conditions.append("amount <= ?")
-            params.append(amount_max)
-
-        if description:
-            # Escape LIKE-special characters in the user's pattern so a
-            # query for ``description="%"`` (or "_") does not match every
-            # row. The `!` escape is paired with the ``ESCAPE '!'`` clause
-            # below; `!!` is the literal `!`. DuckDB requires the escape
-            # character to be a single character and to be declared per-
-            # predicate.
-            escaped = (
-                description.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-            )
-            conditions.append(
-                "(description ILIKE ? ESCAPE '!' OR memo ILIKE ? ESCAPE '!')"
-            )
-            like = f"%{escaped}%"
-            params.extend([like, like])
-
-        if uncategorized_only:
-            conditions.append("categorized_by IS NULL")
-
-        where = "WHERE " + " AND ".join(conditions) if conditions else ""
-
-        sql = f"""
-            SELECT
-                transaction_id, account_id, transaction_date, amount,
-                description, memo, source_type, category, subcategory,
-                notes, tags, splits
-            FROM {FCT_TRANSACTIONS.full_name}
-            {where}
-            ORDER BY transaction_date DESC, transaction_id
-            LIMIT ? OFFSET ?
-        """  # noqa: S608  # TableRef constant, not user input
-
-        rows = self._db.execute(sql, [*params, limit + 1, offset]).fetchall()
-        has_more = len(rows) > limit
-        rows = rows[:limit]
-
-        transactions = [
-            Transaction(
-                transaction_id=str(row[0]),
-                account_id=str(row[1]),
-                transaction_date=str(row[2]),
-                amount=Decimal(str(row[3])),
-                description=str(row[4]),
-                memo=str(row[5]) if row[5] else None,
-                source_type=str(row[6]),
-                category=str(row[7]) if row[7] else None,
-                subcategory=str(row[8]) if row[8] else None,
-                notes=[dict(n) for n in row[9]] if row[9] else None,
-                tags=list(row[10]) if row[10] else None,
-                splits=[dict(s) for s in row[11]] if row[11] else None,
-            )
-            for row in rows
-        ]
+        page = self._query_transactions(
+            account_ids=account_ids,
+            date_from=date_from,
+            date_to=date_to,
+            categories=categories,
+            merchant_id=None,
+            amount_min=amount_min,
+            amount_max=amount_max,
+            text=description,
+            uncategorized_only=uncategorized_only,
+            limit=limit,
+            offset=offset,
+        )
+        has_more = page.total_count > offset + limit
 
         next_cursor = (
             base64.b64encode(str(offset + limit).encode()).decode()
@@ -357,9 +799,158 @@ class TransactionService:
         )
 
         logger.info(
-            f"transactions_get returned {len(transactions)} rows (offset={offset}, has_more={has_more})"
+            f"transactions_get returned {len(page.transactions)} rows "
+            f"(offset={offset}, has_more={has_more})"
         )
-        return TransactionGetResult(transactions=transactions, next_cursor=next_cursor)
+        return TransactionGetResult(
+            transactions=page.transactions,
+            next_cursor=next_cursor,
+        )
+
+    def query_operational(
+        self,
+        *,
+        account_id: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        merchant_id: str | None = None,
+        category: str | None = None,
+        amount_min: Decimal | None = None,
+        amount_max: Decimal | None = None,
+        text: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        snapshot: tuple[str, str] | None = None,
+        after: tuple[str, str] | None = None,
+    ) -> OperationalTransactionResult:
+        """Query the cutover operational surface with already-resolved IDs."""
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
+        if offset < 0:
+            raise ValueError(f"offset must be >= 0, got {offset}")
+        return self._query_transactions(
+            account_ids=[account_id] if account_id is not None else None,
+            date_from=date_from,
+            date_to=date_to,
+            categories=[category] if category is not None else None,
+            merchant_id=merchant_id,
+            amount_min=amount_min,
+            amount_max=amount_max,
+            text=text,
+            uncategorized_only=False,
+            limit=limit,
+            offset=offset,
+            snapshot=snapshot,
+            after=after,
+        )
+
+    def _query_transactions(
+        self,
+        *,
+        account_ids: list[str] | None,
+        date_from: str | None,
+        date_to: str | None,
+        categories: list[str] | None,
+        merchant_id: str | None,
+        amount_min: Decimal | None,
+        amount_max: Decimal | None,
+        text: str | None,
+        uncategorized_only: bool,
+        limit: int,
+        offset: int,
+        snapshot: tuple[str, str] | None = None,
+        after: tuple[str, str] | None = None,
+    ) -> OperationalTransactionResult:
+        """Run the shared parameterized transaction filter and page query."""
+        conditions: list[str] = []
+        params: list[object] = []
+
+        if account_ids:
+            placeholders = ", ".join("?" * len(account_ids))
+            conditions.append(f"account_id IN ({placeholders})")
+            params.extend(account_ids)
+        if date_from:
+            conditions.append("transaction_date >= ?")
+            params.append(date_from)
+        if date_to:
+            conditions.append("transaction_date <= ?")
+            params.append(date_to)
+        if categories:
+            placeholders = ", ".join("?" * len(categories))
+            conditions.append(f"category IN ({placeholders})")
+            params.extend(categories)
+        if merchant_id is not None:
+            conditions.append("merchant_id = ?")
+            params.append(merchant_id)
+        if amount_min is not None:
+            conditions.append("amount >= ?")
+            params.append(amount_min)
+        if amount_max is not None:
+            conditions.append("amount <= ?")
+            params.append(amount_max)
+        if text:
+            escaped = text.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            conditions.append(
+                "(description ILIKE ? ESCAPE '!' OR memo ILIKE ? ESCAPE '!')"
+            )
+            like = f"%{escaped}%"
+            params.extend([like, like])
+        if uncategorized_only:
+            conditions.append("categorized_by IS NULL")
+
+        if snapshot is not None:
+            conditions.append(
+                "(transaction_date < ? OR "
+                "(transaction_date = ? AND transaction_id >= ?))"
+            )
+            params.extend([snapshot[0], snapshot[0], snapshot[1]])
+        count_where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        count_params = list(params)
+        if after is not None:
+            conditions.append(
+                "(transaction_date < ? OR "
+                "(transaction_date = ? AND transaction_id > ?))"
+            )
+            params.extend([after[0], after[0], after[1]])
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        total_row = self._db.execute(
+            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} {count_where}",  # noqa: S608  # TableRef + fixed predicates
+            count_params,
+        ).fetchone()
+        total_count = int(total_row[0]) if total_row is not None else 0
+        rows = self._db.execute(
+            f"""
+            SELECT
+                transaction_id, account_id, transaction_date, amount,
+                description, memo, source_type, category, subcategory,
+                notes, tags, splits
+            FROM {FCT_TRANSACTIONS.full_name}
+            {where}
+            ORDER BY transaction_date DESC, transaction_id
+            LIMIT ? OFFSET ?
+            """,  # noqa: S608  # TableRef + fixed predicates
+            [*params, limit, offset],
+        ).fetchall()
+        return OperationalTransactionResult(
+            transactions=[
+                Transaction(
+                    transaction_id=str(row[0]),
+                    account_id=str(row[1]),
+                    transaction_date=str(row[2]),
+                    amount=Decimal(str(row[3])),
+                    description=str(row[4]),
+                    memo=str(row[5]) if row[5] else None,
+                    source_type=str(row[6]),
+                    category=str(row[7]) if row[7] else None,
+                    subcategory=str(row[8]) if row[8] else None,
+                    notes=[dict(n) for n in row[9]] if row[9] else None,
+                    tags=list(row[10]) if row[10] else None,
+                    splits=[dict(s) for s in row[11]] if row[11] else None,
+                )
+                for row in rows
+            ],
+            total_count=total_count,
+        )
 
     # ------------------------------------------------------------------
     # Manual entry — raw-write half (spec Req 1–6, Task 7a).
@@ -744,41 +1335,59 @@ class TransactionService:
         counterpart to imperative ``add_tags`` / ``remove_tags``. Returns the
         sorted final tag list.
         """
-        for t in tags:
-            validate_slug(t)
-        desired = set(tags)
+        prepared = self._prepare_tags_set(transaction_id, tags)
         self._db.begin()
         try:
-            current_rows = self._db.conn.execute(
-                "SELECT tag FROM app.transaction_tags WHERE transaction_id = ?",
-                [transaction_id],
-            ).fetchall()
-            current = {r[0] for r in current_rows}
-            to_add = sorted(desired - current)
-            to_remove = sorted(current - desired)
-            for tag in to_add:
-                self._tags_repo.add(
-                    transaction_id=transaction_id,
-                    tag=tag,
-                    actor=actor,
-                    in_outer_txn=True,
-                )
-            for tag in to_remove:
-                self._tags_repo.remove(
-                    transaction_id=transaction_id,
-                    tag=tag,
-                    actor=actor,
-                    in_outer_txn=True,
-                )
+            self._apply_tags_set(prepared, actor=actor, in_outer_txn=True)
             self._db.commit()
-        except Exception:
+        except BaseException:
             self._db.rollback()
             raise
         logger.info(
-            f"tag.set transaction_id={transaction_id} added={len(to_add)} "
-            f"removed={len(to_remove)} actor={actor}"
+            f"tag.set transaction_id={transaction_id} added={len(prepared.to_add)} "
+            f"removed={len(prepared.to_remove)} actor={actor}"
         )
-        return sorted(desired)
+        return list(prepared.desired)
+
+    def _prepare_tags_set(
+        self,
+        transaction_id: str,
+        tags: Sequence[str],
+    ) -> _PreparedTagsSet:
+        """Validate and resolve one declarative tag diff."""
+        for tag in tags:
+            validate_slug(tag)
+        desired = set(tags)
+        current = set(self.list_tags(transaction_id))
+        return _PreparedTagsSet(
+            transaction_id=transaction_id,
+            desired=tuple(sorted(desired)),
+            to_add=tuple(sorted(desired - current)),
+            to_remove=tuple(sorted(current - desired)),
+        )
+
+    def _apply_tags_set(
+        self,
+        prepared: _PreparedTagsSet,
+        *,
+        actor: str,
+        in_outer_txn: bool,
+    ) -> None:
+        """Apply one prepared tag diff."""
+        for tag in prepared.to_add:
+            self._tags_repo.add(
+                transaction_id=prepared.transaction_id,
+                tag=tag,
+                actor=actor,
+                in_outer_txn=in_outer_txn,
+            )
+        for tag in prepared.to_remove:
+            self._tags_repo.remove(
+                transaction_id=prepared.transaction_id,
+                tag=tag,
+                actor=actor,
+                in_outer_txn=in_outer_txn,
+            )
 
     def rename_tag(self, old_tag: str, new_tag: str, *, actor: str) -> TagRenameResult:
         """Rename a tag globally; emit one parent + N child audit events.
@@ -787,41 +1396,102 @@ class TransactionService:
         many rows; each per-row update emits a ``tag.rename_row`` child whose
         ``parent_audit_id`` chains back to the parent (Req 15).
         """
-        validate_slug(old_tag)
-        validate_slug(new_tag)
+        prepared = self._prepare_tag_rename(old_tag, new_tag)
         self._db.begin()
         try:
-            rows = self._db.conn.execute(
-                "SELECT transaction_id FROM app.transaction_tags WHERE tag = ?",
-                [old_tag],
-            ).fetchall()
-            # Parent is a cross-row audit marker (target_id=None), not a
-            # single-row mutation, so it's emitted directly rather than via the repo.
-            parent = self._audit.record_audit_event(
-                action="tag.rename",
-                target=(*_AUDIT_TARGET_TAGS, None),
-                before={"old_tag": old_tag},
-                after={"new_tag": new_tag, "row_count": len(rows)},
+            parent_audit_id = self._apply_tag_rename(
+                prepared,
                 actor=actor,
+                in_outer_txn=True,
+                record_noop=True,
             )
-            for (txn_id,) in rows:
-                self._tags_repo.rename_row(
-                    transaction_id=txn_id,
-                    old_tag=old_tag,
-                    new_tag=new_tag,
-                    actor=actor,
-                    parent_audit_id=parent.audit_id,
-                    in_outer_txn=True,
-                )
             self._db.commit()
-        except Exception:
+        except BaseException:
             self._db.rollback()
             raise
         logger.info(
-            f"tag.rename old={old_tag} new={new_tag} row_count={len(rows)} "
+            f"tag.rename old={old_tag} new={new_tag} "
+            f"row_count={len(prepared.target_ids)} "
             f"actor={actor}"
         )
-        return TagRenameResult(parent_audit_id=parent.audit_id, row_count=len(rows))
+        return TagRenameResult(
+            parent_audit_id=parent_audit_id or "",
+            row_count=len(prepared.target_ids),
+        )
+
+    def _prepare_tag_rename(
+        self,
+        old_tag: str,
+        new_tag: str,
+    ) -> _PreparedTagRename:
+        """Validate and resolve one global tag rename."""
+        validate_slug(old_tag)
+        validate_slug(new_tag)
+        rows = self._db.conn.execute(
+            """
+            SELECT transaction_id
+              FROM app.transaction_tags
+             WHERE tag = ?
+             ORDER BY transaction_id
+            """,
+            [old_tag],
+        ).fetchall()
+        target_ids = tuple(str(row[0]) for row in rows)
+        if target_ids:
+            conflicts = self._db.conn.execute(
+                """
+                SELECT transaction_id
+                  FROM app.transaction_tags
+                 WHERE tag = ? AND transaction_id IN (
+                    SELECT transaction_id
+                      FROM app.transaction_tags
+                     WHERE tag = ?
+                 )
+                """,
+                [new_tag, old_tag],
+            ).fetchall()
+            if conflicts:
+                raise UserError(
+                    "The tag rename would duplicate an existing tag target.",
+                    code="TAG_RENAME_CONFLICT",
+                )
+        return _PreparedTagRename(
+            old_name=old_tag,
+            new_name=new_tag,
+            target_ids=target_ids,
+        )
+
+    def _apply_tag_rename(
+        self,
+        prepared: _PreparedTagRename,
+        *,
+        actor: str,
+        in_outer_txn: bool,
+        record_noop: bool = False,
+    ) -> str | None:
+        """Apply one prepared global rename and return its parent audit ID."""
+        if not prepared.changed and not record_noop:
+            return None
+        parent = self._audit.record_audit_event(
+            action="tag.rename",
+            target=(*_AUDIT_TARGET_TAGS, None),
+            before={"old_tag": prepared.old_name},
+            after={
+                "new_tag": prepared.new_name,
+                "row_count": len(prepared.target_ids),
+            },
+            actor=actor,
+        )
+        for transaction_id in prepared.target_ids:
+            self._tags_repo.rename_row(
+                transaction_id=transaction_id,
+                old_tag=prepared.old_name,
+                new_tag=prepared.new_name,
+                actor=actor,
+                parent_audit_id=parent.audit_id,
+                in_outer_txn=in_outer_txn,
+            )
+        return parent.audit_id
 
     def list_tags(self, transaction_id: str) -> list[str]:
         """Return the tags applied to a transaction in lexicographic order."""
@@ -964,7 +1634,7 @@ class TransactionService:
         mutating state so a malformed input never leaves the row set in a
         half-applied state. The clear + adds run in one DuckDB transaction.
         """
-        prepared: list[dict[str, Any]] = []
+        targets: list[_GranularSplitTarget] = []
         for idx, s in enumerate(splits):
             if "amount" not in s:
                 raise ValueError(f"splits[{idx}] missing required 'amount'")
@@ -973,44 +1643,135 @@ class TransactionService:
                 raise ValueError(
                     f"splits[{idx}].amount must be Decimal, got {type(amount).__name__}"
                 )
-            prepared.append({
-                "amount": amount,
-                "category": s.get("category"),
-                "subcategory": s.get("subcategory"),
-                "note": s.get("note"),
-            })
+            targets.append(
+                _GranularSplitTarget(
+                    amount=amount,
+                    category=s.get("category"),
+                    subcategory=s.get("subcategory"),
+                    note=s.get("note"),
+                )
+            )
+        prepared = self._prepare_splits_set(
+            transaction_id,
+            targets,
+            expected_total=None,
+            require_categories=False,
+            force_replace=True,
+        )
         self._db.begin()
         try:
-            self._splits_repo.clear(
-                transaction_id=transaction_id, actor=actor, in_outer_txn=True
-            )
-            for ord_idx, s in enumerate(prepared):
-                split_id = uuid.uuid4().hex[:12]
-                # Resolve FK per row — each split has its own (possibly empty) category.
-                category_id = resolve_category_id(
-                    self._db, s["category"], s["subcategory"]
-                )
-                self._splits_repo.insert(
-                    split_id=split_id,
-                    transaction_id=transaction_id,
-                    amount=s["amount"],
-                    category=s["category"],
-                    subcategory=s["subcategory"],
-                    category_id=category_id,
-                    note=s["note"],
-                    ord=ord_idx,
-                    actor=actor,
-                    in_outer_txn=True,
-                )
+            self._apply_splits_set(prepared, actor=actor, in_outer_txn=True)
             self._db.commit()
-        except Exception:
+        except BaseException:
             self._db.rollback()
             raise
         logger.info(
-            f"split.set transaction_id={transaction_id} count={len(prepared)} "
+            f"split.set transaction_id={transaction_id} "
+            f"count={len(prepared.desired)} "
             f"actor={actor}"
         )
         return self.list_splits(transaction_id)
+
+    def _prepare_splits_set(
+        self,
+        transaction_id: str,
+        splits: Sequence[_SplitTargetLike],
+        *,
+        expected_total: Decimal | None,
+        require_categories: bool,
+        force_replace: bool = False,
+    ) -> _PreparedSplitsSet:
+        """Validate and resolve one declarative split sequence."""
+        desired: list[_PreparedSplit] = []
+        total = Decimal("0")
+        for split in splits:
+            category_id = resolve_category_id(
+                self._db,
+                split.category,
+                split.subcategory,
+            )
+            if (
+                require_categories
+                and split.category is not None
+                and category_id is None
+            ):
+                raise UserError(
+                    "The split category reference did not match a category.",
+                    code="CATEGORY_REFERENCE_NOT_FOUND",
+                )
+            desired.append(
+                _PreparedSplit(
+                    amount=split.amount,
+                    category=split.category,
+                    subcategory=split.subcategory,
+                    category_id=category_id,
+                    note=split.note,
+                )
+            )
+            total += split.amount
+        if splits and expected_total is not None and total != expected_total:
+            raise UserError(
+                "Split amounts must total the transaction amount.",
+                code="SPLIT_TOTAL_INVALID",
+            )
+        rows = self._db.conn.execute(
+            """
+            SELECT amount, category, subcategory, category_id, note
+              FROM app.transaction_splits
+             WHERE transaction_id = ?
+             ORDER BY ord, split_id
+            """,
+            [transaction_id],
+        ).fetchall()
+        current = tuple(
+            _PreparedSplit(
+                amount=(
+                    row[0] if isinstance(row[0], Decimal) else Decimal(str(row[0]))
+                ),
+                category=row[1],
+                subcategory=row[2],
+                category_id=row[3],
+                note=row[4],
+            )
+            for row in rows
+        )
+        target = tuple(desired)
+        return _PreparedSplitsSet(
+            transaction_id=transaction_id,
+            current=current,
+            desired=target,
+            changed=force_replace or current != target,
+            destructive=bool(current and (force_replace or current != target)),
+        )
+
+    def _apply_splits_set(
+        self,
+        prepared: _PreparedSplitsSet,
+        *,
+        actor: str,
+        in_outer_txn: bool,
+    ) -> None:
+        """Apply one prepared split replacement."""
+        if not prepared.changed:
+            return
+        self._splits_repo.clear(
+            transaction_id=prepared.transaction_id,
+            actor=actor,
+            in_outer_txn=in_outer_txn,
+        )
+        for ord_idx, split in enumerate(prepared.desired):
+            self._splits_repo.insert(
+                split_id=uuid.uuid4().hex[:12],
+                transaction_id=prepared.transaction_id,
+                amount=split.amount,
+                category=split.category,
+                subcategory=split.subcategory,
+                category_id=split.category_id,
+                note=split.note,
+                ord=ord_idx,
+                actor=actor,
+                in_outer_txn=in_outer_txn,
+            )
 
     def list_splits(self, transaction_id: str) -> list[Split]:
         """Return all splits for a transaction ordered by ``ord, split_id``."""

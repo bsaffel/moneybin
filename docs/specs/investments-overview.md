@@ -7,9 +7,12 @@
 > Foundation child shipped 2026-07-04: [`investments-data-model.md`](investments-data-model.md)
 > (Pillars A+B — securities catalog, investment-transaction ledger, derived
 > lots/gains/holdings, four-method cost-basis engine) is now `implemented`.
-> Pillars C (price feeds) and D (net-worth integration) remain planned; the
-> M1J milestone itself stays open until cost basis ties to a real broker
-> 1099-B for a full tax year.
+> Pillar C phase C.1 shipped: positions carry `market_value` and
+> `unrealized_gain` from the close the broker already sends through `sync pull`.
+> C.2 (stooq and CoinGecko feeds, manual overrides) and C.3 (the daily
+> `core.fct_holdings_daily` series) remain designed but unbuilt, as does Pillar
+> D (net-worth integration); the M1J milestone itself stays open until cost
+> basis ties to a real broker 1099-B for a full tax year.
 > Umbrella doc for the investments initiative (milestone M1J). Child specs listed
 > in [The four pillars](#the-four-pillars) are written separately; the foundation
 > child is [`investments-data-model.md`](investments-data-model.md).
@@ -24,12 +27,11 @@
 
 ## Purpose
 
-Investments is MoneyBin's largest competitive moat: a personal-finance platform
-that produces **cost-basis output reconcilable against a real 1099-B for a full
-tax year**, computed independently from the user's own transaction ledger rather
-than trusted blindly from a broker feed. This doc fixes the vision, the data-model
-contract, the scope boundary, and the build order. Design and implementation
-details live in the child specs it points to.
+The investment system must produce **cost-basis output reconcilable against a
+real 1099-B for a full tax year**, computed independently from the user's own
+transaction ledger rather than trusted blindly from a broker feed. This doc
+fixes the vision, the data-model contract, the scope boundary, and the build
+order. Design and implementation details live in the child specs it points to.
 
 This is the keystone of milestone **M1J**. At least six already-written specs gate
 on it: Plaid Investments sync, portfolio/holdings reports, investment-transaction
@@ -83,7 +85,7 @@ valuation on top. Consumers (CLI, MCP, the `us_tax` package, reports) read from
 | `core.fct_investment_transactions` | Fact | One investment event | The ledger: buys, sells, dividends, reinvests, splits, transfers, fees |
 | `core.fct_investment_lots` | Fact (derived) | One open/closed tax lot | Each acquisition opens a lot; disposals consume lots per the elected method; carries cost basis and remaining quantity (no gain/loss columns) |
 | `core.fct_realized_gains` | Fact (derived) | One (disposal × consumed lot) pair | The 1099-B grain: proceeds, cost basis, gain/loss, short/long-term split |
-| `core.dim_holdings` | Dimension (derived) | One position (account × security) | Current open quantity + cost basis; sum of open lots. *(Name locked by `extension-contracts.md`.)* |
+| `core.dim_holdings` | Dimension (derived) | One position (account × security) | Current open quantity + cost basis + broker-carried valuation; sum of open lots. *(Name locked by `extension-contracts.md`.)* |
 | `core.fct_holdings_daily` | Fact (derived) | One position per day | Daily-valued time series (holdings × price). **Pillar C** — needs price feeds. *(Planned name; illustrative in `architecture-shared-primitives.md`, not yet a locked contract.)* |
 
 Mutable user state lives in `app.*`: the manual-entry security catalog, the
@@ -96,7 +98,7 @@ cost-basis-method election, and specific-lot selection overrides. Everything in
 |---|---|---|---|
 | **A. Investment data model** | The securities dimension + the investment-transaction ledger (raw → prep → core), plus manual entry | No | [`investments-data-model.md`](investments-data-model.md) *(foundation child — A+B)* |
 | **B. Cost-basis & gain/loss engine** | Derived lots; FIFO + HIFO + specific-ID + average-cost; realized gain/loss; short-term/long-term split | No | [`investments-data-model.md`](investments-data-model.md) *(ships with A)* |
-| **C. Price feeds & valuation** | Yahoo + CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss | Yes (it *is* the feed) | `investments-price-feeds.md` *(planned)* |
+| **C. Price feeds & valuation** | Broker-carried, stooq, and CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss. **C.1 shipped** — the broker-carried close values `core.dim_holdings`; C.2 (stooq, CoinGecko, overrides) and C.3 (daily series) remain designed | Yes (it *is* the feed) | [`investments-price-feeds.md`](investments-price-feeds.md) |
 | **D. Net-worth integration** | Holdings valuation into `reports.net_worth` / `fct_balances` | Yes (consumes C) | `investments-net-worth.md` *(planned)* |
 
 ### Already-carved children
@@ -185,8 +187,8 @@ parallel `staleness_days`, so prices and physical assets share one shape for the
 staleness concept. A stale close is never silently presented as the current
 price. This is the price-side application of
 "magic stays visible": the fallback itself is fine, silently misrepresenting its
-age is not. A shipped competitor already does exactly this (snapshot fallback
-plus gap-day staleness marking), confirming the shape.
+age is not. The explicit date and staleness measure are required so a fallback
+price cannot be mistaken for a current quote.
 
 ### Currency: column now, conversion later
 
@@ -226,8 +228,8 @@ cost-basis methods.
    — securities dimension, ledger, lots, and the three-method cost-basis engine with
    manual entry. Reaches the full-tax-year 1099-B bar. Fixes every schema contract
    the gated children wait on.
-2. **Pillar C** (`investments-price-feeds.md`) — append-only price history, daily
-   valuation, unrealized gain/loss.
+2. **Pillar C** ([`investments-price-feeds.md`](investments-price-feeds.md)) —
+   append-only price history, daily valuation, unrealized gain/loss.
 3. **Pillar D** (`investments-net-worth.md`) — holdings valuation into
    `reports.net_worth`.
 4. **Already-carved children** (Plaid sync, OFX import, portfolio reports, matching)
@@ -280,8 +282,15 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
 - **Realized gain/loss surface grain — resolved.** The foundation child uses a
   separate `core.fct_realized_gains` fact (one row per disposal × consumed lot — the
   1099-B grain), rather than overloading columns onto `core.fct_investment_lots`.
-- **Adjusted vs raw price storage (Pillar C).** Store raw closes and adjust on read,
-  or store both raw and split/dividend-adjusted series. Pillar C decision.
+- **Adjusted vs raw price storage (Pillar C) — resolved.** Store raw closes only,
+  and record the adjustment basis each source declared. Ledger quantity already
+  reflects splits as of each date, so a raw price is its correct multiplicand; an
+  adjusted price applied to a historical quantity applies the split twice. An
+  adjusted series is also stated relative to the corporate actions known when it
+  was fetched, so it stops being correct after the next one — which makes it
+  unusable as a durable historical fact. Adjusted rows are stored and excluded
+  from valuation with the reason recorded. See
+  [`investments-price-feeds.md`](investments-price-feeds.md).
 - **Cross-source security resolution thresholds.** The fuzzy step (name match when no
   CUSIP/ticker) needs scoring + a review posture, mirroring matching. Deferred to the
   first importer child.

@@ -33,6 +33,11 @@ FCT_TRANSACTION_LINES = TableRef("core", "fct_transaction_lines", audience="inte
 BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers", audience="interface")
 FCT_BALANCES = TableRef("core", "fct_balances", audience="interface")
 FCT_BALANCES_DAILY = TableRef("core", "fct_balances_daily", audience="interface")
+# Service-internal curator-impact queue (moved out of reports.* — reports-foundation.md
+# R5: membership in reports.* means "user-facing report," and this view's only
+# runtime reader is services/categorization/queries.py, backing
+# transactions_categorize_pending).
+CORE_UNCATEGORIZED_QUEUE = TableRef("core", "uncategorized_queue", audience="interface")
 
 # -- Raw tables (used until core models are built for these entities) --
 OFX_ACCOUNTS = TableRef("raw", "ofx_accounts")
@@ -56,11 +61,14 @@ PDF_FORMATS = TableRef("app", "pdf_formats")
 ACCOUNT_SETTINGS = TableRef("app", "account_settings", audience="interface")
 BALANCE_ASSERTIONS = TableRef("app", "balance_assertions", audience="interface")
 TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories", audience="interface")
+CATEGORIZATION_DECISIONS = TableRef("app", "categorization_decisions")
 BUDGETS = TableRef("app", "budgets", audience="interface")
 TRANSACTION_NOTES = TableRef("app", "transaction_notes", audience="interface")
 TRANSACTION_TAGS = TableRef("app", "transaction_tags", audience="interface")
 TRANSACTION_SPLITS = TableRef("app", "transaction_splits", audience="interface")
 IMPORTS = TableRef("app", "imports", audience="interface")
+IMPORT_PREVIEWS = TableRef("app", "import_previews")
+IMPORT_PREVIEW_SNAPSHOTS = TableRef("raw", "import_preview_snapshots")
 AUDIT_LOG = TableRef("app", "audit_log", audience="interface")
 CATEGORIES = TableRef("core", "dim_categories", audience="interface")
 USER_CATEGORIES = TableRef("app", "user_categories")
@@ -76,6 +84,7 @@ PROPOSED_RULES = TableRef("app", "proposed_rules")
 SCHEMA_MIGRATIONS = TableRef("app", "schema_migrations")
 VERSIONS = TableRef("app", "versions")
 GSHEET_CONNECTIONS = TableRef("app", "gsheet_connections")
+EXPORT_DESTINATIONS = TableRef("app", "export_destinations")
 AI_CONSENT_GRANTS = TableRef("app", "ai_consent_grants")
 
 # -- App tabular tables --
@@ -117,11 +126,15 @@ FCT_INVESTMENT_TRANSACTIONS = TableRef(
 FCT_INVESTMENT_LOTS = TableRef("core", "fct_investment_lots", audience="interface")
 FCT_REALIZED_GAINS = TableRef("core", "fct_realized_gains", audience="interface")
 DIM_HOLDINGS = TableRef("core", "dim_holdings", audience="interface")
+SECURITY_PRICES = TableRef("raw", "security_prices")
+FCT_SECURITY_PRICES = TableRef("core", "fct_security_prices", audience="interface")
 
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
 SEED_CATEGORY_SOURCE_MAP = TableRef("seeds", "category_source_map")
 SEED_EXCHANGE_MIC_MAP = TableRef("seeds", "exchange_mic_map")
+SEED_ACCOUNT_TYPE_MAP = TableRef("seeds", "account_type_map")
+SEED_INSTITUTIONS = TableRef("seeds", "institutions")
 
 # -- Prep / staging views (built by SQLMesh transforms) --
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
@@ -142,9 +155,6 @@ REPORTS_CASH_FLOW = TableRef("reports", "cash_flow", audience="interface")
 REPORTS_SPENDING_TREND = TableRef("reports", "spending_trend", audience="interface")
 REPORTS_RECURRING_SUBSCRIPTIONS = TableRef(
     "reports", "recurring_subscriptions", audience="interface"
-)
-REPORTS_UNCATEGORIZED_QUEUE = TableRef(
-    "reports", "uncategorized_queue", audience="interface"
 )
 REPORTS_MERCHANT_ACTIVITY = TableRef(
     "reports", "merchant_activity", audience="interface"

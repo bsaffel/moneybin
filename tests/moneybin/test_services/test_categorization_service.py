@@ -3451,12 +3451,12 @@ class TestCategorizePendingPlaidPass:
 # project relocated to src/moneybin/sqlmesh). SQLMESH_ROOT is what production
 # uses, so this binding cannot drift from it.
 _UNCATEGORIZED_QUEUE_MODEL_FILE = (
-    SQLMESH_ROOT / "models" / "reports" / "uncategorized_queue.sql"
+    SQLMESH_ROOT / "models" / "core" / "uncategorized_queue.sql"
 )
 
 
 def _install_uncategorized_queue_view(db: Database) -> None:
-    """Materialize reports.uncategorized_queue from the real model SQL.
+    """Materialize core.uncategorized_queue from the real model SQL.
 
     core.fct_transactions / core.dim_accounts already exist as physical
     tables via the module's autouse create_core_tables() fixture; this
@@ -3464,12 +3464,11 @@ def _install_uncategorized_queue_view(db: Database) -> None:
     file so the test binds to the real column contract instead of a
     hand-typed stub that could drift from it.
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     raw = _UNCATEGORIZED_QUEUE_MODEL_FILE.read_text()
     start = raw.index("MODEL")
     end = raw.index(");", start) + 2
     body = raw[end:].strip()
-    db.execute(f"CREATE OR REPLACE VIEW reports.uncategorized_queue AS\n{body}")  # noqa: S608  # model body read from the repo file, not user input
+    db.execute(f"CREATE OR REPLACE VIEW core.uncategorized_queue AS\n{body}")  # noqa: S608  # model body read from the repo file, not user input
 
 
 def _install_matched_stub(db: Database) -> None:
@@ -3496,7 +3495,7 @@ def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
 ) -> None:
     """An unmatched transfer leg is flagged, not silently categorizable (F19).
 
-    reports.uncategorized_queue filters `NOT is_transfer`, but is_transfer only
+    core.uncategorized_queue filters `NOT is_transfer`, but is_transfer only
     becomes true AFTER matching links the pair. Pre-matching, a "BILL PAY" leg is
     the top-impact "uncategorized" row — and categorizing it double-counts
     against the eventual transfer pair.

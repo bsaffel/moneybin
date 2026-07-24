@@ -42,7 +42,9 @@ def _restore_profile_state() -> Generator[None, None, None]:  # pyright: ignore[
         config._current_profile = original  # pyright: ignore[reportPrivateUsage]
 
 
-def _mock_pipeline(mocker: Any, *, net_worth: str = "100.00", failing: int = 0) -> None:
+def _mock_pipeline(
+    mocker: Any, *, net_worth: str | None = "100.00", failing: int = 0
+) -> None:
     """Patch the heavy collaborators DemoService.run imports lazily."""
     from moneybin.privacy.payloads.networth import NetWorthSnapshotPayload
     from moneybin.services.doctor_service import DoctorReport, InvariantResult
@@ -69,11 +71,11 @@ def _mock_pipeline(mocker: Any, *, net_worth: str = "100.00", failing: int = 0) 
     )
     net = mocker.patch("moneybin.services.networth_service.NetworthService")
     net.return_value.current.return_value = NetWorthSnapshotPayload(
-        balance_date=datetime.date(2025, 1, 1),
-        net_worth=Decimal(net_worth),
-        total_assets=Decimal("150.00"),
-        total_liabilities=Decimal("50.00"),
-        account_count=2,
+        balance_date=datetime.date(2025, 1, 1) if net_worth is not None else None,
+        net_worth=Decimal(net_worth) if net_worth is not None else None,
+        total_assets=Decimal("150.00") if net_worth is not None else None,
+        total_liabilities=Decimal("50.00") if net_worth is not None else None,
+        account_count=2 if net_worth is not None else 0,
         per_account=[],
     )
 
@@ -140,6 +142,17 @@ def test_run_populates_fresh_demo_profile(
     from moneybin.utils.user_config import get_default_profile
 
     assert get_default_profile() == DEMO_PROFILE
+
+
+@pytest.mark.integration
+def test_run_refuses_missing_net_worth_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _mock_pipeline(mocker, net_worth=None)
+
+    with pytest.raises(DemoRefreshFailedError, match="net worth unavailable"):
+        DemoService().run(persona="basic", seed=42)
 
 
 @pytest.mark.integration

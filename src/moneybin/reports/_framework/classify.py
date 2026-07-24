@@ -13,16 +13,21 @@ from __future__ import annotations
 
 import logging
 
+from moneybin.privacy.sql_lineage import FAIL_CLOSED_CLASS
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportSpec
 
 logger = logging.getLogger(__name__)
 
-# Fail-closed fallback for a result column the report did not declare. DataClass
-# has no CRITICAL member — CRITICAL is a Tier; ACCOUNT_IDENTIFIER is the
-# Tier.CRITICAL class redact_records actually masks. An undeclared column is a
-# contract gap (the completeness test guards against it), so over-redact.
-_FAIL_CLOSED = DataClass.ACCOUNT_IDENTIFIER
+# Fail-closed fallback for a result column the report did not declare — the SAME
+# constant sql_lineage and sql_query fail closed to, not a second one beside it.
+# An undeclared column is a column we cannot name, which is exactly what
+# UNRESOLVED means, and it masks WHOLE. The partial-masking CRITICAL classes
+# (ACCOUNT_IDENTIFIER, INSTITUTION_ACCOUNT_NUMBER) are the wrong tool here for
+# the reason given in UNRESOLVED's taxonomy comment: ``"****" + value[-4:]``
+# publishes the last four characters of a value we could not identify, and not
+# knowing what those characters are is the whole premise of the fallback.
+_FAIL_CLOSED = FAIL_CLOSED_CLASS
 
 
 def classify_columns(spec: ReportSpec, columns: list[str]) -> dict[str, DataClass]:

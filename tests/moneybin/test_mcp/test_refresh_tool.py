@@ -16,8 +16,13 @@ from moneybin.services.refresh import RefreshResult
 async def test_refresh_run_is_registered() -> None:
     mcp = FastMCP("test")
     register_refresh_tools(mcp)
-    names = {tool.name for tool in await mcp._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert "refresh_run" in names
+    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {tool.name for tool in tools}
+    assert names == {"refresh_run"}
+    description = next(tool.description for tool in tools if tool.name == "refresh_run")
+    assert description is not None
+    assert "canonical order" in description
+    assert "No revert path" in description
 
 
 @pytest.mark.unit
@@ -54,6 +59,26 @@ async def test_refresh_run_surfaces_apply_error() -> None:
 
 
 @pytest.mark.unit
+async def test_refresh_run_apply_failure_skips_identity_review_hints() -> None:
+    """Apply failure stops identity, so full-refresh actions do not advertise reviews."""
+    fake_result = RefreshResult(
+        applied=False,
+        duration_seconds=1.1,
+        error="model boom",
+    )
+    with (
+        patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
+        patch("moneybin.mcp.tools.refresh.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        envelope = await refresh_run()
+
+    actions = " ".join(envelope.actions)
+    assert 'reviews(kind="account_links")' not in actions
+    assert 'reviews(kind="merchant_links")' not in actions
+
+
+@pytest.mark.unit
 async def test_refresh_run_steps_pass_through() -> None:
     """``refresh_run(steps=[...])`` forwards the list verbatim to refresh()."""
     fake_result = RefreshResult(applied=True, duration_seconds=1.5, error=None)
@@ -79,6 +104,50 @@ async def test_refresh_run_steps_none_calls_service_with_none() -> None:
         get_db.return_value.__enter__.return_value = MagicMock()
         await refresh_run()
     assert svc.call_args.kwargs == {"steps": None}
+
+
+@pytest.mark.unit
+async def test_refresh_run_identity_errors_are_typed_and_point_to_reviews() -> None:
+    """Identity backfill exposes only failed domains and review next steps."""
+    fake_result = RefreshResult(
+        applied=False,
+        duration_seconds=None,
+        identity_errors=(),
+    )
+    with (
+        patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
+        patch("moneybin.mcp.tools.refresh.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        envelope = await refresh_run(steps=["identity"])
+
+    assert envelope.data.identity_errors == []
+    actions = " ".join(envelope.actions)
+    assert 'reviews(kind="account_links")' in actions
+    assert 'reviews(kind="merchant_links")' in actions
+
+
+@pytest.mark.unit
+async def test_refresh_run_identity_account_failure_keeps_merchant_review_hint() -> (
+    None
+):
+    """A failed account backfill hides only its own review queue hint."""
+    fake_result = RefreshResult(
+        applied=False,
+        duration_seconds=None,
+        identity_errors=("accounts",),
+    )
+    with (
+        patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
+        patch("moneybin.mcp.tools.refresh.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        envelope = await refresh_run(steps=["identity"])
+
+    assert envelope.data.identity_errors == ["accounts"]
+    actions = " ".join(envelope.actions)
+    assert 'reviews(kind="account_links")' not in actions
+    assert 'reviews(kind="merchant_links")' in actions
 
 
 @pytest.mark.unit

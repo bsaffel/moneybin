@@ -4,16 +4,14 @@ Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
 middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
-These surfaces are all operator-territory (low-sensitivity infrastructure
-data only): model states, audit check results, pipeline counts, durations.
-No PII or financial amounts appear in any of these payloads.
+Export status includes user-supplied destination names and therefore derives
+Tier.MEDIUM. It excludes exported financial rows, destination paths,
+spreadsheet URLs, and workbook identifiers.
 
 Tier derivation summary:
-  All payloads in this module derive Tier.LOW — every field maps to
-  TXN_TYPE, AGGREGATE, TIMESTAMP_OBSERVABILITY, RECORD_ID, or DESCRIPTION.
-  DESCRIPTION is Tier.MEDIUM, but is used only for error/detail strings
-  (audit failure messages, validation error messages). Payloads that
-  include a DESCRIPTION field derive Tier.MEDIUM.
+  Payloads made only from TXN_TYPE, AGGREGATE, TIMESTAMP_OBSERVABILITY, and
+  RECORD_ID derive Tier.LOW. DESCRIPTION and USER_NOTE derive Tier.MEDIUM;
+  payloads that include either class inherit that tier.
 
   - ``TransformStatusPayload``      → Tier.LOW (RECORD_ID + TXN_TYPE + TIMESTAMP_OBSERVABILITY)
   - ``TransformPlanPayload``        → Tier.LOW (model name lists = RECORD_ID, bool = TXN_TYPE)
@@ -28,6 +26,8 @@ Tier derivation summary:
   - ``SystemStatusReader``          → Tier.LOW (RECORD_ID + TXN_TYPE)
   - ``SystemStatusDatabaseConnectionsInfo`` → Tier.LOW (composition only)
   - ``SystemStatusPayload``         → Tier.LOW (no DESCRIPTION fields)
+  - ``ExportsStatus``               → Tier.MEDIUM (destination name = USER_NOTE)
+  - ``SystemStatusCLIPayload``      → Tier.MEDIUM (exports include USER_NOTE)
   - ``InvariantResultPayload``      → Tier.MEDIUM (detail = DESCRIPTION, affected_ids = RECORD_ID)
   - ``SystemDoctorPayload``         → Tier.MEDIUM (via InvariantResultPayload)
   - ``RefreshRunPayload``           → Tier.MEDIUM (error = DESCRIPTION)
@@ -38,8 +38,14 @@ Tier derivation summary:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from moneybin.privacy.payloads.categorize import (
+    CategorizeStatsPayload,
+    CategorizeStatsWithAutoPayload,
+)
 from moneybin.privacy.taxonomy import DataClass
 
 # ---------------------------------------------------------------------------
@@ -316,6 +322,87 @@ class SystemDoctorPayload:
 
 
 # ---------------------------------------------------------------------------
+# dormant coarse system_status payload
+# ---------------------------------------------------------------------------
+
+
+class OverviewStatus(BaseModel):
+    """The existing data-inventory projection inside sectioned system status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["overview"] = "overview"
+    overview: SystemStatusPayload
+
+
+class DoctorStatus(BaseModel):
+    """The existing integrity-check projection inside sectioned system status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["doctor"] = "doctor"
+    doctor: SystemDoctorPayload
+
+
+class CategorizationStatus(BaseModel):
+    """The existing categorization statistics inside sectioned system status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["categorization"] = "categorization"
+    statistics: CategorizeStatsPayload | CategorizeStatsWithAutoPayload
+
+
+class SystemStatusExportDestination(BaseModel):
+    """Privacy-safe readiness for one configured export destination."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: Annotated[str, DataClass.USER_NOTE]
+    kind: Annotated[Literal["local", "sheets"], DataClass.TXN_TYPE]
+    ready: Annotated[bool, DataClass.TXN_TYPE]
+    write_capable: Annotated[bool, DataClass.TXN_TYPE]
+    reasons: Annotated[list[str], DataClass.TXN_TYPE]
+
+
+class ExportsStatus(BaseModel):
+    """Export destination readiness inside sectioned system status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["exports"] = "exports"
+    destinations: list[SystemStatusExportDestination]
+
+
+@dataclass(frozen=True, slots=True)
+class SystemStatusCLIPayload:
+    """Flat typed payload for the established ``system status`` CLI JSON shape."""
+
+    accounts_count: Annotated[int, DataClass.AGGREGATE]
+    transactions_count: Annotated[int, DataClass.AGGREGATE]
+    transactions_date_range: Annotated[list[str | None], DataClass.AGGREGATE]
+    last_import_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    matches_pending: Annotated[int, DataClass.AGGREGATE]
+    categorize_pending: Annotated[int, DataClass.AGGREGATE]
+    exports: list[SystemStatusExportDestination]
+
+
+SystemStatusSection = Annotated[
+    OverviewStatus | DoctorStatus | CategorizationStatus | ExportsStatus,
+    Field(discriminator="kind"),
+]
+
+
+class SystemStatusCoarsePayload(BaseModel):
+    """Selected status sections in deterministic request order."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["sections"] = "sections"
+    sections: list[SystemStatusSection]
+
+
+# ---------------------------------------------------------------------------
 # refresh_run payload
 # ---------------------------------------------------------------------------
 
@@ -340,9 +427,10 @@ class RefreshRunPayload:
 
     The ``*_error`` fields are DESCRIPTION (Tier.MEDIUM): SQLMesh / step error
     type names are non-PII but we conservatively classify them as DESCRIPTION
-    since error strings in adjacent tooling sometimes embed model paths. They
-    are emitted as stable ``null`` keys (not omitted when absent) so agents see
-    a consistent shape — matching the ``self_heal_actions`` stable-key intent.
+    since error strings in adjacent tooling sometimes embed model paths.
+    ``identity_errors`` contains only fixed domain labels and is therefore
+    TXN_TYPE (Tier.LOW). These fields are emitted as stable keys so agents see a
+    consistent shape — matching the ``self_heal_actions`` stable-key intent.
     """
 
     applied: Annotated[bool, DataClass.TXN_TYPE]
@@ -350,6 +438,7 @@ class RefreshRunPayload:
     error: Annotated[str | None, DataClass.DESCRIPTION]
     matching_error: Annotated[str | None, DataClass.DESCRIPTION]
     categorization_error: Annotated[str | None, DataClass.DESCRIPTION]
+    identity_errors: Annotated[list[str], DataClass.TXN_TYPE]
     self_heal_actions: list[SelfHealActionRow]
 
 
@@ -475,3 +564,45 @@ class SystemAuditGetPayload:
     events: list[SystemAuditEventPayload]
     can_undo: Annotated[bool, DataClass.TXN_TYPE]
     undo_blocked_by: Annotated[list[str] | None, DataClass.RECORD_ID]
+
+
+# ---------------------------------------------------------------------------
+# dormant coarse system_audit payload
+# ---------------------------------------------------------------------------
+
+
+class AuditEvents(BaseModel):
+    """Recent audit events."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["events"] = "events"
+    events: list[SystemAuditEventPayload]
+
+
+class AuditHistory(BaseModel):
+    """Recent audited operations with undoability metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["history"] = "history"
+    operations: list[SystemAuditHistoryEntryPayload]
+
+
+class AuditDetail(BaseModel):
+    """One operation or one parent audit event and its child chain."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["detail"] = "detail"
+    operation_id: Annotated[str | None, DataClass.RECORD_ID]
+    audit_id: Annotated[str | None, DataClass.RECORD_ID]
+    events: list[SystemAuditEventPayload]
+    can_undo: Annotated[bool | None, DataClass.TXN_TYPE]
+    undo_blocked_by: Annotated[list[str] | None, DataClass.RECORD_ID]
+
+
+SystemAuditCoarsePayload = Annotated[
+    AuditEvents | AuditHistory | AuditDetail,
+    Field(discriminator="kind"),
+]

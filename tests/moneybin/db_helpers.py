@@ -192,6 +192,7 @@ SELECT CAST(NULL AS VARCHAR) AS merchant_id,
        CAST(NULL AS VARCHAR) AS raw_pattern,
        CAST(NULL AS VARCHAR) AS match_type,
        CAST(NULL AS VARCHAR) AS canonical_name,
+       CAST(NULL AS VARCHAR) AS category_id,
        CAST(NULL AS VARCHAR) AS category,
        CAST(NULL AS VARCHAR) AS subcategory,
        CAST(NULL AS VARCHAR) AS created_by,
@@ -315,6 +316,12 @@ SELECT CAST(NULL AS VARCHAR) AS account_id,
        CAST(NULL AS DECIMAL(18, 2)) AS cost_basis,
        CAST(NULL AS DECIMAL(28, 10)) AS average_cost,
        CAST(NULL AS VARCHAR) AS currency_code,
+       CAST(NULL AS DECIMAL(18, 2)) AS market_value,
+       CAST(NULL AS DECIMAL(18, 2)) AS unrealized_gain,
+       CAST(NULL AS DATE) AS price_date,
+       CAST(NULL AS VARCHAR) AS price_source,
+       CAST(NULL AS INTEGER) AS days_since_observed,
+       CAST(NULL AS VARCHAR) AS valuation_status,
        CAST(NULL AS DECIMAL(28, 10)) AS provider_reported_quantity,
        CAST(NULL AS DECIMAL(18, 2)) AS provider_reported_cost_basis,
        CAST(NULL AS DECIMAL(18, 2)) AS provider_reported_value,
@@ -326,9 +333,46 @@ WHERE FALSE;
 # explicit casts (DECIMAL(28,10)/(18,2)/(28,10)) — average_cost is DECIMAL,
 # NOT DOUBLE (DuckDB's decimal `/` promotes to DOUBLE unless the whole
 # division is cast back). database.md: no FLOAT for financial quantities.
+# market_value/unrealized_gain/price_date/price_source/days_since_observed/
+# valuation_status (Pillar C) mirror dim_holdings.sql's latest_price join —
+# NULL (never zero) when no usable price applies.
 # The provider_reported_* columns are the broker's non-authoritative claim
 # (LEFT JOINed from the newest holdings snapshot in production) — same types as
 # the ledger-derived columns they mirror.
+
+# core.fct_security_prices — SQLMesh SQL FULL-kind table in production.
+# Column shape mirrors fct_security_prices.sql's final SELECT.
+CORE_FCT_SECURITY_PRICES_DDL = """\
+CREATE TABLE IF NOT EXISTS core.fct_security_prices (
+    security_id VARCHAR,
+    price_date DATE,
+    quote_currency VARCHAR,
+    close DECIMAL(28, 10),
+    source_type VARCHAR,
+    price_basis VARCHAR,
+    updated_at TIMESTAMP
+);
+"""
+
+# core.uncategorized_queue — SQLMesh-managed view in production (curator-impact
+# queue, moved from reports.* per reports-foundation.md R5). Column shape
+# mirrors uncategorized_queue.sql's final SELECT.
+CORE_UNCATEGORIZED_QUEUE_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.uncategorized_queue AS
+SELECT CAST(NULL AS VARCHAR) AS transaction_id,
+       CAST(NULL AS VARCHAR) AS account_id,
+       CAST(NULL AS VARCHAR) AS account_name,
+       CAST(NULL AS DATE) AS txn_date,
+       CAST(NULL AS DECIMAL(18, 2)) AS amount,
+       CAST(NULL AS VARCHAR) AS description,
+       CAST(NULL AS VARCHAR) AS merchant_id,
+       CAST(NULL AS VARCHAR) AS merchant_normalized,
+       CAST(NULL AS INTEGER) AS age_days,
+       CAST(NULL AS DECIMAL(18, 2)) AS priority_score,
+       CAST(NULL AS VARCHAR) AS source_type,
+       CAST(NULL AS VARCHAR) AS source_id
+WHERE FALSE;
+"""
 
 
 def create_core_dim_stub_views(db: Database) -> None:
@@ -346,6 +390,8 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_FCT_INVESTMENT_LOTS_DDL)
     db.execute(CORE_FCT_REALIZED_GAINS_DDL)
     db.execute(CORE_DIM_HOLDINGS_STUB_DDL)
+    db.execute(CORE_FCT_SECURITY_PRICES_DDL)
+    db.execute(CORE_UNCATEGORIZED_QUEUE_STUB_DDL)
 
 
 def create_core_tables(db: Database) -> None:

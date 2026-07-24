@@ -63,6 +63,17 @@ class DataClass(StrEnum):
     AGGREGATE = "aggregate"
     RECORD_ID = "record_id"
     TIMESTAMP_OBSERVABILITY = "timestamp_observability"
+    # Not a classification — the absence of one. Assigned by the fail-closed
+    # paths in ``sql_lineage`` / ``sql_query`` when a column reaches the user
+    # WITHOUT lineage having positively established what it holds (an
+    # undeclared deployed column, or a runtime column no projection resolved
+    # to). It is CRITICAL and masked WHOLE: a partial mask such as
+    # ACCOUNT_IDENTIFIER's ``"****" + value[-4:]`` would surface the last four
+    # characters of a value we cannot name, and the whole point of this class
+    # is that we do not know what those characters are. Never write it into
+    # ``CLASSIFICATION`` or a ``@report(classes=…)`` map — declaring a column
+    # "unresolved" defeats the completeness tests that exist to catch gaps.
+    UNRESOLVED = "unresolved"
 
     @property
     def tier(self) -> Tier:
@@ -88,6 +99,7 @@ _TIER_BY_CLASS: dict[DataClass, Tier] = {
     DataClass.AGGREGATE: Tier.LOW,
     DataClass.RECORD_ID: Tier.LOW,
     DataClass.TIMESTAMP_OBSERVABILITY: Tier.LOW,
+    DataClass.UNRESOLVED: Tier.CRITICAL,
 }
 
 # Keyed by (schema, table) -> {column: DataClass}. Every column in
@@ -187,6 +199,26 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "start_month": DataClass.TXN_DATE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("app", "categorization_decisions"): {
+        "attempt_number": DataClass.AGGREGATE,
+        "categorized_by": DataClass.TXN_TYPE,
+        "category": DataClass.CATEGORY,
+        "category_id": DataClass.RECORD_ID,
+        "category_revision": DataClass.AGGREGATE,
+        "confidence": DataClass.AGGREGATE,
+        "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "decided_by": DataClass.TXN_TYPE,
+        "decision_id": DataClass.RECORD_ID,
+        "merchant_id": DataClass.RECORD_ID,
+        "proposed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_by": DataClass.TXN_TYPE,
+        "rule_id": DataClass.RECORD_ID,
+        "source_type": DataClass.TXN_TYPE,
+        "status": DataClass.TXN_TYPE,
+        "subcategory": DataClass.CATEGORY,
+        "transaction_id": DataClass.RECORD_ID,
+    },
     ("app", "categorization_rules"): {
         "account_id": DataClass.RECORD_ID,
         "category": DataClass.CATEGORY,
@@ -244,11 +276,34 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "workbook_name": DataClass.INSTITUTION,
     },
+    ("app", "export_destinations"): {
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "destination_id": DataClass.RECORD_ID,
+        "kind": DataClass.TXN_TYPE,
+        "local_path": DataClass.RECORD_ID,
+        "managed_tab_prefix": DataClass.USER_NOTE,
+        "name": DataClass.USER_NOTE,
+        "spreadsheet_id": DataClass.RECORD_ID,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "imports"): {
         "import_id": DataClass.RECORD_ID,
         "labels": DataClass.USER_NOTE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "updated_by": DataClass.TXN_TYPE,
+    },
+    ("app", "import_previews"): {
+        "channel": DataClass.TXN_TYPE,
+        "consumed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "expires_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "file_path": DataClass.RECORD_ID,
+        "file_sha256": DataClass.RECORD_ID,
+        "file_size_bytes": DataClass.AGGREGATE,
+        "import_id": DataClass.RECORD_ID,
+        "issued_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "preview_id": DataClass.RECORD_ID,
+        "snapshot_json": DataClass.TXN_AMOUNT,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("app", "lot_selections"): {
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -579,6 +634,23 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "cost_basis": DataClass.BALANCE,
         "average_cost": DataClass.BALANCE,
         "currency_code": DataClass.CURRENCY,
+        # market_value/unrealized_gain (Pillar C): quantity × a resolved close, and
+        # that figure less cost_basis — the same "held stock" character as
+        # cost_basis/average_cost above, not a single flow. Same class, same tier.
+        "market_value": DataClass.BALANCE,
+        "unrealized_gain": DataClass.BALANCE,
+        # price_date names a market close's date (public reference data, like
+        # fct_security_prices.price_date), not a fact about the user — LOW tier,
+        # matching that precedent rather than TXN_DATE.
+        "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
+        # Which provider supplied the close — a routing tag, like
+        # fct_security_prices.source_type.
+        "price_source": DataClass.TXN_TYPE,
+        # CURRENT_DATE - price_date: CURRENT_DATE is public, so this is bijective
+        # with price_date (uncategorized_queue.age_days precedent) and inherits its
+        # class rather than TXN_DATE.
+        "days_since_observed": DataClass.TIMESTAMP_OBSERVABILITY,
+        "valuation_status": DataClass.TXN_TYPE,
         # The broker's non-authoritative claim about the same position. Being a
         # reference rather than MoneyBin's own figure changes nothing about its
         # sensitivity — it discloses the identical holding, so each column
@@ -592,6 +664,12 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("core", "dim_merchants"): {
         "canonical_name": DataClass.MERCHANT_NAME,
         "category": DataClass.CATEGORY,
+        # FK to core.dim_categories.category_id — missed here until the
+        # generalized derivation check (reports-foundation.md) caught it: the
+        # completeness test's core.dim_merchants stub (tests/moneybin/
+        # db_helpers.py) had independently drifted to omit this column too,
+        # so neither guard alone would have surfaced the gap.
+        "category_id": DataClass.RECORD_ID,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "created_by": DataClass.TXN_TYPE,
         "exemplars": DataClass.MERCHANT_NAME,
@@ -701,6 +779,21 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "currency_code": DataClass.CURRENCY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("core", "fct_security_prices"): {
+        "security_id": DataClass.RECORD_ID,
+        # A market close is public reference data (what a security's price WAS
+        # on a date) — not a personal fact about the user, unlike
+        # fct_investment_transactions.price which is what the user actually
+        # paid. Neither this row nor its date names an account or a quantity
+        # held, so both get the same LOW-tier public-reference treatment as
+        # dim_securities.ticker/name rather than TXN_AMOUNT/TXN_DATE.
+        "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
+        "quote_currency": DataClass.CURRENCY,
+        "close": DataClass.AGGREGATE,
+        "source_type": DataClass.TXN_TYPE,
+        "price_basis": DataClass.TXN_TYPE,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("core", "fct_transaction_lines"): {
         "account_id": DataClass.RECORD_ID,
         "description": DataClass.DESCRIPTION,
@@ -773,5 +866,30 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "transaction_year_quarter": DataClass.TXN_DATE,
         "transfer_pair_id": DataClass.RECORD_ID,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("core", "uncategorized_queue"): {
+        # Curator-impact queue for the categorization surface
+        # (services/categorization/queries.py, transactions_categorize_pending);
+        # moved out of reports.* per reports-foundation.md R5. account_id is
+        # RECORD_ID here to match every other account_id in this registry
+        # (spec D6) — NOT ACCOUNT_IDENTIFIER, unlike the deleted
+        # _bridged_classes.py entry this mirrors.
+        "transaction_id": DataClass.RECORD_ID,
+        "account_id": DataClass.RECORD_ID,
+        "account_name": DataClass.USER_NOTE,
+        "txn_date": DataClass.TXN_DATE,
+        "amount": DataClass.TXN_AMOUNT,
+        "description": DataClass.DESCRIPTION,
+        "merchant_id": DataClass.RECORD_ID,
+        "merchant_normalized": DataClass.MERCHANT_NAME,
+        # CURRENT_DATE is public, so age_days is bijective with txn_date
+        # (txn_date = CURRENT_DATE - age_days) — a date, not an aggregate.
+        "age_days": DataClass.TXN_DATE,
+        # ABS(amount) * age_days: exact once age_days is visible (>= MEDIUM
+        # tier), so priority_score recovers ABS(amount) by division at any
+        # tier that unmasks age_days but not amount. Must stay HIGH.
+        "priority_score": DataClass.TXN_AMOUNT,
+        "source_type": DataClass.TXN_TYPE,
+        "source_id": DataClass.RECORD_ID,
     },
 }

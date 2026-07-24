@@ -38,7 +38,7 @@ The signed amount lives on `core.fct_transactions.amount`: **negative = expense,
 | `reports.merchant_activity.total_spend` | **Positive** (absolute outflow). |
 | `reports.merchant_activity.total_outflow` | **Negative** (preserved). |
 | `reports.large_transactions.amount` | Signed (preserved from source). |
-| `reports.uncategorized_queue.amount` | Signed (preserved from source). |
+| `core.uncategorized_queue.amount` | Signed (preserved from source). |
 | `reports.net_worth.total_liabilities` | **Negative** (preserved). |
 
 If you sum `outflow` from `cash_flow` and `total_spend` from `spending_trend` in the same query, one is negative and the other is positive. Don't.
@@ -125,15 +125,15 @@ Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Jo
 |---|---|---|
 | `account_id` | VARCHAR | Stable across imports; FK target for `fct_transactions.account_id`. |
 | `routing_number` | VARCHAR | ABA routing number; NULL when not provided. |
-| `account_type` | VARCHAR | Source-supplied classification (`CHECKING`, `SAVINGS`, `CREDITLINE`, ...). |
-| `institution_name` | VARCHAR | Human-readable institution. |
+| `account_type` | VARCHAR | Canonical classification, normalized across all sources via `seeds.account_type_map`: `depository`, `credit`, `loan`, `investment`, `other`. `NULL` when the source spelling is unrecognized. |
+| `institution_name` | VARCHAR | Human-readable institution. For OFX, resolved from `<FI><FID>` via `seeds.institutions`, falling back to the raw `<ORG>` for an unregistered FID — `<ORG>` is a routing code (Chase publishes `B1`), not a name. |
 | `institution_fid` | VARCHAR | OFX FID; NULL for tabular sources. |
 | `source_type`, `source_file` | VARCHAR | Source of the winning record after dedup; source file path. |
 | `extracted_at`, `loaded_at`, `updated_at` | TIMESTAMP | Source-parse / DB-write times (UTC). `updated_at = GREATEST(loaded_at, account_settings.updated_at)`. |
-| `display_name` | VARCHAR | User override → derived default (`institution_name + account_type + …<last4>`) → bare `account_id`. |
+| `display_name` | VARCHAR | User override → derived default (`institution_name + account_subtype + …<last4>`; the subtype is preferred over the canonical type because "checking" reads to a human where "depository" does not) → `institution_name + …<last4>` for a typeless account → bare `account_id`. |
 | `official_name` | VARCHAR | User-set or Plaid-supplied formal name. |
 | `last_four` | VARCHAR | User-set or Plaid mask. |
-| `account_subtype` | VARCHAR | Plaid-style subtype (`checking`, `savings`, `credit card`, `mortgage`, ...). |
+| `account_subtype` | VARCHAR | Plaid-style subtype (`checking`, `savings`, `credit card`, `mortgage`, ...). User override, else the provider's own subtype, else derived from the source spelling by `seeds.account_type_map`. |
 | `holder_category` | VARCHAR | `personal` / `business` / `joint`. |
 | `currency_code` | VARCHAR | ISO-4217; defaults to `'USD'`. |
 | `credit_limit` | DECIMAL(18,2) | User-asserted; drives utilization metrics. |
@@ -256,9 +256,27 @@ Observed days use the most authoritative source (per-day precedence: `user asser
 
 Logical grain key: `(account_id, balance_date)`.
 
+### `core.uncategorized_queue`
+
+Uncategorized transactions ranked by curator-impact. Grain: one row per uncategorized transaction. Excludes transfers and archived accounts. Service-internal — its only reader is the categorization surface (`moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`), not a standalone `reports.*` view.
+
+| Column | Type | Description |
+|---|---|---|
+| `transaction_id` | VARCHAR | Joinable to `core.fct_transactions.transaction_id`. |
+| `account_id` | VARCHAR | Owning account; RECORD_ID (opaque, unmasked — spec D6), same as everywhere else. |
+| `account_name` | VARCHAR | Resolved display name; NULL only if `dim_accounts.display_name` itself is NULL (uncommon). |
+| `txn_date` | DATE | Transaction date. |
+| `amount` | DECIMAL(18,2) | Signed (source sign preserved). |
+| `description` | VARCHAR | Source description. |
+| `merchant_normalized` | VARCHAR | Resolved merchant; NULL when no `dim_merchants` match and no source merchant value. |
+| `age_days` | INTEGER | `CURRENT_DATE − txn_date`. |
+| `priority_score` | DECIMAL(18,2) | `ABS(amount) × age_days` — default sort key. |
+| `source_type` | VARCHAR | Provenance source. |
+| `source_id` | VARCHAR | **NULL placeholder today.** Reserved column pending `source_id` surfacing on `fct_transactions`. Don't filter or join on it. |
+
 ## `reports.*` — curated presentation views
 
-All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `reports_*` tools) read these directly.
+All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `reports(report_id=...)`) read these directly.
 
 ### Which view should I use?
 
@@ -270,8 +288,9 @@ All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `rep
 | What's my net worth? | `reports.net_worth` | Daily snapshot from `fct_balances_daily`. |
 | Which transactions are unusually large? | `reports.large_transactions` | Modified z-scores against account and category baselines + `is_top_100`. |
 | Which subscriptions am I paying for? | `reports.recurring_subscriptions` | Heuristic candidates with confidence scores; does not auto-classify. |
-| What's not categorized yet? | `reports.uncategorized_queue` | Ranked by curator-impact (`ABS(amount) × age_days`). |
 | Are my balances drifting from reality? | `reports.balance_drift` | Per-assertion deltas vs computed balance; feeds `moneybin doctor`. |
+
+What's not categorized yet is answered by `core.uncategorized_queue` (above) rather than a `reports.*` view — it's service-internal, reached via `moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`, not a standalone report.
 
 When `cash_flow`, `spending_trend`, and `merchant_activity` overlap (e.g., "spend by category last month"), pick the one whose **grain** matches the question: `cash_flow` for `(month, account, category)`, `spending_trend` for `(month, category)` with windowed comparisons, `merchant_activity` for lifetime-per-merchant.
 
@@ -335,24 +354,6 @@ Heuristic detection of likely-recurring outflows. Grain: one row per `(merchant_
 | `status` | VARCHAR | `'active'` if `last_seen` within `max(60 days, 2× cadence)`, else `'inactive'`. |
 | `confidence` | DECIMAL | `0.0`–`1.0`; saturates at `1.0` with ≥6 occurrences and zero variance. |
 
-### `reports.uncategorized_queue`
-
-Uncategorized transactions ranked by curator-impact. Grain: one row per uncategorized transaction. Excludes transfers and archived accounts.
-
-| Column | Type | Description |
-|---|---|---|
-| `transaction_id` | VARCHAR | Joinable to `core.fct_transactions.transaction_id`. |
-| `account_id` | VARCHAR | Owning account. |
-| `account_name` | VARCHAR | Resolved display name; NULL only if `dim_accounts.display_name` itself is NULL (uncommon). |
-| `txn_date` | DATE | Transaction date. |
-| `amount` | DECIMAL(18,2) | Signed (source sign preserved). |
-| `description` | VARCHAR | Source description. |
-| `merchant_normalized` | VARCHAR | Resolved merchant; NULL when no `dim_merchants` match and no source merchant value. |
-| `age_days` | INTEGER | `CURRENT_DATE − txn_date`. |
-| `priority_score` | DECIMAL(18,2) | `ABS(amount) × age_days` — default sort key. |
-| `source_type` | VARCHAR | Provenance source. |
-| `source_id` | VARCHAR | **NULL placeholder today.** Reserved column pending `source_id` surfacing on `fct_transactions`. Don't filter or join on it. |
-
 ### `reports.merchant_activity`
 
 Per-merchant lifetime aggregations. Grain: one row per `merchant_normalized`. NULL merchants bucketed as `'(unknown)'`. Excludes transfers and archived accounts. Subsumes "top merchants" — top-N is `ORDER BY total_spend DESC LIMIT N`.
@@ -396,7 +397,7 @@ Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed bala
 | `account_name` | VARCHAR | Resolved display name. |
 | `assertion_date` | DATE | User-asserted balance date. |
 | `asserted_balance` | DECIMAL(18,2) | User-entered value. |
-| `computed_balance` | DECIMAL(18,2) | Carry-forward from `core.fct_balances_daily`; NULL if missing. |
+| `computed_balance` | DECIMAL(18,2) | Interpolated daily balance, or observed balance minus its reconciliation adjustment; NULL if the daily row is missing or is the first observation. |
 | `drift` | DECIMAL(18,2) | `asserted_balance − computed_balance`. |
 | `drift_abs` | DECIMAL(18,2) | For default sort. |
 | `drift_pct` | DECIMAL | `drift / asserted_balance`; NULL when asserted is zero. |
@@ -527,7 +528,7 @@ What not to do, and why.
 - **Don't aggregate both `core.fct_transactions.amount` and `core.fct_transaction_lines.line_amount` in the same query.** Pick one grain. The lines view sums to the same totals as the fact (whole = parent.amount, split lines sum to parent.amount); joining both yields 2×.
 - **Don't read from `prep.*`.** It's internal staging — column shapes can change without notice and no catalog comments are emitted. Use `core.*`.
 - **Don't `SUM(amount)` across mixed currencies.** `reports.*` and any cross-account aggregate over `fct_transactions` add `amount` without FX conversion. For single-currency users this is correct; for multi-currency users it's wrong. Filter by `currency_code` until multi-currency support ships.
-- **Don't filter on `reports.uncategorized_queue.source_id`.** It's a NULL placeholder today.
+- **Don't filter on `core.uncategorized_queue.source_id`.** It's a NULL placeholder today.
 - **Don't mix sign conventions.** If you join `cash_flow.outflow` (negative) and `spending_trend.total_spend` (positive) in the same expression, the math is wrong. Pick one view per question.
 - **Don't query `app.transaction_notes` / `app.transaction_tags` / `app.transaction_splits` directly when you need them per-transaction.** They're already aggregated as nested `LIST(STRUCT(...))` columns on `core.fct_transactions`. Direct queries miss the resolved shape and bypass the audit-emitting service layer for writes.
 

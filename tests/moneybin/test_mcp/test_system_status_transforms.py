@@ -42,7 +42,7 @@ def _seed_pending_import(import_id: str = "IMP_PENDING_001") -> None:
 @pytest.mark.unit
 async def test_system_status_envelope_has_transforms_block(mcp_db: object) -> None:
     """Envelope.data exposes transforms.{pending,last_apply_at}."""
-    env = await system_status()
+    env = system_status()
     data = env.to_dict()["data"]
     assert "transforms" in data
     transforms = data["transforms"]
@@ -54,7 +54,7 @@ async def test_system_status_envelope_has_transforms_block(mcp_db: object) -> No
 async def test_pending_state_adds_action_hint(mcp_db: object) -> None:
     """When pending=True, actions includes a refresh_run hint."""
     _seed_pending_import()
-    env = await system_status()
+    env = system_status()
     parsed = env.to_dict()
     assert parsed["data"]["transforms"]["pending"] is True
     assert any("refresh_run" in a for a in parsed["actions"])
@@ -63,7 +63,7 @@ async def test_pending_state_adds_action_hint(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_not_pending_omits_action_hint(mcp_db: object) -> None:
     """No pending imports → no refresh_run hint."""
-    env = await system_status()
+    env = system_status()
     parsed = env.to_dict()
     assert parsed["data"]["transforms"]["pending"] is False
     assert not any("refresh_run" in a for a in parsed["actions"])
@@ -72,7 +72,7 @@ async def test_not_pending_omits_action_hint(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_omits_schema_drift_when_healthy(mcp_db: object) -> None:
     """No schema_drift key when all core tables match EXPECTED_CORE_COLUMNS."""
-    env = await system_status()
+    env = system_status()
     data = env.to_dict()["data"]
     assert data.get("schema_drift") is None
 
@@ -84,7 +84,7 @@ async def test_system_status_surfaces_schema_drift_when_columns_missing(
     """schema_drift block lists missing columns when drift is detected."""
     with get_database(read_only=False) as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
-    env = await system_status()
+    env = system_status()
     data = env.to_dict()["data"]
     assert data.get("schema_drift") is not None
     tables = data["schema_drift"]["tables"]
@@ -98,7 +98,7 @@ async def test_system_status_action_hint_for_schema_drift(mcp_db: object) -> Non
     """Actions array includes a refresh remediation hint when drift detected."""
     with get_database(read_only=False) as db:
         db.execute("ALTER TABLE core.dim_accounts DROP COLUMN display_name")
-    env = await system_status()
+    env = system_status()
     actions = env.to_dict()["actions"]
     assert any("drifted" in a for a in actions)
 

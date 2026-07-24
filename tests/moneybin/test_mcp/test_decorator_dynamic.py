@@ -7,22 +7,42 @@ from the envelope, does not re-redact, and logs the per-call values.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import Sensitivity
+from moneybin.privacy.payloads.reports import (
+    ReportOutputColumn,
+    ReportResultPayload,
+    ReportSemanticsPayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
 def _dyn_tool() -> ResponseEnvelope[Any]:
     return build_envelope(
         data=[{"account_id": "****1234", "amount": -5}],
         sensitivity="high",
         classes_returned=["account_identifier", "txn_amount"],
     )
+
+
+@pytest.mark.unit
+def test_dynamic_classification_declares_a_maximum_sensitivity() -> None:
+    """Dynamic tools carry an explicit documentation-safe sensitivity ceiling."""
+    signature = inspect.signature(mcp_tool)
+
+    assert "maximum_sensitivity" in signature.parameters
+    with pytest.raises(ValueError, match="requires maximum_sensitivity"):
+        mcp_tool(dynamic_classification=True)
+    with pytest.raises(ValueError, match="only valid with dynamic_classification"):
+        mcp_tool(maximum_sensitivity=Sensitivity.HIGH)
+    assert _dyn_tool._mcp_maximum_sensitivity is Sensitivity.HIGH  # type: ignore[attr-defined]
 
 
 @pytest.mark.unit
@@ -57,10 +77,63 @@ async def test_dynamic_tool_logs_per_call_classes() -> None:
 
 
 @pytest.mark.unit
+async def test_dynamic_report_audit_logs_actual_returned_row_count() -> None:
+    captured: list[Any] = []
+
+    def _capture_event(event: Any) -> None:
+        captured.append(event)
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    def _report_tool() -> ResponseEnvelope[Any]:
+        payload = ReportResultPayload(
+            report_id="core:spending",
+            parameters={},
+            semantics=ReportSemanticsPayload(
+                unit="currency",
+                currency=None,
+                sign="signed",
+                kind="flow",
+                valuation_basis="transaction amount",
+                fx_basis="no FX conversion",
+                time_basis="calendar month",
+                denominator=None,
+                comparison_window=None,
+                exclusions=(),
+                provenance=("reports.spending",),
+            ),
+            columns=[
+                ReportOutputColumn(
+                    name="amount",
+                    description="Signed money amount.",
+                    data_class="txn_amount",
+                ),
+            ],
+            rows=[{"amount": -5}, {"amount": -8}],
+            sensitivity="high",
+            count=2,
+            truncated=False,
+            period="2026-07",
+        )
+        return build_envelope(
+            data=payload,
+            sensitivity="high",
+            returned_count=len(payload.rows),
+            total_count=2,
+            classes_returned=["txn_amount"],
+        )
+
+    with patch("moneybin.mcp.decorator.write_privacy_event", _capture_event):
+        envelope = await _report_tool()  # type: ignore[arg-type]
+
+    assert envelope.summary.returned_count == 2
+    assert captured[0]["row_count"] == 2
+
+
+@pytest.mark.unit
 async def test_dynamic_tool_critical_sensitivity_preserved() -> None:
     """A dynamic tool returning critical sensitivity is not stamped to high."""
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.CRITICAL)
     def _critical_tool() -> ResponseEnvelope[Any]:
         return build_envelope(
             data=[{"account_id": "****5678"}],
@@ -83,7 +156,7 @@ async def test_dynamic_tool_error_envelope_logs_unclassified() -> None:
     def _capture_event(event: Any) -> None:
         captured.append(event)
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def _error_tool() -> ResponseEnvelope[Any]:
         return build_error_envelope(
             error=UserError("bad query", code="invalid_query"),

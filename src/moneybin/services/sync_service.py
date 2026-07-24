@@ -219,6 +219,7 @@ class SyncService:
             investment_transactions_loaded=load_result.investment_transactions_loaded,
             holdings_loaded=load_result.holdings_loaded,
             holding_lots_loaded=load_result.holding_lots_loaded,
+            security_prices_loaded=load_result.security_prices_loaded,
             institutions=sync_data.metadata.institutions,
             investment_source_overlap_accounts=overlap,
             security_resolution=resolution,
@@ -234,6 +235,11 @@ class SyncService:
         # the refresh and dim_holdings keeps serving the previous, non-empty
         # snapshot, so the emptied broker still reads as holding its old
         # positions: the exact phantom the receipt exists to expose.
+        # Price observations: raw.security_prices is append-only, so this counts
+        # only the closes actually written. Today they ride along with a
+        # securities upsert, but nothing structural guarantees that — a price
+        # source that does not is a durable raw write whose rows would never
+        # reach core.fct_security_prices without this term.
         # Security-resolution writes: resolve_all() sweeps the whole raw
         # securities table, not this pull's delta, so a pull that loads nothing
         # can still bind a security an earlier pull stranded. That binding is
@@ -251,6 +257,7 @@ class SyncService:
             + load_result.holdings_loaded
             + load_result.holding_lots_loaded
             + load_result.holdings_snapshots_loaded
+            + load_result.security_prices_loaded
             + resolution_writes
         )
         if refresh and rows_changed > 0:
@@ -458,13 +465,30 @@ class SyncService:
 
     def disconnect(self, *, institution: str) -> None:
         """Resolve institution name to connection id and call client.disconnect()."""
+        inst = self.plan_disconnect(institution=institution)
+        self.client.disconnect(inst.id)
+
+    def plan_disconnect(self, *, institution: str) -> ConnectedInstitution:
+        """Resolve the exact live connection that an institution disconnect targets."""
         inst = self._find_institution(institution)
         if inst is None:
             raise ValueError(
                 f"no connected institution matching '{institution}' — "
                 f"run `moneybin sync status` to list connected banks"
             )
+        return inst
+
+    def disconnect_confirmed(
+        self,
+        *,
+        institution: str,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> ConnectedInstitution:
+        """Verify the live target immediately before deleting the connection."""
+        inst = self.plan_disconnect(institution=institution)
+        verify(inst)
         self.client.disconnect(inst.id)
+        return inst
 
     def _guidance_for(
         self, *, status: str, error_code: str | None, institution: str
