@@ -131,9 +131,12 @@ Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `S
 ### Keeping the console readable
 
 WARNING and above always reach the console. Below that, a record is hidden only
-if its logger matches `_CONSOLE_SUPPRESSED_PREFIXES` in `logging/config.py` —
-today `sqlmesh`, `httpx`, `httpcore`, each of which narrates its own internals
-several times per command. Everything else prints.
+if its logger matches `_CONSOLE_SUPPRESSED_PREFIXES` in `logging/config.py`.
+Everything else prints. That list holds two kinds of entry — third-party
+libraries that narrate every call (`sqlmesh`, `httpx`, …) and MoneyBin modules
+whose INFO is per-run bookkeeping the log file should keep and the terminal
+should not. Read the constant for the current membership; each entry carries
+the reason it earned a place.
 
 **`logger.debug` is not "hide from console" — it is "drop everywhere."** The
 root logger sits at INFO, so a DEBUG record is never emitted and never reaches

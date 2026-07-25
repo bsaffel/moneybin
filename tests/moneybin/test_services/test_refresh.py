@@ -487,3 +487,76 @@ def test_refresh_gsheet_step_skippable(
     assert patched_services["transform_apply"].call_count == 1
     assert patched_services["categorize_pending"].call_count == 1
     assert result.applied is True
+
+
+@pytest.mark.unit
+def test_identity_step_announces_new_review_items(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A proposal or conflict from refresh must tell the user it landed.
+
+    `accounts links run` / `merchants links run` echo their own summaries,
+    but the refresh pipeline has none: RefreshResult carries only errors and
+    the services' own counters are denylisted from the console. Without this
+    notice a review item appears and the user is never told.
+    """
+    from moneybin.services import account_links_service, merchant_links_service
+
+    def _accounts_service(_db: Database) -> Any:
+        return MagicMock(run=MagicMock(return_value=3))
+
+    def _merchants_service(_db: Database) -> Any:
+        return MagicMock(
+            run=MagicMock(return_value=HarvestResult(bound=7, conflicts=2))
+        )
+
+    monkeypatch.setattr(account_links_service, "AccountLinksService", _accounts_service)
+    monkeypatch.setattr(
+        merchant_links_service, "MerchantLinksService", _merchants_service
+    )
+
+    caplog.set_level(logging.INFO, logger="moneybin.services.refresh")
+    result = refresh(MagicMock(), steps=["identity"])
+
+    assert result.identity_errors == ()
+    messages = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "moneybin.services.refresh" and r.levelno == logging.INFO
+    ]
+    assert any("3" in m and "accounts links pending" in m for m in messages), messages
+    assert any("2" in m and "merchants links pending" in m for m in messages), messages
+
+
+@pytest.mark.unit
+def test_identity_step_stays_quiet_when_nothing_needs_review(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No proposals, no conflicts, no notice — silence is the whole point."""
+    from moneybin.services import account_links_service, merchant_links_service
+
+    def _accounts_service(_db: Database) -> Any:
+        return MagicMock(run=MagicMock(return_value=0))
+
+    def _merchants_service(_db: Database) -> Any:
+        # bound>0 with no conflicts: work happened, but none of it needs a
+        # human, so the console stays quiet.
+        return MagicMock(
+            run=MagicMock(return_value=HarvestResult(bound=9, conflicts=0))
+        )
+
+    monkeypatch.setattr(account_links_service, "AccountLinksService", _accounts_service)
+    monkeypatch.setattr(
+        merchant_links_service, "MerchantLinksService", _merchants_service
+    )
+
+    caplog.set_level(logging.INFO, logger="moneybin.services.refresh")
+    refresh(MagicMock(), steps=["identity"])
+
+    assert not [
+        r
+        for r in caplog.records
+        if r.name == "moneybin.services.refresh" and r.levelno == logging.INFO
+    ]
