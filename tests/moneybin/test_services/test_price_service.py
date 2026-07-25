@@ -37,6 +37,9 @@ from moneybin.services.price_service import (
     TIINGO_SOURCE_TYPE,
     PriceService,
 )
+from moneybin.services.security_links_service import (
+    _FEED_KEY_REF_KINDS,  # pyright: ignore[reportPrivateUsage]  # the routing set under test
+)
 from moneybin.services.undo_service import UndoService
 from moneybin.tables import (
     AUDIT_LOG,
@@ -1214,3 +1217,23 @@ def test_the_ref_kind_the_service_binds_matches_what_staging_expects() -> None:
 
     assert mapping[TIINGO_SOURCE_TYPE] == TIINGO_REF_KIND
     assert mapping[COINGECKO_SOURCE_TYPE] == COINGECKO_REF_KIND
+
+
+def test_every_ref_kind_the_service_queues_is_routed_as_a_feed_key() -> None:
+    """The opposite direction of the same contract, per the C.2 staging lesson.
+
+    `SecurityLinksService.accept` routes on `_FEED_KEY_REF_KINDS`: a ref_kind in
+    that set BINDS the feed, one outside it MERGES two securities and DELETEs
+    one. So a new adapter whose ref_kind never reaches that set would have its
+    review decisions routed into the merge path — destroying the very security
+    the user was trying to price.
+
+    The consumer's own tests read the set, so they cannot see a producer that
+    ships ahead of it. This reads the producer.
+    """
+    queued = {TIINGO_REF_KIND, COINGECKO_REF_KIND}
+
+    assert queued <= _FEED_KEY_REF_KINDS, (
+        "PriceService queues these ref_kinds, but SecurityLinksService.accept "
+        f"routes them to the MERGE path: {sorted(queued - _FEED_KEY_REF_KINDS)}"
+    )

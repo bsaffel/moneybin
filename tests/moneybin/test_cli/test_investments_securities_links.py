@@ -198,13 +198,19 @@ class TestSecurityLinksSet:
     """Tests for `investments securities links set`."""
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
-    @patch("moneybin.services.security_links_service.SecurityLinksService.accept_merge")
-    def test_set_accept_calls_accept_merge(
+    @patch("moneybin.services.security_links_service.SecurityLinksService.accept")
+    def test_set_accept_dispatches_on_the_decisions_own_kind(
         self,
         mock_accept: MagicMock,
         mock_get_db: MagicMock,
     ) -> None:
-        """--accept --into calls accept_merge with into= and decided_by='user'."""
+        """--accept --into calls `accept`, which routes merge vs feed-key bind.
+
+        Not `accept_merge` directly: the queue mixes identity decisions (accepting
+        merges two catalog rows) with price-feed decisions (accepting binds a
+        symbol), and routing every acceptance through the merge path made the
+        latter impossible to accept at all.
+        """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
 
         result = runner.invoke(
@@ -254,7 +260,7 @@ class TestSecurityLinksSet:
         assert result.exit_code == 2
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
-    @patch("moneybin.services.security_links_service.SecurityLinksService.accept_merge")
+    @patch("moneybin.services.security_links_service.SecurityLinksService.accept")
     def test_set_accept_wrong_into_surfaces_user_error(
         self,
         mock_accept: MagicMock,

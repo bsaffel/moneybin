@@ -70,6 +70,15 @@ logger = logging.getLogger(__name__)
 # (lot_id, quantity) pairs keyed by disposal — the shape LotSelectionsRepo takes.
 _SelectionSet = dict[str, list[tuple[str, Decimal]]]
 
+# Refs that name a market-data symbol rather than a second catalog row for one
+# instrument. Accepting one BINDS the feed; accepting an identity ref MERGES two
+# securities — opposite operations behind one reviewer intent, which is why
+# `accept` routes on this set. Kept in step with what PriceService actually
+# queues by test_price_service.py, which asserts every ref_kind the service files
+# appears here: a new adapter whose ref_kind is missing would silently route its
+# decisions into the merge path and destroy the security they were meant to price.
+_FEED_KEY_REF_KINDS = frozenset({"tiingo_ticker", "coingecko_slug"})
+
 
 @dataclass(frozen=True)
 class PendingSecurityLinkCandidate:
@@ -302,6 +311,131 @@ class SecurityLinksService:
     # ------------------------------------------------------------------
     # Mutations
     # ------------------------------------------------------------------
+
+    def accept(
+        self,
+        decision_id: str,
+        *,
+        into: str,
+        decided_by: str = "user",
+        verify_accept: Callable[[SecurityLinkAcceptImpact], None] | None = None,
+    ) -> None:
+        """Accept one pending decision by whichever mechanism its ref_kind needs.
+
+        The queue holds two kinds of question that look identical to a reviewer
+        and are structurally opposite to resolve:
+
+        - An **identity** ref (``plaid_security_id``, ``institution_security_id``)
+          asks whether two catalog rows are one instrument. Accepting MERGES —
+          re-points every reference onto the survivor and deletes the provisional.
+        - A **feed-key** ref (``tiingo_ticker``, ``coingecko_slug``) asks whether
+          a market-data symbol names this security. Accepting BINDS — it creates
+          the link that did not exist, and touches nothing else.
+
+        Routing every acceptance through the merge path made feed-key decisions
+        unacceptable by construction: the merge requires an accepted binding to
+        move, and a feed key has none — that absence is exactly why PriceService
+        queued it. The decision stayed pending forever and the security stayed
+        unpriced with no way to resolve it.
+
+        One entry point rather than two commands: the reviewer's intent is the
+        same ("yes, this pairing is right"), and the pending queue mixes both
+        kinds, so asking the caller to pick the mechanism would leak an
+        implementation detail into the surface.
+        """
+        decision = self._require_pending(decision_id)
+        if str(decision["ref_kind"]) in _FEED_KEY_REF_KINDS:
+            self.accept_feed_key(decision_id, into=into, decided_by=decided_by)
+            return
+        self.accept_merge(
+            decision_id, into=into, decided_by=decided_by, verify_accept=verify_accept
+        )
+
+    def accept_feed_key(
+        self,
+        decision_id: str,
+        *,
+        into: str,
+        decided_by: str = "user",
+        in_outer_txn: bool = False,
+    ) -> None:
+        """Bind a reviewed market-data symbol to the security under review.
+
+        Not a merge: no catalog row is deleted and no lot, manual event, or price
+        mark moves. The binding simply did not exist — ``PriceService`` refused to
+        create it silently because the symbol was ambiguous or the provider's
+        metadata disagreed — and the reviewer is supplying the certainty the
+        derivation lacked.
+
+        In ONE transaction: mark the decision accepted (its audit id parents the
+        binding, so the pair undoes together), insert the accepted link, and
+        auto-reject the ref's sibling candidates — accepting one answers them all.
+
+        Raises ``UserError`` when the decision is unknown or not pending, when
+        ``into`` does not match the decision's own ``candidate_security_id`` (the
+        same confirming safety check the merge path applies), or when that
+        security no longer exists.
+        """
+        if not in_outer_txn:
+            self._db.begin()
+        try:
+            decision = self._require_pending(decision_id)
+            if into != decision["candidate_security_id"]:
+                raise UserError(
+                    "into does not match the candidate named in decision "
+                    f"{decision_id!r}; pass the decision's own "
+                    "candidate_security_id as a confirming safety check.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            if not self._security_exists(into):
+                raise UserError(
+                    f"Security {into!r} no longer exists, so a price feed cannot "
+                    "be bound to it.",
+                    code=error_codes.MUTATION_NOT_FOUND,
+                )
+            event = self._decisions.update_status(
+                decision_id,
+                status="accepted",
+                decided_by=decided_by,
+                actor=self._actor,
+                in_outer_txn=True,
+            )
+            self._links.insert(
+                security_id=into,
+                ref_kind=str(decision["ref_kind"]),
+                ref_value=str(decision["ref_value"]),
+                source_type=str(decision["source_type"]),
+                decided_by=decided_by,
+                actor=self._actor,
+                parent_audit_id=event.audit_id,
+                in_outer_txn=True,
+            )
+            self._reject_pending_siblings(
+                decision,
+                exclude=decision_id,
+                decided_by=decided_by,
+                parent_audit_id=event.audit_id,
+            )
+            if not in_outer_txn:
+                self._db.commit()
+        except BaseException:
+            if not in_outer_txn:
+                self._db.rollback()
+            raise
+        if in_outer_txn:
+            return
+
+        SECURITY_LINK_DECISION_OUTCOMES_TOTAL.labels(outcome="accepted").inc()
+        logger.info(
+            f"feed key bound: decision={decision_id} security={into} "
+            f"ref_kind={decision['ref_kind']}"
+        )
+
+        from moneybin.services.security_resolver import (  # noqa: PLC0415
+            refresh_security_link_pending_gauge,
+        )
+
+        refresh_security_link_pending_gauge(self._db)
 
     def reject_merge(
         self,
@@ -552,6 +686,23 @@ class SecurityLinksService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def decisions_for_ref(
+        self, *, ref_kind: str, ref_value: str, source_type: str
+    ) -> int:
+        """Pending decisions competing for one provider ref.
+
+        Accepting any one of them resolves the whole group — the winner is
+        accepted and its siblings auto-rejected — so this is the decision-row
+        count a confirmation's blast radius must state. Read-only.
+        """
+        row = self._db.execute(
+            f"SELECT COUNT(*) FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE status = 'pending' AND ref_kind = ? AND ref_value = ? "
+            "AND source_type = ?",
+            [ref_kind, ref_value, source_type],
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
 
     def _require_pending(self, decision_id: str) -> dict[str, Any]:
         """Fetch the decision, or raise ``UserError`` unless it is pending."""

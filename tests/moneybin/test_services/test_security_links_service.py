@@ -128,9 +128,15 @@ def _manual_security_id(
     return None if row is None else row[0]
 
 
-def _accepted_binding(db: Database, ref_value: str = _REF_VALUE) -> str | None:
+def _accepted_binding(
+    db: Database,
+    ref_value: str = _REF_VALUE,
+    *,
+    ref_kind: str = _REF_KIND,
+    source_type: str = "plaid",
+) -> str | None:
     return SecurityLinksRepo(db).lookup(
-        ref_kind=_REF_KIND, ref_value=ref_value, source_type="plaid"
+        ref_kind=ref_kind, ref_value=ref_value, source_type=source_type
     )
 
 
@@ -1174,3 +1180,75 @@ def test_a_colliding_price_mark_blocks_the_merge(
 
     assert caught.value.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
     assert _security_exists(db, merge_setup["provisional"])
+
+
+# --------------------------------------------------------- feed-key decisions
+
+
+def _feed_key_decision(db: Database, *, security_id: str) -> str:
+    """A pending tiingo_ticker decision — the shape PriceService queues."""
+    event = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind="tiingo_ticker",
+        ref_value="BHP",
+        source_type="tiingo",
+        candidate_security_id=security_id,
+        provider_ticker="BHP",
+        provider_name="Bharat Heavy Electricals",
+        match_reason="name_divergence",
+        actor="system",
+    )
+    assert event.target_id is not None
+    return event.target_id
+
+
+def test_a_feed_key_decision_can_be_accepted(db: Database) -> None:
+    """A queue that cannot be drained is worse than no queue.
+
+    `accept_merge` requires an accepted binding for the ref to move onto the
+    survivor. A feed-key decision never has one — that absence is precisely WHY
+    PriceService queued it — so routing one through the merge path raises "has
+    nothing to merge away" and the security stays unpriced forever, with the
+    review row stuck pending. Accepting a feed key CREATES the binding.
+    """
+    security = _mint(db, name="BHP Group Ltd", created_by="user")
+    decision_id = _feed_key_decision(db, security_id=security)
+
+    SecurityLinksService(db).accept(decision_id, into=security)
+
+    assert (
+        _accepted_binding(db, "BHP", ref_kind="tiingo_ticker", source_type="tiingo")
+        == security
+    )
+    decision = SecurityLinkDecisionsRepo(db).fetch_by_id(decision_id)
+    assert decision is not None and decision["status"] == "accepted"
+
+
+def test_accepting_a_feed_key_keeps_the_security(db: Database) -> None:
+    """Binding a price feed is not a merge — nothing is deleted or re-pointed.
+
+    The merge path ends by DELETEing the provisional catalog row. Reaching it
+    with a feed-key decision would destroy the very security the user is trying
+    to price.
+    """
+    security = _mint(db, name="BHP Group Ltd", created_by="user")
+    decision_id = _feed_key_decision(db, security_id=security)
+
+    SecurityLinksService(db).accept(decision_id, into=security)
+
+    assert _security_exists(db, security)
+
+
+def test_an_identity_decision_still_takes_the_merge_path(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The dispatcher must not turn a merge into a bare binding.
+
+    The adversarial partner to the two tests above: same entry point, and the
+    provisional catalog row must still be merged away.
+    """
+    SecurityLinksService(db).accept(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert not _security_exists(db, merge_setup["provisional"])
+    assert _accepted_binding(db) == merge_setup["survivor"]

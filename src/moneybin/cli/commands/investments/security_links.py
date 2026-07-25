@@ -160,7 +160,7 @@ def links_set(
         with get_database(read_only=False) as db:
             svc = SecurityLinksService(db, actor="cli")
             if accept:
-                svc.accept_merge(decision_id, into=into or "", decided_by="user")
+                svc.accept(decision_id, into=into or "", decided_by="user")
             else:
                 svc.reject_merge(decision_id, decided_by="user")
 

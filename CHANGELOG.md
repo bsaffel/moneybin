@@ -44,7 +44,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   One source failing does not cost you the others: a missing Tiingo token still
   refreshes crypto, and the refresh names the source that failed and why. Prices
   implied by your own ledger now come only from executions — a dividend's
-  per-share rate is no longer read as that security's market close.
+  per-share rate is no longer read as that security's market close. Accepting a
+  queued feed key binds it (`moneybin investments securities links set <id>
+  --accept --into <security>`); accepting an identity decision still merges the
+  two securities, and the confirmation you are shown says which one it is.
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.

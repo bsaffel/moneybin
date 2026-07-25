@@ -319,6 +319,23 @@ already awaiting a human.
 pull-side derivation MoneyBin proposes about its own catalog, rather than a
 push-side claim a provider made — so reviewer-facing text distinguishes the two.
 
+**Accepting the two kinds does opposite things, so the accept path routes on
+`ref_kind`.** An identity ref (`plaid_security_id`, `institution_security_id`)
+asks whether two catalog rows are one instrument; accepting MERGES — every
+reference re-points onto the survivor and the provisional row is deleted. A feed
+key (`tiingo_ticker`, `coingecko_slug`) asks whether a market-data symbol names
+this security; accepting BINDS — the link that did not exist is created and
+nothing else moves.
+
+Routing both through the merge path would make a feed-key decision impossible to
+accept by construction: the merge requires an accepted binding to move away, and
+a feed key has none — that absence is exactly why it queued. The reviewer sees
+one queue and one intent ("yes, this pairing is right"), so the surface keeps one
+verb and dispatches beneath it; asking the caller to name the mechanism would
+leak an implementation detail. The MCP confirmation text differs per kind for the
+same reason: the merge prompt states that tax lots are fused and a security is
+deleted, and neither is true of a binding.
+
 **The queue must stay near-empty in normal operation.** A review entry per held
 position is a design failure, not a safety feature: no comparable tool asks a
 user to ratify every holding, and a queue that noisy trains people to accept
