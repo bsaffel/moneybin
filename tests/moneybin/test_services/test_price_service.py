@@ -25,8 +25,15 @@ from moneybin.connectors.prices.protocol import (
 )
 from moneybin.connectors.prices.tiingo import TickerMetadata
 from moneybin.database import Database
-from moneybin.services.price_service import PriceService
+from moneybin.services.price_service import (
+    COINGECKO_REF_KIND,
+    COINGECKO_SOURCE_TYPE,
+    TIINGO_REF_KIND,
+    TIINGO_SOURCE_TYPE,
+    PriceService,
+)
 from moneybin.tables import SECURITIES, SECURITY_LINK_DECISIONS, SECURITY_LINKS
+from tests.moneybin.price_model_helpers import ref_kind_mapping
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -698,3 +705,46 @@ def test_listing_prices_can_bound_the_start_date(db: Database) -> None:
     result = _service(db, _FakeTiingo()).list_prices("s1", since=date(2026, 1, 1))
 
     assert [r.price_date for r in result.rows] == [date(2026, 7, 24)]
+
+
+def test_every_source_the_service_writes_resolves_in_staging() -> None:
+    """A source_type this service writes MUST be mapped in prep.stg_security_prices.
+
+    The two halves ship in different files, and nothing else connects them.
+    ``PriceService`` writes ``raw.security_prices`` rows tagged with its own
+    ``source_type`` constants; ``prep.stg_security_prices`` resolves each row
+    through a ``CASE p.source_type`` whose result is compared against
+    ``app.security_links.ref_kind`` in an INNER JOIN. An unmapped source makes
+    that CASE return NULL, the comparison UNKNOWN, and the join drops the row —
+    with no error, no counter, and no way to recover it by accepting bindings
+    later, because the failure is in the mapping rather than the binding.
+
+    The staging module's own tripwire could not catch this: it reads the CASE and
+    fires only when the CASE changes, so shipping a *writer* for an unmapped
+    source left it green while every row written went nowhere. This test watches
+    the other direction, and lives in the unit gate so it runs on every commit.
+    """
+    mapping = ref_kind_mapping()
+    written = {TIINGO_SOURCE_TYPE, COINGECKO_SOURCE_TYPE}
+
+    assert written <= mapping.keys(), (
+        f"PriceService writes {sorted(written - mapping.keys())} but "
+        f"prep.stg_security_prices maps only {sorted(mapping)} — every row written "
+        f"for an unmapped source is discarded permanently by the INNER JOIN. Add "
+        f"`WHEN '<source>' THEN '<ref_kind>'` to the model's CASE."
+    )
+
+
+def test_the_ref_kind_the_service_binds_matches_what_staging_expects() -> None:
+    """Mapping the source is only half of it — the ref_kind must agree too.
+
+    ``PriceService`` writes the binding into ``app.security_links.ref_kind``;
+    staging joins on ``ref_kind = CASE ... END``. If the two disagree on the
+    spelling, the source is mapped, the binding is accepted, and the row is
+    still dropped — the same silent loss as an unmapped source, reached a
+    different way.
+    """
+    mapping = ref_kind_mapping()
+
+    assert mapping[TIINGO_SOURCE_TYPE] == TIINGO_REF_KIND
+    assert mapping[COINGECKO_SOURCE_TYPE] == COINGECKO_REF_KIND

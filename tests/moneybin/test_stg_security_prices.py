@@ -2,46 +2,15 @@
 
 from __future__ import annotations
 
-import re
 from decimal import Decimal
-from pathlib import Path
 
 import duckdb
 import pytest
 
-import moneybin
 from moneybin.database import Database, sqlmesh_context
+from tests.moneybin.price_model_helpers import ref_kind_mapping as _ref_kind_mapping
 
 pytestmark = pytest.mark.integration
-
-_MODEL_PATH = (
-    Path(moneybin.__file__).parent
-    / "sqlmesh"
-    / "models"
-    / "prep"
-    / "stg_security_prices.sql"
-)
-
-
-def _ref_kind_mapping() -> dict[str, str]:
-    """The (source -> ref_kind) pairs the model's CASE actually maps, read from it.
-
-    Derived from the model file rather than restated here on purpose. A hardcoded copy
-    would drift silently: the whole point of the coverage test below is that extending
-    the CASE automatically extends what the test exercises, so an adapter author cannot
-    add a mapping without also being told what else the mapping needs (a widened
-    app.security_links.ref_kind CHECK).
-    """
-    sql = _MODEL_PATH.read_text()
-    case_blocks = re.findall(r"CASE\s+p\.source_type(.*?)\bEND\b", sql, re.DOTALL)
-    assert len(case_blocks) == 1, (
-        f"expected exactly one `CASE p.source_type` in {_MODEL_PATH.name}; a second one "
-        f"means ref_kind resolution forked and this test no longer covers it: "
-        f"{case_blocks}"
-    )
-    mapping = dict(re.findall(r"WHEN\s+'([^']+)'\s+THEN\s+'([^']+)'", case_blocks[0]))
-    assert mapping, "no WHEN ... THEN pairs parsed out of the ref_kind CASE"
-    return mapping
 
 
 def _insert_price(
@@ -132,14 +101,18 @@ def test_reversed_link_does_not_resolve(db: Database) -> None:
 def test_every_mapped_source_resolves_end_to_end(db: Database) -> None:
     """Every source the ref_kind CASE maps must actually reach staging.
 
-    The mapped set is read from the model file, so this test grows itself: the day
-    someone adds `WHEN 'tiingo' THEN 'tiingo_ticker'` to the CASE, this test starts
-    seeding a tiingo row and a tiingo_ticker binding for it — and fails immediately,
-    because app.security_links.ref_kind is CHECK-constrained to
-    ('plaid_security_id', 'institution_security_id'). Extending the CASE alone does not
-    make a source resolve; the constraint must be widened in the same change. Pinning
-    the mapping's *shipped* set as a literal here instead would drift the moment
-    someone edited the model, which is exactly when the check needs to fire.
+    The mapped set is read from the model file, so this test grows itself: adding
+    `WHEN 'x' THEN 'x_key'` to the CASE makes this test start seeding an `x` row and an
+    `x_key` binding for it, and fail immediately unless app.security_links.ref_kind is
+    CHECK-constrained to admit `x_key` too. Extending the CASE alone does not make a
+    source resolve; the constraint must be widened in the same change. (That is what
+    V042 did for tiingo_ticker and coingecko_slug.) Pinning the mapping's *shipped* set
+    as a literal here instead would drift the moment someone edited the model, which is
+    exactly when the check needs to fire.
+
+    This direction only sees mappings that exist. A writer shipping ahead of its mapping
+    leaves the CASE untouched and this test unchanged — see
+    test_price_service.py::test_every_source_the_service_writes_resolves_in_staging.
     """
     mapping = _ref_kind_mapping()
     for index, (source, ref_kind) in enumerate(sorted(mapping.items())):
@@ -175,21 +148,27 @@ def test_an_unmapped_source_is_dropped_permanently_not_deferred(db: Database) ->
 
     This is the finding the COVERAGE block in the model documents, pinned as behavior.
     The binding here is *accepted* and its ref_value matches, so the row fails for one
-    reason only: `CASE p.source_type WHEN 'plaid' ... END` returns NULL for 'tiingo', making
+    reason only: the CASE returns NULL for an unmapped source, making
     `links.ref_kind = NULL` UNKNOWN and the INNER JOIN drop the row. That is unlike the
     unresolved-binding case, where the observation waits in raw and reappears once its
     security binds — no number of accepted bindings will ever surface this one.
 
-    Deliberately a tripwire: when a tiingo adapter lands and extends the CASE, this test
-    goes red and forces whoever wrote it to confront the drop rather than discover it
-    in production. Adjust it then; do not weaken it now.
+    Originally written against 'tiingo' as a tripwire that would fire when the tiingo
+    adapter landed. It did not fire, because it watches the CASE and the adapter shipped
+    a *writer* one commit ahead of its mapping — every tiingo row written in between was
+    dropped here. Two guards replaced that role, in the directions this test cannot see:
+    `test_price_service.py` asserts every source PriceService writes is mapped (build
+    time), and `investment_unmapped_price_source` reports any unmapped source_type
+    already sitting in raw (run time). This test now pins only the drop semantics, using
+    a source with no adapter behind it.
     """
-    assert "tiingo" not in _ref_kind_mapping(), (
-        "tiingo now has a ref_kind mapping — this tripwire has done its job. Replace it "
-        "with a positive resolution test and move tiingo into the covered set."
+    unmapped = "yahoo"
+    assert unmapped not in _ref_kind_mapping(), (
+        f"{unmapped!r} now has a ref_kind mapping; pick a source with no adapter behind "
+        f"it, or this test silently stops covering the drop it names"
     )
-    _insert_price(db, key="tiingo_vti", close="214.55", source="tiingo")
-    _accept_link(db, key="tiingo_vti", canonical_id="canonvti0000001")
+    _insert_price(db, key="yahoo_vti", close="214.55", source=unmapped)
+    _accept_link(db, key="yahoo_vti", canonical_id="canonvti0000001")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
