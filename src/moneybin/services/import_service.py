@@ -194,6 +194,15 @@ class PerFileResult:
     Full-Disk-Access walkthrough on a TCC block. Like `error`, it never comes
     from raw str(e).
     """
+    details: dict[str, Any] | None = None
+    """Structured facts behind `error_code`, for branching instead of parsing.
+
+    A permission failure carries `errno`, `platform`, and — when the macOS
+    branch fires — `protected_root`. `hint` says the same thing in prose, but
+    prose is not a contract: an agent that wants to know whether this was a TCC
+    denial should read `details["protected_root"]`, not grep the hint. Travels
+    with `error_code` and `hint`; None whenever they are.
+    """
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     sign_override_replayed: bool = False
@@ -422,21 +431,29 @@ def _validate_explicit_tabular_sign_shape(
         )
 
 
-def per_file_failure(exc: Exception) -> tuple[str, str | None, str | None]:
-    """Return (error_message, error_code, hint) safe to put in a PerFileResult.
+def per_file_failure(
+    exc: Exception,
+) -> tuple[str, str | None, str | None, dict[str, Any] | None]:
+    """Return (error_message, error_code, hint, details) for a PerFileResult.
 
     Public because the single-file MCP path builds its own PerFileResult and
     must reach the same verdict this module's batch loop does.
 
-    Classified errors carry their sanitized message, code, and recovery hint.
-    Unclassified ones fall back to the class name with no code and no hint —
-    raw str(e) may embed PII (see extractors/ofx/extractor.py), and there is
-    no advice to give for an exception we didn't recognize.
+    Classified errors carry their sanitized message, code, recovery hint, and
+    structured `details`. Unclassified ones fall back to the class name with
+    nothing else — raw str(e) may embed PII (see extractors/ofx/extractor.py),
+    and there is no advice to give for an exception we didn't recognize.
+
+    `details` is the fourth element rather than dropped because it is what an
+    agent branches on: a permission failure carries `errno`, `platform`, and
+    (on the macOS branch) `protected_root`. Returning only the hint would force
+    callers to string-match prose to recover facts the classifier already knew
+    — the exact pattern `error_code` exists to replace.
     """
     classified = classify_user_error(exc)
     if classified is None:
-        return type(exc).__name__, None, None
-    return classified.message, classified.code, classified.hint
+        return type(exc).__name__, None, None, None
+    return classified.message, classified.code, classified.hint, classified.details
 
 
 def _display_label(file_type: str, file_path: Path) -> str:
@@ -4088,7 +4105,9 @@ class ImportService:
                     )
                 )
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
-                error_message, error_code, error_hint = per_file_failure(e)
+                error_message, error_code, error_hint, error_details = per_file_failure(
+                    e
+                )
                 # Log the class name, never the message: a classified message is
                 # user-safe but still names the path, and logs stay PII-free.
                 logger.warning(f"Import failed for {path}: {type(e).__name__}")
@@ -4100,6 +4119,7 @@ class ImportService:
                         error=error_message,
                         error_code=error_code,
                         hint=error_hint,
+                        details=error_details,
                     )
                 )
 

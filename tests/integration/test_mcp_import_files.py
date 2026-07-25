@@ -131,6 +131,40 @@ async def test_failed_file_raises_the_envelope_sensitivity(
     assert env.summary.sensitivity == "medium"
 
 
+async def test_permission_failure_row_carries_structured_details(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MCP gets the same `details` the CLI row does, from the same classifier.
+
+    `data-recovery-contract.md` promises `errno` and `platform` on every
+    permission failure. Without them an agent has to grep the `hint` prose to
+    recover what the classifier already knew — the pattern `error_code` and
+    `details` exist to replace.
+
+    The errno is asserted rather than the macOS branch: `protected_root` needs
+    Darwin plus a real protected path, and this test runs on Linux in CI.
+    """
+    _setup_db(tmp_path, monkeypatch)
+    blocked = tmp_path / "statement.ofx"
+    blocked.write_text("OFXHEADER:100\n")
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        MagicMock(side_effect=PermissionError(13, "Permission denied", str(blocked))),
+    )
+
+    env = import_files(paths=[str(blocked)], refresh=False)
+
+    assert env.data.failed_count == 1
+    row = env.data.files[0]
+    assert row.error_code == "infra_permission_denied"
+    assert row.details is not None
+    assert row.details["errno"] == 13
+    assert row.details["platform"]
+    # One failed file is unanimous, so the batch error carries it too.
+    assert env.error is not None
+    assert env.error.details == row.details
+
+
 async def test_clean_batch_stays_low_sensitivity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

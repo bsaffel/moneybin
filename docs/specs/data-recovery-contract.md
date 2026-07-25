@@ -124,6 +124,8 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
     `details` carries `errno` and `platform` on every permission failure, plus `protected_root` (`~/Documents` / `~/Desktop` / `~/Downloads` — the `~/` prefix is on the wire) when the macOS branch fires. Those are the fields an agent branches on.
 
+    This holds on the batch path too, not just single-exception envelopes: `import_files` (MCP and `--output json`) carries `details` on each `data.files[]` row, and hoists it to the envelope's `error.details` when every failed file agrees on it — the same unanimity rule `error_code` and `hint` use. A batch whose files failed for different reasons omits the batch-level `details` rather than claiming one file's errno for all of them.
+
     The macOS remedy is delivered via `hint`, **not** `recovery_actions`: a `RecoveryAction` requires a `tool` naming an MCP tool (`min_length=1`, `extra="forbid"`), so the type cannot express an action the user must take outside the app. Extending it to do so is explicitly out of scope — smuggling human instructions into `rationale` while naming an unrelated tool is a strained one-off, not a convention to promote.
 
 4. **`operation_id` schema addition.** `app.audit_log` gains three columns:

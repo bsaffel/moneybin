@@ -14,7 +14,12 @@ from moneybin.protocol.import_envelope import mark_total_failure
 from moneybin.services.import_service import BatchImportResult, PerFileResult
 
 
-def _failed(path: str, code: str | None, hint: str | None) -> PerFileResult:
+def _failed(
+    path: str,
+    code: str | None,
+    hint: str | None,
+    details: dict[str, Any] | None = None,
+) -> PerFileResult:
     return PerFileResult(
         path=path,
         status="failed",
@@ -22,6 +27,7 @@ def _failed(path: str, code: str | None, hint: str | None) -> PerFileResult:
         error=f"{path} broke",
         error_code=code,
         hint=hint,
+        details=details,
     )
 
 
@@ -138,6 +144,53 @@ def test_unclassified_lone_failure_still_names_the_count() -> None:
 
     assert result.error is not None
     assert "all 1 file(s)" in result.error.message
+
+
+def test_unanimous_details_are_hoisted() -> None:
+    """`details` is the field agents branch on, so the batch must carry it too.
+
+    Hoisted by equality rather than a set — a dict is unhashable, so the
+    set-based unanimity used for code and hint cannot express this one.
+    """
+    shared = {"errno": 1, "platform": "Darwin", "protected_root": "~/Documents"}
+    batch = _batch(
+        _failed("a.csv", error_codes.INFRA_PERMISSION_DENIED, "grant", shared),
+        _failed("b.csv", error_codes.INFRA_PERMISSION_DENIED, "grant", shared),
+    )
+    result = mark_total_failure(_envelope(), batch)
+
+    assert result.error is not None
+    assert result.error.details == shared
+
+
+def test_divergent_details_are_not_hoisted() -> None:
+    """Claiming one errno for a batch that had two would be worse than silence.
+
+    Both files here are permission failures with the same code and hint, so
+    only `details` disagrees — that alone must suppress the hoist, or an agent
+    reading `protected_root` would act on a fact true of one file.
+    """
+    batch = _batch(
+        _failed(
+            "a.csv",
+            error_codes.INFRA_PERMISSION_DENIED,
+            "grant",
+            {"errno": 1, "platform": "Darwin", "protected_root": "~/Documents"},
+        ),
+        _failed(
+            "b.csv",
+            error_codes.INFRA_PERMISSION_DENIED,
+            "grant",
+            {"errno": 13, "platform": "Darwin"},
+        ),
+    )
+    result = mark_total_failure(_envelope(), batch)
+
+    assert result.error is not None
+    assert result.error.details is None
+    # The code and hint still hoist — they ARE unanimous. Each field is
+    # decided on its own agreement, not on the batch being uniform overall.
+    assert result.error.code == error_codes.INFRA_PERMISSION_DENIED
 
 
 def test_partial_success_stays_ok() -> None:

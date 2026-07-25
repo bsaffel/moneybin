@@ -572,7 +572,7 @@ def import_files(
                 per_file_failure,
             )
 
-            error_message, error_code, error_hint = per_file_failure(e)
+            error_message, error_code, error_hint, error_details = per_file_failure(e)
             # Log the class name, never the message: a classified message is
             # user-safe but still names the path, and logs stay PII-free.
             logger.warning(f"Import failed for {validated[0]}: {type(e).__name__}")
@@ -587,6 +587,7 @@ def import_files(
                         error=error_message,
                         error_code=error_code,
                         hint=error_hint,
+                        details=error_details,
                     )
                 ],
                 transforms_applied=False,
@@ -638,6 +639,7 @@ def import_files(
             error=r.error,
             error_code=r.error_code,
             hint=r.hint,
+            details=r.details,
             sign_correction_suggested=r.sign_correction_suggested,
             sign_override_replayed=r.sign_override_replayed,
             confirmation_payload=cast(

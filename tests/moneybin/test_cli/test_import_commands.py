@@ -804,6 +804,48 @@ class TestImportFilesCommand:
         # Same DESCRIPTION-tier prose as the batch path, so the same tier.
         assert payload["summary"]["sensitivity"] == "medium"
 
+    def test_single_file_failure_carries_the_structured_permission_details(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`details` is what an agent branches on, so it must reach the wire.
+
+        `data-recovery-contract.md` promises `errno` and `platform` on every
+        permission failure plus `protected_root` when the macOS branch fires.
+        Routing this path through `per_file_failure` is what made it a per-file
+        row, and the 3-tuple it used to return dropped `details` at the source
+        — leaving an agent to grep the `hint` prose for "Full Disk Access" to
+        learn what `protected_root` already states.
+
+        Darwin is pinned so the conjunction under test is the code's, not the
+        runner's; CI is Linux.
+        """
+        import json
+
+        monkeypatch.setattr("moneybin.errors.platform.system", lambda: "Darwin")
+        blocked = Path.home() / "Documents" / "statement.csv"
+        test_file = tmp_path / "statement.csv"
+        test_file.touch()
+        mock_import_file.side_effect = PermissionError(
+            1, "Operation not permitted", str(blocked)
+        )
+
+        result = runner.invoke(app, ["files", str(test_file), "--output", "json"])
+
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout)
+        details = payload["data"]["files"][0]["details"]
+        assert details["errno"] == 1
+        assert details["platform"] == "Darwin"
+        assert details["protected_root"] == "~/Documents"
+        # One failed file is trivially unanimous, so the batch level carries it
+        # too — that is the level a caller checking `.error` reads first.
+        assert payload["error"]["details"]["protected_root"] == "~/Documents"
+
     def test_command_level_failure_keeps_the_bare_error_envelope(
         self,
         runner: CliRunner,

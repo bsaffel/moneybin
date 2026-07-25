@@ -28,7 +28,7 @@ def test_ofx_parse_failure_does_not_put_parser_text_on_the_wire(
     with pytest.raises(ValueError) as raised:
         ImportService(db).import_file(ofx, refresh=False)
 
-    message, _code, _hint = per_file_failure(raised.value)
+    message, _code, _hint, _details = per_file_failure(raised.value)
     assert PII not in message, f"parser text reached the wire: {message}"
     assert PII not in str(raised.value)
     # Still actionable: the user must learn the file could not be parsed.
@@ -68,6 +68,6 @@ def test_transform_failure_does_not_put_polars_text_on_the_wire(
             auto_accept=True,
         )
 
-    message, _code, _hint = per_file_failure(raised.value)
+    message, _code, _hint, _details = per_file_failure(raised.value)
     assert PII not in message, f"parser text reached the wire: {message}"
     assert "Transform failed" in str(raised.value)

@@ -71,6 +71,17 @@ def mark_total_failure(
         f"Import failed for all {len(failed)} file(s); "
         "see data.files[] for each file's error, error_code, and hint."
     )
+    # Same unanimity rule again, by equality rather than a set: `details` is a
+    # dict, so it is unhashable. Hoisting a non-unanimous one would tell an
+    # agent the whole batch shared an errno or a protected_root when it did
+    # not — and `details` exists precisely to be branched on, so a wrong one is
+    # worse than none. Each file's own copy stays in data.files[].
+    first_details = failed[0].details
+    shared_details = (
+        first_details
+        if first_details and all(r.details == first_details for r in failed)
+        else None
+    )
     return envelope.with_error(
         # An unclassified or non-unanimous failure has no single code of its
         # own. IMPORT_PARSE_ERROR is the honest fallback: the domain is right
@@ -80,5 +91,6 @@ def mark_total_failure(
             message=message,
             code=shared_code or error_codes.IMPORT_PARSE_ERROR,
             hint=shared_hint,
+            details=shared_details,
         )
     )

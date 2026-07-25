@@ -721,6 +721,10 @@ def _batch_payload(
             # The recovery advice travels with the code — a scripted caller
             # hitting a TCC block needs the fix, not just the classification.
             **({"hint": r.hint} if r.hint else {}),
+            # The structured facts behind the code (errno, platform,
+            # protected_root). `hint` says it in prose; this is what a script
+            # branches on without matching that prose.
+            **({"details": r.details} if r.details else {}),
             **(
                 {"confirmation_payload": r.confirmation_payload}
                 if r.confirmation_payload
@@ -756,7 +760,7 @@ def _single_file_failure(file_path: Path, exc: Exception) -> BatchImportResult:
         per_file_failure,
     )
 
-    error_message, error_code, error_hint = per_file_failure(exc)
+    error_message, error_code, error_hint, error_details = per_file_failure(exc)
     # The class name, never the message: a classified message is user-safe but
     # still names the path, and logs stay PII-free.
     logger.warning(f"Import failed for one file: {type(exc).__name__}")
@@ -771,6 +775,7 @@ def _single_file_failure(file_path: Path, exc: Exception) -> BatchImportResult:
                 error=error_message,
                 error_code=error_code,
                 hint=error_hint,
+                details=error_details,
             )
         ],
         transforms_applied=False,
