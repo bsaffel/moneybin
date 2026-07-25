@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp import FastMCP
 
+from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
@@ -254,7 +255,7 @@ def sync_link(
             return build_error_envelope(
                 error=UserError(
                     f"multiple connected institutions match '{institution}' ({ids})",
-                    code="ambiguous",
+                    code=error_codes.SYNC_INSTITUTION_AMBIGUOUS,
                     hint="Run sync_status to identify them; the duplicate name "
                     "must be disambiguated before sync_link can target one.",
                 ),
@@ -330,7 +331,7 @@ def sync_status_coarse(
     if session_id is not None and auth_session_id is not None:
         raise UserError(
             "session_id and auth_session_id select different status modes.",
-            code="SYNC_STATUS_MODE_CONFLICT",
+            code=error_codes.SYNC_STATUS_MODE_CONFLICT,
         )
     if auth_session_id is not None:
         result = _build_sync_auth_service().status(auth_session_id)
@@ -395,7 +396,7 @@ def sync_link_coarse(
         if institution is not None:
             raise UserError(
                 "institution is valid only when mode='institution'.",
-                code="SYNC_LINK_MODE_CONFLICT",
+                code=error_codes.SYNC_LINK_MODE_CONFLICT,
             )
         result = _build_sync_auth_service().begin()
         data: SyncLinkCoarsePayload = SyncAuthView(
@@ -511,12 +512,12 @@ async def sync_disconnect(
         if institution is not None:
             raise UserError(
                 "institution is valid only when mode='institution'.",
-                code="SYNC_DISCONNECT_MODE_CONFLICT",
+                code=error_codes.SYNC_DISCONNECT_MODE_CONFLICT,
             )
         if confirmation_token is not None:
             raise UserError(
                 "confirmation_token is valid only when mode='institution'.",
-                code="SYNC_CONFIRMATION_NOT_ALLOWED",
+                code=error_codes.SYNC_CONFIRMATION_NOT_ALLOWED,
             )
         result = await asyncio.to_thread(_sync_logout)
         return build_envelope(
@@ -531,7 +532,7 @@ async def sync_disconnect(
     if institution is None:
         raise UserError(
             "institution is required when mode='institution'.",
-            code="SYNC_INSTITUTION_REQUIRED",
+            code=error_codes.SYNC_INSTITUTION_REQUIRED,
         )
     binding: ConfirmationBinding | None = None
     if confirmation_token is None:

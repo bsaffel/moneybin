@@ -1,4 +1,4 @@
-"""reports_balance_drift — asserted vs computed balance reconciliation."""
+"""core:balance_drift — asserted vs computed balance reconciliation."""
 
 from __future__ import annotations
 

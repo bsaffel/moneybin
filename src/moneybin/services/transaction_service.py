@@ -7,8 +7,6 @@ Consumed by both MCP tools and CLI commands.
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import json
 import logging
@@ -17,7 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -30,6 +28,13 @@ from moneybin.mcp.write_contracts import (
     SplitsSet,
     TagRename,
     TagsSet,
+)
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    KeysetScalar,
+    build_keyset_page,
+    compare_keyset,
+    decode_keyset_cursor,
 )
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
@@ -50,6 +55,37 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Namespace for cursors minted by TransactionService.get(). Distinct from the
+# MCP `transactions` tool's namespace: same table, different public filter set,
+# so a cursor from one must not decode against the other.
+_TRANSACTION_LIST_CURSOR = "transactions_list"
+
+# Display order of the keyset: `ORDER BY transaction_date DESC, transaction_id`.
+_TRANSACTION_KEY_DIRECTIONS: tuple[Literal["asc", "desc"], ...] = ("desc", "asc")
+
+
+def _is_transaction_key(key: tuple[KeysetScalar, ...]) -> bool:
+    """Validate a decoded cursor key before it reaches the SQL predicate.
+
+    Cursors are unsigned base64 JSON, so a caller can forge one. Types alone
+    are not enough: a well-typed but non-ISO date reaches DuckDB and raises a
+    ConversionException, which ``classify_user_error`` does not recognize — the
+    caller gets a traceback instead of an envelope. An empty transaction_id is
+    worse than malformed: ``transaction_id > ''`` is true for every row, so the
+    continuation silently re-serves rows the cursor claims to be past.
+    """
+    if len(key) != 2 or not all(isinstance(part, str) for part in key):
+        return False
+    day, transaction_id = cast("tuple[str, str]", key)
+    if not transaction_id:
+        return False
+    try:
+        date.fromisoformat(day)
+    except ValueError:
+        return False
+    return True
+
 
 # Audit target prefixes (schema, table) for the audit events still emitted
 # directly by this service: the cross-row tag.rename parent marker and manual
@@ -134,10 +170,17 @@ class Transaction:
 
 @dataclass(slots=True)
 class TransactionGetResult:
-    """Result of TransactionService.get()."""
+    """Result of TransactionService.get().
+
+    ``total_count`` is every row matching the filters, not the page length —
+    the same meaning ``summary.total_count`` carries on the MCP surface. It is
+    carried on the result rather than recomputed by callers so a truncated
+    page cannot present its own size as the match count.
+    """
 
     transactions: list[Transaction]
     next_cursor: str | None
+    total_count: int
 
 
 @dataclass(slots=True)
@@ -562,7 +605,7 @@ class TransactionService:
         if row is None:
             raise UserError(
                 "The transaction reference did not match a transaction.",
-                code="TRANSACTION_REFERENCE_NOT_FOUND",
+                code=error_codes.TRANSACTION_REFERENCE_NOT_FOUND,
             )
         amount = row[0]
         return amount if isinstance(amount, Decimal) else Decimal(str(amount))
@@ -580,7 +623,7 @@ class TransactionService:
         if row is None:
             raise UserError(
                 "The note reference did not match a note.",
-                code="NOTE_REFERENCE_NOT_FOUND",
+                code=error_codes.TRANSACTION_NOTE_NOT_FOUND,
             )
         return _row_to_note(row)
 
@@ -759,20 +802,47 @@ class TransactionService:
         aliases. Any unresolved entry rejects the whole filter instead of
         returning a partial result.
 
-        Pagination is offset-based internally; the cursor is base64(str(offset))
-        so callers treat it as opaque.
+        Pagination is keyset, not offset: the cursor carries the immutable
+        ``(transaction_date, transaction_id)`` key the last served row had,
+        plus the total the first page saw. Offset paging skipped a row when
+        anything above the boundary was deleted and repeated one when anything
+        prepended — both silent, and both wrong on a financial ledger.
         """
         if limit < 1:
             raise ValueError(f"limit must be >= 1, got {limit}")
+        scope = self._get_cursor_scope(
+            accounts=accounts,
+            date_from=date_from,
+            date_to=date_to,
+            categories=categories,
+            amount_min=amount_min,
+            amount_max=amount_max,
+            description=description,
+            uncategorized_only=uncategorized_only,
+        )
+        position: KeysetPosition | None = None
         if cursor is not None:
             try:
-                offset = int(base64.b64decode(cursor.encode()).decode())
-            except (binascii.Error, UnicodeDecodeError, ValueError) as e:
-                raise ValueError(f"invalid cursor: {cursor!r}") from e
-            if offset < 0:
-                raise ValueError(f"invalid cursor (negative offset): {cursor!r}")
-        else:
-            offset = 0
+                position = decode_keyset_cursor(
+                    cursor, namespace=_TRANSACTION_LIST_CURSOR, scope=scope
+                )
+            except ValueError as e:
+                raise ValueError("invalid cursor") from e
+            if not _is_transaction_key(position.snapshot) or not _is_transaction_key(
+                position.after
+            ):
+                raise ValueError("invalid cursor")
+            # Both keys are well-formed on their own, but an `after` that sorts
+            # ahead of its snapshot makes the continuation predicate weaker
+            # than the snapshot predicate instead of narrower, re-serving rows
+            # page one already returned. Matches the accounts keyset path.
+            if (
+                compare_keyset(
+                    position.after, position.snapshot, _TRANSACTION_KEY_DIRECTIONS
+                )
+                < 0
+            ):
+                raise ValueError("invalid cursor")
 
         account_ids: list[str] | None = None
         if accounts:
@@ -787,25 +857,66 @@ class TransactionService:
             amount_max=amount_max,
             text=description,
             uncategorized_only=uncategorized_only,
-            limit=limit,
-            offset=offset,
+            # Over-fetch by one: how build_keyset_page learns there is a next
+            # page without a second count query.
+            limit=limit + 1,
+            offset=0,
+            snapshot=cast("tuple[str, str] | None", position.snapshot)
+            if position is not None
+            else None,
+            after=cast("tuple[str, str] | None", position.after)
+            if position is not None
+            else None,
         )
-        has_more = page.total_count > offset + limit
-
-        next_cursor = (
-            base64.b64encode(str(offset + limit).encode()).decode()
-            if has_more
-            else None
+        total_count = position.total if position is not None else page.total_count
+        transactions, next_cursor = build_keyset_page(
+            page.transactions,
+            limit=limit,
+            key_of=lambda t: (t.transaction_date, t.transaction_id),
+            namespace=_TRANSACTION_LIST_CURSOR,
+            scope=scope,
+            snapshot=position.snapshot if position is not None else None,
+            total=total_count,
         )
 
         logger.info(
-            f"transactions_get returned {len(page.transactions)} rows "
-            f"(offset={offset}, has_more={has_more})"
+            f"Transaction query returned {len(transactions)} of {total_count} "
+            f"rows (has_more={next_cursor is not None})"
         )
         return TransactionGetResult(
-            transactions=page.transactions,
+            transactions=transactions,
             next_cursor=next_cursor,
+            total_count=total_count,
         )
+
+    @staticmethod
+    def _get_cursor_scope(
+        *,
+        accounts: list[str] | None,
+        date_from: str | None,
+        date_to: str | None,
+        categories: list[str] | None,
+        amount_min: Decimal | None,
+        amount_max: Decimal | None,
+        description: str | None,
+        uncategorized_only: bool,
+    ) -> dict[str, object]:
+        """Canonicalize the public filters a ``get()`` cursor is bound to.
+
+        Binds the caller's own arguments, not the resolved account IDs: the
+        cursor must stop being valid when the *request* changes, and a display
+        name that later resolves elsewhere is a changed request.
+        """
+        return {
+            "accounts": sorted(accounts) if accounts else None,
+            "amount_max": str(amount_max) if amount_max is not None else None,
+            "amount_min": str(amount_min) if amount_min is not None else None,
+            "categories": sorted(categories) if categories else None,
+            "date_from": date_from,
+            "date_to": date_to,
+            "description": description,
+            "uncategorized_only": uncategorized_only,
+        }
 
     def query_operational(
         self,
@@ -1453,7 +1564,7 @@ class TransactionService:
             if conflicts:
                 raise UserError(
                     "The tag rename would duplicate an existing tag target.",
-                    code="TAG_RENAME_CONFLICT",
+                    code=error_codes.TRANSACTION_TAG_RENAME_CONFLICT,
                 )
         return _PreparedTagRename(
             old_name=old_tag,
@@ -1697,7 +1808,7 @@ class TransactionService:
             ):
                 raise UserError(
                     "The split category reference did not match a category.",
-                    code="CATEGORY_REFERENCE_NOT_FOUND",
+                    code=error_codes.TAXONOMY_CATEGORY_REFERENCE_NOT_FOUND,
                 )
             desired.append(
                 _PreparedSplit(
@@ -1712,7 +1823,7 @@ class TransactionService:
         if splits and expected_total is not None and total != expected_total:
             raise UserError(
                 "Split amounts must total the transaction amount.",
-                code="SPLIT_TOTAL_INVALID",
+                code=error_codes.TRANSACTION_SPLIT_TOTAL_INVALID,
             )
         rows = self._db.conn.execute(
             """

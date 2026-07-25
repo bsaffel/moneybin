@@ -1,4 +1,4 @@
-"""reports_recurring / `reports recurring` — likely-recurring subscriptions."""
+"""core:recurring / `reports recurring` — likely-recurring subscriptions."""
 
 from __future__ import annotations
 

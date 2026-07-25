@@ -18,6 +18,7 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
 from moneybin.seeds import refresh_views
 from moneybin.services.matching_service import MatchingService
+from moneybin.sqlmesh_registry import model_presence
 from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
@@ -25,11 +26,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TransformFreshness:
-    """Snapshot of transform freshness vs. raw imports."""
+    """Snapshot of transform freshness vs. raw imports.
+
+    ``missing_models`` names registered SQLMesh models with no relation in the
+    catalog. They count as pending — a model that was never built is the most
+    stale a model can be — and they are listed rather than folded into the
+    boolean so the caller can say *what* a refresh would fix.
+    """
 
     pending: bool
     last_apply_at: datetime | None
     latest_import_at: datetime | None
+    missing_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -207,36 +215,56 @@ class TransformService:
             )
 
     def freshness(self) -> TransformFreshness:
-        """Return raw-vs-dim staleness without initializing SQLMesh.
+        """Return warehouse staleness without initializing SQLMesh.
 
-        Pending iff a raw account row exists whose ``extracted_at`` is
-        newer than the newest ``core.dim_accounts.extracted_at``. Both
-        sides compare the same propagated data value (Python-set when
-        the loader parses the file, carried unchanged through SQLMesh
-        into ``dim_accounts.extracted_at``) — so the check is immune to
-        the DuckDB ``CURRENT_TIMESTAMP`` transaction-start race that
-        affects clock-derived columns when autocommit writes and a
-        longer SQLMesh apply transaction interleave.
+        Pending when either is true:
+
+        * a registered SQLMesh model has no relation in the catalog — it was
+          never built, which no timestamp comparison can detect because an
+          unbuilt model has no timestamp; or
+        * a raw account row exists whose ``extracted_at`` is newer than
+          ``core.dim_accounts.extracted_at``.
+
+        The second check reads ``core.dim_accounts`` alone because it is the
+        only core model that projects a bare ``extracted_at`` — everything else
+        renames it (``source_extracted_at`` on ``fct_transactions``,
+        ``extracted_at AS updated_at`` on ``fct_security_prices``) or drops it.
+        Generalizing the comparison across models is therefore not possible
+        today, and would need care if it became so: models fed by independent
+        provider cadences could pin ``pending`` true permanently, which no
+        ``refresh_run`` could clear. The missing-model check above is the part
+        that does generalize. Both sides compare the same propagated data value
+        (Python-set when the loader parses the file, carried unchanged through
+        SQLMesh) — so the check stays immune to the DuckDB
+        ``CURRENT_TIMESTAMP`` transaction-start race that affects clock-derived
+        columns when autocommit writes and a longer SQLMesh apply transaction
+        interleave.
 
         ``last_apply_at`` (``dim_accounts.updated_at``) and
         ``latest_import_at`` (``import_log.completed_at``) remain
         wall-clock values for display only; they do not drive the
         pending decision.
         """
+        presence = model_presence(self._db)
+        # A warehouse nobody has built yet is not stale — it is what a profile
+        # looks like between `db init` and its first refresh. Reporting that as
+        # pending would make the flag permanently true on a healthy first run.
+        missing_models = () if presence.never_built else presence.missing
         pending_extracted = self._max_unapplied_raw_extracted_at()
-        dim_extracted = self._max_dim_accounts_extracted_at()
+        core_extracted = self._max_dim_accounts_extracted_at()
 
         if pending_extracted is None:
-            pending = False
-        elif dim_extracted is None:
-            pending = True
+            raw_ahead = False
+        elif core_extracted is None:
+            raw_ahead = True
         else:
-            pending = pending_extracted > dim_extracted
+            raw_ahead = pending_extracted > core_extracted
 
         return TransformFreshness(
-            pending=pending,
+            pending=bool(missing_models) or raw_ahead,
             last_apply_at=self._max_dim_accounts_updated_at(),
             latest_import_at=self._max_completed_import_at(),
+            missing_models=missing_models,
         )
 
     def status(self) -> TransformStatus:

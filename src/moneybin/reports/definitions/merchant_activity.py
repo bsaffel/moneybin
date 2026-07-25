@@ -1,4 +1,4 @@
-"""reports_merchants / `reports merchants` — per-merchant lifetime totals."""
+"""core:merchants / `reports merchants` — per-merchant lifetime totals."""
 
 from __future__ import annotations
 

@@ -33,6 +33,133 @@ async def test_system_status_coarse_dispatches_each_section(section: str) -> Non
     assert response.data.sections[0].kind == section
 
 
+async def test_system_status_degrades_when_one_section_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing section is marked unavailable; the healthy ones still return.
+
+    One bad section previously returned its error envelope for the whole
+    call, destroying up to three good sections. _run_tool_body unwraps the
+    decorator, so a section body can raise rather than return an envelope —
+    the degradation path has to survive both.
+    """
+
+    def exploding_doctor(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("doctor scan failed")
+
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system.system_doctor", exploding_doctor, raising=True
+    )
+
+    response = await system_status_coarse(sections=["overview", "doctor"])
+
+    assert response.error is None
+    kinds = [section.kind for section in response.data.sections]
+    assert "overview" in kinds
+    unavailable = [s for s in response.data.sections if s.kind == "unavailable"]
+    assert len(unavailable) == 1
+    assert unavailable[0].section == "doctor"
+    assert unavailable[0].code
+    assert response.summary.degraded is True
+
+
+async def test_a_degraded_section_lifts_the_reported_sensitivity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A response carrying exception-derived text must not advertise itself low.
+
+    ``SectionUnavailable.reason``/``hint`` hold whatever ``classify_user_error``
+    built, and several of its branches interpolate the exception —
+    ``OSError`` contributes ``filename``, ``ValueError``/``LookupError`` use
+    ``str(exc)``. Classified as a low-tier label, a degraded response
+    self-reported and audited as ``sensitivity: low`` regardless of what that
+    text actually held.
+    """
+
+    def exploding_doctor(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("doctor scan failed")
+
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system.system_doctor", exploding_doctor, raising=True
+    )
+
+    response = await system_status_coarse(sections=["overview", "doctor"])
+
+    assert response.summary.degraded is True
+    assert response.summary.sensitivity == "medium"
+
+
+async def test_a_healthy_status_still_reports_the_low_tier() -> None:
+    """The other direction: nothing degraded must not inflate the tier.
+
+    The classification is derived from the section variants actually present,
+    so raising the degraded marker's class must not leak into a clean call —
+    no privacy test fails on over-reporting, which is what makes this the easy
+    half to get silently wrong.
+    """
+    response = await system_status_coarse(sections=["overview"])
+
+    assert response.summary.degraded is False
+    assert response.summary.sensitivity == "low"
+
+
+async def test_system_status_degrades_when_one_section_returns_an_error_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the contract: a section that RETURNS an error.
+
+    `_run_tool_body` unwraps the decorator but not the body's own return
+    value, and live bodies do return error envelopes — `_locked_status_envelope`
+    does exactly that on a locked database. Breaks if only the raise arm is
+    handled: the whole call would surface that section's error and destroy the
+    healthy ones.
+    """
+    from moneybin import error_codes
+    from moneybin.errors import UserError
+    from moneybin.protocol.envelope import build_error_envelope
+
+    def refusing_doctor(*_args: object, **_kwargs: object) -> object:
+        return build_error_envelope(
+            error=UserError(
+                "Database is locked.", code=error_codes.INFRA_DATABASE_LOCKED
+            ),
+            sensitivity="low",
+        )
+
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system.system_doctor", refusing_doctor, raising=True
+    )
+
+    response = await system_status_coarse(sections=["overview", "doctor"])
+
+    assert response.error is None
+    unavailable = [s for s in response.data.sections if s.kind == "unavailable"]
+    assert [s.section for s in unavailable] == ["doctor"]
+    assert unavailable[0].code == error_codes.INFRA_DATABASE_LOCKED
+    assert "overview" in [s.kind for s in response.data.sections]
+    assert response.summary.degraded is True
+
+
+async def test_system_status_degraded_section_does_not_leak_exception_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The unavailable marker names the failure, never the raw exception text."""
+
+    def exploding_doctor(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("balance -2412.55 for card 4111111111111111")
+
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system.system_doctor", exploding_doctor, raising=True
+    )
+
+    response = await system_status_coarse(sections=["overview", "doctor"])
+
+    unavailable = [s for s in response.data.sections if s.kind == "unavailable"]
+    assert len(unavailable) == 1
+    assert "4111111111111111" not in unavailable[0].reason
+    assert "2412.55" not in unavailable[0].reason
+
+
 async def test_system_status_coarse_defaults_to_fixed_section_order() -> None:
     response = await system_status_coarse()
 
@@ -200,9 +327,9 @@ async def test_system_audit_coarse_detail_requires_exactly_one_identifier() -> N
     )
 
     assert missing.error is not None
-    assert missing.error.code == "AUDIT_IDENTIFIER_REQUIRED"
+    assert missing.error.code == "audit_identifier_required"
     assert duplicate.error is not None
-    assert duplicate.error.code == "AUDIT_IDENTIFIER_REQUIRED"
+    assert duplicate.error.code == "audit_identifier_required"
 
 
 @pytest.mark.parametrize("view", ["events", "history"])
@@ -215,7 +342,7 @@ async def test_system_audit_coarse_rejects_detail_identifier_for_other_views(
     )
 
     assert response.error is not None
-    assert response.error.code == "AUDIT_IDENTIFIER_NOT_ALLOWED"
+    assert response.error.code == "audit_identifier_not_allowed"
 
 
 async def test_system_audit_coarse_dispatches_events_and_history() -> None:
@@ -433,7 +560,7 @@ async def test_system_audit_coarse_rejects_malformed_and_cross_view_cursors(
     first = await system_audit_coarse(view="events", limit=1)
 
     malformed = await system_audit_coarse(view="events", cursor="not-base64")
-    from moneybin.mcp.pagination import encode_keyset_cursor
+    from moneybin.protocol.pagination import encode_keyset_cursor
 
     invalid_timestamp = await system_audit_coarse(
         view="events",

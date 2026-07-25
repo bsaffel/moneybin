@@ -266,7 +266,7 @@ def test_ambiguous_short_id_lists_sorted_namespaced_candidates() -> None:
     with pytest.raises(UserError) as raised:
         catalog.resolve("summary")
 
-    assert raised.value.code == "REPORT_ID_AMBIGUOUS"
+    assert raised.value.code == "report_id_ambiguous"
     assert raised.value.details == {
         "report_id": "summary",
         "candidates": ["core:summary", "retirement:summary"],
@@ -279,7 +279,7 @@ def test_missing_report_id_is_structured_and_sanitized() -> None:
     with pytest.raises(UserError) as raised:
         catalog.resolve("missing")
 
-    assert raised.value.code == "REPORT_ID_NOT_FOUND"
+    assert raised.value.code == "report_id_not_found"
     assert raised.value.details == {"report_id": "missing"}
     assert "missing" not in raised.value.message
 
@@ -294,7 +294,7 @@ def test_duplicate_full_report_ids_are_rejected() -> None:
     [
         (
             {"year": 2026, "account_number": "sensitive"},
-            "REPORT_PARAMETER_UNKNOWN",
+            "report_parameter_unknown",
             {
                 "report_id": "retirement:summary",
                 "parameters": ["account_number"],
@@ -302,12 +302,12 @@ def test_duplicate_full_report_ids_are_rejected() -> None:
         ),
         (
             {},
-            "REPORT_PARAMETER_MISSING",
+            "report_parameter_missing",
             {"report_id": "retirement:summary", "parameters": ["year"]},
         ),
         (
             {"year": "2026"},
-            "REPORT_PARAMETER_INVALID_TYPE",
+            "report_parameter_invalid_type",
             {
                 "report_id": "retirement:summary",
                 "parameter": "year",
@@ -352,7 +352,7 @@ def test_sql_parameters_are_rejected_before_query_dispatch() -> None:
             limit=100,
         )
 
-    assert raised.value.code == "REPORT_PARAMETER_INVALID_TYPE"
+    assert raised.value.code == "report_parameter_invalid_type"
     db.execute.assert_not_called()
 
 
@@ -818,7 +818,7 @@ def test_negative_limit_is_rejected_before_dispatch(kind: str) -> None:
             limit=-1,
         )
 
-    assert raised.value.code == "REPORT_LIMIT_INVALID"
+    assert raised.value.code == "report_limit_invalid"
     assert raised.value.details == {"minimum": 0}
     executor.assert_not_called()
     db.execute.assert_not_called()
@@ -843,7 +843,7 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
         (
             NETWORTH_REPORT,
             {"as_of": "not-a-date"},
-            "REPORT_PARAMETER_INVALID_VALUE",
+            "report_parameter_invalid_value",
             {
                 "report_id": "core:networth",
                 "parameter": "as_of",
@@ -853,7 +853,7 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
         (
             NETWORTH_REPORT,
             {"as_of": "20260702"},
-            "REPORT_PARAMETER_INVALID_VALUE",
+            "report_parameter_invalid_value",
             {
                 "report_id": "core:networth",
                 "parameter": "as_of",
@@ -863,7 +863,7 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
         (
             NETWORTH_REPORT,
             {"as_of": "2026-W27-4"},
-            "REPORT_PARAMETER_INVALID_VALUE",
+            "report_parameter_invalid_value",
             {
                 "report_id": "core:networth",
                 "parameter": "as_of",
@@ -873,7 +873,7 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
         (
             NETWORTH_REPORT,
             {"as_of": "2026-02-30"},
-            "REPORT_PARAMETER_INVALID_VALUE",
+            "report_parameter_invalid_value",
             {
                 "report_id": "core:networth",
                 "parameter": "as_of",
@@ -886,7 +886,7 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
                 "from_date": "2026-07-02",
                 "to_date": "2026-07-01",
             },
-            "REPORT_PARAMETER_INVALID_RANGE",
+            "report_parameter_invalid_range",
             {
                 "report_id": "core:networth_history",
                 "parameters": ["from_date", "to_date"],
@@ -944,7 +944,7 @@ def test_extension_reports_join_fresh_catalog_without_surface_side_effects(
 
     with pytest.raises(UserError) as raised:
         before.resolve("retirement_summary")
-    assert raised.value.code == "REPORT_ID_NOT_FOUND"
+    assert raised.value.code == "report_id_not_found"
     assert after.resolve("retirement_summary") is extension
     assert extension_report_specs() == (extension,)
 

@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import logging
+import shlex
+from dataclasses import replace
 from decimal import Decimal
+from typing import cast
 
 import typer
 
@@ -17,6 +20,70 @@ from moneybin.cli.output import (
 from moneybin.cli.utils import render_rich_table
 
 logger = logging.getLogger(__name__)
+
+
+def _continuation_command(invocation: dict[str, object], next_cursor: str) -> str:
+    """Reproduce this invocation with the cursor added.
+
+    Two distinct reasons every argument carries, not just the filters. The
+    cursor is *bound* to the filters that produced it, so dropping one makes
+    the service reject the continuation outright. ``--output`` is not bound —
+    the call still succeeds without it, which is worse: page two silently
+    renders as a human table and an agent walking pages gets a parse error
+    instead of an envelope.
+
+    Mirrors the MCP twin (``_transaction_actions``), which already emits a
+    complete continuation call. ``shlex.join`` handles account names and
+    description patterns containing spaces or quotes.
+    """
+    argv = ["moneybin", "transactions", "list"]
+    for account in cast("list[str]", invocation["accounts"]):
+        argv += ["--account", account]
+    for category in cast("list[str]", invocation["categories"]):
+        argv += ["--category", category]
+    for flag, value in (
+        ("--from", invocation["date_from"]),
+        ("--to", invocation["date_to"]),
+        ("--amount-min", invocation["amount_min"]),
+        ("--amount-max", invocation["amount_max"]),
+        ("--description", invocation["description"]),
+    ):
+        if value is not None:
+            argv += [flag, str(value)]
+    if invocation["uncategorized"]:
+        argv.append("--uncategorized")
+    if invocation["quiet"]:
+        argv.append("--quiet")
+    argv += [
+        "--limit",
+        str(invocation["limit"]),
+        "--output",
+        str(invocation["output"]),
+        "--cursor",
+        next_cursor,
+    ]
+    return shlex.join(argv)
+
+
+def _list_actions(next_cursor: str | None, invocation: dict[str, object]) -> list[str]:
+    """Next-step hints for an agent driving the CLI.
+
+    These name CLI invocations, not MCP tools. An agent reading a CLI envelope
+    can only run commands, and citing tool names here also drags the CLI into
+    the blast radius of every MCP rename.
+    """
+    actions = [
+        "Use `moneybin reports spending` for category breakdowns",
+        "Use `moneybin transactions categorize run` to categorize uncategorized "
+        "transactions",
+    ]
+    if next_cursor is not None:
+        actions.insert(
+            0,
+            f"Use `{_continuation_command(invocation, next_cursor)}` "
+            "to fetch the next page",
+        )
+    return actions
 
 
 def transactions_list(
@@ -102,12 +169,34 @@ def transactions_list(
     envelope = build_envelope(
         data=payload,
         sensitivity="medium",
+        total_count=result.total_count,
+        returned_count=len(result.transactions),
         next_cursor=result.next_cursor,
-        actions=[
-            "Use transactions_get with the next_cursor value to fetch the next page",
-            "Use reports_spending for category breakdowns",
-            "Use transactions_categorize_commit to categorize uncategorized transactions",
-        ],
+        actions=_list_actions(
+            result.next_cursor,
+            {
+                "accounts": accounts,
+                "categories": categories,
+                "date_from": date_from,
+                "date_to": date_to,
+                "amount_min": amount_min,
+                "amount_max": amount_max,
+                "description": description,
+                "uncategorized": uncategorized,
+                "limit": limit,
+                "output": output.value,
+                "quiet": quiet,
+            },
+        ),
+    )
+    # Under keyset pagination the cursor is the only truth about "more".
+    # `build_envelope` also infers has_more from `total_count > returned_count`,
+    # which is true on every page of a multi-page walk — including the last,
+    # where there is nothing left to fetch. Every other keyset call site applies
+    # this same override.
+    envelope = replace(
+        envelope,
+        summary=replace(envelope.summary, has_more=result.next_cursor is not None),
     )
 
     def _render_text(_: object) -> None:

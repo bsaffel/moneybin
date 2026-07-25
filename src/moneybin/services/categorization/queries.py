@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 import duckdb
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.categories import (
@@ -275,7 +276,7 @@ class CategorizationQueries:
         Returns ``None`` only when the underlying fact table doesn't exist
         yet (pre-first-import). When the fact table exists but the queue
         view is missing — schema drift or unapplied refresh — raises
-        ``UserError(code="schema_out_of_date")`` so callers surface a
+        ``UserError(code=error_codes.INFRA_SCHEMA_DRIFT)`` so callers surface a
         ``refresh_run`` remediation rather than misreporting "no data".
         """
         if sort not in {"date", "impact"}:
@@ -313,7 +314,7 @@ class CategorizationQueries:
                 "Uncategorized-queue view is missing. The schema is out of "
                 "date — run `refresh_run` (MCP) or `moneybin refresh` (CLI) "
                 "to rebuild derived views.",
-                code="schema_out_of_date",
+                code=error_codes.INFRA_SCHEMA_DRIFT,
                 hint="refresh_run",
                 details={"missing_object": CORE_UNCATEGORIZED_QUEUE.full_name},
             ) from e

@@ -748,12 +748,14 @@ def test_run_all_returns_expected_invariants(
     # audit coverage (M1S) + 9 investment reconciliation checks (T17: staging
     # rejects, opening-lot review, unmodeled legs, holdings divergence,
     # source overlap, unresolved securities, conflicting security refs,
-    # unreported holdings, phantom holdings).
-    assert len(report.invariants) == 46
+    # unreported holdings, phantom holdings) + sqlmesh_model_presence
+    # (registered-but-unbuilt models).
+    assert len(report.invariants) == 47
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
     assert "bridge_transfers_balanced" in names
+    assert "sqlmesh_model_presence" in names
     assert "dedup_reconciliation" in names
     assert "categorization_coverage" in names
     assert "app_audit_coverage_user_categories" in names
@@ -1906,3 +1908,105 @@ def test_investment_checks_bind_to_real_transform_output(db: Database) -> None:
         f"investment check(s) skipped against a real transform — the SQL is "
         f"not actually bound to the real schema: {skipped}"
     )
+
+
+@pytest.mark.unit
+def test_missing_registered_model_fails_an_invariant(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model the project declares but never built must fail the doctor.
+
+    Every other health signal is derived from what IS built, so a model that
+    was never materialised leaves nothing to notice. Breaks if the invariant
+    compares against the catalog instead of the registered set.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    # `doctor_db` already builds `core.fct_transactions`, which no `db init`
+    # creates — that alone marks the warehouse as built, staging layer or not.
+    svc = DoctorService(doctor_db)
+
+    report = svc.run_all()
+    result = next(r for r in report.invariants if r.name == "sqlmesh_model_presence")
+
+    assert result.status == "fail"
+    # The fixture DB builds only a handful of core tables, so most of the
+    # registered set is absent — the point is that it says *which*.
+    assert result.affected_ids
+    assert all("." in name for name in result.affected_ids)
+    assert result.detail is not None
+
+
+@pytest.mark.unit
+def test_unreadable_catalog_reports_unavailable_not_a_fresh_profile(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catalog read that fails must not hand back the first-run remedy.
+
+    "no SQLMesh models built yet; run refresh_run" is an actively wrong
+    instruction for a database whose catalog cannot be read — it names a
+    healthy state and a remedy that will not help. The invariant catches its
+    own failure and says so, matching every other `_run_*` method.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    def _raise(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("catalog unreadable")
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.services.doctor_service.model_presence", _raise)
+
+    report = DoctorService(doctor_db).run_all()
+    result = next(r for r in report.invariants if r.name == "sqlmesh_model_presence")
+
+    assert result.status == "skipped"
+    assert result.detail is not None
+    assert "refresh_run" not in result.detail
+    assert "catalog unreadable" in result.detail
+
+
+@pytest.mark.unit
+def test_model_presence_passes_when_every_registered_model_exists(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The invariant must be able to PASS, not just always fail.
+
+    Its sibling test proves it fails on an incomplete catalog — which a
+    permanently-broken check (a normalization regression on either side of the
+    set difference) would also satisfy. This pins the other direction, so the
+    invariant cannot ship green while flipping `moneybin system doctor` to
+    exit 1 on every warehouse.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    # Declare only models this fixture genuinely builds, so a pass is real
+    # rather than an artifact of an empty registered set.
+    monkeypatch.setattr(
+        "moneybin.sqlmesh_registry.registered_model_names",
+        lambda: frozenset({"prep.stg_probe", "core.dim_accounts"}),
+    )
+    doctor_db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    doctor_db.execute("CREATE VIEW prep.stg_probe AS SELECT 1 AS x")
+    svc = DoctorService(doctor_db)
+
+    result = next(
+        r for r in svc.run_all().invariants if r.name == "sqlmesh_model_presence"
+    )
+
+    assert result.status == "pass"
+    assert result.affected_ids == []
+    assert result.detail is None

@@ -21,11 +21,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.mcp.write_contracts import (
     CategoryStateRequest,
@@ -42,6 +37,11 @@ from moneybin.privacy.payloads.taxonomy import (
 )
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.services.categorization import (
     CategorizationService,
     CategoryStateTarget,
@@ -93,7 +93,7 @@ def _taxonomy_position(
     except ValueError as exc:
         raise UserError(
             "Invalid taxonomy pagination cursor.",
-            code="TAXONOMY_CURSOR_INVALID",
+            code=error_codes.TAXONOMY_CURSOR_INVALID,
         ) from exc
 
 
@@ -261,7 +261,7 @@ def taxonomy_coarse(
     if view == "merchants" and include_inactive:
         raise UserError(
             "include_inactive is only valid for the categories view.",
-            code="TAXONOMY_INCLUDE_INACTIVE_NOT_ALLOWED",
+            code=error_codes.TAXONOMY_INCLUDE_INACTIVE_NOT_ALLOWED,
         )
     canonical_query = query.casefold().strip() if query is not None else None
     filters: dict[str, object] = {

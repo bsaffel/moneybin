@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from moneybin.database import get_database
@@ -51,8 +53,11 @@ async def test_system_status_envelope_has_transforms_block(mcp_db: object) -> No
 
 
 @pytest.mark.unit
-async def test_pending_state_adds_action_hint(mcp_db: object) -> None:
+async def test_pending_state_adds_action_hint(
+    mcp_db: object, declare_only_models: Callable[..., None]
+) -> None:
     """When pending=True, actions includes a refresh_run hint."""
+    declare_only_models("core.dim_accounts")
     _seed_pending_import()
     env = system_status()
     parsed = env.to_dict()
@@ -61,8 +66,11 @@ async def test_pending_state_adds_action_hint(mcp_db: object) -> None:
 
 
 @pytest.mark.unit
-async def test_not_pending_omits_action_hint(mcp_db: object) -> None:
+async def test_not_pending_omits_action_hint(
+    mcp_db: object, declare_only_models: Callable[..., None]
+) -> None:
     """No pending imports → no refresh_run hint."""
+    declare_only_models("core.dim_accounts")
     env = system_status()
     parsed = env.to_dict()
     assert parsed["data"]["transforms"]["pending"] is False
@@ -172,3 +180,30 @@ def test_check_schema_at_boot_silent_on_healthy(mcp_db: object) -> None:
     from moneybin.mcp.server import check_schema_at_boot
 
     check_schema_at_boot()
+
+
+@pytest.mark.unit
+async def test_missing_models_survives_to_the_wire_payload(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model absent from the catalog is named in system_status's payload.
+
+    Breaks if the field is dropped, renamed, or loses its `list(...)`
+    conversion anywhere between `TransformService.freshness()`,
+    `SystemService.status()`, and the envelope — three layers with no other
+    test spanning them, for the "reports which models are absent" behavior.
+    """
+    monkeypatch.setattr(
+        "moneybin.sqlmesh_registry.registered_model_names",
+        lambda: frozenset({"prep.stg_probe", "core.definitely_not_built"}),
+    )
+    with get_database(read_only=False) as db:
+        # Marks the warehouse built — a never-refreshed one reports no missing
+        # models at all, which is a different (and correct) state.
+        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute("CREATE VIEW prep.stg_probe AS SELECT 1 AS x")
+
+    transforms = system_status().to_dict()["data"]["transforms"]
+
+    assert transforms["missing_models"] == ["core.definitely_not_built"]
+    assert transforms["pending"] is True

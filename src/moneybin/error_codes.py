@@ -4,13 +4,29 @@ Every UserError raised from a MoneyBin tool path MUST use one of these
 constants for its `code` argument. Agents branch on these strings; they
 are part of the public surface contract.
 
+A code's prefix names the domain it came from: either a cross-cutting
+concern (`mutation_`, `audit_`, `refresh_`, `undo_`, `recovery_`,
+`infra_`) or an MCP tool namespace (`import_`, `sync_`, `gsheet_`,
+`sql_`, `account_`, `entity_`, `investment_`, `privacy_`, `report_`,
+`review_`, `taxonomy_`, `transaction_`). An agent can branch on the
+family without enumerating every member.
+
 Adding a new code:
-1. Pick a prefix from VALID_PREFIXES below. If none fits, surface the
-   gap on `docs/specs/data-recovery-contract.md` Req 3 and update the
-   spec first — do not invent ad-hoc prefixes.
+1. Pick a prefix from VALID_PREFIXES in
+   `tests/moneybin/test_errors/test_error_codes.py`. If none fits,
+   surface the gap on `docs/specs/data-recovery-contract.md` Req 3 and
+   update the spec first — do not invent ad-hoc prefixes.
 2. Add the constant ordered alphabetically within its prefix group.
 3. The constant name is the value uppercased: IMPORT_PARSE_ERROR =
    "import_parse_error".
+
+Reference these constants; never hardcode the string. ``TestWireCodes``
+checks both sides — every ``code=`` literal and every comparison against
+a ``.code`` attribute must name a *declared value* — which is what a
+literal spelled inline still satisfies, so the convention is on you. It
+exists because a literal that never reaches this module is invisible to
+every other test here: that is how 104 undeclared codes shipped on the
+wire while these tests stayed green.
 
 Codes are stable. Renaming a code is a breaking change for any agent
 that branches on it; treat as one-way per .claude/rules/design-principles.md.
@@ -20,14 +36,46 @@ that branches on it; treat as one-way per .claude/rules/design-principles.md.
 # Import — loading raw data
 # ---------------------------------------------------------------------------
 
+IMPORT_BRIDGE_RESPONSE_INVALID = "import_bridge_response_invalid"
+IMPORT_CONFIRM_CHANNEL_CONFLICT = "import_confirm_channel_conflict"
+IMPORT_CONFIRM_REQUIRES_SIGNAL = "import_confirm_requires_signal"
+IMPORT_CURSOR_INVALID = "import_cursor_invalid"
+IMPORT_FILE_CHANGED_DURING_CONFIRMATION = "import_file_changed_during_confirmation"
 IMPORT_FILE_NOT_FOUND = "import_file_not_found"
 IMPORT_FORMAT_UNKNOWN = "import_format_unknown"
+IMPORT_ID_NOT_ALLOWED = "import_id_not_allowed"
 IMPORT_INVALID_FILE_PATH = "import_invalid_file_path"
+IMPORT_INVALID_NUMBER_FORMAT = "import_invalid_number_format"
+IMPORT_INVALID_SIGN_CONVENTION = "import_invalid_sign_convention"
+IMPORT_PAGINATION_NOT_ALLOWED = "import_pagination_not_allowed"
 IMPORT_PARSE_ERROR = "import_parse_error"
+IMPORT_PDF_ACCOUNT_SIGNAL_UNSUPPORTED = "import_pdf_account_signal_unsupported"
 # A scanned / image-only PDF with no selectable text layer: the deterministic
 # rung has nothing to structure, nothing to seed, and the text bridge can't read
 # a page image — extraction needs a vision-capable backend (Req 5, smart-import-pdf).
 IMPORT_PDF_NO_TEXT_LAYER = "import_pdf_no_text_layer"
+IMPORT_PREVIEW_BRIDGE_RESPONSE_REQUIRED = "import_preview_bridge_response_required"
+IMPORT_PREVIEW_CHANGED = "import_preview_changed"
+IMPORT_PREVIEW_CHANNEL_CONFLICT = "import_preview_channel_conflict"
+IMPORT_PREVIEW_CONSUMED = "import_preview_consumed"
+IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED = "import_preview_direct_import_required"
+IMPORT_PREVIEW_ERROR = "import_preview_error"
+IMPORT_PREVIEW_EXPIRED = "import_preview_expired"
+IMPORT_PREVIEW_NOT_FOUND = "import_preview_not_found"
+IMPORT_PREVIEW_PLAN_MISMATCH = "import_preview_plan_mismatch"
+IMPORT_PREVIEW_PLAN_MISSING = "import_preview_plan_missing"
+IMPORT_PREVIEW_SNAPSHOT_MISSING = "import_preview_snapshot_missing"
+IMPORT_REVERT_ALREADY_REVERTED = "import_revert_already_reverted"
+IMPORT_REVERT_INVALID_TARGET = "import_revert_invalid_target"
+IMPORT_REVERT_NOT_FOUND = "import_revert_not_found"
+IMPORT_REVERT_SUPERSEDED = "import_revert_superseded"
+IMPORT_REVERT_UNSUPPORTED = "import_revert_unsupported"
+IMPORT_SAVED_FORMAT_BUILTIN_IMMUTABLE = "import_saved_format_builtin_immutable"
+IMPORT_SAVED_FORMAT_NOT_FOUND = "import_saved_format_not_found"
+IMPORT_SECTIONS_DUPLICATE = "import_sections_duplicate"
+IMPORT_SECTIONS_REQUIRED = "import_sections_required"
+IMPORT_SIGN_CONFIRMATION_NOT_PENDING = "import_sign_confirmation_not_pending"
+IMPORT_SIGN_PROPOSAL_CHANGED = "import_sign_proposal_changed"
 IMPORT_SUPERSEDED = "import_superseded"
 
 
@@ -66,7 +114,12 @@ MUTATION_REDACTION_CHOICE_REQUIRED = "mutation_redaction_choice_required"
 # Audit — doctor / invariant failures
 # ---------------------------------------------------------------------------
 
+AUDIT_CURSOR_NOT_ALLOWED = "audit_cursor_not_allowed"
 AUDIT_FK_VIOLATION = "audit_fk_violation"
+AUDIT_IDENTIFIER_NOT_ALLOWED = "audit_identifier_not_allowed"
+AUDIT_IDENTIFIER_NOT_FOUND = "audit_identifier_not_found"
+AUDIT_IDENTIFIER_REQUIRED = "audit_identifier_required"
+AUDIT_INVARIANT_FAILURE = "audit_invariant_failure"
 AUDIT_ORPHAN_STATE = "audit_orphan_state"
 AUDIT_SIGN_VIOLATION = "audit_sign_violation"
 AUDIT_UNBALANCED_TRANSFER = "audit_unbalanced_transfer"
@@ -79,6 +132,7 @@ AUDIT_UNBALANCED_TRANSFER = "audit_unbalanced_transfer"
 REFRESH_CATEGORIZE_FAILED = "refresh_categorize_failed"
 REFRESH_MATCH_FAILED = "refresh_match_failed"
 REFRESH_MODEL_FAILED = "refresh_model_failed"
+REFRESH_UNKNOWN_STEP = "refresh_unknown_step"
 
 
 # ---------------------------------------------------------------------------
@@ -101,18 +155,26 @@ RECOVERY_NO_PATH = "recovery_no_path"
 # Infra — database, migrations, encryption (existing codes retained)
 # ---------------------------------------------------------------------------
 
+INFRA_CATALOG_UNAVAILABLE = "infra_catalog_unavailable"
 INFRA_CRYPTO_UNAVAILABLE = "infra_crypto_unavailable"
 INFRA_DATABASE_LOCKED = "infra_database_locked"
 INFRA_DATABASE_NOT_INITIALIZED = "infra_database_not_initialized"
 INFRA_FILE_NOT_FOUND = "infra_file_not_found"
+INFRA_INVALID_ARGUMENTS = "infra_invalid_arguments"
 INFRA_INVALID_INPUT = "infra_invalid_input"
 INFRA_IO_ERROR = "infra_io_error"
 INFRA_NOT_FOUND = "infra_not_found"
+INFRA_NOT_IMPLEMENTED = "infra_not_implemented"
 INFRA_PERMISSION_DENIED = "infra_permission_denied"
 INFRA_SCHEMA_DRIFT = "infra_schema_drift"
 INFRA_SETUP_REQUIRED = "infra_setup_required"
 INFRA_TIMED_OUT = "infra_timed_out"
 INFRA_TOO_MANY_ITEMS = "infra_too_many_items"
+# Terminal fallback: an exception classify_user_error does not recognize. The
+# agent still gets a branchable code instead of the bare str(exc) that fastmcp's
+# mask_error_details would otherwise leave. Carries the exception *type* only —
+# never its message, which can embed file paths, SQL, and financial data.
+INFRA_UNCLASSIFIED_ERROR = "infra_unclassified_error"
 INFRA_WRONG_KEY = "infra_wrong_key"
 
 
@@ -120,7 +182,15 @@ INFRA_WRONG_KEY = "infra_wrong_key"
 # Sync — external connectors (Plaid, future SimpleFIN, etc.)
 # ---------------------------------------------------------------------------
 
+SYNC_AUTH_SESSION_INVALID = "sync_auth_session_invalid"
+SYNC_AUTH_SESSION_NOT_FOUND = "sync_auth_session_not_found"
+SYNC_CONFIRMATION_NOT_ALLOWED = "sync_confirmation_not_allowed"
+SYNC_DISCONNECT_MODE_CONFLICT = "sync_disconnect_mode_conflict"
 SYNC_ERROR = "sync_error"
+SYNC_INSTITUTION_AMBIGUOUS = "sync_institution_ambiguous"
+SYNC_INSTITUTION_REQUIRED = "sync_institution_required"
+SYNC_LINK_MODE_CONFLICT = "sync_link_mode_conflict"
+SYNC_STATUS_MODE_CONFLICT = "sync_status_mode_conflict"
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +200,12 @@ SYNC_ERROR = "sync_error"
 # separate domain per the _connect/_link verb split in surface-design.md.
 # Like sync_, this is a taxonomy-completeness prefix, not a recovery code.
 
+GSHEET_AUTH_ARGUMENT_CONFLICT = "gsheet_auth_argument_conflict"
+GSHEET_CONFIRMATION_NOT_ALLOWED = "gsheet_confirmation_not_allowed"
+GSHEET_CONNECTION_ID_NOT_ALLOWED = "gsheet_connection_id_not_allowed"
+GSHEET_CONNECT_MODE_CONFLICT = "gsheet_connect_mode_conflict"
 GSHEET_ERROR = "gsheet_error"
+GSHEET_RECONNECT_ARGUMENT_CONFLICT = "gsheet_reconnect_argument_conflict"
 
 
 # ---------------------------------------------------------------------------
@@ -141,3 +216,107 @@ SQL_INVALID_QUERY = "sql_invalid_query"
 SQL_QUERY_ERROR = "sql_query_error"
 SQL_SCHEMA_NOT_ALLOWED = "sql_schema_not_allowed"
 SQL_UNKNOWN_TABLE = "sql_unknown_table"
+
+
+# ---------------------------------------------------------------------------
+# Account — accounts and balances surface
+# ---------------------------------------------------------------------------
+
+ACCOUNT_AMBIGUOUS = "account_ambiguous"
+ACCOUNT_BALANCE_AS_OF_NOT_ALLOWED = "account_balance_as_of_not_allowed"
+ACCOUNT_BALANCE_CURSOR_INVALID = "account_balance_cursor_invalid"
+ACCOUNT_BALANCE_DATE_RANGE_INVALID = "account_balance_date_range_invalid"
+ACCOUNT_BALANCE_DATES_NOT_ALLOWED = "account_balance_dates_not_allowed"
+ACCOUNT_BALANCE_THRESHOLD_NOT_ALLOWED = "account_balance_threshold_not_allowed"
+ACCOUNT_CURSOR_INVALID = "account_cursor_invalid"
+ACCOUNT_CURSOR_NOT_ALLOWED = "account_cursor_not_allowed"
+ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED = "account_include_closed_not_allowed"
+ACCOUNT_INVALID_FIELD = "account_invalid_field"
+ACCOUNT_LIMIT_NOT_ALLOWED = "account_limit_not_allowed"
+ACCOUNT_NOT_FOUND = "account_not_found"
+ACCOUNT_QUERY_NOT_ALLOWED = "account_query_not_allowed"
+ACCOUNT_QUERY_REQUIRED = "account_query_required"
+ACCOUNT_REFERENCE_NOT_ALLOWED = "account_reference_not_allowed"
+ACCOUNT_REFERENCE_REQUIRED = "account_reference_required"
+
+
+# ---------------------------------------------------------------------------
+# Entity — shared reference resolution (stable ID, alias, normalized)
+# ---------------------------------------------------------------------------
+
+ENTITY_REFERENCE_AMBIGUOUS = "entity_reference_ambiguous"
+ENTITY_REFERENCE_NOT_FOUND = "entity_reference_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Investment — holdings, lots, securities
+# ---------------------------------------------------------------------------
+
+INVESTMENT_ACCOUNT_NOT_ALLOWED = "investment_account_not_allowed"
+INVESTMENT_CURSOR_INVALID = "investment_cursor_invalid"
+INVESTMENT_DATE_RANGE_INVALID = "investment_date_range_invalid"
+INVESTMENT_DATES_NOT_ALLOWED = "investment_dates_not_allowed"
+INVESTMENT_OPEN_ONLY_NOT_ALLOWED = "investment_open_only_not_allowed"
+
+
+# ---------------------------------------------------------------------------
+# Privacy — consent ledger and privacy log
+# ---------------------------------------------------------------------------
+
+PRIVACY_CURSOR_INVALID = "privacy_cursor_invalid"
+PRIVACY_PAGINATION_NOT_ALLOWED = "privacy_pagination_not_allowed"
+
+
+# ---------------------------------------------------------------------------
+# Report — registered report catalog and execution
+# ---------------------------------------------------------------------------
+
+REPORT_ID_AMBIGUOUS = "report_id_ambiguous"
+REPORT_ID_NOT_FOUND = "report_id_not_found"
+REPORT_ID_REQUIRED = "report_id_required"
+REPORT_LIMIT_INVALID = "report_limit_invalid"
+REPORT_PARAMETER_INVALID_RANGE = "report_parameter_invalid_range"
+REPORT_PARAMETER_INVALID_TYPE = "report_parameter_invalid_type"
+REPORT_PARAMETER_INVALID_VALUE = "report_parameter_invalid_value"
+REPORT_PARAMETER_MISSING = "report_parameter_missing"
+REPORT_PARAMETER_UNKNOWN = "report_parameter_unknown"
+
+
+# ---------------------------------------------------------------------------
+# Review — pending decision queues
+# ---------------------------------------------------------------------------
+
+REVIEW_CURSOR_INVALID = "review_cursor_invalid"
+REVIEW_PAGINATION_NOT_ALLOWED = "review_pagination_not_allowed"
+REVIEW_STATUS_NOT_ALLOWED = "review_status_not_allowed"
+
+
+# ---------------------------------------------------------------------------
+# Taxonomy — categories, subcategories, categorization rules
+# ---------------------------------------------------------------------------
+
+TAXONOMY_CATEGORY_ALREADY_EXISTS = "taxonomy_category_already_exists"
+TAXONOMY_CATEGORY_HAS_REFERENCES = "taxonomy_category_has_references"
+TAXONOMY_CATEGORY_IS_DEFAULT = "taxonomy_category_is_default"
+TAXONOMY_CATEGORY_NOT_FOUND = "taxonomy_category_not_found"
+TAXONOMY_CATEGORY_REFERENCE_NOT_FOUND = "taxonomy_category_reference_not_found"
+TAXONOMY_CURSOR_INVALID = "taxonomy_cursor_invalid"
+TAXONOMY_INCLUDE_INACTIVE_NOT_ALLOWED = "taxonomy_include_inactive_not_allowed"
+TAXONOMY_RULE_NOT_FOUND = "taxonomy_rule_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Transaction — rows and their annotations (notes, tags, splits)
+# ---------------------------------------------------------------------------
+
+TRANSACTION_AMOUNT_RANGE_INVALID = "transaction_amount_range_invalid"
+TRANSACTION_CATEGORIZATION_ERRORS = "transaction_categorization_errors"
+TRANSACTION_CURSOR_INVALID = "transaction_cursor_invalid"
+TRANSACTION_DATE_RANGE_INVALID = "transaction_date_range_invalid"
+TRANSACTION_INVALID_AMOUNT = "transaction_invalid_amount"
+TRANSACTION_INVALID_BATCH_SIZE = "transaction_invalid_batch_size"
+TRANSACTION_INVALID_INPUT = "transaction_invalid_input"
+TRANSACTION_NOTE_NOT_FOUND = "transaction_note_not_found"
+TRANSACTION_REFERENCE_NOT_FOUND = "transaction_reference_not_found"
+TRANSACTION_SPLIT_TOTAL_INVALID = "transaction_split_total_invalid"
+TRANSACTION_TAG_RENAME_CONFLICT = "transaction_tag_rename_conflict"

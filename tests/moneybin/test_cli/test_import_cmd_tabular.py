@@ -330,7 +330,7 @@ class TestDeleteFormat:
         ).return_value
         service.plan_saved_format_delete.side_effect = UserError(
             "Saved format not found.",
-            code="saved_format_not_found",
+            code="import_saved_format_not_found",
         )
         result = runner.invoke(app, ["formats", "delete", "my_custom_format", "--yes"])
         assert result.exit_code == 1

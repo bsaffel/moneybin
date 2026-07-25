@@ -111,7 +111,7 @@ class GSheetPullService:
         if conn.status == "disconnected":
             raise GSheetError(
                 f"Connection {connection_id} is disconnected; reconnect it "
-                "with gsheet_reconnect before pulling."
+                "with gsheet_connect before pulling."
             )
         adapter = ADAPTERS[conn.adapter]
         import_id = uuid.uuid4().hex[:12]

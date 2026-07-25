@@ -516,7 +516,9 @@ def transactions_categorize_rules_delete(
             rule_id, reapply=reapply, actor="mcp"
         )
     if not deactivated:
-        raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
+        raise UserError(
+            f"Rule {rule_id} not found", code=error_codes.TAXONOMY_RULE_NOT_FOUND
+        )
     return build_envelope(
         data=RulesDeletePayload(rule_id=rule_id, action="deactivated")
     )
@@ -538,7 +540,13 @@ def transactions_categorize_auto_review(
     """
     with get_database(read_only=True) as db:
         result = AutoRuleService(db).review(limit=limit)
-    return auto_review_envelope(result)
+    return auto_review_envelope(
+        result,
+        # `reviews_decide` is the registered MCP path for accepting or
+        # rejecting these proposals; this callback's own sibling
+        # (`transactions_categorize_auto_accept`) is internal, not registered.
+        accept_action="Use reviews_decide to accept or reject proposals",
+    )
 
 
 def transactions_categorize_auto_accept(

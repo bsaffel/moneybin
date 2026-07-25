@@ -161,7 +161,7 @@ class TestCategorizePendingGet:
         # pointing at refresh_run, NOT silently collapse to "no data".
         with pytest.raises(UserError) as exc_info:
             transactions_categorize_pending()
-        assert exc_info.value.code == "schema_out_of_date"
+        assert exc_info.value.code == "infra_schema_drift"
         assert "refresh" in str(exc_info.value).lower()
 
     @pytest.mark.unit

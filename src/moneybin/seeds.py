@@ -48,6 +48,25 @@ _SEED_MODELS: list[str] = [
     SEED_EXCHANGE_MIC_MAP.full_name,
 ]
 
+# Registered SQLMesh models that `db init` creates before any transform has
+# run: ``refresh_views`` builds the three ``core`` dims directly via DuckDB and
+# ``materialize_seeds`` plans every model in ``_SEED_MODELS``. Their presence is
+# therefore no evidence that a SQLMesh apply ever happened — everything else in
+# the registered set is.
+#
+# Spread from ``_SEED_MODELS`` rather than re-listing the seeds: a hand-written
+# copy silently omitted ``seeds.exchange_mic_map``, which made
+# ``never_built`` False on a freshly-initialized profile and failed the doctor
+# on a healthy first run. Consumed by ``sqlmesh_registry.model_presence``;
+# pinned against a real ``init_db`` by
+# ``test_init_created_models_matches_what_a_real_db_init_builds``.
+INIT_CREATED_MODELS: frozenset[str] = frozenset({
+    CATEGORIES.full_name,
+    MERCHANTS.full_name,
+    BRIDGE_CATEGORY_SOURCE_MAP.full_name,
+    *_SEED_MODELS,
+})
+
 
 def materialize_seeds(db: Database) -> None:
     """Materialize all SQLMesh seed models, then (re)create the dim views.

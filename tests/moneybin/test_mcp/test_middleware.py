@@ -39,7 +39,7 @@ async def test_unknown_kwarg_becomes_invalid_arguments_envelope() -> None:
         result = await client.call_tool("echo", {"wrong_arg": "value"})
         envelope = json.loads(result.content[0].text)  # type: ignore[attr-defined]
         assert envelope["status"] == "error"
-        assert envelope["error"]["code"] == "invalid_arguments"
+        assert envelope["error"]["code"] == "infra_invalid_arguments"
         hint = envelope["error"]["hint"]
         assert "x" in hint and "y" in hint
         details = envelope["error"]["details"]
@@ -53,7 +53,7 @@ async def test_missing_required_kwarg_becomes_envelope() -> None:
     async with Client(server) as client:
         result = await client.call_tool("echo", {})
         envelope = json.loads(result.content[0].text)  # type: ignore[attr-defined]
-        assert envelope["error"]["code"] == "invalid_arguments"
+        assert envelope["error"]["code"] == "infra_invalid_arguments"
         assert envelope["error"]["details"]["missing"] == ["x"]
 
 
@@ -102,6 +102,6 @@ async def test_middleware_unit_returns_tool_result_with_accepted_list() -> None:
 
     result = await mw.on_call_tool(ctx, call_next)
     body = json.loads(result.content[0].text)  # type: ignore[attr-defined]
-    assert body["error"]["code"] == "invalid_arguments"
+    assert body["error"]["code"] == "infra_invalid_arguments"
     assert "wrong_arg" in body["error"]["details"]["unexpected"]
     assert set(body["error"]["details"]["accepted"]) == {"x", "y"}

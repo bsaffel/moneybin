@@ -7,6 +7,7 @@ from typing import Annotated
 from fastmcp import FastMCP
 from pydantic import Field, JsonValue
 
+from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp.decorator import mcp_tool
@@ -36,7 +37,7 @@ def reports(
         if parameters is not None or limit is not None:
             raise UserError(
                 "parameters and limit require report_id",
-                code="REPORT_ID_REQUIRED",
+                code=error_codes.REPORT_ID_REQUIRED,
             )
         payload = catalog_to_payload(catalog)
         return build_envelope(
@@ -50,7 +51,7 @@ def reports(
     if limit is not None and limit < 1:
         raise UserError(
             "limit must be at least 1",
-            code="REPORT_LIMIT_INVALID",
+            code=error_codes.REPORT_LIMIT_INVALID,
         )
 
     session_max = get_max_rows()

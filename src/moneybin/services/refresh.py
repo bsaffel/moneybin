@@ -50,6 +50,7 @@ from typing import Any, Literal
 
 import duckdb
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
 
@@ -138,7 +139,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             "identity")`` to run. Defaults to every stage when None.
 
     Raises:
-        UserError(code="UNKNOWN_REFRESH_STEP"): if any element of ``steps``
+        UserError(code=error_codes.REFRESH_UNKNOWN_STEP): if any element of ``steps``
             is not in the canonical set.
 
     See module docstring for the conceptual contract. Soft-fail variant:
@@ -154,7 +155,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         if unknown:
             raise UserError(
                 f"Unknown refresh step(s): {', '.join(unknown)}",
-                code="UNKNOWN_REFRESH_STEP",
+                code=error_codes.REFRESH_UNKNOWN_STEP,
                 hint=f"known steps: {', '.join(CANONICAL_STEPS)}",
             )
 
@@ -191,7 +192,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                 )
                 logger.warning(
                     f"GSheet pull: {len(non_complete)} non-complete result(s) "
-                    f"({summary}); see gsheet_status for per-connection detail"
+                    f"({summary}); see gsheet for per-connection detail"
                 )
 
     matching_error: str | None = None

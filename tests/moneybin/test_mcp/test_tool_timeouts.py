@@ -135,6 +135,49 @@ async def test_timed_out_local_export_cannot_publish_after_response(
 
 
 @pytest.mark.unit
+async def test_read_only_open_registers_connection_for_timeout_cleanup(
+    mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-only tool's real connection registers, so a timeout can reset it.
+
+    sql_query opens read_only=True. That path never populated the per-call
+    holder, so the decorator's timeout handler took the "no connection
+    acquired, nothing to reset" arm and skipped interrupt_and_reset_database
+    entirely — leaving the abandoned query and its connection behind, which
+    wedged the doctor path until the server restarted.
+
+    Deliberately drives the real get_database() rather than assigning the
+    holder by hand the way the sibling tests do: hand-wiring the holder is
+    what made this defect invisible.
+
+    The cap is 0.5s, not the 0.05s its hand-wired siblings use, because this
+    test races a real encrypted-DuckDB open against the timer. Opening the
+    fixture DB normally takes tens of milliseconds, but on a loaded machine it
+    can exceed 50ms — and if the cap fires first, nothing has registered yet
+    and the assertion fails for a reason that has nothing to do with the bug.
+    Keep the sleep an order of magnitude above the cap.
+    """
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.5)
+    reset_mock = MagicMock()
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", reset_mock
+    )
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    def slow_read_tool() -> ResponseEnvelope[Any]:
+        from moneybin.database import get_database
+
+        with get_database(read_only=True):
+            time.sleep(5.0)
+        return _ok_envelope()
+
+    await slow_read_tool()
+
+    reset_mock.assert_called_once()
+    assert reset_mock.call_args.args[0] is not None
+
+
 async def test_timed_out_tool_resets_only_its_own_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -149,12 +192,12 @@ async def test_timed_out_tool_resets_only_its_own_connection(
     @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def slow_tool() -> ResponseEnvelope[Any]:
         from moneybin.database import (
-            _write_conn_holder,  # type: ignore[reportPrivateUsage]  # test-only: simulate get_database registering its conn
+            _call_conn_holder,  # type: ignore[reportPrivateUsage]  # test-only: simulate get_database registering its conn
         )
 
         # The decorator points the holder at this call's per-call list before
         # running the sync body; mirror get_database registering its connection.
-        holder = _write_conn_holder.get()
+        holder = _call_conn_holder.get()
         assert holder is not None
         holder[0] = sentinel
         time.sleep(0.5)
@@ -186,12 +229,12 @@ async def test_timed_out_async_tool_resets_the_conn_its_worker_thread_opened(
 
     def _blocking_write() -> None:
         from moneybin.database import (
-            _write_conn_holder,  # type: ignore[reportPrivateUsage]  # test-only: simulate get_database registering its conn
+            _call_conn_holder,  # type: ignore[reportPrivateUsage]  # test-only: simulate get_database registering its conn
         )
 
         # Runs on the worker thread the TOOL spawned, not the one the decorator
         # dispatched — the registration has to survive that hop.
-        holder = _write_conn_holder.get()
+        holder = _call_conn_holder.get()
         assert holder is not None, "async body's worker thread never saw the holder"
         holder[0] = sentinel
         time.sleep(0.5)
@@ -330,12 +373,15 @@ async def test_tool_raised_timeout_error_not_classified_as_cap_fired(
     def inner_timeout_tool() -> ResponseEnvelope[Any]:
         raise TimeoutError("downstream HTTP timeout")
 
-    # TimeoutError is not a classified UserError, so the decorator re-raises
-    # it (matching pre-existing behavior for unclassified exceptions). The
-    # critical assertions are the side effects: no DB reset, no cap-fired log.
-    with pytest.raises(TimeoutError, match="downstream HTTP timeout"):
-        await inner_timeout_tool()
+    # TimeoutError is not a classified UserError, so it comes back as the
+    # unclassified envelope — critically NOT infra_timed_out, which is what a
+    # cap-fired timeout returns. The side effects are the rest of the contract:
+    # no DB reset, no cap-fired log.
+    result = await inner_timeout_tool()
 
+    assert result.error is not None
+    assert result.error.code == error_codes.INFRA_UNCLASSIFIED_ERROR
+    assert result.error.code != error_codes.INFRA_TIMED_OUT
     reset_mock.assert_not_called()
 
 
@@ -390,7 +436,7 @@ async def test_back_to_back_call_after_timeout_succeeds(
             # Mirror real get_database: register the per-call holder so the
             # decorator's timeout cleanup resets THIS connection (rather than
             # finding [0]=None and skipping, which the guarded cleanup now does).
-            holder = db_module._write_conn_holder.get()  # pyright: ignore[reportPrivateUsage]
+            holder = db_module._call_conn_holder.get()  # pyright: ignore[reportPrivateUsage]
             if holder is not None:
                 holder[0] = conn
         try:

@@ -108,7 +108,7 @@ async def test_import_files_validates_path_under_home(
     _setup_db(tmp_path, monkeypatch)
     with pytest.raises(UserError) as exc_info:
         import_files(paths=["/etc/passwd"])
-    assert exc_info.value.code == "invalid_file_path"
+    assert exc_info.value.code == "import_invalid_file_path"
 
 
 async def test_failed_file_raises_the_envelope_sensitivity(

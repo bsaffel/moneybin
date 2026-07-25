@@ -12,6 +12,7 @@ from typing import Any, Literal, cast, get_args, get_origin
 
 from pydantic import JsonValue, TypeAdapter
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.mcp.privacy import tier_to_sensitivity
@@ -101,7 +102,7 @@ class ReportCatalog:
         if len(short) > 1:
             raise UserError(
                 "Report ID is ambiguous.",
-                code="REPORT_ID_AMBIGUOUS",
+                code=error_codes.REPORT_ID_AMBIGUOUS,
                 details={
                     "report_id": report_id,
                     "candidates": sorted(report.report_id for report in short),
@@ -109,7 +110,7 @@ class ReportCatalog:
             )
         raise UserError(
             "Report not found.",
-            code="REPORT_ID_NOT_FOUND",
+            code=error_codes.REPORT_ID_NOT_FOUND,
             details={"report_id": report_id},
         )
 
@@ -166,7 +167,7 @@ class ReportCatalog:
         if limit is not None and limit < 0:
             raise UserError(
                 "Report limit must be non-negative.",
-                code="REPORT_LIMIT_INVALID",
+                code=error_codes.REPORT_LIMIT_INVALID,
                 details={"minimum": 0},
             )
         spec = self.resolve(report_id)
@@ -193,7 +194,7 @@ def _validate_parameters(
     if unknown:
         raise UserError(
             "Unknown report parameter.",
-            code="REPORT_PARAMETER_UNKNOWN",
+            code=error_codes.REPORT_PARAMETER_UNKNOWN,
             details={"report_id": spec.report_id, "parameters": unknown},
         )
 
@@ -205,7 +206,7 @@ def _validate_parameters(
     if missing:
         raise UserError(
             "Required report parameter is missing.",
-            code="REPORT_PARAMETER_MISSING",
+            code=error_codes.REPORT_PARAMETER_MISSING,
             details={"report_id": spec.report_id, "parameters": missing},
         )
 
@@ -219,7 +220,7 @@ def _validate_parameters(
         if not _matches_annotation(value, parameter.annotation):
             raise UserError(
                 "Report parameter has an invalid type.",
-                code="REPORT_PARAMETER_INVALID_TYPE",
+                code=error_codes.REPORT_PARAMETER_INVALID_TYPE,
                 details={
                     "report_id": spec.report_id,
                     "parameter": parameter.name,

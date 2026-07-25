@@ -161,7 +161,7 @@ async def test_sync_disconnect_logout_rejects_confirmation_token(
     )
 
     assert envelope.error is not None
-    assert envelope.error.code == "SYNC_CONFIRMATION_NOT_ALLOWED"
+    assert envelope.error.code == "sync_confirmation_not_allowed"
     mock_build.return_value.logout.assert_not_called()
 
 

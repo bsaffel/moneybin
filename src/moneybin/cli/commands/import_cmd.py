@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.commands import import_inbox, import_labels
 from moneybin.cli.output import (
     OutputFormat,
@@ -2212,7 +2213,7 @@ def formats_show(
             emit_json_error(
                 UserError(
                     f"Format not found: {name!r}",
-                    code="not_found",
+                    code=error_codes.IMPORT_SAVED_FORMAT_NOT_FOUND,
                     hint=f"Available formats: {available}",
                 )
             )
