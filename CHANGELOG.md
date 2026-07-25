@@ -100,9 +100,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   printed an HTTP status line for every request it made, one line per merchant
   it created, raw-loader row counts naming your Chase card a "Plaid account",
   and the same categorization total three times from three layers. Those are
-  gone from the console; `--verbose` or `moneybin logs cli` still has them.
-  Progress and results — migrations, matching, transforms, per-institution
-  totals — print as before. Output an AI assistant reads over MCP is unchanged.
+  gone from the console and kept in the log file, which `moneybin logs cli`
+  reads. Progress and results — migrations, matching, transforms,
+  per-institution totals — print as before, and a link or merchant conflict
+  landing in a review queue now says so. Output an AI assistant reads over MCP
+  is unchanged.
 - **A permission-denied import now tells you how to fix it.** Importing a file
   the OS refuses to open returns the new `infra_permission_denied` code with a
   hint matched to the actual cause: a file-mode problem says to check ownership

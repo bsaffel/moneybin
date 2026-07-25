@@ -329,9 +329,17 @@ class AccountLinksService:
             raise
 
         refresh_account_link_pending_gauge(self._db)
-        # Named for the function, not the user, and usually reports zero. The
-        # pending queue itself is the surface: `moneybin accounts links pending`.
-        logger.debug(f"accounts_links_run: wrote {new_count} new pending decisions")
+        if new_count:
+            # The user's only notice. `refresh._run_identity_step` discards this
+            # return value, so RefreshResult never carries the count and the
+            # gauge is the sole other record — which no CLI user ever sees.
+            logger.info(
+                f"{new_count} new account link(s) need review — "
+                "run `moneybin accounts links pending`"
+            )
+        else:
+            # Nothing happened; the zero is worth neither the console nor the file.
+            logger.debug("accounts_links_run: wrote 0 new pending decisions")
         return new_count
 
     def record_committed_outer_decisions(self) -> None:

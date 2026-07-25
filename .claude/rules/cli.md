@@ -167,9 +167,9 @@ sink and the filter stands down entirely, because
 `docs/guides/observability.md` and `threat-model.md` both promise stderr is
 unaffected by that setting.
 
-Locked by `tests/moneybin/test_logging_config.py::TestConsoleInfoAllowlist`,
-which drives the allowlisted modules' real logger names so a rename fails the
-test instead of silently muting a stage.
+Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilter`, which
+checks both directions — denylisted prefixes are hidden, an unnamed logger still
+prints — and by `TestMcpStreamKeepsInfoOnStderr` for the host channel.
 
 ## Standard Flags on Read-Only Commands
 

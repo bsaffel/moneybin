@@ -297,11 +297,15 @@ class MerchantLinksService:
 
         result = MerchantResolver(self._db, actor=self._actor).harvest()
         refresh_merchant_link_pending_gauge(self._db)
-        # Same as accounts_links_run: internal counters in the engine's own
-        # vocabulary; the review queue is the user-facing surface.
-        logger.debug(
-            f"merchant_links_run: bound={result.bound} conflicts={result.conflicts}"
-        )
+        if result.conflicts:
+            # Same as accounts_links_run: refresh discards this result, so
+            # without this line a conflict lands in the review queue silently.
+            logger.info(
+                f"{result.conflicts} merchant link conflict(s) need review — "
+                "run `moneybin merchants links pending`"
+            )
+        else:
+            logger.debug(f"merchant_links_run: bound={result.bound} conflicts=0")
         return result
 
     def record_committed_outer_outcomes(self, outcomes: tuple[str, ...]) -> None:
