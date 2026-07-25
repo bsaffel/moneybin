@@ -89,18 +89,24 @@ Numbered, each independently testable.
    (`Net worth: …`, `Assets: …`). It emits aligned label/value pairs to
    **stdout**.
 4. `render_note` is the only way a command prints an informational status line. It
-   emits to **stderr** and is suppressed by `-q/--quiet` — except for notes marked
-   as **result framing** (requirement 10), which describe the completeness of the
-   data itself rather than the progress of the operation.
+   emits to **stderr** and is suppressed by `-q/--quiet`. Result framing
+   (requirement 10) is not a note and does not travel this path.
 5. Result data is never suppressed by `-q` (restates `cli.md`; asserted here
-   because the renderers are now the enforcement point). Result *framing* — a
-   statement about what the result omits — is covered by the same guarantee: `-q`
-   suppresses chatter, never the boundaries of the data.
+   because the renderers are now the enforcement point). The same guarantee
+   covers any statement about what the result omits — see requirement 10.
 
 **Column policy (F1)**
 
-6. Every `reports` command declares a `DEFAULT_COLUMNS` tuple naming the columns
-   its text branch renders. `render_rows` renders only those.
+6. Every `reports` command declares its default column set, and `render_rows`
+   renders only those. The declaration is **parameter-aware**: a static tuple
+   where the projection is fixed, and a callable of the report's own parameters
+   where it is not. `cash_flow` is the motivating case —
+   `by="account"` selects `account_id, account_name` and no `category`, while
+   `by="category"` selects `category` and no account columns
+   (`src/moneybin/reports/definitions/cash_flow.py:98-107`), so any single tuple
+   would name a field absent in one mode or drop the only grouping dimension in
+   the other. A report whose default set does not resolve for a legal parameter
+   combination is a spec violation, caught by the contract test in requirement 9.
 7. Every command with a `DEFAULT_COLUMNS` narrower than its full projection
    accepts `--wide`, which renders all columns.
 8. `--output json` is unaffected by `DEFAULT_COLUMNS` and by `--wide`; it returns
@@ -109,30 +115,49 @@ Numbered, each independently testable.
     header, and no elision of any value that is not free text. 80 is the width F1
     was reproduced at, so a wider bar would let an implementation satisfy this
     spec while the reported defect persists.
-10. When columns are omitted, `render_rows` emits one **result-framing** note
+10. When columns are omitted, `render_rows` emits one **result-framing** line
     naming the count and the flag: `12 of 23 columns shown — --wide for all`.
-    Silent truncation is prohibited, and per requirements 4–5 this note survives
-    `-q` — otherwise `reports spending --quiet` would reintroduce exactly the
-    silent truncation this requirement forbids.
+    Silent truncation is prohibited. This line is part of the result, not
+    chatter: it emits to **stdout** immediately after the table, and `-q` never
+    suppresses it. Both properties are load-bearing — routing it to stderr would
+    let `moneybin reports spending > report.txt` capture a truncated table with
+    no indication it was truncated, and suppressing it under `-q` would do the
+    same for `--quiet`. Either alone reintroduces the silent truncation this
+    requirement forbids.
 
 **Money and numbers (F9)**
 
 11. A single `format_money` is the only place amounts are stringified for text
     output. Thousands separators always; two decimal places always.
 12. Every money column declares a **money kind**, and the renderer never infers
-    meaning from the raw number. Three kinds:
+    meaning from the raw number. Four kinds:
     - `flow` — signed under the AGENTS.md accounting convention (negative =
       expense, positive = income). Renders an explicit `+` / `−` (U+2212).
     - `magnitude` — a positive absolute quantity whose polarity is carried by the
       column, not the value (`spending_trend.total_spend` is a positive outflow).
       Renders unsigned; never colored as income.
+    - `delta` — a signed *change in a magnitude*, where the sign means direction
+      (more / less) rather than income / expense. Declares the polarity of the
+      thing it measures, because that determines whether an increase is good or
+      bad. `spending_trend.mom_delta` is current-minus-previous spend
+      (`src/moneybin/reports/definitions/spending_trend.py:52-56`): a positive
+      value means spending *rose*. It renders signed — the direction is the
+      column's entire purpose — and colors against the declared polarity, so a
+      rise in spending is `--neg-expense`, not `--pos-income`.
     - `balance` — a position, not a movement. Renders unsigned.
+
+    `delta` exists because neither of the other kinds fits a signed delta:
+    `flow` would color a spending increase green, and `magnitude` renders
+    unsigned, erasing the increase-versus-decrease distinction the column exists
+    to convey.
 13. Amounts are right-aligned in `render_rows` columns.
 14. Color is driven by the money kind plus the value, never by the value alone.
     A `flow` colors `--pos-income` when positive and `--neg-expense` when
-    negative; a `magnitude` in a spend-oriented column is never green; a `balance`
-    is uncolored. The sign glyph — where the kind has one — is present regardless
-    of color, so the encoding survives a pipe, a non-TTY, and `NO_COLOR`.
+    negative; a `magnitude` in a spend-oriented column is never green; a `delta`
+    colors against its declared polarity, so a rise in an expense magnitude reads
+    `--neg-expense`; a `balance` is uncolored. The sign glyph — where the kind has
+    one — is present regardless of color, so the encoding survives a pipe, a
+    non-TTY, and `NO_COLOR`.
     **Rationale:** `spending_trend.py` declares `total_spend` as a positive
     absolute outflow and `mom_delta` as current-minus-previous spend. Coloring on
     raw sign would render spending green as income and invert the meaning of a
@@ -256,13 +281,16 @@ a `unit` field to the metric declaration — a registry change, not a database o
 | Path | Change |
 |---|---|
 | `src/moneybin/cli/output.py` | `render_or_json` delegates its text branch to the new renderers; `--wide` joins the shared option set |
-| `src/moneybin/reports/_framework/registry.py` (`ReportSpec`) | Carry `DEFAULT_COLUMNS` as spec metadata — **this is where the column policy lives** |
+| `src/moneybin/reports/_framework/contract.py` (`ReportSpec`, line 88) | Carry the default column set as spec metadata — **this is where the column policy lives**. Parameter-aware per requirement 6 |
 | `src/moneybin/reports/_framework/cli_register.py` | `build_cli_command(spec)` (called by `register_report_cli`, line 115) builds each report's Typer signature — this is where the generated `--wide` option and the `DEFAULT_COLUMNS` application land. Note `register_reports_cli`, the plural fan-out, lives in `registry.py:73` and only loops specs; it likely needs no change |
 | `src/moneybin/reports/definitions/*.py` | Declare each report's `DEFAULT_COLUMNS`, `spending_trend.py` first (F1) |
 | `src/moneybin/cli/commands/reports/networth.py` | The two hand-written NetworthService-backed commands; adopt `render_summary` / `render_rows` |
 | `src/moneybin/cli/commands/accounts/__init__.py` | Account ID column (26); adopt `render_rows` |
 | `src/moneybin/cli/commands/transactions/list_.py` | Account name (27); drop the `transactions_get …` line (16); human paging (34) |
 | `src/moneybin/cli/commands/transactions/categorize/__init__.py` | Uncategorized queue is a Shape-5 read-projection — migrate off `render_rich_table` (1) |
+| `src/moneybin/cli/commands/accounts/links.py` | `links pending` / `links list` hand-format an aligned table via `typer.echo` (lines 70-89) — requirement 1 applies from day one |
+| `src/moneybin/cli/commands/merchants/links.py` | Same hand-formatted-table pattern as its accounts twin; migrate both together per the coherence rule |
+| `src/moneybin/cli/commands/transactions/matches.py` | `matches pending` hand-formats a padded f-string table (lines 61-77) — the third of the three review-queue renderers |
 | `src/moneybin/cli/commands/refresh.py` | Per-stage notes (18); drop function-name prefixes and `SQLMesh` (16, 17) |
 | `src/moneybin/cli/commands/system/doctor.py` | Quiet on success (20–22); recovery-action rendering unchanged per req 16's exception |
 | `src/moneybin/cli/commands/stats.py` | Dimensions, units, grouping (23–25) |
@@ -346,8 +374,13 @@ that way.
 Per `.claude/rules/testing.md` and the project's TDD requirement, each numbered
 requirement gets a failing test before its implementation.
 
-**Unit** — `render_money` sign/separator/alignment matrix; TTY and `NO_COLOR`
-gating; `-q` suppressing notes but never rows.
+**Unit** — `format_money` across all four money kinds (`flow` / `magnitude` /
+`delta` / `balance`), asserting a spend `magnitude` never renders green and a
+positive `delta` on an expense column renders `--neg-expense` (12, 14); TTY and
+`NO_COLOR` gating (15); and the stream/suppression matrix — `-q` suppresses
+notes, never rows, and never result framing, which lands on stdout (4, 5, 10).
+The redirect case is its own assertion: capturing stdout alone must still
+contain the omission line.
 
 **Contract, parameterized across every command** — this is where coherence is
 actually enforced, and the tests must enumerate commands from the live registry
@@ -356,11 +389,16 @@ contract:
 
 - Every read-only command's text branch renders through one of the three
   renderers (1).
-- Every `reports` command's `DEFAULT_COLUMNS` renders within **80** columns with
+- Every `reports` command's default column set renders within **80** columns with
   no header elided (9) — the same threshold requirement 9 sets, and the width F1
-  was reproduced at.
-- Rendered output contains no registered MCP tool name and no `_run:`-shaped
-  prefix (16).
+  was reproduced at. Parameter-aware sets are exercised across every legal
+  parameter combination, not just the default one (6).
+- Rendered output contains no **multi-segment `snake_case` identifier** and no
+  `key=value` fragment outside a recovery action (16). The test carries
+  requirement 16's exceptions verbatim — single-word registered tool names
+  (`accounts`, `reports`) and `RecoveryAction` lines are **not** matched. Stating
+  the assertion more broadly than the requirement would fail on legitimate output
+  like `Accounts: 5`.
 - No reachable message contains `docs/specs/` (32).
 - No stub command appears in any `--help` output (31).
 
