@@ -49,7 +49,7 @@ immutability**, through a cheap append-only alias map.
 This is pattern-establishing: future canonical entities (securities, merchants)
 will inherit whichever identity model we choose here, and the "why" (the
 derive-from-raw vs. stable-public-id tension) is not recoverable from the code.
-It meets the ADR bar in [`design-principles.md`](../../.claude/rules/design-principles.md).
+It meets the ADR bar in [`design-principles-depth.md`](../../.claude/references/design-principles-depth.md).
 
 ## Decision
 
