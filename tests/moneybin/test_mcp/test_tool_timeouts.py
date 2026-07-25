@@ -150,8 +150,15 @@ async def test_read_only_open_registers_connection_for_timeout_cleanup(
     Deliberately drives the real get_database() rather than assigning the
     holder by hand the way the sibling tests do: hand-wiring the holder is
     what made this defect invisible.
+
+    The cap is 0.5s, not the 0.05s its hand-wired siblings use, because this
+    test races a real encrypted-DuckDB open against the timer. Opening the
+    fixture DB normally takes tens of milliseconds, but on a loaded machine it
+    can exceed 50ms — and if the cap fires first, nothing has registered yet
+    and the assertion fails for a reason that has nothing to do with the bug.
+    Keep the sleep an order of magnitude above the cap.
     """
-    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.05)
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.5)
     reset_mock = MagicMock()
     monkeypatch.setattr(
         "moneybin.mcp.decorator.interrupt_and_reset_database", reset_mock
@@ -162,7 +169,7 @@ async def test_read_only_open_registers_connection_for_timeout_cleanup(
         from moneybin.database import get_database
 
         with get_database(read_only=True):
-            time.sleep(0.5)
+            time.sleep(5.0)
         return _ok_envelope()
 
     await slow_read_tool()
