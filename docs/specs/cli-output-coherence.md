@@ -107,6 +107,17 @@ Numbered, each independently testable.
    would name a field absent in one mode or drop the only grouping dimension in
    the other. A report whose default set does not resolve for a legal parameter
    combination is a spec violation, caught by the contract test in requirement 9.
+   **Extension reports** (`register_extension_reports`,
+   `src/moneybin/reports/_framework/registry.py:34`) share the same `@report` /
+   `ReportSpec` contract and the same `register_report_cli` path, so the field is
+   **optional** on `ReportSpec`: an extension that declares nothing keeps working
+   unchanged. Its fallback is not "all columns" — that would let a third-party
+   report bypass requirement 9's guarantee — but the leading columns of the
+   declared projection that fit the width, with the remainder reachable via
+   `--wide`. The guarantee is therefore generic, and declaring `DEFAULT_COLUMNS`
+   is an ordering refinement rather than a migration burden.
+   `docs/specs/extension-contracts.md` gains the optional field and its fallback
+   in the same change.
 7. Every command with a `DEFAULT_COLUMNS` narrower than its full projection
    accepts `--wide`, which renders all columns.
 8. `--output json` is unaffected by `DEFAULT_COLUMNS` and by `--wide`; it returns
@@ -190,7 +201,15 @@ Numbered, each independently testable.
 18. `refresh` emits one `render_note` per pipeline stage naming the stage and its
     observable outcome, including stages whose outcome is zero. A run that changed
     nothing and a run that recategorized 400 transactions are distinguishable from
-    stderr alone.
+    stderr alone. This requires a **result-carrier change**, not a renderer-only
+    one: `RefreshResult` (`src/moneybin/services/refresh.py:75`) carries
+    error-or-`None` per step, and `_run_categorize_step` (line 314) computes its
+    counts, logs them, and returns `str | None`, discarding them. The renderer
+    cannot recover a count the service already dropped, and must not re-query for
+    it. `RefreshResult` therefore gains a per-stage outcome carrying the counts the
+    steps already compute. This is the **one** requirement in this spec that
+    reaches below the CLI layer, and it is deliberate: the outcome per stage is
+    the payload, so no render-layer-only change can satisfy it.
 19. The profile banner states the resolved source or omits the parenthetical. The
     string `(from config.yaml or first-run wizard)` does not survive.
 
@@ -246,8 +265,14 @@ Numbered, each independently testable.
 
 29. Category values are resolved to the display taxonomy at one boundary. No
     single rendered column contains both `Food & Drink` and `FOOD_AND_DRINK`.
-30. A category with no display mapping renders its raw value **and** is counted in
-    a `render_note`, rather than silently mixing into the column.
+30. A category with no display mapping renders a single consistent placeholder —
+    `Uncategorized` — never the raw provider code. Rendering the raw value would
+    itself produce the mixed column requirement 29 prohibits, which is the defect,
+    not a disclosure of it. The count of unmapped rows rides the **result framing**
+    (requirement 10), not a `render_note`: requirement 4 suppresses notes under
+    `--quiet`, and a taxonomy gap the user cannot see is exactly what requirement
+    29 exists to prevent. The raw provider value remains available in
+    `--output json`, which requirement 8 leaves unfiltered.
 
 **Stubs (F4)**
 
@@ -262,11 +287,21 @@ Numbered, each independently testable.
 **Pagination (F10)**
 
 34. The text branch renders a human paging line stating the number of rows shown,
-    whether more exist, and the flag to continue — `8 shown · more available ·
-    --cursor to continue`. The raw cursor token appears only in `--output json`.
+    whether more exist, and a continuation the reader can actually type —
+    `8 shown · more available · raise --limit for more`.
+    It must **not** name `--cursor`:
+    that option takes a token value
+    (`src/moneybin/cli/commands/transactions/list_.py:50-52`), the token is
+    deliberately withheld from text output, and
+    instructing a reader to pass a flag whose value they were not given produces a
+    usage error. Showing the token instead would re-open F10, whose defect was a
+    base64 cursor printed at a human. `--cursor` remains the agent's continuation
+    over `--output json`, where the token is present.
     **No total is rendered:** `TransactionGetResult` exposes `transactions` and
-    `next_cursor` only, computing `total_count` to derive `has_more` and then
-    dropping it (`src/moneybin/services/transaction_service.py:136-148`).
+    `next_cursor` only, computing `total_count` to derive `has_more`
+    (`src/moneybin/services/transaction_service.py:793`) and then dropping it
+    rather than carrying it onto the result
+    (`src/moneybin/services/transaction_service.py:136-148`).
     Surfacing a total would be a service and payload change, which requirement 8
     excludes. `has_more` is sufficient to close F10 — the defect was a base64
     cursor shown to a human, not a missing count.
@@ -319,6 +354,8 @@ rather than introduce a second source of truth beside it.
 | `src/moneybin/cli/commands/merchants/links.py` | Same hand-formatted-table pattern as its accounts twin; migrate both together per the coherence rule |
 | `src/moneybin/cli/commands/transactions/matches.py` | `matches pending` hand-formats a padded f-string table (lines 61-77) — the third of the three review-queue renderers |
 | `src/moneybin/cli/commands/refresh.py` | Per-stage notes (18); drop function-name prefixes and `SQLMesh` (16, 17) |
+| `src/moneybin/services/refresh.py` | `RefreshResult` gains per-stage outcomes so the counts `_run_categorize_step` already computes reach the renderer instead of only the log (18) |
+| `docs/specs/extension-contracts.md` | Document `DEFAULT_COLUMNS` as an optional `ReportSpec` field and its width-bounded fallback (6) |
 | `src/moneybin/cli/commands/system/doctor.py` | Quiet on success (20–22); recovery-action rendering unchanged per req 16's exception |
 | `src/moneybin/cli/commands/stats.py` | Dimensions, units, grouping (23–25) |
 | `src/moneybin/cli/utils.py` | Profile banner (19); **retire `render_rich_table`** into `render_rows` — it is the shared `rich.Table` builder req 1 supersedes |
@@ -462,9 +499,14 @@ contract:
   no header elided (9) — the same threshold requirement 9 sets, and the width F1
   was reproduced at. Parameter-aware sets are exercised across every legal
   parameter combination, not just the default one (6).
-- Rendered output contains no **multi-segment `snake_case` identifier** and no
-  `key=value` fragment outside a recovery action (16). The test carries
-  requirement 16's exceptions verbatim — single-word registered tool names
+- **Renderer-authored** output — static status copy, labels, headers, notes, and
+  result framing — contains no **multi-segment `snake_case` identifier** and no
+  `key=value` fragment outside a recovery action (16). The audit is scoped to
+  strings the renderer owns and **excludes table-cell payloads**: a transaction
+  description reading `order_id=123` or a user-supplied snake_case category label
+  is the user's own data, and an assertion over all rendered bytes would demand
+  mangling financial data to satisfy a contract about status copy. The test also
+  carries requirement 16's exceptions verbatim — single-word registered tool names
   (`accounts`, `reports`) and `RecoveryAction` lines are **not** matched. Stating
   the assertion more broadly than the requirement would fail on legitimate output
   like `Accounts: 5`.
