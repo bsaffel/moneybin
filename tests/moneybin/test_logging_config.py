@@ -225,6 +225,7 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
             "sqlmesh.core.context",
             "moneybin.matching.engine",
             "moneybin.extractors.plaid.extractor",
+            "moneybin.cli.utils.profile_source",
         ],
     )
     def test_named_noisy_dependencies_are_hidden(self, logger_name: str) -> None:

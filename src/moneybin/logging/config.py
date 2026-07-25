@@ -57,6 +57,10 @@ _CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = (
     "httpcore",
     "moneybin.matching.engine",
     "moneybin.extractors.plaid",
+    # Which of --profile / MONEYBIN_PROFILE / config.yaml chose the profile.
+    # A child logger so this one line can be suppressed without silencing
+    # `moneybin.cli`, which is ordinary user-facing output.
+    "moneybin.cli.utils.profile_source",
 )
 
 

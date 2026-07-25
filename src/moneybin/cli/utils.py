@@ -24,6 +24,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Profile-resolution provenance: kept in the log file, kept off the console.
+# Named so `_CONSOLE_SUPPRESSED_PREFIXES` can target it without silencing the
+# rest of `moneybin.cli`, which is ordinary user-facing output.
+_profile_source_logger = logger.getChild("profile_source")
+
 
 def _error_audit_classification(payload_type: type | None) -> tuple[str, list[str]]:
     """Audit (sensitivity, classes) for a JSON-mode error row.
@@ -270,8 +275,11 @@ def resolve_profile() -> None:
         raise typer.Exit(1)
 
     setup_observability(stream="cli", verbose=_flags.verbose, profile=profile_name)
-    # Where the profile came from is resolution trivia, not something the user
-    # chose to see on every command; it stays in the log for debugging.
     logger.info(f"Using profile: {profile_name}")
     if source:
-        logger.debug(f"Profile resolved from {source}")
+        # INFO, on a child logger the console denylist covers: which of
+        # --profile, MONEYBIN_PROFILE, or config.yaml chose this profile is
+        # trivia on every command but the only evidence when an unexpected one
+        # is selected. `logger.debug` would drop it from the log file too —
+        # the root logger sits at INFO and never emits DEBUG records.
+        _profile_source_logger.info(f"Profile resolved from {source}")
