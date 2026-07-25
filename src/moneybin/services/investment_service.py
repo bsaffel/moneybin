@@ -1728,7 +1728,15 @@ class InvestmentService:
         if account_id is None and security_id is None:
             for row in holding_rows:
                 PRICE_RESOLUTION_STATUS_TOTAL.labels(status=row.valuation_status).inc()
-            PRICE_STALENESS_DAYS.set(max(observed_ages) if observed_ages else 0)
+            # NaN, not 0, when nothing is priced. days_since_observed is 0 on a
+            # same-day close, so 0 would make a total pricing outage read as a
+            # perfectly fresh portfolio and leave a `> N days` alert unable to
+            # fire in the one case this gauge exists to expose. NaN is
+            # Prometheus's no-data convention and agrees with
+            # max_days_since_observed, which reports None for the same empty set.
+            PRICE_STALENESS_DAYS.set(
+                max(observed_ages) if observed_ages else float("nan")
+            )
         return HoldingsResult(
             rows=holding_rows,
             warnings=warnings,

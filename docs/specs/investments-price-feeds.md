@@ -919,9 +919,21 @@ listing permanently on an append-only table; sourcing it from the catalog makes 
 wrong currency one fixable catalog row.
 
 Which securities to fetch, and for which dates, derives from holdings: a security
-is fetched over the interval it was actually held, extended to today while the
-position is open. Fetching every security ever seen across its full history
-exhausts provider rate limits on every sync and stores data no report reads.
+is fetched over the interval it was actually held, extended to the last complete
+day while the position is open. Fetching every security ever seen across its full
+history exhausts provider rate limits on every sync and stores data no report
+reads.
+
+**A refresh never requests today.** `raw.security_prices` is append-only with
+`on_conflict="ignore"` and `price_date` in its primary key, so the first writer
+owns a date permanently — a midday pull storing an in-progress close makes the
+evening pull carrying the settled close a silent no-op, and that date's valuation
+wrong forever. `.claude/rules/data-extraction.md` forbids partial-day extraction
+for this reason. CoinGecko is already structurally incapable of it, since its
+close for date D is the 00:00 UTC point of D+1; bounding the window gives the
+equity path the same guarantee, and makes both providers agree on the newest date
+a pull can produce — which `investment_price_disagreement` compares them on.
+`--since` moves the start only.
 
 Failure handling follows `GSheetPullService`:
 
@@ -1090,7 +1102,7 @@ partially fail, so it is unobservable without them.
 | `price_refresh_securities_total` | Counter | `source_type`, `outcome` | `PriceService.pull` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
 | `price_rows_written_total` | Counter | `source_type` | `PriceService._store` | Ingest volume, and the check that a backfill wrote what it claimed. |
 | `price_resolution_status_total` | Counter | `status` | `InvestmentService.holdings` | `status` ∈ `valued` / `carried_forward` / `unpriced` / `unreconstructable` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities, and the `unreconstructable` share is how much history M1J.6 would recover. |
-| `price_staleness_days` | Gauge | — | `InvestmentService.holdings` | Maximum `days_since_observed` across held securities carrying a value. One number answering "how old is the oldest price my net worth rests on." |
+| `price_staleness_days` | Gauge | — | `InvestmentService.holdings` | Maximum `days_since_observed` across held securities carrying a value. One number answering "how old is the oldest price my net worth rests on." NaN when no position carries a value: `days_since_observed` is 0 on a same-day close, so publishing 0 for a total pricing outage would make it read as the freshest possible portfolio and leave a `> N days` alert unable to fire. |
 
 The label is `source_type`, not `source` — the canonical provenance column name
 across every layer (`database.md`), so a metric and a query name the same thing

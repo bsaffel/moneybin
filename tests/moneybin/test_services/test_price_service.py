@@ -680,11 +680,24 @@ def test_since_bounds_the_requested_window(db: Database) -> None:
 
     _service(db, tiingo).pull(since=date(2026, 1, 1))
 
-    assert tiingo.windows == [(date(2026, 1, 1), _TODAY)]
+    # `since` moves the start only — the end stays at the last complete day, so a
+    # backfill cannot reach into today's still-forming bar either.
+    assert tiingo.windows == [(date(2026, 1, 1), _TODAY - timedelta(days=1))]
 
 
-def test_the_default_window_ends_today_and_never_later(db: Database) -> None:
-    """A future price_date would let today's value come from tomorrow's close."""
+def test_the_window_ends_at_the_last_complete_day(db: Database) -> None:
+    """Today's bar is still forming, and this table gives the first writer the key.
+
+    `raw.security_prices` is append-only with `on_conflict="ignore"` and
+    `price_date` in the primary key, so a midday pull that stores an in-progress
+    close owns that date permanently — the evening pull carrying the settled
+    close is silently dropped. `.claude/rules/data-extraction.md` forbids
+    partial-day extraction for exactly this reason, and the CoinGecko adapter is
+    already structurally incapable of it (today's crypto needs tomorrow's
+    midnight point). The equity path had no equivalent bound.
+
+    Requesting a future date would be the same defect one day further out.
+    """
     _seed_security(db, security_id="s1", name="Apple Inc", ticker="AAPL")
     _hold(db, "s1")
     tiingo = _FakeTiingo(metadata={"AAPL": TickerMetadata("Apple Inc", None)})
@@ -692,7 +705,7 @@ def test_the_default_window_ends_today_and_never_later(db: Database) -> None:
     _service(db, tiingo).pull()
 
     start, end = tiingo.windows[0]
-    assert end == _TODAY
+    assert end == _TODAY - timedelta(days=1)
     assert start < end
 
 

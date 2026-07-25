@@ -311,7 +311,18 @@ class PriceService:
         since: date | None = None,
     ) -> PullResult:
         """Refresh stored prices for held securities over the requested window."""
-        start = since or self._today - timedelta(days=_DEFAULT_LOOKBACK_DAYS)
+        # Never today. raw.security_prices is append-only with on_conflict="ignore"
+        # and price_date in its primary key, so whoever writes a date first owns it
+        # permanently — a midday pull that stored an in-progress close would make
+        # the evening pull carrying the settled close a silent no-op, and that
+        # date's valuation wrong forever. data-extraction.md forbids partial-day
+        # extraction for this reason. CoinGecko is already incapable of it (its
+        # close for date D is the 00:00 UTC point of D+1, which does not exist
+        # yet); this gives the equity path the same bound, and makes both
+        # providers agree on the newest date a pull can produce — which
+        # investment_price_disagreement compares them on.
+        end = self._today - timedelta(days=1)
+        start = since or end - timedelta(days=_DEFAULT_LOOKBACK_DAYS)
         held = self.held_securities(security_ids)
         unpriced: list[UnpricedSecurity] = []
         queued = 0
@@ -368,7 +379,7 @@ class PriceService:
                 with PRICE_REFRESH_DURATION_SECONDS.labels(
                     source_type=source_type
                 ).time():
-                    result = adapter.fetch(refs, start, self._today)
+                    result = adapter.fetch(refs, start, end)
             except PriceFeedError as exc:
                 # A whole-batch condition — an absent credential, a rate limit, an
                 # unreachable host. By construction it says nothing about any

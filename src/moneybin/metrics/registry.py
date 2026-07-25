@@ -676,7 +676,10 @@ PRICE_STALENESS_DAYS = Gauge(
     # One number answering "how old is the oldest price my net worth rests on".
     # Scoped to positions that actually publish a figure: an unpriced position
     # has no age, and counting it as infinitely stale would bury the real answer.
-    "Largest days_since_observed across held securities carrying a market value",
+    # NaN when NO position carries one — a total outage must not read as 0, which
+    # is what a same-day close reports and therefore the healthiest value here.
+    "Largest days_since_observed across held securities carrying a market value; "
+    "NaN when none do",
 )
 
 SECURITY_LINK_OUTCOMES_TOTAL = Counter(
