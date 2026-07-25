@@ -329,11 +329,6 @@ class AccountLinksService:
             raise
 
         refresh_account_link_pending_gauge(self._db)
-        # Unconditional and at INFO so the log file always records the run's
-        # outcome, including the zero. The console never sees it — this module
-        # is in `_CONSOLE_SUPPRESSED_PREFIXES`. Callers own what the user
-        # reads: `accounts links run` echoes its own summary, and the refresh
-        # pipeline surfaces a review notice from `_run_identity_step`.
         logger.info(f"accounts_links_run: wrote {new_count} new pending decisions")
         return new_count
 

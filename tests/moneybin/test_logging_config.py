@@ -226,8 +226,6 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
             "moneybin.matching.engine",
             "moneybin.extractors.plaid.extractor",
             "moneybin.cli.utils.profile_source",
-            "moneybin.services.account_links_service",
-            "moneybin.services.merchant_links_service",
             "moneybin.services.categorization.orchestrator.engine_counts",
         ],
     )
@@ -283,6 +281,13 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
             "moneybin.database",
             "moneybin.services.refresh",
             "moneybin.extractors.institution_resolution",
+            # The link harvesters. Suppressing these was tried in #356 and
+            # reverted: `import files` and `inbox sync` run the same refresh
+            # and have no other notice, so hiding them loses the only signal
+            # that a review item landed. Keep them visible unless every
+            # refresh caller carries the count itself.
+            "moneybin.services.account_links_service",
+            "moneybin.services.merchant_links_service",
             # A dependency nobody has named. Under a denylist it must pass —
             # the inverse of what an allowlist would do, and the case that
             # tells the two designs apart.

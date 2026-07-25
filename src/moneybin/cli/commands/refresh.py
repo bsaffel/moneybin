@@ -114,11 +114,6 @@ def refresh_command(
             raise typer.Exit(1)
         return
 
-    # Review items the identity step created. Rendered here, not logged inside
-    # refresh(), so --quiet above actually suppresses them.
-    for notice in result.review_notices:
-        typer.echo(f"👀 {notice}")
-
     # Suppress the step-retry hint when apply also failed: the apply error is
     # the blocker (reported by ❌ below), so "re-run the failed step" would
     # misdirect the agent before it resolves the blocking failure.

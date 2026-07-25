@@ -61,11 +61,6 @@ _CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = (
     # A child logger so this one line can be suppressed without silencing
     # `moneybin.cli`, which is ordinary user-facing output.
     "moneybin.cli.utils.profile_source",
-    # Link-harvest counters. Every run records its outcome to the file, but
-    # both callers already tell the user what matters: the `links run`
-    # commands echo their own summary, and refresh emits a review notice.
-    "moneybin.services.account_links_service",
-    "moneybin.services.merchant_links_service",
     # Per-engine categorization counts. `categorize_pending()` restates them
     # in its run summary, so they duplicate on the console — but the
     # per-method path calls the engines directly with no summary, so the file

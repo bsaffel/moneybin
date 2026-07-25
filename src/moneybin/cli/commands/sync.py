@@ -368,11 +368,6 @@ def sync_pull(
         )
         if result.transactions_removed:
             typer.echo(f"   Removed {result.transactions_removed} stale transactions.")
-        # Informational, unlike the per-institution counts above — those are
-        # the data `-q` must never suppress, this is a prompt to go look.
-        if not quiet:
-            for notice in result.review_notices:
-                typer.echo(f"👀 {notice}")
         investments_total = (
             result.securities_loaded
             + result.investment_transactions_loaded

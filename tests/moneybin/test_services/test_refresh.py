@@ -45,7 +45,7 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
         return_value={"total": 0, "rule": 0, "merchant": 0, "plaid": 0}
     )
     auto_stats = MagicMock(return_value=MagicMock(pending_proposals=0))
-    identity = MagicMock(return_value=((), ()))
+    identity = MagicMock(return_value=())
 
     # Patches target the consumer module (moneybin.services.refresh) where
     # each name is bound — refresh.py imports TransformService at module level
@@ -113,9 +113,9 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
         calls.append("categorize")
         return None
 
-    def _identity(_db: Database) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def _identity(_db: Database) -> tuple[str, ...]:
         calls.append("identity")
-        return (), ()
+        return ()
 
     monkeypatch.setattr(
         "moneybin.services.refresh._run_gsheet_step",
@@ -487,64 +487,3 @@ def test_refresh_gsheet_step_skippable(
     assert patched_services["transform_apply"].call_count == 1
     assert patched_services["categorize_pending"].call_count == 1
     assert result.applied is True
-
-
-@pytest.mark.unit
-def test_identity_step_announces_new_review_items(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A proposal or conflict from refresh must tell the user it landed.
-
-    `accounts links run` / `merchants links run` echo their own summaries,
-    but the refresh pipeline has none: RefreshResult carries only errors and
-    the services' own counters are denylisted from the console. Without this
-    notice a review item appears and the user is never told.
-    """
-    from moneybin.services import account_links_service, merchant_links_service
-
-    def _accounts_service(_db: Database) -> Any:
-        return MagicMock(run=MagicMock(return_value=3))
-
-    def _merchants_service(_db: Database) -> Any:
-        return MagicMock(
-            run=MagicMock(return_value=HarvestResult(bound=7, conflicts=2))
-        )
-
-    monkeypatch.setattr(account_links_service, "AccountLinksService", _accounts_service)
-    monkeypatch.setattr(
-        merchant_links_service, "MerchantLinksService", _merchants_service
-    )
-
-    result = refresh(MagicMock(), steps=["identity"])
-
-    assert result.identity_errors == ()
-    notices = result.review_notices
-    assert any("3" in n and "accounts links pending" in n for n in notices), notices
-    assert any("2" in n and "merchants links pending" in n for n in notices), notices
-
-
-@pytest.mark.unit
-def test_identity_step_stays_quiet_when_nothing_needs_review(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No proposals, no conflicts, no notice — silence is the whole point."""
-    from moneybin.services import account_links_service, merchant_links_service
-
-    def _accounts_service(_db: Database) -> Any:
-        return MagicMock(run=MagicMock(return_value=0))
-
-    def _merchants_service(_db: Database) -> Any:
-        # bound>0 with no conflicts: work happened, but none of it needs a
-        # human, so the console stays quiet.
-        return MagicMock(
-            run=MagicMock(return_value=HarvestResult(bound=9, conflicts=0))
-        )
-
-    monkeypatch.setattr(account_links_service, "AccountLinksService", _accounts_service)
-    monkeypatch.setattr(
-        merchant_links_service, "MerchantLinksService", _merchants_service
-    )
-
-    result = refresh(MagicMock(), steps=["identity"])
-
-    assert result.review_notices == ()

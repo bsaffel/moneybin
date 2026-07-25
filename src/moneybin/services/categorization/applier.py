@@ -600,11 +600,9 @@ class MatchApplier:
                 MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(int(row[0]))
         created = list(dict.fromkeys(created_merchant_ids))
         if created:
-            # The count is what a reader can act on; the ids are traceability,
-            # so they stay at debug rather than one info line apiece. Merchant
-            # names are never logged (see .claude/rules/security.md).
+            # A count, not one line per id: a categorization run creates these
+            # in bulk. Merchant names are never logged (.claude/rules/security.md).
             logger.info(f"Created {len(created)} user merchant(s)")
-            logger.debug(f"Created user merchant ids: {', '.join(created)}")
 
     # -- Rule management --
 
