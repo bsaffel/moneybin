@@ -180,7 +180,7 @@ Two signals from the review queue:
 1. **Noise ratio** — you're rejecting a lot of proposed pairs. Scoring is too permissive or threshold too low.
 2. **Missed pairs** — you manually identify transfers that the matcher didn't propose. Blocking criteria too strict or threshold too high.
 
-These surface naturally during `moneybin transactions review --type matches`.
+These surface naturally in `moneybin transactions matches pending`.
 
 ### Diagnose: where is the problem?
 
@@ -255,7 +255,7 @@ After import, the matcher runs in transfer mode alongside dedup:
 ```
 Imported 142 transactions from chase_checking_2026-03.csv
   Matching: 8 dedup auto-merged, 5 potential transfers found
-  Run 'moneybin transactions review --type matches' when ready
+  Run 'moneybin transactions matches pending' to see them, then 'moneybin review --confirm <match-id>' to decide
 ```
 
 ### Match commands (extended)
@@ -264,7 +264,7 @@ Transfer detection extends the commands defined in `matching-same-record-dedup.m
 
 | Command | Transfer behavior |
 |---|---|
-| `moneybin transactions review --type matches` | Shows dedup and transfer proposals. Transfer pairs display both sides (interactive loop pending per `moneybin-cli.md` v2; `--status` works end-to-end). |
+| `moneybin transactions matches pending` | Lists dedup and transfer proposals. Side-by-side pair rendering is pending per `moneybin-cli.md` v2; `moneybin review --type matches` reports the count. |
 | `moneybin transactions matches history` | `--type transfer` filter. Signal breakdown per entry. (`--status rejected` planned for tuning diagnosis.) |
 | `moneybin transactions matches undo <match_id>` | Un-matches a confirmed transfer pair, restores both transactions to independent status. |
 | `moneybin transactions matches run` | Runs dedup + transfers. `--auto-accept-transfers` skips interactive review. |
@@ -287,9 +287,9 @@ Transfer pair (confidence: 0.84)
 
 | Interactive | Flag equivalent |
 |---|---|
-| Review one-by-one | `moneybin transactions review --type matches --confirm <match_id>` (one ID per invocation; non-interactive flags pending per `moneybin-cli.md` v2) |
-| Accept all pending | `moneybin transactions review --type matches --confirm-all` (pending — see above) |
-| Reject specific | `moneybin transactions review --type matches --reject <match_id>` (pending — see above) |
+| Review one-by-one | `moneybin review --type matches --confirm <match_id>` (one ID per invocation) |
+| Accept all pending | `moneybin review --type matches --confirm-all` |
+| Reject specific | `moneybin review --type matches --reject <match_id>` |
 
 ## MCP Interface
 

@@ -29,6 +29,49 @@ def test_review_type_invalid() -> None:
 
 @patch("moneybin.cli.commands.transactions.review.get_database")
 @patch("moneybin.config.get_settings")
+def test_bare_review_answers_its_own_help_text(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """`moneybin review` with no flags prints the counts its help advertises."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(app, ["review"])
+    assert result.exit_code == 0
+    out = result.output.lower()
+    assert "not yet implemented" not in out
+    assert "matches pending" in out
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
+def test_review_type_filter_without_status_prints_the_count(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """`--type matches` alone selects the count, not the unbuilt walk."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(app, ["review", "--type", "matches"])
+    assert result.exit_code == 0
+    out = result.output.lower()
+    assert "not yet implemented" not in out
+    assert "matches pending" in out
+
+
+def test_interactive_is_the_only_stubbed_path() -> None:
+    """The unbuilt walk is reachable only by asking for it by name."""
+    result = runner.invoke(app, ["review", "--interactive"])
+    assert result.exit_code == 0
+    assert "not yet implemented" in result.output.lower()
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
 def test_review_status_flag(
     mock_get_settings: MagicMock, mock_get_db: MagicMock
 ) -> None:

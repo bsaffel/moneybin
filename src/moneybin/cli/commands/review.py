@@ -7,8 +7,8 @@ Aggregates pending counts from all five review queues:
   - Merchant-link decisions
   - Security-link decisions
 
-Use `moneybin review --status` to see counts; interactive walk is
-stubbed pending the v2 review-loop UX.
+Counts are what a bare `moneybin review` prints; the item-by-item walk is
+stubbed pending the v2 review-loop UX and reachable only via `--interactive`.
 
 See also: `moneybin transactions review` (deprecated alias — removed after
 one minor release; points here).
@@ -34,7 +34,10 @@ def review_command(
         help="all | matches | categorize | account-links | merchant-links | security-links",
     ),
     status: bool = typer.Option(
-        False, "--status", help="Show queue counts only, no interactive loop"
+        False, "--status", help="Show queue counts (the default)"
+    ),
+    interactive: bool = typer.Option(
+        False, "--interactive", help="Walk the queue item by item (not yet built)"
     ),
     confirm_id: str | None = typer.Option(
         None, "--confirm", help="Non-interactive: confirm one match by ID"
@@ -49,14 +52,16 @@ def review_command(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
-    """Walk all pending review queues: matches, uncategorized, account-links, merchant-links, and security-links.
+    """Pending counts across all review queues: matches, uncategorized, account-links, merchant-links, and security-links.
 
     One sweep answers "what needs my attention?" across all review domains.
-    Use --status for counts only; --type to filter to a specific queue.
+    Use --type to filter to a specific queue, then --confirm/--reject/
+    --confirm-all to decide matches without leaving the shell.
     """
     review_impl(
         type_=type_,
         status=status,
+        interactive=interactive,
         confirm_id=confirm_id,
         reject_id=reject_id,
         confirm_all=confirm_all,

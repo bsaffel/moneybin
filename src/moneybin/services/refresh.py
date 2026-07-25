@@ -204,7 +204,8 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                 logger.info(f"Matching: {match_result.summary()}")
                 if match_result.has_pending:
                     logger.info(
-                        "Run 'moneybin transactions review --type matches' when ready"
+                        "Run 'moneybin transactions matches pending' to see them, "
+                        "then 'moneybin review --confirm <match-id>' to decide"
                     )
         except (duckdb.CatalogException, duckdb.BinderException):
             # Views not built yet (first load precedes SQLMesh apply) — an

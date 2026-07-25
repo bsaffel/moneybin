@@ -85,7 +85,7 @@ This **applies** the existing dedup and medallion patterns rather than establish
 
 The accept/reject surface shipped in #209; this requirement adds component clustering to the read side only.
 
-11. The pending-match read path (`MatchingService.get_pending` → MCP `reviews(kind="matches", status="pending")`, CLI `transactions review --type matches`, `matches history`) **clusters pending dedup edges by their connected component** and presents each cluster as a unit (e.g., "3 copies of −$42.00 on 2024-03-15 across ofx/csv/sources"). Components are computed from the same accepted+pending edge graph the matcher seeds from.
+11. The pending-match read path (`MatchingService.get_pending` → MCP `reviews(kind="matches", status="pending")`, CLI `transactions matches pending`, `matches history`) **clusters pending dedup edges by their connected component** and presents each cluster as a unit (e.g., "3 copies of −$42.00 on 2024-03-15 across ofx/csv/sources"). Components are computed from the same accepted+pending edge graph the matcher seeds from.
 12. "Accept group" / "reject group" expand to per-edge `MatchingService.set_status(match_id, status)` calls (MCP `reviews_decide(decisions=[...])`, CLI `matches set` / `review --confirm/--reject`) over the pending edges in the cluster; `accept_all_pending` already covers the whole-queue case. The edge-level mutation contract from #209 is unchanged. Re-split is automatic via Requirement 6.
 
 ### Doctor / `dedup_reconciliation`

@@ -100,6 +100,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **`moneybin review` prints the counts its help promises instead of refusing to
+  run.** A bare invocation, and `--type <queue>` on its own, reached a
+  not-implemented stub while the counts sat behind `--status`; counts are now the
+  default and the unbuilt item-by-item walk is reachable only via
+  `--interactive`. The recovery hints printed after `transactions matches run`,
+  `transactions matches backfill`, and `refresh` — plus the
+  `transactions_matches_pending` MCP hint — pointed at
+  `moneybin transactions review --type matches`, which was both the deprecated
+  alias and the stubbed path; they now name `transactions matches pending` and
+  `review --confirm`. Passing two of `--status`, `--interactive`, and
+  `--confirm`/`--reject`/`--confirm-all` is a usage error rather than a silent
+  pick. (#358)
 - **`sync pull` no longer buries its results in diagnostic logging.** HTTP
   status lines, raw-loader row counts, per-tier match counts, and the
   profile-resolution source now go to the log file instead of the console, and

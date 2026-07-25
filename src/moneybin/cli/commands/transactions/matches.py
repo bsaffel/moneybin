@@ -99,7 +99,9 @@ def matches_run(
                     logger.info(f"Matching: {result.summary()}")
                     if result.has_pending:
                         logger.info(
-                            "Run 'moneybin transactions review --type matches' when ready"
+                            "Run 'moneybin transactions matches pending' to see "
+                            "them, then 'moneybin review --confirm <match-id>' "
+                            "to decide"
                         )
                 else:
                     logger.info("No new matches found")
@@ -226,7 +228,8 @@ def matches_backfill(
                 logger.info(f"Backfill complete: {result.summary()}")
                 if result.has_pending:
                     logger.info(
-                        "Run 'moneybin transactions review --type matches' when ready"
+                        "Run 'moneybin transactions matches pending' to see them, "
+                        "then 'moneybin review --confirm <match-id>' to decide"
                     )
 
                 if not skip_transform and result.auto_merged:
