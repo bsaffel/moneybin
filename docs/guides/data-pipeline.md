@@ -218,7 +218,7 @@ Surviving candidates are then scored by:
 The combined confidence score is checked against two thresholds from settings:
 
 - `>= high_confidence_threshold` (default `0.85`) → auto-accept, written to `app.match_decisions` with `match_status = 'accepted'`.
-- `>= review_threshold` (default `0.70`) → land in the review queue (`moneybin review --type matches`).
+- `>= review_threshold` (default `0.70`) → land in the review queue (`moneybin transactions matches pending` lists them; `moneybin review --type matches --status` reports the count).
 - Below `review_threshold` → discarded.
 
 Notably **not** part of the comparison: payee fuzzy match (description similarity does the work), merchant ID, category, or any field that the matcher itself is supposed to harmonize downstream. Dedup is identity, not normalization.
@@ -350,7 +350,7 @@ Sensitivity classification and critical-field masking are wired today. The conse
 Symptom-to-fix, in rough order of how often they come up.
 
 - **A new transaction is in `raw.*` but not `core.*`.** Run `moneybin refresh`. The import probably ran with `--no-refresh`.
-- **A row appears twice in `core.fct_transactions`.** Two sources contributed without being matched. Run `moneybin review --type matches` to see pending dedup candidates; confirm the right ones and `refresh`.
+- **A row appears twice in `core.fct_transactions`.** Two sources contributed without being matched. Run `moneybin transactions matches pending` to list the candidates, then accept them with `moneybin review --type matches --confirm <match_id>` (or `--confirm-all`) and `refresh`. The bare `moneybin review --type matches` is the interactive loop, which is not built yet — it exits without listing anything.
 - **A row is missing entirely after a successful import.** Check `moneybin import status` for the batch counts, then `moneybin import history --import-id <id>` for per-file detail. If the row is in `raw.*` but not flowing through, run `moneybin refresh` and watch for SQLMesh errors.
 - **Numbers don't reconcile against your statement.** Run `moneybin system doctor` for integrity checks. Look at `meta.fct_transaction_provenance` to see which sources contributed to a given `transaction_id`. Balance assertions in `app.balance_assertions` let you pin known-good checkpoints.
 - **Schema drift after a migration.** Boot-time self-heal runs the pending migrations on the next `moneybin db unlock` (subject to the `no_auto_upgrade` config gate). `moneybin system doctor` confirms.

@@ -141,7 +141,7 @@ or reject with
 `identity_links_decide(decisions=[{"kind":"account_link","decision_id":"<id>","decision":"reject"}])`,
 then run `refresh_run(steps=["identity"])`.
 The `review` command (`moneybin review --type
-account-links`) shows the pending count across queues. **You decide every merge**
+account-links --status`) shows the pending count across queues. **You decide every merge**
 — MoneyBin won't combine two accounts on a weak signal on its own.
 
 ## What happens after a match
