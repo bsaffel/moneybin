@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Database & Security
 
 MoneyBin encrypts every profile database at rest by default. This guide covers the encryption model, key lifecycle, headless and multi-machine deployments, backup and restore, disaster recovery, and what a stolen laptop or synced folder actually reveals. There is no unencrypted mode — every `.duckdb` file MoneyBin creates is AES-256-GCM encrypted from the moment it exists.
@@ -336,7 +336,7 @@ moneybin db info
 ## What's intentionally not protected
 
 - **Memory of running MoneyBin processes.** While the database is unlocked, the encryption key lives unmasked in the moneybin process's memory. A debugger or memory dump on the live process recovers it. The defense is OS-level.
-- **Tool results sent to a hosted LLM.** If you connect Claude Desktop, ChatGPT, Cursor, or another MCP client and ask a question, the data needed to answer that question goes to the model provider, per the MCP host's privacy policy. This is the entire point of the AI integration — see [MCP Server](mcp-server.md) for the trust model and what each surface sends. MoneyBin does not silently scrub or redact tool output before it leaves the machine. A future opt-in redaction layer is on the roadmap; it is not shipped today.
+- **Tool results sent to a hosted LLM.** If you connect Claude Desktop, ChatGPT, Cursor, or another MCP client and ask a question, the data needed to answer that question goes to the model provider, per the MCP host's privacy policy. This is the entire point of the AI integration — see [MCP Server](mcp-server.md) for the trust model and what each surface sends. Account and routing numbers are masked before a result leaves the process; amounts, balances, descriptions, merchant names, and dates are not. The consent gate that would withhold `medium` and `high` sensitivity results is on the roadmap. [What the AI Provider Sees](what-the-ai-sees.md) is the per-tool account.
 - **Logs.** `SanitizedLogFormatter` strips PII patterns (SSNs, account numbers, dollar amounts) at the formatter layer as a safety net. It is *not* a guarantee — an explicit `logger.error(f"description={user_description}")` against a non-pattern value still writes that value to disk. Treat the log directory (`<base>/profiles/<profile>/logs/`) as semi-trusted: don't paste log files into public bug reports without skimming them first.
 - **Anyone with a live unlocked keychain session on the same machine.** Encryption at rest is a defense against snapshots of your data — disk images, sync replicas, backup tapes. It is not a defense against an attacker who can already act as you on a machine that's unlocked and running. Use a screen lock and `db lock` when you walk away.
 

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Scenario Authoring Guide
 
 How to write a scenario test that exercises the whole pipeline end-to-end against a synthetic dataset or a hand-authored fixture, with assertions that survive code changes. Companion: [`synthetic-data.md`](synthetic-data.md) covers the generator that scenarios consume.
@@ -315,7 +315,7 @@ For non-bug-repro work (covering a new pipeline stage, adding distribution asser
 
 If you're reproducing a bug from a real CSV, OFX, or DB snapshot, the input must be anonymized before it lands in the repo.
 
-The fully-automated path is the planned `moneybin synthetic anonymize` engine (see [`docs/specs/testing-anonymized-data.md`](../specs/testing-anonymized-data.md)) — a structure-preserving anonymizer that masks merchants, perturbs amounts, shifts dates while preserving distributions. It is **planned but not implemented today**.
+The fully-automated path is the planned `moneybin synthetic anonymize` engine (see [`docs/specs/testing-anonymized-data.md`](../specs/testing-anonymized-data.md)) — a structure-preserving anonymizer that masks merchants, perturbs amounts, shifts dates while preserving distributions. It is **planned**.
 
 The manual recipe in the meantime — sufficient for bug-repro fixtures:
 

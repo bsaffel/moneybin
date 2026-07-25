@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Threat Model
 
 What MoneyBin protects against, and what it does not. This page is the honest list — written so a privacy-conscious user can decide whether MoneyBin meets their threat model, not so MoneyBin looks good. If you're trusting MoneyBin with real financial data, read this in full before you decide.
@@ -11,7 +11,7 @@ The neighboring docs cover the mechanisms: the [Database & Security guide](datab
 
 ## Hazard: no egress gate today
 
-> **The single most important thing on this page.** Every row of every MCP tool result your agent uses to answer goes to whichever LLM provider the MCP client is configured against. Account and routing numbers are masked before they leave (CRITICAL-tier fields — enforced today); nothing else is. There is no consent prompt and no aggregate-only fallback intercepting `medium` or `high` sensitivity tool results before they leave the MoneyBin process. Sensitivity tiers are an audit-log signal today, not an enforced gate. If "Anthropic / OpenAI / Google sees my transactions for the duration of this conversation" is unacceptable, do not use the agent — use the CLI, where there is no LLM in the loop, or point your client at a local model. The enforcing consent / degraded-response framework is on the roadmap; it is not shipped. The full per-tool breakdown — what leaves, what's masked, what's recorded — lives in [What the AI Provider Sees](what-the-ai-sees.md).
+> **The single most important thing on this page.** Every row of every MCP tool result your agent uses to answer goes to whichever LLM provider the MCP client is configured against. Account and routing numbers are masked before they leave (CRITICAL-tier fields — enforced today); nothing else is. There is no consent prompt and no aggregate-only fallback intercepting `medium` or `high` sensitivity tool results before they leave the MoneyBin process. Sensitivity tiers are an audit-log signal today, not an enforced gate. If "Anthropic / OpenAI / Google sees my transactions for the duration of this conversation" is unacceptable, do not use the agent — use the CLI, where there is no LLM in the loop, or point your client at a local model. The enforcing consent / degraded-response framework is on the roadmap. The full per-tool breakdown — what leaves, what's masked, what's recorded — lives in [What the AI Provider Sees](what-the-ai-sees.md).
 
 ---
 
@@ -35,7 +35,7 @@ Concurrent writers across machines via a sync folder will corrupt the database (
 
 Interactive CLI output and MCP tool results don't print SSNs, raw account numbers, or full balances in the clear:
 
-- Reports and queries that surface account references render masked identifiers (`...1234`) rather than the full account number.
+- Reports and queries that surface account references render masked identifiers (`****1234`) rather than the full account number.
 - The `SanitizedLogFormatter` (see below) masks the same patterns in any log output that incidentally captures them.
 
 This is a partial protection. Descriptions, merchant names, dates, and amounts ARE in plain output by design — you asked the tool for them. If "the screen behind you" is in your threat model, prefer non-shoulder-surfable environments over relying on this layer.
@@ -82,7 +82,7 @@ MoneyBin has no way to detect or stop a misbehaving client. The trust boundary i
 
 ### A malicious or compromised hosted LLM provider
 
-See the [hazard callout](#hazard-no-egress-gate-today) at the top. Today: every tool result goes to whichever LLM provider the MCP client is configured against, unfiltered. The audit log captures intent; it does not block the call. See [MCP server: sensitivity tiers](mcp-server.md#sensitivity-tiers) for the tier definitions.
+See the [hazard callout](#hazard-no-egress-gate-today) at the top. Today: every tool result goes to whichever LLM provider the MCP client is configured against, unfiltered. The audit log captures intent; it does not block the call. See [Sensitivity tiers](#sensitivity-tiers-current-vs-planned) below for the tier definitions.
 
 ### An attacker who can run code in your MoneyBin process
 
@@ -94,7 +94,7 @@ Plaid is the upstream banking provider. When you use sync:
 
 - Your bank credentials go directly from your browser to Plaid's hosted Link UI — they never touch MoneyBin or `moneybin-sync`.
 - Plaid sees every transaction and balance it pulls on your behalf, by design.
-- Plaid retains transaction history for as long as the item remains linked, per Plaid's policies. Disconnecting via `moneybin sync disconnect --institution <id>` does not retroactively delete history Plaid already pulled.
+- Plaid retains transaction history for as long as the item remains linked, per Plaid's policies. Disconnecting via `moneybin sync disconnect --institution <name>` does not retroactively delete history Plaid already pulled.
 
 If "Plaid sees my transactions" is incompatible with your threat model, use file-based imports (OFX/QFX/QBO/CSV/PDF) only. Those paths never touch the network.
 
@@ -150,7 +150,7 @@ Every profile database is encrypted from the moment it's created. There is no un
 What it does NOT catch — and what you must therefore keep out of log statements by hand:
 
 - **Merchant names and free-text descriptions.** "Bought at AMAZON" passes through verbatim. Location-bearing merchant names (an obscure local pharmacy, a hotel in another country) can reveal more than a balance does.
-- **Account names and labels.** "Chase Checking ...1234" masks the digits; "Chase Checking" doesn't.
+- **Account names and labels.** "Chase Checking 1234567890" masks to "Chase Checking ****...7890"; "Chase Checking" doesn't.
 - **Pre-decimal amounts without `$`.** A `1234.56` in a log line is not masked. Use the dollar sign or don't log the amount.
 - **Decimal SSN/account fragments split across lines.** Multi-line records are formatted line-by-line, so a pattern split by a newline won't match.
 - **PII in exception messages from third-party libraries.** The formatter applies AFTER the inner formatter runs; if a library composes a message with a raw account number embedded, the formatter masks it. If the library writes via a logger configured without `SanitizedLogFormatter`, it doesn't.
@@ -168,7 +168,7 @@ The `.claude/rules/security.md` log-content rules and `docs/specs/privacy-data-p
 - **Disabling file logging entirely.** `MONEYBIN_LOGGING__LOG_TO_FILE=false` (or set `log_to_file: false` in your config file). Logs still go to stderr.
 - **Rotation.** MoneyBin does NOT rotate log files itself. Use the OS facility (`logrotate` on Linux, `newsyslog` on macOS) or rotate by hand.
 - **What sanitizer events look like.** When a pattern is masked, the sanitizer emits a separate event at `DEBUG` level (it does not warn). If you grep for sanitizer activity, look in `DEBUG` output, not `WARNING`.
-- **The MCP file-log default.** MCP stdio sessions write their own log file by default; in a hosted server context the file handler is off and re-enabled via `MONEYBIN_LOGGING__MCP_FILE=true`. See [observability spec](../specs/observability.md) for the full handler matrix.
+- **The MCP file-log default.** MCP sessions write their own log file (`mcp_YYYY-MM-DD.log`) under the same `log_to_file` setting as the CLI — `MONEYBIN_LOGGING__LOG_TO_FILE=false` disables it for both streams; there's no separate stdio-vs-hosted auto-detection today.
 
 ---
 
@@ -190,7 +190,7 @@ flowchart LR
     Broker <--> DB
 ```
 
-The MoneyBin MCP server (local stdio) has no listening port. The trust boundary is the OS user that launched the client process.
+On the default and only supported transport (stdio), the MoneyBin MCP server has no listening port. `moneybin mcp serve --transport sse|streamable-http --insecure` opens an unauthenticated network port instead — MoneyBin has no HTTP authentication yet, so anyone who can reach that port can read and write your financial data. The command refuses to start without `--insecure`; see [MCP clients: Transport](mcp-clients.md#transport) for why it exists and when (rarely) to use it. On the default transport, the trust boundary is the OS user that launched the client process.
 
 ### Client egress profile
 
@@ -203,7 +203,7 @@ A firewall ruleset for the MoneyBin client alone — without an MCP client runni
 | `moneybin db ...`, `moneybin transform apply`, `moneybin reports ...` | None | All local. |
 | `moneybin sync ...` (Plaid path) | `sync.server_url` only | Default is `None` — the user supplies the broker URL via env / config. Set to your self-hosted instance or to the hosted broker if you choose one. |
 | `moneybin gsheet ...` / `gsheet_*` | Google OAuth and Sheets APIs | Only when the user invokes the connector; credentials remain in `SecretStore`. |
-| `moneybin export ... --destination sheets:*` / `export_run` | Google Sheets API | Only when the user explicitly selects a saved Sheets export destination; export data is written to its managed tabs. |
+| `moneybin export bundle\|report --to sheets:<name>` / `export_run` | Google Sheets API | Only when the user explicitly selects a saved Sheets export destination; export data is written to its managed tabs. |
 | Categorization assist (MCP tool) | None | The LLM call originates in the MCP client process, not in MoneyBin. |
 
 No telemetry, no analytics, no update checks, no enrichment lookups. The MCP client running alongside MoneyBin makes its own outbound calls per its own privacy policy — that is out of MoneyBin's control.
@@ -233,7 +233,7 @@ Every MCP tool carries one of four sensitivity tiers, derived automatically from
 
 **What this means today:** the tier is a logging signal plus (at `critical`) a masking trigger, not a consent gate. A `medium`, `high`, or `critical` tool executes and returns its result without any user-visible consent prompt — account and routing numbers masked, everything else in the clear; the response leaves the MoneyBin process and lands in the MCP client, which forwards it to the LLM. The per-call privacy log captures intent (use `privacy(view="log")` to read it back; `system_audit` records mutations only), but nothing blocks the call.
 
-**What this means going forward:** when the consent framework lands, `medium` / `high` calls without consent will return aggregate-only `data` with `summary.degraded: true` — never failing outright. The tier names won't change. Cross-links: the per-tool breakdown of what actually leaves is in [What the AI Provider Sees](what-the-ai-sees.md); tier mechanics in [MCP server: sensitivity tiers](mcp-server.md#sensitivity-tiers).
+**What this means going forward:** when the consent framework lands, `medium` / `high` calls without consent will return aggregate-only `data` with `summary.degraded: true` — never failing outright. The tier names won't change. Cross-links: the per-tool breakdown of what actually leaves is in [What the AI Provider Sees](what-the-ai-sees.md); tier mechanics in [MCP server: data handling](mcp-server.md#data-handling).
 
 If you need the strongest practical safeguard before the gate ships: lock the database when you're not actively using the agent (see [`db lock` semantics](#db-lock-semantics) below).
 
@@ -344,7 +344,7 @@ Concrete actions a privacy-conscious user can take now, ranked by impact.
 
 - **`moneybin db lock` when you're not actively using the agent or CLI.** The keychain entry survives a screen lock by default — `db lock` is what evicts the key. See [semantics](#db-lock-semantics) above.
 - **Keep at least one off-machine encrypted backup** of the profile database. Storage is cheap; recovery from drive failure with no backup is not.
-- **Audit the audit log periodically.** `moneybin db query "SELECT * FROM app.audit_log ORDER BY recorded_at DESC LIMIT 100"`, or via the `system_audit` MCP tool. The audit log captures every mutation that flows through a dedicated tool. Keep in mind [integrity caveats](#audit-log-integrity) — it's a forensic aid, not a tamper-resistant log.
+- **Audit the audit log periodically.** `moneybin db query "SELECT * FROM app.audit_log ORDER BY occurred_at DESC LIMIT 100"`, or via the `system_audit` MCP tool. The audit log captures every mutation that flows through a dedicated tool. Keep in mind [integrity caveats](#audit-log-integrity) — it's a forensic aid, not a tamper-resistant log.
 
 ### Consider
 

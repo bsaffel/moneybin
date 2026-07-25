@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Data Sources
 
 Every supported data source — what file formats and API integrations MoneyBin can ingest, what fields each preserves, where the data lands. For the how-to (running the import), see [`docs/guides/data-import.md`](../guides/data-import.md). For the resulting schema, see [`docs/reference/data-model.md`](data-model.md). For how these sources resolve to one canonical account — which identity signal each format provides — see [`docs/reference/account-matching.md`](account-matching.md).
@@ -13,10 +13,11 @@ Reference for engineers wiring automation against the import path and for migran
 |--------|---------------------|--------------------|
 | Tabular files (CSV/TSV/Excel/Parquet/Feather) | `csv`, `tsv`, `excel`, `parquet`, `feather` | `raw.tabular_transactions`, `raw.tabular_accounts` |
 | OFX / QFX / QBO | `ofx` | `raw.ofx_transactions`, `raw.ofx_accounts`, `raw.ofx_balances`, `raw.ofx_institutions` |
-| Plaid sync | `plaid` | `raw.plaid_transactions`, `raw.plaid_accounts`, `raw.plaid_balances` |
-| Manual entry | `manual` | `raw.manual_transactions` |
+| PDF statements | `pdf` | `raw.tabular_transactions` (transaction-shaped documents); `raw.pdf_seeds` + generated `raw.pdf_<alias>` views (everything else) |
+| Plaid sync | `plaid` | `raw.plaid_transactions`, `raw.plaid_accounts`, `raw.plaid_balances`; investments: `raw.plaid_securities`, `raw.plaid_investment_transactions`, `raw.plaid_investment_holdings`, `raw.plaid_investment_holding_lots`, `raw.plaid_investment_holdings_snapshots` |
+| Manual entry | `manual` | `raw.manual_transactions`; investments: `raw.manual_investment_transactions` |
 
-Tabular `source_type` is one of five file-format values — there is no single "tabular" family tag in core. Filter with `source_type IN ('csv','tsv','excel','parquet','feather')` when you want every tabular row regardless of file type. Every batch — regardless of source — registers an `import_id` in `raw.import_log` and stamps it on every row it produced. That id is the unit of `moneybin import revert`.
+Tabular `source_type` is one of five file-format values — there is no single "tabular" family tag in core. Filter with `source_type IN ('csv','tsv','excel','parquet','feather')` when you want every tabular row regardless of file type. PDF transaction-shaped rows share `raw.tabular_transactions` with the five file formats above, tagged `source_type='pdf'` — include it explicitly when a query means "every row that went through the tabular pipeline." Every batch — regardless of source — registers an `import_id` in `raw.import_log` and stamps it on every row it produced. That id is the unit of `moneybin import revert`.
 
 `source_origin` is a finer-grained tag scoped beneath `source_type`: institution slug for OFX (`wells_fargo`, `chase`), Plaid item id for Plaid, format name for tabular (`tiller`, `chase_credit`), and the literal `'user'` for manual entries.
 
@@ -29,8 +30,13 @@ The canonical rule in `core.fct_transactions` is **negative = expense, positive 
 | `tiller`, `mint`, `maybe`, `chase_credit` | `negative_is_expense` (already canonical) | No flip; pass-through in `prep.stg_tabular__transactions` |
 | `ynab`, `citi_credit` | `split_debit_credit` (separate Outflow/Debit + Inflow/Credit columns) | Merged into one signed `amount` in tabular transforms (`src/moneybin/extractors/tabular/transforms.py`) |
 | OFX | `negative_is_expense` (OFX native) | No flip |
+| PDF | Derived per document — `negative_is_expense` (bank statements) or `negative_is_income` (credit-card charges post positive, payments negative) | Detected during recipe derivation; a `negative_is_income` recipe requires human ratification before it writes (see "PDF statements" below) — never applied silently |
 | Plaid | `positive_is_expense` (Plaid native) | Flipped in `prep.stg_plaid__transactions` |
 | Manual | `negative_is_expense` (enforced at write) | No flip |
+
+## Account-type normalization
+
+`core.dim_accounts.account_type` normalizes every source's native spelling to one five-value vocabulary — `depository`, `credit`, `loan`, `investment`, `other` — through `seeds.account_type_map` (`src/moneybin/sqlmesh/models/seeds/account_type_map.csv`, 19 rows). Raw tables keep the source's own spelling (OFX `CHECKING`/`CREDITLINE`, Plaid `depository`/`credit`, the PDF importer's `credit`); the three `stg_*__accounts` staging views normalize through the shared map before `core` sees a value. An unrecognized spelling resolves to `NULL`, never a guessed type, so a later, stronger source can still supply the real value on merge. Finer detail survives in `account_subtype` (`checking`, `savings`, `money market`, `cd`, `cash management`, `line of credit`, `credit card`, `mortgage`, `student`, `brokerage`, …) — Plaid's own subtype wins over the registry's when both are present.
 
 ## Tabular formats
 
@@ -65,7 +71,7 @@ The order below is what `ImportService._import_tabular_file` executes (`src/mone
 | Sign convention | Per-profile or inferred | `--sign {negative_is_expense\|negative_is_income\|split_debit_credit}` | Overrides detection. |
 | Excel sheet | Largest sheet | `--sheet <name>` | Explicit sheet by name. |
 
-**Multi-currency files.** The `currency` column is parsed when present (e.g., the `maybe` profile reads it into `raw.tabular_transactions.currency`), but `core.*` is single-currency today — every row is treated as USD downstream regardless of the per-row currency. Mixed-currency files import without warning. FX conversion lands with the multi-currency milestone.
+**Multi-currency files.** The `currency` column is parsed when present (e.g., the `maybe` profile reads it into `raw.tabular_transactions.currency`) and carried through to `core.fct_transactions.currency_code` — every source (tabular, OFX `<CURDEF>`, Plaid, manual) captures its own currency end-to-end rather than defaulting the unknown case to USD; a row without one inherits `core.dim_accounts.currency_code`. What's still missing: no conversion, no home-currency setting, and no no-blend guard — a mixed-currency file imports without warning, and a report summing across currencies adds the raw numbers with no FX applied.
 
 Each named profile below ships in `src/moneybin/data/tabular_formats/<name>.yaml` and matches first-import autodetection without needing `--format`. Field-mapping legend: each profile lists `field_mapping` (source-column → canonical field). Anything appearing in `header_signature` but **not** in `field_mapping` is read off the row but not persisted — those are the "fields dropped" entries.
 
@@ -127,7 +133,7 @@ Each named profile below ships in `src/moneybin/data/tabular_formats/<name>.yaml
 - **Required columns:** `date`, `name`, `amount`, `currency`, `account`, `category`, `tags`, `note`.
 - **Field mapping:** `date` → `transaction_date`, `name` → `description`, `amount` → `amount`, `currency` → `currency`, `account` → account name, `category` → `category`, `note` → `memo`.
 - **Fields dropped:** `tags`. Post-import: `moneybin transactions tags add`.
-- **Notes:** Date `%Y-%m-%d`, sign `negative_is_expense`. Multi-account. Also covers Sure (inherited schema). `currency` lands but downstream `core.*` is single-currency — see "Locale and encoding" above.
+- **Notes:** Date `%Y-%m-%d`, sign `negative_is_expense`. Multi-account. Also covers Sure (inherited schema). `currency` carries through to `core.fct_transactions.currency_code` with no conversion — see "Multi-currency files" above.
 
 ### `chase_credit`
 
@@ -149,7 +155,7 @@ Combinable with named profiles (override only the named flag) or with smart-dete
 
 ## OFX / QFX / QBO
 
-One extractor, three formats — Open Financial Exchange and its Quicken (QFX) and QuickBooks (QBO) variants. The OFX extractor reads both SGML and XML payloads and tolerates single-line headers. Implementation: `src/moneybin/extractors/ofx_extractor.py`.
+One extractor, three formats — Open Financial Exchange and its Quicken (QFX) and QuickBooks (QBO) variants. The OFX extractor reads both SGML and XML payloads and tolerates single-line headers. Implementation: `src/moneybin/extractors/ofx/extractor.py`.
 
 **Fields parsed from each `<STMTTRN>`:**
 
@@ -163,21 +169,44 @@ One extractor, three formats — Open Financial Exchange and its Quicken (QFX) a
 | `<MEMO>` | `memo` |
 | `<CHECKNUM>` | `check_number` |
 
-**Account-level fields parsed:** `account_id`, `routing_number`, `account_type` (e.g. `CHECKING`, `SAVINGS`, `CREDITCARD`). Landed in `raw.ofx_accounts`. **Balance fields:** statement `start_date` / `end_date`, `ledger_balance`, `available_balance`, `balance_date` → `raw.ofx_balances`. **Institution fields:** `<FI><ORG>`, `<FI><FID>` → `raw.ofx_institutions`.
+**Account-level fields parsed:** `account_id`, `routing_number`, `account_type` (raw OFX spelling — e.g. `CHECKING`, `SAVINGS`, `CREDITCARD`; normalized in `core.dim_accounts` per "Account-type normalization" above), `currency_code` (from `<CURDEF>`). Landed in `raw.ofx_accounts`. **Balance fields:** statement `start_date` / `end_date`, `ledger_balance`, `available_balance`, `balance_date`, `currency_code` → `raw.ofx_balances`. **Institution fields:** `<FI><ORG>`, `<FI><FID>` → `raw.ofx_institutions`.
 
-**Institution resolution.** The institution slug is resolved through a chain (`src/moneybin/extractors/institution_resolution.py`): `<FI><ORG>` snake-cased → static `<FI><FID>` lookup table covering major US banks (Chase, Citi, Bank of America, Wells Fargo, US Bank) → filename regex (`wells_fargo`, `chase`, `bank_of_america`, `citi`, `us_bank`, `capital_one`, `discover`, `amex`) → `--institution` override → interactive prompt → `InstitutionResolutionError`.
+**Institution resolution.** Two independent resolutions run off the same `<FI>` block (`src/moneybin/extractors/institution_resolution.py`). The **slug** (`source_origin`, an input to the transaction-id content hash) resolves through a chain: `<FI><ORG>` snake-cased → `<FI><FID>` lookup in `seeds.institutions` (5 rows: Chase, Citi, Bank of America, Wells Fargo, U.S. Bank) → filename regex (`wells_fargo`, `chase`, `bank_of_america`, `citi`, `us_bank`, `capital_one`, `discover`, `amex`) → `--institution` override → interactive prompt → `InstitutionResolutionError`. Because `<ORG>` wins whenever a bank publishes one, most banks' slugs never reach the registry step — Chase resolves to `b1`, not `chase`, since Chase's `<ORG>` is `B1`. Separately, `core.dim_accounts.institution_name` (the **display** name) joins `seeds.institutions` on `<FI><FID>` directly, independent of which step produced the slug — this is what turns Chase's opaque `<ORG>` code `B1` into "Chase" for display without touching `source_origin` or transaction-id identity.
 
 **Description cleanup.** `<NAME>` and `<MEMO>` are HTML-entity-decoded at extraction; banks that double-escape are unwound via a bounded triple-pass `html.unescape` loop.
 
+## PDF statements
+
+Generic PDF ingestion, not a per-institution parser — one extractor drives every PDF through a three-rung ladder, reusing the tabular pipeline once a document becomes rows. Implementation: `src/moneybin/extractors/pdf/`.
+
+**Extraction ladder** (`routing.py`, `auto_derive.py`, `bridge.py`):
+
+1. **Deterministic replay.** A layout-fingerprint match against `app.pdf_formats` replays its saved recipe — no LLM involvement. `front_end` records how: `text` (pdfplumber), `table` (camelot), or `vision` (not cheap-replay; re-runs through the bridge).
+2. **Deterministic auto-derive.** No fingerprint match — `derive_recipe` reconstructs the transaction table from pdfplumber's ruled tables, falling back to whitespace-column reconstruction from raw text lines when the statement draws no ruling lines. A confidence threshold gates whether the derived recipe saves and runs, or escalates.
+3. **Bridge escalation.** A transaction-shaped document (`transaction_table_underivable`) the deterministic rung can't crack is surfaced to the driving agent, which proposes a recipe; a `smart_import_parse` audit-log row records the hand-off every time. A scanned PDF with no text layer returns `import_pdf_no_text_layer` instead of attempting extraction — no vision/OCR backend runs today.
+
+**Routing — two outcomes**, gated by a ±1¢ reconciliation check (statement balance math, row count) before either one commits:
+
+| Outcome | Where it lands | Notes |
+|---|---|---|
+| Transaction-shaped, reconciles | `raw.tabular_transactions`, `source_type='pdf'` | Same matching / categorization / reports pipeline as every other tabular source. Account resolves through the existing tabular account-matching (`extractors/tabular/account_matching.py`) — a PDF transaction never lands account-less. |
+| Not transaction-shaped (`no_transaction_table`), or transaction-shaped with a non-US number locale (`unsupported_number_format`) | `raw.pdf_seeds` (JSON) + auto-generated `raw.pdf_<alias>` typed view | Catch-all; requires an `--alias`. Does not participate in matching, categorization, or `reports.*` — queryable via `sql_query` MCP, the REPL, or a direct SQL join to `fct_transactions`. |
+
+**Sign convention.** A bank statement is `negative_is_expense`, like OFX. A credit-card statement is natively `negative_is_income` (charges post positive, payments negative) — the inverse of every other source. MoneyBin requires explicit human ratification before a `negative_is_income` recipe writes anything: MCP elicitation when the client supports it, otherwise `moneybin import confirm <file> --bridge-response response.json --confirm`. The confirmation carries the evidence (a printed-vs-recorded sample) and is never applied silently — a wrong inversion corrupts every row, and a saved recipe would replay the error forever. `--sign` is a durable override but only ratifies; an agent actor can never set it (rejected at the bridge boundary).
+
+**Reversibility.** Every PDF import gets an `import_id` in `raw.import_log`, identical to tabular and OFX — `moneybin import revert` undoes it. Row identity is a position-aware content hash (`pdf_<sha256>[:16]` over `alias|page|row_index|content`), so re-importing the same statement is a no-op, while two genuinely identical rows (same-day, same-amount charges) still both survive because the row-index component breaks the tie.
+
+**Out of scope today.** Brokerage positions/holdings PDFs route to seed — no core investments table reads `raw.pdf_seeds`. W-2, 1099, and other tax-form PDFs are not extracted; no tax-form parser exists. Scanned/image-only PDFs (no text layer) are declined outright.
+
 ## Plaid sync
 
-Live banking sync brokered through `moneybin-sync`. Implementation: `src/moneybin/loaders/plaid_loader.py`, `src/moneybin/services/sync_service.py`, `src/moneybin/connectors/sync_client.py`. The client never talks to Plaid directly — it talks to the moneybin-sync API, which holds the Plaid integration as an implementation detail.
+Live banking sync brokered through `moneybin-sync`. Implementation: `src/moneybin/extractors/plaid/extractor.py`, `src/moneybin/services/sync_service.py`, `src/moneybin/connectors/sync_client.py`. The client never talks to Plaid directly — it talks to the moneybin-sync API, which holds the Plaid integration as an implementation detail.
 
 **What's pulled per sync:**
 
 - **Accounts** (`raw.plaid_accounts`): `account_id`, `account_type`, `account_subtype`, `institution_name`, `official_name`, `mask` (last-4).
-- **Transactions** (`raw.plaid_transactions`): `transaction_id`, `account_id`, `transaction_date`, `amount`, `description`, `merchant_name`, `category`, `pending`.
-- **Balances** (`raw.plaid_balances`): `account_id`, `balance_date`, `current_balance`, `available_balance`.
+- **Transactions** (`raw.plaid_transactions`): `transaction_id`, `account_id`, `transaction_date`, `amount`, `description`, `merchant_name`, `category`, `pending`, `iso_currency_code` / `unofficial_currency_code`.
+- **Balances** (`raw.plaid_balances`): `account_id`, `balance_date`, `current_balance`, `available_balance`, `iso_currency_code` / `unofficial_currency_code`.
 - **Removed transactions:** Plaid's incremental sync emits a separate `removed_transactions` list; corresponding rows are deleted from `raw.plaid_transactions` and surfaced as `transactions_removed` in the `PullResult`.
 
 **Sign convention.** `raw.plaid_transactions.amount` preserves Plaid's native convention (positive = expense). The sign flip happens exactly once, in `prep.stg_plaid__transactions`, so downstream `core.*` rows match the canonical MoneyBin convention (negative = expense).
@@ -188,11 +217,24 @@ Live banking sync brokered through `moneybin-sync`. Implementation: `src/moneybi
 |---|---|
 | Cash (`depository`: checking, savings) | First-class — flows into `core.fct_transactions` and `core.dim_accounts` |
 | Credit cards (`credit`) | First-class |
-| Investments (`investment`, `brokerage`) | Rows land in `raw.plaid_*` if exposed, but holdings / cost-basis / lot-tracking surfaces are not implemented |
+| Investments (`investment`, `brokerage`) | First-class — see "Investments" below |
 | Loans / mortgages (`loan`) | Rows land if exposed; no first-class treatment |
 | HSA (`depository.hsa`) | Rows land if exposed; no first-class treatment |
 
 **Incremental sync.** Plaid uses cursor-based incremental sync — each `sync pull` resumes from the last cursor stored server-side. `--force` resets the cursor and re-fetches full history; cross-source dedup collapses the overlap downstream.
+
+### Investments
+
+A Plaid investment/brokerage account pulls five entities beyond the depository/credit set above, all captured through the same `sync pull`:
+
+- **Securities** (`raw.plaid_securities`): `security_id`, `ticker_symbol`, `market_identifier_code`, `security_name`, `security_type`, `close_price`, `close_price_as_of`, `iso_currency_code` / `unofficial_currency_code`. Upserted in place — one row per security, overwritten on every pull.
+- **Security prices** (`raw.security_prices`, append-only): the security-level close captured alongside every securities upsert, keyed `(provider_security_key, price_date, source_type, source_origin)`. `core.fct_security_prices` resolves one close per security/date/currency; `core.dim_holdings` uses it to price a position (`market_value`, `unrealized_gain`, and `valuation_status` — `valued` / `carried_forward` / `unpriced` / `withheld`, null rather than zero when a price can't be trusted).
+- **Investment transactions** (`raw.plaid_investment_transactions`): `investment_transaction_id`, `account_id`, `security_id`, `transaction_date`, `quantity`, `amount`, `price`, `fees`, `iso_currency_code` / `unofficial_currency_code`, plus Plaid's own `investment_transaction_type` / `investment_transaction_subtype`. `prep.stg_plaid__investment_transactions` maps Plaid's ~6 types × ~48 subtypes onto MoneyBin's closed 14-value ledger vocabulary (`buy`, `sell`, `dividend`, `fee`, `split`, `transfer_in`, …) and flips the amount sign (Plaid: positive = cash out) — the only place that flip happens. A row the taxonomy can't map lands with `ledger_include=FALSE` and a `review_reason` instead of guessing.
+- **Holdings** (`raw.plaid_investment_holdings`): `account_id`, `security_id`, `holdings_date`, `institution_price`, `institution_price_as_of`, `institution_value`, `cost_basis`, `quantity`, `iso_currency_code` / `unofficial_currency_code`, `vested_quantity`, `vested_value`. One row per (account, security) as of the pull.
+- **Holding lots** (`raw.plaid_investment_holding_lots`): per-lot detail inside a holding (`institution_lot_id`, `original_purchase_datetime`, `quantity`, `purchase_price`, `cost_basis`, `current_value`, `position_type`) when the institution reports lot-level tax data.
+- **Holdings snapshots** (`raw.plaid_investment_holdings_snapshots`): one row per (item, holdings pull) — the receipt that the pull happened and what it returned (`holdings_date`, `holdings_count`), independent of whether any holdings rows were written. `core.dim_holdings` reads the newest snapshot to decide "as of when," not the presence of holdings rows — a fully liquidated brokerage account writes zero holdings but still writes its snapshot, so the newest-snapshot join (not a row scan) is what correctly shows an emptied account holding nothing.
+
+Landing tables: `core.dim_securities`, `core.fct_investment_transactions`, `core.fct_investment_lots`, `core.fct_realized_gains`, `core.dim_holdings`. Securities resolve to canonical identity through `app.security_links` (same accept/decide pattern as account linking); an unresolved security's rows carry `NULL` `security_id` rather than the raw provider id, so an unbound security can't silently masquerade as canonical.
 
 ## JSON output (`--output json`)
 
@@ -248,6 +290,11 @@ On extractor failure (single-file path), the same envelope shape is emitted with
   "accounts_loaded": 4,
   "balances_loaded": 4,
   "transactions_removed": 1,
+  "securities_loaded": 12,
+  "investment_transactions_loaded": 9,
+  "holdings_loaded": 12,
+  "holding_lots_loaded": 0,
+  "security_prices_loaded": 12,
   "institutions": [
     {
       "provider_item_id": "...",
@@ -264,6 +311,8 @@ On extractor failure (single-file path), the same envelope shape is emitted with
 }
 ```
 
+The investments fields default to `0` for a non-investment account. `PullResult` also carries `opening_bootstrap_rows`, `investment_source_overlap_accounts` (accounts with both manual and Plaid investment rows — lots and gains double-count until one source is chosen per account), and `security_resolution` / `security_resolution_error` (the `app.security_links` resolution sweep run after load), omitted above for brevity.
+
 Note: `sync pull` emits the `PullResult` directly (no envelope wrapper) — the import command emits the envelope. This is a known asymmetry; sync commands will adopt the envelope alongside the rest of the surface.
 
 ## Idempotency across sources
@@ -274,6 +323,8 @@ Re-importing the same content produces no duplicates because every raw table ded
 |---|---|---|---|
 | Tabular | `(transaction_id, account_id, source_file)` | When the source carries a transaction ID column (e.g., Tiller's `Transaction ID`), `transaction_id` is `<account_id>:<source_id>`. Otherwise, content hash: `<source_type>_<sha256-of "date\|amount\|description\|account_id">[:16]` (`src/moneybin/extractors/tabular/transforms.py`). Loader uses `on_conflict="upsert"`. | Primary key includes `source_file`, so re-importing the same content under a different filename produces a second raw row. Cross-source dedup in `core` collapses these. |
 | OFX | `(source_transaction_id, account_id, source_file)` | Source-provided `<FITID>`. Loader uses `on_conflict="upsert"`. | Same `source_file` caveat as tabular. |
+| PDF (transactions) | Same as Tabular — `(transaction_id, account_id, source_file)` | Content hash, `pdf_` prefix (`services/import_service.py::_import_pdf_transactions`), same occurrence-suffix rule as tabular. | Lands in `raw.tabular_transactions` alongside every other tabular source. |
+| PDF (seeds) | `(alias, row_hash)` | Position-aware content hash: `pdf_<sha256-of "alias\|p<page>r<row_idx>\|json(row)">[:16]` (`extractors/pdf/seed_store.py`). Loader uses `INSERT OR IGNORE`. | Re-imports keep the first import's `import_id`. The page+row-index component is load-bearing — two genuinely identical rows (same-day, same-amount charges) at different physical positions both survive; a pure content hash would collapse them to one. |
 | Plaid | `transaction_id` | Source-provided. Loader upserts in place; Plaid's `removed_transactions` list triggers deletes. | Cursor-driven — incremental by default; `--force` resets and re-fetches. |
 | Manual | `source_transaction_id` (`manual_<uuid4>[:12]`) | New ID per `transactions create` call. | A second create call with identical fields creates a new row — there is no content-hash collapse for manual entries. |
 
@@ -288,6 +339,8 @@ Per-source error surfaces. CLI exits 1 with the exception class name visible in 
 | Tabular | `ValueError` | Smart-import confidence `low` (date / amount / description not all mapped); unknown `--format` name; zero data rows; single-account profile with no `--account-name` / `--account-id`; unsupported extension; size-limit trip (use `--no-size-limit`). |
 | OFX | `ValueError` | Malformed OFX payload or read error (wraps the underlying parser exception). |
 | OFX | `InstitutionResolutionError` | Institution chain exhausted with no match and no `--institution` override (non-interactive only). |
+| PDF | `UserError` (code `import_pdf_no_text_layer`) | Scanned / image-only PDF with no selectable text layer; no vision backend to fall back to. |
+| PDF | `typer.BadParameter` (exit 2, `moneybin import confirm`) | `--bridge-response` combined with `--accept`/`--mapping`; or supplied without `--confirm`, since its recipe may invert every amount in the statement. |
 | Plaid | `httpx`-shaped errors via `sync_client` | Auth / network / rate-limit failures from moneybin-sync. |
 | All | `DatabaseKeyError`, `DatabaseLockError`, `DatabaseNotInitializedError` | Database lifecycle; surfaced with `db unlock` guidance. |
 
@@ -353,11 +406,11 @@ Drop files into the per-profile inbox; `moneybin import inbox` drains them in on
 Honest gap list. See [`docs/roadmap.md`](../roadmap.md) for current sequencing.
 
 - **Beancount / hledger ledger files.** No plain-text-accounting parsers. Workaround: export the source transactions your ledger was built from and import those.
-- **Broker / investment statements.** No eTrade, Schwab, Fidelity, or Vanguard CSV parsers. Plaid investment accounts load raw rows if exposed, but holdings, cost basis, and FIFO lot tracking are not implemented.
+- **Broker / investment statements outside Plaid.** No eTrade, Schwab, Fidelity, or Vanguard CSV parsers, and no investments-aware PDF routing — a brokerage positions/holdings PDF lands in `raw.pdf_seeds`, not a core investments table. A Plaid-linked brokerage account is first-class: securities, investment transactions, holdings, and cost basis (FIFO, HIFO, specific-identification, average-cost) are implemented — see "Investments" under Plaid sync above.
 - **HSA / 401(k) transaction history outside Plaid.** If Plaid exposes the account, raw rows land; otherwise unsupported.
-- **Multi-currency.** Every amount is treated as USD downstream. Source `currency` columns are read into `raw.tabular_transactions.currency` but original-currency preservation and FX gain/loss are not implemented.
-- **PDFs.** No PDF formats are supported. Bank-statement PDFs, W-2 forms, 1099 forms, receipts, and brokerage statements are not extracted.
-- **Tax forms.** No W-2, 1040, 1099-INT/DIV/B, K-1, or state-form parsers.
+- **FX conversion.** Every source captures its own `currency_code` (tabular, OFX, Plaid, manual) — see "Multi-currency files" above — but there's no conversion, no home-currency setting, and no no-blend guard. A report summing across currencies adds the raw numbers unconverted.
+- **Scanned / image-only PDFs.** A PDF with no text layer is declined outright (`import_pdf_no_text_layer`); no vision/OCR backend runs. Text-layer bank and credit-card statements extract deterministically or through agent-assisted recipe derivation — see "PDF statements" above.
+- **Tax forms.** No W-2, 1040, 1099-INT/DIV/B, K-1, or state-form parsers — including from a text-layer PDF, which lands in `raw.pdf_seeds` rather than a tax-shaped table.
 - **Direct Monarch / Copilot API pulls.** CSV-only — export from the tool, import the file.
 - **Programmatic format-profile registration.** New profiles require a YAML file in the repo or interactive acceptance during smart-import; no external registration API.
 - **Bulk manual entry.** `moneybin transactions create` is one row per call. For batches, build a CSV.

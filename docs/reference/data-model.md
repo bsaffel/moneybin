@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Data Model
 
 The user-facing data model. Tables in `core.*`, `reports.*`, `app.*`, `meta.*`, and `seeds.*` are the surfaces consumers (CLI, MCP, your own SQL) read from. This page covers each table's grain, key columns, and what they mean. For the pipeline that fills them, see [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md).
@@ -59,7 +59,7 @@ If you sum `outflow` from `cash_flow` and `total_spend` from `spending_trend` in
 
 ### Money types
 
-`DECIMAL(18,2)` for money columns — never `FLOAT`. The values are **major units** (dollars, euros), not minor units (cents). Polars uses `pl.Decimal(18, 2)`; Python uses `decimal.Decimal`. `DECIMAL(18,8)` is reserved for fractional shares, NAV, prices, and exchange rates (not yet materialized). Every money column in `reports.*` inherits `DECIMAL(18,2)` from the underlying `core` source.
+`DECIMAL(18,2)` for money columns — never `FLOAT`. The values are **major units** (dollars, euros), not minor units (cents). Polars uses `pl.Decimal(18, 2)`; Python uses `decimal.Decimal`. Investment quantities and unit prices (share counts, cost basis per share, security closes) use `DECIMAL(28,10)` — see [Investments](#investments) below. Exchange rates are not yet materialized (see "Currency handling" above). Every money column in `reports.*` inherits `DECIMAL(18,2)` from the underlying `core` source.
 
 ### Merchant normalization (`merchant_normalized`)
 
@@ -87,7 +87,9 @@ This is a `VIEW` over `prep.int_transactions__merged` joined to category, mercha
 | `amount_absolute` | DECIMAL(18,2) | `ABS(amount)`; avoids sign handling in aggregations. |
 | `transaction_direction` | VARCHAR | `'expense'` \| `'income'` \| `'zero'` (derived from sign). |
 | `description` | VARCHAR | Payee or merchant description from highest-priority source. |
-| `merchant_name` | VARCHAR | `COALESCE(core.dim_merchants.canonical_name, source value)`. |
+| `original_description` | VARCHAR | Raw, unmodified bank-statement description (Plaid `original_description`); NULL when the source has no separate raw form. Distinct from `description` (cleaned) and `memo` (supplementary). |
+| `merchant_name` | VARCHAR | `COALESCE(core.dim_merchants.canonical_name, source value)`. Display only. |
+| `merchant_id` | VARCHAR | FK → `core.dim_merchants.merchant_id`. NULL when no canonical merchant has been resolved. GROUP/PARTITION on this, not `merchant_name` (identifiers.md Guard 1). |
 | `memo` | VARCHAR | Additional notes from highest-priority source. |
 | `category` | VARCHAR | Fallback order: `category_id` → `core.dim_categories.category`; else `app.transaction_categories.category` snapshot; else source text. |
 | `subcategory` | VARCHAR | Same fallback chain. |
@@ -98,7 +100,7 @@ This is a `VIEW` over `prep.int_transactions__merged` joined to category, mercha
 | `is_pending` | BOOLEAN | See the "Pending and posted" callout above. |
 | `pending_transaction_id` | VARCHAR | ID of the pending row this record resolved. |
 | `location_address` / `_city` / `_region` / `_postal_code` / `_country` | VARCHAR | Merchant address parts; NULL when not provided. |
-| `location_latitude` / `_longitude` | DECIMAL(18,8) | Merchant coordinates; NULL when not provided. |
+| `location_latitude` / `_longitude` | DOUBLE | Merchant coordinates; NULL when not provided. |
 | `currency_code` | VARCHAR | ISO 4217. |
 | `source_type` | VARCHAR | Winning record's source: `ofx`, `csv`, `tsv`, `excel`, `plaid`, `manual`, ... |
 | `source_count` | INTEGER | Contributing source rows (1 for unmatched, 2+ for merged). |
@@ -194,7 +196,7 @@ Two-tier reverse lookup — match a transaction's detailed and primary codes and
 
 ### `core.bridge_transfers`
 
-Confirmed transfer pairs linking two `fct_transactions` rows. Grain: one row per `transfer_id`. `VIEW` derived from `app.match_decisions` where `match_type = 'transfer'` and `match_status = 'accepted'`.
+Confirmed transfer pairs linking two `fct_transactions` rows. Grain: one row per `transfer_id`. `VIEW` derived from `app.match_decisions` where `match_type = 'transfer'`, `match_status = 'accepted'`, and `reversed_at IS NULL` — a later-reversed match drops out even though its `match_status` still reads `'accepted'`.
 
 | Column | Type | Description |
 |---|---|---|
@@ -232,9 +234,9 @@ Observation-grain balance view: OFX statement balances, tabular running balances
 |---|---|---|
 | `account_id` | VARCHAR | Source-system account identifier. |
 | `balance_date` | DATE | Date the balance was observed (institution-local). |
-| `balance` | DECIMAL(18,2) | Observed balance. |
-| `source_type` | VARCHAR | `ofx` \| `tabular` \| `assertion`. |
-| `source_ref` | VARCHAR | File path or `'user'` for assertions. |
+| `balance` | DECIMAL(18,2) | Observed balance. **Liabilities negative.** OFX and tabular sources arrive pre-signed from the institution; Plaid's `current_balance` (always reported positive) is negated at ingest for `credit` / `loan` account types. A Plaid row whose account type can't be resolved is dropped rather than defaulted positive. |
+| `source_type` | VARCHAR | `ofx` \| `tabular` \| `assertion` \| `plaid`. |
+| `source_ref` | VARCHAR | File path (ofx/tabular), `'user'` for assertions, or the Plaid item id. |
 | `updated_at` | TIMESTAMP | Underlying observation's `loaded_at` / `created_at` (UTC). |
 | `currency_code` | VARCHAR | ISO 4217; the observation's own captured currency, else inherited from `core.dim_accounts.currency_code`. |
 
@@ -242,7 +244,7 @@ Observation-grain balance view: OFX statement balances, tabular running balances
 
 Per-account daily balance spine. Grain: one row per `(account_id, balance_date)` from each account's first observation to its last. `FULL` Python model.
 
-Observed days use the most authoritative source (per-day precedence: `user assertion > ofx > plaid > tabular`). Gaps are filled by carrying the last balance forward, adjusted by intervening transactions from `core.fct_transactions`.
+Observed days use the most authoritative source (per-day precedence: `user assertion > {ofx, plaid} > tabular`; `ofx` and `plaid` tie and are broken by freshest `updated_at`, then `source_type` ascending). Gaps are filled by carrying the last balance forward, adjusted by intervening transactions from `core.fct_transactions`.
 
 | Column | Type | Description |
 |---|---|---|
@@ -268,11 +270,157 @@ Uncategorized transactions ranked by curator-impact. Grain: one row per uncatego
 | `txn_date` | DATE | Transaction date. |
 | `amount` | DECIMAL(18,2) | Signed (source sign preserved). |
 | `description` | VARCHAR | Source description. |
+| `merchant_id` | VARCHAR | FK → `core.dim_merchants.merchant_id`. NULL when no canonical merchant was resolved. |
 | `merchant_normalized` | VARCHAR | Resolved merchant; NULL when no `dim_merchants` match and no source merchant value. |
 | `age_days` | INTEGER | `CURRENT_DATE − txn_date`. |
 | `priority_score` | DECIMAL(18,2) | `ABS(amount) × age_days` — default sort key. |
 | `source_type` | VARCHAR | Provenance source. |
 | `source_id` | VARCHAR | **NULL placeholder today.** Reserved column pending `source_id` surfacing on `fct_transactions`. Don't filter or join on it. |
+
+### Investments
+
+`core.fct_investment_transactions` is the only authored/ingested investment surface — lots, holdings, and realized gains all derive from it (Invariant 8: never write to a derived table directly). Sign convention mirrors `fct_transactions.amount`: negative = cash out, positive = cash in.
+
+### `core.dim_securities`
+
+Canonical securities dimension. Grain: one row per `security_id`. `VIEW` over `app.securities` — a catalog view, not a curated seed list (same pattern as `core.dim_merchants`): MoneyBin ships no security catalog, every security is user- or provider-created.
+
+| Column | Type | Description |
+|---|---|---|
+| `security_id` | VARCHAR | Stable surrogate (truncated UUID4, 12 hex); never derived from ticker. |
+| `name` | VARCHAR | Display name. |
+| `security_type` | VARCHAR | `equity` \| `etf` \| `mutual_fund` \| `bond` \| `crypto` \| `cash` \| `other`. `cash` covers money-market/sweep positions. |
+| `ticker` | VARCHAR | Display/lookup ticker; not unique (tickers get reused) — carry `security_id` for joins/aggregation (identifiers.md Guard 1). |
+| `exchange` | VARCHAR | Listing exchange; disambiguates duplicate tickers. |
+| `cusip` | VARCHAR | Licensed identifier; NULL unless user-supplied. |
+| `isin` | VARCHAR | International identifier. |
+| `figi` | VARCHAR | OpenFIGI mapping. |
+| `coingecko_id` | VARCHAR | Crypto price-lookup slug. |
+| `is_cash_equivalent` | BOOLEAN | Treat-like-cash flag (money-market/sweep); NULL = unknown. |
+| `currency_code` | VARCHAR | Denominating currency; no FX conversion in v1. |
+
+`created_by`, `created_at`, `updated_at`, and the per-security `cost_basis_method` override live on `app.securities` but are not projected through this view.
+
+Logical grain key: `security_id`.
+
+### `core.dim_holdings`
+
+Current positions: the sum of open lots per `(account_id, security_id)` — a "now" snapshot with no date dimension, rebuilt on every run. `VIEW`. Grain: `(account_id, security_id)`.
+
+| Column | Type | Description |
+|---|---|---|
+| `account_id` | VARCHAR | FK → `core.dim_accounts` (grain). |
+| `security_id` | VARCHAR | FK → `core.dim_securities` (grain). |
+| `quantity` | DECIMAL(28,10) | Total open units (`Σ remaining_quantity` across open lots). |
+| `cost_basis` | DECIMAL(18,2) | Total open basis (`Σ cost_basis_remaining`). Under average cost the pooled remaining basis can exceed a single lot's own total — this, not `cost_basis_total`, is the meaningful figure. |
+| `average_cost` | DECIMAL(28,10) | `cost_basis / quantity`; NULL when `quantity` is 0. |
+| `currency_code` | VARCHAR | Denominating currency for the position. |
+| `market_value` | DECIMAL(18,2) | `quantity × resolved close`. **NULL — never zero** — when unpriced or withheld (see `valuation_status`); a zero would be indistinguishable from a worthless position and silently understate any aggregate that sums it. |
+| `unrealized_gain` | DECIMAL(18,2) | `market_value − cost_basis`. NULL whenever `market_value` is NULL, and also on an otherwise-valued row when any contributing open lot has `basis_incomplete` (an unknown-basis `transfer_in` stores a placeholder 0.00 that would overstate the gain). |
+| `price_date` | DATE | Date of the close used (may be earlier than today). NULL exactly when `market_value` is NULL. |
+| `price_source` | VARCHAR | `source_type` that supplied the close (see `core.fct_security_prices`). NULL exactly when `price_date` is NULL. |
+| `days_since_observed` | INTEGER | `CURRENT_DATE − price_date`. NULL exactly when `price_date` is NULL. |
+| `valuation_status` | VARCHAR | `valued` (priced as of today) \| `carried_forward` (priced, but the close predates today) \| `unpriced` (no usable close resolved) \| `withheld` (the share count is known wrong — a broker snapshot contradiction, an unreconciled split, or a fresh snapshot that dropped a position the ledger still carries). A `withheld` row publishes **no** pricing at all: `market_value`, `unrealized_gain`, `price_date`, `price_source`, `days_since_observed` are all NULL even if a fresh close did resolve — the close itself is not lost, it stays queryable in `core.fct_security_prices`. |
+| `provider_reported_quantity` | DECIMAL(28,10) | **NON-AUTHORITATIVE.** The broker's claimed open units from its newest holdings snapshot; reconciliation reference only, never blended into `quantity`. NULL when the broker's newest snapshot doesn't report this position. |
+| `provider_reported_cost_basis` | DECIMAL(18,2) | NON-AUTHORITATIVE broker claim; same NULL rule. |
+| `provider_reported_value` | DECIMAL(18,2) | NON-AUTHORITATIVE broker claim; MoneyBin's own `market_value` is never derived from this. |
+| `provider_reported_as_of` | TIMESTAMP | Oldest `extracted_at` among the snapshots summed into the three columns above (MIN, not MAX) — a position spanning multiple broker connections is only as fresh as its stalest contributor. |
+| `updated_at` | TIMESTAMP | Latest of the position's open-lot timestamps, the resolved close's freshness, and (for a broker-reported position) the newest snapshot receipt time. Does not advance on idempotent SQLMesh re-applies. |
+
+Logical grain key: `(account_id, security_id)`.
+
+### `core.fct_investment_transactions`
+
+The canonical investment-transaction ledger. Grain: one row per `investment_transaction_id`. `FULL` model (materialized table, not a view — unlike `fct_transactions`). Unions manual entry, Plaid transactions, and the Plaid opening-lot bootstrap (a reconstruction of pre-import-window lots, carrying the non-user-authorable `subtype = 'opening_bootstrap'` so it's always distinguishable from a real transfer).
+
+| Column | Type | Description |
+|---|---|---|
+| `investment_transaction_id` | VARCHAR | Canonical ID (source-provided or content hash). |
+| `account_id` | VARCHAR | FK → `core.dim_accounts`. |
+| `security_id` | VARCHAR | FK → `core.dim_securities`. NULL for cash-only events (deposit, withdrawal, account fee, cash interest) and for a synced security with no accepted binding. |
+| `trade_date` | DATE | Trade date; drives holding-period (short/long-term) classification. |
+| `settlement_date` | DATE | Settlement date; informational. |
+| `original_acquisition_date` | DATE | `transfer_in` only: original acquisition date (the opened lot uses `COALESCE(this, trade_date)`). |
+| `type` | VARCHAR | Closed taxonomy, fourteen values: `buy` \| `sell` \| `reinvest` \| `dividend` \| `interest` \| `capital_gain_distribution` \| `transfer_in` \| `transfer_out` \| `deposit` \| `withdrawal` \| `split` \| `fee` \| `return_of_capital` \| `other`. Lot-affecting: `buy`, `sell`, `transfer_in`, `transfer_out`, `reinvest`, `split`, `return_of_capital`. The rest are cash-only (`quantity` NULL). |
+| `subtype` | VARCHAR | Per-type refinement (tax character, reinvest funding source); nullable. `'opening_bootstrap'` marks a reconstructed pre-window lot. |
+| `event_group_id` | VARCHAR | Links legs of one decomposed economic event (e.g. a reinvest pair); nullable. |
+| `quantity` | DECIMAL(28,10) | Signed units: positive = acquire, negative = dispose, NULL for cash-only events. |
+| `price` | DECIMAL(28,10) | Per-unit price; NULL for non-priced events. |
+| `amount` | DECIMAL(18,2) | Signed cash effect: negative = out (buy), positive = in (sell/dividend). Every branch arrives in this convention already — never re-flip a provider's sign downstream. |
+| `fees` | DECIMAL(18,2) | Fee/commission component, folded into cost basis. |
+| `currency_code` | VARCHAR | Denominating currency; no FX in v1. |
+| `provider_type`, `provider_subtype` | VARCHAR | Provider's original type/subtype strings (e.g. Plaid's), preserved verbatim for audit. NULL for manual and bootstrap rows. Never a ledger input — `type` is the closed taxonomy. |
+| `source_type` | VARCHAR | Origin tag: `manual` \| `plaid`. |
+| `source_origin` | VARCHAR | Institution/connection scope. |
+| `description` | VARCHAR | Free-text description. |
+| `updated_at` | TIMESTAMP | The row's own staging `created_at` (single source; no app-layer joins yet). Does not advance on idempotent SQLMesh re-applies. |
+
+Logical grain key: `investment_transaction_id`.
+
+### `core.fct_investment_lots`
+
+Tax lots derived from `core.fct_investment_transactions`: each acquisition opens a lot; each disposal consumes open lots per the resolved cost-basis method (`fifo` \| `hifo` \| `specific` \| `average`). Grain: one row per `lot_id`. `FULL` Python model — rebuilt in full on every run by the pure cost-basis engine (`moneybin.investments.cost_basis`).
+
+| Column | Type | Description |
+|---|---|---|
+| `lot_id` | VARCHAR | Content hash of `(account_id, security_id, acquisition_date, opening transaction id)`; prefix `lot_`. |
+| `account_id` | VARCHAR | FK → `core.dim_accounts`. |
+| `security_id` | VARCHAR | FK → `core.dim_securities`. |
+| `acquisition_date` | DATE | Trade date of the opening event; drives short/long-term classification. |
+| `acquisition_type` | VARCHAR | `buy` \| `reinvest` \| `transfer_in`. |
+| `original_quantity` | DECIMAL(28,10) | Units when the lot opened. |
+| `remaining_quantity` | DECIMAL(28,10) | Open units after disposals consumed (0 when fully closed). |
+| `cost_basis_total` | DECIMAL(18,2) | Total basis of `original_quantity`, including fees. |
+| `cost_basis_remaining` | DECIMAL(18,2) | Basis attributable to `remaining_quantity`. |
+| `cost_basis_method` | VARCHAR | Resolved method that governed this lot's consumption. |
+| `currency_code` | VARCHAR | Denominating currency. |
+| `is_open` | BOOLEAN | `remaining_quantity > 0`. |
+| `source_transaction_id` | VARCHAR | FK → the opening `core.fct_investment_transactions` row. |
+| `basis_incomplete` | BOOLEAN | TRUE when the lot opened with no supplied basis (e.g. an ACATS-style `transfer_in` with unknown cost basis) — `cost_basis_total`/`cost_basis_remaining` are 0.00, not a real zero. |
+| `updated_at` | TIMESTAMP | Latest of the position's ledger-row timestamps (max over the `(account_id, security_id)` group). Does not advance on idempotent SQLMesh re-applies. |
+
+Logical grain key: `lot_id`.
+
+### `core.fct_realized_gains`
+
+Realized gains at the 1099-B grain: one row per `(disposal transaction, consumed lot)` pair. Grain: one row per `realized_gain_id`. `FULL` Python model, sharing the cost-basis engine and inputs with `core.fct_investment_lots`.
+
+| Column | Type | Description |
+|---|---|---|
+| `realized_gain_id` | VARCHAR | Content hash of `(disposal_txn_id, lot_id)`. |
+| `account_id` | VARCHAR | FK → `core.dim_accounts`. |
+| `security_id` | VARCHAR | FK → `core.dim_securities`. |
+| `disposal_txn_id` | VARCHAR | FK → the disposing `core.fct_investment_transactions` row. |
+| `lot_id` | VARCHAR | FK → the consumed `core.fct_investment_lots` row. |
+| `quantity` | DECIMAL(28,10) | Units drawn from this lot for this disposal. |
+| `acquisition_date` | DATE | Lot acquisition date (holding-period start). |
+| `disposal_date` | DATE | Disposal trade date (holding-period end). |
+| `proceeds` | DECIMAL(18,2) | Sale proceeds attributable to this quantity, net of fees. |
+| `cost_basis` | DECIMAL(18,2) | Cost basis attributable to this quantity (method-dependent). |
+| `gain_loss` | DECIMAL(18,2) | `proceeds − cost_basis`; signed, negative is a loss. |
+| `term` | VARCHAR | `short` (held ≤ 1 year) \| `long` (held > 1 year). |
+| `cost_basis_method` | VARCHAR | Method that produced this basis. |
+| `basis_incomplete` | BOOLEAN | TRUE when part of this disposal matched no tracked lot (a zero-basis slice). |
+| `currency_code` | VARCHAR | Denominating currency. |
+| `updated_at` | TIMESTAMP | Latest of the position's ledger-row timestamps. Does not advance on idempotent SQLMesh re-applies. |
+
+Logical grain key: `realized_gain_id`.
+
+### `core.fct_security_prices`
+
+The resolved price series: one close per `(security_id, price_date, quote_currency)`, with the winning source carried as provenance. Grain: `(security_id, price_date, quote_currency)`. `FULL` model. Only `price_basis = 'raw'` observations are eligible — an adjusted series states a price relative to corporate actions known when fetched, so it stops being correctly adjusted after the next split; adjusted observations stay visible in `prep.stg_security_prices` but are excluded here rather than silently valued.
+
+| Column | Type | Description |
+|---|---|---|
+| `security_id` | VARCHAR | FK → `core.dim_securities` (grain). |
+| `price_date` | DATE | The date this close applies to (grain). |
+| `quote_currency` | VARCHAR | ISO 4217 the close is expressed in (grain); this model converts nothing. |
+| `close` | DECIMAL(28,10) | The winning close for one unit, in `quote_currency`; always > 0. |
+| `source_type` | VARCHAR | Which source supplied the winning close, by preference rank: `override` \| `plaid` \| `stooq` \| `coingecko` \| `trade_implied`. Only `plaid` is implemented today; the rest are planned (`docs/specs/investments-price-feeds.md`). |
+| `price_basis` | VARCHAR | Always `'raw'` here. |
+| `updated_at` | TIMESTAMP | When the winning observation was served by its provider (the source's own `extracted_at`). |
+
+`core.dim_holdings` looks up the most recent close at or before today per `(security_id, quote_currency)` — as-of, not equality, so weekends/holidays/outages don't blank a position.
 
 ## `reports.*` — curated presentation views
 
@@ -288,7 +436,7 @@ All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `rep
 | What's my net worth? | `reports.net_worth` | Daily snapshot from `fct_balances_daily`. |
 | Which transactions are unusually large? | `reports.large_transactions` | Modified z-scores against account and category baselines + `is_top_100`. |
 | Which subscriptions am I paying for? | `reports.recurring_subscriptions` | Heuristic candidates with confidence scores; does not auto-classify. |
-| Are my balances drifting from reality? | `reports.balance_drift` | Per-assertion deltas vs computed balance; feeds `moneybin doctor`. |
+| Are my balances drifting from reality? | `reports.balance_drift` | Per-assertion deltas vs computed balance; feeds `moneybin system doctor`. |
 
 What's not categorized yet is answered by `core.uncategorized_queue` (above) rather than a `reports.*` view — it's service-internal, reached via `moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`, not a standalone report.
 
@@ -389,7 +537,7 @@ All non-transfer transactions with z-scores against account and category baselin
 
 ### `reports.balance_drift`
 
-Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed balance. Grain: one row per balance assertion. Feeds `moneybin doctor`.
+Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed balance. Grain: one row per balance assertion. Feeds `moneybin system doctor`.
 
 | Column | Type | Description |
 |---|---|---|
@@ -546,7 +694,6 @@ Tables here capture state that cannot be re-derived from raw sources: categoriza
 | `app.transaction_splits` | One row per `split_id` | Split children. Sum should equal `parent.amount` (not SQL-enforced — see the assertion query). Joined into `core.fct_transactions.splits`. |
 | `app.categorization_rules` | One row per `rule_id` | Pattern-based auto-categorization rules. |
 | `app.proposed_rules` | One row per `proposed_rule_id` | Auto-rule proposals staged for review. |
-| `app.rule_deactivations` | One row per `deactivation_id` | Audit trail for rule deactivations. |
 | `app.user_merchants` | One row per `merchant_id` | Mutable merchant entries. Surfaced via `core.dim_merchants`. |
 | `app.user_categories` | One row per `category_id` | User-created categories. Combined with seeds via `core.dim_categories`. |
 | `app.category_overrides` | One row per `category_id` | User soft-deletions on seed categories. |
@@ -556,6 +703,8 @@ Tables here capture state that cannot be re-derived from raw sources: categoriza
 | `app.audit_log` | One row per mutation | Unified audit log; emitted synchronously in the same transaction as the mutation. |
 | `app.match_decisions` | One row per `match_id` | Matcher + user-review decisions. `match_type` ∈ `{dedup, transfer}`. Source for `core.bridge_transfers`. |
 | `app.tabular_formats` | One row per format `name` | Saved column mappings for tabular imports (Chase, Citi, Tiller, Mint, YNAB built-ins + auto-detected). |
+| `app.securities` | One row per `security_id` | Manually-maintained security catalog (ticker, CUSIP, ISIN, FIGI, `cost_basis_method` override). Surfaced via `core.dim_securities`. |
+| `app.lot_selections` | One row per `(investment_transaction_id, lot_id)` | Specific-identification overrides: which lots a disposal draws from and how much; unselected remainder falls back to FIFO. |
 
 **Internal `app.*` tables (do not query directly):** `app.seed_source_priority`, `app.metrics`, `app.versions`, `app.schema_migrations`. These are ops plumbing — source-priority ranking, Prometheus snapshots, component versions, migration history.
 
@@ -586,6 +735,9 @@ MCP-visible app tables are tagged `audience="interface"` in [`src/moneybin/table
 |---|---|---|
 | `seeds.categories` | One row per `category_id` | CSV-backed (`src/moneybin/sqlmesh/models/seeds/categories.csv`). 16 primary categories with ~100 subcategories, based on Plaid Personal Finance Category v2. Columns: `category_id`, `category`, `subcategory`, `description`, `class`. SQLMesh detects CSV changes automatically. |
 | `seeds.category_source_map` | One row per `(source_type, source_category_code)` | CSV-backed (`src/moneybin/sqlmesh/models/seeds/category_source_map.csv`). Default provider-code → `category_id` mappings (Plaid PFC). Surfaced via `core.bridge_category_source_map`. |
+| `seeds.account_type_map` | One row per `alias` | CSV-backed (`.../seeds/account_type_map.csv`). Source-spelling → canonical `(account_type, account_subtype)` registry (OFX `<ACCTTYPE>`, Plaid, tabular). Lookup is on `UPPER(alias)`. Consumed by `core.dim_accounts`. |
+| `seeds.exchange_mic_map` | One row per `alias` | CSV-backed (`.../seeds/exchange_mic_map.csv`). Alias → canonical ISO-10383 MIC registry for exchange-identity resolution. An alias absent from the table is treated as unknown, not a mismatch. |
+| `seeds.institutions` | One row per `fid` | CSV-backed (`.../seeds/institutions.csv`). OFX `<FI><FID>` → `(slug, display_name)`. Consumed by `core.dim_accounts.institution_name`; `slug` also feeds `source_origin` at import time (renaming an existing slug re-keys transaction ids and needs a migration). |
 
 `seeds.categories` is surfaced via `core.dim_categories` alongside `app.user_categories`; `seeds.category_source_map` via `core.bridge_category_source_map` alongside `app.category_source_map`.
 
@@ -597,5 +749,6 @@ Identifiers across the model use a small set of strategies — source IDs where 
 
 - [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md) — how rows reach these tables (raw → prep → core), refresh semantics, dedup rules.
 - [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md) — the 12 shared primitives consumers rely on.
+- [`docs/specs/investments-data-model.md`](../specs/investments-data-model.md) — the closed `type` taxonomy, cost-basis methods, and corporate-action handling behind the investments tables.
 - [`docs/guides/sql-access.md`](../guides/sql-access.md) — opening the encrypted database from external clients.
 - [`src/moneybin/tables.py`](../../src/moneybin/tables.py) — `TableRef` constants; the canonical list of advertised table names.

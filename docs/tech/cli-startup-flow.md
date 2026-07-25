@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 
 # CLI Startup Flow
 
@@ -86,12 +86,13 @@ The non-obvious failure mode: `from x import Y` at module top of any command fil
 
 ### `main_callback` stays inert
 
-The callback in [`src/moneybin/cli/main.py`](../../src/moneybin/cli/main.py) does exactly four things and nothing else:
+The callback in [`src/moneybin/cli/main.py`](../../src/moneybin/cli/main.py) does four things, plus one guard clause, and nothing else:
 
 1. `stash_cli_flags(profile_name, verbose)` — writes to a module-level `_CLIFlags` dataclass.
 2. `setup_observability(stream="cli", verbose=verbose, profile=None)` — console logging only; no file handler yet because the profile isn't resolved.
-3. When `--profile <name>` or `MONEYBIN_PROFILE` is explicit: `set_current_profile(name)`. This validates the name format and updates the `_current_profile` module variable — no directory check, no YAML read, no DB open.
-4. When `ctx.invoked_subcommand` is neither `"profile"` nor `"synthetic"`: `register_profile_resolver(resolve_profile)`. The resolver fires the first time anything calls `get_settings()` or `get_current_profile()`.
+3. Guard clause: if `ctx.invoked_subcommand == "demo"` and `--profile` was passed explicitly, raise `typer.BadParameter` (exit 2) — `demo` always targets the dedicated `demo` profile and rejects being pointed elsewhere. An ambient `MONEYBIN_PROFILE` env var is tolerated and overridden; only the explicit flag is rejected. Still no directory or DB I/O.
+4. When `--profile <name>` or `MONEYBIN_PROFILE` is explicit: `set_current_profile(name)`. This validates the name format and updates the `_current_profile` module variable — no directory check, no YAML read, no DB open.
+5. When `ctx.invoked_subcommand` is none of `"profile"`, `"synthetic"`, `"demo"`: `register_profile_resolver(resolve_profile)`. The resolver fires the first time anything calls `get_settings()` or `get_current_profile()`.
 
 The callback NEVER calls `resolve_profile()` directly. That is the single rule that keeps `--help` and bare-group invocations side-effect free.
 
@@ -127,10 +128,12 @@ Profile resolution has two paths: an **eager** path when the user supplies a pro
 
 ```mermaid
 flowchart TD
-    A[main_callback entry] --> B{--profile flag<br/>or MONEYBIN_PROFILE?}
+    A[main_callback entry] --> Z{invoked_subcommand == demo<br/>AND --profile explicit?}
+    Z -->|yes| ZZ["raise BadParameter (exit 2)<br/>demo owns its own profile"]
+    Z -->|no| B{--profile flag<br/>or MONEYBIN_PROFILE?}
     B -->|yes| C["set_current_profile(name)<br/>name validation only"]
     B -->|no| D[skip eager set]
-    C --> E{invoked_subcommand in<br/>profile / synthetic?}
+    C --> E{invoked_subcommand in<br/>profile / synthetic / demo?}
     D --> E
     E -->|yes| F[return — these manage<br/>their own profile lifecycle]
     E -->|no| G[register_profile_resolver]
@@ -176,14 +179,14 @@ After the chain returns a profile name, the resolver:
 
 1. Calls `set_current_profile(name)`.
 2. Checks `<base>/profiles/<normalized>/` exists. If not, emits a hint to `profile list` / `profile create <name>` and exits 1.
-3. Calls `setup_observability(stream="cli", verbose=_flags.verbose, profile=name)` — this is the call that actually opens the profile-scoped log file at `<base>/profiles/<profile>/logs/moneybin.log`.
+3. Calls `setup_observability(stream="cli", verbose=_flags.verbose, profile=name)` — this is the call that actually opens the profile- and stream-scoped log file at `<base>/profiles/<profile>/logs/cli_<YYYY-MM-DD>.log` (one file per stream per day; see `session_log_path()` in [`src/moneybin/logging/config.py`](../../src/moneybin/logging/config.py)).
 4. Logs `Using profile: X (from <source>)`.
 
 ### Bare-group invocations and recovery commands
 
 `moneybin db --help`, `moneybin import` (no args), `moneybin db` (no args) all reach `main_callback`. The callback runs, stashes flags, optionally validates an explicit `--profile`, and registers the resolver — but Typer then exits with the group's help text (via `no_args_is_help=True`) or with `--help` output, **before** any command body runs. The resolver is registered but never fires. No profile dir is read, no log file is opened.
 
-When `ctx.invoked_subcommand` is `"profile"` or `"synthetic"`, `main_callback` returns before `register_profile_resolver(...)`. Both subgroups call `get_current_profile(auto_resolve=False)` internally so they never trigger the lazy chain even if the resolver were registered. `profile create <new>` legitimately runs against a profile that doesn't exist yet; `synthetic` commands manage their own profile lifecycle.
+When `ctx.invoked_subcommand` is `"profile"`, `"synthetic"`, or `"demo"`, `main_callback` returns before `register_profile_resolver(...)`. All three manage their own profile lifecycle: `profile` and `synthetic` call `get_current_profile(auto_resolve=False)` internally so they never trigger the lazy chain even if the resolver were registered; `profile create <new>` legitimately runs against a profile that doesn't exist yet. `demo` never calls the resolver either — it always points itself at the hardcoded `demo` profile via `DemoService`, and (per the guard clause above) rejects an explicit `--profile` before reaching this branch.
 
 ## Encryption-key resolution
 
@@ -216,7 +219,7 @@ Container build-time: `moneybin --help` during `docker build` is safe — the `-
 
 ## Concurrency across processes
 
-DuckDB is single-writer per file. Multiple `read_only=True` attaches against the same profile DB coexist freely across processes. Multiple write-mode `Database()` opens serialize via the file lock: the second writer either acquires the lock when the first releases it, or — after `max_wait` seconds (default 5 s) of exponential backoff retry — surfaces `DatabaseLockError`. The error message identifies the blocking process when `lsof` is available.
+DuckDB is single-writer per file. Multiple `read_only=True` attaches against the same profile DB coexist freely across processes. Multiple write-mode `Database()` opens serialize via the file lock: the second writer either acquires the lock when the first releases it, or — after `max_wait` seconds (default 10 s, `DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS` in [`src/moneybin/config.py`](../../src/moneybin/config.py)) of exponential backoff retry — surfaces `DatabaseLockError`. The error message identifies the blocking process when `lsof` is available.
 
 For containers sharing a volume, pick active-passive rather than active-active. Multiple sidecars writing to the same profile DB at once will see lock errors under load; the safe pattern is one container as the writer (sync, transform) and others as read-only consumers (MCP server, query CLI).
 
@@ -266,7 +269,9 @@ What a regression in this layer looks like, and where to look first:
 - **`moneybin <subgroup> --help`.** `main_callback` runs (inert), Typer prints the subgroup help, exits. Resolver is registered but never fires.
 - **`moneybin db` (bare group).** `main_callback` runs (inert), Typer exits with the group's help via `no_args_is_help=True`. Resolver is registered but never fires.
 - **`moneybin profile create <new>` / `moneybin synthetic ...`.** `main_callback` skips `register_profile_resolver(...)`. The eager `set_current_profile(name)` still runs if `--profile` was supplied. Both subgroups use `get_current_profile(auto_resolve=False)` internally.
-- **`moneybin logs` (no stream argument).** Leaf command with a required positional. Typer surfaces the missing-arg error and exits 2 *without* the resolver firing — the wizard never runs for usage errors.
+- **`moneybin demo`.** `main_callback` skips `register_profile_resolver(...)` the same way; `DemoService` sets the active profile to the hardcoded `demo` profile itself rather than relying on the lazy chain.
+- **`moneybin demo --profile other`.** Rejected before any profile or I/O work: the guard clause in `main_callback` raises `typer.BadParameter` (exit 2) because `demo` cannot be pointed at a non-`demo` profile.
+- **`moneybin logs` (no stream argument).** `stream` is an optional Typer argument (so `--print-path` and `--prune` can run without one). The command body itself checks `stream is None and not print_path and not prune` and exits 2 with its own usage message *before* calling `get_settings()` — the wizard never runs for usage errors, but the enforcement is explicit body validation, not Typer's built-in required-argument check.
 
 ## Extending the CLI
 

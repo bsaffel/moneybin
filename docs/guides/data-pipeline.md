@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Data Pipeline
 
 Every transaction you see in `core.fct_transactions` traces back to a specific source row in `raw.*`. The pipeline that gets it there is a layered medallion: Python loaders write raw, SQLMesh transforms raw into staging views and canonical tables, services maintain user state in a parallel `app.*` schema, and curated `reports.*` views shape the result for display. This guide walks the layers, explains what each one's job is, names the actual models in the repo, and shows where consumers should query from.
@@ -135,16 +135,16 @@ Owned by services (Python). The `app` schema holds anything you do *to* a transa
 
 | Table | Role | Touched by |
 |---|---|---|
-| `app.transaction_notes` | Free-form notes | `transactions notes add/remove` |
-| `app.transaction_tags` | Tag labels | `transactions tags add/set/remove` |
-| `app.transaction_splits` | Split child rows | `transactions splits add/set/remove` |
+| `app.transaction_notes` | Free-form notes | `transactions notes add/edit/delete` |
+| `app.transaction_tags` | Tag labels | `transactions tags add/remove` |
+| `app.transaction_splits` | Split child rows | `transactions splits add/remove` |
 | `app.transaction_categories` | Category/subcategory per transaction | `transactions categorize`, categorization engines |
 | `app.categorization_rules` | Pattern-based auto-categorization rules | `transactions categorize rules` |
 | `app.proposed_rules` | Pending auto-rule suggestions | rules service |
 | `app.match_decisions` | Accept/reject decisions from the matching engine | `transactions matches`, refresh |
-| `app.balance_assertions` | User-asserted balance checkpoints | `transactions balance assert` |
+| `app.balance_assertions` | User-asserted balance checkpoints | `accounts balance assert` |
 | `app.budgets` | Monthly budget targets | `budget set` |
-| `app.account_settings` | Display name, archived, `include_in_net_worth`, credit limit | `accounts settings` |
+| `app.account_settings` | Display name, archived, `include_in_net_worth`, credit limit | `accounts set` |
 | `app.user_categories` | User-added categories layered onto the seed taxonomy | category service |
 | `app.user_merchants` | User-asserted merchant identities and aliases | merchant service |
 | `app.audit_log` | Append-only audit trail of every state-changing operation | every write |
@@ -154,15 +154,15 @@ Owned by services (Python). The `app` schema holds anything you do *to* a transa
 
 ### `reports.*` — curated presentation views
 
-One view per CLI/MCP report. Read-only by design; the privacy middleware enforces it. Adding a new report means adding a new view here, not changing core.
+One view per CLI/MCP report, with one exception: `reports.net_worth` also backs the `networth-history` report (below). Read-only by design; the privacy middleware enforces it. Adding a new report means adding a new view here, not changing core.
 
 | View | Powers |
 |---|---|
-| `reports.net_worth` | `moneybin reports networth` / `reports(report_id='core:networth')` |
+| `reports.net_worth` | `moneybin reports networth` / `reports(report_id='core:networth')`, and `moneybin reports networth-history` / `reports(report_id='core:networth_history')` (period-bucketed re-query of the same view; no separate `reports.*` table) |
 | `reports.cash_flow` | `moneybin reports cashflow` / `reports(report_id='core:cashflow')` |
 | `reports.spending_trend` | `moneybin reports spending` / `reports(report_id='core:spending')` |
 | `reports.recurring_subscriptions` | `moneybin reports recurring` / `reports(report_id='core:recurring')` |
-| `reports.large_transactions` | `moneybin reports large` / `reports(report_id='core:large_transactions')` |
+| `reports.large_transactions` | `moneybin reports large-transactions` / `reports(report_id='core:large_transactions')` |
 | `reports.merchant_activity` | `moneybin reports merchants` / `reports(report_id='core:merchants')` |
 | `reports.balance_drift` | `moneybin reports balance-drift` / `reports(report_id='core:balance_drift')` |
 
@@ -218,7 +218,7 @@ Surviving candidates are then scored by:
 The combined confidence score is checked against two thresholds from settings:
 
 - `>= high_confidence_threshold` (default `0.85`) → auto-accept, written to `app.match_decisions` with `match_status = 'accepted'`.
-- `>= review_threshold` (default `0.70`) → land in the review queue (`transactions review --type matches`).
+- `>= review_threshold` (default `0.70`) → land in the review queue (`moneybin review --type matches`).
 - Below `review_threshold` → discarded.
 
 Notably **not** part of the comparison: payee fuzzy match (description similarity does the work), merchant ID, category, or any field that the matcher itself is supposed to harmonize downstream. Dedup is identity, not normalization.
@@ -229,7 +229,7 @@ The pipeline is built so re-running a loader against changed source data converg
 
 - **Plaid revisions.** When a pending Plaid transaction posts, or Plaid corrects an existing transaction, `/transactions/sync` returns it under `modified` with the same `transaction_id`. The Plaid loader upserts on `transaction_id`, so the row in `raw.plaid_transactions` is overwritten in place. After the next `refresh`, the gold record reflects the new fields.
 - **Plaid removals.** `removed_transactions` IDs are deleted from `raw.plaid_transactions`. The downstream gold row vanishes on the next refresh.
-- **CSV re-imports.** The tabular loader upserts on the content-hash `transaction_id` (SHA-256 of `date|amount|description|account_id`, truncated and prefixed). Re-importing a file with a *fixed* description, amount, or date produces a *new* `transaction_id` — so the corrected row lands alongside the original. Use `moneybin import history --import-id <id> --revert` to remove the prior import first if you want a clean swap.
+- **CSV re-imports.** The tabular loader upserts on the content-hash `transaction_id` (SHA-256 of `date|amount|description|account_id`, truncated and prefixed). Re-importing a file with a *fixed* description, amount, or date produces a *new* `transaction_id` — so the corrected row lands alongside the original. Use `moneybin import revert <import-id>` to remove the prior import first if you want a clean swap.
 - **Manual edits.** Manual entries live in `raw.manual_transactions` and have their own write paths; correcting one is a normal `transactions` update.
 
 The invariant: `raw.*` is the system of record. If you need to undo, revert the import; if you need to amend, re-run the loader (Plaid) or revert-then-reimport (tabular).
@@ -242,7 +242,7 @@ Your category, tags, notes, and splits live in `app.transaction_*` keyed by `tra
 - **Match-group change.** If a previously-unmatched row gains a dedup partner (or loses one), its `transaction_id` flips from `hash(single tuple)` to `hash(sorted set of tuples)` or vice versa. The category row in `app.transaction_categories` then refers to a `transaction_id` that no longer exists in `core.fct_transactions` — it becomes an orphan. Categorization will re-run against the new gold row, but **any user-typed category the orphaned row carried does not migrate automatically**.
 - **Source-row hash change.** Editing the underlying CSV (different date, amount, or description) produces a different content-hash, so it's a different transaction entirely — see "Amendments and corrections."
 
-If you confirm or reject a pending match in `transactions review`, expect potentially-orphaned user categorizations on the affected rows. Recategorize after the `refresh`.
+If you confirm or reject a pending match in `moneybin review`, expect potentially-orphaned user categorizations on the affected rows. Recategorize after the `refresh`.
 
 ## Transfers vs dedup
 
@@ -269,7 +269,7 @@ moneybin refresh --step match --step transform   # subset, in order
 `import files` and `sync pull` invoke the full cascade automatically. Reach for the explicit `moneybin refresh` when:
 
 - You edited a categorization rule and want it applied to existing transactions.
-- You confirmed pending matches in `transactions review` and want `core.*` to reflect the new dedup state.
+- You confirmed pending matches in `moneybin review` and want `core.*` to reflect the new dedup state.
 - You ran `import files --no-refresh` to chain many imports, and now want to settle the pipeline once.
 - A scheduled job (cron, `launchd`, `systemd`) drives it on a cadence.
 
@@ -314,7 +314,7 @@ The CLI's `--output json` path and MCP `refresh_run` share this payload. A
 first-load missing-view precondition is not treated as a matching or
 categorization crash, so it leaves the corresponding error field empty.
 
-The lower-level `moneybin transform` group exposes individual SQLMesh operations (`apply`, `plan`, `status`, `validate`, `audit`, `restate`). Reach for those when debugging a specific model or restating a date range; for normal post-load work, `refresh` is the entry point.
+The lower-level `moneybin transform` group exposes individual SQLMesh operations (`apply`, `plan`, `seed`, `status`, `validate`, `audit`, `restate`). Reach for those when debugging a specific model or restating a date range; for normal post-load work, `refresh` is the entry point.
 
 ## Querying the pipeline
 
@@ -327,7 +327,7 @@ moneybin db shell                        # interactive DuckDB shell against the 
 moneybin db query "SELECT * FROM core.fct_transactions WHERE category = 'Groceries' LIMIT 20"
 ```
 
-Read from `core.*` and `reports.*`. The full column reference is in [`docs/reference/data-model.md`](../reference/data-model.md). For external clients (DBeaver, Datasette, `duckdb` CLI, Python or R notebooks), `moneybin db key` prints the encryption key — see [`docs/guides/sql-access.md`](sql-access.md).
+Read from `core.*` and `reports.*`. The full column reference is in [`docs/reference/data-model.md`](../reference/data-model.md). For external clients (DBeaver, Datasette, `duckdb` CLI, Python or R notebooks), `moneybin db key show` prints the encryption key — see [`docs/guides/sql-access.md`](sql-access.md).
 
 ### From the CLI
 
@@ -343,14 +343,14 @@ All read commands accept `--output json` and emit the standard response envelope
 
 The `sql_query` tool runs read-only DuckDB against `core.*` and `reports.*` (DDL and writes are rejected). For discovery, the `moneybin://schema` resource enumerates the *interface set* — the consumer-facing tables and views in `core.*` and `reports.*` declared as `TableRef` constants in code — with column-level descriptions auto-derived from SQLMesh model comments. Domain-specific tools (`transactions`, `reports(report_id=...)`, and `accounts`) are the higher-affordance path; `sql_query` is the escape hatch.
 
-Sensitivity classification and critical-field masking are wired today. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred; tools must not rely on a consent gate yet.
+Sensitivity classification and critical-field masking are wired today. The consent ledger exists, but global consent gating is not yet enforced.
 
 ## What can go wrong
 
 Symptom-to-fix, in rough order of how often they come up.
 
 - **A new transaction is in `raw.*` but not `core.*`.** Run `moneybin refresh`. The import probably ran with `--no-refresh`.
-- **A row appears twice in `core.fct_transactions`.** Two sources contributed without being matched. Run `moneybin transactions review --type matches` to see pending dedup candidates; confirm the right ones and `refresh`.
+- **A row appears twice in `core.fct_transactions`.** Two sources contributed without being matched. Run `moneybin review --type matches` to see pending dedup candidates; confirm the right ones and `refresh`.
 - **A row is missing entirely after a successful import.** Check `moneybin import status` for the batch counts, then `moneybin import history --import-id <id>` for per-file detail. If the row is in `raw.*` but not flowing through, run `moneybin refresh` and watch for SQLMesh errors.
 - **Numbers don't reconcile against your statement.** Run `moneybin system doctor` for integrity checks. Look at `meta.fct_transaction_provenance` to see which sources contributed to a given `transaction_id`. Balance assertions in `app.balance_assertions` let you pin known-good checkpoints.
 - **Schema drift after a migration.** Boot-time self-heal runs the pending migrations on the next `moneybin db unlock` (subject to the `no_auto_upgrade` config gate). `moneybin system doctor` confirms.

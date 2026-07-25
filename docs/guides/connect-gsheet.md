@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-20 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Google Sheets
 
 Connect a Google Sheet as a live data source. MoneyBin authenticates once via direct OAuth, then every `moneybin refresh` re-pulls the sheet's current state — additions, edits, and deletions all flow through. Tiller-style ledger sheets participate in the full matching and categorization pipeline; any other sheet lands as queryable JSON with an auto-generated typed view.
@@ -83,13 +83,14 @@ Best for: Tiller, Tiller-style hand-maintained ledgers, anything with date / amo
 - Rows land in `raw.tabular_transactions` and participate in **all** downstream machinery: cross-source dedup, transfer detection, categorization rules, LLM-assist, reports.
 - The pinned column mapping is detected once at connect time and reused on every pull — no re-detection unless the sheet's structure drifts (see below).
 - `--account-name` (or `--account-id`) names the destination account; required if the sheet doesn't carry an account column.
+- `--sign` sets the amount sign convention (`negative_is_expense`, `negative_is_income`, `split_debit_credit`) when MoneyBin can't derive it from the selected columns — for example, when a column mapping replaces the amount source MoneyBin auto-detected. An inferred whole-ledger inversion (`negative_is_income`) always requires an explicit `--sign` to confirm before it's saved.
 
 ### `seed` — catch-all
 
 Best for: anything else. Asset valuations, a subscription tracker, a budget tab, scratch data you want SQL access to.
 
 - Rows land in `raw.gsheet_seeds` as JSON, one row per sheet row.
-- An **auto-generated typed view** at `raw.gsheet_<alias>` exposes the rows with inferred column types (string, number, date, boolean), queryable from `sql_query` and visible in `moneybin://schema`.
+- An **auto-generated typed view** at `raw.gsheet_<alias>` exposes the rows with inferred column types (string, number, date), queryable from `sql_query` and visible in `moneybin://schema`.
 - Does **not** participate in matching, categorization, or reports — there's no schema contract beyond "rectangular tabular data."
 - `--alias=<slug>` names the generated view (required for the seed adapter; derived from sheet name if omitted).
 
@@ -135,7 +136,7 @@ categorize post-pull subset. Three things to know:
 
 ## Drift detection and recovery
 
-If you add a column to your sheet, rename one, or rearrange them, MoneyBin's next pull will detect that the headers no longer match the pinned mapping and **refuse the pull for that connection**. The connection enters `drift_detected` state; the rest of your connections keep pulling normally.
+If you rename or remove a column MoneyBin has mapped — or a mapped column's cells go mostly empty — MoneyBin's next pull detects the pinned header is missing and **refuses the pull for that connection**. Adding a new column or reordering existing ones is not drift: MoneyBin matches headers by set membership, not position, and ignores columns outside the pinned mapping. The connection enters `drift_detected` state; the rest of your connections keep pulling normally.
 
 ```bash
 moneybin gsheet status
@@ -144,13 +145,9 @@ moneybin gsheet status
 Will show something like:
 
 ```
-Google Sheets — 2 connections, 1 needs attention
-
-  abc123  Joint Checking (transactions)   healthy        last pull 2m ago
-  def456  Budget Tab     (seed)           drift_detected last pull 1h ago
-                                          → expected columns: [date, amount, description]
-                                          → found columns:    [date, amount, description, notes]
-                                          → run: moneybin gsheet reconnect def456
+abc123  status=healthy  adapter=transactions  last_success=2026-07-24T14:32:00  failures=0
+def456  status=drift_detected  adapter=seed  last_success=2026-07-23T09:00:00  failures=1
+   ⚠️  missing headers: ['description']
 ```
 
 To recover, run:
@@ -203,7 +200,7 @@ Drift responses populate `actions[]` with a `gsheet_connect(connection_id=...)` 
 ## Limitations
 
 - **Read-only OAuth scope.** MoneyBin requests `https://www.googleapis.com/auth/spreadsheets.readonly` only. We never write back to your sheet. Write-scope is deferred to a future version (stable-ID write-back design).
-- **Google API quotas.** Google's default Sheets API quota is 60 read requests per minute per user. MoneyBin uses one request per pull per connection, so practical-use quotas are very hard to hit — but if you're connecting tens of large sheets, stagger pulls.
+- **Google API quotas.** Google's default Sheets API quota is 60 read requests per minute per user. MoneyBin issues two requests per pull per connection (workbook metadata, then sheet values), so practical-use quotas are still hard to hit — but if you're connecting tens of large sheets, stagger pulls.
 - **Single Google identity per profile** in v1. Multi-identity support is deferred.
 - **Soft-deleted rows are hidden by default.** Rows removed from your sheet disappear from reports but survive in `raw.tabular_transactions` with `deleted_from_source_at` set. To inspect them:
 

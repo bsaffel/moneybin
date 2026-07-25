@@ -1,11 +1,11 @@
-<!-- Last reviewed: 2026-07-21 -->
+<!-- Last reviewed: 2026-07-24 -->
 # What the AI Provider Sees
 
 When you drive MoneyBin with an AI agent, some of your financial data reaches
 the model provider behind that agent — Anthropic, OpenAI, Google, or whoever
 your MCP client is configured against. This page states exactly what, so you can
 decide before you connect. It is written to be accurate, not reassuring; where a
-protection is planned but not shipped, it says so.
+protection is planned rather than shipped, it says so.
 
 The one-sentence version: **anything the agent reads to answer you, the model
 provider receives** — except account and routing numbers, which are masked
@@ -65,10 +65,10 @@ envelope contains once it reaches the model.
 |---|---|---|---|
 | Transaction reads (`transactions`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
 | Report views (`reports(report_id="core:networth")`, `reports(report_id="core:spending")`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
-| Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app` (amounts, descriptions, merchants, dates, locations) | Account/routing numbers (by column classification) | Per-call event |
+| Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app`/`reports` (amounts, descriptions, merchants, dates, locations) | Account/routing numbers (by column classification) | Per-call event |
 | Categorization assist (`transactions_categorize_assist`) | Scrubbed description (**merchant kept**, amount as a sign) + structural fields incl. `check_number` | Amount value, date, account ID, locations, embedded PII | Per-call event |
 | Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |
-| Exports (`export_run`, `exports_set`) | Export configuration and the receipt (destination, format, row counts, checksums, and export ID) | Account/routing numbers in the receipt | Per-call event; destination changes also create an audit row |
+| Exports (`export_run`, `exports_set`) | Export configuration and the receipt (destination, format, row counts, checksums, and export ID) — no row data | Nothing to mask in the receipt; the artifact itself masks account/routing numbers when `redacted` | Per-call event; destination changes also create an audit row |
 | Errors / timeouts | A generic message; no row content, no SQL text | — | Per-call event |
 
 The rest of this page expands each column.
@@ -157,7 +157,7 @@ signal the model categorizes on — but before the prompt is built, it:
   other characters (`xxxxxxxxx5648`) can slip through, so treat it as noise
   reduction, not a guarantee.
 
-So the model categorizing "SQ *BLUE BOTTLE #0123, OAKLAND CA" sees **"BLUE
+So the model categorizing "SQ *BLUE BOTTLE #0123 OAKLAND CA" sees **"BLUE
 BOTTLE"** with an outflow sign — the merchant, yes, but not the amount, the date,
 the account, or the location. It still learns *where* you shopped; it does not
 learn *how much*, *when*, or *from which account*. That is real minimization, but
@@ -179,13 +179,14 @@ other field in the clear.
 
 The provider sees the *results of the queries the agent ran*, not your database:
 
-- `sql_query` is walled to the `core` and `app` schemas, is read-only (writes,
-  DDL, and file/URL functions are rejected), and caps results at 1,000 rows with
-  a 30-second limit. It cannot **SELECT row data** from `raw`/`prep`, read local
-  files, or exfiltrate to a URL. One narrow exception: catalog statements
-  (`DESCRIBE`, `SHOW`, `PRAGMA`, `EXPLAIN`) run before the schema gate, so an
-  agent can see the *structure* of `raw`/`prep` tables — column names, types, and
-  storage stats — but never their row values.
+- `sql_query` is walled to the `core`, `app`, and `reports` schemas, is
+  read-only (writes, DDL, and file/URL functions are rejected), and caps
+  results at 1,000 rows with a 30-second limit. It cannot **SELECT row data**
+  from `raw`/`prep`, read local files, or exfiltrate to a URL. One narrow
+  exception: catalog statements (`DESCRIBE`, `SHOW`, `PRAGMA`, `EXPLAIN`) run
+  before the schema gate, so an agent can see the *structure* of `raw`/`prep`
+  tables — column names, types, and storage stats — but never their row
+  values.
 - Typed reads return the rows matching the filter the agent chose, capped and
   paginated.
 
