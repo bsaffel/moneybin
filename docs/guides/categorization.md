@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Categorization
 
 How MoneyBin categorizes transactions: deterministic rules and merchant mappings first, LLM-assist as the human helper for what's left, source precedence enforced on every write so your manual choices outrank automation. The same workflow is reachable from CLI (`moneybin transactions categorize ...`) and the bounded MCP categorization tools — pick whichever feels natural for the task.
@@ -21,7 +21,7 @@ user > rule > auto_rule > migration > ml > provider_native > ai
 
 Enforcement happens in the SQL write path, not after the fact. A write at any source can never displace a higher-source row. The single Python ladder generates the SQL `CASE` expression that backs the `ON CONFLICT DO UPDATE WHERE` clause, so Python and SQL cannot drift.
 
-> **⚠️ Hazard — bulk commits write `ai`-source, not `user`-source.**
+> **Hazard — bulk commits write `ai`-source, not `user`-source.**
 >
 > Both `transactions categorize commit` and `transactions categorize commit-from-file` write `categorized_by="ai"` — the **lowest** rung on the ladder. Any rule, auto-rule, ML run, Plaid update, or future LLM-assist pass that touches the same row will overwrite your commit.
 >
@@ -51,7 +51,7 @@ flowchart TD
     G --> C
 ```
 
-A few things worth pinning down:
+Four points about the diagram above:
 
 - **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same canonical pipeline: gsheet pull, cross-source matching, SQLMesh transform, categorization, then identity backfill. Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
 - **Newly created rules apply on the next refresh.** Creating a rule does not retroactively categorize old rows unless you opt in. Pass `--reapply` on the CLI `rules create`; MCP callers update the complete rule target state with `transactions_categorize_rules_set` and invoke `transactions_categorize_run` when they need an immediate run.
@@ -68,19 +68,21 @@ All commands live under `moneybin transactions categorize ...`. Every read comma
 |---|---|
 | `assist` | Returns uncategorized transactions as PII-scrubbed JSON for an LLM to annotate. Does not write. |
 | `export-uncategorized` | Same PII-scrubbed shape, written to a file or stdout. Convenience wrapper for pipeline use. |
+| `pending` | Lists uncategorized transactions (excludes transfer pairs and archived accounts). `--sort {date,impact}`, `--min-amount`, `--account`. |
 | `commit` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Commits a JSON array of `{transaction_id, category, subcategory}` items. Accepts `--input <path>` or `-` for stdin. |
 | `commit-from-file` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Same as `commit` but takes the path as a positional argument; tolerant of export-shape extras like `description_scrubbed`. |
 | `run` | Re-runs the deterministic cascade (rules and merchants) over uncategorized rows. `--methods rules,merchants` controls the order. No LLM involvement. |
+| `improve-ai` | Re-looks-up every `categorized_by='ai'` row against the Plaid category bridge and upgrades it to `provider_native` where the bridge match is at MEDIUM confidence or higher. Never touches `user` or `rule`/`auto_rule` rows. |
 | `rules list` | Lists active rules in priority order. |
-| `rules create` | Single rule: `NAME --pattern X --category Y [--match-type contains\|exact\|regex] [--priority N] [--min-amount/--max-amount] [--account-id ID]`. Batch: `--from-file rules.json`. `--reapply` re-evaluates uncategorized rows. |
+| `rules create` | Single rule: `NAME --pattern X --category Y [--match-type contains\|exact\|regex] [--priority N] [--min-amount/--max-amount] [--account-id ID]`. Batch: `--from-file rules.json`. `--reapply` re-evaluates uncategorized rows. A `contains` pattern shorter than 4 characters is refused unless `--allow-broad` — see [Auto-rule safety guards](#auto-rule-safety-guards). |
 | `rules delete <rule_id>` | Soft-deletes a rule (`is_active=false`). `--reapply` strips categorizations the rule wrote and re-evaluates those rows against remaining matchers. |
 | `rules apply` | Runs only active rules, equivalent to `run --methods rules`. Merchant and provider-native passes are not invoked. |
-| `auto review` | Lists pending auto-rule proposals with sample transactions and trigger counts. |
-| `auto accept` | Batch-accept/reject proposals: `--accept <id>...`, `--reject <id>...`, `--accept-all`, `--reject-all`. Explicit rejects override `--accept-all`. |
+| `auto review` | Lists pending auto-rule proposals with sample transactions, trigger counts, and estimated match counts; flags broad proposals. |
+| `auto accept` | Batch-accept/reject proposals: `--accept <id>...`, `--reject <id>...`, `--accept-all`, `--reject-all`. Explicit rejects override `--accept-all`. `--allow-broad` is required to accept a proposal flagged broad — see [Auto-rule safety guards](#auto-rule-safety-guards). |
 | `auto stats` | Counts: active auto-rules, pending proposals, transactions auto-ruled. |
 | `auto rules` | Lists active rules where `created_by='auto_rule'`. |
 | `stats` | Coverage summary: total, categorized, uncategorized, percentage, and per-source breakdown. |
-| `ml status` / `ml train` / `ml apply` | 🚧 Stubs. ML categorization (`categorized_by='ml'`) is reserved but not implemented; commands exit with a not-implemented notice today. |
+| `ml status` / `ml train` / `ml apply` | Stubs. ML categorization (`categorized_by='ml'`) exits with a not-implemented notice today. |
 
 ### MCP
 
@@ -92,10 +94,10 @@ MCP uses the bounded standard surface rather than one tool for every CLI subcomm
 | `transactions_categorize_commit` | Commit reviewed categorizations. It accepts `canonical_merchant_name` per item (the CLI strips this field). |
 | `transactions_categorize_rules` | Inspect the current or historical categorization-rule projection. |
 | `transactions_categorize_rules_set` | Set the complete reviewed rule target state. |
-| `transactions_categorize_run` | Run the deterministic categorization engines. |
+| `transactions_categorize_run` | `operation="categorize"` (default) runs the deterministic engines (`methods=["rules","merchants"]`). `operation="improve_ai"` runs the `improve-ai` upgrade pass instead (forbids `methods`). |
 | `system_status` | Return categorization coverage and queue counts with `sections=["categorization"]`. |
 | `reviews` | Read the pending categorization or auto-rule queue with `kind="categorization"` or `kind="auto_rules"`. |
-| `reviews_decide` | Accept or reject reviewed categorization proposals or auto-rule proposals in one `decisions` batch. |
+| `reviews_decide` | Accept or reject reviewed categorization proposals or auto-rule proposals in one `decisions` batch. `kind="auto_rule"` decisions may set a per-decision `allow_broad` field — see [Auto-rule safety guards](#auto-rule-safety-guards). |
 | `taxonomy` / `taxonomy_set` | Read or declare category and merchant target state with `view="categories"` or `view="merchants"`. |
 
 Every tool returns the standard response envelope (`summary`, `data`, `actions`). `summary.display_currency` carries the currency for any amount-bearing data; amounts follow the accounting convention (negative = expense, positive = income; transfers exempt).
@@ -155,7 +157,7 @@ If you're moving from Tiller, Beancount, hledger, Mint exports, or another tool 
 
 3. **`moneybin transactions create` for new manual entries.** New transactions you enter via `moneybin transactions create --category X` write `categorized_by='user'` at creation time. This is the only path that writes user-source today, and it applies to *new* transactions, not imported historical rows.
 
-A unified bulk-import-as-user CLI is planned but not shipped. If you need it for a migration today, file an issue with your data shape — the existing `set_category_in_active_txn` service method already supports user-source writes, so the gap is a CLI/MCP entry point, not a database constraint.
+A unified bulk-import-as-user CLI does not exist yet. If you need it for a migration today, file an issue with your data shape — the existing `set_category_in_active_txn` service method already supports user-source writes, so the gap is a CLI/MCP entry point, not a database constraint.
 
 ## JSON shapes
 
@@ -276,9 +278,18 @@ moneybin transactions categorize rules create "Spotify subscription" \
   --subcategory "Streaming"
 ```
 
-**Match outcome.** The first rule that matches in priority order wins. Tie-break for equal `priority` is `created_at ASC` — older rules win ties. Rules write `categorized_by='rule'` (or `auto_rule` for system-promoted rules); the source-precedence guard means a rule write can replace `auto_rule`, `migration`, `ml`, `plaid`, and `ai` writes, but never a `user` edit.
+**Match outcome.** The first rule that matches in priority order wins. Tie-break for equal `priority` is `created_at ASC` — older rules win ties. Rules write `categorized_by='rule'` (or `auto_rule` for system-promoted rules); the source-precedence guard means a rule write can replace `auto_rule`, `migration`, `ml`, `provider_native`, and `ai` writes, but never a `user` edit.
 
 **Soft delete.** `rules delete` sets `is_active=false`; the row stays in the table. `--reapply` additionally strips categorizations the rule wrote (`categorized_by IN ('rule', 'auto_rule')` with this `rule_id`) and re-runs the deterministic cascade so the affected rows fall back to other matchers. Higher-precedence writes (`user`, `migration`, etc.) that happen to reference this `rule_id` are left intact.
+
+## Auto-rule safety guards
+
+Two independent guards run on the write/accept path itself — refused before the row lands, not merely flagged in review output, so a caller that skips the review step still cannot push a ledger-wrecking rule through.
+
+- **Specificity floor.** A `contains` pattern shorter than `auto_rule_min_contains_length` (default 4 characters) is refused: a 2-character `contains "TO"` rule matches `STORE`, `AUTO`, and `TOTAL`. Applies to both manually authored rules (`rules create`) and auto-rule proposals at accept time. CLI `rules create --allow-broad` overrides it for a manual rule (use `--match-type exact` instead where possible); the MCP `transactions_categorize_rules_set` tool has no override.
+- **Blast-radius guard (auto-rule proposals only).** `moneybin transactions categorize auto review` flags a proposal broad when its `estimated_match_count` exceeds `auto_rule_broad_match_factor` (default 10) times its `trigger_count` — the pattern would recategorize far more rows than the evidence that produced it. Proposals matching fewer than `auto_rule_broad_match_min` (default 20) transactions are never flagged, however thin the evidence. The review listing marks a flagged proposal `⚠️ BROAD, requires --allow-broad to accept`.
+
+`auto accept --allow-broad` (CLI) and `reviews_decide`'s per-decision `allow_broad` field for `kind="auto_rule"` items (MCP) both bypass the specificity floor and the blast-radius guard together for the accepted proposal — there is no way to waive one without the other on that path. Both thresholds live under `MoneyBinSettings.categorization` in `src/moneybin/config.py`.
 
 ## Merchant exemplars and the snowball
 
@@ -336,9 +347,9 @@ There is no `categorize revert` command today. To investigate or undo a batch:
 - **Undo a rule batch.** `moneybin transactions categorize rules delete <rule_id> --reapply` strips every row the rule wrote and re-evaluates against remaining matchers — the cleanest path for "I committed a bad rule."
 - **Undo a `commit-from-file` batch.** No first-class path. The pragmatic approach: identify the affected `transaction_id`s from your input file, then either author a higher-priority rule that corrects them, or use `moneybin db query` to `DELETE FROM app.transaction_categories WHERE transaction_id IN (...)` and let the next refresh re-evaluate. Audit-based revert tooling is planned.
 
-## What's planned, not shipped
+## Known gaps
 
-- **ML-based categorization.** The `ml` source slot exists in the precedence ladder and the `transactions categorize ml {status,train,apply}` commands are registered, but they're stubs today — invoking any of them returns a not-implemented notice. A local model would slot in between `migration` and `plaid` in the precedence ladder.
+- **ML-based categorization.** The `ml` source already occupies its position in the precedence ladder — between `migration` and `provider_native` — and the `transactions categorize ml {status,train,apply}` commands are registered, but they're stubs today: invoking any of them returns a not-implemented notice.
 - **Bulk-import-as-user CLI.** See [Migrating curated categories](#migrating-curated-categories). The service method exists; the CLI/MCP entry point doesn't.
 - **CLI parity for `canonical_merchant_name`.** The CLI `commit` and `commit-from-file` strip the key today; only the MCP `transactions_categorize_commit` tool routes it through to the exemplar accumulator.
 - **Merchant exemplar inspection / pruning.** No MCP route currently lists or removes exemplars or hard-deletes merchants. `taxonomy(view="merchants")` exposes catalog state; any future mutation remains unnamed until admission.

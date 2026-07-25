@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-06-19 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Account Matching
 
 One real-world account shows up as many records — a QFX statement this month, a
@@ -35,7 +35,7 @@ most reliable signal to the least, stopping at the first rung that fires:
 flowchart TD
     A[New source account record] --> B{You named an account?<br/>--account-id / --account-name / binding}
     B -->|Yes| ADOPT[Adopt that account]
-    B -->|No| C{Strong key already bound?<br/>same-source key · Plaid token · scoped full number}
+    B -->|No| C{Strong key already bound?<br/>same-source key · persistent token · scoped full number}
     C -->|Yes| AUTO[Auto-adopt silently]
     C -->|No| D{Weak match?<br/>institution + last4 · fuzzy name}
     D -->|Yes| REVIEW[Propose - you confirm<br/>never an auto-merge]
@@ -47,8 +47,9 @@ flowchart TD
    X"). Adopted above all detection.
 2. **Strong key → silent auto-adopt.** A stable, upstream-assigned key that's
    already bound to an account: the source's own account key on a same-source
-   re-import, a Plaid persistent token, or a full account number scoped by its
-   routing/bank id. These are near-certain, so MoneyBin adopts silently.
+   re-import (including Plaid's `account_id`, scoped to that connection), or a
+   full account number scoped by its routing/bank id. These are near-certain, so
+   MoneyBin adopts silently.
 3. **Weak match → always a confirm.** A shared **institution + last 4 digits**,
    or a **fuzzy name** match. Weak signals collide — two Wells Fargo accounts can
    both end in `4267` — so MoneyBin *proposes* and waits. **It never merges two
@@ -72,11 +73,11 @@ makes a candidate recognizable but is never a key on its own; **institution** an
 | Source | Strong key (auto-adopts) | Last 4 (corroborating) | Institution | Name |
 |---|---|---|---|---|
 | **OFX / QFX / QBO** | `<ACCTID>` scoped by `<BANKID>` | `RIGHT(<ACCTID>, 4)` | `<ORG>`, else `<FID>` lookup, else filename | account type / label |
-| **Plaid** | `persistent_account_id` | `mask` | `institution_name` | official account name |
+| **Plaid** | `account_id` (same connection only) | `mask` | `institution_name` | official account name |
 | **Tabular — aggregator export** (Tiller, Monarch, …, with account info) | *none* — labels are mutable | parsed from the account-label / `Account #` column | a per-row `Institution` column, or parsed from the label | the account label |
 | **Tabular — bare bank export** (Date / Description / Amount only) | *none* | *none* | filename heuristic, or unknown | filename stem (a placeholder) |
 
-Three things worth calling out:
+Reading the table precisely requires four caveats:
 
 - **Last 4, not the full number.** MoneyBin derives and stores only the last four
   digits; the full account number is never kept in the canonical account
@@ -88,6 +89,11 @@ Three things worth calling out:
 - **A bare bank CSV carries no identity.** Date/Description/Amount alone can't
   tell MoneyBin which account it is, so binding is always explicit — which is why
   the pick-list (rung 4) exists.
+- **Plaid's strong key is connection-scoped, not cross-connection.** The sync
+  broker's account contract does not carry Plaid's `persistent_account_id`, so
+  re-authenticating the same bank through Plaid Link (a new connection) does not
+  auto-adopt the existing account — it resolves through the weak-match rungs
+  (institution + last 4) like any other cross-source twin.
 
 ## When MoneyBin asks you: the import gate
 
@@ -123,10 +129,10 @@ When the same account arrives from a second source and only matches *weakly*
 (institution + last 4), MoneyBin files a proposal instead of merging:
 
 ```bash
-moneybin accounts links pending                 # see proposals: provisional account, candidate, signal, last4
-moneybin accounts links set <decision_id> <account_id>   # accept the merge
-moneybin accounts links set <decision_id> --standalone   # keep it as its own account
-moneybin accounts links run                     # re-scan existing accounts for twins
+moneybin accounts links pending                    # see proposals: provisional account, candidate, signal, last4
+moneybin accounts links set <decision_id> --into <account_id>   # accept the merge
+moneybin accounts links set <decision_id> --standalone           # keep it as its own account
+moneybin accounts links run                        # re-scan existing accounts for twins
 ```
 
 The agent path uses `reviews(kind="account_links", status="pending")`. Accept with
@@ -135,7 +141,7 @@ or reject with
 `identity_links_decide(decisions=[{"kind":"account_link","decision_id":"<id>","decision":"reject"}])`,
 then run `refresh_run(steps=["identity"])`.
 The `review` command (`moneybin review --type
-account-links`) shows the pending count across queues. **You decide every merge**
+account-links --status`) shows the pending count across queues. **You decide every merge**
 — MoneyBin won't combine two accounts on a weak signal on its own.
 
 ## What happens after a match

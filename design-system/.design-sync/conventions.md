@@ -80,7 +80,10 @@ The four rules most often broken before anyone thinks to look one up:
 - **Amounts never animate** — no count-up, no ticking digits. A value change
   swaps instantly; one 120ms `--accent-gilt-tint` fade is the only sanctioned cue.
 - **Chart color follows the accent tiers** — a lone value-over-time line is
-  `--accent-brass`; bars, areas, and dots are `--accent-gilt` fills; comparisons
+  `--accent-brass`; *labeled* bars and areas are `--accent-gilt` fills, while an
+  *unlabeled* mark (heatmap cell, default histogram bar) uses `--data-fill`
+  (gilt on dark, brass on light) so the fill clears 3:1 without a label; point
+  markers on a value line are neutral `--text-primary`, not gilt; comparisons
   draw `--chart-1` … `--chart-8` in order, six max before grouping to "Other",
   and a category keeps its hue in every view.
 - **Motion reports a state change and nothing else** — 120ms flips, 180ms

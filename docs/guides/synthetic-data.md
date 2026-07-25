@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Synthetic Data
 
 MoneyBin ships a synthetic-data generator so you can try the full pipeline — reports, categorization, the MCP surface — without uploading a single real statement. This guide covers what the generator produces, how to drive it from the CLI or from Python, and how it stays isolated from any real data you have.
@@ -11,7 +11,7 @@ Per persona you get:
 
 - **Multiple accounts.** Checking, savings, and credit-card accounts. No investment accounts today; brokerage / 401(k) generation is a future addition.
 - **Mixed source paths.** Some accounts route through the OFX loader (`raw.ofx_*`); others through the tabular CSV loader (`raw.tabular_*`). Provenance columns flag them as synthetic (see below).
-- **Categorized merchants in the input, NOT pre-applied categories.** Each transaction is generated against one of ~14 merchant catalogs (`grocery`, `dining`, `transport`, `subscriptions`, `health`, `utilities`, `insurance`, `kids`, `shopping`, `entertainment`, `personal_care`, `travel`, `education`, `gifts`). The expected category is recorded in `synthetic.ground_truth`; the raw transaction itself ships uncategorized so the categorizer has work to do.
+- **Categorized merchants in the input, NOT pre-applied categories.** Each transaction is generated against one of 14 merchant catalogs (`grocery`, `dining`, `transport`, `subscriptions`, `health`, `utilities`, `insurance`, `kids`, `shopping`, `entertainment`, `personal_care`, `travel`, `education`, `gifts`). The expected category is recorded in `synthetic.ground_truth`; the raw transaction itself ships uncategorized so the categorizer has work to do.
 - **Realistic merchant strings.** Each catalog ships a weighted list of real-world merchant names so descriptions look like what a categorizer would actually see.
 - **Income.** Biweekly direct deposits (`basic`, `family`), dual-income households (`family`), or irregular freelance invoices plus a monthly retainer (`freelancer`).
 - **Recurring transactions.** Rent or mortgage, utilities, insurance premiums, subscription services, and (for `freelancer`) quarterly IRS estimated payments — fired on declared days of month.
@@ -23,7 +23,7 @@ Per persona you get:
 Each persona declares a default of **3 years** ending at the calendar year before the current year (e.g., generating in 2026 covers 2023-01-01 through 2025-12-31). Override with `--years`. Volume scales with persona complexity:
 
 - `basic` — ~300 transactions per year (one checking + one credit card, modest spending).
-- `family` — several thousand per year across four accounts.
+- `family` — ~950-1,000 per year across four accounts.
 - `freelancer` — irregular but heavy business activity across three accounts.
 
 Exact counts are deterministic given a seed — see Seed stability below.
@@ -60,7 +60,7 @@ moneybin synthetic generate --persona family --seed 42
 
 # 2. Look at what the reports surface produces against fresh data.
 moneybin --profile bob reports networth
-moneybin --profile bob reports cashflow --from 2024-01-01 --to 2024-12-01 --by month
+moneybin --profile bob reports cashflow --from-month 2024-01 --to-month 2024-12 --by category
 moneybin --profile bob reports recurring
 moneybin --profile bob reports spending
 
@@ -72,7 +72,7 @@ moneybin --profile bob db query \
 moneybin --profile bob db query "SELECT COUNT(*) FROM synthetic.ground_truth"
 ```
 
-`reports networth` shows balance composition across all generated accounts; `reports cashflow` rolls income vs spending by month or category; `reports recurring` lists the detected recurring stream (rent, utilities, subscriptions, statement payments). These are the same commands that run against real data — the only difference is the data underneath.
+`reports networth` shows balance composition across all generated accounts; `reports cashflow` rolls up monthly inflow, outflow, and net, grouped by account, category, or both; `reports recurring` lists the detected recurring stream (rent, utilities, subscriptions, statement payments). These are the same commands that run against real data — the only difference is the data underneath.
 
 To start over with a different seed or year count:
 
@@ -85,10 +85,10 @@ moneybin synthetic reset --persona family --seed 7 --years 5 --yes
 | If you... | Pick | Why |
 |---|---|---|
 | Are a single-income renter, few accounts, no kids, want a fast smoke test | `basic` | ~300 txns/year, 2 accounts (checking + credit card) |
-| Have a mortgage, kids, dual income, multiple cards | `family` | Several thousand txns/year, 4 accounts, summer + holiday seasonality |
+| Have a mortgage, kids, dual income, multiple cards | `family` | ~1,000 txns/year, 4 accounts, summer + holiday seasonality |
 | Are self-employed with irregular income and business expenses | `freelancer` | Quarterly estimated tax payments, owner draws, business-vs-personal account split |
 
-If you're evaluating MoneyBin and your real finances would be closest to `family`, `family` is what you should generate — the reports surface lights up most fully there.
+If you're evaluating MoneyBin and your real finances would be closest to `family`, `family` is what you should generate — it also exercises the most of the reports surface: 4 accounts, 11 recurring streams, and 3 monthly transfers, versus 2 accounts and 5 recurring streams for `basic`.
 
 ## Categorizing synthetic data
 
@@ -108,11 +108,15 @@ moneybin --profile bob db query "
     SUM(CASE WHEN ft.category IS NULL THEN 1 ELSE 0 END) AS uncategorized,
     COUNT(*) AS total
   FROM core.fct_transactions ft
+  JOIN prep.int_transactions__matched m
+    ON m.transaction_id = ft.transaction_id
   JOIN synthetic.ground_truth gt
-    ON ft.source_transaction_id = gt.source_transaction_id
+    ON gt.source_transaction_id = m.source_transaction_id
   WHERE gt.expected_category IS NOT NULL
 "
 ```
+
+`core.fct_transactions.transaction_id` is a gold key computed by the dedup/matching pipeline, not the generator's original ID — `synthetic.ground_truth.source_transaction_id` only survives through `prep.int_transactions__matched`, so the join bridges through that table. This is the same join `moneybin`'s own categorization-accuracy evaluation uses (`src/moneybin/validation/evaluations/categorization.py`).
 
 Transfers have `expected_category = NULL` (a transfer is not a spending category) — filter them out with the `WHERE` clause above when scoring categorizer accuracy.
 
@@ -191,7 +195,7 @@ Unless `--skip-transform` is set, SQLMesh then builds `prep.*`, `core.*`, and `r
 
 ```sql
 CREATE TABLE synthetic.ground_truth (
-    source_transaction_id VARCHAR NOT NULL PRIMARY KEY,  -- joins to raw.* and core.fct_transactions
+    source_transaction_id VARCHAR NOT NULL PRIMARY KEY,  -- joins to raw.*; reaches core.fct_transactions via prep.int_transactions__matched
     account_id            VARCHAR NOT NULL,              -- synthetic source-system account ID
     expected_category     VARCHAR,                       -- NULL for transfers
     transfer_pair_id      VARCHAR,                       -- non-NULL for both legs of a transfer
@@ -201,14 +205,14 @@ CREATE TABLE synthetic.ground_truth (
 );
 ```
 
-`source_transaction_id` joins to raw and core transaction tables. `expected_category` uses the canonical category vocabulary (the same one the categorizer assigns into). Transfers have `expected_category = NULL` and a shared `transfer_pair_id` across the two legs.
+`source_transaction_id` joins directly to `raw.ofx_transactions.source_transaction_id` and `raw.tabular_transactions.transaction_id`; reaching `core.fct_transactions` requires the `prep.int_transactions__matched` bridge (see Categorizing synthetic data, above). `expected_category` uses the canonical category vocabulary (the same one the categorizer assigns into). Transfers have `expected_category = NULL` and a shared `transfer_pair_id` across the two legs.
 
 ## Persona reference
 
 | Persona | Default profile | Accounts | Annual txn volume | Income shape | Notable behaviors |
 |---|---|---|---|---|---|
 | `basic` | `alice` | 1 checking, 1 credit card | ~300 | Single biweekly salary, 3% annual raise | Holiday shopping bump; weekend dining bias; statement-balance card payoff |
-| `family` | `bob` | 1 checking, 1 savings, 2 credit cards | ~thousands | Dual biweekly salaries | Mortgage, 3 subscriptions, 2 card payments, automatic savings transfer; summer kids-activities bump; holiday grocery + shopping spike |
+| `family` | `bob` | 1 checking, 1 savings, 2 credit cards | ~950-1,000 | Dual biweekly salaries | Mortgage, 3 subscriptions, 2 card payments, automatic savings transfer; summer kids-activities bump; holiday grocery + shopping spike |
 | `freelancer` | `charlie` | 2 checking (personal + business), 1 credit card | ~hundreds, irregular | Irregular client invoices + monthly retainer | Quarterly IRS estimated tax (Jan/Apr/Jun/Sep); business-vs-personal account split; monthly owner draw |
 
 Persona definitions are YAML files under `src/moneybin/synthetic/data/personas/`. Merchant catalogs live in `src/moneybin/synthetic/data/merchants/`. To add a new persona or expand a catalog, drop a YAML file and follow the existing schema — see `CONTRIBUTING.md`.
@@ -269,7 +273,7 @@ Practical implications for CI and regression tests:
 
 - **Not a realistic distribution of any specific user's spending.** Volumes, merchant mixes, and income shapes are parametric — deliberate, declared, deterministic. They are not learned from real data and should not be treated as representative of a real household.
 - **No Plaid pull semantics.** The generator writes directly to raw tables. It does not exercise the Plaid sync cursor, incremental-pull skip logic, or auth refresh flows — those paths are covered by mocks elsewhere.
-- **No investment accounts yet.** Only checking, savings, and credit-card account types are generated. Brokerage, retirement, and crypto accounts are planned but not shipped.
+- **No investment accounts yet.** Only checking, savings, and credit-card account types are generated. Brokerage, retirement, and crypto accounts are planned.
 - **No multi-currency.** Every persona is USD-only.
 - **No manual entries or rule training.** The generator produces raw transactions and ground truth; it does not seed `app.*` user-state tables (manual entries, custom rules, budgets).
 - **Random `--seed` is logged but not persisted.** If you omit `--seed`, the generator picks a value in `1..9999` and logs it. Save it from the log if you need to reproduce that exact run; otherwise prefer passing an explicit seed.

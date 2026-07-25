@@ -105,7 +105,7 @@ Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipe
 
 `sync pull`, `refresh`, and `transform apply` can run for several seconds to minutes. Progress and status lines stream to **stderr** by default (visible interactively, hidden when redirected); `--output json` returns a single envelope at completion. There is no incremental JSON progress stream today — agents that need progress should poll `sync status` / `transform status` from a separate invocation.
 
-Concurrent **writes** against the same profile serialize on the database lock; a cron-driven `sync pull` overlapping with an interactive write retries briefly (up to 5 s) and then exits `1` rather than blocking indefinitely. Reads rarely contend with writes — write windows are per-operation rather than per-session — but a read overlapping a long write retries on the same backoff before failing. Use `db ps` to see who's holding the file and `db kill` if needed.
+Concurrent **writes** against the same profile serialize on the database lock; a cron-driven `sync pull` overlapping with an interactive write retries briefly (up to 10 s) and then exits `1` rather than blocking indefinitely. Reads rarely contend with writes — write windows are per-operation rather than per-session — but a read overlapping a long write retries on the same backoff before failing. Use `db ps` to see who's holding the file and `db kill` if needed.
 
 ## Which command for which task?
 
@@ -357,7 +357,7 @@ Physical assets (real estate, vehicles, valuables). Group is reserved; commands 
 
 ### `investments`
 
-Investment ledger, positions, tax lots, realized gains, and the manually-maintained securities catalog. Promotes the former `accounts investments` placeholder to a top-level group. All commands support `--output json`.
+Investment ledger, positions, tax lots, realized gains, and the securities catalog (user-created entries plus those minted during a Plaid sync). Promotes the former `accounts investments` placeholder to a top-level group. All commands support `--output json`.
 
 | Command | Purpose | Key flags |
 |---|---|---|

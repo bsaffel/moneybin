@@ -13,7 +13,7 @@ one wins. Sample data throughout; the grammar is what ships. Never hardcode hex
 - **Interpolation**: linear only, never splines. Gaps never bridged — stepped carry-forward is the honest form for balance data.
 - **Area fills**: ≤ 8% opacity.
 - **Signs**: printed in the glyph, never color alone. Income `+`, spend `−` (U+2212), transfers/savings unsigned in neutral. This applies to chart labels too (sankey, donut legends, stacked bars) — not just Amount components.
-- **Color**: three tiers by job (see **Annotation ladder** below) — **gilt** (`--accent-gilt`) fills (bars, areas, dots), **brass** (`--accent-brass`) derived lines and provenance text, **verdigris** interaction only. A lone value-over-time line is brass; a lone bar/area/dot is a gilt fill. Comparisons draw `--chart-1..8` in order, six max, then group to Other. A category keeps its hue in every view (Housing = chart-1 everywhere; see **Category color** below). A single-measure bar chart *of categories* may opt into category hue; every other lone series (e.g. spend-by-weekday) stays gilt. Income/expense pair is `--pos-income`/`--neg-expense`. Never blue as accent.
+- **Color**: three tiers by job (see **Annotation ladder** below) — **gilt** (`--accent-gilt`) fills (bars, areas, dots), **brass** (`--accent-brass`) derived lines and provenance text, **verdigris** interaction only. A lone value-over-time line is brass; a lone bar/area/dot is a gilt fill. Comparisons draw `--chart-1..8` in order, six max, then group to Other. A category keeps its hue in every view (Housing & Utilities = chart-1 everywhere; see **Category color** below). A single-measure bar chart *of categories* may opt into category hue; every other lone series (e.g. spend-by-weekday) stays gilt. Income/expense pair is `--pos-income`/`--neg-expense`. Never blue as accent.
 - **Disclosure over decoration**: a clipped axis says so on the chart ("axis clipped · zero not shown", mono 11px, top-right). Independent scales say so. "Other" says what it absorbed.
 - **Focus**: every interactive control gets `outline: 2px solid var(--focus)` on `:focus-visible`. Chart SVGs carry `role="img"` + `aria-label`.
 
@@ -31,12 +31,20 @@ Rationale: nothing legible sits *on* a gilt fill — ink is ~1.06:1 (isoluminant
 
 ### Category color
 
-Categories draw from a fixed map so a category reads as the same hue in every view (stacked, share, donut, ranked, column):
+Categories draw from a fixed map, keyed to the **canonical top-level category** that `core.fct_transactions.category` carries (seeded by `seeds.categories`), so a category reads as the same hue in every view (stacked, share, donut, ranked, column):
 
 ```
-Housing=chart-1  Groceries=chart-2  Transport=chart-3  Insurance=chart-4
-Dining=chart-5   Utilities=chart-6  Travel=chart-7     Other=chart-8
+Housing & Utilities=chart-1  Food & Drink=chart-2   Transportation=chart-3
+Shopping=chart-4             Healthcare=chart-5     Entertainment=chart-6
+Travel=chart-7               Other=chart-8
 ```
+
+The taxonomy carries **seventeen** top-level categories against an eight-slot ramp, so the map pins eight and declares the rest by rule:
+
+- **Income** and **Transfer** never draw from this ramp. Income/expense flows use `--pos-income` / `--neg-expense`, transfers stay unsigned neutral (see **Signs**).
+- The seven unpinned categories — Bank Fees, Loan Payments, Home Improvement, Personal Care, Family & Kids, Services, Government & Nonprofit — reach a chart through **Other** (`--chart-8`) under the six-max rule. When a view draws one on its own, it takes the lowest-numbered slot no pinned category in that view occupies, and the legend names it. **Hue stability across views is a guarantee for the eight pinned categories only.**
+
+Five slots carry over from the pre-canonical map (Groceries → Food & Drink, Transport → Transportation, Utilities → Housing & Utilities, plus Travel and Other unchanged); Dining collapsed into Food & Drink and the specimen's Insurance has no canonical top-level equivalent, which freed slots 4–6 for Shopping, Healthcare, and Entertainment. The `charts-*.html` specimens still label their sample series with the older names — sample data, not the map.
 
 **Single-measure category bars** (ranked or column of one measure) default to **gilt** (bars are fills) — one measure, one color. They *may* opt into coloring each bar by its category hue from the map above: the category label sits beside each bar, so hue is a reinforcing channel, not the sole encoding, and it keeps a category's color consistent across ranked / column / stacked / share / donut. Gilt stays the default; category-hue is the opt-in, and it must use this same fixed map. Non-category single series (spend-by-weekday — days carry no palette identity) stay gilt. (Single-series value-over-time *lines* are brass — a derived line, not a fill.)
 
