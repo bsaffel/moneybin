@@ -881,8 +881,24 @@ requires a paired `_delete` for this mutation shape.
 run. `investments holdings` and `investments gains` gain `market_value`,
 `unrealized_gain`, and an as-of column reporting `price_date` and staleness.
 
-Sensitivity is `high`, matching the tier MCP derives for cost-basis and quantity
-data. Market values are the same class of data as the holdings they value.
+**Sensitivity splits by grain, and this section originally over-claimed it.**
+`market_value` is `high` — quantity x close reveals position size, and it is the
+same class of data as the holdings it values. A per-UNIT `close` is not: the
+privacy registry classifies both `core.fct_security_prices.close` and
+`app.security_price_overrides.close` as AGGREGATE, because a market close is
+public reference data about a security rather than a personal fact about the
+user, unlike `core.fct_investment_transactions.price` (what the user actually
+paid). So `investments prices list` derives `low` while `investments holdings`
+stays `high`, and the payloads follow the registry rather than this paragraph's
+earlier blanket claim.
+
+**Still open:** that AGGREGATE classification was decided when `close` was only
+reachable through a resolved model. C.2 gives it a direct user-facing read, and
+the override path can carry a private-company mark — a 409A valuation is not
+public reference data in the way an exchange close is. The registry's own comment
+concedes the source is classified no stricter than the column it feeds. Re-examine
+before launch, and ship an unaliased "an ordinary public-price query still works"
+fixture beside any masking test so the fix cannot over-mask silently.
 
 ## MCP and report integration
 

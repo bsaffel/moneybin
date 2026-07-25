@@ -21,6 +21,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   receipts identify the selected format, bundle/report Sheets metadata remain
   independently verifiable, and cancellable publication runs without holding
   the global DuckDB writer lock over filesystem or Google API I/O.
+- **Independent price feeds for held securities.** `moneybin investments prices pull`
+  refreshes closes from Tiingo (equities, ETFs, and mutual fund NAVs) and CoinGecko
+  (crypto), so a position values from a source other than the broker that reports
+  it. Fetch scope comes from open positions rather than the whole catalog. A feed
+  key binds silently only when the symbol names one catalog entry and the provider
+  agrees about its exchange and issuer name; anything ambiguous is queued for
+  review instead, because a ticker is not an identifier — the same symbol names
+  different securities across exchanges and gets recycled after a delisting.
+  `investments prices set` records your own price for a security and date, which
+  outranks every provider close for that date; `investments prices delete` returns
+  the date to provider-derived valuation; `investments prices list` shows the
+  resolved series with the source that won each date. A non-positive mark is
+  refused — a worthless position is a ledger event, not a zero price. Store the
+  Tiingo token with `investments prices token`; CoinGecko needs no credential.
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.

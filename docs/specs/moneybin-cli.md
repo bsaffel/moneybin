@@ -250,13 +250,34 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |                                     the manually-maintained securities catalog. Defined in
 |                                     investments-data-model.md (Pillars A+B, implemented).
 |                                     Positions carry market value from the broker-supplied close
-|                                     (Pillar C.1); net-worth integration awaits Pillar D.
+|                                     (Pillar C.1) plus external feeds and user marks (C.2);
+|                                     net-worth integration awaits Pillar D.
 |   +-- add                        -- Record an investment event (buy/sell/dividend/transfer/...)
 |   +-- list                       -- List ledger events
 |   +-- holdings                   -- Current positions (cost basis + market value, unrealized gain, price age)
 |   +-- lots [--open|--all]        -- Tax lots with remaining quantity + basis
 |   |   +-- select <disposal_id> --lot <lot_id>:<qty> [--lot ...]  -- Replace lot selection (declarative set; multi-lot)
 |   +-- gains                      -- Realized gain/loss (the 1099-B surface)
+|   +-- prices                     -- Market prices for held securities (Pillar C.2)
+|   |   +-- pull [--security REF]... [--since DATE]
+|   |   |         Refresh stored closes for held positions from the configured feeds.
+|   |   |         Fetch scope comes from open positions, not the whole catalog. A feed
+|   |   |         key that cannot be derived with confidence is queued for review
+|   |   |         rather than bound to a guess -- a ticker is not an identifier.
+|   |   +-- set <security> <date> <price> [--currency CUR] [--note TEXT]
+|   |   |         Record your own price. Outranks every provider close for that date
+|   |   |         and leaves other dates untouched. A non-positive price is refused:
+|   |   |         a worthless position is a ledger event, not a zero price.
+|   |   +-- delete <security> <date> [--currency CUR]
+|   |   |         Remove a mark, returning that date to provider-derived valuation.
+|   |   |         Load-bearing, not CRUD symmetry -- `set` can only change the number,
+|   |   |         so without this a mark is unreachable once written.
+|   |   +-- list <security> [--since DATE] [--source SRC] [--output json] [--quiet]
+|   |   |         The resolved series, newest first: the winning close and its source
+|   |   |         per date, not every observation that competed for it.
+|   |   +-- token [--token VALUE]
+|   |             Store the Tiingo API token in the OS keychain. CLI-only under the
+|   |             secret-material exemption; prompts without echo when --token is omitted.
 |   +-- securities                 -- Security catalog
 |       +-- list / add / set       -- Manage catalog (set carries --method per-security override)
 |       +-- links                  -- Review security identity merge proposals (M1G.4 Task 12)

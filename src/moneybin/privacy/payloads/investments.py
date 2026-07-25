@@ -69,6 +69,7 @@ if TYPE_CHECKING:
         SecuritiesResult,
         SecurityRow,
     )
+    from moneybin.services.price_service import PricesResult
     from moneybin.services.security_links_service import (
         PendingSecurityLinkGroup,
     )
@@ -665,4 +666,82 @@ class SecurityLinksHistoryPayload:
         """Build the history payload from ``SecurityLinksService.history()`` rows."""
         return cls(
             decisions=[SecurityLinkHistoryRow.from_decision_row(r) for r in rows]
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentPricePullPayload:
+    """Payload for ``investments_prices_pull`` — counts plus what stayed unpriced.
+
+    Deliberately carries no price and no security identifier beyond the id: a
+    refresh summary is about coverage, not about what anything is worth.
+    """
+
+    rows_written: Annotated[int, DataClass.AGGREGATE]
+    observations: Annotated[int, DataClass.AGGREGATE]
+    securities_priced: Annotated[int, DataClass.AGGREGATE]
+    queued_for_review: Annotated[int, DataClass.AGGREGATE]
+    unpriced: list[InvestmentUnpricedEntry]
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentUnpricedEntry:
+    """One held security a refresh could not price, and why."""
+
+    security_id: Annotated[str, DataClass.RECORD_ID]
+    reason: Annotated[str, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentPriceMarkPayload:
+    """Payload for ``investments_prices_set`` / ``_delete`` — the mark's identity.
+
+    ``close`` is AGGREGATE, matching the registry entries for
+    ``app.security_price_overrides.close`` and ``core.fct_security_prices.close``:
+    a per-UNIT price is public reference data (what a security was worth on a
+    date), unlike ``fct_investment_transactions.price``, which is what the user
+    actually paid. The elevated figure is ``market_value`` — quantity x close —
+    which reveals position size and stays BALANCE on the holdings payload.
+    """
+
+    security_id: Annotated[str, DataClass.RECORD_ID]
+    price_date: Annotated[date, DataClass.TIMESTAMP_OBSERVABILITY]
+    quote_currency: Annotated[str, DataClass.CURRENCY]
+    close: Annotated[Decimal | None, DataClass.AGGREGATE]
+    removed: Annotated[bool, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentPriceRow:
+    """One resolved price in an ``investments_prices_list`` result."""
+
+    price_date: Annotated[date, DataClass.TIMESTAMP_OBSERVABILITY]
+    quote_currency: Annotated[str, DataClass.CURRENCY]
+    close: Annotated[Decimal, DataClass.AGGREGATE]
+    source_type: Annotated[str, DataClass.TXN_TYPE]
+    price_basis: Annotated[str, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentPricesPayload:
+    """Payload for ``investments_prices_list`` — the resolved series, newest first."""
+
+    security_id: Annotated[str, DataClass.RECORD_ID]
+    rows: list[InvestmentPriceRow]
+
+    @classmethod
+    def from_result(cls, result: PricesResult) -> InvestmentPricesPayload:
+        """Map the service result onto the classified payload."""
+        return cls(
+            security_id=result.security_id,
+            rows=[
+                InvestmentPriceRow(
+                    price_date=row.price_date,
+                    quote_currency=row.quote_currency,
+                    close=row.close,
+                    source_type=row.source_type,
+                    price_basis=row.price_basis,
+                )
+                for row in result.rows
+            ],
         )

@@ -176,7 +176,7 @@ class TiingoPriceAdapter:
             raise PriceFeedAuthError(
                 "No Tiingo API token is stored. Tiingo's free tier covers 1,000 "
                 "requests/day; create a token at tiingo.com and store it with "
-                "'moneybin investments prices login'."
+                "'moneybin investments prices token'."
             ) from exc
 
     def _observations(self, ref: SecurityRef, bars: object) -> list[PriceObservation]:

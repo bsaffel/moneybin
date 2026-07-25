@@ -25,6 +25,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Protocol
 
 import duckdb
@@ -40,8 +41,10 @@ from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.repositories.security_price_repo import SecurityPriceRepo
 from moneybin.tables import (
     DIM_HOLDINGS,
+    FCT_SECURITY_PRICES,
     SECURITIES,
     SECURITY_LINK_DECISIONS,
     SECURITY_LINKS,
@@ -123,6 +126,25 @@ class HeldSecurity:
     ticker: str | None
     exchange: str | None
     coingecko_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PriceRow:
+    """One resolved price from core.fct_security_prices."""
+
+    price_date: date
+    quote_currency: str
+    close: Decimal
+    source_type: str
+    price_basis: str
+
+
+@dataclass(frozen=True, slots=True)
+class PricesResult:
+    """The resolved series for one security, newest first."""
+
+    security_id: str
+    rows: tuple[PriceRow, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +331,119 @@ class PriceService:
             securities_priced=len(priced_securities),
             queued_for_review=queued,
             unpriced=tuple(unpriced),
+        )
+
+    def resolve_security(self, ref: str) -> str:
+        """Resolve a free-text security reference to a canonical ``security_id``.
+
+        Delegates to ``InvestmentService.resolve_security`` rather than repeating
+        the ladder: ``identifiers.md`` Guard 2 requires filters to bind to the id
+        and resolution to happen once at the service boundary, and two resolvers
+        for one question would drift.
+        """
+        from moneybin.services.investment_service import (  # noqa: PLC0415  # avoids an import cycle
+            InvestmentService,
+        )
+
+        return InvestmentService(self._db).resolve_security(ref)
+
+    # ---------------------------- user marks ----------------------------
+
+    def set_mark(
+        self,
+        security_id: str,
+        price_date: date,
+        close: Decimal,
+        *,
+        quote_currency: str = "USD",
+        note: str | None,
+    ) -> None:
+        """Record the user's own price for one security, date, and currency.
+
+        Refuses a non-positive close. The guarantee "an unpriced holding is NULL,
+        never zero" would otherwise have a hole on exactly the path a user
+        controls: a genuinely worthless position is a ledger event — a disposal or
+        write-off — not a zero price, and admitting zero here would make
+        *worthless* and *unknown* two states every downstream total, report, and
+        doctor check has to tell apart.
+        """
+        if close <= 0:
+            raise ValueError(
+                "A price mark must be positive. A worthless position is recorded "
+                "as a disposal or write-off in the ledger, not as a zero price."
+            )
+        SecurityPriceRepo(self._db).set(
+            security_id,
+            price_date,
+            quote_currency.upper(),
+            close=close,
+            note=note,
+            actor=self._actor,
+        )
+
+    def delete_mark(
+        self, security_id: str, price_date: date, *, quote_currency: str = "USD"
+    ) -> bool:
+        """Remove one mark, returning ``True`` if a row was actually deleted.
+
+        Reporting the no-op matters: a silent success reads as "the override is
+        gone" when there was never one, which is the same observable state for the
+        wrong reason.
+        """
+        event = SecurityPriceRepo(self._db).delete(
+            security_id,
+            price_date,
+            quote_currency.upper(),
+            actor=self._actor,
+        )
+        return event is not None
+
+    def list_prices(
+        self,
+        security_id: str,
+        *,
+        since: date | None = None,
+        source_type: str | None = None,
+    ) -> PricesResult:
+        """The resolved series for one security, newest first.
+
+        Reads ``core.fct_security_prices`` rather than ``raw``: the question a user
+        asks is which price applies, and that is the resolved winner per date, not
+        every observation that competed for it.
+        """
+        clauses = ["security_id = ?"]
+        params: list[object] = [security_id]
+        if since is not None:
+            clauses.append("price_date >= ?")
+            params.append(since)
+        if source_type is not None:
+            clauses.append("source_type = ?")
+            params.append(source_type)
+        where = " AND ".join(clauses)
+        try:
+            rows = self._db.execute(
+                f"SELECT price_date, quote_currency, close, source_type, price_basis "  # noqa: S608  # TableRef + parameterized values
+                f"FROM {FCT_SECURITY_PRICES.full_name} WHERE {where} "
+                "ORDER BY price_date DESC, quote_currency",
+                params,
+            ).fetchall()
+        except duckdb.CatalogException:
+            logger.warning(
+                "core.fct_security_prices is absent — run 'moneybin refresh run'"
+            )
+            return PricesResult(security_id=security_id, rows=())
+        return PricesResult(
+            security_id=security_id,
+            rows=tuple(
+                PriceRow(
+                    price_date=row[0],
+                    quote_currency=str(row[1]),
+                    close=row[2],
+                    source_type=str(row[3]),
+                    price_basis=str(row[4]),
+                )
+                for row in rows
+            ),
         )
 
     # --------------------------- key derivation ---------------------------
@@ -595,3 +730,25 @@ def _name_tokens(name: str) -> list[str]:
     """Significant lowercase tokens, corporate-form suffixes removed."""
     words = re.findall(r"[a-z0-9]+", name.lower())
     return [w for w in words if w not in _CORPORATE_SUFFIXES]
+
+
+def build_price_service(db: Database, *, actor: str = "system") -> PriceService:
+    """Wire a PriceService with the real adapters and the OS keychain.
+
+    Kept out of ``PriceService.__init__`` so tests inject fakes without a
+    production seam, matching ``connectors/gsheet/service_factory.py``.
+    """
+    from moneybin.connectors.prices.coingecko import (  # noqa: PLC0415  # httpx is not cold-start cheap
+        CoinGeckoPriceAdapter,
+    )
+    from moneybin.connectors.prices.tiingo import TiingoPriceAdapter  # noqa: PLC0415
+    from moneybin.secrets import (
+        SecretStore,  # noqa: PLC0415  # keyring import is deferred too
+    )
+
+    return PriceService(
+        db,
+        tiingo=TiingoPriceAdapter(secrets=SecretStore()),
+        coingecko=CoinGeckoPriceAdapter(),
+        actor=actor,
+    )

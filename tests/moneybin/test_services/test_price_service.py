@@ -567,3 +567,134 @@ def test_each_source_is_counted_under_its_own_label(db: Database) -> None:
 
     assert _rows_written("tiingo") - before[0] == 1
     assert _rows_written("coingecko") - before[1] == 1
+
+
+# --------------------------------------------------------------------------
+# User price marks
+# --------------------------------------------------------------------------
+
+
+def _core_prices_ddl(db: Database) -> None:
+    """core.fct_security_prices is SQLMesh-built in production; stub the shape."""
+    db.execute(
+        "CREATE OR REPLACE TABLE core.fct_security_prices ("
+        "security_id VARCHAR, price_date DATE, quote_currency VARCHAR, "
+        "close DECIMAL(28,10), source_type VARCHAR, price_basis VARCHAR, "
+        "updated_at TIMESTAMP)"
+    )
+
+
+def test_setting_a_mark_stores_it_with_override_provenance(db: Database) -> None:
+    """A mark is the user's own number, and its source must say so."""
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    service.set_mark("s1", date(2026, 6, 30), Decimal("42.50"), note="409A")
+
+    row = db.execute(
+        "SELECT security_id, price_date, quote_currency, close, note "
+        "FROM app.security_price_overrides"
+    ).fetchone()
+    assert row == ("s1", date(2026, 6, 30), "USD", Decimal("42.50"), "409A")
+
+
+def test_setting_a_mark_twice_replaces_the_value(db: Database) -> None:
+    """A correction replaces the number; the mark stays one row for its date."""
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    service.set_mark("s1", date(2026, 6, 30), Decimal("42.50"), note="first")
+    service.set_mark("s1", date(2026, 6, 30), Decimal("51.00"), note="revised")
+
+    rows = db.execute("SELECT close, note FROM app.security_price_overrides").fetchall()
+    assert rows == [(Decimal("51.00"), "revised")]
+
+
+def test_a_nonpositive_mark_is_refused(db: Database) -> None:
+    """The never-zero rule must hold on the user-controlled path too.
+
+    A genuinely worthless position is a ledger event — a disposal or write-off —
+    not a zero price, which would make worthless and unknown two states every
+    downstream total has to tell apart.
+    """
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    with pytest.raises(ValueError, match="positive"):
+        service.set_mark("s1", date(2026, 6, 30), Decimal("0"), note=None)
+
+    count = db.execute("SELECT COUNT(*) FROM app.security_price_overrides").fetchone()
+    assert count is not None
+    assert count[0] == 0
+
+
+def test_deleting_a_mark_returns_the_date_to_provider_valuation(db: Database) -> None:
+    """Without delete a mark is unreachable: it outranks every provider row."""
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+    service.set_mark("s1", date(2026, 6, 30), Decimal("42.50"), note=None)
+
+    deleted = service.delete_mark("s1", date(2026, 6, 30))
+
+    assert deleted is True
+    count = db.execute("SELECT COUNT(*) FROM app.security_price_overrides").fetchone()
+    assert count is not None
+    assert count[0] == 0
+
+
+def test_deleting_an_absent_mark_reports_that_nothing_was_removed(
+    db: Database,
+) -> None:
+    """A silent success would read as "the override is gone" when none existed."""
+    _seed_security(db, security_id="s1", name="Private Co")
+
+    assert _service(db, _FakeTiingo()).delete_mark("s1", date(2026, 6, 30)) is False
+
+
+def test_listing_prices_reads_the_resolved_series(db: Database) -> None:
+    """The user wants to see which source won, not every raw observation."""
+    _seed_security(db, security_id="s1", name="Apple Inc", ticker="AAPL")
+    _core_prices_ddl(db)
+    db.execute(
+        "INSERT INTO core.fct_security_prices VALUES "
+        "('s1', DATE '2026-07-23', 'USD', 212.55, 'tiingo', 'raw', NOW()), "
+        "('s1', DATE '2026-07-24', 'USD', 214.00, 'override', 'raw', NOW()), "
+        "('s2', DATE '2026-07-24', 'USD', 99.00, 'tiingo', 'raw', NOW())"
+    )
+
+    result = _service(db, _FakeTiingo()).list_prices("s1")
+
+    assert [(r.price_date, r.close, r.source_type) for r in result.rows] == [
+        (date(2026, 7, 24), Decimal("214.00"), "override"),
+        (date(2026, 7, 23), Decimal("212.55"), "tiingo"),
+    ]
+
+
+def test_listing_prices_can_filter_by_source(db: Database) -> None:
+    """Comparing what a feed said against what a mark overrode is the use case."""
+    _seed_security(db, security_id="s1", name="Apple Inc", ticker="AAPL")
+    _core_prices_ddl(db)
+    db.execute(
+        "INSERT INTO core.fct_security_prices VALUES "
+        "('s1', DATE '2026-07-23', 'USD', 212.55, 'tiingo', 'raw', NOW()), "
+        "('s1', DATE '2026-07-24', 'USD', 214.00, 'override', 'raw', NOW())"
+    )
+
+    result = _service(db, _FakeTiingo()).list_prices("s1", source_type="override")
+
+    assert [r.source_type for r in result.rows] == ["override"]
+
+
+def test_listing_prices_can_bound_the_start_date(db: Database) -> None:
+    """A long-held position has years of closes; the default must not dump them all."""
+    _seed_security(db, security_id="s1", name="Apple Inc", ticker="AAPL")
+    _core_prices_ddl(db)
+    db.execute(
+        "INSERT INTO core.fct_security_prices VALUES "
+        "('s1', DATE '2020-01-02', 'USD', 100.00, 'tiingo', 'raw', NOW()), "
+        "('s1', DATE '2026-07-24', 'USD', 214.00, 'tiingo', 'raw', NOW())"
+    )
+
+    result = _service(db, _FakeTiingo()).list_prices("s1", since=date(2026, 1, 1))
+
+    assert [r.price_date for r in result.rows] == [date(2026, 7, 24)]
