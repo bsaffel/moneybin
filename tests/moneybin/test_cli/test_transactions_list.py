@@ -284,3 +284,64 @@ def test_list_cursor_forwarded() -> None:
             ) as mock_get:
                 runner.invoke(app, ["transactions", "list", "--cursor", "dGVzdA=="])
     assert mock_get.call_args.kwargs["cursor"] == "dGVzdA=="
+
+
+@pytest.mark.unit
+def test_the_suggested_continuation_command_reruns_with_the_same_filters() -> None:
+    """An agent must be able to run the continuation hint verbatim.
+
+    The cursor is bound to the filters that produced it
+    (`TransactionService._get_cursor_scope`), so a continuation that drops
+    `--account` decodes against a different scope and the service rejects it —
+    `test_cursor_is_rejected_when_the_filters_change` pins exactly that. A
+    filter-less hint is therefore guaranteed-invalid for every filtered query,
+    which is the common case. The MCP twin (`_transaction_actions`) already
+    echoes each active filter back into a complete continuation call.
+    """
+    import json
+    import shlex
+
+    txns = [_make_txn()]
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService,
+                "get",
+                return_value=_mock_result(txns, next_cursor="c1", total_count=4),
+            ):
+                first = runner.invoke(
+                    app,
+                    [
+                        "transactions",
+                        "list",
+                        "--account",
+                        "Test Bank",
+                        "--from",
+                        "2026-01-01",
+                        "--uncategorized",
+                        "--limit",
+                        "2",
+                        "--output",
+                        "json",
+                    ],
+                )
+
+    assert first.exit_code == 0
+    hint = json.loads(first.output)["actions"][0]
+    argv = shlex.split(hint.split("`")[1])
+    assert argv[0] == "moneybin"
+
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result([])
+            ) as rerun:
+                second = runner.invoke(app, argv[1:])
+
+    assert second.exit_code == 0
+    kwargs = rerun.call_args.kwargs
+    assert kwargs["accounts"] == ["Test Bank"]
+    assert kwargs["date_from"] == "2026-01-01"
+    assert kwargs["uncategorized_only"] is True
+    assert kwargs["limit"] == 2
+    assert kwargs["cursor"] == "c1"

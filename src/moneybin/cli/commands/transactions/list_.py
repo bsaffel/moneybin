@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import logging
+import shlex
 from dataclasses import replace
 from decimal import Decimal
+from typing import cast
 
 import typer
 
@@ -20,7 +22,36 @@ from moneybin.cli.utils import render_rich_table
 logger = logging.getLogger(__name__)
 
 
-def _list_actions(next_cursor: str | None) -> list[str]:
+def _continuation_command(filters: dict[str, object], next_cursor: str) -> str:
+    """A complete, runnable continuation — every active filter echoed back.
+
+    The cursor is bound to the filters that produced it, so a command that
+    drops them decodes against a different scope and the service rejects it.
+    Mirrors the MCP twin (``_transaction_actions``), which already emits a
+    complete continuation call. ``shlex.join`` handles account names and
+    description patterns containing spaces or quotes.
+    """
+    argv = ["moneybin", "transactions", "list"]
+    for account in cast("list[str]", filters["accounts"]):
+        argv += ["--account", account]
+    for category in cast("list[str]", filters["categories"]):
+        argv += ["--category", category]
+    for flag, value in (
+        ("--from", filters["date_from"]),
+        ("--to", filters["date_to"]),
+        ("--amount-min", filters["amount_min"]),
+        ("--amount-max", filters["amount_max"]),
+        ("--description", filters["description"]),
+    ):
+        if value is not None:
+            argv += [flag, str(value)]
+    if filters["uncategorized"]:
+        argv.append("--uncategorized")
+    argv += ["--limit", str(filters["limit"]), "--cursor", next_cursor]
+    return shlex.join(argv)
+
+
+def _list_actions(next_cursor: str | None, filters: dict[str, object]) -> list[str]:
     """Next-step hints for an agent driving the CLI.
 
     These name CLI invocations, not MCP tools. An agent reading a CLI envelope
@@ -35,7 +66,7 @@ def _list_actions(next_cursor: str | None) -> list[str]:
     if next_cursor is not None:
         actions.insert(
             0,
-            f"Use `moneybin transactions list --cursor {next_cursor}` "
+            f"Use `{_continuation_command(filters, next_cursor)}` "
             "to fetch the next page",
         )
     return actions
@@ -127,7 +158,20 @@ def transactions_list(
         total_count=result.total_count,
         returned_count=len(result.transactions),
         next_cursor=result.next_cursor,
-        actions=_list_actions(result.next_cursor),
+        actions=_list_actions(
+            result.next_cursor,
+            {
+                "accounts": accounts,
+                "categories": categories,
+                "date_from": date_from,
+                "date_to": date_to,
+                "amount_min": amount_min,
+                "amount_max": amount_max,
+                "description": description,
+                "uncategorized": uncategorized,
+                "limit": limit,
+            },
+        ),
     )
     # Under keyset pagination the cursor is the only truth about "more".
     # `build_envelope` also infers has_more from `total_count > returned_count`,
