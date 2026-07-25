@@ -464,10 +464,9 @@ class DoctorService:
         watermark, leaves nothing for the scan to flag. The *structural* guard
         against raw bypass writes is the lint rule (rejects raw
         ``INSERT``/``UPDATE``/``DELETE`` against protected tables outside
-        ``*_repo.py``); content-based coverage is a hosted-tier follow-up (see
-        ``private/followups.md``). ``pk_col`` and ``updated_col`` are
-        code-supplied constants, quoted defensively per
-        ``.claude/rules/security.md``.
+        ``*_repo.py``); content-based coverage is a hosted-tier follow-up.
+        ``pk_col`` and ``updated_col`` are code-supplied constants, quoted
+        defensively per ``.claude/rules/security.md``.
         """
         # Defense-in-depth: both raw-interpolated expressions must be code-supplied
         # constants from their allowlists (the SQL below splices them unsanitized).

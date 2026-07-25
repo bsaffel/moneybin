@@ -49,7 +49,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 2. **No general undo for `app.*` mutations.** Invariant 10 Phase 1 captures the data; Phase 2 builds the consumer. Without it, "I miscategorized 30 transactions, undo that" requires manual re-edits or reaching for `sql_query` — exactly the SQL surgery this spec rules out.
 3. **Doctor failures don't point at recoveries.** "FK integrity failed on these 5 transaction IDs" leaves the agent guessing whether to revert an import, edit the account_id, or treat the orphan as intentional.
 4. **Self-healing is absent.** When `import_revert` cascades and leaves orphan `app.transaction_categories` rows, those accumulate forever. No refresh-time cleanup.
-5. **Refresh crashes silently.** Matcher and categorizer failures log at DEBUG (`followups.md:71`); the import looks healthy while dupes silently accumulate. No surface to detect partial-pipeline failure.
+5. **Refresh crashes silently.** Matcher and categorizer failures log at DEBUG; the import looks healthy while dupes silently accumulate. No surface to detect partial-pipeline failure.
 6. **Matching unreachable from MCP.** This pre-cutover gap is closed by
    `reviews(kind="matches", status="pending")` and
    `reviews_decide(decisions=[...])`.
@@ -249,7 +249,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
         timestamp: str
     ```
 
-    Behavior change: a *real* crash in the matcher/categorizer moves from `logger.debug(...)` to `logger.error(...)` and populates the `*_error` field. A missing-view precondition (`duckdb.CatalogException` / `BinderException` — e.g. first load before SQLMesh apply built the views) is NOT a crash: it stays a quiet `logger.debug(...)` and leaves `*_error` `None`, so a fresh database's first refresh never reports a false failure. (This precondition discrimination is what genuinely closes `followups.md:71`; a blind DEBUG→ERROR would trade silent failure for false-positive noise.) Refresh continues — one stage's failure doesn't abort the pipeline (same partial-failure-isolation pattern import already uses). If any `*_error` is set, the response envelope's `recovery_actions` includes:
+    Behavior change: a *real* crash in the matcher/categorizer moves from `logger.debug(...)` to `logger.error(...)` and populates the `*_error` field. A missing-view precondition (`duckdb.CatalogException` / `BinderException` — e.g. first load before SQLMesh apply built the views) is NOT a crash: it stays a quiet `logger.debug(...)` and leaves `*_error` `None`, so a fresh database's first refresh never reports a false failure. (This precondition discrimination is what genuinely closes the silent-refresh-crash gap 5 above; a blind DEBUG→ERROR would trade silent failure for false-positive noise.) Refresh continues — one stage's failure doesn't abort the pipeline (same partial-failure-isolation pattern import already uses). If any `*_error` is set, the response envelope's `recovery_actions` includes:
 
     - `refresh_run(steps=["match"])` for a matching-only retry, or `refresh_run(steps=["categorize"])` for a categorization-only retry, `confidence=suggested`.
     - `system_status(sections=["doctor"], detail="full")` for diagnosis, `confidence=suggested`.
@@ -725,4 +725,4 @@ Resolved during the 2026-05-19/2026-05-20 brainstorm. Captured so future readers
 - Prerequisite: `app-integrity-invariant.md` (Phase 1 — audit_log pre-image capture, repository routing, lint rule). This spec supersedes the Phase 2 description in that spec's Out of Scope section.
 - Adjacent: `data-reconciliation.md` (draft) — broader ETL invariant work; this spec lands the agent-recovery contract that draft references.
 - Companion rule: `.claude/rules/data-recovery.md` (new, lands in PR 10) — codifies the contract for future specs and tools.
-- Followup items rolled into this spec: `followups.md:71` (silent refresh crashes) — covered by Req 9.
+- Prior gaps rolled into this spec: silent refresh crashes (gap 5) — covered by Req 9.

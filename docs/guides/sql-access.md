@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Direct SQL Access
 
 MoneyBin stores your finances in an encrypted DuckDB file. You can query it from your own scripts and clients with the same SQL you'd write against any DuckDB. This guide covers the read-only surface, how to connect from external tools, and the patterns that hold up across releases.
@@ -19,11 +19,26 @@ The schema reference lives in [`docs/reference/data-model.md`](../reference/data
 
 `core.*` and `reports.*` are stable consumer surfaces. `app.*` is readable as a debugging aid, but every consumer-relevant column already surfaces through `core.fct_transactions` (notes, tags, splits as nested `LIST(STRUCT(...))` columns) or `core.dim_accounts` (account settings joined in). Reach down into `app.*` only when you need raw history that the dim/fact resolution discards.
 
+This table describes what's reachable through `db query`/`db shell`/`db ui` and external clients, which have no schema restriction of their own — DuckDB's own permissions are the only gate. The agent-safe paths (`sql_query` and `moneybin sql query`) are narrower: `core`, `app`, and `reports` only. See [`sql_query` rules](#sql_query-rules-mcp-tool-and-moneybin-sql-query-cli) below.
+
 See [`docs/reference/data-model.md`](../reference/data-model.md) for column-level documentation of every table above.
 
-## Three paths to query
+## Four paths to query
 
-All three built-in paths attach the database under the alias **`moneybin`** and pre-issue `USE moneybin;`. The schema-qualified names below (`core.fct_transactions`, `reports.spending_trend`) work in every path without any extra setup. All three assume the database is **unlocked** — the encryption key is in the OS keychain. If you see `Database is locked — run 'moneybin db unlock' first`, that's a passphrase-mode profile that hasn't been unlocked this boot. Auto-key profiles unlock automatically on first use. Details in [`database-security.md`](database-security.md).
+All four built-in paths attach the database under the alias **`moneybin`** and pre-issue `USE moneybin;`. The schema-qualified names below (`core.fct_transactions`, `reports.spending_trend`) work in every path without any extra setup. All four assume the database is **unlocked** — the encryption key is in the OS keychain. If you see `Database is locked — run 'moneybin db unlock' first`, that's a passphrase-mode profile that hasn't been unlocked this boot. Auto-key profiles unlock automatically on first use. Details in [`database-security.md`](database-security.md).
+
+### `moneybin sql query "<sql>"` — privacy-safe SQL from the CLI
+
+The agent-mediated counterpart to `db query` below, and the CLI twin of the MCP `sql_query` tool: both call the same `execute_sql_query` primitive, so they share the read-only gate, the `core`/`app`/`reports` schema restriction, sqlglot column lineage, and CRITICAL masking:
+
+```bash
+moneybin sql query "SELECT year_month, total_spend
+                    FROM reports.spending_trend
+                    WHERE category = 'Food & Drink'
+                    ORDER BY year_month DESC LIMIT 12"
+```
+
+Output is governed by `-o, --output {text,json}` (only two formats — not `db query`'s five, since results go through the same envelope as MCP tools) and `--json-fields` to project a subset of columns. Full rule set — allowed statements, blocked functions, multi-statement handling, masking — in [`sql_query` rules](#sql_query-rules-mcp-tool-and-moneybin-sql-query-cli) below.
 
 ### `moneybin db query "<sql>"` — one-shot from the CLI
 
@@ -32,7 +47,7 @@ For scripts, one-liners, and anything you'd pipe into `jq` or `csvq`. Output is 
 ```bash
 moneybin db query "SELECT year_month, total_spend
                    FROM reports.spending_trend
-                   WHERE category = 'Food and Drink'
+                   WHERE category = 'Food & Drink'
                    ORDER BY year_month DESC LIMIT 12" \
                   --output csv
 ```
@@ -43,16 +58,16 @@ Available formats: `text` (DuckDB's `-table` boxed ASCII, the default), `json`, 
 
 ```json
 [
-  {"year_month":"2026-04","total_spend":1284.50},
-  {"year_month":"2026-03","total_spend":1102.18}
+  {"year_month":"2026-04","total_spend":"1284.50"},
+  {"year_month":"2026-03","total_spend":"1102.18"}
 ]
 ```
 
-Decimal/numeric columns serialize as JSON numbers. Dates and timestamps serialize as ISO 8601 strings (`"2026-04-15"`, `"2026-04-15T10:23:00"`). SQL `NULL` serializes as JSON `null` with the key still present. The whole result is buffered before any byte hits stdout — large result sets allocate memory on both DuckDB's side and yours; add an explicit `LIMIT` or stream via `COPY ... TO '/tmp/out.parquet'` from `db shell` for big extracts.
+`DECIMAL` columns — MoneyBin's money type, `DECIMAL(18,2)` on every amount — serialize as JSON **strings**, not numbers: DuckDB's `-json` formatter preserves exact decimal precision rather than risk a double-precision float rounding a cent away. Plain `INTEGER`/`DOUBLE` columns serialize as ordinary JSON numbers. `jq` consumers need `tonumber` before arithmetic on a money column. Dates serialize as `"2026-04-15"`; timestamps serialize space-separated, not `T`-separated (`"2026-04-15 10:23:00"`, not ISO 8601's `"2026-04-15T10:23:00"`). SQL `NULL` serializes as JSON `null` with the key still present. The whole result is buffered before any byte hits stdout — large result sets allocate memory on both DuckDB's side and yours; add an explicit `LIMIT` or stream via `COPY ... TO '/tmp/out.parquet'` from `db shell` for big extracts.
 
 This is **not** the same envelope as MoneyBin's higher-level CLI commands or MCP tools. Those return `{"status", "summary", "data", "actions"}`; `db query --output json` is raw rows. For envelope parity with MCP, use the higher-level read commands listed in [`cli-reference.md`](cli-reference.md).
 
-**Parameter binding.** `db query` has no `--param` flag and no stdin JSON input — the SQL is taken as a single positional argument and forwarded to DuckDB's `-c` flag. **Do not interpolate untrusted values into the SQL string from the shell** — `moneybin db query "SELECT ... WHERE id = '$id'"` is a SQL-injection footgun if `$id` came from a user, a file, or an LLM. For parameterized read queries from agent loops, prefer the MCP `sql_query` tool (also un-parameterized, but the read-only parser blocks the dangerous shapes — see [MCP `sql_query` rules](#mcp-sql_query-rules) below) or attach from Python and use `conn.execute(sql, [params])` directly.
+**Parameter binding.** `db query` has no `--param` flag and no stdin JSON input — the SQL is taken as a single positional argument and forwarded to DuckDB's `-c` flag. **Do not interpolate untrusted values into the SQL string from the shell** — `moneybin db query "SELECT ... WHERE id = '$id'"` is a SQL-injection footgun if `$id` came from a user, a file, or an LLM. For parameterized read queries from agent loops, prefer `moneybin sql query` or the MCP `sql_query` tool (also un-parameterized, but the read-only parser blocks the dangerous shapes — see [`sql_query` rules](#sql_query-rules-mcp-tool-and-moneybin-sql-query-cli) below) or attach from Python and use `conn.execute(sql, [params])` directly.
 
 **Exit codes.** `0` on success, `1` on runtime failure (SQL syntax error, missing table, lock contention exhausted, locked database), `2` on usage error (missing flag value). On runtime failure DuckDB's own error message goes to stderr; nothing is written to stdout. There is no JSON error envelope from this command — script consumers should check the exit code, not parse stdout, to detect failure.
 
@@ -94,11 +109,11 @@ In a script, capture stdout only: `KEY=$(moneybin db key show -q)`.
 
 ### Get the database path
 
-Default location: `<base>/profiles/<profile>/moneybin.duckdb`. `<base>` resolves to `$MONEYBIN_BASE_DIR`, then `$XDG_DATA_HOME/moneybin`, then `~/.moneybin`. A typical install puts the file at `~/.moneybin/profiles/default/moneybin.duckdb`. See [`database-security.md`](database-security.md) for the full resolution order.
+Default location: `<base>/profiles/<profile>/moneybin.duckdb`. `<base>` resolves to `$MONEYBIN_HOME` if set, else `<cwd>/.moneybin` when `$MONEYBIN_ENVIRONMENT=development` or the current directory is a MoneyBin repo checkout, else `~/.moneybin`. A typical install puts the file at `~/.moneybin/profiles/default/moneybin.duckdb`. See [`database-security.md`](database-security.md) for the full resolution order.
 
 ### DuckDB version compatibility
 
-The encrypted DuckDB file format is versioned with DuckDB itself; the version that wrote it must be compatible with the version reading it. MoneyBin currently bundles **DuckDB 1.5.2** (see `pyproject.toml`). Your external client should use a DuckDB release with the same major.minor or one with documented forward-compatibility. A version mismatch typically surfaces as an opaque `IO Error` or `Serialization Error` on ATTACH. `moneybin db info` prints the DuckDB version the file was last opened with.
+The encrypted DuckDB file format is versioned with DuckDB itself; the version that wrote it must be compatible with the version reading it. MoneyBin currently bundles **DuckDB 1.5.4** (pinned in `uv.lock`; `pyproject.toml` only sets a floor, `duckdb>=1.3.2`). Your external client should use a DuckDB release with the same major.minor or one with documented forward-compatibility. A version mismatch typically surfaces as an opaque `IO Error` or `Serialization Error` on ATTACH. `moneybin db info` prints the DuckDB version *currently running* (it runs `SELECT version()`), which is the number to match your external client against. It is not a record of what wrote the file — DuckDB persists no writer-version metadata, so after a MoneyBin upgrade `db info` reports the new runtime even for a file last written by an older release.
 
 ### DuckDB CLI
 
@@ -167,6 +182,7 @@ Then point the downstream tool at the Parquet file. **Never share the live encry
 
 | Path | Error surface |
 |---|---|
+| `sql query` | Rejected, unparseable, out-of-scope, unknown-table, or failed queries raise a classified error (`error_codes.SQL_*`): a structured JSON error envelope on stdout with `--output json`, a ❌-prefixed message otherwise. Exit `1` either way. |
 | `db query` | DuckDB error to stderr, exit `1`. No JSON envelope on error path. |
 | `db shell` / `db ui` | DuckDB error printed inline in the shell; subprocess exit `1` on hard failure. |
 | External `duckdb` Python | Raises `duckdb.Error` (or specific subclasses like `duckdb.IOException`, `duckdb.InvalidInputException`, `duckdb.CatalogException`, `duckdb.BinderException`). A wrong `ENCRYPTION_KEY` surfaces as a generic decryption / IO error — DuckDB doesn't distinguish bad-key from corrupt-file. |
@@ -174,9 +190,10 @@ Then point the downstream tool at the Parquet file. **Never share the live encry
 
 ## Lock contention and retry
 
-DuckDB is single-writer, multi-reader. Multiple read-only connections coexist with each other; they coexist with a MoneyBin writer only between its write operations — a read-only open that lands during an active write retries on the same backoff as writers (start 50 ms, ×1.5, cap 500 ms, default 5 s budget) before raising a lock error.
+DuckDB is single-writer, multi-reader. Multiple read-only connections coexist with each other; they coexist with a MoneyBin writer only between its write operations — a read-only open *through the `Database` helper* that lands during an active write retries on the same backoff as writers (start 50 ms, ×1.5, cap 500 ms, 10 s budget) before raising a lock error. Which paths get that helper is the distinction the bullets below draw.
 
-- **`db query` and `db shell`** open the database the same way other moneybin commands do — through the project's `Database` connection helper. On a write path, that helper retries on lock contention with exponential backoff (start 50 ms, ×1.5, cap 500 ms) until the configured wait budget expires (default 5 s). Read paths do not contend with each other; only a concurrent active write causes a read to retry on the same backoff.
+- **`db query` and `db shell` do not retry either.** They shell out to the DuckDB CLI with a generated init script that attaches the encrypted file, so the project's `Database` helper — and its backoff — is never in the path. If the subprocess hits a lock error, the command converts it straight to exit 1. Treat these two like the external attaches below, not like other `moneybin` commands: on a race, retry in your own script.
+- **Other `moneybin` commands do retry.** Everything that goes through the `Database` helper backs off on lock contention (start 50 ms, ×1.5, cap 500 ms) until the write-lock wait budget expires (10 s, fixed at build time). Read paths don't contend with each other; only a concurrent active write makes a read retry.
 - **External read-only attaches do not retry.** If your client races a moneybin write and DuckDB returns a lock error, your client sees it immediately. Wait a few seconds and retry — moneybin's exclusive lock windows are short (typically sub-second per imported batch).
 - **`moneybin db ps`** shows which processes have the file open; **`moneybin db kill`** sends SIGTERM. Use these if a stale process is blocking a write.
 
@@ -205,21 +222,22 @@ Then ATTACH the backup file with `READ_ONLY` from your client. The backup is a f
 The safe paths:
 
 - **External clients:** attach with `READ_ONLY` as shown above. DuckDB then rejects writes at the engine level.
-- **AI agents:** use the MCP `sql_query` tool. The read-only parser rejects anything that isn't `SELECT`/`WITH`/`DESCRIBE`/`SHOW`/`PRAGMA`/`EXPLAIN`.
-- **Your own writes to `app.*`:** go through the CLI (`moneybin transactions note add`, `moneybin transactions tag`, etc.) or the MCP write tools. They emit `app.audit_log` rows and the right metric counters.
+- **AI agents:** use the MCP `sql_query` tool or the CLI `moneybin sql query` command. The read-only parser rejects anything that isn't `SELECT`/`WITH`/`DESCRIBE`/`SHOW`/`PRAGMA`/`EXPLAIN`.
+- **Your own writes to `app.*`:** go through the CLI (`moneybin transactions notes add`, `moneybin transactions tags add`, etc.) or the MCP write tools. They emit `app.audit_log` rows and the right metric counters.
 
-## MCP `sql_query` rules
+## `sql_query` rules (MCP tool and `moneybin sql query` CLI)
 
-The MCP `sql_query` tool is the agent-safe SQL path. Its keyword gates are **regex-based**, with a parse-backed statement check on top — design your queries accordingly:
+The MCP `sql_query` tool and the `moneybin sql query` CLI command are the agent-safe SQL paths — both call the same `execute_sql_query` primitive, so every rule below applies identically to both surfaces unless noted. Keyword gates are **regex-based**, with a parse-backed statement check on top — design your queries accordingly:
 
 - **Allowed top-level statements:** `SELECT`, `WITH`, `DESCRIBE`, `SHOW`, `PRAGMA`, `EXPLAIN`. Match is case-insensitive against the leading non-whitespace token.
+- **Allowed schemas (row data):** `core`, `app`, `reports` only. A `SELECT` referencing a table outside that set — `raw`, `prep`, `meta`, `seeds` included — is refused before execution, even though those schemas are readable through `db query`/`db shell`/external clients (see [the read surface](#the-read-surface) above). **The gate gates rows, not catalog metadata:** `DESCRIBE`, `SHOW`, `PRAGMA`, and `EXPLAIN` are routed to a metadata branch that returns before the schema check runs, so `DESCRIBE raw.plaid_transactions` succeeds and reveals that table's column names, types, and storage stats. It cannot return any of its row values. See [What the AI Provider Sees](what-the-ai-sees.md) for the agent-facing account of this exception.
 - **Blocked anywhere in the query body:** `INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE`, `ALTER`, `TRUNCATE`, `REPLACE`, `MERGE`, `COPY`, `ATTACH`, `DETACH`, `EXPORT`, `IMPORT`. A `WITH writes AS (INSERT ...) SELECT ...` is rejected because the body matches `INSERT`. The check is conservative — a `SELECT` with the literal word `INSERT` in a string would also be rejected; quote or alias around it.
 - **Blocked function names:** the table-valued readers `read_csv`, `read_parquet`, `read_json`, `read_ndjson`, `read_text`, `read_blob`, `read_delta`, `read_iceberg`, their `scan_*` aliases, the legacy `parquet_scan`, and `glob(...)`. These would let an agent exfiltrate local files even though they look like SELECTs.
 - **Blocked literals:** URL schemes (`http://`, `https://`, `s3://`, `az://`, `gcs://`) and any `FROM '...'`/`JOIN '...'` quoted-path replacement scan.
 - **Multi-statement input:** rejected. Every statement in `SELECT 1; SELECT routing_number FROM core.dim_accounts` is individually a legal read, so the keyword gates above all pass — but DuckDB returns the last statement's rows while classification reads the first, so the query is refused before execution. The statement count is taken from your query text exactly as DuckDB receives it, so a second statement cannot hide behind a `--` comment. A trailing `; -- comment` or a doubled `;;` is still one statement and runs normally.
-- **Row cap:** `mcp.max_rows` from `MoneyBinSettings` (default **1000**). Results are buffered, not streamed.
-- **Time cap:** `mcp.tool_timeout_seconds` (default **30 s**) applied by the MCP decorator. On timeout the active DuckDB statement is interrupted.
-- **Sensitivity tier:** derived per call from the columns your query returns (the max class among them). Each call is recorded to the per-call privacy log (`privacy.log.jsonl`) with the tool name, tier, returned data classes, and row count — **not** the query text and **not** row content. CRITICAL columns (account/routing numbers) are masked in the results by column classification; an output column the classifier can't resolve fails closed to the most-sensitive treatment. There is no consent-grant requirement today (the consent ledger records but does not gate). See [What the AI Provider Sees](what-the-ai-sees.md).
+- **Row cap:** `mcp.max_rows` from `MoneyBinSettings` (default **1000**), shared by both surfaces. Results are buffered, not streamed.
+- **Time cap:** `mcp.tool_timeout_seconds` (default **30 s**), applied by the MCP tool decorator only — `moneybin sql query` has no equivalent wall-clock cap. On MCP timeout the active DuckDB statement is interrupted.
+- **Sensitivity tier:** derived per call from the columns your query returns (the max class among them). Every MCP call, and every CLI call made with `--output json`, is recorded to the per-call privacy log (`privacy.log.jsonl`) with the tool name, tier, returned data classes, and row count — **not** the query text and **not** row content. `moneybin sql query` under its default `--output text` writes no privacy event: the text branch returns before the audit write. Pass `--output json` when the query needs to land in the log. CRITICAL columns (account/routing numbers) are masked identically on both surfaces: account identifiers keep the last four digits (`****1234`), routing numbers are masked in full (`*****`, no digits retained). An output column the classifier can't resolve fails closed to the most-sensitive treatment. There is no consent-grant requirement today (the consent ledger records but does not gate). See [What the AI Provider Sees](what-the-ai-sees.md).
 
 For schema-aware composition without burning tokens on the full catalog, call `sql_schema(table=None)` first (compact catalog) and then `sql_schema(table='core.fct_transactions')` for the table you need.
 
@@ -237,7 +255,7 @@ For schema-aware composition without burning tokens on the full catalog, call `s
 
 MoneyBin is pre-v1. Column names and view shapes in `core.*` and `reports.*` may rename or restructure before launch — but every change lands in [`CHANGELOG.md`](../../CHANGELOG.md). Post-launch, the surface locks: additive changes only, with deprecation windows for anything that has to move.
 
-Practical implication for scripts: pin to MoneyBin versions in your tooling and re-read the changelog when bumping. `meta.model_freshness` and `moneybin db info` both report the SQLMesh model versions in effect, useful for compatibility checks.
+Practical implication for scripts: pin to MoneyBin versions in your tooling and re-read the changelog when bumping. `meta.model_freshness` reports the SQLMesh model versions in effect (`last_changed_at`, `last_applied_at` per model) — useful for schema-drift checks; `moneybin db info` reports the running DuckDB version — useful for the client-compatibility check in [DuckDB version compatibility](#duckdb-version-compatibility) above. The two are unrelated version axes; neither substitutes for the other.
 
 ## See also
 
@@ -245,4 +263,4 @@ Practical implication for scripts: pin to MoneyBin versions in your tooling and 
 - [`docs/guides/data-pipeline.md`](data-pipeline.md) — how rows reach `core.*`; what's read-only versus write-restricted.
 - [`docs/guides/cli-reference.md`](cli-reference.md) — every `db` subcommand, `--output` shapes, envelope details.
 - [`docs/guides/database-security.md`](database-security.md) — encryption model, unlock flow, base-directory resolution, multi-machine patterns.
-- [`docs/guides/mcp-server.md`](mcp-server.md) — the `sql_query` tool and the agent-safe path.
+- [`docs/guides/mcp-server.md`](mcp-server.md) — the `sql_query` MCP tool and the agent-safe path (CLI twin: `moneybin sql query`).

@@ -62,6 +62,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`moneybin transactions list --cursor` tokens from before this release are
   rejected.** The cursor changed from base64 offset to the keyset envelope MCP
   already used; restart the walk from page one.
+- **`moneybin db key export|import|verify` no longer name an internal tracker
+  file in their not-yet-implemented message.** The three commands printed a
+  path to a repository-internal document no reader outside the project can
+  open; they now state only that the command is not yet implemented.
 - **`reports.*` column privacy classes are now derived from each SQLMesh
   model's source and verified in CI**, replacing a hand-maintained bridge
   file. A report's declared `classes=` map is checked against an

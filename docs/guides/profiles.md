@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 
 # Profiles
 
@@ -63,11 +63,11 @@ moneybin profile create personal
 moneybin profile create business --init-inbox
 ```
 
-If any step fails, the partially created profile directory is rolled back so you can retry without hitting a "profile already exists" error.
+If any step fails while creating a brand-new profile, the directory `profile create` made is rolled back so you can retry without hitting a "profile already exists" error. A directory it did not make — see "Name collisions" below — is never rolled back, since it may already hold a database.
 
 #### Name collisions
 
-`profile create` calls `mkdir(exist_ok=False)`, so it refuses outright if a directory at `<base>/profiles/<normalized_name>/` already exists — even an empty one with no `config.yaml`. To recover from a stale dir, remove it manually (`rm -rf <base>/profiles/<name>`) and re-run.
+`ProfileExistsError` means a *registered* profile — one with a `config.yaml` — already exists at `<base>/profiles/<normalized_name>/`; only that case is refused. A directory with no `config.yaml` — left behind by a bare `moneybin db init`, a hand `mkdir`, or an interrupted `profile delete` — is *adopted* instead: `profile create <name>` completes it in place, tightening its permissions to `0700`, initializing a database only if one isn't already there, and writing `config.yaml` last as the commit marker. An adopted directory's existing database is never touched, and a failure partway through leaves it unregistered but intact — retry `profile create <name>` to finish it.
 
 A **stale keychain entry** from a previously-deleted profile is the more interesting failure mode: `profile delete` removes the directory but best-effort-deletes the keychain entry (silent debug-log on keyring failure). If keyring cleanup failed at delete time, the next `profile create <same-name>` overwrites the entry with the new key, which is the intended behavior. To verify or hand-clean before recreating, target the service name `moneybin-<name>`:
 
@@ -122,6 +122,7 @@ Removes a profile permanently:
 
 - Deletes the entire `<base>/profiles/<name>/` tree, including `logs/`, `backups/`, `temp/`, the `config.yaml`, and the encrypted database file.
 - Best-effort-clears the profile's keychain entries (`DATABASE__ENCRYPTION_KEY` and `DATABASE__PASSPHRASE_SALT` under service `moneybin-<name>`). Sibling profiles' keychain entries are never touched.
+- Best-effort-clears the profile's sync auth tokens (JWT + refresh token) from a separate keyring service, keyed by the profile's internal `profile_id` (a local, opaque id in `<base>/profiles/<name>/profile_id`, unrelated to the sync server's own user identity).
 - Refuses to delete the currently active profile — switch away first.
 - Prompts for confirmation; pass `--yes/-y` to skip the prompt for scripting.
 
@@ -229,7 +230,7 @@ The honest current state for shared-host deployments:
 
 ### File permissions
 
-MoneyBin sets `0600` on the DuckDB file when it's created or copied (backup, restore, key rotate) and on per-day log files. It does **not** chmod the profile directory itself — directory mode follows your umask at `mkdir` time, which on most desktop installs is `0755`. For headless or multi-user deployments, tighten by hand after `profile create`:
+MoneyBin sets `0600` on the DuckDB file when it's created or copied (backup, restore, key rotate) and on per-day log files. `profile create` also sets `0700` on the profile directory itself: it forces a `0o077` umask around `mkdir` for a fresh profile, and explicitly `chmod`s an adopted directory (one it didn't create — see "Name collisions" above) to `0700` before writing into it. A profile directory made by an older MoneyBin version, or by hand outside `profile create`, may still carry your umask's default (often `0755`) — tighten it by hand if so:
 
 ```bash
 chmod 700 ~/.moneybin/profiles/<name>

@@ -19,11 +19,11 @@ The roadmap row at M1M originally read as a planned data-model spec ("statement 
 - Balance-grain observations live in `core.fct_balances` (per-observation, normalized across OFX statement balances, tabular running balances, and user assertions) plus `core.fct_balances_daily` (daily carry-forward with `reconciliation_delta`). Defined in [`reports-net-worth.md`](reports-net-worth.md) §Data Model; shipped.
 - The M:N curation overlay between source-observed rows and canonical records lives in `app.match_decisions` (pairwise edges with `match_status ∈ {pending, accepted, rejected}`, auto-merge ≥0.95, review queue 0.70–0.95, drop <0.70). Defined in [`matching-overview.md`](matching-overview.md) §"Default automation posture"; shipped, with N-way collapse extended in [`matching-nway-dedup.md`](matching-nway-dedup.md).
 - The user-authored anchor curation overlay for balances lives in `app.balance_assertions`. Defined in [`reports-net-worth.md`](reports-net-worth.md) §Data Model; shipped.
-- The review surface for ambiguous matcher decisions uses `reviews(kind="matches", status="pending")` and `reviews_decide(decisions=[...])` in MCP, and `moneybin transactions review --type matches` in the CLI. Framed in [`matching-overview.md`](matching-overview.md) §"Match review UX"; the consolidated MCP API is specified in [`matching-nway-dedup.md`](matching-nway-dedup.md) Requirements 11–12.
+- The review surface for ambiguous matcher decisions uses `reviews(kind="matches", status="pending")` and `reviews_decide(decisions=[...])` in MCP, and `moneybin transactions review --type matches` in the CLI. Specified in [`matching-nway-dedup.md`](matching-nway-dedup.md) Requirements 11–12.
 - The balance-drift surface lives in `core.fct_balances_daily.reconciliation_delta` plus the `accounts_balances(view="reconcile", ...)` MCP projection and `moneybin accounts balance reconcile` CLI. Defined in [`reports-net-worth.md`](reports-net-worth.md) §CLI Interface and §MCP Interface.
 - Audit and reversibility on every mutation to `app.match_decisions` and `app.balance_assertions` are covered by Invariant 10 (mutation routing through `*Repo` classes that emit paired `app.audit_log` rows in the same DuckDB transaction) per [`app-integrity-invariant.md`](app-integrity-invariant.md), and Invariant 11 (recoverability of mutations via `system_audit_undo`) introduced in [`data-recovery-contract.md`](data-recovery-contract.md) (in-progress; M1L).
 
-A new `core.fct_source_observations` table would shadow `meta.fct_transaction_provenance` plus the `raw.*` layer. A new `core.bridge_transaction_observations` table would shadow `app.match_decisions`. A new `app.observations` curation overlay would shadow both `app.match_decisions` and `app.balance_assertions`. None of these adds expressiveness; each subtracts coherence and forces every consumer query to handle two sources for the same fact.
+A new `core.fct_source_observations` table would shadow `meta.fct_transaction_provenance` plus the `raw.*` layer. A new `core.fct_balance_anchors` table would shadow `core.fct_balances` and `app.balance_assertions`. A new `core.bridge_transaction_observations` table would shadow `app.match_decisions`. A new `app.observations` curation overlay would shadow both `app.match_decisions` and `app.balance_assertions`. None of these adds expressiveness; each subtracts coherence and forces every consumer query to handle two sources for the same fact.
 
 This doc therefore takes a different shape than a feature spec: it carries no Requirements, no Data Model DDL, no Implementation Plan. Its job is to name primitives that already exist, give consumers a read map, and lock the boundary.
 
@@ -52,7 +52,7 @@ The table below is the load-bearing artifact of this doc. Future agents grepping
 ```mermaid
 flowchart LR
     subgraph perSource["Per-source observations"]
-        rawTxn["raw.tabular_transactions<br/>raw.ofx_transactions<br/>raw.plaid_*"]
+        rawTxn["raw.tabular_transactions<br/>raw.ofx_transactions<br/>raw.plaid_transactions"]
         rawPdf["raw.pdf_seeds<br/>(non-canonical payloads)"]
     end
 
@@ -76,6 +76,7 @@ flowchart LR
     rawTxn -- "matcher (deterministic + fuzzy)" --> fctTxn
     prov -- "lineage view" --> fctTxn
     matchDec -- "review queue gating" --> fctTxn
+    matchDec -- "deterministic SQLMesh rebuild" --> prov
     rawTxn -- "via prep.stg_*" --> bal
     balAssert --> bal
     bal --> fctBalDay
