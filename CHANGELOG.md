@@ -96,15 +96,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
-- **Commands no longer bury their results in diagnostic logging.** `moneybin
-  sync pull` printed every internal log line the run produced — HTTP request
-  status lines, one line per merchant it created, raw-loader row counts, and the
-  same categorization total repeated by three different layers — mixed in with
-  the output you asked for. The console now shows progress and results; the rest
-  goes to the log file, where `moneybin logs cli` has always been able to read
-  it. Nothing is lost: `--verbose`, or setting `logging.level` to `DEBUG` in your
-  profile, brings all of it back to the terminal. Output an AI assistant reads
-  over MCP is unchanged.
+- **`sync pull` no longer buries its results in diagnostic logging.** The run
+  printed an HTTP status line for every request it made, one line per merchant
+  it created, raw-loader row counts naming your Chase card a "Plaid account",
+  and the same categorization total three times from three layers. Those are
+  gone from the console; `--verbose` or `moneybin logs cli` still has them.
+  Progress and results — migrations, matching, transforms, per-institution
+  totals — print as before. Output an AI assistant reads over MCP is unchanged.
 - **A permission-denied import now tells you how to fix it.** Importing a file
   the OS refuses to open returns the new `infra_permission_denied` code with a
   hint matched to the actual cause: a file-mode problem says to check ownership

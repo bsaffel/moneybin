@@ -128,41 +128,34 @@ Diagnostic output (errors, warnings, progress, status) goes to **stderr** (fd 2)
 
 Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `StreamHandler` already targets `sys.stderr` (see `src/moneybin/logging/config.py`). `logger.error()` and `logger.warning()` reach fd 2; `logger.info()` may reach either as long as it doesn't pollute scripts capturing stdout. Locked by `tests/moneybin/test_cli/test_error_routing.py`.
 
-### The console INFO allowlist
+### Keeping the console readable
 
-WARNING and above always reach the console. On the **`cli` stream with file
-logging on**, sub-WARNING records reach it only from the logger prefixes in
-`_CONSOLE_INFO_ALLOWLIST` (`logging/config.py`); everything else goes to the log
-file. Under `log_to_file: false` — or if the log directory is missing — stderr is
-the only sink, so the filter stands down entirely and everything passes. Asking for DEBUG —
-`--verbose` or a profile's `logging.level` — turns the filter off entirely, so
-the most detailed setting is never quieter than the default. It is an allowlist,
-not a denylist, so a newly-added dependency or service `logger.info` is quiet by
-default rather than after someone notices it.
+WARNING and above always reach the console. Below that, a record is hidden only
+if its logger matches `_CONSOLE_SUPPRESSED_PREFIXES` in `logging/config.py` —
+today `sqlmesh`, `httpx`, `httpcore`, each of which narrates its own internals
+several times per command. Everything else prints.
 
-**The allowlist is CLI-only, and so is the DEBUG escape hatch.** The `mcp` and
-`sqlmesh` streams keep the older `_CONSOLE_SUPPRESSED_PREFIXES` denylist, which
-applies at every level — `mcp serve --verbose` does not lift it. That asymmetry
-is deliberate: the CLI's stderr is a person's terminal with a log file behind
-it, so dropping an unrecognized record costs nothing and "show me more" has an
-obvious audience. MCP's stderr is the host's log channel —
-`docs/specs/observability.md` marks it "Always", and stdio transport turns the
-file handler off — so an over-broad filter there destroys records, and an
-over-broad *un*-filter aims SQLMesh's chatter at a channel nobody asked to
-widen. SQLMesh detail stays reachable in `sqlmesh_YYYY-MM-DD.log` either way.
-When you change one stream's policy, check the other.
+**Choose the level at the call site, not the prefix list.** A `logger.info` in
+a service is visible to the user, so write it for them or make it
+`logger.debug`. Two questions settle it:
 
-What this means when you write code:
+- Does a `typer.echo` or another log line already say this? Then the second one
+  is a duplicate — `logger.debug`. (`sync pull` reported its categorization
+  total three times from three layers before this rule existed.)
+- Is it phrased in the subsystem's vocabulary rather than the user's? Then it is
+  diagnostics — `logger.debug`. "Tier 4: 5 potential transfers found" and
+  "Loaded 5 Plaid accounts" both failed this: the user has no tiers, and their
+  Chase card is not a "Plaid account".
 
-- **In `moneybin.cli.*`** — nothing changes. The whole package is allowlisted, so
-  the Standard Pattern above still prints. Prefer `typer.echo` for command
-  results; `logger.info` is fine for progress.
-- **In a service, extractor, or engine** — `logger.info` is diagnostics and will
-  not be seen. Return the numbers and let the CLI render them.
-- **Adding a prefix to the allowlist** is the exception, for progress that
-  genuinely originates below the CLI because MCP drives the same code path (a
-  long transform, a pipeline stage). Log in the user's vocabulary if you do —
-  allowlisting a module makes its internal wording user-facing.
+**A denylist is the deliberate choice here.** An allowlist would be quieter as
+new dependencies arrive, but it inverts the default for ~168 `logger.info` sites
+and turns every one whose output a user needs into a silent regression — MCP's
+host stderr, `log_to_file: false`, schema-migration progress, and "your
+`--institution` flag was ignored" each broke that way when it was tried in #356.
+What must be hidden is enumerable; what must stay visible is not.
+
+**Adding a prefix hides it everywhere** — every stream, every level, including
+`--verbose`. Only add one that has a log file of its own.
 
 Locked by `tests/moneybin/test_logging_config.py::TestConsoleInfoAllowlist`,
 which drives the allowlisted modules' real logger names so a rename fails the

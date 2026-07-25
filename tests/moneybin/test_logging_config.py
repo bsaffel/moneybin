@@ -206,121 +206,66 @@ class TestSetupLogging(_LoggingSetupTestBase):
                 )
 
 
-class TestConsoleInfoAllowlist(_LoggingSetupTestBase):
-    """The console shows INFO only from loggers declared user-facing.
+class TestConsoleNoiseFilter(_LoggingSetupTestBase):
+    """The console hides named noisy dependencies and nothing else.
 
-    Diagnostics from every other logger reach the log file but not the
-    user's terminal. The allowlist is the load-bearing part: a denylist
-    would leak every dependency nobody has thought to suppress yet.
+    This is a denylist by design. An allowlist would be quieter as new
+    dependencies arrive, but it inverts the default for every ``logger.info``
+    in the tree, and each one a user actually needs becomes a silent
+    regression. What must be hidden is enumerable; what must stay visible
+    is not.
     """
 
     @pytest.mark.unit
-    def test_info_from_undeclared_dependency_is_hidden(self) -> None:
-        """An INFO logger nobody named must not reach the console.
-
-        The fixture is a library that appears on no list. A denylist
-        passes it (it isn't suppressed); only an allowlist rejects it.
-        Named dependencies like httpx are the wrong fixture here — they
-        cannot tell the two designs apart.
-        """
+    @pytest.mark.parametrize(
+        "logger_name",
+        ["httpx", "httpcore.connection", "sqlmesh.core.context"],
+    )
+    def test_named_noisy_dependencies_are_hidden(self, logger_name: str) -> None:
+        """Each denylisted prefix and its descendants stay off the console."""
         handler = self._console_handler()
-        record = self._record("some_vendor_lib.client", logging.INFO)
 
-        assert not handler.filter(record)
-
-    @pytest.mark.unit
-    def test_no_file_logging_keeps_everything_on_stderr(self) -> None:
-        """With no log file, stderr is the only sink — it must keep everything.
-
-        `docs/guides/observability.md` and `threat-model.md` both promise
-        that `log_to_file: false` leaves stderr "unaffected", so containers
-        and journald can capture it. The allowlist is only defensible
-        because a file keeps the copy; with no file it deletes the record.
-        """
-        handler = self._console_handler(log_to_file=False)
-
-        assert handler.filter(self._record("some_vendor_lib.client", logging.INFO))
-
-    @pytest.mark.unit
-    def test_info_from_cli_reaches_console(self) -> None:
-        """CLI progress is user-facing and must survive the allowlist."""
-        handler = self._console_handler()
-        record = self._record("moneybin.cli.commands.sync", logging.INFO)
-
-        assert handler.filter(record)
-
-    @pytest.mark.unit
-    def test_warning_from_undeclared_dependency_reaches_console(self) -> None:
-        """Quieting INFO must never quiet a problem."""
-        handler = self._console_handler()
-        record = self._record("some_vendor_lib.client", logging.WARNING)
-
-        assert handler.filter(record)
+        assert not handler.filter(self._record(logger_name, logging.INFO))
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "module_path",
+        "logger_name",
         [
-            "moneybin.services.refresh",
-            "moneybin.services.transform_service",
-            "moneybin.services.categorization.orchestrator",
-            # Schema init and migrations run inline on the first command after
-            # an upgrade and can take a while. Every command opens the DB, and
-            # no CLI-layer line repeats this progress afterward.
+            "moneybin.cli.commands.sync",
             "moneybin.database",
-            # Migration progress and the failure hint that pairs with it —
-            # a sibling of moneybin.database, not a descendant, so the prefix
-            # match does not cover it.
-            "moneybin.migrations",
-            # Tells the user their own --institution flag was overridden. A
-            # silently-ignored argument is the one thing that must never be
-            # quiet, and no CLI-layer line restates it.
+            "moneybin.services.refresh",
             "moneybin.extractors.institution_resolution",
-            # Both emit ⚙️/✅ progress, which `.claude/rules/cli.md` reserves
-            # for user-facing output.
-            "moneybin.services.demo_service",
-            "moneybin.synthetic.merchant_seed",
+            # A dependency nobody has named. Under a denylist it must pass —
+            # the inverse of what an allowlist would do, and the case that
+            # tells the two designs apart.
+            "some_vendor_lib.client",
         ],
     )
-    def test_pipeline_progress_reaches_console(self, module_path: str) -> None:
-        """Long-running stages report progress from below the CLI layer.
-
-        The logger name is read off the real module rather than hardcoded,
-        so moving or renaming one of these fails here instead of silently
-        going quiet during a two-minute sync.
-        """
-        import importlib
-
-        module = importlib.import_module(module_path)
+    def test_everything_else_reaches_the_console(self, logger_name: str) -> None:
+        """Anything not explicitly suppressed stays visible."""
         handler = self._console_handler()
-        record = self._record(module.logger.name, logging.INFO)
 
-        assert handler.filter(record)
-
-    @pytest.mark.unit
-    def test_debug_level_restores_undeclared_dependency_output(self) -> None:
-        """Configuring DEBUG must show DEBUG, not file it away silently.
-
-        `--verbose` is not the only way in: a profile can set
-        `logging.level: DEBUG`. Asking for the most detailed level and
-        getting a quieter console than INFO would be backwards.
-        """
-        handler = self._console_handler(level="DEBUG")
-        record = self._record("some_vendor_lib.client", logging.INFO)
-
-        assert handler.filter(record)
+        assert handler.filter(self._record(logger_name, logging.INFO))
 
     @pytest.mark.unit
-    def test_verbose_restores_undeclared_dependency_output(self) -> None:
-        """`--verbose` is the escape hatch and must defeat the allowlist.
+    def test_warning_from_denylisted_dependency_reaches_console(self) -> None:
+        """Quieting noise must never quiet a problem."""
+        handler = self._console_handler()
 
-        Without this, the one flag a user reaches for when debugging is
-        the flag that hides the evidence.
+        assert handler.filter(self._record("httpx", logging.WARNING))
+
+    @pytest.mark.unit
+    def test_no_file_logging_still_hides_denylisted_noise(self) -> None:
+        """Suppression is unconditional; the sqlmesh/httpx logs stand alone.
+
+        `docs/guides/observability.md` promises stderr is "unaffected" by
+        `log_to_file: false`, which is about MoneyBin's own records — the
+        denylisted dependencies were never on stderr to begin with.
         """
-        handler = self._console_handler(verbose=True)
-        record = self._record("some_vendor_lib.client", logging.INFO)
+        handler = self._console_handler(log_to_file=False)
 
-        assert handler.filter(record)
+        assert not handler.filter(self._record("sqlmesh.core.context", logging.INFO))
+        assert handler.filter(self._record("moneybin.database", logging.INFO))
 
 
 class TestMcpStreamKeepsInfoOnStderr(_LoggingSetupTestBase):
@@ -328,8 +273,8 @@ class TestMcpStreamKeepsInfoOnStderr(_LoggingSetupTestBase):
 
     `docs/specs/observability.md` marks MCP stderr "Always" and shows
     `moneybin.mcp - INFO` lines as what the AI host sees. Under stdio
-    transport the file handler is off by default, so filtering INFO here
-    doesn't relocate those records — it destroys them.
+    transport the file handler is off by default, so anything filtered
+    here is destroyed rather than relocated.
     """
 
     @pytest.mark.unit
@@ -337,35 +282,14 @@ class TestMcpStreamKeepsInfoOnStderr(_LoggingSetupTestBase):
         """Server startup, tool calls, and shutdown must stay visible."""
         handler = self._console_handler("mcp")
 
-        assert handler.filter(self._record("moneybin.mcp.server"))
-
-    @pytest.mark.unit
-    def test_verbose_does_not_open_the_host_channel_to_sqlmesh(self) -> None:
-        """`mcp serve --verbose` must not flood the host with SQLMesh chatter.
-
-        The DEBUG escape hatch exists so a person can see more in their own
-        terminal. On the MCP stream there is no person and no file behind
-        stderr, so raising the level must not also lift the denylist — that
-        protection was unconditional before the allowlist existed. SQLMesh
-        detail is still reachable in `sqlmesh_YYYY-MM-DD.log`.
-        """
-        handler = self._console_handler("mcp", verbose=True)
-
-        assert not handler.filter(self._record("sqlmesh.core.context"))
+        assert handler.filter(self._record("moneybin.mcp.server", logging.INFO))
 
     @pytest.mark.unit
     def test_mcp_stream_still_suppresses_sqlmesh_noise(self) -> None:
-        """Exempting MCP from the allowlist must not un-mute SQLMesh.
-
-        SQLMesh INFO was suppressed on every stream before the allowlist
-        existed. Its dedicated file handler — the other thing that keeps
-        it off stderr — is only installed when file logging is on, which
-        stdio transport turns off by default. So the filter is the only
-        guard left on exactly the path the host reads.
-        """
+        """SQLMesh has its own log file and has never belonged on stderr."""
         handler = self._console_handler("mcp")
 
-        assert not handler.filter(self._record("sqlmesh.core.context"))
+        assert not handler.filter(self._record("sqlmesh.core.context", logging.INFO))
 
 
 class TestPydanticLoggingConfig:

@@ -29,55 +29,23 @@ class _SuppressFilter(logging.Filter):
         return "Shutting down the event dispatcher" not in record.getMessage()
 
 
-# Prefixes too noisy for stderr on the NON-CLI streams. MCP's stderr is the
-# host's log channel, not a terminal — `docs/specs/observability.md` marks it
-# "Always" and stdio transport turns the file handler off, so anything filtered
-# here is destroyed rather than relocated. Only SQLMesh's operational chatter
-# earns that, and only because it has nowhere useful to go on this path.
-_CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = ("sqlmesh",)
-
-# Logger-name prefixes whose INFO is user-facing progress and belongs on the
-# CLI console. Everything else is diagnostics: it reaches the log file (and the
-# console under --verbose) but never competes with command output.
+# Logger-name prefixes whose INFO/DEBUG output is too noisy for the console
+# but should still reach log files for debugging. SQLMesh emits a lot of
+# operational logging (model evaluation, plan creation, state sync, analytics)
+# that drowns out user-facing CLI output — route it all to the sqlmesh log
+# file instead. httpx/httpcore narrate every request the sync client makes,
+# which turns a `sync pull` into a wall of "HTTP/1.1 201 Created".
 #
-# This is an allowlist on purpose. The denylist above is what the CLI used to
-# use, and it had to name each offender — so every new dependency, and every
-# new logger.info in a service, leaked to the terminal until someone noticed
-# and suppressed it. An allowlist is silent by default and loud only where we
-# said so. That trade only works where a human is reading: it applies to the
-# `cli` stream alone, because a machine-read stream would rather have the
-# extra records than silently lose one.
+# This is a denylist: anything not named here reaches the console. That is the
+# deliberate choice. An allowlist would be quiet by default — nicer as new
+# dependencies arrive — but it inverts the default for every one of the ~168
+# `logger.info` sites in the tree, and each one whose output a user actually
+# needs becomes a silent regression. The cases that survive a filter are easy
+# to enumerate; the cases that need to stay visible are not.
 #
-# Adding a prefix here makes that module's INFO part of the CLI's visible
-# output. Prefer `typer.echo` for command results; reach for this only when the
-# progress genuinely originates below the CLI layer.
-_CONSOLE_INFO_ALLOWLIST: tuple[str, ...] = (
-    "moneybin.cli",
-    # Pipeline stages that run long enough that silence reads as a hang.
-    # These sit below the CLI layer because MCP drives them too, so their
-    # progress cannot move up into `typer.echo`.
-    #
-    # Note these are the modules that phrase results for a person. Engines
-    # below them (matching.engine, categorization.applier) report through
-    # return values and log in their own vocabulary — that stays diagnostic.
-    "moneybin.services.refresh",
-    "moneybin.services.transform_service",
-    "moneybin.services.categorization.orchestrator",
-    # Schema init and migrations, which every command runs inline on the first
-    # invocation after an upgrade. Same rationale as the stages above, and no
-    # CLI-layer line repeats this progress once it has scrolled past.
-    "moneybin.database",
-    # Sibling of moneybin.database, not a descendant — the prefix match does
-    # not reach it. Carries the hint that pairs with a migration failure.
-    "moneybin.migrations",
-    # Reports that the user's own --institution flag was overridden. An
-    # argument that is silently ignored is the worst thing to make quiet.
-    "moneybin.extractors.institution_resolution",
-    # Both emit the ⚙️/✅ progress vocabulary `.claude/rules/cli.md` reserves
-    # for user-facing output, and both are driven straight from a command.
-    "moneybin.services.demo_service",
-    "moneybin.synthetic.merchant_seed",
-)
+# Suppressing a prefix here hides it from *every* stream and every level,
+# including `--verbose`. Only add one whose output has a log file of its own.
+_CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = ("sqlmesh", "httpx", "httpcore")
 
 
 def _matches(name: str, prefixes: tuple[str, ...]) -> bool:
@@ -86,48 +54,15 @@ def _matches(name: str, prefixes: tuple[str, ...]) -> bool:
 
 
 class _ConsoleNoiseFilter(logging.Filter):
-    """Gate sub-WARNING records on the console handler.
+    """Suppress noisy third-party INFO messages from the console only.
 
     Attached to the console handler so file handlers still see everything.
     WARNING and above always pass — quieting noise must never quiet a problem.
-
-    The policy differs by stream because the reader does. The CLI's stderr is
-    a person's terminal, so it takes an allowlist: unrecognized INFO is noise
-    competing with command output, and the log file keeps a copy. MCP's stderr
-    is the host's log channel with no file behind it under stdio, so it keeps
-    the old denylist: dropping an unrecognized record there loses it outright.
     """
-
-    def __init__(
-        self,
-        *,
-        stream: Literal["cli", "mcp", "sqlmesh"] = "cli",
-        unfiltered: bool = False,
-        file_sink: bool = False,
-    ) -> None:
-        super().__init__()
-        # Asking for DEBUG — via --verbose or a profile's logging.level — is
-        # the escape hatch users reach for when something is wrong. It must
-        # defeat the allowlist rather than be narrowed by it, or the most
-        # detailed setting would produce a quieter console than the default.
-        self._unfiltered = unfiltered
-        # The allowlist is only defensible because a log file keeps the copy of
-        # what stderr drops. With `log_to_file: false` stderr is the only sink,
-        # and both docs/guides/observability.md and threat-model.md promise it
-        # stays "unaffected" so containers and journald can capture it — so
-        # filtering there would delete records, not relocate them.
-        self._allowlist_mode = stream == "cli" and file_sink
 
     def filter(self, record: logging.LogRecord) -> bool:
         if record.levelno >= logging.WARNING:
             return True
-        if self._allowlist_mode:
-            # The escape hatch is scoped to this branch on purpose. It answers
-            # "show me more in my terminal", which presumes a person reading
-            # one. Letting it also lift the denylist below would aim SQLMesh's
-            # chatter at the MCP host's stderr, where nobody asked for it and
-            # no file catches the overflow; `sqlmesh_*.log` still has it.
-            return self._unfiltered or _matches(record.name, _CONSOLE_INFO_ALLOWLIST)
         return not _matches(record.name, _CONSOLE_SUPPRESSED_PREFIXES)
 
 
@@ -287,10 +222,10 @@ def setup_logging(
     # Prepare handlers
     handlers: list[logging.Handler] = []
 
-    # Console handler (always present, writes to stderr). Its filter is
-    # attached below, once we know whether a file handler actually landed.
+    # Console handler (always present, writes to stderr)
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
+    console_handler.addFilter(_ConsoleNoiseFilter())
     handlers.append(console_handler)
 
     # File handler — only write to file if the log directory's parent exists.
@@ -313,17 +248,6 @@ def setup_logging(
             # console filter already suppresses these from stderr; this
             # ensures they still reach a log file for debugging.
             _setup_sqlmesh_file_handler(log_file_path, inner_formatter)
-
-    # Attach the console filter now that the file-handler outcome is known —
-    # including the mkdir failure above, which leaves stderr as the only sink
-    # just as surely as `log_to_file: false` does.
-    console_handler.addFilter(
-        _ConsoleNoiseFilter(
-            stream=stream,
-            unfiltered=resolved_level <= logging.DEBUG,
-            file_sink=any(isinstance(h, logging.FileHandler) for h in handlers),
-        )
-    )
 
     # Configure root logger
     logging.basicConfig(

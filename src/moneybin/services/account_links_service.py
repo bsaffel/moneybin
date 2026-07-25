@@ -329,7 +329,9 @@ class AccountLinksService:
             raise
 
         refresh_account_link_pending_gauge(self._db)
-        logger.info(f"accounts_links_run: wrote {new_count} new pending decisions")
+        # Named for the function, not the user, and usually reports zero. The
+        # pending queue itself is the surface: `moneybin accounts links pending`.
+        logger.debug(f"accounts_links_run: wrote {new_count} new pending decisions")
         return new_count
 
     def record_committed_outer_decisions(self) -> None:

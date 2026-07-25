@@ -297,7 +297,9 @@ class MerchantLinksService:
 
         result = MerchantResolver(self._db, actor=self._actor).harvest()
         refresh_merchant_link_pending_gauge(self._db)
-        logger.info(
+        # Same as accounts_links_run: internal counters in the engine's own
+        # vocabulary; the review queue is the user-facing surface.
+        logger.debug(
             f"merchant_links_run: bound={result.bound} conflicts={result.conflicts}"
         )
         return result
