@@ -13,17 +13,20 @@ Within ONE transaction it re-points ``app.lot_selections`` at the survivor
 re-points every accepted provider ref off the provisional security, re-points
 every manual ledger row carrying the provisional's ``security_id`` directly
 (``raw.manual_investment_transactions`` — user state resolved at entry, with no
-link-table indirection), resolves the decision (auto-rejecting the ref's sibling
-candidates), and deletes the provisional catalog row. A selection that cannot be
-deterministically remapped BLOCKS the merge (``UserError``) rather than silently
-downgrading a specific-ID election to FIFO on the next rebuild.
+link-table indirection), re-points the user's ``app.security_price_overrides``
+marks, resolves the decision (auto-rejecting the ref's sibling candidates), and
+deletes the provisional catalog row. A selection that cannot be deterministically
+remapped BLOCKS the merge (``UserError``) rather than silently downgrading a
+specific-ID election to FIFO on the next rebuild; so does a price mark that
+would collide with one the survivor already holds.
 
 The cascade's contract: after the merge, NOTHING still references the deleted
-catalog row. Atomicity is the correctness bar — a half-applied merge (links
-re-pointed but lot selections stranded, or the catalog row deleted while a
-manual event still points at it) leaves cost basis silently wrong with no error
-raised and no doctor check to catch it. A failed merge is retryable; a
-half-merge is not detectable.
+catalog row. That means every link-free reference — lot selections, manual
+events, price marks — not only the ones a link table would carry. Atomicity is
+the correctness bar: a half-applied merge (links re-pointed but lot selections
+stranded, or the catalog row deleted while a manual event still points at it)
+leaves cost basis silently wrong with no error raised and no doctor check to
+catch it. A failed merge is retryable; a half-merge is not detectable.
 
 ``actor`` is the audit surface (``cli``/``mcp``); ``decided_by`` is the domain
 column (``user``/``auto``). The caller supplies both.
@@ -51,6 +54,7 @@ from moneybin.repositories.manual_investment_transactions_repo import (
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.repositories.security_price_repo import SecurityPriceRepo
 from moneybin.tables import (
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
@@ -58,6 +62,7 @@ from moneybin.tables import (
     SECURITIES,
     SECURITY_LINK_DECISIONS,
     SECURITY_LINKS,
+    SECURITY_PRICE_OVERRIDES,
 )
 
 logger = logging.getLogger(__name__)
@@ -267,8 +272,23 @@ class SecurityLinksService:
                 "manual_investment_transactions": len(
                     self._manual_events.list_ids_for_security(provisional)
                 ),
+                "security_price_overrides": self._mark_count(provisional),
             },
         )
+
+    def _mark_count(self, security_id: str) -> int:
+        """User price marks the merge will move — part of its blast radius.
+
+        Counted here because the confirm preview binds approval to this figure:
+        a row the merge mutates but the preview omits is a write the user never
+        agreed to.
+        """
+        row = self._db.execute(
+            f"SELECT COUNT(*) FROM {SECURITY_PRICE_OVERRIDES.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE security_id = ?",
+            [security_id],
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
 
     def _security_display(self, security_id: str) -> tuple[str | None, str | None]:
         """(ticker, name) for ``security_id`` from ``app.securities``; ``(None, None)`` if absent."""
@@ -377,14 +397,18 @@ class SecurityLinksService:
         6. Re-point every ``raw.manual_investment_transactions`` row that carries
            the provisional's ``security_id`` — the ledger's other, link-free
            reference to the catalog (see :meth:`_repoint_manual_events`).
-        7. Auto-reject the ref's sibling pending candidates — accepting one answers
+        7. Re-point the user's ``app.security_price_overrides`` marks — the
+           fourth link-free reference (see :meth:`_repoint_price_marks`).
+        8. Auto-reject the ref's sibling pending candidates — accepting one answers
            them all, so a tie resolves in a single review action.
-        8. Delete the provisional ``created_by='plaid'`` catalog row.
+        9. Delete the provisional ``created_by='plaid'`` catalog row.
 
-        Steps 4-8 must succeed or fail together: a merge that re-points the link
-        but strands a lot selection silently corrupts cost basis, and one that
+        Steps 4-9 must succeed or fail together: a merge that re-points the link
+        but strands a lot selection silently corrupts cost basis, one that
         deletes the catalog row but strands a manual event splits the
-        instrument's position across a live security and a dead one.
+        instrument's position across a live security and a dead one, and one
+        that strands a price mark silently stops the user's own valuation from
+        applying.
 
         Raises ``UserError`` when:
         - ``decision_id`` is unknown (MUTATION_NOT_FOUND) or not ``pending``
@@ -437,7 +461,7 @@ class SecurityLinksService:
                 )
             if self._security_created_by(provisional) != "plaid":
                 # SecuritiesRepo.delete enforces the same rule at the LAST
-                # write of the cascade (step 7); this pre-write check moves
+                # write of the cascade (step 9); this pre-write check moves
                 # the refusal ahead of the first write, per "Plan (and
                 # validate) BEFORE the first write" below.
                 raise UserError(
@@ -484,6 +508,9 @@ class SecurityLinksService:
             manual_repointed = self._repoint_manual_events(
                 provisional, survivor, parent_audit_id=parent_audit_id
             )
+            marks_repointed = self._repoint_price_marks(
+                provisional, survivor, parent_audit_id=parent_audit_id
+            )
             self._reject_pending_siblings(
                 decision,
                 exclude=decision_id,
@@ -510,7 +537,8 @@ class SecurityLinksService:
             f"security merge accepted: decision={decision_id} "
             f"provisional={provisional} survivor={survivor} "
             f"disposals_remapped={len(plan)} "
-            f"manual_events_repointed={manual_repointed}"
+            f"manual_events_repointed={manual_repointed} "
+            f"price_marks_repointed={marks_repointed}"
         )
 
         # Accepting changed the pending count (the named decision plus its
@@ -680,7 +708,7 @@ class SecurityLinksService:
         restricts a manual entry to ``created_by='user'`` catalog rows in the
         first place.
 
-        Left behind, those rows would point at the catalog id step 7 deletes:
+        Left behind, those rows would point at the catalog id step 9 deletes:
         ``core.fct_investment_lots`` would keep building lots under a security
         that no longer exists while the Plaid side moved to the survivor, so the
         user's single real position is split across a live security and a dead
@@ -704,6 +732,75 @@ class SecurityLinksService:
                 in_outer_txn=True,
             )
         return len(source_ids)
+
+    def _repoint_price_marks(
+        self, provisional: str, survivor: str, *, parent_audit_id: str | None
+    ) -> int:
+        """Move the user's own price marks onto the survivor.
+
+        ``app.security_price_overrides.security_id`` is the FOURTH link-free
+        reference to ``app.securities``, beside lot selections, links, and manual
+        events. No FK constrains it, so step 9's catalog delete leaves the mark
+        behind rather than failing: ``core.fct_security_prices`` keeps unioning it
+        under the dead id, ``core.dim_holdings`` joins it to nothing, and the
+        surviving position quietly falls back to provider pricing — the user's
+        explicit valuation stops applying with no warning on any surface.
+
+        Refuses when a mark on each side shares a ``(price_date,
+        quote_currency)``. The composite primary key admits only one, and choosing
+        between two numbers the user typed is not a decision this merge can make
+        silently — the same reasoning that makes an unremappable lot selection
+        block rather than guess.
+
+        Spelled as delete-then-set rather than a primary-key update so it reuses
+        the repo's audited primitives and their full-row capture; the two events
+        thread onto the merge's ``parent_audit_id`` and reverse in order, so an
+        undo puts the mark back on the provisional.
+        """
+        rows = self._db.execute(
+            f"SELECT price_date, quote_currency, close, note "  # noqa: S608  # TableRef constant
+            f"FROM {SECURITY_PRICE_OVERRIDES.full_name} WHERE security_id = ? "
+            "ORDER BY price_date, quote_currency",
+            [provisional],
+        ).fetchall()
+        if not rows:
+            return 0
+        clash = self._db.execute(
+            f"SELECT COUNT(*) FROM {SECURITY_PRICE_OVERRIDES.full_name} AS a "  # noqa: S608  # TableRef constant
+            f"JOIN {SECURITY_PRICE_OVERRIDES.full_name} AS b "
+            "ON b.price_date = a.price_date AND b.quote_currency = a.quote_currency "
+            "WHERE a.security_id = ? AND b.security_id = ?",
+            [provisional, survivor],
+        ).fetchone()
+        if clash is not None and int(clash[0]) > 0:
+            raise UserError(
+                "Both securities carry a price mark for the same date and "
+                "currency, and only one can survive the merge. Delete the mark "
+                "you do not want with 'moneybin investments prices delete', then "
+                "accept this decision again.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+        marks = SecurityPriceRepo(self._db)
+        for price_date, quote_currency, close, note in rows:
+            marks.delete(
+                provisional,
+                price_date,
+                str(quote_currency),
+                actor=self._actor,
+                parent_audit_id=parent_audit_id,
+                in_outer_txn=True,
+            )
+            marks.set(
+                survivor,
+                price_date,
+                str(quote_currency),
+                close=close,
+                note=note,
+                actor=self._actor,
+                parent_audit_id=parent_audit_id,
+                in_outer_txn=True,
+            )
+        return len(rows)
 
     def _repoint_links(
         self,

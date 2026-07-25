@@ -19,10 +19,14 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+import pytest
 from prometheus_client import REGISTRY
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.repositories.security_price_repo import SecurityPriceRepo
+from moneybin.services.undo_service import UndoService
 
 
 def _audit_rows_for(db: Database, target_id: str) -> list[tuple[Any, ...]]:
@@ -184,3 +188,55 @@ def test_parent_audit_id_threads_through(db: Database) -> None:
         ["abc123def456|2026-07-13|USD"],
     ).fetchone()
     assert row is not None and row[0] == first.audit_id
+
+
+def test_undoing_a_mark_scopes_its_audit_row_to_the_composite_key(
+    db: Database,
+) -> None:
+    """An undo must record the same target_id its forward mutation did.
+
+    ``BaseRepo._row_target_id`` defaults to the FIRST pk column — ``security_id``
+    alone — while ``set``/``delete`` both emit the composite
+    ``"{security_id}|{price_date}|{quote_currency}"``. Undo rows landing under a
+    different id than the mutations they reverse is what defeats the cascade
+    guard in the next test; this asserts the id directly so the cause is
+    distinguishable from the effect.
+    """
+    repo = SecurityPriceRepo(db)
+    event = repo.set(_SEC, _DAY, "USD", close=Decimal("190.00"), note=None, actor="cli")
+
+    repo.undo_event(event, actor="cli")
+
+    actions = [row[0] for row in _audit_rows_for(db, _TARGET)]
+    assert actions == [
+        "security_price_override.set",
+        "security_price_override.set.undo",
+    ]
+
+
+def test_undoing_an_undo_will_not_clobber_a_later_correction(db: Database) -> None:
+    """Block-don't-cascade has to see the later write in order to refuse.
+
+    The user marks a price, undoes it, then re-marks the same date at a corrected
+    value. Undoing the undo would re-insert the ORIGINAL price over that
+    correction. ``UndoService`` refuses exactly this by looking for later
+    operations against the same ``(target_schema, target_table, target_id)`` — so
+    an undo row keyed on ``security_id`` alone matches nothing, finds no blocker,
+    and performs the silent clobber the guard exists to prevent.
+    """
+    repo = SecurityPriceRepo(db)
+    first = repo.set(_SEC, _DAY, "USD", close=Decimal("190.00"), note=None, actor="cli")
+    undo = repo.undo_event(first, actor="cli")
+    assert undo is not None
+    repo.set(_SEC, _DAY, "USD", close=Decimal("205.00"), note=None, actor="cli")
+
+    with pytest.raises(UserError) as caught:
+        UndoService(db).undo(undo.operation_id, actor="cli")
+
+    assert caught.value.code == error_codes.UNDO_CASCADE_BLOCKED
+    row = db.execute(
+        "SELECT close FROM app.security_price_overrides "
+        "WHERE security_id = ? AND price_date = ? AND quote_currency = ?",
+        [_SEC, _DAY, "USD"],
+    ).fetchone()
+    assert row is not None and row[0] == Decimal("205.00")

@@ -40,15 +40,28 @@ _OVERRIDE_COLUMNS = (
 )
 
 
-def _target_id(security_id: str, price_date: date, quote_currency: str) -> str:
+def _target_id_parts(
+    security_id: str, price_date: date | str, quote_currency: str
+) -> str:
     """Composite ``target_id`` for the three-column PK.
 
     Must match the doctor coverage check's ``pk_expr``
     (``security_id || '|' || CAST(price_date AS VARCHAR) || '|' ||
     quote_currency``); DuckDB casts a ``DATE`` to the same ``YYYY-MM-DD`` string
     ``date.isoformat()`` produces.
+
+    ``price_date`` accepts both forms deliberately: forward mutations pass a
+    ``date``, while ``_row_target_id`` receives whatever the row carries — an ISO
+    string once the row has round-tripped through a JSON audit payload. Both must
+    yield the same id, or an undo scopes to a target its own mutation never used.
     """
-    return f"{security_id}|{price_date.isoformat()}|{quote_currency}"
+    day = price_date.isoformat() if isinstance(price_date, date) else price_date
+    return f"{security_id}|{day}|{quote_currency}"
+
+
+def _target_id(security_id: str, price_date: date, quote_currency: str) -> str:
+    """Composite ``target_id`` for a forward mutation's known-typed arguments."""
+    return _target_id_parts(security_id, price_date, quote_currency)
 
 
 class SecurityPriceRepo(BaseRepo):
@@ -58,6 +71,27 @@ class SecurityPriceRepo(BaseRepo):
 
     table_ref = SECURITY_PRICE_OVERRIDES
     pk_columns = ("security_id", "price_date", "quote_currency")
+
+    def _row_target_id(self, row: dict[str, Any]) -> str:
+        """Mirror the forward mutations' composite audit target.
+
+        Without this the base implementation keys an undo row on ``security_id``
+        alone while ``set``/``delete`` emit the full triple, so undo rows and the
+        mutations they reverse land under different ``target_id`` values. That
+        breaks ``UndoService``'s "block, don't cascade" guard, which matches
+        later operations on ``(target_schema, target_table, target_id)``: it
+        finds no blocker and reinstates a stale price over a correction the user
+        made afterwards.
+
+        ``price_date`` arrives as a ``date`` from the live row and as an ISO
+        string from a JSON-decoded audit payload; both must produce the same id,
+        so the value is stringified rather than re-formatted.
+        """
+        return _target_id_parts(
+            str(row["security_id"]),
+            row["price_date"],
+            str(row["quote_currency"]),
+        )
 
     def _fetch_row(
         self, security_id: str, price_date: date, quote_currency: str

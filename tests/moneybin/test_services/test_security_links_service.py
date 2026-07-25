@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.investments.cost_basis import compute_lot_id
@@ -26,6 +27,7 @@ from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.repositories.security_price_repo import SecurityPriceRepo
 from moneybin.services.mutation_context import operation
 from moneybin.services.security_links_service import (
     SecurityLinkAcceptImpact,
@@ -199,6 +201,7 @@ def test_accept_impact_counts_every_row_the_merge_will_mutate(
         actor="cli",
     )
     _add_manual_event(db, security_id=provisional)
+    _mark(db, provisional)
 
     impact = SecurityLinksService(db).accept_impact(
         merge_setup["decision_id"],
@@ -213,6 +216,7 @@ def test_accept_impact_counts_every_row_the_merge_will_mutate(
         "security_link_decisions": 2,
         "lot_selections": 1,
         "manual_investment_transactions": 1,
+        "security_price_overrides": 1,
     }
 
 
@@ -231,6 +235,7 @@ def test_accept_verifier_receives_live_impact_and_failure_rolls_back(
             "security_link_decisions": 1,
             "lot_selections": 0,
             "manual_investment_transactions": 0,
+            "security_price_overrides": 0,
         }
         decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
         assert decision is not None and decision["status"] == "pending"
@@ -1086,3 +1091,86 @@ def test_pending_candidate_with_deleted_security_has_no_ticker_or_name(
 
 def test_pending_empty_when_no_decisions(db: Database) -> None:
     assert SecurityLinksService(db).pending() == []
+
+
+# ------------------------------------------------------- price-mark repoint
+
+
+def _mark(
+    db: Database, security_id: str, *, day: str = "2026-06-30", close: str = "42.50"
+) -> None:
+    SecurityPriceRepo(db).set(
+        security_id,
+        date.fromisoformat(day),
+        "USD",
+        close=Decimal(close),
+        note=None,
+        actor="cli",
+    )
+
+
+def _mark_owner(db: Database, *, day: str = "2026-06-30") -> str | None:
+    row = db.execute(
+        "SELECT security_id FROM app.security_price_overrides WHERE price_date = ?",
+        [date.fromisoformat(day)],
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def test_accept_repoints_price_marks_onto_survivor(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """A user's explicit price is a fourth link-free reference to the catalog.
+
+    ``app.security_price_overrides.security_id`` sits alongside lot selections,
+    links, and manual events, and the merge moved only the first three. Deleting
+    the provisional catalog row leaves the mark keyed to a dead security:
+    ``fct_security_prices`` keeps emitting it, ``dim_holdings`` joins it to
+    nothing, and the surviving position silently drops back to provider pricing.
+    """
+    _mark(db, merge_setup["provisional"])
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _mark_owner(db) == merge_setup["survivor"]
+
+
+def test_price_mark_repoint_undoes_with_the_rest_of_the_merge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The mark repoint rides the merge's operation_id — a partial undo is a defect."""
+    _mark(db, merge_setup["provisional"])
+
+    with operation() as op:
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+    assert _mark_owner(db) == merge_setup["survivor"]
+
+    UndoService(db).undo(op, actor="cli")
+
+    assert _mark_owner(db) == merge_setup["provisional"]
+
+
+def test_a_colliding_price_mark_blocks_the_merge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Two marks for one date cannot both survive a composite primary key.
+
+    Picking a winner would silently discard a number the user typed. The merge
+    already refuses when a lot selection cannot be deterministically remapped;
+    this is the same condition on the same transaction, so it takes the same
+    answer — refuse, and leave both marks for the user to resolve.
+    """
+    _mark(db, merge_setup["provisional"], close="42.50")
+    _mark(db, merge_setup["survivor"], close="43.10")
+
+    with pytest.raises(UserError) as caught:
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+
+    assert caught.value.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
+    assert _security_exists(db, merge_setup["provisional"])
