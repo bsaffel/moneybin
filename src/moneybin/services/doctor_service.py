@@ -44,6 +44,7 @@ from moneybin.tables import (
     SECURITIES,
     SECURITY_LINKS,
     SECURITY_PRICE_OVERRIDES,
+    SECURITY_PRICES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
@@ -226,6 +227,9 @@ class DoctorService:
             self._run_investment_conflicting_security_refs(),
             self._run_investment_unreported_holdings(),
             self._run_investment_phantom_holdings(),
+            self._run_investment_price_disagreement(),
+            self._run_investment_unpriced_holdings(),
+            self._run_investment_unmapped_price_source(),
         ]
         raw_invariants = [
             *sqlmesh_results,
@@ -1214,6 +1218,188 @@ class DoctorService:
                     "the missing disposal"
                 ),
                 affected_ids=[f"{r[0]}:{r[1]}" for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_price_disagreement(self) -> InvariantResult:
+        """Two provider feeds holding materially different closes for one security-date.
+
+        Two sources agreeing is uninteresting; two disagreeing means one is
+        wrong, and resolution picks a winner by rank without saying so. This is
+        where that inference becomes visible.
+
+        Reads ``prep.stg_security_prices`` rather than the resolved fact table
+        for two reasons: the fact table has already collapsed the pair to one
+        winner, and staging carries provider observations *only*. Overrides and
+        trade-implied prices are derived at model build and never land in
+        ``raw.security_prices``, so they cannot reach this comparison — which is
+        the point. Both are *expected* to differ from a provider close (an
+        override exists to correct one; a trade-implied price reflects one
+        execution's size and spread), so including them would raise a standing
+        warning on every ordinary correction and every intraday fill.
+
+        Deliberately not scoped to an enumerated provider list. The set of
+        providers grows and an enumeration can only go stale in the direction
+        that hides disagreements; the derived sources are excluded structurally
+        by reading staging instead.
+        """
+        name = "investment_price_disagreement"
+        tolerance = get_settings().investments.price_disagreement_tolerance_pct / 100
+        try:
+            rows = self._db.execute(
+                """
+                SELECT DISTINCT a.security_id
+                FROM prep.stg_security_prices AS a
+                JOIN prep.stg_security_prices AS b
+                  ON b.security_id = a.security_id
+                  AND b.price_date = a.price_date
+                  AND b.quote_currency = a.quote_currency
+                  AND b.source_type > a.source_type
+                WHERE ABS(a.close - b.close) / ((a.close + b.close) / 2) > ?
+                ORDER BY a.security_id
+                """,  # noqa: S608  # fixed view name + bound parameter, no user input
+                [tolerance],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — staging view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"price staging view unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            pct = get_settings().investments.price_disagreement_tolerance_pct
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} security(s) have two price feeds disagreeing "
+                    f"by more than {pct}% on the same date and currency — one "
+                    "of them is wrong, and valuation picks a winner by source "
+                    "rank without flagging the conflict; compare the series "
+                    "with `moneybin investments prices list <security> "
+                    "--source <feed>` and record a mark with `moneybin "
+                    "investments prices set` if the winning feed is the wrong one"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_unpriced_holdings(self) -> InvariantResult:
+        """Open positions carrying no usable price on the current valuation date.
+
+        ``valuation_status`` already records this per position, but only where
+        someone is already looking at that position — nothing surfaces it in the
+        place users go to ask "is anything wrong with my data?". A position whose
+        feed key never bound simply reads blank forever.
+
+        Scoped to ``unpriced`` alone. ``withheld`` also publishes no value, but
+        its remedy is reconciling a share count, not adding a price source, and
+        routing it here would send the user to fix something that was never
+        broken. ``carried_forward`` has a usable price whose age the staleness
+        surface carries.
+
+        Reported per security rather than per position: the remedy — bind a feed
+        key or record a mark — applies to the security, so one holding in three
+        accounts is one piece of work, not three.
+        """
+        name = "investment_unpriced_holdings"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT security_id
+                FROM {DIM_HOLDINGS.full_name}
+                WHERE valuation_status = 'unpriced'
+                ORDER BY security_id
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"holdings view unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} held security(s) have no usable price, so "
+                    "their positions report no market value at all and are "
+                    "absent from every total that sums one — no provider "
+                    "covers them, or their feed key never bound; run "
+                    "`moneybin investments prices pull` and review anything it "
+                    "queues, or record a valuation with "
+                    "`moneybin investments prices set`"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_unmapped_price_source(self) -> InvariantResult:
+        """Price rows whose ``source_type`` the staging view cannot resolve.
+
+        ``prep.stg_security_prices`` maps each ``source_type`` to a ``ref_kind``
+        through a CASE, then INNER JOINs on the result. An unmapped source makes
+        that CASE return NULL, the comparison UNKNOWN, and the join drop the row
+        — silently, and permanently: unlike an unresolved binding, no number of
+        later accepted bindings will ever surface it, because the failure is in
+        the mapping rather than the binding. C.2 shipped a writer one commit
+        ahead of its mapping and every row it wrote in between was discarded
+        this way, which is why this check exists.
+
+        The accepted-binding join is what separates the two conditions without
+        parsing the model's SQL. A row reaching this query already has an
+        accepted binding whose ``source_type`` and ``ref_value`` match the
+        staging join exactly, so ``ref_kind`` is the only remaining condition
+        that can be failing. Without that clause the check would fire on every
+        ordinary first pull, since the Plaid extractor writes prices during
+        ingestion, before the resolver has minted a canonical security.
+        """
+        name = "investment_unmapped_price_source"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT p.source_type
+                FROM {SECURITY_PRICES.full_name} AS p
+                JOIN {SECURITY_LINKS.full_name} AS l
+                  ON l.status = 'accepted'
+                  AND l.source_type = p.source_type
+                  AND l.ref_value = p.provider_security_key
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM prep.stg_security_prices AS s
+                    WHERE s.source_type = p.source_type
+                      AND s.source_origin = p.source_origin
+                      AND s.provider_security_key = p.provider_security_key
+                      AND s.price_date = p.price_date
+                      AND s.quote_currency = UPPER(p.quote_currency)
+                )
+                ORDER BY p.source_type
+                """  # noqa: S608  # TableRef constants + fixed view name, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — staging view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"price staging view unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} price source(s) write rows that resolve to "
+                    "nothing: their securities are bound, but "
+                    "prep.stg_security_prices has no ref_kind mapping for the "
+                    "source, so every observation is discarded and no holding "
+                    "is valued from it — this cannot be fixed by accepting "
+                    "bindings and needs the source added to that model's "
+                    "ref_kind CASE"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 

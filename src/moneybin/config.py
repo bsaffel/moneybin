@@ -717,6 +717,23 @@ class InvestmentsSettings(BaseModel):
         ),
     )
 
+    price_disagreement_tolerance_pct: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "Percent difference between two provider closes for the same "
+            "security, date, and quote currency beyond which "
+            "`investment_price_disagreement` reports them. Sized to the failure "
+            "it actually catches — a feed key bound to the wrong security, "
+            "which yields order-of-magnitude differences — rather than to the "
+            "precision two feeds agree to. Legitimate differences exist and "
+            "must not fire: a broker's crypto valuation is struck at its own "
+            "snapshot time while CoinGecko's is a 00:00 UTC close, so a "
+            "volatile day separates them by more than a percent with both "
+            "correct."
+        ),
+    )
+
 
 class MoneyBinSettings(BaseSettings):
     """Main application settings with environment variable integration.

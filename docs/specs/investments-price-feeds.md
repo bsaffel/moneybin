@@ -534,14 +534,26 @@ Both are cheap to honour and expensive to discover late.
   silently and unrecoverably. Retiring a provider means ceasing to *write*, never
   removing its mapping or its `ref_kind`.
 
-  **No test currently catches that deletion.**
+  **Three guards cover this, because no one of them sees every direction.**
+
   `tests/moneybin/test_stg_security_prices.py::test_every_mapped_source_resolves_end_to_end`
-  derives its source list by parsing the CASE out of the model file, which is what
-  makes adding an arm without widening the `ref_kind` CHECK fail loudly — but it
-  also means removing an arm merely shrinks the set the test iterates. The guard
-  that would close this is a check that every `source_type` present in
-  `raw.security_prices` has a mapping, which belongs with the held-but-unpriced
-  doctor work rather than in staging.
+  derives its source list by parsing the CASE out of the model file, so adding an
+  arm without widening the `ref_kind` CHECK fails loudly. It cannot see a removed
+  arm (removing one merely shrinks the set it iterates), nor a writer that ships
+  ahead of its mapping — in both cases the CASE is what changed or failed to
+  change, and this test reads only the CASE.
+
+  `tests/moneybin/test_services/test_price_service.py::test_every_source_the_service_writes_resolves_in_staging`
+  watches the opposite direction: every `source_type` `PriceService` writes must
+  appear in the CASE, spelled with the same `ref_kind` the service binds. This is
+  the guard that was missing when C.2's writer shipped one commit ahead of its
+  mapping, leaving every `tiingo` and `coingecko` row it wrote discarded.
+
+  `investment_price_disagreement`'s sibling `investment_unmapped_price_source`
+  closes the run-time half: any `source_type` present in `raw.security_prices`
+  with an accepted binding whose rows still never reach staging. It covers rows
+  already written and sources no Python constant names — including a retired
+  provider whose arm someone deletes.
 
 **Freshness dominates rank.** An override applies to one
 `(security_id, price_date, quote_currency)`. Within that date it beats every
@@ -558,23 +570,40 @@ picking a winner — an inference that could be wrong surfaces where it happens
 rather than resolving quietly.
 
 The check is `investment_price_disagreement`, a sibling to
-`investment_price_discontinuity`: it fires when two *provider* sources —
-`source IN ('plaid', 'tiingo', 'coingecko')` — hold rows for the same
-`(security_id, price_date, quote_currency)` differing by more than
-`price_disagreement_tolerance_pct` (a config field, following the staleness
-defaults). The comparison is deliberately restricted to provider closes, because
-the other two sources are *expected* to differ: an override exists precisely to
-correct a close the user believes is wrong, and a trade-implied price reflects
-one execution's size and spread rather than the day's close. Comparing those
-against a provider row would raise a standing warning on every ordinary
-correction and every intraday fill.
+`investment_price_discontinuity`: it fires when two *provider* sources hold rows
+for the same `(security_id, price_date, quote_currency)` differing by more than
+`investments.price_disagreement_tolerance_pct` (a config field, following the
+staleness defaults). The comparison is deliberately restricted to provider
+closes, because the other two sources are *expected* to differ: an override
+exists precisely to correct a close the user believes is wrong, and a
+trade-implied price reflects one execution's size and spread rather than the
+day's close. Comparing those against a provider row would raise a standing
+warning on every ordinary correction and every intraday fill.
+
+**That restriction is structural, not an enumerated source list.** The check
+reads `prep.stg_security_prices`, which carries provider observations only —
+overrides and trade-implied prices are derived at model build and never land in
+`raw.security_prices`. An enumerated `source IN (...)` list would add nothing
+over that and could only go stale in the direction that *hides* disagreements,
+by omitting a provider added later. Reading the resolved fact table instead
+would not work at all: it has already collapsed each conflicting pair to its
+rank winner, so the disagreement is no longer visible there.
+
+**Default tolerance: 2.0%.** Sized to the failure the check actually catches — a
+feed key bound to the wrong security, which yields order-of-magnitude
+differences — not to the precision two correct feeds agree to. Legitimate
+differences exist and must not fire: a broker strikes its crypto valuation at
+its own snapshot time while CoinGecko's is a 00:00 UTC close, so a volatile day
+separates two correct figures by more than a percent. A threshold tight enough
+to catch a genuinely wrong close a percent away would fire on those constantly,
+and a warning that fires constantly is one the reader learns to skip.
 
 The two are separate checks because their remedies differ — a discontinuity says
 distrust a *day*, a disagreement says distrust a *feed* — and a single merged
 finding could not say which. It lands in C.2, the first phase in which a security
 can carry two sources at all.
 
-**Held but unpriced** is a third C.2 check. A position whose feed key never bound
+**Held but unpriced** — `investment_unpriced_holdings` — is a third C.2 check. A position whose feed key never bound
 — an unrecognized ticker, a security no provider covers — values as `unpriced`
 and simply reads blank forever. `valuation_status` records it on the holdings
 view, but only where someone is already looking at that position; nothing
@@ -585,6 +614,21 @@ the *transaction ledger* for events whose security never resolved and never
 examines price rows, so the safety net it implied does not exist. The new check
 closes that gap: an open position carrying no usable price on the current
 valuation date, reported with the securities affected.
+
+It reports per security rather than per position, because the remedy — bind a
+feed key, or record a mark — applies to the security. One holding spread across
+three accounts is one piece of work, not three. It is scoped to
+`valuation_status = 'unpriced'` alone: `withheld` also publishes no value, but
+wants a share count reconciled rather than a price source, and routing it here
+would send the user to fix something that was never broken. `carried_forward`
+has a usable price whose age the staleness surface already carries.
+
+**The population this check reports shrank when trade-implied prices landed.** A
+per-unit price on a ledger event is now an observation on its trade date, so a
+feedless position bought years ago reports `carried_forward` at its execution
+price rather than `unpriced`. That is the correct answer — the user did pay that
+price — but it means this check no longer surfaces the position, and the honesty
+moves entirely onto `days_since_observed` and the staleness threshold.
 
 ### Trade-implied prices
 
@@ -1079,9 +1123,10 @@ investment/report integration. The first-available floor was dropped as a no-op
   list plus a `raw_*.sql` glob inside provider directories, so a file added
   under `src/moneybin/sql/schema/` is not discovered on its own and the first
   write would hit a missing table
-- `src/moneybin/services/doctor_service.py` — `investment_price_disagreement`
-  (C.2) and `investment_price_discontinuity` (C.3), registered alongside the nine
-  existing investment checks
+- `src/moneybin/services/doctor_service.py` — `investment_price_disagreement`,
+  `investment_unpriced_holdings`, `investment_unmapped_price_source` (C.2) and
+  `investment_price_discontinuity` (C.3), registered alongside the nine existing
+  investment checks
 - `src/moneybin/config.py` — staleness defaults, backfill bound,
   `price_disagreement_tolerance_pct`
 - `src/moneybin/tables.py` — new table constants

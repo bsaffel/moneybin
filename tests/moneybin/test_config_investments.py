@@ -37,3 +37,20 @@ class TestInvestmentsSettings:
         monkeypatch.setenv("MONEYBIN_INVESTMENTS__PRICE_STALENESS_DEFAULT_DAYS", "10")
         settings = MoneyBinSettings(profile="test")
         assert settings.investments.price_staleness_default_days == 10
+
+    def test_disagreement_tolerance_default(self) -> None:
+        assert InvestmentsSettings().price_disagreement_tolerance_pct == 2.0
+
+    def test_disagreement_tolerance_must_be_positive(self) -> None:
+        """Zero would report every pair of feeds that are not bit-identical."""
+        with pytest.raises(ValueError, match="price_disagreement_tolerance_pct"):
+            InvestmentsSettings(price_disagreement_tolerance_pct=0)
+
+    def test_disagreement_tolerance_env_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "MONEYBIN_INVESTMENTS__PRICE_DISAGREEMENT_TOLERANCE_PCT", "0.5"
+        )
+        settings = MoneyBinSettings(profile="test")
+        assert settings.investments.price_disagreement_tolerance_pct == 0.5

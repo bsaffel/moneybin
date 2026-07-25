@@ -35,6 +35,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resolved series with the source that won each date. A non-positive mark is
   refused — a worthless position is a ledger event, not a zero price. Store the
   Tiingo token with `investments prices token`; CoinGecko needs no credential.
+  `moneybin system doctor` gains three checks over the price series: two feeds
+  quoting the same security, date, and currency more than 2% apart (one of them
+  is wrong, and valuation picks a winner by rank without saying so); held
+  positions carrying no usable price, which report no market value and are
+  absent from every total that sums one; and price rows whose source the
+  pipeline cannot resolve, which are discarded before they can value anything.
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.
