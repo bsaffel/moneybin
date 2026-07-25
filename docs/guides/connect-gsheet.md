@@ -115,7 +115,7 @@ Every `moneybin refresh` (or explicit `gsheet pull`) runs this per connection:
 
 ```mermaid
 flowchart LR
-    A[Fetch sheet content] --> B{Drift check<br/>headers match?}
+    A[Fetch sheet content] --> B{Drift check<br/>headers + required<br/>columns populated?}
     B -->|Yes| C[Diff vs raw state]
     B -->|No| Z[Refuse pull,<br/>set drift state]
     C --> D[Insert new rows]
@@ -138,7 +138,7 @@ categorize post-pull subset. Three things to know:
 
 What counts as drift depends on the adapter.
 
-A `transactions` connection pins a column mapping. If you rename or remove a column MoneyBin has mapped — or a mapped column's cells go mostly empty — the next pull detects the pinned header is missing and **refuses the pull for that connection**. Adding a new column or reordering existing ones is not drift: MoneyBin matches headers by set membership, not position, and ignores columns outside the pinned mapping.
+A `transactions` connection pins a column mapping. If you rename or remove a column MoneyBin has mapped — or the cells of a *required* column go mostly empty (the date column, plus either the amount column or the debit/credit pair) — the next pull detects the drift and **refuses the pull for that connection**. A mostly-blank optional column like Description or Notes is normal and never trips it. Adding a new column or reordering existing ones is not drift: MoneyBin matches headers by set membership, not position, and ignores columns outside the pinned mapping.
 
 A `seed` connection pins nothing. It regenerates its view on every pull, so renamed, added, and reordered columns are absorbed silently; only a sheet with no header row at all refuses.
 
