@@ -38,7 +38,7 @@ if TYPE_CHECKING:
         ConfirmationRequired,
         SignConventionProposal,
     )
-    from moneybin.services.import_service import ImportResult
+    from moneybin.services.import_service import BatchImportResult, ImportResult
 
 
 class _FormatTypeFilter(StrEnum):
@@ -323,15 +323,8 @@ def import_files_command(
     from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.protocol.envelope import build_envelope
+    from moneybin.protocol.import_envelope import mark_total_failure
     from moneybin.services.import_service import ImportService
-
-    # Single-file invocations keep fast-fail on missing paths (typo
-    # detection). Multi-file batches defer to ImportService.import_files()
-    # which records per-file FileNotFoundError as PerFileResult so the
-    # batch contract ("per-file failures do not abort the batch") holds.
-    if len(file_paths) == 1 and not file_paths[0].exists():
-        logger.error(f"❌ File not found: {file_paths[0]}")
-        raise typer.Exit(1)
 
     # --mapping is an alias for --override; merge both into one dict.
     combined_override = list(override or []) + list(mapping or [])
@@ -391,123 +384,152 @@ def import_files_command(
 
     files_list: list[dict[str, Any]] = []
     data: dict[str, Any] = {}
+    # Declared out here, not in the batch branch, so the total-failure gate
+    # after the try block can reach it. The single-file path also sets it, from
+    # a synthesized one-file batch, when the file itself fails — that is what
+    # gives both paths the same counts, files[] rows, status, and exit code.
+    batch_result: BatchImportResult | None = None
     try:
         with handle_cli_errors():
-            with get_database(read_only=False) as db:
-                svc = ImportService(db)
-                # Single-path invocations always use import_file directly so
-                # ImportConfirmationRequiredError can bubble to the CLI handler.
-                # Multi-path stays on import_files (batch contract).
-                if len(file_paths) == 1:
-                    import_kwargs: dict[str, Any] = {
-                        "file_path": file_paths[0],
-                        "refresh": refresh,
-                        "institution": institution,
-                        "force": force,
-                        "interactive": interactive,
-                        "account_id": account_id,
-                        "account_name": account_name,
-                        "format_name": format_name,
-                        "overrides": overrides,
-                        "sign": sign,
-                        "date_format": date_format or None,
-                        "number_format": number_format,
-                        "save_format": save_format,
-                        "sheet": sheet,
-                        "delimiter": delimiter,
-                        "encoding": encoding,
-                        "no_row_limit": no_row_limit,
-                        "no_size_limit": no_size_limit,
-                        "auto_accept": yes,
-                        "confirm": confirm,
-                        "actor_kind": "human",
-                    }
-                    if confirm_sign:
-                        import_kwargs["human_sign_confirmation"] = True
-                    result = svc.import_file(**import_kwargs)
-                    if result.sign_correction_suggested:
-                        typer.echo(
-                            "⚠️  Sign convention may be inverted (running balance "
-                            "suggests negation). If amounts look wrong, re-run "
-                            "with --sign to override.",
-                            err=True,
-                        )
-                    if result.sign_override_replayed:
-                        typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
-                    files_list = [
-                        {
-                            "path": str(file_paths[0]),
-                            "status": "imported",
-                            "source_type": result.file_type,
-                            "rows_loaded": result.rows_loaded,
-                            "import_id": result.import_id,
-                            # Mirror the batch path: JSON-output agents need
-                            # the structured signal regardless of single vs
-                            # multi-file invocation.
-                            "sign_correction_suggested": result.sign_correction_suggested,
-                            "sign_override_replayed": result.sign_override_replayed,
-                        }
-                    ]
-                    data = {
-                        "imported_count": 1,
-                        "failed_count": 0,
-                        "total_count": 1,
-                        "transforms_applied": refresh and result.core_tables_rebuilt,
-                        "transforms_duration_seconds": None,
-                        "files": files_list,
-                    }
+            # Single-file invocations keep fast-fail on missing paths (typo
+            # detection), before the database is opened. Multi-file batches
+            # defer to ImportService.import_files(), which records a per-file
+            # FileNotFoundError as a PerFileResult so the batch contract
+            # ("per-file failures do not abort the batch") holds.
+            #
+            # `Path.exists()` is itself a classified-error site: pathlib only
+            # swallows ENOENT/ENOTDIR/EBADF/ELOOP, so a macOS TCC denial
+            # (EPERM) propagates out of `.exists()` rather than returning
+            # False. That makes THIS the line the headline single-file TCC
+            # case reaches — not `svc.import_file` below — so it has to
+            # produce the same one-file batch, or the one scenario this
+            # affordance exists for is the only one answering `data: []`
+            # while every sibling answers `data.files[]`.
+            if len(file_paths) == 1:
+                try:
+                    missing = not file_paths[0].exists()
+                except PermissionError as preflight_exc:
+                    batch_result = _single_file_failure(file_paths[0], preflight_exc)
+                    files_list, data = _batch_payload(batch_result)
                 else:
-                    batch = svc.import_files(
-                        [str(p) for p in file_paths],
-                        refresh=refresh,
-                        force=force,
-                        interactive=interactive,
-                        confirm=confirm,
-                        actor_kind="human",
-                    )
-                    if any(r.sign_correction_suggested for r in batch.per_file):
-                        typer.echo(
-                            "⚠️  Sign convention may be inverted for one or "
-                            "more imports (running balance suggests negation). "
-                            "If amounts look wrong, re-run with --sign to "
-                            "override.",
-                            err=True,
-                        )
-                    if any(r.sign_override_replayed for r in batch.per_file):
-                        typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
-                    files_list = [
-                        {
-                            "path": r.path,
-                            "status": r.status,
-                            "source_type": r.source_type,
-                            "rows_loaded": r.rows_loaded,
-                            "import_id": r.import_id,
-                            # Always include sign_correction_suggested so
-                            # JSON-output agents see a structured signal that
-                            # amounts may need re-import with --sign — the TTY
-                            # path already warns to stderr; this closes the
-                            # gap for scripted callers.
-                            "sign_correction_suggested": r.sign_correction_suggested,
-                            "sign_override_replayed": r.sign_override_replayed,
-                            **({"error": r.error} if r.error else {}),
-                            **(
-                                {"confirmation_payload": r.confirmation_payload}
-                                if r.confirmation_payload
-                                else {}
-                            ),
+                    if missing:
+                        # A path that does not exist has no import outcome to
+                        # report, so this stays a bare error rather than a
+                        # failed row: there is nothing actionable in
+                        # `data.files[]` that the message does not already say.
+                        logger.error(f"❌ File not found: {file_paths[0]}")
+                        raise typer.Exit(1)
+
+            # Skipped when the preflight already failed: the file was never
+            # opened, so there is nothing to import and no reason to take a
+            # write connection.
+            if batch_result is None:
+                with get_database(read_only=False) as db:
+                    svc = ImportService(db)
+                    # Single-path invocations always use import_file directly
+                    # so ImportConfirmationRequiredError can bubble to the CLI
+                    # handler. Multi-path stays on import_files (batch
+                    # contract).
+                    if len(file_paths) == 1:
+                        import_kwargs: dict[str, Any] = {
+                            "file_path": file_paths[0],
+                            "refresh": refresh,
+                            "institution": institution,
+                            "force": force,
+                            "interactive": interactive,
+                            "account_id": account_id,
+                            "account_name": account_name,
+                            "format_name": format_name,
+                            "overrides": overrides,
+                            "sign": sign,
+                            "date_format": date_format or None,
+                            "number_format": number_format,
+                            "save_format": save_format,
+                            "sheet": sheet,
+                            "delimiter": delimiter,
+                            "encoding": encoding,
+                            "no_row_limit": no_row_limit,
+                            "no_size_limit": no_size_limit,
+                            "auto_accept": yes,
+                            "confirm": confirm,
+                            "actor_kind": "human",
                         }
-                        for r in batch.per_file
-                    ]
-                    data = {
-                        "imported_count": batch.imported_count,
-                        "failed_count": batch.failed_count,
-                        "total_count": batch.total_count,
-                        "transforms_applied": batch.transforms_applied,
-                        "transforms_duration_seconds": batch.transforms_duration_seconds,
-                        "files": files_list,
-                    }
-                    if batch.transforms_error:
-                        data["transforms_error"] = batch.transforms_error
+                        if confirm_sign:
+                            import_kwargs["human_sign_confirmation"] = True
+                        try:
+                            result = svc.import_file(**import_kwargs)
+                        except (ValueError, PermissionError) as file_exc:
+                            # A failure attributable to THIS FILE is part of the
+                            # import contract, not a command-level error: the batch
+                            # path and the MCP tool both answer with counts plus a
+                            # data.files[] row. Letting handle_cli_errors claim it
+                            # answers `data: []` instead, so the per-file error,
+                            # code, and hint reach scripted callers on every path
+                            # but the single-file one — the most common invocation,
+                            # and the one this change's recovery advice targets.
+                            #
+                            # Deliberately narrow: a locked or uninitialised
+                            # database is not a failed file, and reporting it as
+                            # `failed_count: 1` would blame a file that was never
+                            # read. Those stay with handle_cli_errors, which is
+                            # also where anything unclassified still surfaces.
+                            batch_result = _single_file_failure(file_paths[0], file_exc)
+                            files_list, data = _batch_payload(batch_result)
+                        else:
+                            if result.sign_correction_suggested:
+                                typer.echo(
+                                    "⚠️  Sign convention may be inverted (running "
+                                    "balance suggests negation). If amounts look "
+                                    "wrong, re-run with --sign to override.",
+                                    err=True,
+                                )
+                            if result.sign_override_replayed:
+                                typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
+                            files_list = [
+                                {
+                                    "path": str(file_paths[0]),
+                                    "status": "imported",
+                                    "source_type": result.file_type,
+                                    "rows_loaded": result.rows_loaded,
+                                    "import_id": result.import_id,
+                                    # Mirror the batch path: JSON-output agents need
+                                    # the structured signal regardless of single vs
+                                    # multi-file invocation.
+                                    "sign_correction_suggested": result.sign_correction_suggested,
+                                    "sign_override_replayed": result.sign_override_replayed,
+                                }
+                            ]
+                            data = {
+                                "imported_count": 1,
+                                "failed_count": 0,
+                                "total_count": 1,
+                                "transforms_applied": refresh
+                                and result.core_tables_rebuilt,
+                                "transforms_duration_seconds": None,
+                                "files": files_list,
+                            }
+                    else:
+                        batch_result = svc.import_files(
+                            [str(p) for p in file_paths],
+                            refresh=refresh,
+                            force=force,
+                            interactive=interactive,
+                            confirm=confirm,
+                            actor_kind="human",
+                        )
+                        if any(
+                            r.sign_correction_suggested for r in batch_result.per_file
+                        ):
+                            typer.echo(
+                                "⚠️  Sign convention may be inverted for one or "
+                                "more imports (running balance suggests negation). "
+                                "If amounts look wrong, re-run with --sign to "
+                                "override.",
+                                err=True,
+                            )
+                        if any(r.sign_override_replayed for r in batch_result.per_file):
+                            typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
+                        files_list, data = _batch_payload(batch_result)
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
         from moneybin.services.import_confirmation import (  # noqa: PLC0415
             ImportConfirmationRequiredError,
@@ -618,46 +640,39 @@ def import_files_command(
             )
             raise typer.Exit(1) from _exc
 
-        if not isinstance(_exc, (ValueError, PermissionError)):
-            raise
-
-        # ValueError / PermissionError: surface as a structured failed-file
-        # envelope so --output json stays consistent with the batch contract.
-        error_type = type(_exc).__name__
-        files_list = [
-            {
-                "path": str(file_paths[0]) if len(file_paths) == 1 else "",
-                "status": "failed",
-                "source_type": None,
-                "rows_loaded": 0,
-                "import_id": None,
-                "error": error_type,
-            }
-        ]
-        data = {
-            "imported_count": 0,
-            "failed_count": 1,
-            "total_count": 1,
-            "transforms_applied": False,
-            "transforms_duration_seconds": None,
-            "files": files_list,
-        }
-        envelope = build_envelope(data=data, sensitivity="low")
-        if output == OutputFormat.JSON:
-            render_or_json(envelope, output, cli_actor="import_files_command")
-        else:
-            logger.error(f"❌ {_exc}")
-        raise typer.Exit(1) from _exc
+        # Everything else belongs to handle_cli_errors: it classifies every
+        # exception it recognizes (the Database*Errors, and any ValueError or
+        # PermissionError the single-file branch did not already claim as a
+        # per-file failure) into a structured error envelope and a typer.Exit,
+        # and re-raises what it does not. Only ImportConfirmationRequiredError
+        # — unclassified by design, so it can carry its proposal — reaches the
+        # branch above.
+        raise
 
     # Bump sensitivity to "medium" when any per-file entry carries a
     # confirmation_payload — those payloads include detector samples
     # (description / merchant cells) and must match the single-file
     # confirmation_required envelope's medium tier so agents apply the
     # same consent gate to batch proposals.
+    # `error` and `hint` are DESCRIPTION-tier in `ImportPerFileRow`, which is
+    # what the MCP path derives its tier from. They are prose that can name the
+    # failing path, so a batch carrying either is medium on this surface too —
+    # otherwise the same bytes ship as `low` from the CLI and `medium` from
+    # MCP, and the privacy-audit row inherits the under-declaration.
     batch_sensitivity = (
-        "medium" if any(f.get("confirmation_payload") for f in files_list) else "low"
+        "medium"
+        if any(
+            f.get("confirmation_payload") or f.get("error") or f.get("hint")
+            for f in files_list
+        )
+        else "low"
     )
     envelope = build_envelope(data=data, sensitivity=batch_sensitivity)
+    if batch_result is not None:
+        # Same gate the MCP import_files tool applies, from the same function:
+        # "every file failed" must read as a failure on both surfaces, or a
+        # script checking .status proceeds as though the data landed.
+        envelope = mark_total_failure(envelope, batch_result)
     if output == OutputFormat.JSON:
         render_or_json(envelope, output, cli_actor="import_files_command")
     elif not quiet:
@@ -666,6 +681,14 @@ def import_files_command(
             label = f["source_type"] or "?"
             rows = f.get("rows_loaded") or 0
             logger.info(f"{icon} {f['path']} [{label}] — {rows} rows")
+            # A failed row's whole value is why it failed and how to fix it.
+            # Text mode is the CLI default, so leaving these to the JSON branch
+            # made the recovery advice invisible to anyone running the bare
+            # command — the exact scenario this classification exists for.
+            if error := f.get("error"):
+                logger.error(f"   {error}")
+            if hint := f.get("hint"):
+                logger.info(f"   {hint}")
         if data["transforms_applied"]:
             duration = data["transforms_duration_seconds"]
             if duration is not None:
@@ -679,8 +702,104 @@ def import_files_command(
     # a separate failure surface. Exit non-zero so scripts and agents detect
     # that core tables were not refreshed even when every file imported.
     # Mirrors the fail-loud single-file path that raises on refresh() error.
-    if data.get("transforms_error"):
+    #
+    # The envelope's own status covers the other batch-level failure: an
+    # all-failed batch. Reading it (rather than re-deriving the condition)
+    # keeps the exit code and the reported status from disagreeing.
+    if data.get("transforms_error") or envelope.status == "error":
         raise typer.Exit(1)
+
+
+def _batch_payload(
+    batch: BatchImportResult,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Project a batch result into the ``files[]`` rows and ``data`` dict.
+
+    One builder for every path that reports a batch — the multi-file import and
+    the synthesized single-file failure — because the per-file row shape is a
+    public contract that agents branch on. Two inline copies is how `error` and
+    `hint` reached one surface and not the other.
+    """
+    files_list = [
+        {
+            "path": r.path,
+            "status": r.status,
+            "source_type": r.source_type,
+            "rows_loaded": r.rows_loaded,
+            "import_id": r.import_id,
+            # Always include sign_correction_suggested so JSON-output agents
+            # see a structured signal that amounts may need re-import with
+            # --sign — the TTY path already warns to stderr; this closes the
+            # gap for scripted callers.
+            "sign_correction_suggested": r.sign_correction_suggested,
+            "sign_override_replayed": r.sign_override_replayed,
+            **({"error": r.error} if r.error else {}),
+            # Paired with "error" so scripted/agent callers get the same stable
+            # code the MCP files[] rows carry.
+            **({"error_code": r.error_code} if r.error_code else {}),
+            # The recovery advice travels with the code — a scripted caller
+            # hitting a TCC block needs the fix, not just the classification.
+            **({"hint": r.hint} if r.hint else {}),
+            # The structured facts behind the code (errno, platform,
+            # protected_root). `hint` says it in prose; this is what a script
+            # branches on without matching that prose.
+            **({"details": r.details} if r.details else {}),
+            **(
+                {"confirmation_payload": r.confirmation_payload}
+                if r.confirmation_payload
+                else {}
+            ),
+        }
+        for r in batch.per_file
+    ]
+    data: dict[str, Any] = {
+        "imported_count": batch.imported_count,
+        "failed_count": batch.failed_count,
+        "total_count": batch.total_count,
+        "transforms_applied": batch.transforms_applied,
+        "transforms_duration_seconds": batch.transforms_duration_seconds,
+        "files": files_list,
+    }
+    if batch.transforms_error:
+        data["transforms_error"] = batch.transforms_error
+    return files_list, data
+
+
+def _single_file_failure(file_path: Path, exc: Exception) -> BatchImportResult:
+    """Wrap a file-attributable failure as the one-file batch it really is.
+
+    Mirrors the MCP ``import_files`` single-file branch, down to sharing
+    ``per_file_failure`` — the classified message, code, and hint must be
+    identical whichever surface asked. ``per_file_failure`` is also what keeps
+    raw ``str(e)`` off the wire for anything it cannot classify.
+    """
+    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+        BatchImportResult,
+        PerFileResult,
+        per_file_failure,
+    )
+
+    error_message, error_code, error_hint, error_details = per_file_failure(exc)
+    # The class name, never the message: a classified message is user-safe but
+    # still names the path, and logs stay PII-free.
+    logger.warning(f"Import failed for one file: {type(exc).__name__}")
+    return BatchImportResult(
+        per_file=[
+            PerFileResult(
+                path=str(file_path),
+                status="failed",
+                source_type=None,
+                rows_loaded=0,
+                import_id=None,
+                error=error_message,
+                error_code=error_code,
+                hint=error_hint,
+                details=error_details,
+            )
+        ],
+        transforms_applied=False,
+        transforms_duration_seconds=None,
+    )
 
 
 def _confirmation_envelope_data(outcome: ConfirmationRequired) -> dict[str, Any]:
@@ -1205,7 +1324,7 @@ def import_confirm_command(
         moneybin import confirm ~/Downloads/card.pdf --bridge-response response.json --confirm
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
-    from moneybin.cli.utils import handle_cli_errors  # noqa: PLC0415
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415
     from moneybin.protocol.envelope import build_envelope  # noqa: PLC0415
     from moneybin.services.import_service import ImportService  # noqa: PLC0415
@@ -1247,9 +1366,14 @@ def import_confirm_command(
             param_hint="'--accept' or '--mapping'",
         )
 
-    if not file_path.exists():
-        logger.error(f"❌ File not found: {file_path}")
-        raise typer.Exit(1)
+    # Third site with this shape, wrapped for the same reason as the `import
+    # files` and `import preview` preflights: `Path.exists()` raises under a
+    # macOS TCC denial instead of returning False, so an unwrapped check
+    # tracebacks rather than classifying.
+    with handle_cli_errors():
+        if not file_path.exists():
+            logger.error(f"❌ File not found: {file_path}")
+            raise typer.Exit(1)
 
     bridge_response_data: dict[str, Any] | None = None
     if bridge_response is not None:
@@ -1682,17 +1806,6 @@ def _preview_pdf(source: Path) -> None:
         logger.error(f"❌ Can't open the database, so {source.name} wasn't read: {e}")
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
-    except PermissionError as e:
-        # Statements routinely live under ~/Documents or ~/Desktop, where macOS
-        # TCC denies reads until the terminal is granted access — pdfplumber's
-        # open() then raises from deep in the extractor. Without this the user
-        # gets a full traceback for what is a one-click OS permission fix.
-        logger.error(f"❌ Cannot read {source.name}: {e.strerror or e}")
-        logger.info(
-            "💡 On macOS, grant your terminal access to this folder under "
-            "System Settings → Privacy & Security → Files and Folders."
-        )
-        raise typer.Exit(1) from e
     except ImportConfirmationRequiredError as e:
         # pdf_preview signals both the sign gate and a bridge escalation by
         # raising. Preview's job is to report what is pending, not to resolve
@@ -1775,15 +1888,21 @@ def import_preview(
         moneybin import preview ~/Downloads/transactions.xlsx --sheet Sheet1
         moneybin import preview ~/Downloads/chase_statement.pdf
     """
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import read_file
 
     source = Path(file_path)
 
-    if not source.exists():
-        logger.error(f"❌ File not found: {source}")
-        raise typer.Exit(1)
+    # Wrapped for the same reason as the `import files` preflight: `Path.exists()`
+    # raises rather than returning False under a macOS TCC denial, so an
+    # unwrapped check turns the documented `import preview ~/Documents/...`
+    # scenario into a traceback instead of the Full Disk Access guidance.
+    with handle_cli_errors():
+        if not source.exists():
+            logger.error(f"❌ File not found: {source}")
+            raise typer.Exit(1)
 
     if source.suffix.lower() == ".pdf":
         # Routed before the tabular stages below: none of format detection,
@@ -1808,12 +1927,19 @@ def import_preview(
                 f"A statement's structure comes from its recipe, not a column "
                 f"mapping."
             )
-        _preview_pdf(source)
+        # Same handler the tabular stages below use, for the same reason: a
+        # PermissionError here (statements live under ~/Documents, where macOS
+        # TCC denies reads) must reach `permission_advice` so the remedy matches
+        # the errno and platform. This branch used to hardcode one macOS pane
+        # for every PermissionError, which named the wrong pane for a TCC block
+        # and offered the macOS fix on Linux and for mode denials chmod solves.
+        with handle_cli_errors():
+            _preview_pdf(source)
         return
 
     overrides = _parse_overrides(override)
 
-    try:
+    with handle_cli_errors():
         # Stage 1: Detect format
         format_info = detect_format(
             source,
@@ -1917,13 +2043,6 @@ def import_preview(
         typer.echo(f"\nSample ({sample_n} rows):")
         typer.echo(df.head(sample_n))
         typer.echo()
-
-    except ValueError as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
-    except FileNotFoundError as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
 
 
 @formats_app.command("list")

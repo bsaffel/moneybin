@@ -7,7 +7,6 @@ available via the MCP server. Category taxonomy and merchant mappings live
 in the top-level `categories` and `merchants` groups respectively.
 """
 
-import dataclasses
 import logging
 from decimal import Decimal, InvalidOperation
 from typing import Literal, cast
@@ -21,7 +20,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import ErrorDetail
 
 from . import auto, ml, rules
 from .commit_from_file import categorize_commit_from_file
@@ -243,12 +242,11 @@ def categorize_commit(
         ],
     )
     if result.errors > 0:
-        envelope = dataclasses.replace(
-            envelope,
-            error=UserError(
-                f"{result.errors} item(s) failed to categorize",
+        envelope = envelope.with_error(
+            ErrorDetail(
+                message=f"{result.errors} item(s) failed to categorize",
                 code="categorization_errors",
-            ),
+            )
         )
     render_or_json(
         envelope, output, render_fn=_render_table, cli_actor="categorize_commit"

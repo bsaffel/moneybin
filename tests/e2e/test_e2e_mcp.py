@@ -477,6 +477,46 @@ class TestMatchesTools:
                 # A time-series view must carry the decision timestamp.
                 assert entry["created_at"]
 
+    async def test_tool_raised_error_carries_code_and_status_on_the_wire(
+        self, matches_env: dict[str, str]
+    ) -> None:
+        """A tool-body error reaches the agent with its full envelope intact.
+
+        Distinct from the ValidationErrorMiddleware assertion in
+        TestMCPFirstRunSetup: that path calls `to_dict()` explicitly, so it
+        stayed green while the *tool return* path silently dropped `status`,
+        `error.code`, and `error.hint`. This exercises the path that broke.
+        """
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.types import TextContent
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(matches_env),
+        )
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "investments_securities_set",
+                    {"security_id": "e2e_no_such_security", "name": "irrelevant"},
+                )
+
+        content = result.content[0]
+        assert isinstance(content, TextContent)
+        envelope = json.loads(content.text)
+        assert envelope["status"] == "error", (
+            f"status must survive envelope serialization, got: {envelope}"
+        )
+        assert envelope["error"]["code"] == "mutation_not_found", (
+            f"error.code must survive envelope serialization, got: {envelope}"
+        )
+        assert envelope["error"]["hint"], (
+            f"error.hint must survive envelope serialization, got: {envelope}"
+        )
+
     async def test_legacy_match_boundaries_are_not_registered(
         self, matches_env: dict[str, str]
     ) -> None:

@@ -5,7 +5,7 @@ Decorator-level error classification is covered in test_error_handling.py.
 
 import json
 
-from moneybin.errors import UserError
+from moneybin.errors import ErrorDetail, UserError
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -18,7 +18,9 @@ def test_build_error_envelope_carries_user_error() -> None:
     err = UserError("bad", code="database_locked", hint="unlock it")
     env = build_error_envelope(error=err)
     assert isinstance(env, ResponseEnvelope)
-    assert env.error is err
+    # The envelope holds the wire projection, not the raised exception —
+    # a UserError cannot be pydantic-serialized to the agent.
+    assert env.error == ErrorDetail.from_user_error(err)
     assert env.data == []
     assert env.summary.total_count == 0
     assert env.summary.sensitivity == "low"

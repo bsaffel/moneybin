@@ -124,6 +124,22 @@ class ImportPerFileRow:
     rows_loaded: Annotated[int | None, DataClass.AGGREGATE]
     import_id: Annotated[str | None, DataClass.RECORD_ID]
     error: Annotated[str | None, DataClass.DESCRIPTION]
+    # Stable classification of `error` (e.g. infra_permission_denied), or None
+    # when the exception was unclassified and `error` is just its class name.
+    # A closed vocabulary of codes, never free text → TXN_TYPE (LOW).
+    error_code: Annotated[str | None, DataClass.TXN_TYPE] = None
+    # Actionable recovery advice paired with `error_code` (e.g. the chmod/chown
+    # or macOS Full-Disk-Access instruction). Prose that may name the failing
+    # path, exactly like `error` → DESCRIPTION (MEDIUM).
+    hint: Annotated[str | None, DataClass.DESCRIPTION] = None
+    # Structured facts behind `error_code` — errno, platform, and
+    # protected_root on the macOS permission branch — so an agent branches on
+    # data instead of matching `hint` prose. DESCRIPTION, not TXN_TYPE:
+    # `error_code` is a closed vocabulary, but this is an open-shaped dict
+    # mirroring whatever `UserError.details` carries, so it is classified by
+    # its worst plausible content rather than today's. It only ever appears
+    # alongside `error`, so the row's effective tier is unchanged.
+    details: Annotated[dict[str, Any] | None, DataClass.DESCRIPTION] = None
     sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
     # True when a saved `sign=` override replayed onto this PDF, bypassing the
     # credit-card marker detector for its format.
