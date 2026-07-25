@@ -481,7 +481,7 @@ Guard-2 free-text resolution):
   queues — matches, categorize, **account-links**, future — so a single "what needs my
   attention?" sweep can't silently miss the account-link backlog. Keep
   `moneybin transactions review` as a **deprecated CLI alias for one minor
-  release** (`design-principles.md` CLI/MCP evolution).
+  release** (`design-principles-depth.md` CLI/MCP evolution).
   `ReviewService`
   gains `account_links_pending` in its count.
 

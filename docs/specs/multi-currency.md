@@ -423,7 +423,8 @@ realized FX gain/loss on the conversion pairs.
    surface listed above is actually in scope.
 
    The original text here assumed the MCP-parameter rename needed the
-   ship-alongside-the-old-name-for-one-release protocol from `design-principles.md`. That
+   ship-alongside-the-old-name-for-one-release protocol from
+   `design-principles-depth.md`. That
    protocol is explicitly **post-launch only**; per that doc's own launch trigger
    (**M3H** hosted launch, or the first tagged release adopted by a non-author user —
    `design-principles.md` itself currently misstates this as "M3E," a separate stale

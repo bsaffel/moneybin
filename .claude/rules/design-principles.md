@@ -45,7 +45,8 @@ prematurely freeze a surface before you know it's right.
 
 **Post-launch posture:** lock hard. Treat changes as breaking. Require
 an explicit migration or deprecation path; record the rationale in an
-ADR if it meets the bar below.
+ADR if it meets the bar in
+[`.claude/references/design-principles-depth.md`](../references/design-principles-depth.md).
 
 **Launch trigger.** Lock at the earlier of: M3E hosted launch, or the
 first tagged release adopted by any non-author user.
