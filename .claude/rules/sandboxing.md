@@ -24,7 +24,7 @@ Prefer this shape when the work fits.
 
 ## Use the Read tool for file content, not bash `cat`
 
-For reading a file into context, use the `Read` tool — not `cat`. `Read` takes a single absolute path (e.g. `Read(/Users/.../src/foo.py)`), is sandbox-independent, supports `offset`/`limit` for large files, and avoids the bash command-string matcher entirely. Reserve `cat` for cases that genuinely need shell interpretation: piping into another command, multi-file concatenation, or building files via heredoc. To find files by pattern, use `Glob` (or `Grep`), then `Read` the specific paths.
+`Read` is sandbox-independent and avoids the bash command-string matcher entirely; it also takes `offset`/`limit` for large files. Reserve `cat` for cases needing shell interpretation: piping, multi-file concatenation, heredocs. To find files by pattern use `Glob`/`Grep`, then `Read` the specific paths.
 
 ## Pipelines and chains run silently when components are allowlisted
 
@@ -41,15 +41,13 @@ If a pipeline prompts, it usually means one component (or a path it touches) isn
 
 ## Prefer tool-native structured output over regex filtering
 
-When the goal is "find specific items in tool output," reach for the tool's own filtering before grep. Single command, sandbox-eligible, denser output, more reliable to parse:
+To find specific items in tool output, use the tool's own filtering before grep — single command, sandbox-eligible, denser and more reliably parsed:
 
-- `ruff check --output-format json` or `--output-format concise` instead of `ruff | grep ...`
-- `pyright --outputjson` instead of piping pyright through grep
-- `pytest --tb=short -q` for compact failure summaries
-- `gh api ... --jq '.field'` instead of piping gh output through jq
-- `git log --pretty=format:'%h %s'` instead of piping git log through awk/cut
-
-This is also a token savings: structured output is denser than verbose text + filter.
+- `ruff check --output-format json` (or `concise`)
+- `pyright --outputjson`
+- `pytest --tb=short -q`
+- `gh api ... --jq '.field'`
+- `git log --pretty=format:'%h %s'`
 
 ## Don't reach for these
 

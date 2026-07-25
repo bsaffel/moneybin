@@ -573,7 +573,7 @@ This spec co-ships a rename of the existing `sync-*` surface from `connect` to `
 
 **Scope.** User-facing surface only — CLI verb, MCP tool names, doc copy, error-message text. The `app.sync_connections` storage table name is unchanged ("connection" is the noun form of "link" — the records of established links).
 
-**Backwards compatibility.** Pre-launch, but `sync-plaid.md` is shipped (M1G Phase 1). Keep `sync connect` as a deprecated alias for one minor release with a deprecation warning. Remove on the next minor release. Same pattern for the MCP tool. Per `.claude/rules/design-principles.md` evolving-a-public-contract guidance.
+**Backwards compatibility.** Pre-launch, but `sync-plaid.md` is shipped (M1G Phase 1). Keep `sync connect` as a deprecated alias for one minor release with a deprecation warning. Remove on the next minor release. Same pattern for the MCP tool. Per `.claude/references/design-principles-depth.md` evolving-a-public-contract guidance.
 
 **Files affected by the rename** are enumerated in the Files to Modify table above. The rename lands as its own commits within the gsheet PR series (one commit for the rename, one for the alias-with-deprecation), so reviewers can read the rename diff independently.
 
