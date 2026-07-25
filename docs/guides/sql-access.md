@@ -34,7 +34,7 @@ The agent-mediated counterpart to `db query` below, and the CLI twin of the MCP 
 ```bash
 moneybin sql query "SELECT year_month, total_spend
                     FROM reports.spending_trend
-                    WHERE category = 'Food and Drink'
+                    WHERE category = 'Food & Drink'
                     ORDER BY year_month DESC LIMIT 12"
 ```
 
@@ -47,7 +47,7 @@ For scripts, one-liners, and anything you'd pipe into `jq` or `csvq`. Output is 
 ```bash
 moneybin db query "SELECT year_month, total_spend
                    FROM reports.spending_trend
-                   WHERE category = 'Food and Drink'
+                   WHERE category = 'Food & Drink'
                    ORDER BY year_month DESC LIMIT 12" \
                   --output csv
 ```

@@ -442,7 +442,7 @@ Set a batch's full label state with `import_labels_set(import_id=..., labels=[..
 - `--no-refresh` — defer the post-load SQLMesh apply. Useful when chaining many imports.
 - `--force` / `-F` — re-import a file already in the log.
 
-`moneybin import confirm <path>` is the dedicated recovery command for any `confirmation_required` response — pass `--accept`, `--mapping <field>=<column>` (repeatable), `--confirm-sign`, or `--confirm` depending on what's pending; see its `--help` for the full set. The MCP equivalent is `import_confirm`, which elicits the human directly instead of requiring a second scripted call.
+`moneybin import confirm <path>` is the recovery command for a **tabular** `confirmation_required` response — pass `--accept`, `--mapping <field>=<column>` (repeatable), or `--confirm-sign` depending on what's pending; see its `--help` for the full set. A **PDF** sign-ratification proposal takes a different path: `import confirm` accepts `--confirm` only alongside `--bridge-response`, so re-run `moneybin import files <path>.pdf --confirm` to ratify one. The MCP equivalent is `import_confirm`, which elicits the human directly instead of requiring a second scripted call.
 
 **Exit codes for `moneybin import files`.**
 
