@@ -94,6 +94,52 @@ def test_unclassified_failures_use_the_domain_fallback() -> None:
     assert result.error.code == error_codes.IMPORT_PARSE_ERROR
 
 
+def test_lone_failure_hoists_its_own_message() -> None:
+    """With one file there are no others to over-claim for.
+
+    The count message exists so a batch with several distinct causes doesn't
+    adopt the first file's reason. At one file that risk is absent, and
+    "Import failed for all 1 file(s); see data.files[]" buries the single
+    reason the caller needs behind a pointer to a list of one. This is the
+    common shape now that a single-file CLI import reports as a one-file batch.
+    """
+    batch = _batch(_failed("a.csv", error_codes.INFRA_PERMISSION_DENIED, "grant"))
+    result = mark_total_failure(_envelope(), batch)
+
+    assert result.error is not None
+    assert result.error.message == "a.csv broke"
+
+
+def test_distinct_messages_fall_back_to_the_count() -> None:
+    """Two different reasons: neither one is true of the batch."""
+    batch = _batch(
+        _failed("a.csv", error_codes.INFRA_PERMISSION_DENIED, "grant"),
+        _failed("b.csv", error_codes.INFRA_PERMISSION_DENIED, "grant"),
+    )
+    result = mark_total_failure(_envelope(), batch)
+
+    assert result.error is not None
+    assert "all 2 file(s)" in result.error.message
+    # The code still hoists — it IS unanimous here. Message and code are
+    # decided independently, each on its own agreement.
+    assert result.error.code == error_codes.INFRA_PERMISSION_DENIED
+
+
+def test_unclassified_lone_failure_still_names_the_count() -> None:
+    """A file that carried no message contributes none to hoist.
+
+    Guards the `or` fallback: the unanimity set is `{None}` here, which is
+    "unanimous" by length but carries nothing a caller could act on.
+    """
+    batch = _batch(
+        PerFileResult(path="a.csv", status="failed", source_type=None, error=None)
+    )
+    result = mark_total_failure(_envelope(), batch)
+
+    assert result.error is not None
+    assert "all 1 file(s)" in result.error.message
+
+
 def test_partial_success_stays_ok() -> None:
     """At least one import is genuine success — the batch must not flip."""
     batch = _batch(

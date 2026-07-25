@@ -402,9 +402,9 @@ def import_files_command(
     files_list: list[dict[str, Any]] = []
     data: dict[str, Any] = {}
     # Declared out here, not in the batch branch, so the total-failure gate
-    # after the try block can reach it. Stays None on the single-file path,
-    # which never builds a batch: its failures raise through handle_cli_errors,
-    # which already emits an error envelope and exits 1.
+    # after the try block can reach it. The single-file path also sets it, from
+    # a synthesized one-file batch, when the file itself fails — that is what
+    # gives both paths the same counts, files[] rows, status, and exit code.
     batch_result: BatchImportResult | None = None
     try:
         with handle_cli_errors():
@@ -439,38 +439,58 @@ def import_files_command(
                     }
                     if confirm_sign:
                         import_kwargs["human_sign_confirmation"] = True
-                    result = svc.import_file(**import_kwargs)
-                    if result.sign_correction_suggested:
-                        typer.echo(
-                            "⚠️  Sign convention may be inverted (running balance "
-                            "suggests negation). If amounts look wrong, re-run "
-                            "with --sign to override.",
-                            err=True,
-                        )
-                    if result.sign_override_replayed:
-                        typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
-                    files_list = [
-                        {
-                            "path": str(file_paths[0]),
-                            "status": "imported",
-                            "source_type": result.file_type,
-                            "rows_loaded": result.rows_loaded,
-                            "import_id": result.import_id,
-                            # Mirror the batch path: JSON-output agents need
-                            # the structured signal regardless of single vs
-                            # multi-file invocation.
-                            "sign_correction_suggested": result.sign_correction_suggested,
-                            "sign_override_replayed": result.sign_override_replayed,
+                    try:
+                        result = svc.import_file(**import_kwargs)
+                    except (ValueError, PermissionError) as file_exc:
+                        # A failure attributable to THIS FILE is part of the
+                        # import contract, not a command-level error: the batch
+                        # path and the MCP tool both answer with counts plus a
+                        # data.files[] row. Letting handle_cli_errors claim it
+                        # answers `data: []` instead, so the per-file error,
+                        # code, and hint reach scripted callers on every path
+                        # but the single-file one — the most common invocation,
+                        # and the one this change's recovery advice targets.
+                        #
+                        # Deliberately narrow: a locked or uninitialised
+                        # database is not a failed file, and reporting it as
+                        # `failed_count: 1` would blame a file that was never
+                        # read. Those stay with handle_cli_errors, which is
+                        # also where anything unclassified still surfaces.
+                        batch_result = _single_file_failure(file_paths[0], file_exc)
+                        files_list, data = _batch_payload(batch_result)
+                    else:
+                        if result.sign_correction_suggested:
+                            typer.echo(
+                                "⚠️  Sign convention may be inverted (running "
+                                "balance suggests negation). If amounts look "
+                                "wrong, re-run with --sign to override.",
+                                err=True,
+                            )
+                        if result.sign_override_replayed:
+                            typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
+                        files_list = [
+                            {
+                                "path": str(file_paths[0]),
+                                "status": "imported",
+                                "source_type": result.file_type,
+                                "rows_loaded": result.rows_loaded,
+                                "import_id": result.import_id,
+                                # Mirror the batch path: JSON-output agents need
+                                # the structured signal regardless of single vs
+                                # multi-file invocation.
+                                "sign_correction_suggested": result.sign_correction_suggested,
+                                "sign_override_replayed": result.sign_override_replayed,
+                            }
+                        ]
+                        data = {
+                            "imported_count": 1,
+                            "failed_count": 0,
+                            "total_count": 1,
+                            "transforms_applied": refresh
+                            and result.core_tables_rebuilt,
+                            "transforms_duration_seconds": None,
+                            "files": files_list,
                         }
-                    ]
-                    data = {
-                        "imported_count": 1,
-                        "failed_count": 0,
-                        "total_count": 1,
-                        "transforms_applied": refresh and result.core_tables_rebuilt,
-                        "transforms_duration_seconds": None,
-                        "files": files_list,
-                    }
                 else:
                     batch_result = svc.import_files(
                         [str(p) for p in file_paths],
@@ -490,46 +510,7 @@ def import_files_command(
                         )
                     if any(r.sign_override_replayed for r in batch_result.per_file):
                         typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
-                    files_list = [
-                        {
-                            "path": r.path,
-                            "status": r.status,
-                            "source_type": r.source_type,
-                            "rows_loaded": r.rows_loaded,
-                            "import_id": r.import_id,
-                            # Always include sign_correction_suggested so
-                            # JSON-output agents see a structured signal that
-                            # amounts may need re-import with --sign — the TTY
-                            # path already warns to stderr; this closes the
-                            # gap for scripted callers.
-                            "sign_correction_suggested": r.sign_correction_suggested,
-                            "sign_override_replayed": r.sign_override_replayed,
-                            **({"error": r.error} if r.error else {}),
-                            # Paired with "error" so scripted/agent callers get
-                            # the same stable code the MCP files[] rows carry.
-                            **({"error_code": r.error_code} if r.error_code else {}),
-                            # The recovery advice travels with the code — a
-                            # scripted caller hitting a TCC block needs the fix,
-                            # not just the classification.
-                            **({"hint": r.hint} if r.hint else {}),
-                            **(
-                                {"confirmation_payload": r.confirmation_payload}
-                                if r.confirmation_payload
-                                else {}
-                            ),
-                        }
-                        for r in batch_result.per_file
-                    ]
-                    data = {
-                        "imported_count": batch_result.imported_count,
-                        "failed_count": batch_result.failed_count,
-                        "total_count": batch_result.total_count,
-                        "transforms_applied": batch_result.transforms_applied,
-                        "transforms_duration_seconds": batch_result.transforms_duration_seconds,
-                        "files": files_list,
-                    }
-                    if batch_result.transforms_error:
-                        data["transforms_error"] = batch_result.transforms_error
+                    files_list, data = _batch_payload(batch_result)
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
         from moneybin.services.import_confirmation import (  # noqa: PLC0415
             ImportConfirmationRequiredError,
@@ -641,8 +622,9 @@ def import_files_command(
             raise typer.Exit(1) from _exc
 
         # Everything else belongs to handle_cli_errors: it classifies every
-        # exception it recognizes (ValueError, PermissionError, and the
-        # Database*Errors) into a structured error envelope and a typer.Exit,
+        # exception it recognizes (the Database*Errors, and any ValueError or
+        # PermissionError the single-file branch did not already claim as a
+        # per-file failure) into a structured error envelope and a typer.Exit,
         # and re-raises what it does not. Only ImportConfirmationRequiredError
         # — unclassified by design, so it can carry its proposal — reaches the
         # branch above.
@@ -707,6 +689,93 @@ def import_files_command(
     # keeps the exit code and the reported status from disagreeing.
     if data.get("transforms_error") or envelope.status == "error":
         raise typer.Exit(1)
+
+
+def _batch_payload(
+    batch: BatchImportResult,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Project a batch result into the ``files[]`` rows and ``data`` dict.
+
+    One builder for every path that reports a batch — the multi-file import and
+    the synthesized single-file failure — because the per-file row shape is a
+    public contract that agents branch on. Two inline copies is how `error` and
+    `hint` reached one surface and not the other.
+    """
+    files_list = [
+        {
+            "path": r.path,
+            "status": r.status,
+            "source_type": r.source_type,
+            "rows_loaded": r.rows_loaded,
+            "import_id": r.import_id,
+            # Always include sign_correction_suggested so JSON-output agents
+            # see a structured signal that amounts may need re-import with
+            # --sign — the TTY path already warns to stderr; this closes the
+            # gap for scripted callers.
+            "sign_correction_suggested": r.sign_correction_suggested,
+            "sign_override_replayed": r.sign_override_replayed,
+            **({"error": r.error} if r.error else {}),
+            # Paired with "error" so scripted/agent callers get the same stable
+            # code the MCP files[] rows carry.
+            **({"error_code": r.error_code} if r.error_code else {}),
+            # The recovery advice travels with the code — a scripted caller
+            # hitting a TCC block needs the fix, not just the classification.
+            **({"hint": r.hint} if r.hint else {}),
+            **(
+                {"confirmation_payload": r.confirmation_payload}
+                if r.confirmation_payload
+                else {}
+            ),
+        }
+        for r in batch.per_file
+    ]
+    data: dict[str, Any] = {
+        "imported_count": batch.imported_count,
+        "failed_count": batch.failed_count,
+        "total_count": batch.total_count,
+        "transforms_applied": batch.transforms_applied,
+        "transforms_duration_seconds": batch.transforms_duration_seconds,
+        "files": files_list,
+    }
+    if batch.transforms_error:
+        data["transforms_error"] = batch.transforms_error
+    return files_list, data
+
+
+def _single_file_failure(file_path: Path, exc: Exception) -> BatchImportResult:
+    """Wrap a file-attributable failure as the one-file batch it really is.
+
+    Mirrors the MCP ``import_files`` single-file branch, down to sharing
+    ``per_file_failure`` — the classified message, code, and hint must be
+    identical whichever surface asked. ``per_file_failure`` is also what keeps
+    raw ``str(e)`` off the wire for anything it cannot classify.
+    """
+    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+        BatchImportResult,
+        PerFileResult,
+        per_file_failure,
+    )
+
+    error_message, error_code, error_hint = per_file_failure(exc)
+    # The class name, never the message: a classified message is user-safe but
+    # still names the path, and logs stay PII-free.
+    logger.warning(f"Import failed for one file: {type(exc).__name__}")
+    return BatchImportResult(
+        per_file=[
+            PerFileResult(
+                path=str(file_path),
+                status="failed",
+                source_type=None,
+                rows_loaded=0,
+                import_id=None,
+                error=error_message,
+                error_code=error_code,
+                hint=error_hint,
+            )
+        ],
+        transforms_applied=False,
+        transforms_duration_seconds=None,
+    )
 
 
 def _confirmation_envelope_data(outcome: ConfirmationRequired) -> dict[str, Any]:

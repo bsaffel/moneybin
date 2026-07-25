@@ -759,6 +759,109 @@ class TestImportFilesCommand:
         payload = json.loads(result.stdout)
         assert payload["summary"]["sensitivity"] == "medium"
 
+    def test_single_file_failure_keeps_the_batch_payload(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """One unreadable file reports like a one-file batch, not like a bare error.
+
+        A file-attributable failure is part of the import contract: the batch
+        path and the MCP `import_files` tool both answer with counts plus a
+        `data.files[]` row. Routing the single-file path to `handle_cli_errors`
+        instead answers `data: []`, so a script reading `data.files[0].hint`
+        works for two paths and breaks for one — the same recovery advice this
+        change exists to deliver, missing on the most common invocation.
+        """
+        import json
+
+        test_file = tmp_path / "statement.csv"
+        test_file.touch()
+        mock_import_file.side_effect = PermissionError(
+            1, "Operation not permitted", str(test_file)
+        )
+
+        result = runner.invoke(app, ["files", str(test_file), "--output", "json"])
+
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["data"]["imported_count"] == 0
+        assert payload["data"]["failed_count"] == 1
+        assert payload["data"]["total_count"] == 1
+        files = payload["data"]["files"]
+        assert len(files) == 1
+        assert files[0]["path"] == str(test_file)
+        assert files[0]["status"] == "failed"
+        assert files[0]["error"] == f"Operation not permitted: {test_file}"
+        assert files[0]["error_code"] == "infra_permission_denied"
+        # The hint text is platform-specific (Full Disk Access on macOS, chmod
+        # advice elsewhere), so pin its presence, not its wording.
+        assert files[0]["hint"]
+        assert payload["error"]["code"] == "infra_permission_denied"
+        # Same DESCRIPTION-tier prose as the batch path, so the same tier.
+        assert payload["summary"]["sensitivity"] == "medium"
+
+    def test_command_level_failure_keeps_the_bare_error_envelope(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A locked database is not a failed file, and must not be dressed as one.
+
+        The isolating half of the test above: only file-attributable failures
+        become a `data.files[]` row. Reporting a locked database as
+        ``failed_count: 1`` would tell a script the file is bad when the file
+        was never read — the honest answer is the classified error envelope.
+        """
+        import json
+
+        from moneybin.database import DatabaseLockError
+
+        test_file = tmp_path / "statement.csv"
+        test_file.touch()
+        mock_import_file.side_effect = DatabaseLockError("locked by pid 123")
+
+        result = runner.invoke(app, ["files", str(test_file), "--output", "json"])
+
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "infra_database_locked"
+        assert payload["data"] == []
+
+    def test_text_mode_single_file_shows_why_it_failed(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The single-file failure reaches the shared renderer, hint included.
+
+        Text is the CLI default. Falling through to the batch renderer is what
+        keeps one code path printing the error and hint for both invocations —
+        a second renderer here is how the batch path went silent in the first
+        place.
+        """
+        test_file = tmp_path / "statement.csv"
+        test_file.touch()
+        mock_import_file.side_effect = PermissionError(
+            1, "Operation not permitted", str(test_file)
+        )
+
+        with caplog.at_level("INFO"):
+            result = runner.invoke(app, ["files", str(test_file)])
+
+        assert result.exit_code == 1, result.output
+        assert "Operation not permitted" in caplog.text
+        assert "💡" in caplog.text
+
     def test_clean_batch_stays_low_sensitivity(
         self,
         runner: CliRunner,

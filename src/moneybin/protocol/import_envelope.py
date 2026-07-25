@@ -47,22 +47,27 @@ def mark_total_failure(
     if not failed or len(failed) != len(batch.per_file):
         return envelope
 
-    # The batch's own message names the count instead of hoisting one file's
-    # reason: with several distinct causes, the first file's message would
-    # over-claim for all of them. Per-file message + code stay in data.files[].
-    #
-    # The code and hint are hoisted only on unanimity. Taking the first failed
-    # file's would make the batch-level classification depend on argument
-    # order — the same two files, swapped, would report a different top-level
-    # `error.code`, and agents branch on that. Unanimity is the only condition
-    # under which one code describes the whole batch.
+    # Message, code, and hint are all hoisted on the same condition: unanimity.
+    # Taking the first failed file's would make the batch-level classification
+    # depend on argument order — the same two files, swapped, would report a
+    # different top-level `error.code`, and agents branch on that. Unanimity is
+    # the only condition under which one value describes the whole batch.
     codes = {r.error_code for r in failed}
     shared_code = codes.pop() if len(codes) == 1 else None
     # The hint rides with the code: it is advice, so a wrong-but-plausible one
     # is worse than none. Every file's own hint stays in data.files[].
     hints: set[str | None] = {r.hint for r in failed} if shared_code else set()
     shared_hint = hints.pop() if len(hints) == 1 else None
-    message = (
+    # Same rule for the message, which matters most at len(failed) == 1: there
+    # is no "over-claiming for the others" when there are no others, and
+    # "Import failed for all 1 file(s)" buries the one reason the user needs
+    # behind a pointer to a list of one. With several distinct causes no single
+    # message is true of the batch, so fall back to naming the count.
+    # `or` also covers the all-None case: unclassified failures share one
+    # "message" that carries nothing, so the count message is still the answer.
+    messages = {r.error for r in failed}
+    shared_message = messages.pop() if len(messages) == 1 else None
+    message = shared_message or (
         f"Import failed for all {len(failed)} file(s); "
         "see data.files[] for each file's error, error_code, and hint."
     )
