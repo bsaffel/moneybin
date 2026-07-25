@@ -291,7 +291,7 @@ empty because refresh returns a result payload rather than an error envelope.
 
 ### Concurrency and locking
 
-`refresh` is idempotent but **not concurrency-friendly**. DuckDB is single-writer per file: a second `refresh` started while one is already running will hit the writer lock and either retry-with-backoff (start 50 ms, ×1.5, cap 500 ms) until `database.max_wait_seconds` elapses (default 5 s), or fail with `DatabaseLockError`. Two agents driving `refresh_run` against the same database in parallel is **not supported** — they serialize at best, deadlock at worst. Run one driver at a time; if you need parallel imports, queue the imports and let a single `refresh` settle them.
+`refresh` is idempotent but **not concurrency-friendly**. DuckDB is single-writer per file: a second `refresh` started while one is already running will hit the writer lock and either retry-with-backoff (start 50 ms, ×1.5, cap 500 ms) until the write-lock wait budget elapses (10 s — a build-time constant, not a config field), or fail with `DatabaseLockError`. Two agents driving `refresh_run` against the same database in parallel is **not supported** — they serialize at best, deadlock at worst. Run one driver at a time; if you need parallel imports, queue the imports and let a single `refresh` settle them.
 
 There is no per-step progress signaling today. `refresh_run` returns when the cascade finishes (or fails); intermediate state is observable only via logs.
 

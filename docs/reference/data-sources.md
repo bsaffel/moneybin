@@ -7,13 +7,15 @@ Reference for engineers wiring automation against the import path and for migran
 
 ## Source-type identifiers
 
-`source_type` is the canonical provenance discriminator on every row in `core.fct_transactions` and on every `raw.*` table. Use it for filtering, dedup scope, and audit.
+`source_type` is the canonical provenance discriminator on every row in `core.fct_transactions` and on every `raw.*` transaction, account, and balance table. Use it for filtering, dedup scope, and audit.
+
+**The seed-path tables are the exception.** `raw.pdf_seeds` and `raw.gsheet_seeds` (and the internal `raw.import_preview_snapshots`) carry no `source_type` column — a seed row's provenance is its `alias` or `connection_id`, not a family tag, because the seed path accepts shapes that have no source family. Filtering those tables by `source_type = '...'` fails with a binder error rather than returning zero rows, so branch on the table, not on a value.
 
 | Source | `source_type` value | Raw landing tables |
 |--------|---------------------|--------------------|
 | Tabular files (CSV/TSV/Excel/Parquet/Feather) | `csv`, `tsv`, `excel`, `parquet`, `feather` | `raw.tabular_transactions`, `raw.tabular_accounts` |
 | OFX / QFX / QBO | `ofx` | `raw.ofx_transactions`, `raw.ofx_accounts`, `raw.ofx_balances`, `raw.ofx_institutions` |
-| PDF statements | `pdf` | `raw.tabular_transactions` (transaction-shaped documents); `raw.pdf_seeds` + generated `raw.pdf_<alias>` views (everything else) |
+| PDF statements | `pdf` | `raw.tabular_transactions` (transaction-shaped documents); `raw.pdf_seeds` + generated `raw.pdf_<alias>` views (everything else — no `source_type` column; see the note above) |
 | Plaid sync | `plaid` | `raw.plaid_transactions`, `raw.plaid_accounts`, `raw.plaid_balances`; investments: `raw.plaid_securities`, `raw.plaid_investment_transactions`, `raw.plaid_investment_holdings`, `raw.plaid_investment_holding_lots`, `raw.plaid_investment_holdings_snapshots` |
 | Manual entry | `manual` | `raw.manual_transactions`; investments: `raw.manual_investment_transactions` |
 
