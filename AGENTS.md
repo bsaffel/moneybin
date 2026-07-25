@@ -34,6 +34,12 @@ disambiguates) and name the cost honestly ("more work for me" is not
 disqualifying). When audiences conflict (e.g. AX wants verbose envelopes,
 UX wants terse output), surface it and let the user pick.
 
+## Think Before Coding
+
+If multiple interpretations exist, present them — don't pick one silently. If
+a simpler approach exists, say so; push back when warranted. When something is
+unclear, stop and name what's confusing.
+
 ## Simplicity First
 
 Minimum code that solves the problem. No abstractions for single-use code.
