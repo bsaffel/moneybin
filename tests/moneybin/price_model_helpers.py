@@ -23,6 +23,38 @@ MODEL_PATH = (
     / "stg_security_prices.sql"
 )
 
+FCT_PRICES_PATH = (
+    Path(moneybin.__file__).parent
+    / "sqlmesh"
+    / "models"
+    / "core"
+    / "fct_security_prices.sql"
+)
+
+
+def trade_implied_types() -> set[str]:
+    """The ledger types `core.fct_security_prices` accepts as a market close.
+
+    Parsed rather than restated for the same reason as ``ref_kind_mapping``: the
+    set the model actually applies is the only one worth asserting against, and
+    reading it from the file makes a change to the filter change what the tests
+    exercise.
+    """
+    sql = FCT_PRICES_PATH.read_text()
+    block = re.search(r"trade_implied AS \((.*?)\n\), ", sql, re.DOTALL)
+    assert block is not None, (
+        f"no `trade_implied AS (...)` CTE found in {FCT_PRICES_PATH.name}; the "
+        "ledger-type filter these tests guard may have moved or been renamed"
+    )
+    predicate = re.search(r"t\.type IN \(([^)]*)\)", block.group(1), re.DOTALL)
+    assert predicate is not None, (
+        "the trade_implied CTE applies no `t.type IN (...)` filter, so every "
+        "ledger event carrying a security and a price becomes a market close — "
+        "including dividend, fee, and capital_gain_distribution, whose `price` "
+        "is a per-share distribution rate, not a traded price"
+    )
+    return set(re.findall(r"'([^']+)'", predicate.group(1)))
+
 
 def ref_kind_mapping() -> dict[str, str]:
     """The (source_type -> ref_kind) pairs the model's CASE actually maps."""

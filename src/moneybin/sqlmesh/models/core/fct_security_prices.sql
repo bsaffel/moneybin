@@ -15,14 +15,22 @@
    app.security_links, which is what lets a security no feed covers — a restricted
    grant, a pre-IPO position, a private fund — carry a price at all.
 
-   Trade-implied rows are filtered to price > 0 and a non-NULL security_id.
+   Trade-implied rows are filtered on THREE conditions: an execution ledger type, a
+   non-NULL security_id, and price > 0. All three are load-bearing.
+
    raw.security_prices and app.security_price_overrides both enforce CHECK (close > 0),
    but fct_investment_transactions.price carries no such constraint: a vesting grant or
-   a stock dividend legitimately records price 0, and a cash-only event (deposit,
-   withdrawal, fee) records neither security nor price. Unioned unfiltered, that zero
-   becomes a resolved close and values the whole position at nothing while reporting
+   a stock dividend legitimately records price 0. Unioned unfiltered, that zero becomes
+   a resolved close and values the whole position at nothing while reporting
    valuation_status 'valued' — the precise outcome the positivity checks on the other
    two sources exist to refuse.
+
+   The type filter is what separates a traded price from a per-share rate, and only
+   deposit and withdrawal are barred from carrying a security at all
+   (investment_service._SECURITY_FORBIDDEN). dividend, fee, interest,
+   capital_gain_distribution, and return_of_capital may each carry a security AND a
+   price, so security_id and positivity alone do not identify an execution — see the
+   filter itself for what admitting them costs.
 
    NO FIRST-AVAILABLE FLOOR HERE, deliberately. This model's grain is the observation
    date, not a valuation date, so a floor of MIN(price_date) per (security, source)
@@ -137,8 +145,24 @@ WITH provider AS (
     'raw' AS price_basis,
     t.updated_at AS extracted_at
   FROM core.fct_investment_transactions AS t
+  /* Only an execution sets a market price. `security_id IS NOT NULL AND price > 0`
+     does NOT select executions: prep.stg_plaid__investment_transactions NULLs quantity
+     for cash-type events but passes price through verbatim, and dividend, fee,
+     interest, capital_gain_distribution, and return_of_capital all legitimately carry
+     a security AND a price — a per-share DISTRIBUTION RATE, not a traded price.
+     Admitting those publishes a $0.91 dividend as a $290 ETF's newest close;
+     dim_holdings.latest_price orders by price_date DESC with no source filter, so the
+     position's market value comes out ~300x low, reported as 'valued' with no warning.
+     Transfers are excluded for the adjacent reason: a transfer's price carries cost
+     basis across accounts, so it would publish an acquisition price from years ago as
+     today's value. Kept in step with the ledger vocabulary by
+     tests/moneybin/test_fct_security_prices_trade_implied.py, which derives the
+     admissible set from investment_service._AMOUNT_REQUIRED and asserts this filter is
+     disjoint from _QTY_NULL. */
   WHERE
-    NOT t.security_id IS NULL AND t.price > 0
+    NOT t.security_id IS NULL
+    AND t.price > 0
+    AND t.type IN ('buy', 'sell', 'reinvest')
 ), candidates AS (
   SELECT
     security_id,

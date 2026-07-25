@@ -42,7 +42,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   absent from every total that sums one; and price rows whose source the
   pipeline cannot resolve, which are discarded before they can value anything.
   One source failing does not cost you the others: a missing Tiingo token still
-  refreshes crypto, and the refresh names the source that failed and why.
+  refreshes crypto, and the refresh names the source that failed and why. Prices
+  implied by your own ledger now come only from executions — a dividend's
+  per-share rate is no longer read as that security's market close.
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.
