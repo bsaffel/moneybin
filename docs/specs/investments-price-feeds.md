@@ -1035,13 +1035,34 @@ Registered in `src/moneybin/metrics/registry.py` per
 [`observability.md`](observability.md). A refresh reaches the network and can
 partially fail, so it is unobservable without them.
 
-| Metric | Type | Labels | Purpose |
-|---|---|---|---|
-| `price_refresh_duration_seconds` | Histogram | `source` | Per-adapter fetch latency; the signal that a provider is degrading before it fails. |
-| `price_refresh_securities_total` | Counter | `source`, `outcome` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
-| `price_rows_written_total` | Counter | `source` | Ingest volume, and the check that a backfill wrote what it claimed. |
-| `price_resolution_status_total` | Counter | `status` | `status` ∈ `valued` / `carried_forward` / `unpriced` / `unreconstructable` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities, and the `unreconstructable` share is how much history M1J.6 would recover. |
-| `price_staleness_days` | Gauge | — | Maximum `days_since_observed` across held securities. One number answering "how old is the oldest price my net worth rests on." |
+| Metric | Type | Labels | Emitted where | Purpose |
+|---|---|---|---|---|
+| `price_refresh_duration_seconds` | Histogram | `source_type` | `PriceService.pull` | Per-adapter fetch latency; the signal that a provider is degrading before it fails. |
+| `price_refresh_securities_total` | Counter | `source_type`, `outcome` | `PriceService.pull` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
+| `price_rows_written_total` | Counter | `source_type` | `PriceService._store` | Ingest volume, and the check that a backfill wrote what it claimed. |
+| `price_resolution_status_total` | Counter | `status` | `InvestmentService.holdings` | `status` ∈ `valued` / `carried_forward` / `unpriced` / `unreconstructable` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities, and the `unreconstructable` share is how much history M1J.6 would recover. |
+| `price_staleness_days` | Gauge | — | `InvestmentService.holdings` | Maximum `days_since_observed` across held securities carrying a value. One number answering "how old is the oldest price my net worth rests on." |
+
+The label is `source_type`, not `source` — the canonical provenance column name
+across every layer (`database.md`), so a metric and a query name the same thing
+the same way.
+
+**The three `outcome` values are disjoint and exhaustive over the securities a
+refresh considers, and each routes to a different remedy.** `failed` means the
+provider was asked and refused: retry, or check the credential. `skipped` means
+MoneyBin never asked — no adapter covers the security type, or no feed key
+derived. A security that *was* asked and came back with neither a price nor an
+error is also `skipped`, not `failed`: real providers do this (the Tiingo
+adapter drops a non-positive close without reporting an error), and calling it a
+failure sends the reader to check a credential that is fine.
+
+**The two holdings metrics are recorded only on an unfiltered read.** Both
+describe the whole portfolio, and `holdings()` accepts account and security
+filters. Recording a filtered read would make the exported value depend on
+whichever filter the last caller happened to pass — asking for one
+recently-priced position would publish its age as the age of every number in net
+worth, while the stale position that filter excluded vanished from the status
+counts.
 
 No metric carries a security identifier or a monetary value as a label — labels
 stay low-cardinality and non-identifying, per the logging and privacy rules.

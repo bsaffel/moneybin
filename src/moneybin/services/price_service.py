@@ -36,7 +36,11 @@ from moneybin.connectors.prices.protocol import (
     PriceObservation,
     SecurityRef,
 )
-from moneybin.metrics.registry import PRICE_ROWS_WRITTEN_TOTAL
+from moneybin.metrics.registry import (
+    PRICE_REFRESH_DURATION_SECONDS,
+    PRICE_REFRESH_SECURITIES_TOTAL,
+    PRICE_ROWS_WRITTEN_TOTAL,
+)
 from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
@@ -275,9 +279,15 @@ class PriceService:
                 unpriced.append(
                     UnpricedSecurity(security.security_id, "no_price_source")
                 )
+                PRICE_REFRESH_SECURITIES_TOTAL.labels(
+                    source_type=source_type, outcome="skipped"
+                ).inc()
                 continue
             derivation = self._feed_key(security, source_type, adapter)
             if derivation.ref_value is None:
+                PRICE_REFRESH_SECURITIES_TOTAL.labels(
+                    source_type=source_type, outcome="skipped"
+                ).inc()
                 if derivation.review_reason is not None:
                     if self._queue_review(security, source_type, derivation):
                         queued += 1
@@ -309,7 +319,8 @@ class PriceService:
                 )
                 for sec, key in entries
             ]
-            result = adapter.fetch(refs, start, self._today)
+            with PRICE_REFRESH_DURATION_SECONDS.labels(source_type=source_type).time():
+                result = adapter.fetch(refs, start, self._today)
             observations.extend(result.observations)
             for obs in result.observations:
                 priced_keys.add((source_type, obs.provider_security_key))
@@ -317,6 +328,19 @@ class PriceService:
             for sec, key in entries:
                 if key in failed:
                     unpriced.append(UnpricedSecurity(sec.security_id, failed[key]))
+                # Exhaustive and disjoint over the fetched set: a security the
+                # adapter answered for neither way returned no data without
+                # calling it an error, which is a skip, not a failure.
+                outcome = (
+                    "failed"
+                    if key in failed
+                    else "written"
+                    if (source_type, key) in priced_keys
+                    else "skipped"
+                )
+                PRICE_REFRESH_SECURITIES_TOTAL.labels(
+                    source_type=source_type, outcome=outcome
+                ).inc()
 
         written = self._store(observations)
         priced_securities = {

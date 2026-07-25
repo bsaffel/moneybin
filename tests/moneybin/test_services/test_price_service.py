@@ -555,6 +555,139 @@ def test_the_written_counter_stays_truthful_on_a_partial_write(db: Database) -> 
     assert _rows_written("tiingo") - before == 1
 
 
+def _refresh_outcomes(source_type: str, outcome: str) -> float:
+    return (
+        REGISTRY.get_sample_value(
+            "moneybin_price_refresh_securities_total",
+            {"source_type": source_type, "outcome": outcome},
+        )
+        or 0.0
+    )
+
+
+def test_a_priced_security_counts_as_written(db: Database) -> None:
+    _seed_security(db, security_id="s_eq", name="Apple Inc", ticker="AAPL")
+    _hold(db, "s_eq")
+    tiingo = _FakeTiingo(metadata={"AAPL": TickerMetadata("Apple Inc", None)})
+    before = _refresh_outcomes("tiingo", "written")
+
+    _service(db, tiingo).pull()
+
+    assert _refresh_outcomes("tiingo", "written") - before == 1
+
+
+def test_a_provider_failure_counts_as_failed_not_skipped(db: Database) -> None:
+    """The two outcomes route to different remedies and must not be conflated.
+
+    A failure means the provider was asked and refused — retry, or check the
+    credential. A skip means MoneyBin never asked, because no feed key derived.
+    """
+    _seed_security(db, security_id="s_eq", name="Apple Inc", ticker="AAPL")
+    _hold(db, "s_eq")
+    tiingo = _FakeTiingo(metadata={"AAPL": TickerMetadata("Apple Inc", None)})
+    tiingo.fail_keys = {"AAPL"}
+    before = (
+        _refresh_outcomes("tiingo", "failed"),
+        _refresh_outcomes("tiingo", "skipped"),
+    )
+
+    _service(db, tiingo).pull()
+
+    assert _refresh_outcomes("tiingo", "failed") - before[0] == 1
+    assert _refresh_outcomes("tiingo", "skipped") - before[1] == 0
+
+
+def test_a_security_with_no_feed_key_counts_as_skipped(db: Database) -> None:
+    """Never asked, so it cannot be a failure — the provider was never reached."""
+    _seed_security(db, security_id="s_eq", name="Nameless Holding")
+    _hold(db, "s_eq")
+    before = (
+        _refresh_outcomes("tiingo", "skipped"),
+        _refresh_outcomes("tiingo", "failed"),
+    )
+
+    _service(db, _FakeTiingo()).pull()
+
+    assert _refresh_outcomes("tiingo", "skipped") - before[0] == 1
+    assert _refresh_outcomes("tiingo", "failed") - before[1] == 0
+
+
+def test_the_refresh_duration_is_timed_per_source(db: Database) -> None:
+    """Latency is the signal a provider is degrading before it starts failing.
+
+    Asserts the observation count rather than the elapsed value: the duration of
+    a fake fetch is meaningless, but whether the fetch was timed at all is not.
+    """
+    _seed_security(db, security_id="s_eq", name="Apple Inc", ticker="AAPL")
+    _hold(db, "s_eq")
+    tiingo = _FakeTiingo(metadata={"AAPL": TickerMetadata("Apple Inc", None)})
+    before = (
+        REGISTRY.get_sample_value(
+            "moneybin_price_refresh_duration_seconds_count", {"source_type": "tiingo"}
+        )
+        or 0.0
+    )
+
+    _service(db, tiingo).pull()
+
+    after = (
+        REGISTRY.get_sample_value(
+            "moneybin_price_refresh_duration_seconds_count", {"source_type": "tiingo"}
+        )
+        or 0.0
+    )
+    assert after - before == 1
+
+
+def test_a_security_type_with_no_provider_counts_as_skipped(db: Database) -> None:
+    """Cash and other carry no market quote, so no provider is ever asked.
+
+    This routes through a different branch than a missing feed key — the adapter
+    is None before derivation is even attempted — and reaches its own increment
+    site, so it needs its own fixture.
+    """
+    _seed_security(db, security_id="s_cash", name="Sweep", security_type="cash")
+    _hold(db, "s_cash")
+    before = (
+        _refresh_outcomes("tiingo", "skipped"),
+        _refresh_outcomes("tiingo", "written"),
+    )
+
+    result = _service(db, _FakeTiingo()).pull()
+
+    assert [u.reason for u in result.unpriced] == ["no_price_source"]
+    assert _refresh_outcomes("tiingo", "skipped") - before[0] == 1
+    assert _refresh_outcomes("tiingo", "written") - before[1] == 0
+
+
+def test_a_fetch_returning_nothing_without_an_error_counts_as_skipped(
+    db: Database,
+) -> None:
+    """Asked, answered with neither a price nor a failure — that is not a failure.
+
+    Real providers do this: the Tiingo adapter drops a non-positive close and
+    reports no error, so a window containing only such bars comes back empty.
+    Counting it as failed would send the reader to check a credential that is
+    fine; counting it as written would claim a price that does not exist.
+    """
+    _seed_security(db, security_id="s_eq", name="Apple Inc", ticker="AAPL")
+    _hold(db, "s_eq")
+    tiingo = _FakeTiingo(metadata={"AAPL": TickerMetadata("Apple Inc", None)})
+    tiingo.dates = []  # fetched, but the window yields no usable bar
+    before = (
+        _refresh_outcomes("tiingo", "skipped"),
+        _refresh_outcomes("tiingo", "failed"),
+        _refresh_outcomes("tiingo", "written"),
+    )
+
+    _service(db, tiingo).pull()
+
+    assert tiingo.fetched, "the provider must actually have been asked"
+    assert _refresh_outcomes("tiingo", "skipped") - before[0] == 1
+    assert _refresh_outcomes("tiingo", "failed") - before[1] == 0
+    assert _refresh_outcomes("tiingo", "written") - before[2] == 0
+
+
 def test_each_source_is_counted_under_its_own_label(db: Database) -> None:
     """A mixed batch must not attribute one source's rows to another."""
     _seed_security(db, security_id="s_eq", name="Apple Inc", ticker="AAPL")
