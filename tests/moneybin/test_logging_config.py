@@ -226,6 +226,8 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
             "moneybin.matching.engine",
             "moneybin.extractors.plaid.extractor",
             "moneybin.cli.utils.profile_source",
+            "moneybin.services.account_links_service",
+            "moneybin.services.merchant_links_service",
         ],
     )
     def test_named_noisy_dependencies_are_hidden(self, logger_name: str) -> None:
@@ -305,6 +307,27 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
         assert handler.filter(self._record("sqlmesh.core.context", logging.INFO))
         assert handler.filter(self._record("httpx", logging.INFO))
         assert handler.filter(self._record("moneybin.database", logging.INFO))
+
+    @pytest.mark.unit
+    def test_missing_log_directory_also_keeps_everything_on_stderr(
+        self, tmp_path: Path
+    ) -> None:
+        """A log dir that cannot be created leaves stderr as the only sink too.
+
+        `log_to_file: true` is not the same as "a file handler exists". The
+        parent is created with `parents=False`, so a deleted profile tree
+        raises FileNotFoundError and setup falls back to console-only — the
+        same state as `log_to_file: false`, reached by a different route.
+        """
+        missing = tmp_path / "no-such-profile" / "logs" / "moneybin.log"
+        handler = self._console_handler(log_to_file=True, log_file_path=missing)
+
+        assert not [
+            h
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.FileHandler)
+        ], "Expected no FileHandler when the log directory is missing"
+        assert handler.filter(self._record("httpx", logging.INFO))
 
 
 class TestMcpStreamKeepsInfoOnStderr(_LoggingSetupTestBase):

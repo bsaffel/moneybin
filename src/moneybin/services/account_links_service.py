@@ -329,17 +329,12 @@ class AccountLinksService:
             raise
 
         refresh_account_link_pending_gauge(self._db)
-        if new_count:
-            # The user's only notice. `refresh._run_identity_step` discards this
-            # return value, so RefreshResult never carries the count and the
-            # gauge is the sole other record — which no CLI user ever sees.
-            logger.info(
-                f"{new_count} new account link(s) need review — "
-                "run `moneybin accounts links pending`"
-            )
-        else:
-            # Nothing happened; the zero is worth neither the console nor the file.
-            logger.debug("accounts_links_run: wrote 0 new pending decisions")
+        # Unconditional and at INFO so the log file always records the run's
+        # outcome, including the zero. The console never sees it — this module
+        # is in `_CONSOLE_SUPPRESSED_PREFIXES`. Callers own what the user
+        # reads: `accounts links run` echoes its own summary, and the refresh
+        # pipeline surfaces a review notice from `_run_identity_step`.
+        logger.info(f"accounts_links_run: wrote {new_count} new pending decisions")
         return new_count
 
     def record_committed_outer_decisions(self) -> None:

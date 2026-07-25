@@ -376,13 +376,34 @@ def _run_identity_step(db: Database) -> tuple[str, ...]:
     )
 
     errors: list[str] = []
-    for label, run in (
-        ("accounts", lambda: AccountLinksService(db).run()),
-        ("merchants", lambda: MerchantLinksService(db).run()),
-    ):
-        try:
-            run()
-        except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
-            logger.error(f"{label} identity backfill failed: {type(exc).__name__}")
-            errors.append(label)
+    # Unlike `accounts links run` / `merchants links run`, which echo their own
+    # summaries, this pipeline path has no other notice — RefreshResult carries
+    # only errors. Without these lines a proposal or conflict enters the review
+    # queue and the user is never told.
+    notices: list[str] = []
+
+    try:
+        new_accounts = AccountLinksService(db).run()
+        if new_accounts:
+            notices.append(
+                f"{new_accounts} new account link(s) — "
+                "run `moneybin accounts links pending`"
+            )
+    except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
+        logger.error(f"accounts identity backfill failed: {type(exc).__name__}")
+        errors.append("accounts")
+
+    try:
+        harvest = MerchantLinksService(db).run()
+        if harvest.conflicts:
+            notices.append(
+                f"{harvest.conflicts} merchant link conflict(s) — "
+                "run `moneybin merchants links pending`"
+            )
+    except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
+        logger.error(f"merchants identity backfill failed: {type(exc).__name__}")
+        errors.append("merchants")
+
+    for notice in notices:
+        logger.info(f"👀 {notice}")
     return tuple(errors)

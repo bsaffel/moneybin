@@ -297,15 +297,14 @@ class MerchantLinksService:
 
         result = MerchantResolver(self._db, actor=self._actor).harvest()
         refresh_merchant_link_pending_gauge(self._db)
-        if result.conflicts:
-            # Same as accounts_links_run: refresh discards this result, so
-            # without this line a conflict lands in the review queue silently.
-            logger.info(
-                f"{result.conflicts} merchant link conflict(s) need review — "
-                "run `moneybin merchants links pending`"
-            )
-        else:
-            logger.debug(f"merchant_links_run: bound={result.bound} conflicts=0")
+        # Unconditional and at INFO — see AccountLinksService.run(). Both counts
+        # belong in the file every run: `bound` is a silent write with no metric
+        # behind it, so a conditional branch would lose it entirely on the
+        # common conflicts==0 path. Console suppression comes from
+        # `_CONSOLE_SUPPRESSED_PREFIXES`; the user notice comes from callers.
+        logger.info(
+            f"merchant_links_run: bound={result.bound} conflicts={result.conflicts}"
+        )
         return result
 
     def record_committed_outer_outcomes(self, outcomes: tuple[str, ...]) -> None:
