@@ -96,6 +96,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **An assistant and a person now get the same truthful, structured answer
+  from MoneyBin.** `system_status` and `reviews` degrade section by section
+  and queue by queue instead of failing whole, so one broken check no longer
+  hides the rest; a timed-out read releases its database connection, which is
+  what previously wedged the doctor until the server restarted. A failure the
+  server cannot classify arrives as a structured envelope with a code and a
+  hint — never a bare string — carrying the exception type only, with the
+  traceback left in the local log. `summary.total_count` means "every row
+  matching your request" on both surfaces: `moneybin transactions list
+  --limit 1 --output json` reported 1 where MCP reported 1952 for the same
+  query. That CLI command also paged by offset, so deleting a row above the
+  page boundary silently skipped an unserved one and a newly-arriving row
+  silently repeated a served one; it now uses the same keyset cursor MCP does.
+  A SQLMesh model that was registered but never built used to be invisible to
+  every health signal — the doctor now fails and names it, and status reports
+  it rather than inferring the whole warehouse from one table. Every error
+  code an assistant can branch on is declared in one place: 103 were being
+  raised from tool paths without ever being registered. Assistant-facing hints
+  that named retired tools, and the four import-preview refusals that offered
+  no way forward, are fixed.
 - **The consolidated MCP surface now preserves the safety and recovery
   contracts of the operations it replaces.** Permanent institution
   disconnects require payload-bound confirmation; human import decisions keep
