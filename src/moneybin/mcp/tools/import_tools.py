@@ -1239,6 +1239,18 @@ def import_status(
     )
 
 
+# Why a table and not f"revert_{status}": a code built from a runtime value is
+# invisible to TestWireCodes (an f-string is an ast.JoinedStr, not a literal),
+# so four undeclared codes reached agents unnoticed. An unknown status falls
+# back to a declared code rather than minting one.
+_REVERT_FAILURE_CODES = {
+    "not_found": error_codes.IMPORT_REVERT_NOT_FOUND,
+    "already_reverted": error_codes.IMPORT_REVERT_ALREADY_REVERTED,
+    "unsupported": error_codes.IMPORT_REVERT_UNSUPPORTED,
+    "superseded": error_codes.IMPORT_REVERT_SUPERSEDED,
+}
+
+
 def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
     """Undo an import batch by deleting all rows it produced.
 
@@ -1272,7 +1284,9 @@ def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
     return build_error_envelope(
         error=UserError(
             str(result.get("reason") or f"Cannot revert (status={status})"),
-            code=f"revert_{status}",
+            code=_REVERT_FAILURE_CODES.get(
+                str(status), error_codes.IMPORT_REVERT_UNSUPPORTED
+            ),
         )
     )
 

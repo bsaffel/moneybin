@@ -637,7 +637,7 @@ async def test_accounts_coarse_raw_cursors_reject_cross_filter_reuse(
             "limit": 1,
             "cursor": account_page["next_cursor"],
         },
-        "ACCOUNT_CURSOR_INVALID",
+        "account_cursor_invalid",
     )
 
     resolve_page = await _assert_canonical_variant(
@@ -683,7 +683,7 @@ async def test_accounts_coarse_raw_cursors_reject_cross_filter_reuse(
             "limit": 1,
             "cursor": balance_page["next_cursor"],
         },
-        "BALANCE_CURSOR_INVALID",
+        "account_balance_cursor_invalid",
     )
 
 

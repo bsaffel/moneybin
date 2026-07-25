@@ -839,7 +839,11 @@ def _coarse_position(
     """Decode one scope-bound cursor and validate its string key shape."""
     if cursor is None:
         return None
-    code = "ACCOUNT_CURSOR_INVALID" if tool == "accounts" else "BALANCE_CURSOR_INVALID"
+    code = (
+        error_codes.ACCOUNT_CURSOR_INVALID
+        if tool == "accounts"
+        else error_codes.ACCOUNT_BALANCE_CURSOR_INVALID
+    )
     try:
         position = decode_keyset_cursor(
             cursor,
@@ -871,7 +875,11 @@ def _keyset_page[T](
     directions: tuple[Literal["asc", "desc"], ...],
 ) -> tuple[list[T], str | None, int]:
     """Page immutable keys behind the cursor's first-page prepend boundary."""
-    code = "ACCOUNT_CURSOR_INVALID" if tool == "accounts" else "BALANCE_CURSOR_INVALID"
+    code = (
+        error_codes.ACCOUNT_CURSOR_INVALID
+        if tool == "accounts"
+        else error_codes.ACCOUNT_BALANCE_CURSOR_INVALID
+    )
 
     def compare_rows(left: T, right: T) -> int:
         return compare_keyset(key(left), key(right), directions)

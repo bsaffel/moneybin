@@ -64,6 +64,7 @@ class QueueUnavailable(BaseModel):
     kind: Annotated[ReviewQueueKind, DataClass.TXN_TYPE]
     code: Annotated[str, DataClass.TXN_TYPE]
     reason: Annotated[str, DataClass.TXN_TYPE]
+    hint: Annotated[str | None, DataClass.TXN_TYPE] = None
 
 
 class ReviewsSummaryView(BaseModel):

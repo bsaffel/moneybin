@@ -13,9 +13,17 @@ design does not permit under the MCP timeout guard.
 
 from __future__ import annotations
 
+import logging
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from moneybin.database import Database
+
+logger = logging.getLogger(__name__)
 
 _MODELS_DIR = Path(__file__).parent / "sqlmesh" / "models"
 
@@ -39,12 +47,81 @@ def registered_model_names() -> frozenset[str]:
     within a process, and both callers run on request paths.
     """
     names: set[str] = set()
-    for path in sorted(_MODELS_DIR.rglob("*.sql")):
-        match = _SQL_MODEL_NAME.search(path.read_text())
-        if match is not None:
-            names.add(match.group(1).lower())
-    for path in sorted(_MODELS_DIR.rglob("*.py")):
-        match = _PY_MODEL_NAME.search(path.read_text())
-        if match is not None:
-            names.add(match.group(1).lower())
+    unparsed: list[str] = []
+    for path, pattern in (
+        *((p, _SQL_MODEL_NAME) for p in sorted(_MODELS_DIR.rglob("*.sql"))),
+        *((p, _PY_MODEL_NAME) for p in sorted(_MODELS_DIR.rglob("*.py"))),
+    ):
+        match = pattern.search(path.read_text())
+        if match is None:
+            unparsed.append(path.name)
+            continue
+        names.add(match.group(1).lower())
+    if unparsed:
+        # A model whose header this regex cannot read vanishes from the
+        # registered set — which would silently shrink the very check whose
+        # job is noticing absent models. Say so rather than under-reporting.
+        logger.warning(
+            f"{len(unparsed)} SQLMesh model file(s) have an unreadable name "
+            f"header and are excluded from the registered set: "
+            f"{', '.join(sorted(unparsed))}"
+        )
     return frozenset(names)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelPresence:
+    """Which registered models exist, and whether the warehouse was ever built.
+
+    ``never_built`` separates two states a bare "N models missing" conflates:
+    a warehouse nobody has run ``refresh_run`` against yet — the normal state
+    right after ``db init``, where nothing is wrong — and one that was built
+    but is now incomplete, which is a real defect. Reporting the first as a
+    failure would fail the doctor on the most common first-run state.
+    """
+
+    missing: tuple[str, ...]
+    built_count: int
+    built_staging_count: int
+
+    @property
+    def never_built(self) -> bool:
+        """True when SQLMesh has never materialised anything.
+
+        Keyed on the ``prep`` staging layer, not on the total built count:
+        ``db init`` alone creates five registered relations (``core.dim_*`` and
+        ``seeds.*`` are schema-init tables), so "nothing built" is never true
+        even on a profile that has never refreshed. Nothing but a SQLMesh apply
+        creates a ``prep`` relation, which makes an empty ``prep`` the honest
+        signal — counted from the catalog rather than the registered set, since
+        the question is whether the layer exists at all.
+        """
+        return self.built_staging_count == 0
+
+
+def model_presence(db: Database) -> ModelPresence:
+    """Compare the registered model set against the live catalog.
+
+    Shared by the doctor invariant and ``TransformService.freshness()`` so the
+    two cannot drift — they previously ran the same query with different
+    exception scopes.
+    """
+    try:
+        rows = db.execute(
+            """
+            SELECT LOWER(schema_name || '.' || table_name) FROM duckdb_tables()
+            UNION
+            SELECT LOWER(schema_name || '.' || view_name) FROM duckdb_views()
+            """
+        ).fetchall()
+        built = {str(row[0]) for row in rows}
+    except Exception:  # noqa: BLE001 — an unreadable catalog is "unknown", not "missing"
+        logger.debug("model presence check skipped: catalog unreadable", exc_info=True)
+        return ModelPresence(missing=(), built_count=0, built_staging_count=0)
+    registered = registered_model_names()
+    present = registered & built
+    return ModelPresence(
+        missing=tuple(sorted(registered - built)),
+        built_count=len(present),
+        built_staging_count=sum(1 for name in built if name.startswith("prep.")),
+    )

@@ -379,10 +379,14 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
         )
 
     if status.transforms_pending:
-        actions.append(
-            "Run refresh_run to refresh derived tables "
-            "(raw imports are newer than the last refresh)"
+        # Name the cause that actually fired. "raw imports are newer" is wrong
+        # when a model was never built, and the payload already knows which.
+        cause = (
+            f"{len(status.transforms_missing_models)} registered model(s) are not built"
+            if status.transforms_missing_models
+            else "raw imports are newer than the last refresh"
         )
+        actions.append(f"Run refresh_run to refresh derived tables ({cause})")
 
     actions.extend(_gsheet_action_hints(gsheet["needs_attention"]))
 
@@ -722,8 +726,14 @@ def _unavailable_section(section: str, exc: Exception) -> SectionUnavailable:
     """
     classified = classify_user_error(exc)
     if classified is not None:
+        # Carry the hint too: classify_user_error already built the remedy
+        # (a locked database says to close the other connection), and dropping
+        # it leaves the agent a code with no way forward.
         return SectionUnavailable(
-            section=cast(Any, section), code=classified.code, reason=classified.message
+            section=cast(Any, section),
+            code=classified.code,
+            reason=classified.message,
+            hint=classified.hint,
         )
     # Full traceback server-side; the wire carries only the exception type,
     # since exception messages can embed SQL fragments and financial data.
@@ -876,6 +886,7 @@ async def system_status_coarse(
     ] = []
     actions: list[str] = []
     degraded_reasons: list[str] = []
+    degraded = False
     # Declared once: each branch assigns a differently-parameterized envelope,
     # and the payload is narrowed by the section it belongs to.
     response: ResponseEnvelope[Any]
@@ -925,6 +936,10 @@ async def system_status_coarse(
             selected.append(CategorizationStatus(statistics=response.data))
         actions.extend(response.actions)
         if response.summary.degraded:
+            # Track the flag independently of the reason: a section that
+            # degrades without supplying one must not be aggregated away as
+            # healthy just because it left the reason blank.
+            degraded = True
             reason = response.summary.degraded_reason
             if reason is not None:
                 degraded_reasons.append(reason)
@@ -936,7 +951,7 @@ async def system_status_coarse(
         total_count=len(selected),
         returned_count=len(selected),
         actions=list(dict.fromkeys(actions)),
-        degraded=bool(degraded_reasons),
+        degraded=degraded or bool(degraded_reasons),
         degraded_reason=" ".join(dict.fromkeys(degraded_reasons)) or None,
     )
 

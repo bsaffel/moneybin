@@ -1,11 +1,14 @@
 """MCP tool decorator: sensitivity logging, timeout guard, error classification, envelope guard.
 
 Every decorated tool is exposed as an async coroutine — FastMCP awaits it,
-and sync tool bodies run via ``asyncio.to_thread``. On timeout the
-decorator drops the singleton DuckDB connection so the next call reopens
-a fresh one, releasing any held write lock. Classified domain exceptions
-become error envelopes here; anything else propagates to the server's
-``mask_error_details`` boundary.
+and sync tool bodies run via ``asyncio.to_thread``. On timeout the decorator
+interrupts and drops *this call's* DuckDB connection — connections are
+per-call, registered in a ContextVar by ``get_database`` — releasing any held
+write lock. Every failure becomes an error envelope here: classified domain
+exceptions carry their own code, and anything else becomes
+``infra_unclassified_error`` carrying the exception type only. Nothing is left
+to reach the server's ``mask_error_details`` boundary, which would reduce it to
+a bare string with no code for an agent to branch on.
 
 Sync tool bodies still run in their OS thread after ``asyncio.timeout()``
 cancels the await. The decorator therefore binds a shared request lifetime:

@@ -25,7 +25,7 @@ checks both sides — every ``code=`` literal and every comparison against
 a ``.code`` attribute must name a *declared value* — which is what a
 literal spelled inline still satisfies, so the convention is on you. It
 exists because a literal that never reaches this module is invisible to
-every other test here: that is how 103 undeclared codes shipped on the
+every other test here: that is how 104 undeclared codes shipped on the
 wire while these tests stayed green.
 
 Codes are stable. Renaming a code is a breaking change for any agent
@@ -65,7 +65,11 @@ IMPORT_PREVIEW_NOT_FOUND = "import_preview_not_found"
 IMPORT_PREVIEW_PLAN_MISMATCH = "import_preview_plan_mismatch"
 IMPORT_PREVIEW_PLAN_MISSING = "import_preview_plan_missing"
 IMPORT_PREVIEW_SNAPSHOT_MISSING = "import_preview_snapshot_missing"
+IMPORT_REVERT_ALREADY_REVERTED = "import_revert_already_reverted"
 IMPORT_REVERT_INVALID_TARGET = "import_revert_invalid_target"
+IMPORT_REVERT_NOT_FOUND = "import_revert_not_found"
+IMPORT_REVERT_SUPERSEDED = "import_revert_superseded"
+IMPORT_REVERT_UNSUPPORTED = "import_revert_unsupported"
 IMPORT_SAVED_FORMAT_BUILTIN_IMMUTABLE = "import_saved_format_builtin_immutable"
 IMPORT_SAVED_FORMAT_NOT_FOUND = "import_saved_format_not_found"
 IMPORT_SECTIONS_DUPLICATE = "import_sections_duplicate"
@@ -219,9 +223,11 @@ SQL_UNKNOWN_TABLE = "sql_unknown_table"
 
 ACCOUNT_AMBIGUOUS = "account_ambiguous"
 ACCOUNT_BALANCE_AS_OF_NOT_ALLOWED = "account_balance_as_of_not_allowed"
+ACCOUNT_BALANCE_CURSOR_INVALID = "account_balance_cursor_invalid"
 ACCOUNT_BALANCE_DATE_RANGE_INVALID = "account_balance_date_range_invalid"
 ACCOUNT_BALANCE_DATES_NOT_ALLOWED = "account_balance_dates_not_allowed"
 ACCOUNT_BALANCE_THRESHOLD_NOT_ALLOWED = "account_balance_threshold_not_allowed"
+ACCOUNT_CURSOR_INVALID = "account_cursor_invalid"
 ACCOUNT_CURSOR_NOT_ALLOWED = "account_cursor_not_allowed"
 ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED = "account_include_closed_not_allowed"
 ACCOUNT_INVALID_FIELD = "account_invalid_field"

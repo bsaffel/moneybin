@@ -18,7 +18,7 @@ from moneybin.database import Database, sqlmesh_context
 from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
 from moneybin.seeds import refresh_views
 from moneybin.services.matching_service import MatchingService
-from moneybin.sqlmesh_registry import registered_model_names
+from moneybin.sqlmesh_registry import model_presence
 from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
@@ -245,7 +245,11 @@ class TransformService:
         wall-clock values for display only; they do not drive the
         pending decision.
         """
-        missing_models = self._missing_models()
+        presence = model_presence(self._db)
+        # A warehouse nobody has built yet is not stale — it is what a profile
+        # looks like between `db init` and its first refresh. Reporting that as
+        # pending would make the flag permanently true on a healthy first run.
+        missing_models = () if presence.never_built else presence.missing
         pending_extracted = self._max_unapplied_raw_extracted_at()
         core_extracted = self._max_dim_accounts_extracted_at()
 
@@ -262,21 +266,6 @@ class TransformService:
             latest_import_at=self._max_completed_import_at(),
             missing_models=missing_models,
         )
-
-    def _missing_models(self) -> tuple[str, ...]:
-        """Registered SQLMesh models with no table or view in the catalog."""
-        try:
-            rows = self._db.execute(
-                """
-                SELECT LOWER(schema_name || '.' || table_name) FROM duckdb_tables()
-                UNION
-                SELECT LOWER(schema_name || '.' || view_name) FROM duckdb_views()
-                """
-            ).fetchall()
-        except duckdb.CatalogException:
-            return ()
-        built = {str(row[0]) for row in rows}
-        return tuple(sorted(registered_model_names() - built))
 
     def status(self) -> TransformStatus:
         """Current SQLMesh environment state plus freshness signal.

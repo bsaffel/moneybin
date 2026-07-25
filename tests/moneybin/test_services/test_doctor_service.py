@@ -1927,6 +1927,10 @@ def test_missing_registered_model_fails_an_invariant(
         yield mock_ctx
 
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    # A built warehouse: only a SQLMesh apply creates a `prep.*` relation, so
+    # without one this is the never-refreshed state, which is not a failure.
+    doctor_db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    doctor_db.execute("CREATE VIEW prep.stg_probe AS SELECT 1 AS x")
     svc = DoctorService(doctor_db)
 
     report = svc.run_all()
@@ -1962,9 +1966,11 @@ def test_model_presence_passes_when_every_registered_model_exists(
     # Declare only models this fixture genuinely builds, so a pass is real
     # rather than an artifact of an empty registered set.
     monkeypatch.setattr(
-        "moneybin.services.doctor_service.registered_model_names",
-        lambda: frozenset({"core.fct_transactions", "core.dim_accounts"}),
+        "moneybin.sqlmesh_registry.registered_model_names",
+        lambda: frozenset({"prep.stg_probe", "core.dim_accounts"}),
     )
+    doctor_db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    doctor_db.execute("CREATE VIEW prep.stg_probe AS SELECT 1 AS x")
     svc = DoctorService(doctor_db)
 
     result = next(

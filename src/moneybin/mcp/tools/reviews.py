@@ -197,7 +197,10 @@ def _unavailable_queue(kind: ReviewQueueKind, exc: Exception) -> QueueUnavailabl
     classified = classify_user_error(exc)
     if classified is not None:
         return QueueUnavailable(
-            kind=kind, code=classified.code, reason=classified.message
+            kind=kind,
+            code=classified.code,
+            reason=classified.message,
+            hint=classified.hint,
         )
     logger.exception(f"reviews summary queue {kind} raised {type(exc).__name__}")
     return QueueUnavailable(

@@ -115,7 +115,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     **Taxonomy-completeness prefixes (2026-07-24).** The audit above checked
     `vars(error_codes)`, which only sees codes that reached the module. Walking
     the *wire* surface instead — every `code=` literal and every comparison
-    against a `.code` attribute, found by AST — surfaced 103 codes raised from
+    against a `.code` attribute, found by AST — surfaced 104 codes raised from
     tool paths that were never declared here. They are now declared, one prefix
     per MCP tool namespace: `account_*`, `entity_*`, `investment_*`,
     `privacy_*`, `report_*`, `review_*`, `taxonomy_*`, `transaction_*`. Like

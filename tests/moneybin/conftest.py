@@ -403,18 +403,21 @@ def db(
 def declare_only_models(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
     """Scope the registered SQLMesh model set to what a fixture actually builds.
 
-    ``TransformService.freshness()`` reports pending when a registered model
-    has no relation built. The real project declares 52 of them, so any test
-    fixture that stands up a handful of tables is pending on that half no
-    matter what its timestamps say — which would make a timestamp assertion
-    pass for the wrong reason. The registry reads project files, not the DB;
-    it is an input to freshness, not the mechanism under test, and the
-    missing-model half has its own tests that leave it alone.
+    ``TransformService.freshness()`` reports pending when a *partially* built
+    warehouse is missing a registered model. The real project declares 52, so
+    a fixture that stands up a handful of core tables is pending on that half
+    regardless of its timestamps — which would make a timestamp assertion pass
+    for the wrong reason. The registry reads project files, not the DB: it is
+    an input to freshness, not the mechanism under test, and the missing-model
+    half has its own tests that leave it alone.
+
+    Not needed for a fixture that builds *nothing* — a never-built warehouse
+    is its own state and reports neither missing models nor pending.
     """
 
     def _declare(*names: str) -> None:
         monkeypatch.setattr(
-            "moneybin.services.transform_service.registered_model_names",
+            "moneybin.sqlmesh_registry.registered_model_names",
             lambda: frozenset(names),
         )
 

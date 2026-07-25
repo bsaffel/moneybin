@@ -415,6 +415,7 @@ class SectionUnavailable(BaseModel):
     ]
     code: Annotated[str, DataClass.TXN_TYPE]
     reason: Annotated[str, DataClass.TXN_TYPE]
+    hint: Annotated[str | None, DataClass.TXN_TYPE] = None
 
 
 SystemStatusSection = Annotated[

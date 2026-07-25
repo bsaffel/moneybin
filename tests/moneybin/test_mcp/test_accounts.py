@@ -306,7 +306,7 @@ class TestStandardCoarseAccountReads:
         )
 
         assert reused.error is not None
-        assert reused.error.code == "ACCOUNT_CURSOR_INVALID"
+        assert reused.error.code == "account_cursor_invalid"
 
     @pytest.mark.unit
     async def test_account_resolve_ranks_exact_stable_ties(self, mcp_db: Path) -> None:
@@ -510,7 +510,7 @@ class TestStandardCoarseAccountReads:
         )
 
         assert reused.error is not None
-        assert reused.error.code == "BALANCE_CURSOR_INVALID"
+        assert reused.error.code == "account_balance_cursor_invalid"
 
     @pytest.mark.unit
     async def test_balance_history_cursor_survives_prepended_observation(
@@ -590,7 +590,7 @@ class TestStandardCoarseAccountReads:
             cursor=reconcile.next_cursor,
         )
         assert reused.error is not None
-        assert reused.error.code == "BALANCE_CURSOR_INVALID"
+        assert reused.error.code == "account_balance_cursor_invalid"
 
     @pytest.mark.unit
     async def test_account_list_rejects_wrong_typed_cursor_keys(
@@ -607,7 +607,7 @@ class TestStandardCoarseAccountReads:
         )
 
         assert response.error is not None
-        assert response.error.code == "ACCOUNT_CURSOR_INVALID"
+        assert response.error.code == "account_cursor_invalid"
         assert response.error.message == "Invalid pagination cursor."
 
     @pytest.mark.unit
@@ -639,7 +639,7 @@ class TestStandardCoarseAccountReads:
         )
 
         assert response.error is not None
-        assert response.error.code == "BALANCE_CURSOR_INVALID"
+        assert response.error.code == "account_balance_cursor_invalid"
         assert response.error.message == "Invalid pagination cursor."
 
     @pytest.mark.unit
@@ -731,7 +731,7 @@ class TestStandardCoarseAccountReads:
             ({"view": "history"}, "account_reference_required"),
             (
                 {"view": "latest", "cursor": "not-a-cursor"},
-                "BALANCE_CURSOR_INVALID",
+                "account_balance_cursor_invalid",
             ),
         ],
     )
@@ -750,8 +750,8 @@ class TestStandardCoarseAccountReads:
     @pytest.mark.parametrize(
         ("callback", "code"),
         [
-            (accounts_coarse, "ACCOUNT_CURSOR_INVALID"),
-            (accounts_balances_coarse, "BALANCE_CURSOR_INVALID"),
+            (accounts_coarse, "account_cursor_invalid"),
+            (accounts_balances_coarse, "account_balance_cursor_invalid"),
         ],
     )
     async def test_malformed_cursor_is_rejected_before_account_data_access(

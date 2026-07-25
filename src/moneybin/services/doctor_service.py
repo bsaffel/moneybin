@@ -14,7 +14,7 @@ from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
-from moneybin.sqlmesh_registry import registered_model_names
+from moneybin.sqlmesh_registry import model_presence
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
@@ -270,33 +270,28 @@ class DoctorService:
         invisible to all of them: the pipeline reports healthy while a table
         consumers depend on simply does not exist. This is the one check that
         starts from what *should* be there.
+
+        A warehouse with *nothing* built is a different state — it is what a
+        profile looks like between ``db init`` and its first ``refresh_run``,
+        and calling that a failure would exit non-zero on a healthy first run.
+        That reports ``skipped`` with the remedy instead.
         """
-        try:
-            rows = self._db.execute(
-                """
-                SELECT LOWER(schema_name || '.' || table_name) FROM duckdb_tables()
-                UNION
-                SELECT LOWER(schema_name || '.' || view_name) FROM duckdb_views()
-                """
-            ).fetchall()
-        except Exception as e:  # noqa: BLE001 — degrade gracefully; surface cause at DEBUG
-            logger.debug(f"sqlmesh_model_presence skipped: {e}", exc_info=True)
+        presence = model_presence(self._db)
+        if presence.never_built:
             return InvariantResult(
                 name="sqlmesh_model_presence",
                 status="skipped",
-                detail="catalog not readable",
+                detail="no SQLMesh models built yet; run refresh_run",
                 affected_ids=[],
             )
-
-        built = {str(row[0]) for row in rows}
-        missing = sorted(registered_model_names() - built)
-        if not missing:
+        if not presence.missing:
             return InvariantResult(
                 name="sqlmesh_model_presence",
                 status="pass",
                 detail=None,
                 affected_ids=[],
             )
+        missing = list(presence.missing)
         return InvariantResult(
             name="sqlmesh_model_presence",
             status="fail",

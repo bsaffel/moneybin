@@ -98,6 +98,101 @@ def _emitted_code_literals(tree: ast.AST) -> list[tuple[int, str]]:
     ]
 
 
+def _code_bindings(scope: ast.AST) -> dict[str, ast.expr]:
+    """Names bound to a value inside one function body (params + assignments).
+
+    Scoped deliberately: resolving against the whole module lets an unrelated
+    `code = ...` elsewhere in the file decide what a local `code=code` means.
+    """
+    bindings: dict[str, ast.expr] = {}
+    if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
+        args = scope.args
+        for arg, default in zip(
+            args.args[len(args.args) - len(args.defaults) :],
+            args.defaults,
+            strict=True,
+        ):
+            bindings[arg.arg] = default
+        for arg, kw_default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
+            if kw_default is not None:
+                bindings[arg.arg] = kw_default
+    for node in ast.walk(scope):
+        if (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node is not scope
+        ):
+            continue
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bindings[target.id] = node.value
+    return bindings
+
+
+def _computed_code_expressions(tree: ast.AST) -> list[int]:
+    """Lines where ``code=`` is built at runtime instead of named.
+
+    A literal is checkable; a value assembled at runtime is not.
+    ``code=f"revert_{status}"`` put four undeclared strings on the wire while
+    the literal scan saw nothing, because an f-string is an ``ast.JoinedStr``.
+    Accepted forms are a literal, a reference to a declared constant, a
+    conditional whose branches are all accepted, or a pass-through of an
+    already-classified ``.code`` — everything else is rejected rather than
+    evaluated.
+    """
+    scopes: list[ast.AST] = [
+        tree,
+        *(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        ),
+    ]
+    lines: set[int] = set()
+    resolved: set[int] = set()
+    for scope in scopes:
+        bindings = _code_bindings(scope)
+        for node in ast.walk(scope):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg != "code":
+                    continue
+                if _names_a_constant(keyword.value, bindings):
+                    resolved.add(keyword.value.lineno)
+                else:
+                    lines.add(keyword.value.lineno)
+    return sorted(lines - resolved)
+
+
+def _names_a_constant(node: ast.expr, assigned: dict[str, ast.expr]) -> bool:
+    """Whether an expression's value is drawn from the declared taxonomy."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    if isinstance(node, ast.Attribute):
+        # `error_codes.NAME`, or a pass-through of an already-classified code.
+        return node.attr.isupper() or node.attr == "code"
+    if isinstance(node, ast.Name):
+        # A local alias — resolve it once; a self-reference is not a constant.
+        target = assigned.get(node.id)
+        if target is None or isinstance(target, ast.Name):
+            return node.id.isupper()
+        return _names_a_constant(target, assigned)
+    if isinstance(node, ast.IfExp):
+        return _names_a_constant(node.body, assigned) and _names_a_constant(
+            node.orelse, assigned
+        )
+    if isinstance(node, ast.BoolOp):
+        # `maybe_code or error_codes.FALLBACK` — the fallback is what runs when
+        # nothing upstream supplied a code, so it is the value to pin.
+        return _names_a_constant(node.values[-1], assigned)
+    if isinstance(node, ast.Call):
+        # `mapping.get(key, error_codes.FALLBACK)` — the fallback is declared
+        # and the mapping's values are literals the emitted-literal scan sees.
+        return bool(node.args) and _names_a_constant(node.args[-1], assigned)
+    return False
+
+
 def _compared_code_literals(tree: ast.AST) -> list[tuple[int, str]]:
     """Literals compared against a ``.code`` attribute — control flow reads.
 
@@ -107,24 +202,37 @@ def _compared_code_literals(tree: ast.AST) -> list[tuple[int, str]]:
     a swallow-this-error arm in reviews.py started re-raising when
     ``schema_out_of_date`` became ``infra_schema_drift``.
     """
+
+    def _reads_code(expr: ast.expr) -> bool:
+        return isinstance(expr, ast.Attribute) and expr.attr == "code"
+
+    def _strings(expr: ast.expr) -> list[str]:
+        items = (
+            expr.elts if isinstance(expr, ast.Tuple | ast.List | ast.Set) else [expr]
+        )
+        return [
+            item.value
+            for item in items
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        ]
+
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Compare):
-            continue
-        reads_code = isinstance(node.left, ast.Attribute) and node.left.attr == "code"
-        if not reads_code:
-            continue
-        for operand in node.comparators:
-            candidates = (
-                operand.elts
-                if isinstance(operand, ast.Tuple | ast.List | ast.Set)
-                else [operand]
-            )
-            found.extend(
-                (node.lineno, item.value)
-                for item in candidates
-                if isinstance(item, ast.Constant) and isinstance(item.value, str)
-            )
+        if isinstance(node, ast.Compare):
+            # Either orientation: `exc.code == "x"` and `"x" == exc.code`.
+            if _reads_code(node.left):
+                for operand in node.comparators:
+                    found.extend((node.lineno, value) for value in _strings(operand))
+            elif any(_reads_code(operand) for operand in node.comparators):
+                found.extend((node.lineno, value) for value in _strings(node.left))
+        elif isinstance(node, ast.Match) and _reads_code(node.subject):
+            for case in node.cases:
+                for pattern in ast.walk(case.pattern):
+                    if isinstance(pattern, ast.MatchValue):
+                        found.extend(
+                            (case.pattern.lineno, value)
+                            for value in _strings(pattern.value)
+                        )
     return found
 
 
@@ -133,7 +241,7 @@ def _wire_code_literals() -> list[tuple[str, int, str]]:
 
     ``vars(error_codes)`` only proves the taxonomy is internally consistent —
     it says nothing about what actually reaches an agent. A hardcoded string at
-    a raise site never appears there, which is how 103 undeclared codes shipped
+    a raise site never appears there, which is how 104 undeclared codes shipped
     on the wire while the taxonomy tests stayed green. This walks the emitting
     and consuming surfaces instead.
     """
@@ -148,6 +256,27 @@ def _wire_code_literals() -> list[tuple[str, int, str]]:
 
 class TestWireCodes:
     """What reaches an agent, not just what the module declares."""
+
+    def test_no_error_code_is_built_at_runtime(self) -> None:
+        """A `code=` value must be a literal or an `error_codes.NAME` reference.
+
+        Anything computed — an f-string, a variable assigned from bare strings —
+        is unverifiable by the literal scan, and that is exactly how four
+        `revert_*` codes and two cursor codes reached agents undeclared.
+        """
+        computed: list[str] = []
+        for path in sorted(_SRC_DIR.rglob("*.py")):
+            tree = ast.parse(path.read_text(), filename=str(path))
+            relative = str(path.relative_to(_ROOT))
+            computed.extend(
+                f"{relative}:{line}" for line in _computed_code_expressions(tree)
+            )
+        computed.sort()
+
+        assert computed == [], (
+            f"{len(computed)} `code=` value(s) are built at runtime rather than "
+            f"naming an error_codes constant:\n" + "\n".join(computed)
+        )
 
     def test_every_hardcoded_code_is_a_declared_constant(self) -> None:
         declared = set(_all_code_constants().values())
@@ -205,3 +334,65 @@ class TestSpecificCodes:
     def test_code_exists(self, code: str) -> None:
         codes = set(_all_code_constants().values())
         assert code in codes, f"Code {code!r} not declared in error_codes"
+
+
+class TestWireCodeScanner:
+    """The scanner's own extraction logic, against synthetic sources.
+
+    Everything else in `TestWireCodes` exercises the scanner only through the
+    live tree, so a scanner that quietly stopped matching would read as "no
+    findings" — the failure mode that let 104 undeclared codes ship.
+    """
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ('raise E("m", code="literal_value")', ["literal_value"]),
+            ("raise E(\"m\", code='literal_value')", ["literal_value"]),
+            ('if exc.code == "compared_value": pass', ["compared_value"]),
+            ('if "compared_value" == exc.code: pass', ["compared_value"]),
+            ('if exc.code in ("a_value", "b_value"): pass', ["a_value", "b_value"]),
+            (
+                "match exc.code:\n    case 'matched_value':\n        pass",
+                ["matched_value"],
+            ),
+            ('raise E("m", code=error_codes.NAMED)', []),
+        ],
+    )
+    def test_scanner_extracts_every_hardcoded_form(
+        self, source: str, expected: list[str]
+    ) -> None:
+        tree = ast.parse(source)
+        found = _emitted_code_literals(tree) + _compared_code_literals(tree)
+
+        assert sorted(value for _, value in found) == sorted(expected)
+
+    @pytest.mark.parametrize(
+        ("source", "flagged"),
+        [
+            ('raise E("m", code=f"revert_{status}")', True),
+            ('raise E("m", code=some_unresolvable)', True),
+            ('raise E("m", code="literal")', False),
+            ('raise E("m", code=error_codes.NAMED)', False),
+            ('raise E("m", code=exc.code)', False),
+            (
+                "code = error_codes.A if flag else error_codes.B\n"
+                'raise E("m", code=code)',
+                False,
+            ),
+            (
+                "def f(*, code=error_codes.DEFAULT):\n    raise E('m', code=code)",
+                False,
+            ),
+            ('raise E("m", code=maybe or error_codes.FALLBACK)', False),
+        ],
+    )
+    def test_scanner_flags_only_runtime_built_codes(
+        self, source: str, flagged: bool
+    ) -> None:
+        """Breaks if the runtime-built check stops rejecting f-strings.
+
+        The f-string case is the one that shipped `revert_not_found` and three
+        siblings to agents while every taxonomy test stayed green.
+        """
+        assert bool(_computed_code_expressions(ast.parse(source))) is flagged

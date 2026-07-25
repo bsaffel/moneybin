@@ -338,6 +338,7 @@ def test_status_uninitialized_environment(
     declare_only_models: Callable[..., None],
 ) -> None:
     """Fresh DB: no SQLMesh env → initialized=False, pending=False."""
+    declare_only_models()
     from contextlib import contextmanager
 
     fake_ctx = MagicMock()
@@ -352,7 +353,6 @@ def test_status_uninitialized_environment(
         fake_sqlmesh_context,
     )
 
-    declare_only_models()
     s: TransformStatus = TransformService(db).status()
 
     assert s.environment == "prod"
@@ -554,6 +554,10 @@ def test_freshness_pending_and_named_when_a_registered_model_was_never_built(
     Breaks under the timestamp-only proxy: a model with no relation has no
     timestamp to compare, so it reads as fresh forever.
     """
+    # A `prep.*` view marks the warehouse as built — only a SQLMesh apply
+    # creates one, so without it this is the never-refreshed state instead.
+    freshness_db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    freshness_db.execute("CREATE VIEW prep.stg_probe AS SELECT 1 AS x")
     extracted = _ts(2026, 5, 13, 18, 24)
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
@@ -567,3 +571,19 @@ def test_freshness_pending_and_named_when_a_registered_model_was_never_built(
     assert f.pending is True
     assert "core.fct_transactions" in f.missing_models
     assert "core.dim_accounts" not in f.missing_models
+
+
+@pytest.mark.fresh_db
+def test_freshness_not_pending_on_a_never_built_warehouse(db: Database) -> None:
+    """A profile between `db init` and its first refresh is not stale.
+
+    Deliberately runs against the REAL 52-model registry on a database with
+    none of them built — the state every new user hits first. Breaks if a
+    never-built warehouse is treated as missing-models: `pending` would be
+    permanently true and `moneybin system doctor` would exit 1 on a profile
+    where nothing is wrong.
+    """
+    f = TransformService(db).freshness()
+
+    assert f.pending is False
+    assert f.missing_models == ()

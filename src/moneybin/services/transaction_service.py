@@ -823,11 +823,11 @@ class TransactionService:
                     cursor, namespace=_TRANSACTION_LIST_CURSOR, scope=scope
                 )
             except ValueError as e:
-                raise ValueError(f"invalid cursor: {cursor!r}") from e
+                raise ValueError("invalid cursor") from e
             if not _is_transaction_key(position.snapshot) or not _is_transaction_key(
                 position.after
             ):
-                raise ValueError(f"invalid cursor: {cursor!r}")
+                raise ValueError("invalid cursor")
 
         account_ids: list[str] | None = None
         if accounts:

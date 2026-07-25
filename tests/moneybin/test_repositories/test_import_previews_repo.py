@@ -249,7 +249,13 @@ def test_every_consume_refusal_names_a_way_forward(db: Database) -> None:
             )
         hint = exc_info.value.hint
         assert hint, f"{label} refusal has no hint"
-        assert "import_preview" in hint, f"{label} hint names no recovery call"
+        # Pin the call shape, not just the token: a hint that keeps the word
+        # "import_preview" while losing the instruction is the regression this
+        # guards, and a substring check would not see it.
+        assert "import_preview(file_path=...)" in hint, (
+            f"{label} hint does not name the recovery call"
+        )
+        assert hint.startswith("💡 "), f"{label} hint is not marked as a hint"
 
 
 def test_outer_transaction_rollback_restores_unconsumed_preview(db: Database) -> None:
