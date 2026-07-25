@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,28 @@ def _emitted_code_literals(tree: ast.AST) -> list[tuple[int, str]]:
     ]
 
 
+def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
+    """Nodes belonging to this scope's own body, not to a nested function's.
+
+    `ast.walk` cannot express this: it is a flat generator over every
+    descendant, so skipping a nested `FunctionDef` node still yields that
+    function's children. A `code = ...` inside a nested body therefore leaked
+    into the enclosing scope's bindings and resolved a runtime `code=code`
+    nothing had declared — the guard passed on exactly the shape it exists to
+    reject.
+
+    `ast.Lambda` is deliberately *not* a boundary. Lambdas are absent from the
+    scope list in :func:`_computed_code_expressions`, so excluding them here
+    would leave a `code=` inside one belonging to no scope at all — unchecked
+    rather than misattributed, which is the worse of the two failures.
+    """
+    for child in ast.iter_child_nodes(scope):
+        if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        yield child
+        yield from _own_nodes(child)
+
+
 def _code_bindings(scope: ast.AST) -> dict[str, ast.expr]:
     """Names bound to a value inside one function body (params + assignments).
 
@@ -116,12 +139,7 @@ def _code_bindings(scope: ast.AST) -> dict[str, ast.expr]:
         for arg, kw_default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
             if kw_default is not None:
                 bindings[arg.arg] = kw_default
-    for node in ast.walk(scope):
-        if (
-            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-            and node is not scope
-        ):
-            continue
+    for node in _own_nodes(scope):
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name):
@@ -149,20 +167,17 @@ def _computed_code_expressions(tree: ast.AST) -> list[int]:
         ),
     ]
     lines: set[int] = set()
-    resolved: set[int] = set()
     for scope in scopes:
         bindings = _code_bindings(scope)
-        for node in ast.walk(scope):
+        for node in _own_nodes(scope):
             if not isinstance(node, ast.Call):
                 continue
             for keyword in node.keywords:
                 if keyword.arg != "code":
                     continue
-                if _names_a_constant(keyword.value, bindings):
-                    resolved.add(keyword.value.lineno)
-                else:
+                if not _names_a_constant(keyword.value, bindings):
                     lines.add(keyword.value.lineno)
-    return sorted(lines - resolved)
+    return sorted(lines)
 
 
 def _names_a_constant(node: ast.expr, assigned: dict[str, ast.expr]) -> bool:
@@ -385,6 +400,18 @@ class TestWireCodeScanner:
                 False,
             ),
             ('raise E("m", code=maybe or error_codes.FALLBACK)', False),
+            # A nested function's assignment must not decide what an enclosing
+            # runtime `code=code` means. `outer`'s parameter has no default, so
+            # nothing declares it — the only `code = ...` in the file belongs to
+            # a body that never runs on this path.
+            (
+                "def outer(code):\n"
+                "    def inner():\n"
+                '        code = "unrelated_literal"\n'
+                "\n"
+                "    raise E('m', code=code)",
+                True,
+            ),
         ],
     )
     def test_scanner_flags_only_runtime_built_codes(

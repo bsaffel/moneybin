@@ -125,13 +125,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hides the rest; a timed-out read releases its database connection, which is
   what previously wedged the doctor until the server restarted. A failure the
   server cannot classify arrives as a structured envelope with a code and a
-  hint — never a bare string — carrying the exception type only, with the
-  traceback left in the local log. `summary.total_count` means "every row
-  matching your request" on both surfaces: `moneybin transactions list
-  --limit 1 --output json` reported 1 where MCP reported 1952 for the same
-  query. That CLI command also paged by offset, so deleting a row above the
-  page boundary silently skipped an unserved one and a newly-arriving row
-  silently repeated a served one; it now uses the same keyset cursor MCP does.
+  hint — never a bare string — carrying the exception type only; the local
+  log adds where it was raised, and withholds the message.
+  `summary.total_count` means "every row matching your request" on both
+  surfaces: `moneybin transactions list --limit 1 --output json` reported 1
+  where MCP reported 1952 for the same query. That CLI command also paged by
+  offset, so deleting a row above the page boundary silently skipped an
+  unserved one and a newly-arriving row silently repeated a served one; it now
+  uses the same keyset cursor MCP does.
   A SQLMesh model that was registered but never built used to be invisible to
   every health signal — the doctor now fails and names it, and `system_status`
   reports which models are absent. Next-step hints in CLI output now name
