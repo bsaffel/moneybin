@@ -846,6 +846,53 @@ class TestImportFilesCommand:
         # too — that is the level a caller checking `.error` reads first.
         assert payload["error"]["details"]["protected_root"] == "~/Documents"
 
+    def test_preflight_denial_keeps_the_batch_payload(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The headline TCC case fails at the preflight, not inside import_file.
+
+        `pathlib` only swallows ENOENT/ENOTDIR/EBADF/ELOOP, so an EPERM denial
+        propagates out of `Path.exists()` before any import runs — which makes
+        the preflight, not `svc.import_file`, where a blocked
+        `~/Documents/statement.csv` actually lands. Letting
+        `handle_cli_errors` claim it there answered `data: []` for the one
+        scenario this affordance exists for, while every sibling path (a denial
+        inside `import_file`, the batch loop, MCP) answered `data.files[]`.
+        """
+        import json
+
+        target = tmp_path / "statement.csv"
+        target.touch()
+        real_exists = Path.exists
+
+        def _exists(self: Path) -> bool:
+            # Scoped to the target so settings/profile lookups still resolve.
+            if self == target:
+                raise PermissionError(1, "Operation not permitted", str(target))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", _exists)
+
+        result = runner.invoke(app, ["files", str(target), "--output", "json"])
+
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["data"]["failed_count"] == 1
+        assert payload["data"]["total_count"] == 1
+        row = payload["data"]["files"][0]
+        assert row["status"] == "failed"
+        assert row["error_code"] == "infra_permission_denied"
+        assert row["hint"]
+        # The import must never have been attempted — the preflight is the
+        # whole point of failing before the database is opened.
+        mock_import_file.assert_not_called()
+
     def test_command_level_failure_keeps_the_bare_error_envelope(
         self,
         runner: CliRunner,
