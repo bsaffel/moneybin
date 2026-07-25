@@ -45,7 +45,7 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
         return_value={"total": 0, "rule": 0, "merchant": 0, "plaid": 0}
     )
     auto_stats = MagicMock(return_value=MagicMock(pending_proposals=0))
-    identity = MagicMock(return_value=())
+    identity = MagicMock(return_value=((), ()))
 
     # Patches target the consumer module (moneybin.services.refresh) where
     # each name is bound — refresh.py imports TransformService at module level
@@ -113,9 +113,9 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
         calls.append("categorize")
         return None
 
-    def _identity(_db: Database) -> tuple[str, ...]:
+    def _identity(_db: Database) -> tuple[tuple[str, ...], tuple[str, ...]]:
         calls.append("identity")
-        return ()
+        return (), ()
 
     monkeypatch.setattr(
         "moneybin.services.refresh._run_gsheet_step",
@@ -492,7 +492,6 @@ def test_refresh_gsheet_step_skippable(
 @pytest.mark.unit
 def test_identity_step_announces_new_review_items(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A proposal or conflict from refresh must tell the user it landed.
 
@@ -516,23 +515,17 @@ def test_identity_step_announces_new_review_items(
         merchant_links_service, "MerchantLinksService", _merchants_service
     )
 
-    caplog.set_level(logging.INFO, logger="moneybin.services.refresh")
     result = refresh(MagicMock(), steps=["identity"])
 
     assert result.identity_errors == ()
-    messages = [
-        r.getMessage()
-        for r in caplog.records
-        if r.name == "moneybin.services.refresh" and r.levelno == logging.INFO
-    ]
-    assert any("3" in m and "accounts links pending" in m for m in messages), messages
-    assert any("2" in m and "merchants links pending" in m for m in messages), messages
+    notices = result.review_notices
+    assert any("3" in n and "accounts links pending" in n for n in notices), notices
+    assert any("2" in n and "merchants links pending" in n for n in notices), notices
 
 
 @pytest.mark.unit
 def test_identity_step_stays_quiet_when_nothing_needs_review(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """No proposals, no conflicts, no notice — silence is the whole point."""
     from moneybin.services import account_links_service, merchant_links_service
@@ -552,11 +545,6 @@ def test_identity_step_stays_quiet_when_nothing_needs_review(
         merchant_links_service, "MerchantLinksService", _merchants_service
     )
 
-    caplog.set_level(logging.INFO, logger="moneybin.services.refresh")
-    refresh(MagicMock(), steps=["identity"])
+    result = refresh(MagicMock(), steps=["identity"])
 
-    assert not [
-        r
-        for r in caplog.records
-        if r.name == "moneybin.services.refresh" and r.levelno == logging.INFO
-    ]
+    assert result.review_notices == ()

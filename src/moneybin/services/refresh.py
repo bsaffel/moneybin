@@ -93,6 +93,9 @@ class RefreshResult:
     # tuple, not list: frozen=True blocks reassignment but not in-place
     # mutation of a list field — a tuple keeps the result carrier truly immutable.
     self_heal_actions: tuple[SelfHealRecord, ...] = field(default_factory=tuple)
+    # Review items the identity step created. Data, not output: `refresh()` is
+    # below every caller's --quiet flag, so the CLI renders these itself.
+    review_notices: tuple[str, ...] = field(default_factory=tuple)
 
 
 RefreshStep = Literal["gsheet", "match", "transform", "categorize", "identity"]
@@ -197,6 +200,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     matching_error: str | None = None
     categorization_error: str | None = None
     identity_errors: tuple[str, ...] = ()
+    review_notices: tuple[str, ...] = ()
     if "match" in requested:
         try:
             match_result = MatchingService(db).run()
@@ -223,13 +227,14 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         if "categorize" in requested:
             categorization_error = _run_categorize_step(db)
         if "identity" in requested:
-            identity_errors = _run_identity_step(db)
+            identity_errors, review_notices = _run_identity_step(db)
         return RefreshResult(
             applied=False,
             duration_seconds=None,
             matching_error=matching_error,
             categorization_error=categorization_error,
             identity_errors=identity_errors,
+            review_notices=review_notices,
         )
 
     apply_result = TransformService(db).apply()
@@ -247,7 +252,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     if "categorize" in requested:
         categorization_error = _run_categorize_step(db)
     if "identity" in requested:
-        identity_errors = _run_identity_step(db)
+        identity_errors, review_notices = _run_identity_step(db)
 
     return RefreshResult(
         applied=True,
@@ -255,6 +260,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         matching_error=matching_error,
         categorization_error=categorization_error,
         identity_errors=identity_errors,
+        review_notices=review_notices,
     )
 
 
@@ -366,7 +372,7 @@ def _run_categorize_step(db: Database) -> str | None:
     return None
 
 
-def _run_identity_step(db: Database) -> tuple[str, ...]:
+def _run_identity_step(db: Database) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Generate account and merchant identity proposals without aborting refresh."""
     from moneybin.services.account_links_service import (  # noqa: PLC0415
         AccountLinksService,
@@ -377,9 +383,9 @@ def _run_identity_step(db: Database) -> tuple[str, ...]:
 
     errors: list[str] = []
     # Unlike `accounts links run` / `merchants links run`, which echo their own
-    # summaries, this pipeline path has no other notice — RefreshResult carries
-    # only errors. Without these lines a proposal or conflict enters the review
-    # queue and the user is never told.
+    # summaries, this pipeline path has no other notice. Returned rather than
+    # logged: a logger.info here fires inside refresh(), below every caller's
+    # --quiet flag, so `refresh --quiet` could not suppress it.
     notices: list[str] = []
 
     try:
@@ -404,6 +410,4 @@ def _run_identity_step(db: Database) -> tuple[str, ...]:
         logger.error(f"merchants identity backfill failed: {type(exc).__name__}")
         errors.append("merchants")
 
-    for notice in notices:
-        logger.info(f"👀 {notice}")
-    return tuple(errors)
+    return tuple(errors), tuple(notices)

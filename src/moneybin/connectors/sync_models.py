@@ -337,6 +337,9 @@ class PullResult(BaseModel):
     investment_source_overlap_accounts: list[str] = Field(default_factory=list)
     security_resolution: dict[str, int] = Field(default_factory=dict)
     security_resolution_error: str | None = None
+    # Review items the post-pull refresh created. Data, not output: the refresh
+    # pipeline runs below the CLI's --quiet flag, so the caller renders these.
+    review_notices: list[str] = Field(default_factory=list)
 
 
 class LinkResult(BaseModel):
