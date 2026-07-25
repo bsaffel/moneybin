@@ -206,8 +206,13 @@ Numbered, each independently testable.
 
 23. `stats` renders each metric with its distinguishing dimension, such that no
     two rendered lines share a label.
-24. Histogram metrics render the unit declared in the metric registry. A metric
-    that is not a duration does not render `s`.
+24. Histogram metrics render the unit **derived from the metric name's suffix**,
+    per the Prometheus convention the registry already follows
+    (`..._duration_seconds` → seconds, `..._total` → a count, `..._rate` → a
+    ratio, `..._confidence` → a score). A metric that is not a duration does not
+    render `s`. No new per-metric metadata field is introduced — the naming
+    convention is already load-bearing and universally applied in
+    `src/moneybin/metrics/registry.py`.
 25. `stats` groups metrics by domain with a header per group, rather than one
     alphabetical list.
 
@@ -221,11 +226,21 @@ Numbered, each independently testable.
     adding one would change the JSON/MCP contract requirement 8 keeps untouched
     — and F0 shows balance data is currently summed once per source, which a new
     surface would reproduce rather than reveal. Tracked as a follow-up.
-27. `transactions list` renders the account display name alongside (or instead of)
-    the raw account ID.
-28. The two outputs share at least one column whose values are equal for the same
-    account, so they can be joined by eye. This is what closes F7 — an ID that
-    disambiguates and a name that reads, on both sides.
+27. `transactions list` continues to render the account ID. **The display name is
+    deliberately not in scope**, for the same reason as requirement 26's balance:
+    `TransactionRow` carries only `account_id`
+    (`src/moneybin/privacy/payloads/transactions.py:44`) and
+    `TransactionGetResult` returns only `transactions` and `next_cursor`
+    (`src/moneybin/services/transaction_service.py:136-140`), so a name would
+    require a service and payload change — the JSON/MCP contract requirement 8
+    keeps untouched. Tracked as a follow-up alongside the balance column.
+28. `accounts list` and `transactions list` share the `account_id` column, with
+    equal values for the same account, so the two outputs join. **This is what
+    closes F7:** the reported defect was that `accounts list` showed names with no
+    ID while `transactions list` showed an ID with no name, leaving no shared key.
+    Requirement 26 supplies the missing ID, which makes the join possible on the
+    column both sides already agree on. Display names on both surfaces are an
+    ergonomic improvement on top of that, not the fix.
 
 **Categories (F8)**
 
@@ -246,8 +261,15 @@ Numbered, each independently testable.
 
 **Pagination (F10)**
 
-34. The text branch renders a human paging line — shown, total, and the flag to
-    continue. The raw cursor token appears only in `--output json`.
+34. The text branch renders a human paging line stating the number of rows shown,
+    whether more exist, and the flag to continue — `8 shown · more available ·
+    --cursor to continue`. The raw cursor token appears only in `--output json`.
+    **No total is rendered:** `TransactionGetResult` exposes `transactions` and
+    `next_cursor` only, computing `total_count` to derive `has_more` and then
+    dropping it (`src/moneybin/services/transaction_service.py:136-148`).
+    Surfacing a total would be a service and payload change, which requirement 8
+    excludes. `has_more` is sufficient to close F10 — the defect was a base64
+    cursor shown to a human, not a missing count.
 
 **Non-interference with data correctness (F0)**
 
@@ -261,9 +283,14 @@ Numbered, each independently testable.
 
 No schema changes. No migration. This spec touches presentation only.
 
-The one adjacent read: requirement 24 needs each histogram metric to declare a
-unit. If `src/moneybin/metrics/registry.py` does not already carry one, this adds
-a `unit` field to the metric declaration — a registry change, not a database one.
+No registry change either. An earlier draft of requirement 24 added a `unit`
+field to each metric declaration; that was unnecessary machinery. Every metric in
+`src/moneybin/metrics/registry.py` already encodes its unit in its name by
+Prometheus convention (`moneybin_categorize_duration_seconds`,
+`moneybin_import_batch_size`, `moneybin_categorization_auto_rate`,
+`moneybin_pdf_extraction_confidence`), so `stats` derives the unit from the
+suffix. Per Simplicity First, reuse the convention that is already universal
+rather than introduce a second source of truth beside it.
 
 ## Implementation Plan
 
@@ -297,7 +324,7 @@ a `unit` field to the metric declaration — a registry change, not a database o
 | `src/moneybin/cli/utils.py` | Profile banner (19); **retire `render_rich_table`** into `render_rows` — it is the shared `rich.Table` builder req 1 supersedes |
 | `src/moneybin/cli/commands/stubs.py` | Message copy (32) |
 | `src/moneybin/cli/main.py` + group modules | `hidden=True` on stub registrations (31) |
-| `src/moneybin/metrics/registry.py` | Metric `unit` declaration, if absent (24) |
+| `src/moneybin/metrics/registry.py` | Add the three counters in Observability below. No `unit` field — requirement 24 derives units from the existing name convention |
 | `.claude/rules/cli.md` | Add a "Text rendering" section pointing at this spec — the rule file is where a future contributor looks first |
 
 ### Key Decisions
@@ -368,6 +395,48 @@ No change. MCP tools return the envelope; this spec governs the CLI's **text**
 branch only. `render_or_json`'s JSON path — redaction, `derive_tier` stamping,
 the `privacy.log` audit event — is untouched, and requirement 8 exists to keep it
 that way.
+
+## Observability
+
+Per AGENTS.md ("Specs touching app code must include metrics") and
+[`observability.md`](observability.md). Three counters, registered in
+`src/moneybin/metrics/registry.py` alongside the existing declarations and
+following the same Prometheus naming convention requirement 24 derives units
+from:
+
+```python
+CLI_WIDE_REQUESTED_TOTAL = Counter(
+    "moneybin_cli_wide_requested_total",
+    "Times --wide was passed, by command",
+    ["command"],
+)
+
+CLI_COLUMNS_OMITTED_TOTAL = Counter(
+    "moneybin_cli_columns_omitted_total",
+    "Times a text render omitted columns from the full projection, by command",
+    ["command"],
+)
+
+CLI_STUB_INVOKED_TOTAL = Counter(
+    "moneybin_cli_stub_invoked_total",
+    "Times an unimplemented command was invoked, by command",
+    ["command"],
+)
+```
+
+What each is for — a metric with no question behind it is noise:
+
+- **`wide_requested` vs. `columns_omitted`** together answer whether
+  `DEFAULT_COLUMNS` was chosen correctly. A report whose `--wide` rate approaches
+  its omission rate has the wrong default set, and the ratio says so per command
+  without a survey.
+- **`stub_invoked`** answers which hidden stubs users still reach (requirement
+  31 hides them from `--help` but keeps them invocable), which is the demand
+  signal for implementing one — and detects any surviving path that still
+  advertises a stub.
+
+No metric records row contents, amounts, or identifiers — only counts and the
+command label, per the PII-in-logs rule.
 
 ## Testing Strategy
 
