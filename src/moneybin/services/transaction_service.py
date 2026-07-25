@@ -7,8 +7,6 @@ Consumed by both MCP tools and CLI commands.
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import json
 import logging
@@ -17,7 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -30,6 +28,12 @@ from moneybin.mcp.write_contracts import (
     SplitsSet,
     TagRename,
     TagsSet,
+)
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    KeysetScalar,
+    build_keyset_page,
+    decode_keyset_cursor,
 )
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
@@ -50,6 +54,17 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Namespace for cursors minted by TransactionService.get(). Distinct from the
+# MCP `transactions` tool's namespace: same table, different public filter set,
+# so a cursor from one must not decode against the other.
+_TRANSACTION_LIST_CURSOR = "transactions_list"
+
+
+def _is_transaction_key(key: tuple[KeysetScalar, ...]) -> bool:
+    """Validate a decoded cursor key before it reaches the SQL predicate."""
+    return len(key) == 2 and all(isinstance(part, str) for part in key)
+
 
 # Audit target prefixes (schema, table) for the audit events still emitted
 # directly by this service: the cross-row tag.rename parent marker and manual
@@ -766,20 +781,36 @@ class TransactionService:
         aliases. Any unresolved entry rejects the whole filter instead of
         returning a partial result.
 
-        Pagination is offset-based internally; the cursor is base64(str(offset))
-        so callers treat it as opaque.
+        Pagination is keyset, not offset: the cursor carries the immutable
+        ``(transaction_date, transaction_id)`` key the last served row had,
+        plus the total the first page saw. Offset paging skipped a row when
+        anything above the boundary was deleted and repeated one when anything
+        prepended — both silent, and both wrong on a financial ledger.
         """
         if limit < 1:
             raise ValueError(f"limit must be >= 1, got {limit}")
+        scope = self._get_cursor_scope(
+            accounts=accounts,
+            date_from=date_from,
+            date_to=date_to,
+            categories=categories,
+            amount_min=amount_min,
+            amount_max=amount_max,
+            description=description,
+            uncategorized_only=uncategorized_only,
+        )
+        position: KeysetPosition | None = None
         if cursor is not None:
             try:
-                offset = int(base64.b64decode(cursor.encode()).decode())
-            except (binascii.Error, UnicodeDecodeError, ValueError) as e:
+                position = decode_keyset_cursor(
+                    cursor, namespace=_TRANSACTION_LIST_CURSOR, scope=scope
+                )
+            except ValueError as e:
                 raise ValueError(f"invalid cursor: {cursor!r}") from e
-            if offset < 0:
-                raise ValueError(f"invalid cursor (negative offset): {cursor!r}")
-        else:
-            offset = 0
+            if not _is_transaction_key(position.snapshot) or not _is_transaction_key(
+                position.after
+            ):
+                raise ValueError(f"invalid cursor: {cursor!r}")
 
         account_ids: list[str] | None = None
         if accounts:
@@ -794,26 +825,66 @@ class TransactionService:
             amount_max=amount_max,
             text=description,
             uncategorized_only=uncategorized_only,
-            limit=limit,
-            offset=offset,
+            # Over-fetch by one: how build_keyset_page learns there is a next
+            # page without a second count query.
+            limit=limit + 1,
+            offset=0,
+            snapshot=cast("tuple[str, str] | None", position.snapshot)
+            if position is not None
+            else None,
+            after=cast("tuple[str, str] | None", position.after)
+            if position is not None
+            else None,
         )
-        has_more = page.total_count > offset + limit
-
-        next_cursor = (
-            base64.b64encode(str(offset + limit).encode()).decode()
-            if has_more
-            else None
+        total_count = position.total if position is not None else page.total_count
+        transactions, next_cursor = build_keyset_page(
+            page.transactions,
+            limit=limit,
+            key_of=lambda t: (t.transaction_date, t.transaction_id),
+            namespace=_TRANSACTION_LIST_CURSOR,
+            scope=scope,
+            snapshot=position.snapshot if position is not None else None,
+            total=total_count,
         )
 
         logger.info(
-            f"Transaction query returned {len(page.transactions)} of "
-            f"{page.total_count} rows (offset={offset}, has_more={has_more})"
+            f"Transaction query returned {len(transactions)} of {total_count} "
+            f"rows (has_more={next_cursor is not None})"
         )
         return TransactionGetResult(
-            transactions=page.transactions,
+            transactions=transactions,
             next_cursor=next_cursor,
-            total_count=page.total_count,
+            total_count=total_count,
         )
+
+    @staticmethod
+    def _get_cursor_scope(
+        *,
+        accounts: list[str] | None,
+        date_from: str | None,
+        date_to: str | None,
+        categories: list[str] | None,
+        amount_min: Decimal | None,
+        amount_max: Decimal | None,
+        description: str | None,
+        uncategorized_only: bool,
+    ) -> dict[str, object]:
+        """Canonicalize the public filters a ``get()`` cursor is bound to.
+
+        Binds the caller's own arguments, not the resolved account IDs: the
+        cursor must stop being valid when the *request* changes, and a display
+        name that later resolves elsewhere is a changed request.
+        """
+        return {
+            "accounts": sorted(accounts) if accounts else None,
+            "amount_max": str(amount_max) if amount_max is not None else None,
+            "amount_min": str(amount_min) if amount_min is not None else None,
+            "categories": sorted(categories) if categories else None,
+            "date_from": date_from,
+            "date_to": date_to,
+            "description": description,
+            "uncategorized_only": uncategorized_only,
+        }
 
     def query_operational(
         self,

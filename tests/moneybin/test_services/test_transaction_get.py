@@ -199,6 +199,80 @@ class TestTransactionGet:
         assert all_ids == {"T1", "T2", "T3", "T4"}
 
     @pytest.mark.unit
+    def test_continuation_does_not_skip_after_a_row_ahead_of_it_is_deleted(
+        self, txn_db: Database
+    ) -> None:
+        """Deleting a served row must not pull an unserved one past the boundary.
+
+        Breaks under an offset cursor: page two resumes at OFFSET 2, and the
+        delete shifts every later row up one, so T4 is never returned.
+        """
+        service = TransactionService(txn_db)
+        first = service.get(limit=2)
+        assert [t.transaction_id for t in first.transactions] == ["T2", "T1"]
+
+        txn_db.execute("DELETE FROM core.fct_transactions WHERE transaction_id = 'T2'")
+        second = service.get(limit=2, cursor=first.next_cursor)
+
+        assert [t.transaction_id for t in second.transactions] == ["T3", "T4"]
+
+    @pytest.mark.unit
+    def test_continuation_does_not_repeat_after_a_row_prepends_ahead_of_it(
+        self, txn_db: Database
+    ) -> None:
+        """A newer row arriving above the boundary must not re-serve page one.
+
+        Breaks under an offset cursor: the insert shifts every later row down
+        one, so OFFSET 2 hands back T1 — already returned on page one.
+        """
+        service = TransactionService(txn_db)
+        first = service.get(limit=2)
+        served = [t.transaction_id for t in first.transactions]
+
+        txn_db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                description, source_type
+            ) VALUES ('T0', 'A1', '2026-05-01', -1.00, 'Newer', 'ofx')
+            """
+        )
+        second = service.get(limit=2, cursor=first.next_cursor)
+
+        assert not set(served) & {t.transaction_id for t in second.transactions}
+        assert [t.transaction_id for t in second.transactions] == ["T3", "T4"]
+
+    @pytest.mark.unit
+    def test_continuation_keeps_the_total_the_first_page_reported(
+        self, txn_db: Database
+    ) -> None:
+        """One coherent total across a paged walk, per the keyset contract."""
+        service = TransactionService(txn_db)
+        first = service.get(limit=2)
+
+        txn_db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                description, source_type
+            ) VALUES ('T0', 'A1', '2026-05-01', -1.00, 'Newer', 'ofx')
+            """
+        )
+        second = service.get(limit=2, cursor=first.next_cursor)
+
+        assert first.total_count == 4
+        assert second.total_count == 4
+
+    @pytest.mark.unit
+    def test_cursor_is_rejected_when_the_filters_change(self, txn_db: Database) -> None:
+        """A cursor is bound to the filters that produced it."""
+        service = TransactionService(txn_db)
+        first = service.get(limit=2)
+
+        with pytest.raises(ValueError, match="invalid cursor"):
+            service.get(limit=2, cursor=first.next_cursor, accounts=["A1"])
+
+    @pytest.mark.unit
     def test_no_next_cursor_when_fits_in_one_page(self, txn_db: Database) -> None:
         result = TransactionService(txn_db).get(limit=10)
         assert result.next_cursor is None
@@ -232,12 +306,50 @@ class TestTransactionGet:
             TransactionService(txn_db).get(cursor="not-valid-base64!!!")
 
     @pytest.mark.unit
-    def test_negative_cursor_raises(self, txn_db: Database) -> None:
+    def test_well_formed_base64_that_is_not_a_keyset_cursor_raises(
+        self, txn_db: Database
+    ) -> None:
+        """Decodable base64 is not enough — the payload must be a real cursor.
+
+        ``-10`` is the offset token the retired scheme would have accepted.
+        """
         import base64
 
         bad = base64.b64encode(b"-10").decode()
         with pytest.raises(ValueError, match="invalid cursor"):
             TransactionService(txn_db).get(cursor=bad)
+
+    @pytest.mark.unit
+    def test_cursor_with_non_string_keys_is_rejected_before_the_query(
+        self, txn_db: Database
+    ) -> None:
+        """Typed key validation runs before the keys reach a SQL predicate."""
+        from moneybin.protocol.pagination import encode_keyset_cursor
+        from moneybin.services.transaction_service import (
+            _TRANSACTION_LIST_CURSOR,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        service = TransactionService(txn_db)
+        scope = service._get_cursor_scope(  # pyright: ignore[reportPrivateUsage]
+            accounts=None,
+            date_from=None,
+            date_to=None,
+            categories=None,
+            amount_min=None,
+            amount_max=None,
+            description=None,
+            uncategorized_only=False,
+        )
+        bad = encode_keyset_cursor(
+            namespace=_TRANSACTION_LIST_CURSOR,
+            scope=scope,
+            snapshot=(1, 2),
+            after=(1, 2),
+            total=4,
+        )
+
+        with pytest.raises(ValueError, match="invalid cursor"):
+            service.get(limit=2, cursor=bad)
 
     @pytest.mark.unit
     def test_uncategorized_only_includes_source_categorized(self, db: Database) -> None:

@@ -150,8 +150,8 @@ async def test_privacy_coarse_rejects_wrong_key_type_before_log_read(
     mcp_db: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from moneybin.mcp.pagination import encode_keyset_cursor
     from moneybin.mcp.tools.privacy import privacy_coarse
+    from moneybin.protocol.pagination import encode_keyset_cursor
 
     cursor = encode_keyset_cursor(
         namespace="privacy.log",

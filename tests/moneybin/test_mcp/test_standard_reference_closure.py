@@ -18,9 +18,9 @@ from pydantic import JsonValue
 from moneybin.audits.recipes import registry as recipe_registry
 from moneybin.database import Database
 from moneybin.mcp import prompts
-from moneybin.mcp.pagination import decode_keyset_cursor
 from moneybin.mcp.surface import STANDARD_TOOL_NAMES
 from moneybin.mcp.tools.reports import reports
+from moneybin.protocol.pagination import decode_keyset_cursor
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.reports._framework.contract import ReportSpec
 

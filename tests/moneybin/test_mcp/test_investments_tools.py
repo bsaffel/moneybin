@@ -25,7 +25,6 @@ import pytest
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp.pagination import encode_keyset_cursor
 from moneybin.mcp.tools.investments import (
     investments_coarse,
     investments_lots_select,
@@ -35,6 +34,7 @@ from moneybin.mcp.tools.investments import (
     register_investment_coarse_reads,
     register_investments_tools,
 )
+from moneybin.protocol.pagination import encode_keyset_cursor
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.services.investment_service import (
     EventRow,

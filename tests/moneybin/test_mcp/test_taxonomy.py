@@ -9,7 +9,6 @@ from unittest.mock import patch
 import pytest
 
 from moneybin import error_codes
-from moneybin.mcp.pagination import encode_keyset_cursor
 from moneybin.mcp.tools.taxonomy import (
     register_taxonomy_coarse_reads,
     register_taxonomy_coarse_writes,
@@ -23,6 +22,7 @@ from moneybin.privacy.payloads.categories import (
     MerchantRow,
     MerchantsPayload,
 )
+from moneybin.protocol.pagination import encode_keyset_cursor
 from moneybin.services.categorization import CategorizationService
 
 from .schema_assertions import (

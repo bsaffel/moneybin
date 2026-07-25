@@ -49,12 +49,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    compare_keyset,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.mcp.write_contracts import FiniteDecimal
 from moneybin.privacy.introspection import extract_data_classes
@@ -88,6 +82,12 @@ from moneybin.privacy.payloads.balances import (
 )
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    compare_keyset,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
     AccountLinksService,

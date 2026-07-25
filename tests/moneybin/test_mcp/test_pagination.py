@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from moneybin.mcp.pagination import (
+from moneybin.protocol.pagination import (
     KeysetPosition,
     compare_keyset,
     decode_keyset_cursor,

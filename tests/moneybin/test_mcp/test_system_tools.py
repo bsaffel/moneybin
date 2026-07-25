@@ -483,7 +483,7 @@ async def test_system_audit_coarse_rejects_malformed_and_cross_view_cursors(
     first = await system_audit_coarse(view="events", limit=1)
 
     malformed = await system_audit_coarse(view="events", cursor="not-base64")
-    from moneybin.mcp.pagination import encode_keyset_cursor
+    from moneybin.protocol.pagination import encode_keyset_cursor
 
     invalid_timestamp = await system_audit_coarse(
         view="events",

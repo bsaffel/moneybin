@@ -2237,7 +2237,7 @@ async def test_import_status_mixed_cursor_carries_full_initial_total(
     mcp_db: object,
 ) -> None:
     from moneybin.database import get_database
-    from moneybin.mcp.pagination import decode_keyset_cursor
+    from moneybin.protocol.pagination import decode_keyset_cursor
 
     with get_database(read_only=False) as db:
         for import_id in ("imp_a", "imp_b"):
@@ -2470,7 +2470,7 @@ async def test_import_status_coarse_rejects_invalid_key_types_before_data_access
     mcp_db: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from moneybin.mcp.pagination import encode_keyset_cursor
+    from moneybin.protocol.pagination import encode_keyset_cursor
 
     invalid_cursor = encode_keyset_cursor(
         namespace="import_status.imports",

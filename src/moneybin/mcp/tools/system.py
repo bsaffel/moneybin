@@ -22,11 +22,6 @@ from moneybin.db_lock import lock_path_for
 from moneybin.errors import UserError, classify_user_error
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.system import (
@@ -68,6 +63,11 @@ from moneybin.privacy.payloads.system import (
 )
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
 logger = logging.getLogger(__name__)

@@ -43,12 +43,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import internal_envelope_adapter, mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    compare_keyset,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.imports import (
@@ -86,6 +80,12 @@ from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
     build_error_envelope,
+)
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    compare_keyset,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
 )
 from moneybin.services.import_confirmation import sign_convention_effect
 

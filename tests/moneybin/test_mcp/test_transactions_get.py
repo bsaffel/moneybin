@@ -279,7 +279,7 @@ async def test_transaction_continuation_ignores_newer_matching_insert() -> None:
 
 @pytest.mark.unit
 async def test_transaction_continuation_keeps_initial_total_after_tail_insert() -> None:
-    from moneybin.mcp.pagination import decode_keyset_cursor
+    from moneybin.protocol.pagination import decode_keyset_cursor
 
     _insert_transactions()
     first = await transactions_coarse(account="ACC001", limit=1)
@@ -342,7 +342,7 @@ async def test_transactions_coarse_cursor_is_bound_to_filters(
 
 @pytest.mark.unit
 async def test_transactions_coarse_rejects_non_date_key_before_query() -> None:
-    from moneybin.mcp.pagination import encode_keyset_cursor
+    from moneybin.protocol.pagination import encode_keyset_cursor
 
     cursor = encode_keyset_cursor(
         namespace="transactions",
@@ -371,7 +371,7 @@ async def test_transactions_coarse_rejects_non_date_key_before_query() -> None:
 async def test_transaction_cursor_is_validated_before_reference_data_access() -> None:
     from unittest.mock import patch
 
-    from moneybin.mcp.pagination import encode_keyset_cursor
+    from moneybin.protocol.pagination import encode_keyset_cursor
 
     cursor = encode_keyset_cursor(
         namespace="transactions",

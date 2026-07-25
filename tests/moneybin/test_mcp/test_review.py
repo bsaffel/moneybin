@@ -609,7 +609,7 @@ async def test_review_cursor_snapshot_excludes_prepends_and_preserves_total() ->
 
 
 async def test_review_cursor_validates_key_shape_when_queue_is_empty() -> None:
-    from moneybin.mcp.pagination import encode_keyset_cursor
+    from moneybin.protocol.pagination import encode_keyset_cursor
 
     cursor = encode_keyset_cursor(
         namespace="reviews",

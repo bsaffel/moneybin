@@ -138,6 +138,12 @@ Every command that **reads but does not mutate** state MUST accept:
 
 `db query` extends `--output` to `text|json|csv|markdown|box` since DuckDB's CLI supports all five natively.
 
+A read-only command that pages MUST expose `--cursor` carrying the shared keyset
+envelope from `moneybin.protocol.pagination` — never an offset. Offset paging
+skips a row when anything above the boundary is deleted and repeats one when
+anything prepends, and on a ledger both are silent. See `mcp.md` → Pagination
+for the binding rules; they are cross-surface, not MCP-specific.
+
 **Operator-bypass banner on direct-DB commands.** `db query`, `db shell`, and `db ui` are direct database access with no privacy middleware — CRITICAL-tier fields (account/routing numbers) are NOT masked. Each command emits a banner on stderr at invocation and includes the banner text in its `--help` output, directing operators to `moneybin sql query` for the privacy-safe MCP-backed path. Agents should use the `sql_query` MCP tool or `moneybin sql query` CLI command, not `moneybin db query`, when privacy enforcement is required.
 
 This makes every read command pipeable into `jq`, scripts, and AI agents. Audit-tested by `tests/moneybin/test_cli/test_cli_output_quiet.py`.

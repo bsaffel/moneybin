@@ -38,11 +38,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.write_contracts import AnnotationRequest
 from moneybin.privacy.payloads.transactions import (
     MatchesHistoryPayload,
@@ -58,6 +53,11 @@ from moneybin.privacy.payloads.transactions import (
     TransactionRow,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    build_keyset_page,
+    decode_keyset_cursor,
+)
 from moneybin.services.account_service import AccountService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.entity_reference import (
@@ -436,28 +436,15 @@ def transactions_coarse(
         )
 
     stable_total = position.total if position is not None else result.total_count
-    page_transactions = result.transactions[:limit]
-    if len(result.transactions) > limit and page_transactions:
-        snapshot_key = (
-            snapshot
-            if snapshot is not None
-            else (
-                page_transactions[0].transaction_date,
-                page_transactions[0].transaction_id,
-            )
-        )
-        next_cursor = encode_keyset_cursor(
-            namespace="transactions",
-            scope=filters,
-            snapshot=snapshot_key,
-            after=(
-                page_transactions[-1].transaction_date,
-                page_transactions[-1].transaction_id,
-            ),
-            total=stable_total,
-        )
-    else:
-        next_cursor = None
+    page_transactions, next_cursor = build_keyset_page(
+        result.transactions,
+        limit=limit,
+        key_of=lambda t: (t.transaction_date, t.transaction_id),
+        namespace="transactions",
+        scope=filters,
+        snapshot=snapshot,
+        total=stable_total,
+    )
     page_result = OperationalTransactionResult(
         transactions=page_transactions,
         total_count=stable_total,
