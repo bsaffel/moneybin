@@ -164,7 +164,7 @@ Logical grain key: `merchant_id`.
 
 ### `core.dim_categories`
 
-Resolved category dimension. Unifies `seeds.categories` (16 primary, ~100 subcategories from Plaid PFC v2) with `app.user_categories`, applying `app.category_overrides`. `UNION` (not `UNION ALL`) collapses accidental ID collisions.
+Resolved category dimension. Unifies `seeds.categories` (17 primary, ~95 subcategories, based on Plaid PFC v2) with `app.user_categories`, applying `app.category_overrides`. `UNION` (not `UNION ALL`) collapses accidental ID collisions.
 
 | Column | Type | Description |
 |---|---|---|
@@ -733,7 +733,7 @@ MCP-visible app tables are tagged `audience="interface"` in [`src/moneybin/table
 
 | Table | Grain | Backing |
 |---|---|---|
-| `seeds.categories` | One row per `category_id` | CSV-backed (`src/moneybin/sqlmesh/models/seeds/categories.csv`). 16 primary categories with ~100 subcategories, based on Plaid Personal Finance Category v2. Columns: `category_id`, `category`, `subcategory`, `description`, `class`. SQLMesh detects CSV changes automatically. |
+| `seeds.categories` | One row per `category_id` | CSV-backed (`src/moneybin/sqlmesh/models/seeds/categories.csv`). 17 primary categories with ~95 subcategories, based on Plaid Personal Finance Category v2. Columns: `category_id`, `category`, `subcategory`, `description`, `class`. SQLMesh detects CSV changes automatically. |
 | `seeds.category_source_map` | One row per `(source_type, source_category_code)` | CSV-backed (`src/moneybin/sqlmesh/models/seeds/category_source_map.csv`). Default provider-code → `category_id` mappings (Plaid PFC). Surfaced via `core.bridge_category_source_map`. |
 | `seeds.account_type_map` | One row per `alias` | CSV-backed (`.../seeds/account_type_map.csv`). Source-spelling → canonical `(account_type, account_subtype)` registry (OFX `<ACCTTYPE>`, Plaid, tabular). Lookup is on `UPPER(alias)`. Consumed by `core.dim_accounts`. |
 | `seeds.exchange_mic_map` | One row per `alias` | CSV-backed (`.../seeds/exchange_mic_map.csv`). Alias → canonical ISO-10383 MIC registry for exchange-identity resolution. An alias absent from the table is treated as unknown, not a mismatch. |

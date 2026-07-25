@@ -507,7 +507,7 @@ Each entry of `metadata.institutions[]`:
 | `error_code` | string \| null | Provider error code (e.g., `ITEM_LOGIN_REQUIRED`). |
 | `transactions_window_start` | `YYYY-MM-DD` \| null | The start boundary the server used for this item's investment-transaction pull. Present whenever the item has holdings rows; `null` otherwise. |
 
-The client uses `institutions[]` to update `app.sync_connections` with per-institution status and to surface targeted re-auth guidance.
+The client carries `institutions[]` into its pull result (per-institution status, counts, and error codes) and increments a failed-institution metric keyed by `error_code`. It keeps no local connection-state table: `sync status` calls `GET /institutions` on every invocation and attaches re-auth guidance to that live response, so the server stays the system of record.
 
 ### `POST /sync/ack`
 
