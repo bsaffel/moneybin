@@ -36,7 +36,11 @@ from moneybin.database import (  # noqa: PLC2701 — private import for per-call
     _call_conn_holder,  # pyright: ignore[reportPrivateUsage]
     interrupt_and_reset_database,
 )
-from moneybin.errors import UserError, classify_user_error
+from moneybin.errors import (
+    UserError,
+    classify_user_error,
+    exception_origin,
+)
 from moneybin.mcp.privacy import Sensitivity, log_tool_call, tier_to_sensitivity
 from moneybin.privacy.introspection import (
     PrivacyContractError,
@@ -229,9 +233,13 @@ def _classify_or_envelope(fn_name: str, exc: Exception) -> ResponseEnvelope[Any]
     """
     classified = classify_user_error(exc)
     if classified is None:
-        # Full traceback server-side: a programmer error must stay visible to
-        # the developer even though the wire only carries the exception type.
-        logger.exception(f"Tool {fn_name} raised unclassified {type(exc).__name__}")
+        # Frame chain, not the traceback: `logger.exception` would append
+        # `<Type>: <str(exc)>`, and an exception message can carry an amount or
+        # a SQL fragment. The log gets where it broke; nobody gets what it said.
+        logger.error(
+            f"Tool {fn_name} raised unclassified {type(exc).__name__} "
+            f"at {exception_origin(exc)}"
+        )
         return _build_unclassified_failure_envelope(fn_name, exc)
     logger.error(f"Tool {fn_name} raised {type(exc).__name__}: {classified.code}")
     return build_error_envelope(error=classified, sensitivity="low")

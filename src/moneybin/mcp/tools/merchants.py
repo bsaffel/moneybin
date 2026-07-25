@@ -25,7 +25,7 @@ from typing import Literal
 from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import UserError, exception_origin
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -127,9 +127,12 @@ def merchants_create(
                     actor="mcp",
                 )
                 created += 1
-            except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+            except Exception as exc:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
                 skipped += 1
-                logger.exception("create_merchants failed")
+                logger.error(
+                    f"create_merchants failed with {type(exc).__name__} "
+                    f"at {exception_origin(exc)}"
+                )
                 error_details.append({
                     "canonical_name": canonical_name,
                     "reason": "Failed to create merchant — check logs for details.",

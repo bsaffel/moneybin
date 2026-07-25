@@ -19,7 +19,11 @@ from pydantic import Field
 
 from moneybin import error_codes
 from moneybin.db_lock import lock_path_for
-from moneybin.errors import UserError, classify_user_error
+from moneybin.errors import (
+    UserError,
+    classify_user_error,
+    exception_origin,
+)
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
@@ -735,9 +739,12 @@ def _unavailable_section(section: str, exc: Exception) -> SectionUnavailable:
             reason=classified.message,
             hint=classified.hint,
         )
-    # Full traceback server-side; the wire carries only the exception type,
-    # since exception messages can embed SQL fragments and financial data.
-    logger.exception(f"system_status section {section} raised {type(exc).__name__}")
+    # Frame chain only — an exception message can embed SQL fragments and
+    # financial data, and the log is not exempt from that (see exception_origin).
+    logger.error(
+        f"system_status section {section} raised {type(exc).__name__} "
+        f"at {exception_origin(exc)}"
+    )
     return SectionUnavailable(
         section=cast(Any, section),
         code=error_codes.INFRA_UNCLASSIFIED_ERROR,

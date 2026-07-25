@@ -15,7 +15,11 @@ from pydantic import Field, JsonValue
 from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.database import Database, get_database
-from moneybin.errors import UserError, classify_user_error
+from moneybin.errors import (
+    UserError,
+    classify_user_error,
+    exception_origin,
+)
 from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
@@ -202,7 +206,10 @@ def _unavailable_queue(kind: ReviewQueueKind, exc: Exception) -> QueueUnavailabl
             reason=classified.message,
             hint=classified.hint,
         )
-    logger.exception(f"reviews summary queue {kind} raised {type(exc).__name__}")
+    logger.error(
+        f"reviews summary queue {kind} raised {type(exc).__name__} "
+        f"at {exception_origin(exc)}"
+    )
     return QueueUnavailable(
         kind=kind,
         code=error_codes.INFRA_UNCLASSIFIED_ERROR,
@@ -916,7 +923,7 @@ def reviews_coarse(
             unavailable=unavailable,
         )
         degraded_reason = (
-            "; ".join(f"{entry.kind}: {entry.reason}" for entry in unavailable) or None
+            " ".join(f"{entry.kind}: {entry.reason}" for entry in unavailable) or None
         )
         return _review_envelope(
             payload,
