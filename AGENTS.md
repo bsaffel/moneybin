@@ -42,9 +42,10 @@ unclear, stop and name what's confusing.
 
 ## Simplicity First
 
-Minimum code that solves the problem. No abstractions for single-use code.
-No error handling for impossible scenarios. If you write 200 lines and it
-could be 50, rewrite it.
+Minimum code that solves the problem. No features beyond what was asked. No
+abstractions for single-use code. No "flexibility" or "configurability" that
+wasn't requested. No error handling for impossible scenarios. If you write 200
+lines and it could be 50, rewrite it.
 
 ## Design Philosophy
 
