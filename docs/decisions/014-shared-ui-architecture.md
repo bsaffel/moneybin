@@ -13,7 +13,7 @@ These could be built as two independent frontends. They share the same data, the
 
 The two surfaces genuinely differ in exactly one dimension: **how data crosses the wire.** The MCP App talks to its host over a postMessage / JSON-RPC bridge (`tools/call`); the Web UI talks to a FastAPI surface over HTTP. Everything above that boundary — components, view state, formatting, domain types — is identical.
 
-This is a pattern-establishing decision: every future visual surface (an in-app agent panel, a mobile view, an extension-contributed dashboard) inherits whatever shape we choose here. It meets the ADR bar in [`design-principles.md`](../../.claude/rules/design-principles.md): it establishes a pattern others inherit; the "why" (dual-surface reuse via a transport-agnostic core) is not recoverable from reading the code; and a future contributor could reasonably propose undoing it ("why not just fetch in the components?").
+This is a pattern-establishing decision: every future visual surface (an in-app agent panel, a mobile view, an extension-contributed dashboard) inherits whatever shape we choose here. It meets the ADR bar in [`design-principles-depth.md`](../../.claude/references/design-principles-depth.md): it establishes a pattern others inherit; the "why" (dual-surface reuse via a transport-agnostic core) is not recoverable from reading the code; and a future contributor could reasonably propose undoing it ("why not just fetch in the components?").
 
 ## Decision
 
@@ -70,5 +70,6 @@ Full design, diagrams, and testing strategy: [`ui-architecture.md`](../specs/ui-
 
 - [`ui-architecture.md`](../specs/ui-architecture.md) — the full architecture spec this ADR records the rationale for
 - [MCP Apps overview](https://modelcontextprotocol.io/extensions/apps/overview) · [spec announcement (2026-01-26)](https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/)
-- [`design-principles.md`](../../.claude/rules/design-principles.md) — coherence ("one way to do each thing") and the ADR bar
+- [`design-principles.md`](../../.claude/rules/design-principles.md) — coherence ("one way to do each thing")
+- [`design-principles-depth.md`](../../.claude/references/design-principles-depth.md) — the ADR bar
 - [ADR-011](011-docs-site-framework.md) — prior frontend-tooling decision (docs site); same "Python-native, minimize second-toolchain friction" instinct applied where it fits

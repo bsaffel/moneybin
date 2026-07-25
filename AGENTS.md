@@ -8,27 +8,11 @@ Be the option a serious user converges on because the foundation is
 rock-solid — inevitable, not first or fastest. A longer development
 lifecycle is acceptable when it buys durability.
 
-Three axes, distinct from "Simplicity First" below:
-
-- **Path selection (this principle):** For one-way-door choices (public
-  contracts, security postures, critical-path deps), default to the path
-  that still feels right in five years, even if it costs months more.
-  Pre-launch: iterate. Post-launch: lock hard.
-- **Coherence (every change):** When adding new X, follow the existing
-  pattern for X. If the pattern is wrong, fix it everywhere — don't
-  introduce a parallel pattern beside it. Two patterns for the same job is
-  the single largest source of codebase rot.
-- **Scope discipline ("Simplicity First"):** Two-way doors (internal
-  abstractions, module boundaries, refactors behind a stable contract) get
-  the minimum code that solves the problem. No protocol.
-
-**Agent protocol (one-way doors):** surface both paths, name each cost
-concretely, recommend the durable path and state what it costs; wait for
-explicit override before taking the fast path. With no user (subagent /
-autonomous), default to durable and document the choice. If you can't tell
-whether a decision is one-way, treat it as one-way. Full protocol, trigger
-list, worked example, and the public-contract / internal-abstraction split:
-`.claude/rules/design-principles.md`.
+Three axes, distinct from "Simplicity First" below: **path selection**
+(one-way doors), **coherence** (every change), **scope discipline**
+(two-way doors). If you can't tell whether a decision is one-way, treat it
+as one-way. Classifier, trigger list, the agent protocol, and what
+"durable" means: `.claude/rules/design-principles.md`.
 
 ## Bias Toward UX / DX / AX
 
@@ -51,23 +35,18 @@ disqualifying). When audiences conflict (e.g. AX wants verbose envelopes,
 UX wants terse output), surface it and let the user pick.
 
 ## Think Before Coding
-Don't assume. Don't hide confusion. Surface tradeoffs.
 
-### Before implementing
-State your assumptions explicitly. If uncertain, ask.
-If multiple interpretations exist, present them - don't pick silently.
-If a simpler approach exists, say so. Push back when warranted.
-If something is unclear, stop. Name what's confusing. Ask.
+State assumptions explicitly; if uncertain, ask. If multiple interpretations
+exist, present them — don't pick one silently. If a simpler approach exists,
+say so; push back when warranted. When something is unclear, stop and name
+what's confusing.
 
 ## Simplicity First
-Minimum code that solves the problem. Nothing speculative.
 
-No features beyond what was asked.
-No abstractions for single-use code.
-No "flexibility" or "configurability" that wasn't requested.
-No error handling for impossible scenarios.
-If you write 200 lines and it could be 50, rewrite it.
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+Minimum code that solves the problem. No features beyond what was asked. No
+abstractions for single-use code. No "flexibility" or "configurability" that
+wasn't requested. No error handling for impossible scenarios. If you write 200
+lines and it could be 50, rewrite it.
 
 ## Design Philosophy
 
@@ -75,9 +54,12 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 
 ## Design System
 
-MoneyBin's visual language lives in `design-system/` — the source of truth (it also backs the `/moneybin-design` skill and the synced claude.ai/design project). Before any UI, artifact, or frontend work, read `design-system/readme.md`, `design-system/tokens/`, and `design-system/guidelines/`, plus whichever of the four binding grammar docs covers what you are building — `charts.md` (charts), `motion.md` (motion), `patterns.md` (app chrome: rail shell, floating layer, ⌘K palette, table, import mapper, chords), `ai-surface.md` (ask surface, consent tiers, provider policy). Each wins in its own domain over any summary, including this one. Non-negotiables: dark theme leads; one metal accent in three tiers — brass (`--accent-brass`) speaks, gilt (`--accent-gilt`) fills, verdigris (`--accent-verdigris`) responds, never blue; money is always JetBrains Mono via the `Amount` component, with explicit +/− signs on income/expense flows (balances stay unsigned); icons always come from the `Icon` component, never a one-off inline SVG; hairline borders, no resting shadows; every data widget carries a SQL provenance chip; linear chart interpolation only; no emoji, no exclamation points.
-
-Update flow: prototype and spec visually in the claude.ai **Design Kit** project, promote into `design-system/` via `/design-import` (with PR review), then publish the repo → the claude.ai **Design System** project via `/design-sync`. The repo is canonical; the Design System project is a generated mirror — never hand-edit it as the source. See `design-system/readme.md` → "Updating the design system".
+MoneyBin's visual language lives in `design-system/`. The repo is canonical;
+the claude.ai Design System project is a generated mirror — never hand-edit it
+as the source. Before any UI, artifact, or frontend work, invoke the
+`moneybin-design` skill: it carries the tokens, the four binding grammar docs,
+and the non-negotiables. Update flow: `design-system/readme.md` → "Updating
+the design system".
 
 ## Critical Rules
 
@@ -106,12 +88,9 @@ Update flow: prototype and spec visually in the claude.ai **Design Kit** project
 - **Inline SQL**: Triple-quoted strings (`"""..."""`).
 - **Suppression comments**: Always include a reason: `# noqa: S608  # test input, not executing SQL`.
 - **Acronyms**: ALL CAPS in class names: `OFXExtractor`, `CSVReader`, `PDFExtractor`.
-- **Comments and docstrings**: Default to one short line. A longer comment or
-  multi-paragraph module docstring is warranted when it documents a
-  *non-obvious why* a future reader would otherwise undo — a workaround for an
-  upstream bug, a hidden constraint, a platform-specific quirk, or an
-  invariant the code relies on but doesn't enforce. Don't restate what the
-  code already says; do explain context that lives outside the code.
+- **Comments and docstrings**: Default to one short line. Go longer only for a
+  *non-obvious why* a future reader would otherwise undo — an upstream-bug
+  workaround, a hidden constraint, a platform quirk, an unenforced invariant.
 
 ## Architecture: Data Layers
 
@@ -184,7 +163,7 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 
 | Rule | Covers |
 |------|--------|
-| `design-principles.md` | Durable path selection: heuristics for "inevitable choice" decisions, the agent-protocol trigger list, and the milestone addressing scheme (`M{phase}{letter}.{n}` — append, don't reinvent) |
+| `design-principles.md` | Durable path selection: one-way-door classifier, public-contract trigger list, the agent protocol, coherence rule. Depth — post-launch contract evolution, the milestone addressing scheme (`M{phase}{letter}.{n}` — append, don't reinvent), what it does NOT mean, the ADR bar: `.claude/references/design-principles-depth.md` |
 | `branching.md` | Branch prefix → PR label mapping, commit message style |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |
 | `agent-experience.md` | Required agent-experience report whenever you interact with MoneyBin's MCP server in a session |

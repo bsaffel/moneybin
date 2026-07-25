@@ -55,7 +55,7 @@ N-way dedup is therefore predominantly a **matcher** problem: make the matcher e
 | Prep fold | Recursive-CTE transitive closure | Robust for any group topology; the two-pass breaks at 4-node chains |
 | Transfer interaction | Exclude all non-primary component members | Generalizes the current "lower side of the pair" exclusion to groups |
 
-This **applies** the existing dedup and medallion patterns rather than establishing a new one, so no ADR is warranted (per `.claude/rules/design-principles.md`).
+This **applies** the existing dedup and medallion patterns rather than establishing a new one, so no ADR is warranted (per the ADR bar in `.claude/references/design-principles-depth.md`).
 
 ## Requirements
 

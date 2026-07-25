@@ -456,6 +456,6 @@ scenarios over synthetic ground truth (`make test-scenarios`), plus unit tests:
 - **ADR?** This establishes a category-source-model pattern later increments
   inherit (raw-as-assertion-store over a mutable candidate table; source/method
   split; method-based precedence enforced across runs). It sits near the ADR bar in
-  `design-principles.md`. Current call: capture rationale in this spec, no separate
+  `.claude/references/design-principles-depth.md`. Current call: capture rationale in this spec, no separate
   ADR (default "when in doubt, don't"); revisit if a contributor later proposes a
   mutable assertion store without this context.

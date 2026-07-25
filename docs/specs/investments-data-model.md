@@ -1008,7 +1008,8 @@ output schema, so this spec does not freeze a JSON response object.
 13. **Engine decisions confirmed 2026-07-04, no ADRs**: the cost-basis engine
     is a Python SQLMesh model (applies the `fct_balances_daily.py` precedent)
     and the ledger is a new fact table (applies ADR-001's dim/fact pattern) —
-    both recorded here and in the PR per `design-principles.md`'s ADR bar.
+    both recorded here and in the PR per the ADR bar in
+    `.claude/references/design-principles-depth.md`.
 14. **Four methods in v1 (FIFO, HIFO, specific-ID, average), LIFO on demand.**
     HIFO is a sort-key variant of the FIFO machinery with a real demand signal;
     average cost is 1099-B-motivated and implemented as a running pool (never
