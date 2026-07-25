@@ -33,9 +33,15 @@ up front, because they set the scope:
   read-projections returning rows, and each renders in a different idiom.
 - **F3** — four commands print MCP tool names, Python function names, `repr`
   fragments, or `key=value` debug output at the user.
+- **F11** — every invocation prints a profile banner whose parenthetical names two
+  possible sources rather than the one that resolved, costing a line per command
+  and telling the reader nothing actionable.
 - **F12** — `moneybin refresh` narrates one pipeline stage of three, so a run that
   changed nothing and a run that recategorized 400 transactions are nearly
   indistinguishable from its output.
+
+The remaining findings — F4 through F10 — are each named at the requirement that
+closes them, in the Requirements section below.
 
 Governing rules, none of which this spec supersedes:
 
@@ -83,9 +89,13 @@ Numbered, each independently testable.
    (`Net worth: …`, `Assets: …`). It emits aligned label/value pairs to
    **stdout**.
 4. `render_note` is the only way a command prints an informational status line. It
-   emits to **stderr** and is suppressed by `-q/--quiet`.
+   emits to **stderr** and is suppressed by `-q/--quiet` — except for notes marked
+   as **result framing** (requirement 10), which describe the completeness of the
+   data itself rather than the progress of the operation.
 5. Result data is never suppressed by `-q` (restates `cli.md`; asserted here
-   because the renderers are now the enforcement point).
+   because the renderers are now the enforcement point). Result *framing* — a
+   statement about what the result omits — is covered by the same guarantee: `-q`
+   suppresses chatter, never the boundaries of the data.
 
 **Column policy (F1)**
 
@@ -95,31 +105,61 @@ Numbered, each independently testable.
    accepts `--wide`, which renders all columns.
 8. `--output json` is unaffected by `DEFAULT_COLUMNS` and by `--wide`; it returns
    the full projection, filtered only by `--json-fields`.
-9. `DEFAULT_COLUMNS` for every report fits in 100 columns with no elision of any
-   header, and no elision of any value that is not free text.
-10. When columns are omitted, `render_rows` emits one `render_note` naming the
-    count and the flag: `12 of 23 columns shown — --wide for all`. Silent
-    truncation is prohibited.
+9. `DEFAULT_COLUMNS` for every report fits in **80 columns** with no elision of any
+    header, and no elision of any value that is not free text. 80 is the width F1
+    was reproduced at, so a wider bar would let an implementation satisfy this
+    spec while the reported defect persists.
+10. When columns are omitted, `render_rows` emits one **result-framing** note
+    naming the count and the flag: `12 of 23 columns shown — --wide for all`.
+    Silent truncation is prohibited, and per requirements 4–5 this note survives
+    `-q` — otherwise `reports spending --quiet` would reintroduce exactly the
+    silent truncation this requirement forbids.
 
 **Money and numbers (F9)**
 
 11. A single `format_money` is the only place amounts are stringified for text
     output. Thousands separators always; two decimal places always.
-12. Flow amounts (transaction amounts, income/expense, deltas) carry an explicit
-    sign — `+` or `−` (U+2212). Balances and totals are unsigned, matching the
-    design system's `Amount` contract.
+12. Every money column declares a **money kind**, and the renderer never infers
+    meaning from the raw number. Three kinds:
+    - `flow` — signed under the AGENTS.md accounting convention (negative =
+      expense, positive = income). Renders an explicit `+` / `−` (U+2212).
+    - `magnitude` — a positive absolute quantity whose polarity is carried by the
+      column, not the value (`spending_trend.total_spend` is a positive outflow).
+      Renders unsigned; never colored as income.
+    - `balance` — a position, not a movement. Renders unsigned.
 13. Amounts are right-aligned in `render_rows` columns.
-14. Sign is colored — `--pos-income` green family for positive flows,
-    `--neg-expense` red family for negative — and the sign glyph is present
-    regardless of color, so the encoding survives a pipe, a non-TTY, and
-    `NO_COLOR`.
+14. Color is driven by the money kind plus the value, never by the value alone.
+    A `flow` colors `--pos-income` when positive and `--neg-expense` when
+    negative; a `magnitude` in a spend-oriented column is never green; a `balance`
+    is uncolored. The sign glyph — where the kind has one — is present regardless
+    of color, so the encoding survives a pipe, a non-TTY, and `NO_COLOR`.
+    **Rationale:** `spending_trend.py` declares `total_spend` as a positive
+    absolute outflow and `mom_delta` as current-minus-previous spend. Coloring on
+    raw sign would render spending green as income and invert the meaning of a
+    rising `mom_delta`, contradicting AGENTS.md's sign convention.
 15. Color is emitted only when stdout is a TTY and `NO_COLOR` is unset.
 
 **Message hygiene (F3, F11, F12)**
 
-16. No user-facing message contains an MCP tool name, a Python function name, or a
-    `key=value` debug fragment. Enforced by a test that greps rendered output for
-    the registered MCP tool names and for `_run:`-shaped prefixes.
+16. No user-facing message *leaks* an internal identifier. The audit matches
+    **compound internal identifiers and tool-call syntax**, not bare words:
+    - a `snake_case` identifier of two or more segments (`transactions_get`,
+      `accounts_links_run`), whether bare or as a `name:` prefix;
+    - `key=value` debug fragments outside a recovery action.
+
+    It deliberately does **not** match single-word registered tool names. The
+    registry contains tools literally named `accounts` and `reports`
+    (`src/moneybin/mcp/surface.py:28-29`), which are also unavoidable product
+    vocabulary — a test rejecting every registered name would fail on
+    `Accounts: 5` and force unnatural prose for no privacy or clarity gain.
+
+    **Explicit exception — `RecoveryAction` rendering.** `system doctor` and the
+    error path render `action.tool(key=value, …)` deliberately
+    (`src/moneybin/cli/commands/system/doctor.py:138`), because
+    `RecoveryAction.tool` *is* an MCP tool name by contract
+    (`src/moneybin/errors.py:43`) and the rendered call is meant to be pasted
+    directly by an agent. This is a designed AX affordance, not a leak, and
+    requirement 22 preserves it. The audit skips recovery-action lines.
 17. No user-facing message names an internal dependency. `SQLMesh` is not a user
     concept; the stage is "transforms".
 18. `refresh` emits one `render_note` per pipeline stage naming the stage and its
@@ -148,12 +188,19 @@ Numbered, each independently testable.
 
 **Identity display (F7)**
 
-26. `accounts list` renders the account ID and the current balance alongside the
-    display name.
+26. `accounts list` renders the account ID alongside the display name, so rows
+    that share a display name are distinguishable. **Balance is deliberately not
+    in scope:** `AccountSummary`
+    (`src/moneybin/privacy/payloads/accounts.py`) carries no current-balance
+    field and `AccountService.list_accounts()` reads only `dim_accounts`, so
+    adding one would change the JSON/MCP contract requirement 8 keeps untouched
+    — and F0 shows balance data is currently summed once per source, which a new
+    surface would reproduce rather than reveal. Tracked as a follow-up.
 27. `transactions list` renders the account display name alongside (or instead of)
     the raw account ID.
 28. The two outputs share at least one column whose values are equal for the same
-    account, so they can be joined by eye.
+    account, so they can be joined by eye. This is what closes F7 — an ID that
+    disambiguates and a name that reads, on both sides.
 
 **Categories (F8)**
 
@@ -209,13 +256,17 @@ a `unit` field to the metric declaration — a registry change, not a database o
 | Path | Change |
 |---|---|
 | `src/moneybin/cli/output.py` | `render_or_json` delegates its text branch to the new renderers; `--wide` joins the shared option set |
-| `src/moneybin/cli/commands/reports/*` | Declare `DEFAULT_COLUMNS`; adopt `render_rows` |
-| `src/moneybin/cli/commands/accounts/__init__.py` | ID + balance columns (26); adopt `render_rows` |
+| `src/moneybin/reports/_framework/registry.py` (`ReportSpec`) | Carry `DEFAULT_COLUMNS` as spec metadata — **this is where the column policy lives** |
+| `src/moneybin/reports/_framework/cli_register.py` | `register_reports_cli` generates the `--wide` option and applies `DEFAULT_COLUMNS` to the generated signature |
+| `src/moneybin/reports/definitions/*.py` | Declare each report's `DEFAULT_COLUMNS`, `spending_trend.py` first (F1) |
+| `src/moneybin/cli/commands/reports/networth.py` | The two hand-written NetworthService-backed commands; adopt `render_summary` / `render_rows` |
+| `src/moneybin/cli/commands/accounts/__init__.py` | Account ID column (26); adopt `render_rows` |
 | `src/moneybin/cli/commands/transactions/list_.py` | Account name (27); drop the `transactions_get …` line (16); human paging (34) |
+| `src/moneybin/cli/commands/transactions/categorize/__init__.py` | Uncategorized queue is a Shape-5 read-projection — migrate off `render_rich_table` (1) |
 | `src/moneybin/cli/commands/refresh.py` | Per-stage notes (18); drop function-name prefixes and `SQLMesh` (16, 17) |
-| `src/moneybin/cli/commands/system/doctor.py` | Quiet on success (20–22) |
+| `src/moneybin/cli/commands/system/doctor.py` | Quiet on success (20–22); recovery-action rendering unchanged per req 16's exception |
 | `src/moneybin/cli/commands/stats.py` | Dimensions, units, grouping (23–25) |
-| `src/moneybin/cli/utils.py` | Profile banner (19) |
+| `src/moneybin/cli/utils.py` | Profile banner (19); **retire `render_rich_table`** into `render_rows` — it is the shared `rich.Table` builder req 1 supersedes |
 | `src/moneybin/cli/commands/stubs.py` | Message copy (32) |
 | `src/moneybin/cli/main.py` + group modules | `hidden=True` on stub registrations (31) |
 | `src/moneybin/metrics/registry.py` | Metric `unit` declaration, if absent (24) |
