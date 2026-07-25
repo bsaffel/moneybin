@@ -330,4 +330,5 @@ must produce an agent-experience report per
 suite or editing MCP code/tests does not trigger a report; the signal is
 what it felt like to use the surface. Reports are session-internal: present
 to the developer in chat, never paste into PRs, commits, CHANGELOG, or ADRs. See
-`agent-experience.md` for the full trigger list and reporting workflow.
+`agent-experience.md` for the full trigger list; it links the report
+template and reporting workflow.
