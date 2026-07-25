@@ -84,6 +84,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Per-engine counts. `categorize_pending()` restates them in its run summary,
+# so they are duplicates on the console — but `categorize_run(methods=[...])`
+# calls these engines directly with no summary of its own, and neither the MCP
+# tool nor `--output json` logs the result. INFO on a child logger the console
+# denylist covers keeps the file's record on every path; `logger.debug` would
+# emit nothing at all, since the root logger sits at INFO.
+_engine_counts_logger = logger.getChild("engine_counts")
+
 
 @dataclass(slots=True)
 class CategorizationResult:
@@ -670,9 +678,9 @@ class CategorizationOrchestrator:
                 applied.add(row.transaction_id)
 
         if applied:
-            # Per-engine counts are re-reported by the run summary's breakdown;
-            # at info they'd say the same thing a second time.
-            logger.debug(f"Rule engine categorized {len(applied)} transactions")
+            _engine_counts_logger.info(
+                f"Rule engine categorized {len(applied)} transactions"
+            )
         return applied
 
     def apply_merchant_categories(
@@ -838,8 +846,7 @@ class CategorizationOrchestrator:
                 categorized_count += 1
 
         if categorized_count:
-            # See the rule-engine site: the run summary carries this count.
-            logger.debug(
+            _engine_counts_logger.info(
                 f"Merchant matching categorized {categorized_count} transactions"
             )
         # Refresh the review-queue gauge once per batch, not once per proposal
@@ -1010,8 +1017,9 @@ class CategorizationOrchestrator:
                 ).inc()
 
         if count:
-            # See the rule-engine site: the run summary carries this count.
-            logger.debug(f"Plaid PFC categorization assigned {count} transactions")
+            _engine_counts_logger.info(
+                f"Plaid PFC categorization assigned {count} transactions"
+            )
         return count
 
     def categorize_pending(self, *, include_plaid: bool = True) -> dict[str, int]:

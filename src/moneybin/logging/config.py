@@ -66,6 +66,11 @@ _CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = (
     # commands echo their own summary, and refresh emits a review notice.
     "moneybin.services.account_links_service",
     "moneybin.services.merchant_links_service",
+    # Per-engine categorization counts. `categorize_pending()` restates them
+    # in its run summary, so they duplicate on the console — but the
+    # per-method path calls the engines directly with no summary, so the file
+    # needs them. A child logger keeps the parent's run summary visible.
+    "moneybin.services.categorization.orchestrator.engine_counts",
 )
 
 

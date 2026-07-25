@@ -228,6 +228,7 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
             "moneybin.cli.utils.profile_source",
             "moneybin.services.account_links_service",
             "moneybin.services.merchant_links_service",
+            "moneybin.services.categorization.orchestrator.engine_counts",
         ],
     )
     def test_named_noisy_dependencies_are_hidden(self, logger_name: str) -> None:
@@ -239,7 +240,15 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "logger_name",
-        ["moneybin.matching.engine", "moneybin.extractors.plaid.extractor"],
+        [
+            "moneybin.matching.engine",
+            "moneybin.extractors.plaid.extractor",
+            # `categorize_run(methods=["rules"])` calls the engines directly,
+            # bypassing categorize_pending()'s summary — and neither the MCP
+            # tool nor `--output json` logs the result. On that path this is
+            # the only record the count leaves anywhere.
+            "moneybin.services.categorization.orchestrator.engine_counts",
+        ],
     )
     def test_suppressed_moneybin_records_still_reach_the_file(
         self, logger_name: str
