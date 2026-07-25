@@ -13,11 +13,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import duckdb
+from sqlglot import exp
 
 from moneybin.database import Database, sqlmesh_context
 from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
 from moneybin.seeds import refresh_views
 from moneybin.services.matching_service import MatchingService
+from moneybin.sqlmesh_registry import registered_model_names
 from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
@@ -25,11 +27,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TransformFreshness:
-    """Snapshot of transform freshness vs. raw imports."""
+    """Snapshot of transform freshness vs. raw imports.
+
+    ``missing_models`` names registered SQLMesh models with no relation in the
+    catalog. They count as pending — a model that was never built is the most
+    stale a model can be — and they are listed rather than folded into the
+    boolean so the caller can say *what* a refresh would fix.
+    """
 
     pending: bool
     last_apply_at: datetime | None
     latest_import_at: datetime | None
+    missing_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -207,37 +216,88 @@ class TransformService:
             )
 
     def freshness(self) -> TransformFreshness:
-        """Return raw-vs-dim staleness without initializing SQLMesh.
+        """Return warehouse staleness without initializing SQLMesh.
 
-        Pending iff a raw account row exists whose ``extracted_at`` is
-        newer than the newest ``core.dim_accounts.extracted_at``. Both
-        sides compare the same propagated data value (Python-set when
-        the loader parses the file, carried unchanged through SQLMesh
-        into ``dim_accounts.extracted_at``) — so the check is immune to
-        the DuckDB ``CURRENT_TIMESTAMP`` transaction-start race that
-        affects clock-derived columns when autocommit writes and a
-        longer SQLMesh apply transaction interleave.
+        Pending when either is true:
+
+        * a registered SQLMesh model has no relation in the catalog — it was
+          never built, which no timestamp comparison can detect because an
+          unbuilt model has no timestamp; or
+        * a raw account row exists whose ``extracted_at`` is newer than the
+          **most-behind** built core model's ``extracted_at``.
+
+        The second check reads every built ``core.*`` model carrying
+        ``extracted_at``, not just ``core.dim_accounts``. Taking the minimum is
+        the point: a pipeline is as stale as its furthest-behind model, and
+        checking one model reported fresh whenever that model happened to be
+        current. Both sides still compare the same propagated data value
+        (Python-set when the loader parses the file, carried unchanged through
+        SQLMesh) — so the check stays immune to the DuckDB
+        ``CURRENT_TIMESTAMP`` transaction-start race that affects clock-derived
+        columns when autocommit writes and a longer SQLMesh apply transaction
+        interleave.
 
         ``last_apply_at`` (``dim_accounts.updated_at``) and
         ``latest_import_at`` (``import_log.completed_at``) remain
         wall-clock values for display only; they do not drive the
         pending decision.
         """
+        missing_models = self._missing_models()
         pending_extracted = self._max_unapplied_raw_extracted_at()
-        dim_extracted = self._max_dim_accounts_extracted_at()
+        core_extracted = self._min_core_extracted_at()
 
         if pending_extracted is None:
-            pending = False
-        elif dim_extracted is None:
-            pending = True
+            raw_ahead = False
+        elif core_extracted is None:
+            raw_ahead = True
         else:
-            pending = pending_extracted > dim_extracted
+            raw_ahead = pending_extracted > core_extracted
 
         return TransformFreshness(
-            pending=pending,
+            pending=bool(missing_models) or raw_ahead,
             last_apply_at=self._max_dim_accounts_updated_at(),
             latest_import_at=self._max_completed_import_at(),
+            missing_models=missing_models,
         )
+
+    def _missing_models(self) -> tuple[str, ...]:
+        """Registered SQLMesh models with no table or view in the catalog."""
+        try:
+            rows = self._db.execute(
+                """
+                SELECT LOWER(schema_name || '.' || table_name) FROM duckdb_tables()
+                UNION
+                SELECT LOWER(schema_name || '.' || view_name) FROM duckdb_views()
+                """
+            ).fetchall()
+        except duckdb.CatalogException:
+            return ()
+        built = {str(row[0]) for row in rows}
+        return tuple(sorted(registered_model_names() - built))
+
+    def _min_core_extracted_at(self) -> datetime | None:
+        """Oldest ``MAX(extracted_at)`` across built ``core.*`` models.
+
+        The minimum, not the maximum: one refreshed model must not mask a
+        neighbour that never caught up.
+        """
+        columns = self._db.execute(
+            """
+            SELECT table_name FROM duckdb_columns()
+            WHERE schema_name = 'core' AND column_name = 'extracted_at'
+            ORDER BY table_name
+            """
+        ).fetchall()
+        if not columns:
+            return None
+        # Identifiers come from the catalog, so they name relations that exist;
+        # quote them anyway as defense in depth (security.md).
+        selects = " UNION ALL ".join(
+            f"SELECT MAX(extracted_at) AS m FROM core.{exp.to_identifier(str(row[0]), quoted=True).sql('duckdb')}"  # noqa: S608  # catalog-validated identifier, quoted
+            for row in columns
+        )
+        row = self._db.execute(f"SELECT MIN(m) FROM ({selects})").fetchone()  # noqa: S608  # composed from catalog-validated identifiers
+        return row[0] if row and row[0] is not None else None
 
     def status(self) -> TransformStatus:
         """Current SQLMesh environment state plus freshness signal.

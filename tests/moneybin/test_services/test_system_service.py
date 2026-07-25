@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, datetime
 
 import pytest
@@ -220,8 +221,11 @@ def test_status_transforms_pending_when_raw_newer_than_dim(
 
 
 @pytest.mark.unit
-def test_status_transforms_not_pending_after_apply(db: Database) -> None:
+def test_status_transforms_not_pending_after_apply(
+    db: Database, declare_only_models: Callable[..., None]
+) -> None:
     """transforms_pending is False when dim_accounts.extracted_at >= raw max extracted_at."""
+    declare_only_models("core.dim_accounts")
     create_core_tables_raw(db.conn)
     dim_updated = datetime(2026, 5, 13, 19, 0)
     extracted = datetime(2026, 5, 13, 18, 24)
@@ -235,8 +239,11 @@ def test_status_transforms_not_pending_after_apply(db: Database) -> None:
 
 
 @pytest.mark.unit
-def test_status_transforms_pending_false_with_no_imports(db: Database) -> None:
+def test_status_transforms_pending_false_with_no_imports(
+    db: Database, declare_only_models: Callable[..., None]
+) -> None:
     """transforms_pending is False on a fresh DB with no imports."""
+    declare_only_models()
     # No core.dim_accounts and no imports → freshness returns pending=False.
     status = SystemService(db=db).status()
     assert status.transforms_pending is False

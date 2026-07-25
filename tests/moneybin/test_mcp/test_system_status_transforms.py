@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from moneybin.database import get_database
@@ -61,8 +63,11 @@ async def test_pending_state_adds_action_hint(mcp_db: object) -> None:
 
 
 @pytest.mark.unit
-async def test_not_pending_omits_action_hint(mcp_db: object) -> None:
+async def test_not_pending_omits_action_hint(
+    mcp_db: object, declare_only_models: Callable[..., None]
+) -> None:
     """No pending imports → no refresh_run hint."""
+    declare_only_models("core.dim_accounts")
     env = system_status()
     parsed = env.to_dict()
     assert parsed["data"]["transforms"]["pending"] is False

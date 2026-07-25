@@ -32,6 +32,7 @@ class SystemStatus:
     transforms_pending: bool
     transforms_last_apply_at: datetime | None
     schema_drift: dict[str, list[str]]
+    transforms_missing_models: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -89,6 +90,7 @@ class SystemService:
             categorize_pending=review.categorize_pending,
             transforms_pending=freshness.pending,
             transforms_last_apply_at=freshness.last_apply_at,
+            transforms_missing_models=freshness.missing_models,
             schema_drift=schema_drift,
         )
 

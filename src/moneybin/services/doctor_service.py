@@ -14,6 +14,7 @@ from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
+from moneybin.sqlmesh_registry import registered_model_names
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
@@ -217,6 +218,7 @@ class DoctorService:
         ]
         raw_invariants = [
             *sqlmesh_results,
+            self._run_sqlmesh_model_presence(),
             dedup_reconciliation,
             categorization,
             *app_integrity,
@@ -257,6 +259,54 @@ class DoctorService:
         # `replace()` (not constructor) so a future field on `InvariantResult`
         # carries through automatically — explicit by-field copy would drop it.
         return replace(result, recovery_actions=actions)
+
+    def _run_sqlmesh_model_presence(self) -> InvariantResult:
+        """Fail when a model the project registers has no relation in the catalog.
+
+        Every other health signal reads the *built* set — SQLMesh audits run
+        against materialised models, freshness compares timestamps that only
+        exist once a model is built, and a query against a missing view raises
+        rather than reporting. A model that never materialised is therefore
+        invisible to all of them: the pipeline reports healthy while a table
+        consumers depend on simply does not exist. This is the one check that
+        starts from what *should* be there.
+        """
+        try:
+            rows = self._db.execute(
+                """
+                SELECT LOWER(schema_name || '.' || table_name) FROM duckdb_tables()
+                UNION
+                SELECT LOWER(schema_name || '.' || view_name) FROM duckdb_views()
+                """
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — degrade gracefully; surface cause at DEBUG
+            logger.debug(f"sqlmesh_model_presence skipped: {e}", exc_info=True)
+            return InvariantResult(
+                name="sqlmesh_model_presence",
+                status="skipped",
+                detail="catalog not readable",
+                affected_ids=[],
+            )
+
+        built = {str(row[0]) for row in rows}
+        missing = sorted(registered_model_names() - built)
+        if not missing:
+            return InvariantResult(
+                name="sqlmesh_model_presence",
+                status="pass",
+                detail=None,
+                affected_ids=[],
+            )
+        return InvariantResult(
+            name="sqlmesh_model_presence",
+            status="fail",
+            detail=(
+                f"{len(missing)} registered SQLMesh model(s) have no table or view: "
+                f"{', '.join(missing[:5])}"
+                f"{' …' if len(missing) > 5 else ''}"
+            ),
+            affected_ids=missing,
+        )
 
     def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
         """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).

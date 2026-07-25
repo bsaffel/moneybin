@@ -299,7 +299,9 @@ def _locked_status_envelope(
             merchant_links=SystemStatusMerchantLinksInfo(pending_review=0),
             security_links=SystemStatusSecurityLinksInfo(pending_review=0),
             categorization=SystemStatusCategorizationInfo(uncategorized=0),
-            transforms=SystemStatusTransformsInfo(pending=False, last_apply_at=None),
+            transforms=SystemStatusTransformsInfo(
+                pending=False, last_apply_at=None, missing_models=[]
+            ),
             schema_drift=None,
             gsheet=SystemStatusGsheetInfo(
                 total_connections=0, by_status={}, needs_attention=[]
@@ -417,6 +419,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
                     if status.transforms_last_apply_at
                     else None
                 ),
+                missing_models=list(status.transforms_missing_models),
             ),
             schema_drift=schema_drift_payload,
             gsheet=SystemStatusGsheetInfo(

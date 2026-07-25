@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -72,7 +72,10 @@ def test_freshness_pending_when_raw_newer_than_dim(
     assert f.latest_import_at == _ts(2026, 5, 13, 18, 24)
 
 
-def test_freshness_not_pending_when_dim_caught_up(freshness_db: Database) -> None:
+def test_freshness_not_pending_when_dim_caught_up(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    declare_only_models("core.dim_accounts")
     extracted = _ts(2026, 5, 13, 18, 24)
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
@@ -95,9 +98,10 @@ def test_freshness_pending_when_dim_table_missing(
 
 
 def test_freshness_no_raw_no_pending(
-    db: Database,
+    db: Database, declare_only_models: Callable[..., None]
 ) -> None:
     """No raw rows yet: pending=False (nothing waiting to be refreshed)."""
+    declare_only_models()
     f = TransformService(db).freshness()
     assert f.pending is False
     assert f.last_apply_at is None
@@ -105,9 +109,10 @@ def test_freshness_no_raw_no_pending(
 
 
 def test_freshness_filters_reverted_and_failed_imports(
-    freshness_db: Database,
+    freshness_db: Database, declare_only_models: Callable[..., None]
 ) -> None:
     """Raw rows tied to reverted/failed imports must not count toward staleness."""
+    declare_only_models("core.dim_accounts")
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
         [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
@@ -323,7 +328,9 @@ def test_import_service_run_transforms_delegates_to_transform_service(
 
 
 def test_status_uninitialized_environment(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    declare_only_models: Callable[..., None],
 ) -> None:
     """Fresh DB: no SQLMesh env → initialized=False, pending=False."""
     from contextlib import contextmanager
@@ -340,6 +347,7 @@ def test_status_uninitialized_environment(
         fake_sqlmesh_context,
     )
 
+    declare_only_models()
     s: TransformStatus = TransformService(db).status()
 
     assert s.environment == "prod"
@@ -531,3 +539,56 @@ def test_audit_aggregates_pass_fail_counts(
     names = [a["name"] for a in result.audits]
     assert "fct_transactions_pk" in names
     assert "fct_transactions_fk" in names
+
+
+def test_freshness_pending_when_a_core_model_lags_behind_dim_accounts(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """Staleness is the most-behind model, not whichever one we happen to check.
+
+    Breaks under the single-model proxy: dim_accounts is caught up, so the old
+    comparison reports fresh while core.fct_transactions is three days behind.
+    """
+    declare_only_models("core.dim_accounts", "core.fct_transactions")
+    extracted = _ts(2026, 5, 13, 18, 24)
+    freshness_db.execute(
+        "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
+        [extracted, _ts(2026, 5, 13, 19, 0)],
+    )
+    freshness_db.execute(
+        "CREATE TABLE core.fct_transactions "
+        "(transaction_id VARCHAR, extracted_at TIMESTAMP)"
+    )
+    freshness_db.execute(
+        "INSERT INTO core.fct_transactions VALUES ('t1', ?)",
+        [_ts(2026, 5, 10, 12, 0)],
+    )
+    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", extracted, "i1"])
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 30)])
+
+    f = TransformService(freshness_db).freshness()
+
+    assert f.pending is True
+
+
+def test_freshness_pending_and_named_when_a_registered_model_was_never_built(
+    freshness_db: Database,
+) -> None:
+    """An unbuilt model is staleness, and freshness must say which one.
+
+    Breaks under the timestamp-only proxy: a model with no relation has no
+    timestamp to compare, so it reads as fresh forever.
+    """
+    extracted = _ts(2026, 5, 13, 18, 24)
+    freshness_db.execute(
+        "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
+        [extracted, _ts(2026, 5, 13, 19, 0)],
+    )
+    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", extracted, "i1"])
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 30)])
+
+    f = TransformService(freshness_db).freshness()
+
+    assert f.pending is True
+    assert "core.fct_transactions" in f.missing_models
+    assert "core.dim_accounts" not in f.missing_models

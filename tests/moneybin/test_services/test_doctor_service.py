@@ -748,12 +748,14 @@ def test_run_all_returns_expected_invariants(
     # audit coverage (M1S) + 9 investment reconciliation checks (T17: staging
     # rejects, opening-lot review, unmodeled legs, holdings divergence,
     # source overlap, unresolved securities, conflicting security refs,
-    # unreported holdings, phantom holdings).
-    assert len(report.invariants) == 46
+    # unreported holdings, phantom holdings) + sqlmesh_model_presence
+    # (registered-but-unbuilt models).
+    assert len(report.invariants) == 47
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
     assert "bridge_transfers_balanced" in names
+    assert "sqlmesh_model_presence" in names
     assert "dedup_reconciliation" in names
     assert "categorization_coverage" in names
     assert "app_audit_coverage_user_categories" in names
@@ -1906,3 +1908,33 @@ def test_investment_checks_bind_to_real_transform_output(db: Database) -> None:
         f"investment check(s) skipped against a real transform — the SQL is "
         f"not actually bound to the real schema: {skipped}"
     )
+
+
+@pytest.mark.unit
+def test_missing_registered_model_fails_an_invariant(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model the project declares but never built must fail the doctor.
+
+    Every other health signal is derived from what IS built, so a model that
+    was never materialised leaves nothing to notice. Breaks if the invariant
+    compares against the catalog instead of the registered set.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    svc = DoctorService(doctor_db)
+
+    report = svc.run_all()
+    result = next(r for r in report.invariants if r.name == "sqlmesh_model_presence")
+
+    assert result.status == "fail"
+    # The fixture DB builds only a handful of core tables, so most of the
+    # registered set is absent — the point is that it says *which*.
+    assert result.affected_ids
+    assert all("." in name for name in result.affected_ids)
+    assert result.detail is not None

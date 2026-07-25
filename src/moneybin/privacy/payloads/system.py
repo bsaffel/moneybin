@@ -184,10 +184,17 @@ class SystemStatusCategorizationInfo:
 
 @dataclass(frozen=True, slots=True)
 class SystemStatusTransformsInfo:
-    """Transform freshness sub-object inside SystemStatusPayload."""
+    """Transform freshness sub-object inside SystemStatusPayload.
+
+    ``missing_models`` names registered SQLMesh models with no relation built.
+    A bare ``pending`` flag cannot distinguish "one import is waiting" from
+    "a table your query needs does not exist", and only the second is a reason
+    to stop and rebuild before trusting a result.
+    """
 
     pending: Annotated[bool, DataClass.TXN_TYPE]
     last_apply_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    missing_models: Annotated[list[str], DataClass.TXN_TYPE]
 
 
 @dataclass(frozen=True, slots=True)
