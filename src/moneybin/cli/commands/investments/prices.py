@@ -34,6 +34,7 @@ from moneybin.cli.output import (
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
+    InvestmentFailedSourceEntry,
     InvestmentPriceMarkPayload,
     InvestmentPricePullPayload,
     InvestmentPricesPayload,
@@ -114,6 +115,10 @@ def investments_prices_pull(
             InvestmentUnpricedEntry(security_id=u.security_id, reason=u.reason)
             for u in result.unpriced
         ],
+        failed_sources=[
+            InvestmentFailedSourceEntry(source_type=f.source_type, message=f.message)
+            for f in result.failed_sources
+        ],
     )
     if output == OutputFormat.JSON:
         render_or_json(
@@ -130,6 +135,12 @@ def investments_prices_pull(
                 f"👀 {result.queued_for_review} feed key(s) need review — "
                 "run 'moneybin investments securities links pending'"
             )
+    # A whole-source failure no longer aborts the run, so it has to be visible
+    # here or the only trace is every one of that source's securities reporting
+    # 'price_feed_error' with nothing saying what to fix. stderr because it is a
+    # diagnostic about a degraded run, not part of the refresh's result.
+    for failure in result.failed_sources:
+        typer.echo(f"⚠️  {failure.source_type}: {failure.message}", err=True)
     for entry in result.unpriced:
         typer.echo(f"{entry.security_id:<14} unpriced: {entry.reason}")
 

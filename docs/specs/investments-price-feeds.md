@@ -897,6 +897,22 @@ Failure handling follows `GSheetPullService`:
 - **An unreachable provider leaves stored prices in place.** Valuation continues
   from the last close with staleness rising. Withholding an entire portfolio
   valuation because one refresh failed is worse than the honest stale answer.
+- **A whole-source failure is contained to that source.** `PriceFeedError` and
+  its subclasses are whole-batch conditions, so `pull` catches them per source,
+  records every security routed there as `price_feed_error`, and continues. The
+  refresh still stores what other sources returned — a missing Tiingo token must
+  not discard CoinGecko rows that needed no credential. The failure is reported
+  in `PullResult.failed_sources` with the provider's message, because a
+  contained failure that says nothing is only a quieter outage.
+- **A security whose provider ref another security already holds** is reported
+  `feed_key_bound_elsewhere`. Neither `ticker` nor `coingecko_id` is unique in
+  `app.securities`, so two catalog rows for one instrument is a reachable state,
+  not a corruption — and it belongs to that security, not to the refresh.
+- **A close below the storable precision is dropped**, not stored and not
+  raised. `raw.security_prices.close` is `DECIMAL(28,10)` under `CHECK (close >
+  0)`, so a sub-1e-10 quote quantizes to zero and would fail the insert for
+  every security batched with it. The security reports
+  `close_below_storable_precision`.
 - **Rate limiting backs off exponentially**, on rate-limit responses only.
 - **An undeclared `price_basis` fails ingest.**
 - **A security no source covers** is reported in the refresh result and carries

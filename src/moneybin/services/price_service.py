@@ -31,11 +31,14 @@ from typing import TYPE_CHECKING, Protocol
 import duckdb
 import polars as pl
 
+from moneybin import error_codes
+from moneybin.connectors.prices.errors import PriceFeedError
 from moneybin.connectors.prices.protocol import (
     PriceFetchResult,
     PriceObservation,
     SecurityRef,
 )
+from moneybin.errors import UserError
 from moneybin.metrics.registry import (
     PRICE_REFRESH_DURATION_SECONDS,
     PRICE_REFRESH_SECURITIES_TOTAL,
@@ -118,6 +121,16 @@ _RAW_PRICE_SCHEMA = {
     "price_basis": pl.Utf8,
 }
 
+# The smallest close raw.security_prices can hold. Its column is DECIMAL(28,10),
+# so polars quantizes anything below this to exactly 0 — silently, and *after*
+# each adapter's own `close <= 0` guard has passed on the full-precision value.
+# The stored CHECK (close > 0) then rejects the row and DuckDB aborts the whole
+# multi-row insert, losing every well-priced security batched with it. So the
+# drop happens here, one observation at a time, and is reported as that
+# security's outcome. Widening the column instead would trade a visible refusal
+# for a stored price no downstream total could represent either.
+_MIN_STORABLE_CLOSE = Decimal("1E-10")
+
 
 @dataclass(frozen=True, slots=True)
 class HeldSecurity:
@@ -160,6 +173,14 @@ class UnpricedSecurity:
 
 
 @dataclass(frozen=True, slots=True)
+class FailedSource:
+    """One price source that failed as a whole, and the message to act on."""
+
+    source_type: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
 class PullResult:
     """What one refresh did. Partial success is the normal outcome."""
 
@@ -168,6 +189,7 @@ class PullResult:
     securities_priced: int
     queued_for_review: int
     unpriced: tuple[UnpricedSecurity, ...]
+    failed_sources: tuple[FailedSource, ...] = ()
 
 
 class _PriceAdapter(Protocol):
@@ -309,6 +331,7 @@ class PriceService:
 
         observations: list[PriceObservation] = []
         priced_keys: set[tuple[str, str]] = set()
+        failed_sources: list[FailedSource] = []
         for source_type, entries in by_source.items():
             adapter = self._adapter_for(source_type)
             if adapter is None:  # pragma: no cover — routed above
@@ -319,23 +342,58 @@ class PriceService:
                 )
                 for sec, key in entries
             ]
-            with PRICE_REFRESH_DURATION_SECONDS.labels(source_type=source_type).time():
-                result = adapter.fetch(refs, start, self._today)
-            observations.extend(result.observations)
+            try:
+                with PRICE_REFRESH_DURATION_SECONDS.labels(
+                    source_type=source_type
+                ).time():
+                    result = adapter.fetch(refs, start, self._today)
+            except PriceFeedError as exc:
+                # A whole-batch condition — an absent credential, a rate limit, an
+                # unreachable host. By construction it says nothing about any
+                # other source, and the observations already collected are still
+                # good, so this source drops out and the refresh carries on. The
+                # alternative loses a credential-free feed's rows to a missing
+                # token it never needed. The message is not logged: only the
+                # count and the condition are, per the no-PII rule.
+                logger.warning(
+                    f"{source_type} price fetch failed for {len(refs)} "
+                    f"securities ({type(exc).__name__}) — other sources continue"
+                )
+                failed_sources.append(FailedSource(source_type, str(exc)))
+                for sec, _key in entries:
+                    unpriced.append(
+                        UnpricedSecurity(sec.security_id, "price_feed_error")
+                    )
+                    PRICE_REFRESH_SECURITIES_TOTAL.labels(
+                        source_type=source_type, outcome="failed"
+                    ).inc()
+                continue
+            unstorable: set[str] = set()
             for obs in result.observations:
+                if obs.close < _MIN_STORABLE_CLOSE:
+                    unstorable.add(obs.provider_security_key)
+                    continue
+                observations.append(obs)
                 priced_keys.add((source_type, obs.provider_security_key))
             failed = {f.provider_security_key: f.reason for f in result.failures}
             for sec, key in entries:
+                priced = (source_type, key) in priced_keys
                 if key in failed:
                     unpriced.append(UnpricedSecurity(sec.security_id, failed[key]))
+                elif key in unstorable and not priced:
+                    unpriced.append(
+                        UnpricedSecurity(
+                            sec.security_id, "close_below_storable_precision"
+                        )
+                    )
                 # Exhaustive and disjoint over the fetched set: a security the
                 # adapter answered for neither way returned no data without
                 # calling it an error, which is a skip, not a failure.
                 outcome = (
                     "failed"
-                    if key in failed
+                    if key in failed or (key in unstorable and not priced)
                     else "written"
-                    if (source_type, key) in priced_keys
+                    if priced
                     else "skipped"
                 )
                 PRICE_REFRESH_SECURITIES_TOTAL.labels(
@@ -355,6 +413,7 @@ class PriceService:
             securities_priced=len(priced_securities),
             queued_for_review=queued,
             unpriced=tuple(unpriced),
+            failed_sources=tuple(failed_sources),
         )
 
     def resolve_security(self, ref: str) -> str:
@@ -514,14 +573,27 @@ class PriceService:
             derivation = self._tiingo_key(security, adapter)
 
         if derivation.ref_value is not None:
-            self._links.insert(
-                security_id=security.security_id,
-                ref_kind=ref_kind,
-                ref_value=derivation.ref_value,
-                source_type=source_type,
-                decided_by="auto",
-                actor=self._actor,
-            )
+            try:
+                self._links.insert(
+                    security_id=security.security_id,
+                    ref_kind=ref_kind,
+                    ref_value=derivation.ref_value,
+                    source_type=source_type,
+                    decided_by="auto",
+                    actor=self._actor,
+                )
+            except UserError as exc:
+                if exc.code != error_codes.MUTATION_CONSTRAINT_VIOLATION:
+                    raise
+                # Another security already holds this exact provider ref. Neither
+                # app.securities.ticker nor .coingecko_id is unique, so two
+                # catalog rows for one instrument — the same coin at two brokers —
+                # is a legitimate state a user can reach through the documented
+                # surface. That makes it this security's outcome, not a reason to
+                # abandon everyone else's refresh.
+                return _Derivation(
+                    ref_value=None, unpriced_reason="feed_key_bound_elsewhere"
+                )
         return derivation
 
     def _coingecko_key(self, security: HeldSecurity) -> _Derivation:

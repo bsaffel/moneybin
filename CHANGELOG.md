@@ -41,6 +41,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   positions carrying no usable price, which report no market value and are
   absent from every total that sums one; and price rows whose source the
   pipeline cannot resolve, which are discarded before they can value anything.
+  One source failing does not cost you the others: a missing Tiingo token still
+  refreshes crypto, and the refresh names the source that failed and why.
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.

@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 from prometheus_client import REGISTRY
 
+from moneybin.connectors.prices.errors import PriceFeedAuthError
 from moneybin.connectors.prices.protocol import (
     PriceFetchFailure,
     PriceFetchResult,
@@ -64,6 +65,9 @@ class _FakeTiingo:
     ) -> None:
         self.metadata = metadata or {}
         self.close = close
+        # Per-key override, for the case where one security's quote is the thing
+        # under test and the rest of the batch must stay well-behaved.
+        self.close_by_key: dict[str, Decimal] = {}
         # Which dates each fetch returns. More than one lets a re-pull produce a
         # batch that is genuinely partial — some rows already stored, some new —
         # which is the only shape that exercises per-source write counting.
@@ -72,6 +76,9 @@ class _FakeTiingo:
         self.metadata_calls: list[str] = []
         self.windows: list[tuple[date, date]] = []
         self.fail_keys: set[str] = set()
+        # A whole-batch condition — auth, rate limit, unreachable — as opposed to
+        # fail_keys, which models one security the provider could not answer for.
+        self.raises: Exception | None = None
 
     def fetch_metadata(self, ticker: str) -> TickerMetadata | None:
         self.metadata_calls.append(ticker)
@@ -82,18 +89,21 @@ class _FakeTiingo:
     ) -> PriceFetchResult:
         self.fetched.extend(securities)
         self.windows.append((start, end))
+        if self.raises is not None:
+            raise self.raises
         observations: list[PriceObservation] = []
         failures: list[PriceFetchFailure] = []
         for ref in securities:
             if ref.provider_security_key in self.fail_keys:
                 failures.append(PriceFetchFailure(ref.provider_security_key, "boom"))
                 continue
+            close = self.close_by_key.get(ref.provider_security_key, self.close)
             observations.extend(
                 PriceObservation(
                     provider_security_key=ref.provider_security_key,
                     price_date=day,
                     quote_currency=ref.quote_currency,
-                    close=self.close,
+                    close=close,
                     source_type=self.source_type,
                     price_basis=self.price_basis,
                 )
@@ -707,6 +717,132 @@ def test_each_source_is_counted_under_its_own_label(db: Database) -> None:
 
     assert _rows_written("tiingo") - before[0] == 1
     assert _rows_written("coingecko") - before[1] == 1
+
+
+# --------------------------------------------------------------------------
+# Partial failure — one bad security must not discard the whole refresh
+#
+# Each test here isolates a different way one security's problem escaped as an
+# exception and took the entire pull with it. They are separated because the
+# containment for each lives at a different point in pull(): the derivation
+# loop, the per-source fetch, and the write.
+# --------------------------------------------------------------------------
+
+
+def test_a_credential_failure_in_one_source_keeps_the_other_sources_rows(
+    db: Database,
+) -> None:
+    """A missing Tiingo token must not throw away crypto that needed no credential.
+
+    Whole-batch adapter errors are `UserError` subclasses, so before containment
+    this propagated out of `pull()` — and because `_store` runs after the source
+    loop, the CoinGecko observations already fetched were discarded with it. The
+    crypto half of this portfolio never required the token that failed.
+    """
+    _seed_security(db, security_id="s_eq", name="Apple Inc", ticker="AAPL")
+    _seed_security(
+        db,
+        security_id="s_btc",
+        name="Bitcoin",
+        security_type="crypto",
+        coingecko_id="bitcoin",
+    )
+    _hold(db, "s_eq")
+    _hold(db, "s_btc")
+    tiingo = _FakeTiingo(metadata={"AAPL": TickerMetadata("Apple Inc", None)})
+    tiingo.raises = PriceFeedAuthError("No Tiingo API token is stored")
+
+    result = _service(db, tiingo, _FakeCoinGecko()).pull()
+
+    assert result.rows_written == 1
+    assert result.securities_priced == 1
+    assert ("s_eq", "price_feed_error") in [
+        (u.security_id, u.reason) for u in result.unpriced
+    ]
+
+
+def test_a_failed_source_reports_the_message_that_says_how_to_fix_it(
+    db: Database,
+) -> None:
+    """Containing the abort must not turn a fixable error into a silent one.
+
+    Before containment the user at least saw "No Tiingo API token is stored" and
+    a non-zero exit. Swallowing that would leave only per-security
+    `price_feed_error` lines, which name no provider and no remedy — trading an
+    over-loud failure for an invisible one.
+    """
+    _seed_security(db, security_id="s_eq", name="Apple Inc", ticker="AAPL")
+    _hold(db, "s_eq")
+    tiingo = _FakeTiingo(metadata={"AAPL": TickerMetadata("Apple Inc", None)})
+    tiingo.raises = PriceFeedAuthError("No Tiingo API token is stored")
+
+    result = _service(db, tiingo).pull()
+
+    assert [(f.source_type, f.message) for f in result.failed_sources] == [
+        ("tiingo", "No Tiingo API token is stored")
+    ]
+
+
+def test_a_feed_key_already_bound_to_another_security_does_not_abort_the_pull(
+    db: Database,
+) -> None:
+    """`app.securities.coingecko_id` has no UNIQUE constraint, so two entries can share one.
+
+    Both are legitimate catalog rows — the same coin held at two brokers. The
+    second reaches `SecurityLinksRepo.insert`, whose `_guard_uniqueness` refuses
+    the collision with a `UserError`; uncaught, that aborted the entire command
+    before any adapter ran, so neither security got priced.
+    """
+    for security_id in ("s_btc_a", "s_btc_b"):
+        _seed_security(
+            db,
+            security_id=security_id,
+            name="Bitcoin",
+            security_type="crypto",
+            coingecko_id="bitcoin",
+        )
+        _hold(db, security_id)
+
+    result = _service(db, _FakeTiingo(), _FakeCoinGecko()).pull()
+
+    assert result.securities_priced == 1
+    assert [u.reason for u in result.unpriced] == ["feed_key_bound_elsewhere"]
+
+
+def test_a_close_too_small_to_store_is_dropped_without_losing_the_batch(
+    db: Database,
+) -> None:
+    """Polars quantizes below 1e-10 to exactly zero, after the adapter's `> 0` guard.
+
+    The stored column is DECIMAL(28,10), so a sub-penny token's real quote
+    rounds to 0 and trips `raw.security_prices CHECK (close > 0)` —
+    a `duckdb.ConstraintException` that `classify_user_error` does not
+    recognise, surfacing as a traceback and losing every coin in the batch. The
+    fix drops the unrepresentable row, so the well-behaved coin still lands.
+    """
+    _seed_security(
+        db,
+        security_id="s_dust",
+        name="Dust Coin",
+        security_type="crypto",
+        coingecko_id="dust-coin",
+    )
+    _seed_security(
+        db,
+        security_id="s_btc",
+        name="Bitcoin",
+        security_type="crypto",
+        coingecko_id="bitcoin",
+    )
+    _hold(db, "s_dust")
+    _hold(db, "s_btc")
+    coingecko = _FakeCoinGecko()
+    coingecko.close_by_key = {"dust-coin": Decimal("1.2345E-11")}
+
+    result = _service(db, _FakeTiingo(), coingecko).pull()
+
+    assert result.rows_written == 1
+    assert [u.reason for u in result.unpriced] == ["close_below_storable_precision"]
 
 
 # --------------------------------------------------------------------------

@@ -682,6 +682,7 @@ class InvestmentPricePullPayload:
     securities_priced: Annotated[int, DataClass.AGGREGATE]
     queued_for_review: Annotated[int, DataClass.AGGREGATE]
     unpriced: list[InvestmentUnpricedEntry]
+    failed_sources: list[InvestmentFailedSourceEntry]
 
 
 @dataclass(frozen=True, slots=True)
@@ -690,6 +691,21 @@ class InvestmentUnpricedEntry:
 
     security_id: Annotated[str, DataClass.RECORD_ID]
     reason: Annotated[str, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentFailedSourceEntry:
+    """One price source that failed as a whole, and the message to act on.
+
+    A whole-source failure no longer aborts the refresh, so it needs somewhere to
+    be seen: without this the run reports every one of that source's securities
+    unpriced and never says the token was missing. ``message`` is safe to carry —
+    ``PriceFeedError`` is documented as whole-batch conditions only, so it names
+    a provider and a condition, never a security or a holding.
+    """
+
+    source_type: Annotated[str, DataClass.TXN_TYPE]
+    message: Annotated[str, DataClass.AGGREGATE]
 
 
 @dataclass(frozen=True, slots=True)
