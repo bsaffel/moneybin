@@ -1782,17 +1782,6 @@ def _preview_pdf(source: Path) -> None:
         logger.error(f"❌ Can't open the database, so {source.name} wasn't read: {e}")
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
-    except PermissionError as e:
-        # Statements routinely live under ~/Documents or ~/Desktop, where macOS
-        # TCC denies reads until the terminal is granted access — pdfplumber's
-        # open() then raises from deep in the extractor. Without this the user
-        # gets a full traceback for what is a one-click OS permission fix.
-        logger.error(f"❌ Cannot read {source.name}: {e.strerror or e}")
-        logger.info(
-            "💡 On macOS, grant your terminal access to this folder under "
-            "System Settings → Privacy & Security → Files and Folders."
-        )
-        raise typer.Exit(1) from e
     except ImportConfirmationRequiredError as e:
         # pdf_preview signals both the sign gate and a bridge escalation by
         # raising. Preview's job is to report what is pending, not to resolve
@@ -1914,7 +1903,14 @@ def import_preview(
                 f"A statement's structure comes from its recipe, not a column "
                 f"mapping."
             )
-        _preview_pdf(source)
+        # Same handler the tabular stages below use, for the same reason: a
+        # PermissionError here (statements live under ~/Documents, where macOS
+        # TCC denies reads) must reach `permission_advice` so the remedy matches
+        # the errno and platform. This branch used to hardcode one macOS pane
+        # for every PermissionError, which named the wrong pane for a TCC block
+        # and offered the macOS fix on Linux and for mode denials chmod solves.
+        with handle_cli_errors():
+            _preview_pdf(source)
         return
 
     overrides = _parse_overrides(override)
