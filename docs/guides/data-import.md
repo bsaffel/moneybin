@@ -271,7 +271,7 @@ A statement whose own disclosures (minimum payment, credit limit, APR) name it a
 **What happens to your data:**
 
 - **Transaction-shaped PDFs** (statements with a date / description / amount table) land in `raw.tabular_transactions` (`source_type='pdf'`) and flow through the SQLMesh pipeline to `core.fct_transactions` like any other source. Categorization, search, reports — all work the same. *Caveat for inbox-routed PDFs:* `moneybin import inbox` does not yet trigger the SQLMesh refresh for `file_type='pdf'`, so raw rows land but core/reports won't see them until a `moneybin transform apply` runs. Inbox-routed OFX and tabular files refresh automatically; the inbox refresh gate will be extended to PDFs in a follow-up.
-- **Non-transaction PDFs**, and transaction PDFs that don't reconcile cleanly, fall back to the seed path: the extracted tables land as queryable JSON in `raw.pdf_seeds` with an auto-generated typed view (`raw.pdf_<alias>`). You can `SELECT` against the view via `moneybin sql query` or `db query`, but the rows do not flow to `core.fct_transactions`.
+- **Non-transaction PDFs**, and transaction PDFs that don't reconcile cleanly, fall back to the seed path: the extracted tables land as queryable JSON in `raw.pdf_seeds` with an auto-generated typed view (`raw.pdf_<alias>`). The rows do not flow to `core.fct_transactions`. Read the view with `moneybin db query` or `db shell` — `moneybin sql query` and the `sql_query` MCP tool are restricted to `core`, `app`, and `reports`, so neither can reach `raw`.
 
 **When the fallback triggers** (any one of):
 
@@ -285,7 +285,9 @@ In every fallback case the recipe is NOT saved — MoneyBin only persists recipe
 
 **Preview before committing.** `moneybin import preview <path>.pdf` runs the same deterministic-recipe rung with no writes — it reports whether the statement would extract cleanly, how many rows, and any pending sign-convention confirmation, the same way `import preview` does for tabular files.
 
-**Privacy posture.** PDF content stays local — no network egress, no LLM. The deterministic recipe ladder handles the column-shapes statements typically use; a layout it can't crack escalates instead to the LLM agent you're already driving MoneyBin with, on MCP clients that support it, rather than silently falling back to the seed path. Scanned or image-only PDFs are outside what either rung can read — see [What's not supported yet](#whats-not-supported-yet).
+**Privacy posture.** The deterministic recipe ladder runs entirely on your machine — no network egress, no model call — and handles the column shapes statements typically use. A layout it can't crack escalates to the LLM agent you're already driving MoneyBin with, on MCP clients that support it, rather than silently falling back to the seed path.
+
+**When an agent drives that escalation, the statement leaves your machine.** The bridge payload carries the document's text and its sample table rows verbatim — there is no redacted preview — and it reaches your MCP client, and from there whichever model provider that client uses, in the same tool result that asks you to ratify the hand-off. Ratifying governs whether the extracted rows get imported, not whether the content was sent. MoneyBin writes an `app.audit_log` row (`action: smart_import_parse`) for every hand-off; replay them with `moneybin system audit list`. A CLI-driven import writes the same payload to its local pending sidecar and sends nothing. Scanned or image-only PDFs are outside what either rung can read — see [What's not supported yet](#whats-not-supported-yet).
 
 **Listing saved PDF formats:**
 

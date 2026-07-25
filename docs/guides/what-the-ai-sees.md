@@ -111,9 +111,14 @@ caught.** Three real cases, disclosed rather than hidden:
 - **Free-text notes and descriptions** — an account number you typed into a note,
   or one a bank embedded in a description, reaches the model verbatim (see [Not
   masked](#not-masked-stated-plainly) below).
-- **Import samples** — `import_preview` / `import_files` return a `sample_values`
-  preview of the file being imported, classified as description text; a raw
-  account-number column in that file shows up in the sample.
+- **Import samples and PDF bridge payloads** — `import_preview` / `import_files`
+  return a `sample_values` preview of the file being imported, classified as
+  description text; a raw account-number column in that file shows up in the
+  sample. When a PDF's layout defeats the deterministic extractor, the
+  escalation payload goes further: the statement's full text and its sample
+  table rows travel verbatim, with no redacted preview. Every hand-off writes
+  an `app.audit_log` row (`action: smart_import_parse`) — replay them with
+  `moneybin system audit list`.
 - **Audit snapshots** — `system_audit` list and detail views return the before/after
   row of a change; if that change set an account's `last_four`, the snapshot
   carries the raw digits.

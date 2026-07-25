@@ -96,7 +96,7 @@ Plaid is the upstream banking provider. When you use sync:
 - Plaid sees every transaction and balance it pulls on your behalf, by design.
 - Plaid retains transaction history for as long as the item remains linked, per Plaid's policies. Disconnecting via `moneybin sync disconnect --institution <name>` does not retroactively delete history Plaid already pulled.
 
-If "Plaid sees my transactions" is incompatible with your threat model, use file-based imports (OFX/QFX/QBO/CSV/PDF) only. Those paths never touch the network.
+If "Plaid sees my transactions" is incompatible with your threat model, use file-based imports (OFX/QFX/QBO/CSV/PDF) only. MoneyBin opens no network connection on those paths. One caveat, and it is not a MoneyBin network call: when an **agent** drives a PDF import and the deterministic extractor can't crack the layout, MoneyBin hands the statement's verbatim text to that agent for parsing, and the MCP client forwards it to its model provider. Import from the CLI to avoid it entirely — see [PDF privacy posture](data-import.md#pdf-native-text).
 
 ### `moneybin-sync` (broker) compromise
 
@@ -198,7 +198,7 @@ A firewall ruleset for the MoneyBin client alone — without an MCP client runni
 
 | Activity | Outbound from MoneyBin client | Notes |
 |---|---|---|
-| OFX / QFX / QBO / CSV / PDF imports | None | Pure file path; never reads `sync.server_url`. |
+| OFX / QFX / QBO / CSV / PDF imports | None | Pure file path; never reads `sync.server_url`. An agent-driven PDF import can still egress *through the MCP client* when extraction escalates to the agent — outbound from the client, not from MoneyBin. See [PDF privacy posture](data-import.md#pdf-native-text). |
 | `moneybin mcp serve` startup / local tools | None | stdio JSON-RPC only; no listening port; no telemetry. Explicit connector tool calls follow the rows below. |
 | `moneybin db ...`, `moneybin transform apply`, `moneybin reports ...` | None | All local. |
 | `moneybin sync ...` (Plaid path) | `sync.server_url` only | Default is `None` — the user supplies the broker URL via env / config. Set to your self-hosted instance or to the hosted broker if you choose one. |
@@ -348,7 +348,7 @@ Concrete actions a privacy-conscious user can take now, ranked by impact.
 
 ### Consider
 
-- **Self-host `moneybin-sync` (or skip sync entirely)** if you don't want a hosted broker to see your Plaid access tokens. File-based imports (OFX/CSV/PDF) bypass the broker and never touch the network.
+- **Self-host `moneybin-sync` (or skip sync entirely)** if you don't want a hosted broker to see your Plaid access tokens. File-based imports (OFX/CSV/PDF) bypass the broker; MoneyBin opens no connection on those paths, with the agent-driven PDF escalation noted above as the one way statement content still reaches a provider.
 - **Choose your MCP client deliberately.** Review the client's data-use policy. If a question is sensitive enough that "the model provider sees it" is unacceptable, ask the CLI instead.
 
 ---

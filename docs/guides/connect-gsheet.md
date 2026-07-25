@@ -90,7 +90,7 @@ Best for: Tiller, Tiller-style hand-maintained ledgers, anything with date / amo
 Best for: anything else. Asset valuations, a subscription tracker, a budget tab, scratch data you want SQL access to.
 
 - Rows land in `raw.gsheet_seeds` as JSON, one row per sheet row.
-- An **auto-generated typed view** at `raw.gsheet_<alias>` exposes the rows with inferred column types (string, number, date), queryable from `sql_query` and visible in `moneybin://schema`.
+- An **auto-generated typed view** at `raw.gsheet_<alias>` exposes the rows with inferred column types (string, number, date), visible in `moneybin://schema`. Read it with `moneybin db query` or `db shell` — the view lives in `raw`, and both `sql_query` and `moneybin sql query` are restricted to `core`, `app`, and `reports`.
 - Does **not** participate in matching, categorization, or reports — there's no schema contract beyond "rectangular tabular data."
 - `--alias=<slug>` names the generated view (required for the seed adapter; derived from sheet name if omitted).
 
@@ -136,7 +136,13 @@ categorize post-pull subset. Three things to know:
 
 ## Drift detection and recovery
 
-If you rename or remove a column MoneyBin has mapped — or a mapped column's cells go mostly empty — MoneyBin's next pull detects the pinned header is missing and **refuses the pull for that connection**. Adding a new column or reordering existing ones is not drift: MoneyBin matches headers by set membership, not position, and ignores columns outside the pinned mapping. The connection enters `drift_detected` state; the rest of your connections keep pulling normally.
+What counts as drift depends on the adapter.
+
+A `transactions` connection pins a column mapping. If you rename or remove a column MoneyBin has mapped — or a mapped column's cells go mostly empty — the next pull detects the pinned header is missing and **refuses the pull for that connection**. Adding a new column or reordering existing ones is not drift: MoneyBin matches headers by set membership, not position, and ignores columns outside the pinned mapping.
+
+A `seed` connection pins nothing. It regenerates its view on every pull, so renamed, added, and reordered columns are absorbed silently; only a sheet with no header row at all refuses.
+
+Either way the connection enters `drift_detected` state; the rest of your connections keep pulling normally.
 
 ```bash
 moneybin gsheet status
@@ -145,8 +151,8 @@ moneybin gsheet status
 Will show something like:
 
 ```
-abc123  status=healthy  adapter=transactions  last_success=2026-07-24T14:32:00  failures=0
-def456  status=drift_detected  adapter=seed  last_success=2026-07-23T09:00:00  failures=1
+abc123  status=healthy  adapter=seed  last_success=2026-07-24T14:32:00  failures=0
+def456  status=drift_detected  adapter=transactions  last_success=2026-07-23T09:00:00  failures=1
    ⚠️  missing headers: ['description']
 ```
 
