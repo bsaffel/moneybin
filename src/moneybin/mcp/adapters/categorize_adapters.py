@@ -24,8 +24,18 @@ if TYPE_CHECKING:
 
 def auto_review_envelope(
     result: AutoReviewResult,
+    *,
+    accept_action: str,
 ) -> ResponseEnvelope[AutoReviewPayload]:
-    """Build a ResponseEnvelope for the transactions_categorize_auto_review tool."""
+    """Build a ResponseEnvelope of pending auto-rule proposals.
+
+    ``accept_action`` is supplied by the caller because the two callers speak
+    disjoint vocabularies: the CLI can only run commands, the MCP side can only
+    call registered tools. A hardcoded hint is wrong for one of them whichever
+    it names — and the MCP name this once carried,
+    ``transactions_categorize_auto_accept``, is not registered at all (the live
+    MCP path is ``reviews_decide``).
+    """
     payload = AutoReviewPayload(
         proposals=[
             AutoReviewProposalRow(
@@ -43,10 +53,7 @@ def auto_review_envelope(
         ]
     )
     broad = [p for p in result.proposals if p.get("is_broad")]
-    actions = [
-        "Use `moneybin transactions categorize auto accept` to accept or reject "
-        "proposals",
-    ]
+    actions = [accept_action]
     if broad:
         actions.append(
             f"{len(broad)} proposal(s) are flagged is_broad — each would "

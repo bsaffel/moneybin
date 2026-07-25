@@ -839,3 +839,35 @@ class TestAllowBroadWiring:
         mock_accept.assert_called_once_with(
             accept=["a1"], reject=[], actor="mcp", allow_broad=False
         )
+
+
+@pytest.mark.unit
+def test_the_auto_review_accept_hint_is_built_per_surface() -> None:
+    """A shared adapter must not hand one audience the other's invocation.
+
+    `auto_review_envelope` serves two callers with disjoint vocabularies: the
+    CLI, which can only run commands, and the MCP side, which can only call
+    registered tools. A hardcoded string is wrong for one of them either way —
+    and the MCP-side name it used to carry, `transactions_categorize_auto_accept`,
+    is not registered at all (#344 retired it; the live path is `reviews_decide`).
+    """
+    from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
+    from moneybin.services.auto_rule_service import AutoReviewResult
+
+    empty = AutoReviewResult(proposals=[], total_count=0)
+
+    cli_hint = "Use `moneybin transactions categorize auto accept` to accept"
+    mcp_hint = "Use reviews_decide to accept or reject proposals"
+
+    cli_actions = auto_review_envelope(empty, accept_action=cli_hint).actions
+    mcp_actions = auto_review_envelope(empty, accept_action=mcp_hint).actions
+
+    assert cli_actions[0] == cli_hint
+    assert mcp_actions[0] == mcp_hint
+    # No shell invocation may reach a caller that cannot run one.
+    assert not any("moneybin " in action for action in mcp_actions)
+    # And no retired tool name may reach either.
+    assert not any(
+        "transactions_categorize_auto_accept" in action
+        for action in (*cli_actions, *mcp_actions)
+    )

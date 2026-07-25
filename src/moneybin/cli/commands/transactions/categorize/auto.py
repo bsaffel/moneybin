@@ -43,7 +43,15 @@ def review(
 
     proposals = result.proposals
     if output == OutputFormat.JSON:
-        typer.echo(json.dumps(auto_review_envelope(result).to_dict(), indent=2))
+        envelope = auto_review_envelope(
+            result,
+            # An agent reading a CLI envelope can only run commands.
+            accept_action=(
+                "Use `moneybin transactions categorize auto accept` to accept "
+                "or reject proposals"
+            ),
+        )
+        typer.echo(json.dumps(envelope.to_dict(), indent=2))
         return
 
     if not proposals:

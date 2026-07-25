@@ -540,7 +540,13 @@ def transactions_categorize_auto_review(
     """
     with get_database(read_only=True) as db:
         result = AutoRuleService(db).review(limit=limit)
-    return auto_review_envelope(result)
+    return auto_review_envelope(
+        result,
+        # `reviews_decide` is the registered MCP path for accepting or
+        # rejecting these proposals; this callback's own sibling
+        # (`transactions_categorize_auto_accept`) is internal, not registered.
+        accept_action="Use reviews_decide to accept or reject proposals",
+    )
 
 
 def transactions_categorize_auto_accept(
