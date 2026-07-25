@@ -135,17 +135,23 @@ if its logger matches `_CONSOLE_SUPPRESSED_PREFIXES` in `logging/config.py` —
 today `sqlmesh`, `httpx`, `httpcore`, each of which narrates its own internals
 several times per command. Everything else prints.
 
-**Choose the level at the call site, not the prefix list.** A `logger.info` in
-a service is visible to the user, so write it for them or make it
-`logger.debug`. Two questions settle it:
+**`logger.debug` is not "hide from console" — it is "drop everywhere."** The
+root logger sits at INFO, so a DEBUG record is never emitted and never reaches
+the log file either. That distinction decides which of two tools to reach for:
 
-- Does a `typer.echo` or another log line already say this? Then the second one
-  is a duplicate — `logger.debug`. (`sync pull` reported its categorization
-  total three times from three layers before this rule existed.)
-- Is it phrased in the subsystem's vocabulary rather than the user's? Then it is
-  diagnostics — `logger.debug`. "Tier 4: 5 potential transfers found" and
-  "Loaded 5 Plaid accounts" both failed this: the user has no tiers, and their
-  Chase card is not a "Plaid account".
+| The line is… | Use | Why |
+|---|---|---|
+| Already said by a `typer.echo` or another surviving INFO line | `logger.debug` | The file keeps the other copy. `sync pull` reported its categorization total three times from three layers. |
+| Detail worth keeping in the file, but in the subsystem's vocabulary rather than the user's | denylist prefix | The file keeps it; the console does not. "Tier 4: 5 potential transfers found" — the user has no tiers; "Loaded 5 Plaid accounts" — their Chase card is not a Plaid account. |
+
+Getting this backwards is easy and quiet: demoting the per-tier match counts to
+debug looked like console cleanup, but `MatchResult.summary()` reports only
+run-wide totals, so the per-tier split left the log file entirely. Before
+demoting, name the other place the information survives.
+
+**`typer.echo` does not reach the log file.** It writes to stderr directly. A
+count that exists only in a `typer.echo` is absent from the log, which is why
+the Plaid row counts stay at INFO behind a denylist prefix instead.
 
 **A denylist is the deliberate choice here.** An allowlist would be quieter as
 new dependencies arrive, but it inverts the default for ~168 `logger.info` sites
@@ -154,8 +160,12 @@ host stderr, `log_to_file: false`, schema-migration progress, and "your
 `--institution` flag was ignored" each broke that way when it was tried in #356.
 What must be hidden is enumerable; what must stay visible is not.
 
-**Adding a prefix hides it everywhere** — every stream, every level, including
-`--verbose`. Only add one that has a log file of its own.
+**Adding a prefix hides it from every stream at every level**, including
+`--verbose` — but only while a log file exists to hold the copy. Under
+`log_to_file: false`, or when the log directory is missing, stderr is the only
+sink and the filter stands down entirely, because
+`docs/guides/observability.md` and `threat-model.md` both promise stderr is
+unaffected by that setting.
 
 Locked by `tests/moneybin/test_logging_config.py::TestConsoleInfoAllowlist`,
 which drives the allowlisted modules' real logger names so a rename fails the

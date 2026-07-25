@@ -295,9 +295,11 @@ class TransactionMatcher:
             ))
 
         if tier_merged or tier_pending:
-            # Tier numbers are the engine's own vocabulary. Callers render the
-            # same counts in user language via MatchResult.summary().
-            logger.debug(
+            # Info, not debug: MatchResult.summary() reports run-wide totals, so
+            # this is the only readable record of the per-tier split — debug
+            # would drop it from the log file, not just the console. The
+            # console suppression is the denylist's job.
+            logger.info(
                 f"Tier {tier}: {tier_merged} auto-merged, {tier_pending} pending review"
             )
 
@@ -434,5 +436,7 @@ class TransactionMatcher:
 
         if tier_pending:
             verb = "auto-accepted" if auto_accept else "potential"
-            # See the tier-summary site above: reported to users via summary().
-            logger.debug(f"Tier 4: {tier_pending} {verb} transfers found")
+            # See the tier-summary site above: keep in the file, denylisted
+            # from the console. summary() does not distinguish auto-accepted
+            # from potential transfers.
+            logger.info(f"Tier 4: {tier_pending} {verb} transfers found")

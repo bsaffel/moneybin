@@ -528,11 +528,11 @@ class PlaidExtractor:
             schema=_ACCOUNTS_SCHEMA,
         )
         self.db.ingest_dataframe("raw.plaid_accounts", df, on_conflict="upsert")
-        # Debug, not info: the CLI reports what the user cares about per
-        # institution ("✅ Wells Fargo: 36 transactions"). These restate the
-        # same rows in loader vocabulary — and call the user's Chase card a
-        # "Plaid account", which is true of the table and wrong to their eye.
-        logger.debug(f"Loaded {len(df)} Plaid accounts")
+        # Info, not debug: the CLI's per-institution totals go out via
+        # typer.echo, which never reaches the log file — so these row counts
+        # are the only durable record of what a sync loaded. Denylisted from
+        # the console instead, where "Plaid account" misnames a Chase card.
+        logger.info(f"Loaded {len(df)} Plaid accounts")
         return len(df)
 
     def _load_transactions(
@@ -562,7 +562,7 @@ class PlaidExtractor:
             schema=_TRANSACTIONS_SCHEMA,
         )
         self.db.ingest_dataframe("raw.plaid_transactions", df, on_conflict="upsert")
-        logger.debug(f"Loaded {len(df)} Plaid transactions")
+        logger.info(f"Loaded {len(df)} Plaid transactions")
         return len(df)
 
     def _load_balances(
@@ -590,7 +590,7 @@ class PlaidExtractor:
             schema=_BALANCES_SCHEMA,
         )
         self.db.ingest_dataframe("raw.plaid_balances", df, on_conflict="upsert")
-        logger.debug(f"Loaded {len(df)} Plaid balance snapshots")
+        logger.info(f"Loaded {len(df)} Plaid balance snapshots")
         return len(df)
 
     def _load_securities(
@@ -618,7 +618,7 @@ class PlaidExtractor:
         )
         self.db.ingest_dataframe(PLAID_SECURITIES.full_name, df, on_conflict="upsert")
         SYNC_INVESTMENTS_RECORDS_LOADED.labels(table="plaid_securities").inc(len(df))
-        logger.debug(f"Loaded {len(df)} Plaid securities")
+        logger.info(f"Loaded {len(df)} Plaid securities")
         return len(df)
 
     def _load_security_prices(
@@ -684,7 +684,7 @@ class PlaidExtractor:
         # steadily through a fully stalled upstream feed — the one condition it
         # exists to expose.
         PRICE_ROWS_WRITTEN_TOTAL.labels(source_type="plaid").inc(written)
-        logger.debug(f"Loaded {written} security price observations")
+        logger.info(f"Loaded {written} security price observations")
         return written
 
     def _load_investment_transactions(
@@ -720,7 +720,7 @@ class PlaidExtractor:
         SYNC_INVESTMENTS_RECORDS_LOADED.labels(
             table="plaid_investment_transactions"
         ).inc(len(df))
-        logger.debug(f"Loaded {len(df)} Plaid investment transactions")
+        logger.info(f"Loaded {len(df)} Plaid investment transactions")
         return len(df)
 
     def _load_investment_holdings(
@@ -787,7 +787,7 @@ class PlaidExtractor:
                 table="plaid_investment_holding_lots"
             ).inc(len(df_lots))
             lots_loaded = len(df_lots)
-        logger.debug(
+        logger.info(
             f"Loaded {len(df_holdings)} Plaid holdings rows, {lots_loaded} tax lots"
         )
         return len(df_holdings), lots_loaded
@@ -863,7 +863,7 @@ class PlaidExtractor:
         SYNC_INVESTMENTS_RECORDS_LOADED.labels(
             table="plaid_investment_holdings_snapshots"
         ).inc(len(df))
-        logger.debug(f"Recorded {len(df)} Plaid holdings-snapshot receipt(s)")
+        logger.info(f"Recorded {len(df)} Plaid holdings-snapshot receipt(s)")
         return len(df)
 
     def _warn_amount_drift(self, transactions: list[SyncInvestmentTransaction]) -> None:

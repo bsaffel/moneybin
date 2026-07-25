@@ -603,7 +603,7 @@ class MatchApplier:
             # The count is what a reader can act on; the ids are traceability,
             # so they stay at debug rather than one info line apiece. Merchant
             # names are never logged (see .claude/rules/security.md).
-            logger.info(f"Created {len(created)} user merchants")
+            logger.info(f"Created {len(created)} user merchant(s)")
             logger.debug(f"Created user merchant ids: {', '.join(created)}")
 
     # -- Rule management --

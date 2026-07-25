@@ -219,13 +219,49 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "logger_name",
-        ["httpx", "httpcore.connection", "sqlmesh.core.context"],
+        [
+            "httpx",
+            "httpcore.connection",
+            "sqlmesh.core.context",
+            "moneybin.matching.engine",
+            "moneybin.extractors.plaid.extractor",
+        ],
     )
     def test_named_noisy_dependencies_are_hidden(self, logger_name: str) -> None:
         """Each denylisted prefix and its descendants stay off the console."""
         handler = self._console_handler()
 
         assert not handler.filter(self._record(logger_name, logging.INFO))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "logger_name",
+        ["moneybin.matching.engine", "moneybin.extractors.plaid.extractor"],
+    )
+    def test_suppressed_moneybin_records_still_reach_the_file(
+        self, logger_name: str
+    ) -> None:
+        """Hidden from the console is not the same as gone.
+
+        These two carry detail that exists nowhere else once written: the
+        per-tier match split (MatchResult.summary() reports only run-wide
+        totals) and the per-table row counts (the CLI's totals go out via
+        typer.echo, which never reaches the file). Suppressing them from
+        stderr is fine only because the file still takes them — which is
+        also why the call sites stay at INFO rather than becoming debug,
+        since the root logger never emits DEBUG at its default level.
+        """
+        self._console_handler()
+        record = self._record(logger_name, logging.INFO)
+        file_handlers = [
+            h
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.FileHandler)
+        ]
+
+        assert file_handlers, "Expected a FileHandler"
+        for fh in file_handlers:
+            assert fh.filter(record)
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -255,16 +291,18 @@ class TestConsoleNoiseFilter(_LoggingSetupTestBase):
         assert handler.filter(self._record("httpx", logging.WARNING))
 
     @pytest.mark.unit
-    def test_no_file_logging_still_hides_denylisted_noise(self) -> None:
-        """Suppression is unconditional; the sqlmesh/httpx logs stand alone.
+    def test_no_file_logging_keeps_everything_on_stderr(self) -> None:
+        """With no log file, stderr is the only sink — it must keep everything.
 
-        `docs/guides/observability.md` promises stderr is "unaffected" by
-        `log_to_file: false`, which is about MoneyBin's own records — the
-        denylisted dependencies were never on stderr to begin with.
+        `docs/guides/observability.md` and `threat-model.md` both promise that
+        `log_to_file: false` leaves stderr "unaffected", so containers and
+        journald can capture it. Suppression is only defensible because the
+        file keeps the copy; with no file it destroys the record.
         """
         handler = self._console_handler(log_to_file=False)
 
-        assert not handler.filter(self._record("sqlmesh.core.context", logging.INFO))
+        assert handler.filter(self._record("sqlmesh.core.context", logging.INFO))
+        assert handler.filter(self._record("httpx", logging.INFO))
         assert handler.filter(self._record("moneybin.database", logging.INFO))
 
 
