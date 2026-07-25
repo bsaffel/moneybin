@@ -653,8 +653,18 @@ def import_files_command(
     # (description / merchant cells) and must match the single-file
     # confirmation_required envelope's medium tier so agents apply the
     # same consent gate to batch proposals.
+    # `error` and `hint` are DESCRIPTION-tier in `ImportPerFileRow`, which is
+    # what the MCP path derives its tier from. They are prose that can name the
+    # failing path, so a batch carrying either is medium on this surface too —
+    # otherwise the same bytes ship as `low` from the CLI and `medium` from
+    # MCP, and the privacy-audit row inherits the under-declaration.
     batch_sensitivity = (
-        "medium" if any(f.get("confirmation_payload") for f in files_list) else "low"
+        "medium"
+        if any(
+            f.get("confirmation_payload") or f.get("error") or f.get("hint")
+            for f in files_list
+        )
+        else "low"
     )
     envelope = build_envelope(data=data, sensitivity=batch_sensitivity)
     if batch_result is not None:
@@ -670,6 +680,14 @@ def import_files_command(
             label = f["source_type"] or "?"
             rows = f.get("rows_loaded") or 0
             logger.info(f"{icon} {f['path']} [{label}] — {rows} rows")
+            # A failed row's whole value is why it failed and how to fix it.
+            # Text mode is the CLI default, so leaving these to the JSON branch
+            # made the recovery advice invisible to anyone running the bare
+            # command — the exact scenario this classification exists for.
+            if error := f.get("error"):
+                logger.error(f"   {error}")
+            if hint := f.get("hint"):
+                logger.info(f"   {hint}")
         if data["transforms_applied"]:
             duration = data["transforms_duration_seconds"]
             if duration is not None:

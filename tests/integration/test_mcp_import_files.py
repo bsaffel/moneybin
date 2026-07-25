@@ -109,3 +109,36 @@ async def test_import_files_validates_path_under_home(
     with pytest.raises(UserError) as exc_info:
         import_files(paths=["/etc/passwd"])
     assert exc_info.value.code == "invalid_file_path"
+
+
+async def test_failed_file_raises_the_envelope_sensitivity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed row's `error`/`hint` are DESCRIPTION-tier, so the batch is medium.
+
+    `summary.sensitivity` is what an agent reads to drive its consent prompt.
+    Deriving it from `confirmation_required` rows alone under-declared every
+    batch that merely failed — the CLI had the identical gap.
+    """
+    _setup_db(tmp_path, monkeypatch)
+    bogus = tmp_path / "bogus.ofx"
+    bogus.write_text("not actually OFX content\n")
+
+    env = import_files(paths=[str(bogus)], refresh=False)
+
+    assert env.data.failed_count == 1
+    assert any(r.error for r in env.data.files)
+    assert env.summary.sensitivity == "medium"
+
+
+async def test_clean_batch_stays_low_sensitivity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bump is conditional — an all-imported batch carries no prose."""
+    _setup_db(tmp_path, monkeypatch)
+    fixture = _copy_fixture(FIXTURES_DIR / "sample_minimal.ofx", tmp_path)
+
+    env = import_files(paths=[str(fixture)], refresh=False)
+
+    assert env.data.failed_count == 0
+    assert env.summary.sensitivity == "low"

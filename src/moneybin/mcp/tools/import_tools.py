@@ -761,7 +761,14 @@ def import_files(
         # (DataClass.DESCRIPTION, MEDIUM). Per moneybin-mcp.md the envelope's
         # summary.sensitivity must reflect that — agents read summary.sensitivity
         # to drive consent prompts, not the per-field annotations directly.
-        sensitivity="medium" if pending_files else "low",
+        # A failed row's `error`/`hint` are DESCRIPTION-tier for the same reason
+        # (`ImportPerFileRow`), so they raise the tier too; deriving from
+        # `pending_files` alone under-declared every failed-file batch.
+        sensitivity=(
+            "medium"
+            if pending_files or any(r.error or r.hint for r in files)
+            else "low"
+        ),
         actions=actions,
     )
     return mark_total_failure(envelope, batch)

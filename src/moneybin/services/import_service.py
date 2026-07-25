@@ -944,7 +944,14 @@ class ImportService:
             )
         except Exception as e:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="parse").inc()
-            raise ValueError(f"Invalid OFX file format: {e}") from e
+            # Type name, never `e`: ofxparse exception strings can embed
+            # payee/amount/memo content from the statement, and this message is
+            # no longer log-only — `per_file_failure` puts the classified
+            # message on the wire in `PerFileResult.error`, so interpolating
+            # `e` here publishes statement contents. Matches the identical
+            # guard in extractors/ofx/extractor.py. The `from e` chain keeps
+            # the full detail available in a local traceback.
+            raise ValueError(f"Invalid OFX file format: {type(e).__name__}") from e
 
         # Resolve institution (raises InstitutionResolutionError on non-interactive failure)
         try:
@@ -1991,7 +1998,12 @@ class ImportService:
                 observations=observations,
                 disposition="rollback",
             )
-            raise ValueError(f"Transform failed: {e}") from e
+            # Type name only, same reason as the OFX parse guard above: Polars
+            # conversion errors quote the offending cell ("could not convert
+            # 'SAFEWAY #123'"), and this message now reaches the wire through
+            # `per_file_failure`. The rejection row recorded above keeps the
+            # diagnostic detail on the operator's side of the boundary.
+            raise ValueError(f"Transform failed: {type(e).__name__}") from e
 
         # Stage 5: Load — one account record per unique account
         institution = matched_format.institution_name if matched_format else None

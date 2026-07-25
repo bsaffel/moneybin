@@ -671,6 +671,162 @@ class TestImportFilesCommand:
         result = runner.invoke(app, ["files", str(a), str(b)])
         assert result.exit_code == 1, result.output
 
+    def test_text_mode_batch_shows_why_a_file_failed(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Text mode is the CLI default, so it cannot be the silent one.
+
+        The batch renderer printed only `❌ <path> [?] — 0 rows`, dropping the
+        per-file `error` and `hint` the rest of this change adds. That made the
+        recovery advice reachable only via `--output json` — the headline
+        scenario said nothing useful to a human running the bare command.
+        """
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: a.csv",
+                    error_code="infra_permission_denied",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+                PerFileResult(
+                    path=str(b), status="imported", source_type="tabular", rows_loaded=3
+                ),
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+
+        with caplog.at_level("INFO"):
+            result = runner.invoke(app, ["files", str(a), str(b)])
+
+        assert result.exit_code == 0, result.output  # partial success
+        assert "Operation not permitted" in caplog.text
+        assert "Grant Full Disk Access" in caplog.text
+
+    def test_batch_with_a_failed_file_declares_medium_sensitivity(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`error`/`hint` are DESCRIPTION-tier prose, so the batch is medium.
+
+        `ImportPerFileRow` annotates both as `DataClass.DESCRIPTION`, which the
+        MCP path derives MEDIUM from. The CLI derives its tier inline and only
+        looked at `confirmation_payload`, so once this change started putting
+        `error`/`hint` on the wire the CLI under-declared the same data as
+        `low` — and the paired privacy-audit row inherited that.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: a.csv",
+                    error_code="infra_permission_denied",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+                PerFileResult(
+                    path=str(a), status="imported", source_type="tabular", rows_loaded=1
+                ),
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["sensitivity"] == "medium"
+
+    def test_clean_batch_stays_low_sensitivity(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """The bump is conditional — an all-imported batch carries no prose.
+
+        Pairs with the test above so the fix can't be satisfied by declaring
+        everything medium, which would over-gate every successful import.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a), status="imported", source_type="tabular", rows_loaded=1
+                )
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["sensitivity"] == "low"
+
+    def test_text_mode_batch_stays_quiet_under_quiet_flag(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """`-q` suppresses the per-file block, error lines included."""
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: a.csv",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+                PerFileResult(
+                    path=str(a), status="imported", source_type="tabular", rows_loaded=1
+                ),
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+
+        with caplog.at_level("INFO"):
+            runner.invoke(app, ["files", str(a), str(b), "--quiet"])
+
+        assert "Grant Full Disk Access" not in caplog.text
+
 
 class TestImportStatusCommand:
     """Test the 'import status' CLI command."""
