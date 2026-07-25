@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 
 # Auto-Rule Pipeline
 
@@ -22,8 +22,8 @@ flowchart LR
     rule --> apply[CategorizationOrchestrator<br/>.apply_rules]
     apply --> txn[(app.transaction_categories<br/>categorized_by='auto_rule')]
     orch -->|check_overrides| obs
-    obs -->|threshold hit| deact[deactivate rule<br/>+ re-propose corrected category]
-    deact --> staged
+    obs -->|override threshold hit| deact[deactivate rule<br/>is_active=false]
+    deact --> audit[(app.audit_log<br/>categorization_rule.deactivate)]
 ```
 
 A fresh `AutoRuleService` is instantiated per batch — it holds no cross-batch state. Per-batch caches live on a recording context so the observation hook issues no per-item reads.
@@ -39,13 +39,12 @@ stateDiagram-v2
     tracking --> pending: trigger_count >= proposal_threshold
     pending --> approved: user runs auto accept --accept
     pending --> rejected: user runs auto accept --reject
-    approved --> superseded: check_overrides deactivates rule
     pending --> superseded: new proposal with different category replaces
     superseded --> [*]
     rejected --> [*]
 ```
 
-`approved` is terminal-but-revertible: once the override threshold is hit, `check_overrides` deactivates the rule and creates a fresh `pending` or `tracking` proposal carrying the corrected category.
+`approved` proposals stay `approved` for good — this diagram tracks `app.proposed_rules.status`, and `check_overrides` never writes to that table. Once the override threshold is hit, `check_overrides` deactivates the *rule* (`app.categorization_rules.is_active=false`); the proposal that originally produced it is untouched. See "Deactivation audit trail" below.
 
 ## Stage 1 — Exemplar accumulation
 
@@ -155,6 +154,19 @@ The CLI verb is `accept`; the underlying service method is named `approve`. They
 
 Each accepted proposal runs three writes — insert rule, mark proposal approved, back-fill uncategorized rows — inside a single transaction. A partial failure cannot leave an active rule whose proposal is still `pending`.
 
+### Refusal guards on promotion
+
+Two independent guards run inside `AutoRuleService.approve` before a `pending` proposal is promoted (`src/moneybin/services/auto_rule_service.py:638-734`), both tuned by settings under `MoneyBinSettings.categorization` (`src/moneybin/config.py:622-651`):
+
+- **Specificity floor** (`is_unselective_contains`) — a `contains` pattern shorter than `auto_rule_min_contains_length` (default `4`) is refused. A 2-char pattern like `TO`, invented from a truncated `TRANSFER TO ...`, matches `STORE`, `AUTO`, and `TOTAL`.
+- **Blast radius** (`_is_broad`) — a proposal is refused when its `estimated_match_count` exceeds `auto_rule_broad_match_factor` (default `10`) times its `trigger_count`, and the match count is at or above the `auto_rule_broad_match_min` floor (default `20`, so thin-evidence proposals under that floor are never flagged regardless of ratio).
+
+A refused proposal is not rejected — it stays `pending` and counts toward `skipped` in the accept result. `--allow-broad` (CLI `auto accept`) / `allow_broad=True` (`AutoRuleService.accept`, MCP `reviews_decide` per-decision `allow_broad`) waives *both* guards together for the whole accept batch; there is no way to waive just one (`auto_rule_service.py:667-675`).
+
+Direct rule creation (`transactions categorize rules create`, service `CategorizationService.create_rules`) enforces only the specificity floor — its own `--allow-broad` overrides that check the same way, but there is no blast-radius check on this path: a hand-authored rule has no `trigger_count` evidence to compare a match count against (`src/moneybin/services/categorization/applier.py:636-644`).
+
+`transactions_categorize_rules_set`, the MCP tool for declaring rule target state, resolves targets through `CategorizationService.plan_rule_targets` rather than `create_rules_core`. That path enforces the specificity floor unconditionally — it takes no `allow_broad` parameter, so a short `contains` pattern is refused with no override (`src/moneybin/services/categorization/applier.py:800-813`).
+
 ### Back-fill respects priority
 
 The back-fill does *not* simply categorize every uncategorized row whose description matches the new pattern. It runs the row through the full active rule set (sorted by priority) and only writes when the new rule is the priority winner. Otherwise a higher-priority user rule that also matches would be silently shadowed; subsequent `apply_rules` runs use `INSERT OR IGNORE` and cannot recover the right answer once an auto-rule has claimed the row.
@@ -166,8 +178,10 @@ The scan is bounded by `auto_rule_backfill_scan_cap` (default 50,000). Rows beyo
 Every write goes through the source-precedence guard:
 
 ```
-user (1) > rule (2) > auto_rule (3) > migration (4) > ml (5) > plaid (6) > ai (7)
+user (1) > rule (2) > auto_rule (3) > migration (4) > ml (5) > provider_native (6) > ai (7)
 ```
+
+(`src/moneybin/services/categorization/_shared.py:77-89` — `SOURCE_PRIORITY` is the single source of truth; the SQL `CASE` used in the write path is generated from this dict so the two ladders cannot drift. `provider_native` replaced the earlier `plaid` value when Plaid's Personal Finance Category taxonomy was bridged into `core.dim_categories`.)
 
 Lower number = higher priority. A categorization at priority `N` can replace any row at priority `≥ N`. The lone sanctioned bypass is `categorized_by='user'`, which always wins. This is what guarantees auto-rules cannot overwrite user manual edits.
 
@@ -202,20 +216,15 @@ sequenceDiagram
         DB-->>Auto: row
         Auto->>DB: SELECT active auto-rules
         loop each auto-rule
-            Auto->>DB: user/ai categorizations<br/>after rule.created_at<br/>where (category, subcategory)<br/>disagrees with the rule
-            Auto->>Auto: bucket by (category, subcategory)
-            alt total_overrides >= override_threshold
-                Auto->>Auto: pick winning bucket
-                Auto->>DB: BEGIN
-                Auto->>DB: deactivate rule
-                Auto->>DB: supersede old proposal
-                Auto->>DB: insert new proposal<br/>(trigger_count = winning bucket size)
-                Auto->>DB: insert rule_deactivations audit row
-                Auto->>DB: COMMIT
+            Auto->>DB: user/ai categorizations<br/>after rule.created_at<br/>where (category, subcategory)<br/>disagrees with the rule<br/>and matches the rule's pattern
+            alt override_count >= override_threshold
+                Auto->>DB: deactivate rule<br/>(is_active=false)<br/>+ emit categorization_rule.deactivate<br/>audit event
             end
         end
     end
 ```
+
+Re-proposal — automatically staging a replacement proposal shaped by the overriding categorizations — was removed: "the replacement-rule heuristic lacks production signal" (`src/moneybin/services/auto_rule_service.py:936-938`). `check_overrides` only deactivates; it does not bucket overrides by their replacement `(category, subcategory)` and does not touch `app.proposed_rules`. A user who wants the corrected category picked up must categorize enough transactions by hand (or author a rule) for a fresh proposal to accumulate through the normal Stage 1–3 path.
 
 ### Override semantics
 
@@ -226,11 +235,15 @@ An override is any `app.transaction_categories` row that:
 - Has `(category, subcategory)` different from the rule's.
 - Matches the rule's `(pattern, match_type)` under the matcher. Manual rows (`source_type='manual'`) are filtered out at the SQL level.
 
-The new proposal's `trigger_count` is the size of the *winning* bucket, not the total override count. Minority buckets representing unrelated drift should not inflate the new proposal's evidence.
+`check_overrides` counts every matching override toward one threshold — there is no bucketing by replacement category; overrides disagreeing with the rule for different reasons all count the same.
+
+### Deactivation audit trail
+
+Deactivation (both the override path and a manual `rules delete`) routes through `CategorizationRulesRepo.deactivate`, which sets `is_active=false` and emits one `categorization_rule.deactivate` event to `app.audit_log` (Invariant 10) carrying `context={"reason": "override_threshold", "override_count": N, "sample_ids": [...]}` for the override path (`src/moneybin/repositories/categorization_rules_repo.py:111-151`). There is no separate `app.rule_deactivations` table — it was dropped in migration V018 when re-proposal (and the "winning bucket" metadata it needed) was removed; deactivation events live in the general audit log instead (`src/moneybin/sql/migrations/V018__drop_rule_deactivations.py`).
 
 ### Threshold ordering invariant
 
-`auto_rule_proposal_threshold <= auto_rule_override_threshold` is enforced by a Pydantic validator. If proposal > override, deactivation could create a re-proposal that lands in `tracking` (count below proposal threshold), hiding the corrected category from `auto review` until further user categorizations arrive.
+`auto_rule_proposal_threshold <= auto_rule_override_threshold` is enforced by a Pydantic validator (`src/moneybin/config.py:682-698`). The deactivation bar must not sit below the creation bar: if `override_threshold` were less than `proposal_threshold`, a pattern could accumulate enough user corrections to deactivate its rule via `check_overrides` before enough auto-categorizations had ever occurred to propose the rule via `record_categorization` — an obviously degenerate configuration.
 
 ## Concurrency and locking
 
@@ -246,7 +259,8 @@ Acceptance and override-deactivation are each wrapped in their own transactions;
 | `app.categorization_rules` | Active and historical rules. One row per `rule_id`. Auto-promoted rules have `created_by='auto_rule'` and `priority=auto_rule_default_priority` (default 200). Same shape as user rules (`merchant_pattern`, `match_type`, optional `min_amount` / `max_amount` / `account_id`, `category_id`, `is_active`). |
 | `app.transaction_categories` | The applied categorization. One row per `transaction_id`. Auto-rule applies write `categorized_by='auto_rule'`, carrying `rule_id` for back-reference. |
 | `app.user_merchants` | Exemplar accumulator (surfaced as `core.dim_merchants`). Exemplar-only merchants carry `match_type='oneOf'` and a list of exact match-text values. |
-| `app.rule_deactivations` | Audit trail. One row per deactivation with `reason` (`override_threshold` for the auto-rule path), `override_count`, and the `new_category_id` the deactivation converged on. Append-only; never updated. |
+
+There is no dedicated deactivation-audit table: `app.rule_deactivations` was dropped in migration V018 (see "Deactivation audit trail" below). Deactivation events live in `app.audit_log`, the shared audit table for all `app.*` mutations (Invariant 10).
 
 Detailed column-by-column reference in [`docs/reference/data-model.md`](../reference/data-model.md).
 
@@ -262,6 +276,9 @@ All settings live under `MoneyBinSettings.categorization` in `src/moneybin/confi
 | `auto_rule_sample_txn_cap` | `5` | Maximum `transaction_id`s retained per proposal in `sample_txn_ids`. Older samples drop off when capacity is hit; the newest survive. |
 | `auto_rule_list_default_limit` | `100` | Default `LIMIT` applied to `auto review` and `auto rules` when no `--limit` is given. |
 | `auto_rule_backfill_scan_cap` | `50_000` | Maximum uncategorized rows scanned during the accept back-fill. Rows beyond the cap stay uncategorized until the next `apply_rules` run. |
+| `auto_rule_min_contains_length` | `4` | Specificity floor. A `contains` pattern shorter than this is refused at promotion — a 2-char pattern like `TO` (from a truncated `TRANSFER TO ...`) matches `STORE`, `AUTO`, and `TOTAL`. See "Refusal guards on promotion" below. |
+| `auto_rule_broad_match_min` | `20` | Blast-radius floor. A proposal matching fewer transactions than this is never flagged broad, however thin its evidence. |
+| `auto_rule_broad_match_factor` | `10` | A proposal is broad when its `estimated_match_count` exceeds `factor × trigger_count` — disproportionate to the evidence behind it. Broad proposals are refused at promotion unless explicitly overridden. |
 
 Env-var overrides use the `MONEYBIN_CATEGORIZATION__` prefix, e.g. `MONEYBIN_CATEGORIZATION__AUTO_RULE_PROPOSAL_THRESHOLD=3`.
 
@@ -292,6 +309,8 @@ When bulk-importing years of history for the first time, raise the thresholds *b
 
 ### What a bad proposal looks like in `auto review`
 
+The specificity floor and blast-radius guard ("Refusal guards on promotion" above) catch some bad patterns automatically at accept time, but they are not a substitute for review: a pattern like `PAYMENT` clears the 4-character specificity floor, and whether it crosses the blast-radius ratio depends on how many transactions matched during observation — a proposal can pass both guards and still be wrong.
+
 Patterns to reject (and why):
 
 - **Pattern: `PAYMENT`** — too generic; matches every payment of any kind. Reject.
@@ -307,7 +326,7 @@ Let auto-rules surface the patterns you didn't predict: a regional grocery chain
 
 ### Blast radius of acceptance
 
-Accepting a proposal triggers a back-fill that scans up to `auto_rule_backfill_scan_cap` (default 50,000) uncategorized rows and applies the new rule wherever it wins on priority. There is no built-in dry-run flag.
+Accepting a proposal triggers a back-fill that scans up to `auto_rule_backfill_scan_cap` (default 50,000) uncategorized rows and applies the new rule wherever it wins on priority. There is no built-in dry-run flag. This scan bound is separate from the promotion-time blast-radius *refusal* guard (`auto_rule_broad_match_min` / `auto_rule_broad_match_factor`, "Refusal guards on promotion" above) — a proposal can clear that guard and still be worth previewing before its back-fill runs.
 
 To preview before accepting:
 
@@ -322,7 +341,7 @@ To remove a recently accepted auto-rule and re-categorize the affected rows:
 moneybin transactions categorize rules delete <rule_id> --reapply
 ```
 
-`--reapply` strips the categorizations that this rule wrote and re-evaluates those rows against remaining active matchers. The rule is *soft*-deleted (`is_active=false`); its row stays in `app.categorization_rules` for audit. `app.rule_deactivations` carries an additional audit row when the deactivation came from the override path.
+`--reapply` strips the categorizations that this rule wrote and re-evaluates those rows against remaining active matchers. The rule is *soft*-deleted (`is_active=false`); its row stays in `app.categorization_rules` for audit. `app.audit_log` carries a paired `categorization_rule.deactivate` event either way — a manual `rules delete` and an override-driven deactivation are distinguished by `actor` (`'cli'`/`'mcp'` vs `'auto_rule_service'`) and by whether `context_json` carries `reason='override_threshold'`.
 
 Rejected proposals cannot be un-rejected — but they aren't sticky either: a future observation matching the same pattern can create a fresh proposal because the in-progress lookup only considers `status IN ('pending', 'tracking')`.
 
@@ -341,10 +360,14 @@ ORDER BY created_at DESC;
 Recent auto-rule deactivations (override-driven rollbacks):
 
 ```sql
-SELECT deactivation_id, rule_id, reason, override_count, new_category, deactivated_at
-FROM app.rule_deactivations
-WHERE reason = 'override_threshold'
-ORDER BY deactivated_at DESC
+SELECT audit_id, target_id AS rule_id,
+       json_extract_string(context_json, '$.reason') AS reason,
+       json_extract_string(context_json, '$.override_count') AS override_count,
+       occurred_at
+FROM app.audit_log
+WHERE action = 'categorization_rule.deactivate'
+  AND json_extract_string(context_json, '$.reason') = 'override_threshold'
+ORDER BY occurred_at DESC
 LIMIT 100;
 ```
 
@@ -358,7 +381,7 @@ WHERE tc.transaction_id IS NULL
   AND f.description ILIKE '%' || ? || '%';
 ```
 
-The auto-rule service itself does not write to `app.audit_log` today — `app.rule_deactivations` is the durable record for the override path, and `app.categorization_rules.created_at` is the durable record for accepted proposals.
+The override path's durable record is the `categorization_rule.deactivate` event in `app.audit_log` (see "Deactivation audit trail" above); `app.categorization_rules.created_at` is the durable record for accepted proposals.
 
 ## Agent loop pattern
 
@@ -369,10 +392,13 @@ A worked example for an agent (Claude Code, Codex, or an MCP-driving script) pol
 review = mcp.call("reviews", kind="auto_rules", status="pending")
 for row in review.data["rows"]:
     proposal = row["details"]["proposal"]
-    # There is no confidence column today; trigger_count is the proxy.
+    # There is no confidence column; trigger_count plus the server-computed
+    # is_broad / estimated_match_count (see "Refusal guards on promotion")
+    # are the available signals.
     high_evidence = proposal["trigger_count"] >= 5
-    # Pattern-quality is the agent's responsibility — the service does
-    # not score it. Reject generic patterns and obviously short tokens.
+    # Pattern plausibility beyond blast radius is still the agent's call —
+    # the service doesn't score whether a pattern reads as a real merchant.
+    # Reject generic patterns and obviously short tokens before accepting.
     pattern = proposal["merchant_pattern"]
     too_generic = len(pattern) < 5 or pattern.upper() in {
         "PAYMENT",
@@ -381,7 +407,7 @@ for row in review.data["rows"]:
         "CREDIT",
         "ACH",
     }
-    if high_evidence and not too_generic:
+    if high_evidence and not too_generic and not proposal["is_broad"]:
         mcp.call(
             "reviews_decide",
             decisions=[
@@ -395,7 +421,7 @@ for row in review.data["rows"]:
     # Otherwise leave for human review.
 ```
 
-Honest about the shape today: there is no confidence column on `proposed_rules`. `trigger_count` is the only signal the service exposes; the "is this pattern any good?" judgment lives in the agent, not the service. If you want to encode a stricter policy (require a minimum sample diversity, filter on category, etc.), inspect `sample_txn_ids` and fetch the underlying transactions via `core.fct_transactions` before deciding.
+Honest about the shape today: there is no confidence column on `proposed_rules`. `trigger_count`, `estimated_match_count`, and `is_broad` are the signals the service exposes — the server refuses a broad or under-specific promotion outright (see "Refusal guards on promotion" above), so an agent that skips the `is_broad` check above still cannot promote a ledger-wrecking rule without passing `allow_broad=true` explicitly. What the service does not score is pattern *plausibility* — whether `merchant_pattern` reads as a real merchant name rather than a generic token that happens to clear the specificity floor. That judgment still lives in the agent. If you want a stricter policy (minimum sample diversity, category filtering), inspect `sample_txn_ids` and fetch the underlying transactions via `core.fct_transactions` before deciding.
 
 The same loop can run against the CLI directly with `--output json`:
 
@@ -426,4 +452,4 @@ Pattern extraction is incremental, not a periodic rebuild. The pipeline never re
 
 **Rejected proposal — can it re-surface?** Yes, eventually. `reject` writes `status='rejected'`, which terminates that specific proposal. Future categorizations matching the same `(pattern, match_type)` go through the in-progress lookup, which only considers `status IN ('pending', 'tracking')` — so a fresh proposal can be created from scratch on the next matching observation. There is no "rejection memory" that blocks re-proposal; reject is per-row, not per-pattern. If you want a hard block, author a user rule for the desired `(category, subcategory)` so the active-rule coverage gate short-circuits future observations.
 
-**Auto-rule deactivated by overrides, then the corrected proposal is also rejected.** The rule stays deactivated (no path re-activates a `is_active=false` auto-rule). The corrected proposal terminates as `rejected`. Future observations matching the original pattern create new proposals as usual. The deactivation row in `app.rule_deactivations` is the durable record.
+**Auto-rule deactivated by overrides — what happens to the pattern next?** The rule stays deactivated; no path re-activates an `is_active=false` auto-rule. `check_overrides` does not stage a replacement proposal (see "Override detection" above), so the corrected category is not surfaced automatically. Because the deactivated rule is no longer `is_active`, it no longer satisfies the Stage 3 active-rule coverage gate, so future categorizations matching the same pattern are free to accumulate a brand-new proposal through the normal Stage 1–3 path. The `categorization_rule.deactivate` event in `app.audit_log` is the durable record of why the original rule stopped applying.

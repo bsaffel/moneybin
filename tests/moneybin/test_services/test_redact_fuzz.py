@@ -1,8 +1,7 @@
 """Fuzz tests: assert no embedded PII patterns appear in redacted output.
 
 These run as part of CI on every PR. New PII patterns identified in the wild
-become new fuzz cases — see private/followups.md "Categorization redaction:
-testing, tuning, internationalization".
+become new fuzz cases here.
 """
 
 import pytest

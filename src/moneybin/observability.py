@@ -84,7 +84,8 @@ def setup_observability(
     # flush_metrics() inside close_db() in the server lifecycle instead.
     # The gate is per-stream (not a one-shot init flag) so a process that
     # first booted as mcp/sqlmesh and later runs CLI work still wires the
-    # hook up. Long-term: write-piggybacked persistence; see private/plans/.
+    # hook up. Long-term direction: persist counters piggybacked on an
+    # existing write rather than at process exit.
     if stream == "cli" and not _atexit_registered:
         import atexit
 

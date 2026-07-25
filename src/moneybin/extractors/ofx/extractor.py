@@ -170,8 +170,7 @@ def _disambiguate_colliding_fitids(transactions: list[dict[str, Any]]) -> int:
     apart. Cross-file same-FITID collisions are therefore intentionally not
     repaired here (rare in practice: the observed pattern, a foreign purchase and
     its same-day fee, always co-occurs in one export); a fuller solution needs a
-    stronger signal and is tracked as a follow-up in ``private/followups.md``
-    ("OFX cross-file FITID collision").
+    stronger signal than content and remains open.
 
     Mutates ``transactions`` in place; returns the number of rows rewritten.
     """

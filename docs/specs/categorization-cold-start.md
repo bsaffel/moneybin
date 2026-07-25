@@ -595,7 +595,7 @@ Future spec recommended (see Adjacent initiatives in overview).
 
 ### Server-side merchant DB enrichment
 
-Tracked as a Tier D followup.
+Future spec recommended.
 
 - Slots into the priority ladder cleanly — new `categorized_by='enrichment'` between `'provider_native'` and `'ai'`.
 - Per "sync server is opaque" principle, server-side enrichment is invisible to client beyond receiving better-quality data.
@@ -616,7 +616,7 @@ Existing future direction in overview (retained at the architecture-future level
 
 ### Multi-region expansion (UK, EU, AU, etc.)
 
-Redaction internationalization tracked as recurring quality concern in followups. No seed-catalog dimension to expand — international users build their own `app.user_merchants` via the same LLM-assist + auto-rule snowball as US/CA users.
+Redaction internationalization is a recurring quality concern, not a one-time change. No seed-catalog dimension to expand — international users build their own `app.user_merchants` via the same LLM-assist + auto-rule snowball as US/CA users.
 
 ### What's *not* in the forward-compatibility list
 
