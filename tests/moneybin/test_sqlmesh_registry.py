@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError, classify_user_error
 from moneybin.seeds import INIT_CREATED_MODELS
 from moneybin.sqlmesh_registry import model_presence, registered_model_names
 
@@ -83,8 +85,12 @@ def test_an_unreadable_catalog_is_not_reported_as_never_built(
     value ``never_built`` keys on, so an unreadable catalog took the healthy
     first-run branch in *both* consumers: the doctor reported ``skipped`` with
     "run refresh_run" as the remedy, and ``freshness()`` dropped the missing
-    set and reported ``pending=False``. Propagating is what lets each caller
-    say it could not answer instead of answering wrongly.
+    set and reported ``pending=False``.
+
+    It propagates *classified*, not raw. ``handle_cli_errors`` re-raises
+    whatever ``classify_user_error`` does not recognize, so a bare DuckDB
+    error would turn `moneybin system status` and `moneybin transform status`
+    into tracebacks — trading a wrong answer for a crash.
     """
 
     def _raise(*_args: object, **_kwargs: object) -> object:
@@ -92,8 +98,11 @@ def test_an_unreadable_catalog_is_not_reported_as_never_built(
 
     monkeypatch.setattr(db, "execute", _raise)
 
-    with pytest.raises(RuntimeError, match="catalog unreadable"):
+    with pytest.raises(UserError) as excinfo:
         model_presence(db)
+
+    assert excinfo.value.code == error_codes.INFRA_CATALOG_UNAVAILABLE
+    assert classify_user_error(excinfo.value) is not None
 
 
 @pytest.mark.unit

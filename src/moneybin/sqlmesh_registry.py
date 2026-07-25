@@ -20,6 +20,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from moneybin import error_codes
+from moneybin.errors import UserError
 from moneybin.seeds import INIT_CREATED_MODELS
 
 if TYPE_CHECKING:
@@ -115,16 +117,31 @@ def model_presence(db: Database) -> ModelPresence:
     value :attr:`ModelPresence.never_built` keys on, so an unreadable catalog
     took the healthy first-run branch in both callers — the doctor answered
     "run refresh_run" and ``freshness()`` reported ``pending=False`` for a
-    database it could not inspect at all. Each caller isolates the failure
-    itself and reports that it could not answer.
+    database it could not inspect at all.
+
+    It propagates as a ``UserError`` rather than DuckDB's own exception because
+    ``freshness()`` has no catch of its own: this error is what reaches
+    ``moneybin system status`` and ``moneybin transform status``, and
+    ``handle_cli_errors`` re-raises whatever ``classify_user_error`` does not
+    recognize. Raw, it is a traceback on a user-facing command; classified,
+    every surface degrades — the doctor isolates it per-invariant, the MCP
+    section marks itself unavailable, and the CLI prints one clean line.
     """
-    rows = db.execute(
-        """
-        SELECT LOWER(schema_name || '.' || table_name) FROM duckdb_tables()
-        UNION
-        SELECT LOWER(schema_name || '.' || view_name) FROM duckdb_views()
-        """
-    ).fetchall()
+    try:
+        rows = db.execute(
+            """
+            SELECT LOWER(schema_name || '.' || table_name) FROM duckdb_tables()
+            UNION
+            SELECT LOWER(schema_name || '.' || view_name) FROM duckdb_views()
+            """
+        ).fetchall()
+    except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on catalog reads
+        logger.debug("model catalog read failed", exc_info=True)
+        raise UserError(
+            "Could not read the database model catalog.",
+            code=error_codes.INFRA_CATALOG_UNAVAILABLE,
+            hint="💡 Run 'moneybin system doctor' to check the database.",
+        ) from e
     built = {str(row[0]) for row in rows}
     registered = registered_model_names()
     return ModelPresence(

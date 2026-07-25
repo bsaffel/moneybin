@@ -119,7 +119,15 @@ def test_freshness_does_not_report_healthy_when_the_catalog_is_unreadable(
     swallowed catalog error reached this branch and reported the same value a
     healthy first run does — the one signal watching for absent models going
     quiet on a database that cannot be inspected at all.
+
+    It must also stay *classified* on the way out. `freshness()` has no catch
+    of its own, so this exception is what `moneybin system status` and
+    `moneybin transform status` surface, and `handle_cli_errors` re-raises
+    anything `classify_user_error` returns None for — an unclassified error
+    here is a traceback on a user-facing command.
     """
+    from moneybin.errors import UserError, classify_user_error
+
     real_execute = db.execute
 
     def _fail_catalog_reads(sql: str, *args: object, **kwargs: object) -> object:
@@ -129,8 +137,10 @@ def test_freshness_does_not_report_healthy_when_the_catalog_is_unreadable(
 
     monkeypatch.setattr(db, "execute", _fail_catalog_reads)
 
-    with pytest.raises(RuntimeError, match="catalog unreadable"):
+    with pytest.raises(UserError) as excinfo:
         TransformService(db).freshness()
+
+    assert classify_user_error(excinfo.value) is not None
 
 
 def test_freshness_filters_reverted_and_failed_imports(
