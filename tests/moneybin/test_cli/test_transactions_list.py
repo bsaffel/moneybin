@@ -345,3 +345,43 @@ def test_the_suggested_continuation_command_reruns_with_the_same_filters() -> No
     assert kwargs["uncategorized_only"] is True
     assert kwargs["limit"] == 2
     assert kwargs["cursor"] == "c1"
+
+
+@pytest.mark.unit
+def test_the_suggested_continuation_command_keeps_the_json_output_mode() -> None:
+    """A machine-readable page walk must stay machine-readable past page one.
+
+    `--output` is not a filter, so it is absent from the cursor scope and the
+    continuation still *succeeds* without it — it just renders page two as a
+    human table and drops the next cursor into the text branch. An agent
+    walking pages via `--output json` gets a parse error rather than an
+    envelope, which is the same dead end the missing filters caused.
+    """
+    import json
+    import shlex
+
+    txns = [_make_txn()]
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService,
+                "get",
+                return_value=_mock_result(txns, next_cursor="c1", total_count=4),
+            ):
+                first = runner.invoke(
+                    app,
+                    ["transactions", "list", "--limit", "2", "--output", "json"],
+                )
+
+    assert first.exit_code == 0
+    hint = json.loads(first.output)["actions"][0]
+    argv = shlex.split(hint.split("`")[1])
+
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(TransactionService, "get", return_value=_mock_result([])):
+                second = runner.invoke(app, argv[1:])
+
+    assert second.exit_code == 0
+    # The page-two response must still parse as an envelope.
+    assert "summary" in json.loads(second.output)

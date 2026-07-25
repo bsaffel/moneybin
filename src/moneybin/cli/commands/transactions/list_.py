@@ -22,36 +22,50 @@ from moneybin.cli.utils import render_rich_table
 logger = logging.getLogger(__name__)
 
 
-def _continuation_command(filters: dict[str, object], next_cursor: str) -> str:
-    """A complete, runnable continuation — every active filter echoed back.
+def _continuation_command(invocation: dict[str, object], next_cursor: str) -> str:
+    """Reproduce this invocation with the cursor added.
 
-    The cursor is bound to the filters that produced it, so a command that
-    drops them decodes against a different scope and the service rejects it.
+    Two distinct reasons every argument carries, not just the filters. The
+    cursor is *bound* to the filters that produced it, so dropping one makes
+    the service reject the continuation outright. ``--output`` is not bound —
+    the call still succeeds without it, which is worse: page two silently
+    renders as a human table and an agent walking pages gets a parse error
+    instead of an envelope.
+
     Mirrors the MCP twin (``_transaction_actions``), which already emits a
     complete continuation call. ``shlex.join`` handles account names and
     description patterns containing spaces or quotes.
     """
     argv = ["moneybin", "transactions", "list"]
-    for account in cast("list[str]", filters["accounts"]):
+    for account in cast("list[str]", invocation["accounts"]):
         argv += ["--account", account]
-    for category in cast("list[str]", filters["categories"]):
+    for category in cast("list[str]", invocation["categories"]):
         argv += ["--category", category]
     for flag, value in (
-        ("--from", filters["date_from"]),
-        ("--to", filters["date_to"]),
-        ("--amount-min", filters["amount_min"]),
-        ("--amount-max", filters["amount_max"]),
-        ("--description", filters["description"]),
+        ("--from", invocation["date_from"]),
+        ("--to", invocation["date_to"]),
+        ("--amount-min", invocation["amount_min"]),
+        ("--amount-max", invocation["amount_max"]),
+        ("--description", invocation["description"]),
     ):
         if value is not None:
             argv += [flag, str(value)]
-    if filters["uncategorized"]:
+    if invocation["uncategorized"]:
         argv.append("--uncategorized")
-    argv += ["--limit", str(filters["limit"]), "--cursor", next_cursor]
+    if invocation["quiet"]:
+        argv.append("--quiet")
+    argv += [
+        "--limit",
+        str(invocation["limit"]),
+        "--output",
+        str(invocation["output"]),
+        "--cursor",
+        next_cursor,
+    ]
     return shlex.join(argv)
 
 
-def _list_actions(next_cursor: str | None, filters: dict[str, object]) -> list[str]:
+def _list_actions(next_cursor: str | None, invocation: dict[str, object]) -> list[str]:
     """Next-step hints for an agent driving the CLI.
 
     These name CLI invocations, not MCP tools. An agent reading a CLI envelope
@@ -66,7 +80,7 @@ def _list_actions(next_cursor: str | None, filters: dict[str, object]) -> list[s
     if next_cursor is not None:
         actions.insert(
             0,
-            f"Use `{_continuation_command(filters, next_cursor)}` "
+            f"Use `{_continuation_command(invocation, next_cursor)}` "
             "to fetch the next page",
         )
     return actions
@@ -170,6 +184,8 @@ def transactions_list(
                 "description": description,
                 "uncategorized": uncategorized,
                 "limit": limit,
+                "output": output.value,
+                "quiet": quiet,
             },
         ),
     )
