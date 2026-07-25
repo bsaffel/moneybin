@@ -394,7 +394,7 @@ def _validate_explicit_tabular_sign_shape(
             "convention does not read. Re-run with --sign negative_is_expense "
             "or --sign negative_is_income, or map both debit_amount and "
             "credit_amount; nothing was imported.",
-            code="invalid_sign_convention",
+            code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
         )
     if sign != "split_debit_credit" and has_split_amount:
         raise UserError(
@@ -402,7 +402,7 @@ def _validate_explicit_tabular_sign_shape(
             "mapping resolves a debit/credit pair, which this convention does "
             "not read. Re-run with --sign split_debit_credit, or map one amount "
             "column; nothing was imported.",
-            code="invalid_sign_convention",
+            code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
         )
 
 
@@ -1326,13 +1326,13 @@ class ImportService:
                 raise UserError(
                     "The stored import snapshot no longer matches its reviewed "
                     "header signature.",
-                    code="IMPORT_PREVIEW_PLAN_MISMATCH",
+                    code=error_codes.IMPORT_PREVIEW_PLAN_MISMATCH,
                 )
             if read_result.rows_in_file != reviewed_plan.rows_in_file:
                 raise UserError(
                     "The stored import snapshot no longer matches its reviewed "
                     "row accounting.",
-                    code="IMPORT_PREVIEW_PLAN_MISMATCH",
+                    code=error_codes.IMPORT_PREVIEW_PLAN_MISMATCH,
                 )
             missing_columns = sorted(
                 set(reviewed_plan.field_mapping.values()).difference(df.columns)
@@ -1340,7 +1340,7 @@ class ImportService:
             if missing_columns:
                 raise UserError(
                     "The reviewed import mapping references unavailable columns.",
-                    code="IMPORT_PREVIEW_PLAN_MISMATCH",
+                    code=error_codes.IMPORT_PREVIEW_PLAN_MISMATCH,
                 )
             resolved = ResolvedMapping(
                 field_mapping=dict(reviewed_plan.field_mapping),
@@ -1574,7 +1574,7 @@ class ImportService:
             raise UserError(
                 f"Invalid sign convention: {sign!r}. "
                 f"Valid values: {list(get_args(SignConventionType))}.",
-                code="invalid_sign_convention",
+                code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
             )
         if number_format_override and number_format_override not in get_args(
             NumberFormatType
@@ -1582,7 +1582,7 @@ class ImportService:
             raise UserError(
                 f"Invalid number format: {number_format_override!r}. "
                 f"Valid values: {list(get_args(NumberFormatType))}.",
-                code="invalid_number_format",
+                code=error_codes.IMPORT_INVALID_NUMBER_FORMAT,
             )
         if sign:
             _validate_explicit_tabular_sign_shape(
@@ -2567,7 +2567,7 @@ class ImportService:
                 raise UserError(
                     f"Invalid sign convention: {sign!r}. "
                     f"Valid values: {list(get_args(SignConventionType))}.",
-                    code="invalid_sign_convention",
+                    code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
                 )
             # The loader reads convention-specific row keys: `amount` for the
             # single-column conventions, `debit`/`credit` for the split. An
@@ -2588,7 +2588,7 @@ class ImportService:
                     f"Sign convention {sign!r} does not fit this statement's "
                     f"columns — its recipe extracts a {actual_shape} the "
                     f"convention does not read.",
-                    code="invalid_sign_convention",
+                    code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
                 )
             record_counter(
                 PDF_SIGN_GATE_TOTAL,
@@ -4091,13 +4091,13 @@ class ImportService:
         if format_name in load_builtin_formats():
             raise UserError(
                 f"Built-in format {format_name!r} cannot be deleted.",
-                code="saved_format_builtin_immutable",
+                code=error_codes.IMPORT_SAVED_FORMAT_BUILTIN_IMMUTABLE,
             )
         row = TabularFormatsRepo(self._db).get(format_name)
         if row is None:
             raise UserError(
                 f"Saved format {format_name!r} was not found.",
-                code="saved_format_not_found",
+                code=error_codes.IMPORT_SAVED_FORMAT_NOT_FOUND,
             )
         canonical = json.dumps(
             row,

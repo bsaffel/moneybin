@@ -584,7 +584,7 @@ class TransactionService:
         if row is None:
             raise UserError(
                 "The transaction reference did not match a transaction.",
-                code="TRANSACTION_REFERENCE_NOT_FOUND",
+                code=error_codes.TRANSACTION_REFERENCE_NOT_FOUND,
             )
         amount = row[0]
         return amount if isinstance(amount, Decimal) else Decimal(str(amount))
@@ -602,7 +602,7 @@ class TransactionService:
         if row is None:
             raise UserError(
                 "The note reference did not match a note.",
-                code="NOTE_REFERENCE_NOT_FOUND",
+                code=error_codes.TRANSACTION_NOTE_NOT_FOUND,
             )
         return _row_to_note(row)
 
@@ -1532,7 +1532,7 @@ class TransactionService:
             if conflicts:
                 raise UserError(
                     "The tag rename would duplicate an existing tag target.",
-                    code="TAG_RENAME_CONFLICT",
+                    code=error_codes.TRANSACTION_TAG_RENAME_CONFLICT,
                 )
         return _PreparedTagRename(
             old_name=old_tag,
@@ -1776,7 +1776,7 @@ class TransactionService:
             ):
                 raise UserError(
                     "The split category reference did not match a category.",
-                    code="CATEGORY_REFERENCE_NOT_FOUND",
+                    code=error_codes.TAXONOMY_CATEGORY_REFERENCE_NOT_FOUND,
                 )
             desired.append(
                 _PreparedSplit(
@@ -1791,7 +1791,7 @@ class TransactionService:
         if splits and expected_total is not None and total != expected_total:
             raise UserError(
                 "Split amounts must total the transaction amount.",
-                code="SPLIT_TOTAL_INVALID",
+                code=error_codes.TRANSACTION_SPLIT_TOTAL_INVALID,
             )
         rows = self._db.conn.execute(
             """

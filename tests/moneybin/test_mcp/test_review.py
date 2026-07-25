@@ -394,12 +394,12 @@ async def test_review_summary_counts_auto_rules_without_blast_radius_scan() -> N
 @pytest.mark.parametrize(
     ("kwargs", "code"),
     [
-        ({"kind": "summary", "limit": 1}, "REVIEW_PAGINATION_NOT_ALLOWED"),
+        ({"kind": "summary", "limit": 1}, "review_pagination_not_allowed"),
         (
             {"kind": "summary", "cursor": "anything"},
-            "REVIEW_PAGINATION_NOT_ALLOWED",
+            "review_pagination_not_allowed",
         ),
-        ({"kind": "summary", "status": "history"}, "REVIEW_STATUS_NOT_ALLOWED"),
+        ({"kind": "summary", "status": "history"}, "review_status_not_allowed"),
     ],
 )
 async def test_review_summary_rejects_incompatible_arguments(
@@ -562,7 +562,7 @@ async def test_review_pagination_is_stable_filter_bound_and_executable() -> None
             cursor=first.next_cursor,
         )
         assert incompatible.error is not None
-        assert incompatible.error.code == "REVIEW_CURSOR_INVALID"
+        assert incompatible.error.code == "review_cursor_invalid"
 
 
 async def test_review_pending_continuation_does_not_skip_after_first_row_removed() -> (
@@ -629,7 +629,7 @@ async def test_review_cursor_validates_key_shape_when_queue_is_empty() -> None:
         )
 
     assert response.error is not None
-    assert response.error.code == "REVIEW_CURSOR_INVALID"
+    assert response.error.code == "review_cursor_invalid"
 
 
 async def test_review_standard_registrar_renders_closed_contract() -> None:
@@ -769,7 +769,7 @@ async def test_review_cursor_error_is_canonical_and_sanitized() -> None:
     assert hasattr(text, "text")
     assert response.structuredContent is not None
     assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
-    assert response.structuredContent["error"]["code"] == "REVIEW_CURSOR_INVALID"
+    assert response.structuredContent["error"]["code"] == "review_cursor_invalid"
     assert invalid_cursor not in text.text  # type: ignore[union-attr]
 
 

@@ -38,7 +38,7 @@ async def test_privacy_coarse_status_rejects_pagination_overrides(
     response = await privacy_coarse(view="status", limit=limit, cursor=cursor)
 
     assert response.error is not None
-    assert response.error.code == "PRIVACY_PAGINATION_NOT_ALLOWED"
+    assert response.error.code == "privacy_pagination_not_allowed"
 
 
 async def test_privacy_coarse_log_paginates_exactly_and_preserves_rows(
@@ -175,7 +175,7 @@ async def test_privacy_coarse_rejects_wrong_key_type_before_log_read(
     response = await privacy_coarse(view="log", cursor=cursor)
 
     assert response.error is not None
-    assert response.error.code == "PRIVACY_CURSOR_INVALID"
+    assert response.error.code == "privacy_cursor_invalid"
     assert accessed is False
 
 
@@ -186,7 +186,7 @@ async def test_privacy_coarse_log_rejects_malformed_cursor_without_echo() -> Non
     response = await privacy_coarse(view="log", cursor=cursor_value)
 
     assert response.error is not None
-    assert response.error.code == "PRIVACY_CURSOR_INVALID"
+    assert response.error.code == "privacy_cursor_invalid"
     assert cursor_value not in response.error.message
 
 

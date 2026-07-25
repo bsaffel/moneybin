@@ -215,7 +215,7 @@ def _privacy_position(cursor: str | None) -> KeysetPosition | None:
     except ValueError as exc:
         raise UserError(
             "Invalid privacy pagination cursor.",
-            code="PRIVACY_CURSOR_INVALID",
+            code=error_codes.PRIVACY_CURSOR_INVALID,
         ) from exc
 
 
@@ -265,7 +265,7 @@ def privacy_coarse(
         if limit != 100 or cursor is not None:
             raise UserError(
                 "Privacy status does not accept pagination overrides.",
-                code="PRIVACY_PAGINATION_NOT_ALLOWED",
+                code=error_codes.PRIVACY_PAGINATION_NOT_ALLOWED,
             )
         with get_database(read_only=True) as db:
             status = ConsentService(db).status()
@@ -308,7 +308,7 @@ def privacy_coarse(
     except ValueError as exc:
         raise UserError(
             "Invalid privacy pagination cursor.",
-            code="PRIVACY_CURSOR_INVALID",
+            code=error_codes.PRIVACY_CURSOR_INVALID,
         ) from exc
     rows = [PrivacyLogRow.from_event(event) for event in page.events]
     next_cursor = (

@@ -347,7 +347,7 @@ async def test_import_revert_refuses_builtin_format_deletion(mcp_db: Path) -> No
         )
     ).to_dict()
 
-    assert result["error"]["code"] == "saved_format_builtin_immutable"
+    assert result["error"]["code"] == "import_saved_format_builtin_immutable"
 
 
 def _issue_coarse_preview(
@@ -538,7 +538,7 @@ async def test_import_preview_rejects_oversized_tabular_before_full_read(
         response = await import_preview_coarse(file_path=str(source))
 
     assert response.error is not None
-    assert response.error.code == "preview_error"
+    assert response.error.code == "import_preview_error"
     full_open.assert_not_called()
 
 
@@ -567,7 +567,7 @@ async def test_import_preview_rejects_oversized_pdf_before_full_read(
         response = await import_preview_coarse(file_path=str(source))
 
     assert response.error is not None
-    assert response.error.code == "preview_error"
+    assert response.error.code == "import_preview_error"
     full_open.assert_not_called()
 
 
@@ -597,7 +597,7 @@ async def test_import_preview_rejects_pdf_growth_during_bounded_capture(
         response = await import_preview_coarse(file_path=str(source))
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_PREVIEW_CHANGED"
+    assert response.error.code == "import_preview_changed"
     bounded_open.assert_called_once()
     assert read_sizes == [len(expected) + 1]
 
@@ -638,7 +638,7 @@ async def test_import_preview_rejects_file_growth_during_bounded_capture(
         response = await import_preview_coarse(file_path=str(source))
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_PREVIEW_CHANGED"
+    assert response.error.code == "import_preview_changed"
     bounded_open.assert_called_once()
     assert read_sizes == [5]
 
@@ -958,7 +958,7 @@ async def test_import_confirm_coarse_refuses_changed_pdf_sign_proposal(
     response = await import_confirm_coarse(preview_id=preview_id)
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_SIGN_PROPOSAL_CHANGED"
+    assert response.error.code == "import_sign_proposal_changed"
     confirm.assert_awaited_once()
     assert [call.kwargs["confirm"] for call in apply.call_args_list] == [False, False]
     from moneybin.database import get_database
@@ -1010,7 +1010,7 @@ async def test_import_confirm_coarse_refuses_disappeared_pdf_sign_proposal(
     response = await import_confirm_coarse(preview_id=preview_id)
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_SIGN_PROPOSAL_CHANGED"
+    assert response.error.code == "import_sign_proposal_changed"
     assert [call.kwargs["confirm"] for call in apply.call_args_list] == [False, False]
     from moneybin.database import get_database
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
@@ -1133,7 +1133,7 @@ async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
     )
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_SIGN_PROPOSAL_CHANGED"
+    assert response.error.code == "import_sign_proposal_changed"
     assert calls == 2
     from moneybin.database import get_database
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
@@ -2019,7 +2019,7 @@ async def test_import_confirm_coarse_rejects_pdf_without_confirmation_gate(
     response = await import_confirm_coarse(preview_id=preview_id)
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED"
+    assert response.error.code == "import_preview_direct_import_required"
 
 
 async def test_import_preview_coarse_keeps_ofx_on_direct_import_surface(
@@ -2033,7 +2033,7 @@ async def test_import_preview_coarse_keeps_ofx_on_direct_import_surface(
     response = await import_preview_coarse(file_path=str(ofx))
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED"
+    assert response.error.code == "import_preview_direct_import_required"
 
 
 async def test_import_preview_confirm_status_coarse_workflow(
@@ -2113,35 +2113,35 @@ async def test_import_status_coarse_preserves_legacy_section_data(
 @pytest.mark.parametrize(
     ("sections", "import_id", "limit", "cursor", "code"),
     [
-        ([], None, 100, None, "IMPORT_SECTIONS_REQUIRED"),
+        ([], None, 100, None, "import_sections_required"),
         (
             ["imports", "imports"],
             None,
             100,
             None,
-            "IMPORT_SECTIONS_DUPLICATE",
+            "import_sections_duplicate",
         ),
         (
             ["imports", "formats"],
             "imp_1",
             100,
             None,
-            "IMPORT_ID_NOT_ALLOWED",
+            "import_id_not_allowed",
         ),
-        (None, "imp_1", 100, None, "IMPORT_ID_NOT_ALLOWED"),
+        (None, "imp_1", 100, None, "import_id_not_allowed"),
         (
             ["formats"],
             None,
             10,
             None,
-            "IMPORT_PAGINATION_NOT_ALLOWED",
+            "import_pagination_not_allowed",
         ),
         (
             ["inbox"],
             None,
             100,
             "opaque",
-            "IMPORT_PAGINATION_NOT_ALLOWED",
+            "import_pagination_not_allowed",
         ),
     ],
 )
@@ -2230,7 +2230,7 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
         cursor=first.next_cursor,
     )
     assert wrong_filter.error is not None
-    assert wrong_filter.error.code == "IMPORT_CURSOR_INVALID"
+    assert wrong_filter.error.code == "import_cursor_invalid"
 
 
 async def test_import_status_mixed_cursor_carries_full_initial_total(
@@ -2495,7 +2495,7 @@ async def test_import_status_coarse_rejects_invalid_key_types_before_data_access
         sections=["imports"], limit=1, cursor=invalid_cursor
     )
     assert response.error is not None
-    assert response.error.code == "IMPORT_CURSOR_INVALID"
+    assert response.error.code == "import_cursor_invalid"
     assert accessed is False
 
 
@@ -2545,7 +2545,7 @@ def test_path_outside_home_raises_user_error(
     with pytest.raises(UserError) as excinfo:
         _validate_file_path("/etc/passwd")
 
-    assert excinfo.value.code == "invalid_file_path"
+    assert excinfo.value.code == "import_invalid_file_path"
 
 
 def test_symlink_escaping_home_raises_user_error(
@@ -2566,7 +2566,7 @@ def test_symlink_escaping_home_raises_user_error(
     with pytest.raises(UserError) as excinfo:
         _validate_file_path(str(link))
 
-    assert excinfo.value.code == "invalid_file_path"
+    assert excinfo.value.code == "import_invalid_file_path"
 
 
 def test_bridge_confirm_action_quotes_path_with_apostrophe() -> None:
@@ -2897,7 +2897,7 @@ class TestImportConfirmTool:
 
         result = await import_confirm(file_path=str(csv_file))
         assert result.error is not None
-        assert result.error.code == "confirm_requires_signal"
+        assert result.error.code == "import_confirm_requires_signal"
 
     async def test_accept_loads_data(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -3976,7 +3976,7 @@ class TestImportConfirmBridge:
             bridge_response={"recipe": {}, "rows": []},
         )
         assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        assert result.error.code == "import_confirm_channel_conflict"
 
     async def test_malformed_response_maps_to_user_error(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -3998,7 +3998,7 @@ class TestImportConfirmBridge:
                 bridge_response={"rows": []},
             )
         assert result.error is not None
-        assert result.error.code == "bridge_response_invalid"
+        assert result.error.code == "import_bridge_response_invalid"
 
     async def test_inverted_bridge_recipe_requires_human_elicitation(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4072,7 +4072,7 @@ class TestImportConfirmBridge:
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
         # A plain ValueError raised after parsing (e.g. malformed PDF in
-        # extract, or the load) must NOT be mislabeled bridge_response_invalid —
+        # extract, or the load) must NOT be mislabeled import_bridge_response_invalid —
         # the narrowed catch lets it propagate to the generic error boundary.
         pdf = self._patch(monkeypatch, tmp_path)
         mock_service = MagicMock()
@@ -4088,7 +4088,7 @@ class TestImportConfirmBridge:
                 bridge_response={"recipe": {}, "rows": []},
             )
         assert result.error is not None
-        assert result.error.code != "bridge_response_invalid"
+        assert result.error.code != "import_bridge_response_invalid"
 
     async def test_account_name_with_bridge_raises(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4103,7 +4103,7 @@ class TestImportConfirmBridge:
             account_name="Chase Checking",
         )
         assert result.error is not None
-        assert result.error.code == "pdf_account_signal_unsupported"
+        assert result.error.code == "import_pdf_account_signal_unsupported"
 
     async def test_invalid_path_precedes_account_name_guard(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4118,7 +4118,7 @@ class TestImportConfirmBridge:
             account_name="Chase Checking",
         )
         assert result.error is not None
-        assert result.error.code == "invalid_file_path"
+        assert result.error.code == "import_invalid_file_path"
 
     async def test_pdf_with_accept_rejected_not_looped(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4130,7 +4130,7 @@ class TestImportConfirmBridge:
         pdf = self._patch(monkeypatch, tmp_path)
         result = await import_confirm(file_path=str(pdf), accept=True)
         assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        assert result.error.code == "import_confirm_channel_conflict"
 
     async def test_card_sign_confirm_directs_to_the_sign_channel_and_loads_nothing(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4158,7 +4158,7 @@ class TestImportConfirmBridge:
 
         # A clean UserError envelope — not a crash / TypeError.
         assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        assert result.error.code == "import_confirm_channel_conflict"
         message = result.error.message
         # The live in-MCP channel, plus the terminal fallback, both branches named.
         assert "confirm_pdf_sign=True" in message
@@ -4400,7 +4400,7 @@ class TestImportConfirmPdfSign:
             confirm_pdf_sign=True,
         )
         assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        assert result.error.code == "import_confirm_channel_conflict"
 
     async def test_confirm_pdf_sign_rejected_on_tabular_file(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4413,7 +4413,7 @@ class TestImportConfirmPdfSign:
 
         result = await import_confirm(file_path=str(csv_file), confirm_pdf_sign=True)
         assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        assert result.error.code == "import_confirm_channel_conflict"
 
 
 def test_pdf_sign_actions_lead_with_the_mcp_confirm_path() -> None:
@@ -4499,7 +4499,7 @@ async def test_confirm_pdf_sign_rejects_account_name_instead_of_dropping_it(
         )
 
     assert result.error is not None
-    assert result.error.code == "pdf_account_signal_unsupported"
+    assert result.error.code == "import_pdf_account_signal_unsupported"
     assert "account_id" in result.error.message
     # Refused before any import ran — no rows bound to the wrong account.
     mock_service.import_file.assert_not_called()
@@ -4548,7 +4548,7 @@ async def test_pdf_channels_reject_every_tabular_account_signal(
         result = await import_confirm(file_path=str(pdf), **channel, **signal)  # pyright: ignore[reportArgumentType]
 
     assert result.error is not None
-    assert result.error.code == "pdf_account_signal_unsupported"
+    assert result.error.code == "import_pdf_account_signal_unsupported"
     # The message must name the offending parameter and the supported one.
     assert next(iter(signal)) in result.error.message
     assert "account_id" in result.error.message
@@ -4597,7 +4597,7 @@ async def test_confirm_pdf_sign_without_a_pending_proposal_imports_nothing(
         result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
 
     assert result.error is not None
-    assert result.error.code == "sign_confirmation_not_pending"
+    assert result.error.code == "import_sign_confirmation_not_pending"
     # Nothing was written and nobody was asked — the premise failed first.
     mock_service.import_file.assert_not_called()
     confirm.assert_not_awaited()
@@ -4659,7 +4659,7 @@ class TestConfirmationBindsToTheApprovedBytes:
             result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
 
         assert result.error is not None
-        assert result.error.code == "file_changed_during_confirmation"
+        assert result.error.code == "import_file_changed_during_confirmation"
         # The approval never reached the replacement.
         mock_service.import_file.assert_not_called()
 
@@ -4697,7 +4697,7 @@ class TestConfirmationBindsToTheApprovedBytes:
             result = await import_confirm(file_path=str(csv_file), accept=True)
 
         assert result.error is not None
-        assert result.error.code == "file_changed_during_confirmation"
+        assert result.error.code == "import_file_changed_during_confirmation"
         # Only the gating attempt ran — the ratified retry never did.
         assert mock_service.import_file.call_count == 1
 
@@ -4733,7 +4733,7 @@ class TestConfirmationBindsToTheApprovedBytes:
             )
 
         assert result.error is not None
-        assert result.error.code == "file_changed_during_confirmation"
+        assert result.error.code == "import_file_changed_during_confirmation"
         # Only the gating attempt ran — the ratified retry never did.
         assert mock_service.apply_pdf_bridge_response.call_count == 1
 
@@ -4768,7 +4768,7 @@ async def test_confirm_pdf_sign_rejects_tabular_mapping_signals(
         )
 
     assert result.error is not None
-    assert result.error.code == "confirm_channel_conflict"
+    assert result.error.code == "import_confirm_channel_conflict"
     # Names both the offending signal class and the channel that owns it.
     assert "mapping" in result.error.message
     # Refused before any probe or import ran.

@@ -194,7 +194,7 @@ class TestAnnotationBatches:
                 operation_id="op_orphan_create",
             )
 
-        assert exc.value.code == "TRANSACTION_REFERENCE_NOT_FOUND"
+        assert exc.value.code == "transaction_reference_not_found"
 
     @pytest.mark.unit
     def test_apply_annotations_rejects_unknown_note_delete(
@@ -207,7 +207,7 @@ class TestAnnotationBatches:
                 operation_id="op_orphan_missing",
             )
 
-        assert exc.value.code == "NOTE_REFERENCE_NOT_FOUND"
+        assert exc.value.code == "transaction_note_not_found"
 
     @pytest.mark.unit
     def test_note_add_preserves_thread_and_returns_created_note_id(

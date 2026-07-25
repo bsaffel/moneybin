@@ -150,13 +150,13 @@ def test_purge_retains_consumed_preview_provenance(db: Database) -> None:
             NOW - timedelta(seconds=1),
             NOW,
             "a" * 64,
-            "IMPORT_PREVIEW_EXPIRED",
+            "import_preview_expired",
         ),
         (
             NOW + timedelta(minutes=5),
             NOW,
             "b" * 64,
-            "IMPORT_PREVIEW_CHANGED",
+            "import_preview_changed",
         ),
     ],
 )
@@ -207,7 +207,49 @@ def test_consume_is_single_use(db: Database) -> None:
             actor="mcp",
         )
 
-    assert exc_info.value.code == "IMPORT_PREVIEW_CONSUMED"
+    assert exc_info.value.code == "import_preview_consumed"
+
+
+def test_every_consume_refusal_names_a_way_forward(db: Database) -> None:
+    """A refused preview_id must not be a dead end for the agent holding it.
+
+    Breaks if any of the four refusals ships without a hint — the agent gets a
+    code and a statement of fact with nothing to do next.
+    """
+    repo = _repo(db)
+    live = _issue(repo)
+    repo.consume(  # type: ignore[attr-defined]
+        live,
+        file_sha256="a" * 64,
+        file_size_bytes=128,
+        now=NOW + timedelta(seconds=1),
+        actor="mcp",
+    )
+    expired = _issue(
+        repo,
+        issued_at=NOW - timedelta(minutes=10),
+        expires_at=NOW - timedelta(seconds=1),
+    )
+    changed = _issue(repo)
+
+    cases = [
+        ("missing", "no_such_preview", "a" * 64, NOW + timedelta(seconds=2)),
+        ("consumed", live, "a" * 64, NOW + timedelta(seconds=2)),
+        ("expired", expired, "a" * 64, NOW),
+        ("changed", changed, "b" * 64, NOW + timedelta(seconds=1)),
+    ]
+    for label, preview_id, sha256, when in cases:
+        with pytest.raises(UserError) as exc_info:
+            repo.consume(  # type: ignore[attr-defined]
+                preview_id,
+                file_sha256=sha256,
+                file_size_bytes=128,
+                now=when,
+                actor="mcp",
+            )
+        hint = exc_info.value.hint
+        assert hint, f"{label} refusal has no hint"
+        assert "import_preview" in hint, f"{label} hint names no recovery call"
 
 
 def test_outer_transaction_rollback_restores_unconsumed_preview(db: Database) -> None:

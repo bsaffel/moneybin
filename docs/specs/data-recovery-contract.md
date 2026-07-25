@@ -112,6 +112,20 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
     **Implementation note (PR 2):** the taxonomy module (`src/moneybin/error_codes.py`) also declares `infra_*`, `sync_*`, and `gsheet_*` prefixes to absorb existing non-recovery error codes (`infra_database_locked`, `infra_io_error`, `sync_error`, `gsheet_error`, etc.) without leaving them unprefixed. `sync_*` (mediated providers) and `gsheet_*` (user-controlled storage) are distinct connector domains per the `_connect`/`_link` verb split in `surface-design.md`. These prefixes are *not* part of the recovery contract — they exist purely for taxonomy completeness so `test_error_codes::test_every_code_uses_valid_prefix` can be enforced repo-wide. New recovery codes must use one of the six prefixes in the table above.
 
+    **Taxonomy-completeness prefixes (2026-07-24).** The audit above checked
+    `vars(error_codes)`, which only sees codes that reached the module. Walking
+    the *wire* surface instead — every `code=` literal and every comparison
+    against a `.code` attribute, found by AST — surfaced 103 codes raised from
+    tool paths that were never declared here. They are now declared, one prefix
+    per MCP tool namespace: `account_*`, `entity_*`, `investment_*`,
+    `privacy_*`, `report_*`, `review_*`, `taxonomy_*`, `transaction_*`. Like
+    `infra_*` / `sync_*` / `gsheet_*` these carry no recovery contract; they
+    keep a raise site's meaning intact rather than collapsing sixty distinct
+    request-validation failures into `mutation_invalid_input`. Enforced by
+    `test_error_codes::TestWireCodes`, which checks both sides — an emitted
+    code and a branch reading one — because renaming a code while a comparison
+    holds the old string fails silently.
+
 4. **`operation_id` schema addition.** `app.audit_log` gains three columns:
 
     | Column | Type | Purpose |

@@ -554,7 +554,7 @@ async def test_export_run_returns_sanitized_service_error(mcp_db: object) -> Non
         "run",
         side_effect=UserError(
             "Export destination not found.",
-            code="MUTATION_NOT_FOUND",
+            code="mutation_not_found",
         ),
     ) as run:
         response = await call_tool_raw(
@@ -568,7 +568,7 @@ async def test_export_run_returns_sanitized_service_error(mcp_db: object) -> Non
         )
 
     structured = _structured(response)
-    assert structured["error"]["code"] == "MUTATION_NOT_FOUND"
+    assert structured["error"]["code"] == "mutation_not_found"
     assert "private-drive" not in structured["error"]["message"]
     run.assert_called_once()
 

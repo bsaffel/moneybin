@@ -14,6 +14,7 @@ from typing import Literal, cast
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     output_option,
@@ -248,7 +249,7 @@ def categorize_commit(
             envelope,
             error=UserError(
                 f"{result.errors} item(s) failed to categorize",
-                code="categorization_errors",
+                code=error_codes.TRANSACTION_CATEGORIZATION_ERRORS,
             ),
         )
     render_or_json(

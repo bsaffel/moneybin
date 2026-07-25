@@ -8,6 +8,7 @@ from pathlib import Path
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, output_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
@@ -135,7 +136,7 @@ def categorize_commit_from_file(
             envelope,
             error=UserError(
                 f"{result.errors} item(s) failed to categorize",
-                code="categorization_errors",
+                code=error_codes.TRANSACTION_CATEGORIZATION_ERRORS,
             ),
         )
     render_or_json(

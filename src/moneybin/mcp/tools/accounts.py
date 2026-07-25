@@ -253,7 +253,8 @@ def accounts_set(
         unknown = set(clear_fields) - _CLEARABLE_FIELDS
         if unknown:
             raise UserError(
-                f"Unknown clearable fields: {sorted(unknown)}", code="invalid_field"
+                f"Unknown clearable fields: {sorted(unknown)}",
+                code=error_codes.ACCOUNT_INVALID_FIELD,
             )
         for field in clear_fields:
             kwargs[field] = CLEAR
@@ -967,13 +968,13 @@ async def _resolve_account_reference(
     if isinstance(resolution, AmbiguousEntity):
         raise UserError(
             "The account reference matches multiple accounts.",
-            code="ENTITY_REFERENCE_AMBIGUOUS",
+            code=error_codes.ENTITY_REFERENCE_AMBIGUOUS,
             details={"candidate_ids": list(resolution.candidate_ids)},
         )
     if isinstance(resolution, MissingEntity):
         raise UserError(
             "The account reference did not match an account.",
-            code="ENTITY_REFERENCE_NOT_FOUND",
+            code=error_codes.ENTITY_REFERENCE_NOT_FOUND,
             details={"candidate_ids": []},
         )
     return resolution.entity_id
@@ -1011,50 +1012,50 @@ async def accounts_coarse(
         if reference is not None:
             raise UserError(
                 "reference is not valid for this account view.",
-                code="ACCOUNT_REFERENCE_NOT_ALLOWED",
+                code=error_codes.ACCOUNT_REFERENCE_NOT_ALLOWED,
             )
         if query is not None:
             raise UserError(
                 "query is not valid for this account view.",
-                code="ACCOUNT_QUERY_NOT_ALLOWED",
+                code=error_codes.ACCOUNT_QUERY_NOT_ALLOWED,
             )
     elif view == "detail":
         if reference is None:
             raise UserError(
                 "Account detail requires a reference.",
-                code="ACCOUNT_REFERENCE_REQUIRED",
+                code=error_codes.ACCOUNT_REFERENCE_REQUIRED,
             )
         if query is not None:
             raise UserError(
                 "query is not valid for account detail.",
-                code="ACCOUNT_QUERY_NOT_ALLOWED",
+                code=error_codes.ACCOUNT_QUERY_NOT_ALLOWED,
             )
     else:
         if query is None:
             raise UserError(
                 "Account resolution requires a query.",
-                code="ACCOUNT_QUERY_REQUIRED",
+                code=error_codes.ACCOUNT_QUERY_REQUIRED,
             )
         if reference is not None:
             raise UserError(
                 "reference is not valid for account resolution.",
-                code="ACCOUNT_REFERENCE_NOT_ALLOWED",
+                code=error_codes.ACCOUNT_REFERENCE_NOT_ALLOWED,
             )
 
     if view in ("detail", "summary", "resolve") and cursor is not None:
         raise UserError(
             "This account view does not accept a pagination cursor.",
-            code="ACCOUNT_CURSOR_NOT_ALLOWED",
+            code=error_codes.ACCOUNT_CURSOR_NOT_ALLOWED,
         )
     if view in ("summary", "resolve") and include_closed:
         raise UserError(
             "include_closed is not valid for this account view.",
-            code="ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+            code=error_codes.ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED,
         )
     if view in ("detail", "summary") and limit != 100:
         raise UserError(
             "limit is not valid for this account view.",
-            code="ACCOUNT_LIMIT_NOT_ALLOWED",
+            code=error_codes.ACCOUNT_LIMIT_NOT_ALLOWED,
         )
 
     if view == "list":
@@ -1207,27 +1208,27 @@ async def accounts_balances_coarse(
     if view != "history" and (start is not None or end is not None):
         raise UserError(
             "start and end are only valid for balance history.",
-            code="BALANCE_DATES_NOT_ALLOWED",
+            code=error_codes.ACCOUNT_BALANCE_DATES_NOT_ALLOWED,
         )
     if view != "latest" and as_of is not None:
         raise UserError(
             "as_of is only valid for latest balances.",
-            code="BALANCE_AS_OF_NOT_ALLOWED",
+            code=error_codes.ACCOUNT_BALANCE_AS_OF_NOT_ALLOWED,
         )
     if view != "reconcile" and threshold is not None:
         raise UserError(
             "threshold is only valid for balance reconciliation.",
-            code="BALANCE_THRESHOLD_NOT_ALLOWED",
+            code=error_codes.ACCOUNT_BALANCE_THRESHOLD_NOT_ALLOWED,
         )
     if view == "history" and reference is None:
         raise UserError(
             "Balance history requires an account reference.",
-            code="ACCOUNT_REFERENCE_REQUIRED",
+            code=error_codes.ACCOUNT_REFERENCE_REQUIRED,
         )
     if start is not None and end is not None and start > end:
         raise UserError(
             "Balance history start must not be after end.",
-            code="BALANCE_DATE_RANGE_INVALID",
+            code=error_codes.ACCOUNT_BALANCE_DATE_RANGE_INVALID,
         )
 
     filters: dict[str, object] = {

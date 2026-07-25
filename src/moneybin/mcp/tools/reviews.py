@@ -139,7 +139,7 @@ def _review_position(
     except ValueError as exc:
         raise UserError(
             "Invalid review pagination cursor.",
-            code="REVIEW_CURSOR_INVALID",
+            code=error_codes.REVIEW_CURSOR_INVALID,
         ) from exc
     types, _ = _review_key_contract(kind, status)
     for key in (position.snapshot, position.after):
@@ -149,7 +149,7 @@ def _review_position(
         ):
             raise UserError(
                 "Invalid review pagination cursor.",
-                code="REVIEW_CURSOR_INVALID",
+                code=error_codes.REVIEW_CURSOR_INVALID,
             )
     return position
 
@@ -214,7 +214,10 @@ def _pending_categorization_rows(
     try:
         raw_rows = service.list_uncategorized_transactions(limit=None) or []
     except UserError as exc:
-        if exc.code != "schema_out_of_date" or service.count_uncategorized() != 0:
+        if (
+            exc.code != error_codes.INFRA_SCHEMA_DRIFT
+            or service.count_uncategorized() != 0
+        ):
             raise
         raw_rows = []
     ordered = sorted(
@@ -784,7 +787,7 @@ def _review_page(
         except ValueError as exc:
             raise UserError(
                 "Invalid review pagination cursor.",
-                code="REVIEW_CURSOR_INVALID",
+                code=error_codes.REVIEW_CURSOR_INVALID,
             ) from exc
     page = eligible[:limit]
     if len(eligible) <= limit or not page:
@@ -872,12 +875,12 @@ def reviews_coarse(
         if limit != 100 or cursor is not None:
             raise UserError(
                 "Review summary does not accept pagination overrides.",
-                code="REVIEW_PAGINATION_NOT_ALLOWED",
+                code=error_codes.REVIEW_PAGINATION_NOT_ALLOWED,
             )
         if status != "pending":
             raise UserError(
                 "status is not valid for review summary.",
-                code="REVIEW_STATUS_NOT_ALLOWED",
+                code=error_codes.REVIEW_STATUS_NOT_ALLOWED,
             )
         counts: list[ReviewCount] = []
         unavailable: list[QueueUnavailable] = []

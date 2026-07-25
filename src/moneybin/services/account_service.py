@@ -253,7 +253,7 @@ class AccountNotFoundError(UserError):
         message = f"No account matches {query!r}. Known accounts: {names}{suffix}"
         super().__init__(
             message,
-            code="account_not_found",
+            code=error_codes.ACCOUNT_NOT_FOUND,
             hint="💡 Run 'moneybin accounts list' to see available accounts",
         )
         self.query = query
@@ -281,7 +281,7 @@ class AmbiguousAccountError(UserError):
             f"{query!r} matches {len(account_ids)} accounts: {pairs}. "
             "Use the account_id directly to disambiguate."
         )
-        super().__init__(message, code="account_ambiguous")
+        super().__init__(message, code=error_codes.ACCOUNT_AMBIGUOUS)
         self.query = query
         self.account_ids = account_ids
         self.display_names = display_names
@@ -323,7 +323,9 @@ def assert_account_exists(db: Database, account_id: str) -> None:
         [account_id],
     ).fetchone()
     if row is None:
-        raise UserError(f"Account not found: {account_id}", code="not_found")
+        raise UserError(
+            f"Account not found: {account_id}", code=error_codes.ACCOUNT_NOT_FOUND
+        )
 
 
 class AccountService:

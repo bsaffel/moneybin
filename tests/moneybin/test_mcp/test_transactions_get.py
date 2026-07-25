@@ -177,7 +177,7 @@ async def test_transactions_coarse_preserves_archived_account_id_parity(
     by_name = await transactions_coarse(account="Archived Checking")
 
     assert by_name.error is not None
-    assert by_name.error.code == "ENTITY_REFERENCE_NOT_FOUND"
+    assert by_name.error.code == "entity_reference_not_found"
     assert by_name.error.details == {"candidate_ids": []}
     assert "Archived Checking" not in by_name.error.message
 
@@ -337,7 +337,7 @@ async def test_transactions_coarse_cursor_is_bound_to_filters(
     )
 
     assert response.error is not None
-    assert response.error.code == "TRANSACTION_CURSOR_INVALID"
+    assert response.error.code == "transaction_cursor_invalid"
 
 
 @pytest.mark.unit
@@ -364,7 +364,7 @@ async def test_transactions_coarse_rejects_non_date_key_before_query() -> None:
     response = await transactions_coarse(cursor=cursor)
 
     assert response.error is not None
-    assert response.error.code == "TRANSACTION_CURSOR_INVALID"
+    assert response.error.code == "transaction_cursor_invalid"
 
 
 @pytest.mark.unit
@@ -397,4 +397,4 @@ async def test_transaction_cursor_is_validated_before_reference_data_access() ->
         response = await transactions_coarse(account="CHECKING", cursor=cursor)
 
     assert response.error is not None
-    assert response.error.code == "TRANSACTION_CURSOR_INVALID"
+    assert response.error.code == "transaction_cursor_invalid"

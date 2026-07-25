@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 
+from moneybin import error_codes
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_errors import SyncAPIError, SyncAuthError
 from moneybin.errors import UserError
@@ -171,7 +172,7 @@ class SyncAuthService:
                     self._save_collection(sessions)
                 raise UserError(
                     "Authentication session cannot be resumed.",
-                    code="SYNC_AUTH_SESSION_INVALID",
+                    code=error_codes.SYNC_AUTH_SESSION_INVALID,
                 )
             try:
                 polled = self._client.poll_login(session.device_code)
@@ -273,14 +274,14 @@ class SyncAuthService:
         if not auth_session_id.startswith("syncauth_"):
             raise UserError(
                 "Unknown authentication session.",
-                code="SYNC_AUTH_SESSION_NOT_FOUND",
+                code=error_codes.SYNC_AUTH_SESSION_NOT_FOUND,
             )
         try:
             return sessions[auth_session_id]
         except KeyError:
             raise UserError(
                 "Authentication session was not found or was already cleared.",
-                code="SYNC_AUTH_SESSION_NOT_FOUND",
+                code=error_codes.SYNC_AUTH_SESSION_NOT_FOUND,
             ) from None
 
     def _load_collection(self) -> dict[str, _StoredAuthSession]:

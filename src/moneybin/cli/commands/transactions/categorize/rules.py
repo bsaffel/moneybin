@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     output_option,
@@ -275,7 +276,9 @@ def rules_delete(
                 rule_id, reapply=reapply, actor="cli"
             )
         if not deactivated:
-            raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
+            raise UserError(
+                f"Rule {rule_id} not found", code=error_codes.TAXONOMY_RULE_NOT_FOUND
+            )
 
     if output == OutputFormat.JSON:
         render_or_json(

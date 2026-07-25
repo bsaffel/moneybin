@@ -709,7 +709,7 @@ class TestCreateCategory:
         with pytest.raises(UserError) as exc_info:
             svc.create_category("Childcare", subcategory="Daycare")
 
-        assert exc_info.value.code == "CATEGORY_ALREADY_EXISTS"
+        assert exc_info.value.code == "taxonomy_category_already_exists"
         assert "Childcare" in exc_info.value.message
         assert "Daycare" in exc_info.value.message
 
@@ -721,7 +721,7 @@ class TestCreateCategory:
         with pytest.raises(UserError) as exc_info:
             svc.create_category("Hobbies")
 
-        assert exc_info.value.code == "CATEGORY_ALREADY_EXISTS"
+        assert exc_info.value.code == "taxonomy_category_already_exists"
         assert "Hobbies" in exc_info.value.message
 
 
@@ -776,7 +776,7 @@ class TestToggleCategory:
         seed_categories_view(db)
         with pytest.raises(UserError) as exc_info:
             CategorizationService(db).toggle_category("NOPE", is_active=False)
-        assert exc_info.value.code == "CATEGORY_NOT_FOUND"
+        assert exc_info.value.code == "taxonomy_category_not_found"
 
 
 class TestResolveCategoryId:
@@ -1053,7 +1053,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "transactions" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1068,7 +1068,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "budgets" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1084,7 +1084,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "merchants" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1099,7 +1099,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "splits" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1115,7 +1115,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "rules" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1131,7 +1131,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "proposed rules" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1146,7 +1146,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "source mappings" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1352,13 +1352,13 @@ class TestDeleteCategory:
         seed_categories_view(db)
         with pytest.raises(UserError) as exc_info:
             CategorizationService(db).delete_category("FND")
-        assert exc_info.value.code == "CATEGORY_IS_DEFAULT"
+        assert exc_info.value.code == "taxonomy_category_is_default"
 
     @pytest.mark.unit
     def test_raises_for_unknown_category(self, db: Database) -> None:
         with pytest.raises(UserError) as exc_info:
             CategorizationService(db).delete_category("does-not-exist")
-        assert exc_info.value.code == "CATEGORY_NOT_FOUND"
+        assert exc_info.value.code == "taxonomy_category_not_found"
 
     @pytest.mark.unit
     def test_unforced_delete_does_not_touch_refs(self, db: Database) -> None:

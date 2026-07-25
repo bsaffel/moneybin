@@ -198,13 +198,13 @@ def _resolve_transaction_reference(
     if isinstance(resolution, AmbiguousEntity):
         raise UserError(
             f"The {noun} reference matches multiple {noun}s.",
-            code="ENTITY_REFERENCE_AMBIGUOUS",
+            code=error_codes.ENTITY_REFERENCE_AMBIGUOUS,
             details={"candidate_ids": list(resolution.candidate_ids)},
         )
     if isinstance(resolution, MissingEntity):
         raise UserError(
             f"The {noun} reference did not match a {noun}.",
-            code="ENTITY_REFERENCE_NOT_FOUND",
+            code=error_codes.ENTITY_REFERENCE_NOT_FOUND,
             details={"candidate_ids": []},
         )
     return resolution.entity_id
@@ -271,7 +271,7 @@ def _transaction_position(
     except ValueError as exc:
         raise UserError(
             "Invalid pagination cursor.",
-            code="TRANSACTION_CURSOR_INVALID",
+            code=error_codes.TRANSACTION_CURSOR_INVALID,
         ) from exc
 
 
@@ -290,7 +290,7 @@ def _transaction_bounds(
     ):
         raise UserError(
             "Invalid pagination cursor.",
-            code="TRANSACTION_CURSOR_INVALID",
+            code=error_codes.TRANSACTION_CURSOR_INVALID,
         )
     snapshot = cast(tuple[str, str], position.snapshot)
     after = cast(tuple[str, str], position.after)
@@ -300,12 +300,12 @@ def _transaction_bounds(
     except ValueError as exc:
         raise UserError(
             "Invalid pagination cursor.",
-            code="TRANSACTION_CURSOR_INVALID",
+            code=error_codes.TRANSACTION_CURSOR_INVALID,
         ) from exc
     if not snapshot[1] or not after[1]:
         raise UserError(
             "Invalid pagination cursor.",
-            code="TRANSACTION_CURSOR_INVALID",
+            code=error_codes.TRANSACTION_CURSOR_INVALID,
         )
     return (
         snapshot,
@@ -382,12 +382,12 @@ def transactions_coarse(
     if start is not None and end is not None and start > end:
         raise UserError(
             "Transaction start must not be after end.",
-            code="TRANSACTION_DATE_RANGE_INVALID",
+            code=error_codes.TRANSACTION_DATE_RANGE_INVALID,
         )
     if min_amount is not None and max_amount is not None and min_amount > max_amount:
         raise UserError(
             "Transaction min_amount must not exceed max_amount.",
-            code="TRANSACTION_AMOUNT_RANGE_INVALID",
+            code=error_codes.TRANSACTION_AMOUNT_RANGE_INVALID,
         )
 
     filters: dict[str, object] = {

@@ -872,13 +872,13 @@ def _resolve_coarse_reference(
     if isinstance(resolution, AmbiguousEntity):
         raise UserError(
             f"The {noun} reference matches multiple {noun}s.",
-            code="ENTITY_REFERENCE_AMBIGUOUS",
+            code=error_codes.ENTITY_REFERENCE_AMBIGUOUS,
             details={"candidate_ids": list(resolution.candidate_ids)},
         )
     if isinstance(resolution, MissingEntity):
         raise UserError(
             f"The {noun} reference did not match a {noun}.",
-            code="ENTITY_REFERENCE_NOT_FOUND",
+            code=error_codes.ENTITY_REFERENCE_NOT_FOUND,
             details={"candidate_ids": []},
         )
     return resolution.entity_id
@@ -974,7 +974,7 @@ def _investment_position(
     except ValueError as exc:
         raise UserError(
             "Invalid pagination cursor.",
-            code="INVESTMENT_CURSOR_INVALID",
+            code=error_codes.INVESTMENT_CURSOR_INVALID,
         ) from exc
 
 
@@ -1137,22 +1137,22 @@ def investments_coarse(
     if view not in ("events", "gains") and (start is not None or end is not None):
         raise UserError(
             "start and end are only valid for investment events and gains.",
-            code="INVESTMENT_DATES_NOT_ALLOWED",
+            code=error_codes.INVESTMENT_DATES_NOT_ALLOWED,
         )
     if view != "lots" and open_only is not None:
         raise UserError(
             "open_only is only valid for investment lots.",
-            code="INVESTMENT_OPEN_ONLY_NOT_ALLOWED",
+            code=error_codes.INVESTMENT_OPEN_ONLY_NOT_ALLOWED,
         )
     if view == "securities" and account is not None:
         raise UserError(
             "account is not valid for the securities catalog.",
-            code="INVESTMENT_ACCOUNT_NOT_ALLOWED",
+            code=error_codes.INVESTMENT_ACCOUNT_NOT_ALLOWED,
         )
     if start is not None and end is not None and start > end:
         raise UserError(
             "Investment start must not be after end.",
-            code="INVESTMENT_DATE_RANGE_INVALID",
+            code=error_codes.INVESTMENT_DATE_RANGE_INVALID,
         )
 
     filters: dict[str, object] = {

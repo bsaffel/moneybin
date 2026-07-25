@@ -951,17 +951,17 @@ async def system_audit_coarse(
         if (operation_id is None) == (audit_id is None):
             raise UserError(
                 "Audit detail requires exactly one of operation_id or audit_id.",
-                code="AUDIT_IDENTIFIER_REQUIRED",
+                code=error_codes.AUDIT_IDENTIFIER_REQUIRED,
             )
         if cursor is not None:
             raise UserError(
                 "Audit detail does not accept a cursor.",
-                code="AUDIT_CURSOR_NOT_ALLOWED",
+                code=error_codes.AUDIT_CURSOR_NOT_ALLOWED,
             )
     elif operation_id is not None or audit_id is not None:
         raise UserError(
             "operation_id and audit_id are only valid for audit detail.",
-            code="AUDIT_IDENTIFIER_NOT_ALLOWED",
+            code=error_codes.AUDIT_IDENTIFIER_NOT_ALLOWED,
         )
 
     if view == "events":
@@ -1092,7 +1092,7 @@ async def system_audit_coarse(
     if not events:
         raise UserError(
             "No audit event found for the supplied audit_id.",
-            code="AUDIT_IDENTIFIER_NOT_FOUND",
+            code=error_codes.AUDIT_IDENTIFIER_NOT_FOUND,
         )
     payload = AuditDetail(
         operation_id=None,

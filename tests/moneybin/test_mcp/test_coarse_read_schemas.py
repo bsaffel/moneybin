@@ -588,14 +588,14 @@ async def test_accounts_coarse_raw_errors_are_canonical_and_sanitized(
         mcp,
         "accounts",
         {"view": "detail", "reference": "Savings"},
-        "ENTITY_REFERENCE_AMBIGUOUS",
+        "entity_reference_ambiguous",
     )
     missing_reference = "secret-account-123456789"
     missing = await _assert_canonical_error(
         mcp,
         "accounts",
         {"view": "detail", "reference": missing_reference},
-        "ENTITY_REFERENCE_NOT_FOUND",
+        "entity_reference_not_found",
     )
 
     assert ambiguous["error"]["details"]["candidate_ids"] == ["ACC001", "ACC002"]
@@ -657,7 +657,7 @@ async def test_accounts_coarse_raw_cursors_reject_cross_filter_reuse(
             "limit": 1,
             "cursor": "opaque",
         },
-        "ACCOUNT_CURSOR_NOT_ALLOWED",
+        "account_cursor_not_allowed",
     )
 
     balance_page = await _assert_canonical_variant(
@@ -692,17 +692,17 @@ async def test_accounts_coarse_raw_cursors_reject_cross_filter_reuse(
     [
         (
             {"view": "summary", "include_closed": True},
-            "ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+            "account_include_closed_not_allowed",
         ),
         (
             {"view": "resolve", "query": "checking", "include_closed": True},
-            "ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+            "account_include_closed_not_allowed",
         ),
         (
             {"view": "detail", "reference": "ACC001", "limit": 1},
-            "ACCOUNT_LIMIT_NOT_ALLOWED",
+            "account_limit_not_allowed",
         ),
-        ({"view": "summary", "limit": 1}, "ACCOUNT_LIMIT_NOT_ALLOWED"),
+        ({"view": "summary", "limit": 1}, "account_limit_not_allowed"),
     ],
 )
 async def test_accounts_coarse_raw_rejects_unused_arguments(
@@ -981,14 +981,14 @@ async def test_investment_and_transaction_raw_errors_are_sanitized(
         investments_mcp,
         "investments",
         {"view": "events", "account": "Shared Account"},
-        "ENTITY_REFERENCE_AMBIGUOUS",
+        "entity_reference_ambiguous",
     )
     missing_merchant = "secret-merchant-123456789"
     transactions_error = await _assert_canonical_error(
         transactions_mcp,
         "transactions",
         {"merchant": missing_merchant},
-        "ENTITY_REFERENCE_NOT_FOUND",
+        "entity_reference_not_found",
     )
 
     assert investments_error["error"]["details"]["candidate_ids"] == [
@@ -1258,19 +1258,19 @@ async def test_import_gsheet_privacy_incompatible_errors_are_canonical(
         import_mcp,
         "import_status",
         {"sections": ["imports", "formats"], "import_id": "secret-import-id"},
-        "IMPORT_ID_NOT_ALLOWED",
+        "import_id_not_allowed",
     )
     gsheet_error = await _assert_canonical_error(
         gsheet_mcp,
         "gsheet",
         {"view": "connections", "connection_id": "secret-connection-id"},
-        "GSHEET_CONNECTION_ID_NOT_ALLOWED",
+        "gsheet_connection_id_not_allowed",
     )
     privacy_error = await _assert_canonical_error(
         privacy_mcp,
         "privacy",
         {"view": "status", "limit": 99},
-        "PRIVACY_PAGINATION_NOT_ALLOWED",
+        "privacy_pagination_not_allowed",
     )
 
     assert "secret-import-id" not in import_error["error"]["message"]

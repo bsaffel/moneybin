@@ -93,7 +93,7 @@ def _taxonomy_position(
     except ValueError as exc:
         raise UserError(
             "Invalid taxonomy pagination cursor.",
-            code="TAXONOMY_CURSOR_INVALID",
+            code=error_codes.TAXONOMY_CURSOR_INVALID,
         ) from exc
 
 
@@ -261,7 +261,7 @@ def taxonomy_coarse(
     if view == "merchants" and include_inactive:
         raise UserError(
             "include_inactive is only valid for the categories view.",
-            code="TAXONOMY_INCLUDE_INACTIVE_NOT_ALLOWED",
+            code=error_codes.TAXONOMY_INCLUDE_INACTIVE_NOT_ALLOWED,
         )
     canonical_query = query.casefold().strip() if query is not None else None
     filters: dict[str, object] = {

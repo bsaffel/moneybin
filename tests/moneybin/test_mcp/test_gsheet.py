@@ -192,7 +192,7 @@ async def test_gsheet_connect_auth_only_rejects_connection_arguments(
     response = await gsheet_connect_coarse(**{argument: value})  # type: ignore[arg-type]
 
     assert response.error is not None
-    assert response.error.code == "GSHEET_AUTH_ARGUMENT_CONFLICT"
+    assert response.error.code == "gsheet_auth_argument_conflict"
 
 
 @pytest.mark.unit
@@ -824,7 +824,7 @@ async def test_gsheet_coarse_connections_rejects_connection_id() -> None:
     )
 
     assert envelope.error is not None
-    assert envelope.error.code == "GSHEET_CONNECTION_ID_NOT_ALLOWED"
+    assert envelope.error.code == "gsheet_connection_id_not_allowed"
     assert "secret-connection-id" not in envelope.error.message
 
 

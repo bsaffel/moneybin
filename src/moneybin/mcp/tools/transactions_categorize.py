@@ -516,7 +516,9 @@ def transactions_categorize_rules_delete(
             rule_id, reapply=reapply, actor="mcp"
         )
     if not deactivated:
-        raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
+        raise UserError(
+            f"Rule {rule_id} not found", code=error_codes.TAXONOMY_RULE_NOT_FOUND
+        )
     return build_envelope(
         data=RulesDeletePayload(rule_id=rule_id, action="deactivated")
     )

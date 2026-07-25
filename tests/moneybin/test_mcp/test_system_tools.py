@@ -250,9 +250,9 @@ async def test_system_audit_coarse_detail_requires_exactly_one_identifier() -> N
     )
 
     assert missing.error is not None
-    assert missing.error.code == "AUDIT_IDENTIFIER_REQUIRED"
+    assert missing.error.code == "audit_identifier_required"
     assert duplicate.error is not None
-    assert duplicate.error.code == "AUDIT_IDENTIFIER_REQUIRED"
+    assert duplicate.error.code == "audit_identifier_required"
 
 
 @pytest.mark.parametrize("view", ["events", "history"])
@@ -265,7 +265,7 @@ async def test_system_audit_coarse_rejects_detail_identifier_for_other_views(
     )
 
     assert response.error is not None
-    assert response.error.code == "AUDIT_IDENTIFIER_NOT_ALLOWED"
+    assert response.error.code == "audit_identifier_not_allowed"
 
 
 async def test_system_audit_coarse_dispatches_events_and_history() -> None:

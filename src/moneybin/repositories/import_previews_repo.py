@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from moneybin import error_codes
 from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
 from moneybin.tables import IMPORT_PREVIEW_SNAPSHOTS, IMPORT_PREVIEWS
@@ -139,20 +140,38 @@ class ImportPreviewsRepo(BaseRepo):
         """Consume an unchanged, live preview inside the caller's transaction."""
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row(preview_id)
+            # Each refusal names its way forward. Without a hint every one of
+            # these is a dead end: the agent holds a preview_id the server has
+            # rejected and nothing tells it that a fresh preview is the fix.
             if before is None:
                 raise UserError(
                     "Import preview was not found.",
-                    code="IMPORT_PREVIEW_NOT_FOUND",
+                    code=error_codes.IMPORT_PREVIEW_NOT_FOUND,
+                    hint=(
+                        "💡 Call import_preview(file_path=...) to create a new "
+                        "preview, then confirm the preview_id it returns."
+                    ),
                 )
             if before["consumed_at"] is not None:
                 raise UserError(
                     "Import preview has already been consumed.",
-                    code="IMPORT_PREVIEW_CONSUMED",
+                    code=error_codes.IMPORT_PREVIEW_CONSUMED,
+                    hint=(
+                        "💡 A preview confirms once. Call import_status to see "
+                        "what that import wrote; to import the file again, start "
+                        "from a fresh import_preview(file_path=...)."
+                    ),
                 )
             if _db_time(now) >= before["expires_at"]:
                 raise UserError(
                     "Import preview has expired.",
-                    code="IMPORT_PREVIEW_EXPIRED",
+                    code=error_codes.IMPORT_PREVIEW_EXPIRED,
+                    hint=(
+                        "💡 Nothing was imported. Call "
+                        "import_preview(file_path=...) again and confirm the new "
+                        "preview_id promptly — approval is deliberately "
+                        "short-lived so it stays bound to what you reviewed."
+                    ),
                 )
             if (
                 before["file_sha256"] != file_sha256
@@ -160,7 +179,12 @@ class ImportPreviewsRepo(BaseRepo):
             ):
                 raise UserError(
                     "The previewed file changed before confirmation.",
-                    code="IMPORT_PREVIEW_CHANGED",
+                    code=error_codes.IMPORT_PREVIEW_CHANGED,
+                    hint=(
+                        "💡 Nothing was imported — the approval no longer "
+                        "describes this file. Call import_preview(file_path=...) "
+                        "again to review the current contents."
+                    ),
                 )
             self._db.execute(
                 f"""

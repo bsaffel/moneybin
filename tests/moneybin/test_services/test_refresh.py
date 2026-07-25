@@ -8,7 +8,7 @@ that ``refresh()``:
 - Runs only the requested subset when ``steps`` is a list.
 - Executes steps in canonical order (gsheet → match → transform → categorize)
   regardless of input-list order.
-- Raises ``UserError(code="UNKNOWN_REFRESH_STEP")`` on unknown step names.
+- Raises ``UserError(code="refresh_unknown_step")`` on unknown step names.
 """
 
 from __future__ import annotations
@@ -417,7 +417,7 @@ def test_refresh_unknown_step_raises_user_error(
     """Unknown step name raises UserError with hint enumerating valid steps."""
     with pytest.raises(UserError) as excinfo:
         refresh(MagicMock(), steps=["transform", "bogus"])
-    assert excinfo.value.code == "UNKNOWN_REFRESH_STEP"
+    assert excinfo.value.code == "refresh_unknown_step"
     assert "gsheet" in (excinfo.value.hint or "")
     assert "match" in (excinfo.value.hint or "")
     assert "transform" in (excinfo.value.hint or "")
