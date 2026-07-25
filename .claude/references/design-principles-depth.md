@@ -2,8 +2,8 @@
 
 On-demand companion to [`.claude/rules/design-principles.md`](../rules/design-principles.md),
 which stays always-loaded. Read this when you are actually evolving a locked
-public contract, addressing a milestone, or deciding whether a decision earns
-an ADR.
+public contract, addressing a milestone, checking what the principle does NOT
+mean, wanting the worked example, or deciding whether a decision earns an ADR.
 
 ## Evolving a public contract post-launch
 

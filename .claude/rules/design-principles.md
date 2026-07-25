@@ -6,15 +6,14 @@ description: "Durable path selection: heuristics for one-way-door decisions, pub
 
 Companion to AGENTS.md's "Guiding Principle." Defines what "durable" means
 concretely and when the protocol applies. Depth — evolving a locked contract,
-milestone addressing, the worked example, and the ADR bar:
+milestone addressing, what it does NOT mean, the worked example, and the ADR bar:
 [`.claude/references/design-principles-depth.md`](../references/design-principles-depth.md).
 
 ## The primary lens: reversibility
 
 AGENTS.md establishes the one-way / two-way door classifier. This file
-fills in: which surfaces are which, what "durable" means for one-way
-doors, what it does NOT mean, and how an outcome lands in the repo. When
-in doubt, treat as one-way and invoke the protocol.
+fills in: which surfaces are which, and what "durable" means for one-way
+doors. When in doubt, treat as one-way and invoke the protocol.
 
 ### The protocol (one-way doors)
 
@@ -139,5 +138,5 @@ coherent and durable.
 
 ## Depth
 
-Evolving a locked public contract, milestone addressing (`M{phase}{letter}.{n}`), the worked example, and the ADR bar:
+Evolving a locked public contract, milestone addressing (`M{phase}{letter}.{n}`), what it does NOT mean, the worked example, and the ADR bar:
 [`.claude/references/design-principles-depth.md`](../references/design-principles-depth.md).

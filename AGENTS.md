@@ -36,9 +36,10 @@ UX wants terse output), surface it and let the user pick.
 
 ## Think Before Coding
 
-If multiple interpretations exist, present them — don't pick one silently. If
-a simpler approach exists, say so; push back when warranted. When something is
-unclear, stop and name what's confusing.
+State assumptions explicitly; if uncertain, ask. If multiple interpretations
+exist, present them — don't pick one silently. If a simpler approach exists,
+say so; push back when warranted. When something is unclear, stop and name
+what's confusing.
 
 ## Simplicity First
 
@@ -162,7 +163,7 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 
 | Rule | Covers |
 |------|--------|
-| `design-principles.md` | Durable path selection: one-way-door classifier, public-contract trigger list, the agent protocol, coherence rule. Depth — post-launch contract evolution, the milestone addressing scheme (`M{phase}{letter}.{n}` — append, don't reinvent), the ADR bar: `.claude/references/design-principles-depth.md` |
+| `design-principles.md` | Durable path selection: one-way-door classifier, public-contract trigger list, the agent protocol, coherence rule. Depth — post-launch contract evolution, the milestone addressing scheme (`M{phase}{letter}.{n}` — append, don't reinvent), what it does NOT mean, the ADR bar: `.claude/references/design-principles-depth.md` |
 | `branching.md` | Branch prefix → PR label mapping, commit message style |
 | `sandboxing.md` | Bash invocation patterns: single commands, allowlisted pipelines, structured-output filtering, policy denials |
 | `agent-experience.md` | Required agent-experience report whenever you interact with MoneyBin's MCP server in a session |
