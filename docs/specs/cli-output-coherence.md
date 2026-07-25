@@ -113,9 +113,13 @@ Numbered, each independently testable.
    **optional** on `ReportSpec`: an extension that declares nothing keeps working
    unchanged. Its fallback is not "all columns" — that would let a third-party
    report bypass requirement 9's guarantee — but the leading columns of the
-   declared projection that fit the width, with the remainder reachable via
-   `--wide`. The guarantee is therefore generic, and declaring `DEFAULT_COLUMNS`
-   is an ordering refinement rather than a migration burden.
+   declared projection that fit **requirement 9's fixed 80-column contract
+   bound**, with the remainder reachable via `--wide`. The bound is the constant
+   80, *not* the runtime terminal width: a width-sensitive fallback would select
+   different columns on different terminals, which the Key Decisions section
+   rules out as magic. The same extension therefore renders the same columns
+   everywhere. Declaring `DEFAULT_COLUMNS` is an ordering refinement rather than
+   a migration burden.
    `docs/specs/extension-contracts.md` gains the optional field and its fallback
    in the same change.
 7. Every command with a `DEFAULT_COLUMNS` narrower than its full projection
@@ -225,13 +229,18 @@ Numbered, each independently testable.
 
 23. `stats` renders each metric with its distinguishing dimension, such that no
     two rendered lines share a label.
-24. Histogram metrics render the unit **derived from the metric name's suffix**,
-    per the Prometheus convention the registry already follows
-    (`..._duration_seconds` → seconds, `..._total` → a count, `..._rate` → a
-    ratio, `..._confidence` → a score). A metric that is not a duration does not
-    render `s`. No new per-metric metadata field is introduced — the naming
-    convention is already load-bearing and universally applied in
-    `src/moneybin/metrics/registry.py`.
+24. Histogram metrics render an **explicitly declared** unit, carried as a `unit`
+    field on the metric declaration in `src/moneybin/metrics/registry.py`. A
+    metric that is not a duration does not render `s`.
+    **Name-suffix derivation was tried and rejected.** It holds for
+    `..._duration_seconds` and `..._rate`, but nine registered metrics end in
+    suffixes that name a *dimension* rather than a unit — `..._batch_size`,
+    `..._score`, `..._pending`, `..._count`, `..._rows_affected`. The decisive
+    case is `moneybin_import_batch_size`, whose observations are **files**: that
+    fact lives only in the declaration's description string, which `app.metrics`
+    does not persist. Derivation would force `stats` to omit the unit or guess
+    it. One declared field applied uniformly is also the coherent choice — a
+    derive-here / declare-there split would be two mechanisms for one job.
 25. `stats` groups metrics by domain with a header per group, rather than one
     alphabetical list.
 
@@ -271,8 +280,13 @@ Numbered, each independently testable.
     not a disclosure of it. The count of unmapped rows rides the **result framing**
     (requirement 10), not a `render_note`: requirement 4 suppresses notes under
     `--quiet`, and a taxonomy gap the user cannot see is exactly what requirement
-    29 exists to prevent. The raw provider value remains available in
-    `--output json`, which requirement 8 leaves unfiltered.
+    29 exists to prevent. This **widens requirement 10's trigger**: result framing
+    is emitted when columns are omitted *or* when any rendered column contains an
+    unmapped placeholder. Without that widening the disclosure would vanish in
+    exactly the cases it matters — under `--wide`, and for any report whose full
+    projection already fits 80 columns, neither of which omits a column. The two
+    framing clauses may share one line. The raw provider value remains available
+    in `--output json`, which requirement 8 leaves unfiltered.
 
 **Stubs (F4)**
 
@@ -318,14 +332,16 @@ Numbered, each independently testable.
 
 No schema changes. No migration. This spec touches presentation only.
 
-No registry change either. An earlier draft of requirement 24 added a `unit`
-field to each metric declaration; that was unnecessary machinery. Every metric in
-`src/moneybin/metrics/registry.py` already encodes its unit in its name by
-Prometheus convention (`moneybin_categorize_duration_seconds`,
-`moneybin_import_batch_size`, `moneybin_categorization_auto_rate`,
-`moneybin_pdf_extraction_confidence`), so `stats` derives the unit from the
-suffix. Per Simplicity First, reuse the convention that is already universal
-rather than introduce a second source of truth beside it.
+One registry change: requirement 24's `unit` field on each metric declaration in
+`src/moneybin/metrics/registry.py`. A middle draft of this spec removed it in
+favour of deriving the unit from the Prometheus name suffix, on the reasoning
+that the convention was already universal. It is not: `..._duration_seconds` and
+`..._rate` are self-describing, but `..._batch_size`, `..._score`, `..._pending`,
+`..._count`, and `..._rows_affected` name a dimension, not a unit.
+`moneybin_import_batch_size` counts **files**, a fact recorded only in the
+description string that `app.metrics` does not persist. Declaring the unit is
+therefore the smaller of the two changes, not the larger one — derivation buys a
+removed field and costs a `stats` surface that cannot label nine of its metrics.
 
 ## Implementation Plan
 
@@ -351,6 +367,9 @@ rather than introduce a second source of truth beside it.
 | `src/moneybin/cli/commands/transactions/list_.py` | Account name (27); drop the `transactions_get …` line (16); human paging (34) |
 | `src/moneybin/cli/commands/transactions/categorize/__init__.py` | Uncategorized queue is a Shape-5 read-projection — migrate off `render_rich_table` (1) |
 | `src/moneybin/cli/commands/accounts/links.py` | `links pending` / `links list` hand-format an aligned table via `typer.echo` (lines 70-89) — requirement 1 applies from day one |
+| `src/moneybin/cli/commands/investments/security_links.py` | `links pending` / `links history` hand-format the same padded-column table (lines 78-99, 199-215) |
+| `src/moneybin/cli/commands/transactions/notes.py` | `notes list` emits one `typer.echo` per note (line 103) |
+| `src/moneybin/cli/commands/transactions/tags.py` | `tags list` emits a tab-separated tag/count list (line 150) |
 | `src/moneybin/cli/commands/merchants/links.py` | Same hand-formatted-table pattern as its accounts twin; migrate both together per the coherence rule |
 | `src/moneybin/cli/commands/transactions/matches.py` | `matches pending` hand-formats a padded f-string table (lines 61-77) — the third of the three review-queue renderers |
 | `src/moneybin/cli/commands/refresh.py` | Per-stage notes (18); drop function-name prefixes and `SQLMesh` (16, 17) |
@@ -361,7 +380,7 @@ rather than introduce a second source of truth beside it.
 | `src/moneybin/cli/utils.py` | Profile banner (19); **retire `render_rich_table`** into `render_rows` — it is the shared `rich.Table` builder req 1 supersedes |
 | `src/moneybin/cli/commands/stubs.py` | Message copy (32) |
 | `src/moneybin/cli/main.py` + group modules | `hidden=True` on stub registrations (31) |
-| `src/moneybin/metrics/registry.py` | Add the three counters in Observability below. No `unit` field — requirement 24 derives units from the existing name convention |
+| `src/moneybin/metrics/registry.py` | Add a `unit` field to each histogram declaration (24); add the three counters in Observability below |
 | `.claude/rules/cli.md` | Add a "Text rendering" section pointing at this spec — the rule file is where a future contributor looks first |
 
 ### Key Decisions
@@ -438,7 +457,7 @@ that way.
 Per AGENTS.md ("Specs touching app code must include metrics") and
 [`observability.md`](observability.md). Three counters, registered in
 `src/moneybin/metrics/registry.py` alongside the existing declarations and
-following the same Prometheus naming convention requirement 24 derives units
+following the same Prometheus naming convention the rest of the registry
 from:
 
 ```python
@@ -463,10 +482,10 @@ CLI_STUB_INVOKED_TOTAL = Counter(
 
 What each is for — a metric with no question behind it is noise:
 
-- **`wide_requested` vs. `columns_omitted`** together answer whether
-  `DEFAULT_COLUMNS` was chosen correctly. A report whose `--wide` rate approaches
-  its omission rate has the wrong default set, and the ratio says so per command
-  without a survey.
+- **`wide_requested` vs. `columns_omitted`** flag a report whose `DEFAULT_COLUMNS`
+  may be wrong: one whose `--wide` rate approaches its omission rate is hiding
+  something readers want. Read as a pointer, not a verdict — see the persistence
+  constraint below.
 - **`stub_invoked`** answers which hidden stubs users still reach (requirement
   31 hides them from `--help` but keeps them invocable), which is the demand
   signal for implementing one — and detects any surviving path that still
@@ -474,6 +493,18 @@ What each is for — a metric with no question behind it is noise:
 
 No metric records row contents, amounts, or identifiers — only counts and the
 command label, per the PII-in-logs rule.
+
+**These counters persist only on sessions that also write business data.**
+`flush_metrics()` returns without flushing when `database_was_written()` is false
+(`src/moneybin/observability.py:105`), so a read-only `reports` or stub
+invocation discards its observations at exit. That is deliberate and stays:
+turning an otherwise read-only command into a write-lock holder is not a trade
+this project makes for telemetry, and `--wide` is common enough that the lock
+would land on nearly every read. The consequence is stated rather than worked
+around: the `--wide`-versus-omission ratio is a **directional** signal drawn from
+write-bearing sessions, not a census, and it does not by itself settle whether a
+report's `DEFAULT_COLUMNS` is right. Requirement 9's contract test is what
+*enforces* the column policy; these counters only suggest where to look next.
 
 ## Testing Strategy
 
