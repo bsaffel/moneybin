@@ -112,6 +112,11 @@ INFRA_SCHEMA_DRIFT = "infra_schema_drift"
 INFRA_SETUP_REQUIRED = "infra_setup_required"
 INFRA_TIMED_OUT = "infra_timed_out"
 INFRA_TOO_MANY_ITEMS = "infra_too_many_items"
+# Terminal fallback: an exception classify_user_error does not recognize. The
+# agent still gets a branchable code instead of the bare str(exc) that fastmcp's
+# mask_error_details would otherwise leave. Carries the exception *type* only —
+# never its message, which can embed file paths, SQL, and financial data.
+INFRA_UNCLASSIFIED_ERROR = "infra_unclassified_error"
 INFRA_WRONG_KEY = "infra_wrong_key"
 
 

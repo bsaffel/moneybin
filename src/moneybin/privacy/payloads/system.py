@@ -387,8 +387,32 @@ class SystemStatusCLIPayload:
     exports: list[SystemStatusExportDestination]
 
 
+class SectionUnavailable(BaseModel):
+    """A requested section that could not be produced, and why.
+
+    Keeps one failing section from destroying the rest: every healthy section
+    still returns, this marker names the one that did not, and
+    ``summary.degraded`` flags the response as partial. ``reason`` carries the
+    classified user-facing message only — never a raw exception string, which
+    can embed SQL fragments and financial data.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["unavailable"] = "unavailable"
+    section: Annotated[
+        Literal["overview", "doctor", "categorization", "exports"], DataClass.TXN_TYPE
+    ]
+    code: Annotated[str, DataClass.TXN_TYPE]
+    reason: Annotated[str, DataClass.TXN_TYPE]
+
+
 SystemStatusSection = Annotated[
-    OverviewStatus | DoctorStatus | CategorizationStatus | ExportsStatus,
+    OverviewStatus
+    | DoctorStatus
+    | CategorizationStatus
+    | ExportsStatus
+    | SectionUnavailable,
     Field(discriminator="kind"),
 ]
 

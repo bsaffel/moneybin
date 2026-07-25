@@ -6,6 +6,7 @@ import asyncio
 import fcntl  # POSIX-only: project targets macOS/Linux
 import inspect
 import json
+import logging
 import os
 from collections.abc import Callable
 from datetime import datetime
@@ -16,8 +17,9 @@ import duckdb
 from fastmcp import FastMCP
 from pydantic import Field
 
+from moneybin import error_codes
 from moneybin.db_lock import lock_path_for
-from moneybin.errors import UserError
+from moneybin.errors import UserError, classify_user_error
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.pagination import (
@@ -38,6 +40,7 @@ from moneybin.privacy.payloads.system import (
     OverviewStatus,
     RecoveryActionPayload,
     SchemaDriftTable,
+    SectionUnavailable,
     SystemAuditCoarsePayload,
     SystemAuditEventPayload,
     SystemAuditGetPayload,
@@ -66,6 +69,8 @@ from moneybin.privacy.payloads.system import (
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.utils.db_processes import describe_process, find_blocking_processes
+
+logger = logging.getLogger(__name__)
 
 _HEALTHY_STATUSES = frozenset({"healthy"})
 _DISCONNECTED_STATUSES = frozenset({"disconnected"})
@@ -705,6 +710,28 @@ async def _run_tool_body[T](
     return await asyncio.to_thread(body, *args, **kwargs)
 
 
+def _unavailable_section(section: str, exc: Exception) -> SectionUnavailable:
+    """Mark one status section unavailable instead of failing the whole call.
+
+    ``_run_tool_body`` unwraps the tool decorator, so a section body raises
+    rather than returning an error envelope — this is the path a genuinely
+    broken section takes.
+    """
+    classified = classify_user_error(exc)
+    if classified is not None:
+        return SectionUnavailable(
+            section=cast(Any, section), code=classified.code, reason=classified.message
+        )
+    # Full traceback server-side; the wire carries only the exception type,
+    # since exception messages can embed SQL fragments and financial data.
+    logger.exception(f"system_status section {section} raised {type(exc).__name__}")
+    return SectionUnavailable(
+        section=cast(Any, section),
+        code=error_codes.INFRA_UNCLASSIFIED_ERROR,
+        reason=f"Section failed with an unhandled {type(exc).__name__}",
+    )
+
+
 def _export_status_section() -> ExportsStatus:
     """Load export readiness synchronously inside one database lifetime."""
     from moneybin.database import get_database  # noqa: PLC0415
@@ -838,37 +865,61 @@ async def system_status_coarse(
         raise ValueError("System status sections must not contain duplicates.")
 
     selected: list[
-        OverviewStatus | DoctorStatus | CategorizationStatus | ExportsStatus
+        OverviewStatus
+        | DoctorStatus
+        | CategorizationStatus
+        | ExportsStatus
+        | SectionUnavailable
     ] = []
     actions: list[str] = []
     degraded_reasons: list[str] = []
+    # Declared once: each branch assigns a differently-parameterized envelope,
+    # and the payload is narrowed by the section it belongs to.
+    response: ResponseEnvelope[Any]
     for section in requested:
+        if section not in ("overview", "doctor", "categorization", "exports"):
+            raise ValueError("Unknown system status section.")
+        # One failing section must not destroy the others: every section is
+        # produced independently and an unavailable marker takes its place.
+        try:
+            if section == "exports":
+                selected.append(await _run_tool_body(_export_status_section))
+                actions.extend([
+                    "Deliver a bundle or report with export_run.",
+                    "Configure a named destination with exports_set.",
+                ])
+                continue
+            if section == "overview":
+                response = await _run_tool_body(system_status)
+            elif section == "doctor":
+                response = await _run_tool_body(system_doctor, full=detail == "full")
+            else:
+                response = await _run_tool_body(
+                    transactions_categorize_stats, include_auto=detail == "full"
+                )
+        except Exception as exc:  # noqa: BLE001 — degrade this section, keep the rest
+            unavailable = _unavailable_section(section, exc)
+            selected.append(unavailable)
+            degraded_reasons.append(f"{section}: {unavailable.reason}")
+            continue
+
+        if response.error is not None:
+            selected.append(
+                SectionUnavailable(
+                    section=cast(Any, section),
+                    code=response.error.code,
+                    reason=response.error.message,
+                )
+            )
+            degraded_reasons.append(f"{section}: {response.error.message}")
+            continue
+
         if section == "overview":
-            response = await _run_tool_body(system_status)
-            if response.error is not None:
-                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
             selected.append(OverviewStatus(overview=response.data))
         elif section == "doctor":
-            response = await _run_tool_body(system_doctor, full=detail == "full")
-            if response.error is not None:
-                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
             selected.append(DoctorStatus(doctor=response.data))
-        elif section == "categorization":
-            response = await _run_tool_body(
-                transactions_categorize_stats, include_auto=detail == "full"
-            )
-            if response.error is not None:
-                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
-            selected.append(CategorizationStatus(statistics=response.data))
-        elif section == "exports":
-            selected.append(await _run_tool_body(_export_status_section))
-            actions.extend([
-                "Deliver a bundle or report with export_run.",
-                "Configure a named destination with exports_set.",
-            ])
-            continue
         else:
-            raise ValueError("Unknown system status section.")
+            selected.append(CategorizationStatus(statistics=response.data))
         actions.extend(response.actions)
         if response.summary.degraded:
             reason = response.summary.degraded_reason

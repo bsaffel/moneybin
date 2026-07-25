@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import duckdb
 import pytest
 
 from moneybin import error_codes
@@ -331,6 +332,37 @@ async def test_review_summary_returns_exact_kind_status_matrix() -> None:
     }
     assert set(observed) == expected
     assert response.data.total == sum(observed.values())
+
+
+async def test_review_summary_degrades_when_one_queue_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One broken queue is marked unavailable; the other six still report counts.
+
+    A missing view (core.uncategorized_queue after #340 moved it) previously
+    failed the whole aggregate, so the default reviews() call was a dead end
+    while six of seven queues were healthy.
+    """
+    real_count = reviews_module._review_count  # pyright: ignore[reportPrivateUsage]
+
+    def count_or_fail(db: object, *, kind: str, status: str) -> int:
+        if kind == "categorization":
+            raise duckdb.CatalogException("Table with name uncategorized_queue does")
+        return real_count(db, kind=kind, status=status)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(reviews_module, "_review_count", count_or_fail)
+
+    response = await reviews_coarse(kind="summary")
+
+    assert response.error is None
+    healthy = {count.kind for count in response.data.counts}
+    assert "categorization" not in healthy
+    assert "matches" in healthy
+    assert "auto_rules" in healthy
+    unavailable = {entry.kind for entry in response.data.unavailable}
+    assert unavailable == {"categorization"}
+    assert response.data.unavailable[0].code
+    assert response.summary.degraded is True
 
 
 async def test_review_summary_counts_auto_rules_without_blast_radius_scan() -> None:
@@ -1714,8 +1746,9 @@ async def test_identity_mixed_late_failure_rolls_back_then_shares_operation_id()
         "set",
         side_effect=RuntimeError("injected late failure"),
     ):
-        with pytest.raises(RuntimeError, match="injected late failure"):
-            await identity_links_decide_coarse(decisions=decisions)
+        failed = await identity_links_decide_coarse(decisions=decisions)
+        assert failed.error is not None
+        assert failed.error.code == error_codes.INFRA_UNCLASSIFIED_ERROR
 
     assert _identity_decision_status("account_link", account["decision_id"]) == (
         "pending"

@@ -1788,11 +1788,14 @@ async def test_import_confirm_late_failure_discards_success_observations(
         MagicMock(side_effect=RuntimeError("late failure")),
     )
 
-    with pytest.raises(RuntimeError, match="late failure"):
-        await import_confirm_coarse(
-            preview_id=preview.data.preview_id,
-            account_name="Checking",
-        )
+    from moneybin import error_codes
+
+    result = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+    assert result.error is not None
+    assert result.error.code == error_codes.INFRA_UNCLASSIFIED_ERROR
 
     metric.labels.assert_not_called()
 

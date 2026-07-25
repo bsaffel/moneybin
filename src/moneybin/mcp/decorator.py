@@ -30,7 +30,7 @@ from typing import Any, cast
 
 from moneybin import error_codes
 from moneybin.database import (  # noqa: PLC2701 — private import for per-call tracking
-    _write_conn_holder,  # pyright: ignore[reportPrivateUsage]
+    _call_conn_holder,  # pyright: ignore[reportPrivateUsage]
     interrupt_and_reset_database,
 )
 from moneybin.errors import UserError, classify_user_error
@@ -202,7 +202,13 @@ def _check_envelope(fn_name: str, result: Any) -> ResponseEnvelope[Any]:
 
 
 def _classify_or_raise(fn_name: str, exc: Exception) -> ResponseEnvelope[Any]:
-    """Convert a classified domain exception to an error envelope, else re-raise."""
+    """Convert a classified domain exception to an error envelope, else re-raise.
+
+    Retained for helpers composed *beneath* the public tool boundary
+    (``internal_envelope_adapter``), where the outer ``mcp_tool`` wrapper is
+    still there to catch and classify. The public boundary itself uses
+    ``_classify_or_envelope``, which must never re-raise.
+    """
     classified = classify_user_error(exc)
     if classified is None:
         raise exc
@@ -210,16 +216,43 @@ def _classify_or_raise(fn_name: str, exc: Exception) -> ResponseEnvelope[Any]:
     return build_error_envelope(error=classified, sensitivity="low")
 
 
-def _build_unclassified_failure_envelope(fn_name: str) -> ResponseEnvelope[Any]:
-    """Synthetic envelope for an audit emit on unclassified exception paths.
+def _classify_or_envelope(fn_name: str, exc: Exception) -> ResponseEnvelope[Any]:
+    """Convert any exception to an error envelope, classified where possible.
 
-    Used only as the row_count source before the original exception
-    propagates — never returned to a caller. The exception still re-raises
-    so the server boundary's ``mask_error_details`` handler runs.
+    Never raises. An exception that escapes the public boundary reaches
+    fastmcp's ``mask_error_details``, which keeps only ``str(exc)`` — a bare
+    string with no ``code`` and no ``hint`` for an agent to branch on. Every
+    public tool failure must arrive as a structured envelope instead.
     """
+    classified = classify_user_error(exc)
+    if classified is None:
+        # Full traceback server-side: a programmer error must stay visible to
+        # the developer even though the wire only carries the exception type.
+        logger.exception(f"Tool {fn_name} raised unclassified {type(exc).__name__}")
+        return _build_unclassified_failure_envelope(fn_name, exc)
+    logger.error(f"Tool {fn_name} raised {type(exc).__name__}: {classified.code}")
+    return build_error_envelope(error=classified, sensitivity="low")
+
+
+def _build_unclassified_failure_envelope(
+    fn_name: str, exc: BaseException | None = None
+) -> ResponseEnvelope[Any]:
+    """Structured envelope for an exception ``classify_user_error`` rejects.
+
+    Returned to the caller so the wire always carries a branchable ``code``.
+    Also used as the row_count source for the audit emit on the cancellation
+    path, where the ``CancelledError`` still propagates.
+
+    Carries ``type(exc).__name__`` and never ``str(exc)``: exception messages
+    embed file paths, SQL fragments, and user financial data (the same reason
+    ``TransformService`` logs the type rather than the message).
+    """
+    exception_type = type(exc).__name__ if exc is not None else "unknown"
     err = UserError(
-        f"Tool {fn_name} raised unclassified exception",
-        code="unclassified_error",
+        f"Tool {fn_name} failed with an unhandled {exception_type}",
+        code=error_codes.INFRA_UNCLASSIFIED_ERROR,
+        hint="💡 This is a MoneyBin bug — the server log holds the traceback",
+        details={"tool": fn_name, "exception_type": exception_type},
     )
     return build_error_envelope(error=err, sensitivity="low")
 
@@ -514,8 +547,8 @@ def mcp_tool(
                 timeout_s = timeout_attr
             started = time.monotonic()
             request_lifetime = RequestLifetime()
-            # Per-call holder: the tool's thread stores the write connection
-            # here via _write_conn_thread_local so the timeout handler can
+            # Per-call holder: get_database stores this call's connection
+            # (read or write) here via _call_conn_holder so the timeout handler can
             # interrupt *this* call's connection specifically rather than
             # whatever is in the process-global slot (which might belong to a
             # different concurrent tool call if this tool closed its connection
@@ -542,7 +575,7 @@ def mcp_tool(
                 # here. Without it the connection goes unregistered and the
                 # timeout handler has nothing to interrupt, so the write commits
                 # after the caller already received a timed_out envelope.
-                holder_token = _write_conn_holder.set(_conn_for_this_call)
+                holder_token = _call_conn_holder.set(_conn_for_this_call)
                 try:
                     with operation(), request_lifetime_scope(request_lifetime):
                         async with cm:
@@ -551,18 +584,12 @@ def mcp_tool(
                             else:
                                 result = await asyncio.to_thread(fn, *args, **kwargs)
                 finally:
-                    _write_conn_holder.reset(holder_token)
+                    _call_conn_holder.reset(holder_token)
             except TimeoutError as exc:
                 if not cm.expired():
-                    try:
-                        err_env = _classify_or_raise(fn.__name__, exc)
-                    except BaseException:
-                        # Unclassified — emit a crash audit row, then propagate.
-                        await _emit_privacy_event(
-                            _build_unclassified_failure_envelope(fn.__name__)
-                        )
-                        raise
-                    err_env = _stamp_sensitivity(err_env)
+                    err_env = _stamp_sensitivity(
+                        _classify_or_envelope(fn.__name__, exc)
+                    )
                     await _emit_privacy_event(err_env)
                     return err_env
                 elapsed = time.monotonic() - started
@@ -633,16 +660,10 @@ def mcp_tool(
                 await _emit_privacy_event(timeout_env)
                 return timeout_env
             except Exception as exc:
-                try:
-                    err_env = _classify_or_raise(fn.__name__, exc)
-                except BaseException:
-                    # Unclassified — emit a crash audit row, then propagate
-                    # so the server boundary's mask_error_details runs.
-                    await _emit_privacy_event(
-                        _build_unclassified_failure_envelope(fn.__name__)
-                    )
-                    raise
-                err_env = _stamp_sensitivity(err_env)
+                # Unclassified exceptions return a structured envelope rather
+                # than propagating to mask_error_details, which would reduce
+                # the failure to an opaque str(exc) with no code to branch on.
+                err_env = _stamp_sensitivity(_classify_or_envelope(fn.__name__, exc))
                 await _emit_privacy_event(err_env)
                 return err_env
             except asyncio.CancelledError:
@@ -670,16 +691,18 @@ def mcp_tool(
                     pass
                 raise
             # _check_envelope raises TypeError when a tool returns a non-
-            # ResponseEnvelope. That's an envelope-contract violation that
-            # belongs in the audit trail like any other crash path; emit
-            # before propagating to the server's mask_error_details boundary.
+            # ResponseEnvelope. That's an envelope-contract violation — a
+            # MoneyBin bug — but the caller still gets a structured code
+            # rather than the bare string mask_error_details would produce.
+            # _check_envelope has already logged the violation.
             try:
                 envelope = _check_envelope(fn.__name__, result)
-            except BaseException:
-                await _emit_privacy_event(
-                    _build_unclassified_failure_envelope(fn.__name__)
+            except TypeError as exc:
+                err_env = _stamp_sensitivity(
+                    _build_unclassified_failure_envelope(fn.__name__, exc)
                 )
-                raise
+                await _emit_privacy_event(err_env)
+                return err_env
             # Stamp summary.sensitivity with the decorator-derived tier so the
             # envelope reflects the statically-derived classification regardless
             # of what build_envelope() defaulted to in the tool body. Same helper

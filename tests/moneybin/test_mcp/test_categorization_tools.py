@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastmcp import FastMCP
 
+from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.mcp.tools.categories import (
     categories,
@@ -621,13 +622,14 @@ class TestCategorizationRulesTargetState:
 
         monkeypatch.setattr(CategorizationRulesRepo, "insert", fail_second_insert)
 
-        with pytest.raises(RuntimeError, match="injected second write failure"):
-            await transactions_categorize_rules_set_coarse(
-                rules=[
-                    _rule_target(state="present", value="COFFEE"),
-                    _rule_target(state="present", value="MARKET"),
-                ]
-            )
+        result = await transactions_categorize_rules_set_coarse(
+            rules=[
+                _rule_target(state="present", value="COFFEE"),
+                _rule_target(state="present", value="MARKET"),
+            ]
+        )
+        assert result.error is not None
+        assert result.error.code == error_codes.INFRA_UNCLASSIFIED_ERROR
 
         with get_database(read_only=True) as db:
             assert db.execute(
