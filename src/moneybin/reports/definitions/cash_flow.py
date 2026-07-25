@@ -1,4 +1,4 @@
-"""reports_cashflow / `reports cashflow` — monthly inflow/outflow/net rollup."""
+"""core:cashflow / `reports cashflow` — monthly inflow/outflow/net rollup."""
 
 from __future__ import annotations
 

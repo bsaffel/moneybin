@@ -1,4 +1,4 @@
-"""reports_large_transactions — top-N transactions with z-score anomaly lens."""
+"""core:large_transactions — top-N transactions with z-score anomaly lens."""
 
 from __future__ import annotations
 

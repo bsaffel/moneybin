@@ -89,9 +89,36 @@ def _prompt_texts() -> dict[str, str]:
     return {prompt.__name__: prompt() for prompt in prompts.PROMPT_FUNCTIONS}
 
 
+_ACTOR_KEYWORDS = frozenset({"cli_actor", "privacy_actor"})
+
+
+def _audit_actor_strings(tree: ast.AST) -> set[int]:
+    """Ids of literals passed as ``cli_actor=`` / ``privacy_actor=``.
+
+    These name the CLI command or MCP callback that performed the write — an
+    audit-log identity, not an instruction to a caller. Several legitimately
+    match a tool name that #344 retired, because the CLI kept the name the
+    tool used to have. Renaming them would falsify the audit trail.
+    """
+    return {
+        id(keyword.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg in _ACTOR_KEYWORDS and isinstance(keyword.value, ast.Constant)
+    }
+
+
 def _emitted_tool_strings() -> dict[str, list[str]]:
+    """Non-docstring literals anywhere in ``src`` that name an MCP tool.
+
+    Scans the whole package, not just ``mcp/tools/``: actions[] hints, error
+    messages, and log lines are emitted from services, adapters, connectors,
+    and CLI commands too, and every one of them is read by an agent or a user
+    who will try to act on the name.
+    """
     result: dict[str, list[str]] = {}
-    for path in sorted(_TOOLS_DIR.glob("*.py")):
+    for path in sorted(_SRC_DIR.rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
         docstrings = {
             id(node.body[0].value)
@@ -104,12 +131,13 @@ def _emitted_tool_strings() -> dict[str, list[str]]:
             and isinstance(node.body[0].value, ast.Constant)
             and isinstance(node.body[0].value.value, str)
         }
+        exempt = docstrings | _audit_actor_strings(tree)
         strings = [
             node.value
             for node in ast.walk(tree)
             if isinstance(node, ast.Constant)
             and isinstance(node.value, str)
-            and id(node) not in docstrings
+            and id(node) not in exempt
             and _tool_references(node.value)
         ]
         if strings:

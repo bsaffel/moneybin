@@ -1183,7 +1183,7 @@ class MatchApplier:
             if default:
                 raise UserError(
                     f"Default category {category_id} cannot be deleted "
-                    "(use categories_set with is_active=False to disable)",
+                    "(use taxonomy_set with is_active=False to disable)",
                     code="CATEGORY_IS_DEFAULT",
                 )
             raise UserError(

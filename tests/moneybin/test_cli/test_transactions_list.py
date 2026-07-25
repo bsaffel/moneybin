@@ -40,9 +40,15 @@ def _make_txn(**overrides: object) -> Transaction:
 
 
 def _mock_result(
-    transactions: list[Transaction], next_cursor: str | None = None
+    transactions: list[Transaction],
+    next_cursor: str | None = None,
+    total_count: int | None = None,
 ) -> TransactionGetResult:
-    return TransactionGetResult(transactions=transactions, next_cursor=next_cursor)
+    return TransactionGetResult(
+        transactions=transactions,
+        next_cursor=next_cursor,
+        total_count=len(transactions) if total_count is None else total_count,
+    )
 
 
 @contextmanager
@@ -92,6 +98,76 @@ def test_list_json_output_returns_envelope() -> None:
     # Transaction rows carry amount (TXN_AMOUNT → HIGH); account_id is RECORD_ID
     # (spec D6). CLI render_or_json stamps the derived tier over the declared value.
     assert parsed["summary"]["sensitivity"] == "high"
+
+
+@pytest.mark.unit
+def test_list_json_reports_the_service_total_not_the_page_size() -> None:
+    """summary.total_count carries the service's match count, not len(page).
+
+    Breaks if the ``total_count=`` argument is dropped from ``build_envelope``
+    — the envelope would infer 1 from the single returned row.
+    """
+    import json
+
+    txns = [_make_txn()]
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService,
+                "get",
+                return_value=_mock_result(txns, next_cursor="Y3Vyc29y", total_count=42),
+            ):
+                result = runner.invoke(
+                    app, ["transactions", "list", "--limit", "1", "--output", "json"]
+                )
+    assert result.exit_code == 0
+    summary = json.loads(result.stdout)["summary"]
+    assert summary["total_count"] == 42
+    assert summary["returned_count"] == 1
+    assert summary["has_more"] is True
+
+
+@pytest.mark.unit
+def test_list_actions_name_cli_commands_not_mcp_tools() -> None:
+    """Hints must be runnable by the agent that received them.
+
+    Breaks if a hint reverts to naming an MCP tool — an agent driving the CLI
+    cannot call one, and MCP renames would silently stale the CLI's output.
+    """
+    import json
+
+    txns = [_make_txn()]
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService,
+                "get",
+                return_value=_mock_result(txns, next_cursor="Y3Vyc29y", total_count=42),
+            ):
+                result = runner.invoke(
+                    app, ["transactions", "list", "--output", "json"]
+                )
+    actions = json.loads(result.stdout)["actions"]
+    assert actions
+    assert all("moneybin " in action for action in actions)
+    assert any("--cursor Y3Vyc29y" in action for action in actions)
+
+
+@pytest.mark.unit
+def test_list_omits_the_cursor_hint_on_the_last_page() -> None:
+    """No next_cursor means no 'fetch the next page' hint to follow."""
+    import json
+
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result([_make_txn()])
+            ):
+                result = runner.invoke(
+                    app, ["transactions", "list", "--output", "json"]
+                )
+    actions = json.loads(result.stdout)["actions"]
+    assert not any("--cursor" in action for action in actions)
 
 
 @pytest.mark.unit

@@ -1,4 +1,4 @@
-"""reports_spending / `reports spending` — monthly spending trend with deltas."""
+"""core:spending / `reports spending` — monthly spending trend with deltas."""
 
 from __future__ import annotations
 

@@ -44,7 +44,8 @@ def auto_review_envelope(
     )
     broad = [p for p in result.proposals if p.get("is_broad")]
     actions = [
-        "Use transactions_categorize_auto_accept to accept or reject proposals",
+        "Use `moneybin transactions categorize auto accept` to accept or reject "
+        "proposals",
     ]
     if broad:
         actions.append(

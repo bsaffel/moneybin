@@ -191,7 +191,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                 )
                 logger.warning(
                     f"GSheet pull: {len(non_complete)} non-complete result(s) "
-                    f"({summary}); see gsheet_status for per-connection detail"
+                    f"({summary}); see gsheet for per-connection detail"
                 )
 
     matching_error: str | None = None

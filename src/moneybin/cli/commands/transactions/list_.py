@@ -19,6 +19,27 @@ from moneybin.cli.utils import render_rich_table
 logger = logging.getLogger(__name__)
 
 
+def _list_actions(next_cursor: str | None) -> list[str]:
+    """Next-step hints for an agent driving the CLI.
+
+    These name CLI invocations, not MCP tools. An agent reading a CLI envelope
+    can only run commands, and citing tool names here also drags the CLI into
+    the blast radius of every MCP rename.
+    """
+    actions = [
+        "Use `moneybin reports spending` for category breakdowns",
+        "Use `moneybin transactions categorize run` to categorize uncategorized "
+        "transactions",
+    ]
+    if next_cursor is not None:
+        actions.insert(
+            0,
+            f"Use `moneybin transactions list --cursor {next_cursor}` "
+            "to fetch the next page",
+        )
+    return actions
+
+
 def transactions_list(
     accounts: list[str] = typer.Option(
         [], "--account", help="Account ID or display name (repeatable)."
@@ -102,12 +123,10 @@ def transactions_list(
     envelope = build_envelope(
         data=payload,
         sensitivity="medium",
+        total_count=result.total_count,
+        returned_count=len(result.transactions),
         next_cursor=result.next_cursor,
-        actions=[
-            "Use transactions_get with the next_cursor value to fetch the next page",
-            "Use reports_spending for category breakdowns",
-            "Use transactions_categorize_commit to categorize uncategorized transactions",
-        ],
+        actions=_list_actions(result.next_cursor),
     )
 
     def _render_text(_: object) -> None:

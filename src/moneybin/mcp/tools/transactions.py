@@ -176,6 +176,8 @@ def transactions_get(
     payload = _transaction_payload(result, next_cursor=result.next_cursor)
     return build_envelope(
         data=payload,
+        total_count=result.total_count,
+        returned_count=len(result.transactions),
         next_cursor=result.next_cursor,
         actions=[
             "Use transactions with the next_cursor value to fetch the next page",

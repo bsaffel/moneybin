@@ -134,10 +134,17 @@ class Transaction:
 
 @dataclass(slots=True)
 class TransactionGetResult:
-    """Result of TransactionService.get()."""
+    """Result of TransactionService.get().
+
+    ``total_count`` is every row matching the filters, not the page length —
+    the same meaning ``summary.total_count`` carries on the MCP surface. It is
+    carried on the result rather than recomputed by callers so a truncated
+    page cannot present its own size as the match count.
+    """
 
     transactions: list[Transaction]
     next_cursor: str | None
+    total_count: int
 
 
 @dataclass(slots=True)
@@ -799,12 +806,13 @@ class TransactionService:
         )
 
         logger.info(
-            f"transactions_get returned {len(page.transactions)} rows "
-            f"(offset={offset}, has_more={has_more})"
+            f"Transaction query returned {len(page.transactions)} of "
+            f"{page.total_count} rows (offset={offset}, has_more={has_more})"
         )
         return TransactionGetResult(
             transactions=page.transactions,
             next_cursor=next_cursor,
+            total_count=page.total_count,
         )
 
     def query_operational(
