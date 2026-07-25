@@ -271,7 +271,7 @@ Standard import commands gain matching output:
 ```
 ✅ Imported 142 transactions from chase_checking_2026-03.csv
 ⚙️  Matching: 8 auto-merged, 3 pending review
-👀 Run 'moneybin transactions matches pending' to see them, then 'moneybin review --confirm <match-id>' to decide
+👀 Run 'moneybin transactions matches pending' to see them, then 'moneybin review --type matches --confirm <match-id>' to decide
 ```
 
 ### Match commands
@@ -291,7 +291,7 @@ Standard import commands gain matching output:
 ```
 ⚙️  Scanning 4,230 existing transactions for duplicates...
 ✅ Backfill complete: 47 auto-merged, 12 pending review
-👀 Run 'moneybin transactions matches pending' to see them, then 'moneybin review --confirm <match-id>' to decide
+👀 Run 'moneybin transactions matches pending' to see them, then 'moneybin review --type matches --confirm <match-id>' to decide
 ```
 
 ## MCP Interface

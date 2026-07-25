@@ -76,6 +76,11 @@ def review_impl(
         raise typer.Exit(2)
 
     if decides:
+        # `--type matches` stays explicit rather than being inferred from the
+        # decide flags. They are match-only today, but the queued work extends
+        # them to categorize and the three link queues — at which point a bare
+        # `--confirm <id>` names an id whose queue we would have to guess, and
+        # guessing wrong accepts the wrong decision silently.
         if type_ != "matches":
             logger.error(
                 "❌ --confirm/--reject/--confirm-all require --type matches "
@@ -121,7 +126,7 @@ def transactions_review(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
-    """Walk pending matches first, then uncategorized transactions.
+    """Pending counts across all review queues.
 
     DEPRECATED: use `moneybin review` instead. Removed after one minor release.
     """

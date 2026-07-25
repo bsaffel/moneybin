@@ -147,7 +147,10 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     in their response envelope.
     """
     from moneybin.errors import UserError  # noqa: PLC0415
-    from moneybin.services.matching_service import MatchingService  # noqa: PLC0415
+    from moneybin.services.matching_service import (  # noqa: PLC0415
+        PENDING_MATCHES_HINT,
+        MatchingService,
+    )
 
     if steps is not None:
         unknown = [s for s in steps if s not in CANONICAL_STEPS]
@@ -203,10 +206,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             if match_result.has_matches:
                 logger.info(f"Matching: {match_result.summary()}")
                 if match_result.has_pending:
-                    logger.info(
-                        "Run 'moneybin transactions matches pending' to see them, "
-                        "then 'moneybin review --confirm <match-id>' to decide"
-                    )
+                    logger.info(PENDING_MATCHES_HINT)
         except (duckdb.CatalogException, duckdb.BinderException):
             # Views not built yet (first load precedes SQLMesh apply) — an
             # expected precondition, not a crash. Stay quiet; no error surfaced

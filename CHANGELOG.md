@@ -109,7 +109,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `transactions_matches_pending` MCP hint — pointed at
   `moneybin transactions review --type matches`, which was both the deprecated
   alias and the stubbed path; they now name `transactions matches pending` and
-  `review --confirm`. Passing two of `--status`, `--interactive`, and
+  `review --type matches --confirm`. Passing two of `--status`, `--interactive`, and
   `--confirm`/`--reject`/`--confirm-all` is a usage error rather than a silent
   pick. (#358)
 - **`sync pull` no longer buries its results in diagnostic logging.** HTTP

@@ -10,7 +10,7 @@ from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import emit_json, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.matching.persistence import VALID_MATCH_TYPES
-from moneybin.services.matching_service import MatchingService
+from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
 from moneybin.tables import INT_TRANSACTIONS_UNIONED
 
 app = typer.Typer(
@@ -98,11 +98,7 @@ def matches_run(
                 if result.has_matches:
                     logger.info(f"Matching: {result.summary()}")
                     if result.has_pending:
-                        logger.info(
-                            "Run 'moneybin transactions matches pending' to see "
-                            "them, then 'moneybin review --confirm <match-id>' "
-                            "to decide"
-                        )
+                        logger.info(PENDING_MATCHES_HINT)
                 else:
                     logger.info("No new matches found")
 
@@ -227,10 +223,7 @@ def matches_backfill(
 
                 logger.info(f"Backfill complete: {result.summary()}")
                 if result.has_pending:
-                    logger.info(
-                        "Run 'moneybin transactions matches pending' to see them, "
-                        "then 'moneybin review --confirm <match-id>' to decide"
-                    )
+                    logger.info(PENDING_MATCHES_HINT)
 
                 if not skip_transform and result.auto_merged:
                     from moneybin.services.import_service import ImportService

@@ -255,7 +255,7 @@ After import, the matcher runs in transfer mode alongside dedup:
 ```
 Imported 142 transactions from chase_checking_2026-03.csv
   Matching: 8 dedup auto-merged, 5 potential transfers found
-  Run 'moneybin transactions matches pending' to see them, then 'moneybin review --confirm <match-id>' to decide
+  Run 'moneybin transactions matches pending' to see them, then 'moneybin review --type matches --confirm <match-id>' to decide
 ```
 
 ### Match commands (extended)

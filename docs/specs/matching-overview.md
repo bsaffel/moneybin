@@ -139,7 +139,7 @@ v2 (deferred): **learned promotions.** After the user confirms N matches of the 
 **Hybrid: deterministic sync, fuzzy batch.**
 
 - **Deterministic matches** — same-source re-import (identical `transaction_id`), Plaid retro-mutation (Plaid-provided `transaction_id`) — apply synchronously during the import that produced them. No queue, no review, because these are not decisions — they're mechanical identity matches.
-- **Fuzzy matches** — cross-source dedup, transfer pairs — run automatically after import completes. Results go to the match log: auto-merges above threshold are applied and logged; medium-confidence proposals queue for review. Import output reads: *"Import complete: 1,240 rows. Matching: 3 auto-merged, 5 pending review. Run 'moneybin transactions matches pending' to see them, then 'moneybin review --confirm <match-id>' to decide."*
+- **Fuzzy matches** — cross-source dedup, transfer pairs — run automatically after import completes. Results go to the match log: auto-merges above threshold are applied and logged; medium-confidence proposals queue for review. Import output reads: *"Import complete: 1,240 rows. Matching: 3 auto-merged, 5 pending review. Run 'moneybin transactions matches pending' to see them, then 'moneybin review --type matches --confirm <match-id>' to decide."*
 - **Manual trigger** — `moneybin transactions matches run` is always available for running the matcher on-demand, independent of import.
 
 ## Adjacent initiatives
