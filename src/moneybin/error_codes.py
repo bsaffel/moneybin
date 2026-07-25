@@ -133,6 +133,16 @@ GSHEET_ERROR = "gsheet_error"
 
 
 # ---------------------------------------------------------------------------
+# Price feeds — market data providers (Tiingo, CoinGecko)
+# ---------------------------------------------------------------------------
+# Distinct from sync_* (mediated account providers): a price feed carries no
+# account credential and no PII, only public market data. Like sync_ and
+# gsheet_, a taxonomy-completeness prefix rather than a recovery code.
+
+PRICE_FEED_ERROR = "price_feed_error"
+
+
+# ---------------------------------------------------------------------------
 # SQL — ad-hoc read-only query surface (sql_query / sql_schema)
 # ---------------------------------------------------------------------------
 

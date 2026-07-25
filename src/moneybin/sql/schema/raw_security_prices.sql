@@ -23,9 +23,12 @@ CREATE TABLE IF NOT EXISTS raw.security_prices (
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
-    -- price_basis is deliberately NOT in the key: only 'raw' is written today (Plaid), so
-    -- a second basis for one observation cannot yet occur. When a C.2 adapter (tiingo/
-    -- coingecko) or a backfill first writes an adjusted basis alongside raw, add price_basis
-    -- to this key so on_conflict="ignore" stops silently dropping the second — tracked for C.2.
+    -- price_basis is deliberately NOT in the key: every writer declares 'raw', so a second
+    -- basis for one observation cannot occur. Settled for C.2 rather than left open — the
+    -- tiingo adapter reads `close` (never `adjClose`) and coingecko's spot prices are raw by
+    -- construction, so neither adds a basis here. When a future adapter or backfill first
+    -- writes an adjusted basis alongside raw, add price_basis to this key: until then
+    -- on_conflict="ignore" has no second basis to drop, and afterwards it would drop it
+    -- silently.
     PRIMARY KEY (source_type, source_origin, provider_security_key, price_date, quote_currency)
 );

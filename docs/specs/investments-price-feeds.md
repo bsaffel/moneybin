@@ -745,27 +745,73 @@ separately against the ledger rather than here.
 
 Adapters live in `src/moneybin/connectors/prices/`, matching the
 `connectors/gsheet/` shape: a network client that pulls into `raw.*`. Two
-concrete modules behind one Protocol. Provider identity is data in the `source`
-column, so nothing needs runtime registration.
+concrete modules behind one Protocol. Provider identity is data in the
+`source_type` column, so nothing needs runtime registration.
 
 ```python
 class PriceAdapter(Protocol):
-    source: str
+    source_type: str
     price_basis: str
 
     def fetch(
         self, securities: Sequence[SecurityRef], start: date, end: date
-    ) -> Sequence[PriceObservation]: ...
+    ) -> PriceFetchResult: ...
 ```
+
+`fetch` returns observations *and* per-security failures together, because
+partial success is the normal outcome rather than an error path.
 
 - **`tiingo.py`** — equities, ETFs, and mutual funds. Reads Tiingo's end-of-day
   `close`, which its documentation defines as the as-traded close beside a
   separate `adjClose`, so the adapter declares `price_basis = 'raw'`. Mutual
   fund rows carry the day's NAV in the OHLC fields. Requires an API token, read
-  through `SecretStore` like every other credentialed connector.
+  through `SecretStore` like every other credentialed connector, and sent as an
+  `Authorization: Token …` header rather than the `?token=` query parameter
+  Tiingo also accepts — a credential in a URL reaches access logs.
 - **`coingecko.py`** — crypto, keyed by the `coingecko_id` already on
   `app.securities`. No credential. Spot crypto has no splits or dividends, so
   its closes are raw by construction.
+
+**The keyless CoinGecko tier constrains the endpoint and the window.** Verified
+against the live API on 2026-07-24, because the documentation states neither:
+`/coins/{id}/market_chart/range` answers **401** without a key, while
+`/coins/{id}/market_chart?days=N` answers 200. `/coins/{id}/ohlc/range` — the one
+endpoint that would return a true daily *close* — is Analyst-plan-and-above. So
+the adapter uses the `days` form, and the keyless tier's 365-day history bound is
+clamped rather than silently requested and quietly truncated.
+
+**A crypto observation is the midnight boundary of the following day.** The only
+daily point the keyless tier serves is 00:00:00 UTC, which is the value at the
+*end* of the preceding date, so it is stored against that preceding date. This
+keeps `price_date` meaning "value at the end of this date" for crypto exactly as
+it does for every equity close in the table; labelling it by its own date would
+blend a Friday equity close with Thursday-end crypto inside one portfolio total
+and report that row's staleness as zero days. Two costs are accepted
+deliberately: today's crypto is never priced, and a stored row disagrees by one
+day with CoinGecko's own `/history?date=D` page, which labels the same snapshot
+`D`.
+
+**Granularity varies with window width, so the adapter pins the boundary point.**
+`days=200` returned points spaced 86,400,000 ms at exact midnight UTC; `days=5`
+returned points spaced 3,600,000 ms — matching the documented auto-granularity
+rule. Taking any non-midnight point would make a stored price depend on how wide
+a window happened to be requested, and `raw.security_prices` is append-only with
+`on_conflict="ignore"`, so a 30-day refresh and a 365-day backfill would disagree
+on a date and whichever ran first would win permanently and silently. Keeping
+only the exact-midnight point makes the stored value a pure function of its date.
+
+**Neither adapter writes an adjusted basis**, so `price_basis` stays out of
+`raw.security_prices`' primary key for C.2. The key must gain it before any
+adapter or backfill first writes an adjusted series alongside `raw`; until then
+`on_conflict="ignore"` has no second basis to drop.
+
+**The quote currency is supplied by the caller, not read from the response.**
+Tiingo's end-of-day payload carries no currency field, and CoinGecko takes the
+currency as a *request* parameter, so neither adapter can learn it from the
+provider. `SecurityRef` therefore carries `quote_currency` from
+`app.securities.currency_code`. Hard-coding USD would mislabel every non-US
+listing permanently on an append-only table; sourcing it from the catalog makes a
+wrong currency one fixable catalog row.
 
 Which securities to fetch, and for which dates, derives from holdings: a security
 is fetched over the interval it was actually held, extended to today while the
@@ -873,8 +919,21 @@ that integration remains Pillar D.
   unbound key leaves its row in `raw` and surfaces in the unresolved-security
   backlog rather than vanishing. The migration test
   runs against a populated `app.security_links`, per the migration-realism rule.
-- **Adapter fixtures** — recorded provider responses. No test performs a network
-  call.
+- **Adapter fixtures** — recorded provider responses served through `respx`. No
+  test performs a network call, and no test needs a Tiingo token. The two
+  invariants worth naming, because each guards a permanent write:
+  - **The window does not change the price.** A narrow (hourly) CoinGecko window
+    and a wide (daily) one must agree on a shared date, or an append-only table
+    stores whichever refresh ran first.
+  - **A close never travels as a float.** `json.loads` reads 212.55 as
+    212.55000000000001136868377216160297393798828125 without
+    `parse_float=Decimal`, and that value would land in `DECIMAL(28,10)`.
+- **Adapter guards are verified by mutation, not by coverage.** Each guard —
+  the midnight filter, the end-of-day offset, both non-positive-close checks, the
+  history clamp, reading `close` over `adjClose`, the header-not-query token, the
+  whole-batch auth propagation, retry-on-429-only, and the basis vocabulary — has
+  one fixture that fails when *that* guard alone is deleted. A guard nothing fails
+  without is not a guard.
 - **Scenario coverage** for ingest → resolve → value → net worth.
 
 A change to `core` grain requires `make test-scenarios`, which the default
@@ -941,6 +1000,12 @@ investment/report integration. The first-available floor was dropped as a no-op
 - `src/moneybin/sqlmesh/models/core/fct_holdings_daily.py`
 - `src/moneybin/connectors/prices/__init__.py`
 - `src/moneybin/connectors/prices/protocol.py`
+- `src/moneybin/connectors/prices/errors.py`
+- `src/moneybin/connectors/prices/_http.py` — the one request path both adapters
+  share: retry on rate limit only, map status to a typed error, and parse with
+  `parse_float=Decimal` so a quote never becomes a float. Returns `object` rather
+  than `Any`, so a provider shape change degrades to a named per-security failure
+  instead of a traceback mid-refresh
 - `src/moneybin/connectors/prices/tiingo.py`
 - `src/moneybin/connectors/prices/coingecko.py`
 - `src/moneybin/services/price_service.py`
