@@ -554,10 +554,8 @@ def test_freshness_pending_and_named_when_a_registered_model_was_never_built(
     Breaks under the timestamp-only proxy: a model with no relation has no
     timestamp to compare, so it reads as fresh forever.
     """
-    # A `prep.*` view marks the warehouse as built — only a SQLMesh apply
-    # creates one, so without it this is the never-refreshed state instead.
-    freshness_db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    freshness_db.execute("CREATE VIEW prep.stg_probe AS SELECT 1 AS x")
+    # `core.dim_accounts` below is a registered model no `db init` creates, so
+    # its presence is what marks this warehouse built rather than brand new.
     extracted = _ts(2026, 5, 13, 18, 24)
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",

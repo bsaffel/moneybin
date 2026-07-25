@@ -20,6 +20,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from moneybin.seeds import INIT_CREATED_MODELS
+
 if TYPE_CHECKING:
     from moneybin.database import Database
 
@@ -81,22 +83,24 @@ class ModelPresence:
     """
 
     missing: tuple[str, ...]
-    built_count: int
-    built_staging_count: int
+    built_beyond_init_count: int
 
     @property
     def never_built(self) -> bool:
         """True when SQLMesh has never materialised anything.
 
-        Keyed on the ``prep`` staging layer, not on the total built count:
-        ``db init`` alone creates five registered relations (``core.dim_*`` and
-        ``seeds.*`` are schema-init tables), so "nothing built" is never true
-        even on a profile that has never refreshed. Nothing but a SQLMesh apply
-        creates a ``prep`` relation, which makes an empty ``prep`` the honest
-        signal — counted from the catalog rather than the registered set, since
-        the question is whether the layer exists at all.
+        Keyed on the registered models that opening a database does *not*
+        create, because neither simpler count is honest. The total built count
+        is never zero — ``db init`` alone creates five registered relations
+        (:data:`~moneybin.seeds.INIT_CREATED_MODELS`) — so a fresh profile
+        would read as built. An empty ``prep`` layer has the opposite failure:
+        a warehouse that lost its staging views while materialised ``core``
+        models survive reads as brand new, which silences the doctor invariant
+        and ``freshness().pending`` on exactly the broken state they exist to
+        report. A surviving non-init model is positive evidence of a prior
+        apply, and nothing else creates one.
         """
-        return self.built_staging_count == 0
+        return self.built_beyond_init_count == 0
 
 
 def model_presence(db: Database) -> ModelPresence:
@@ -117,11 +121,9 @@ def model_presence(db: Database) -> ModelPresence:
         built = {str(row[0]) for row in rows}
     except Exception:  # noqa: BLE001 — an unreadable catalog is "unknown", not "missing"
         logger.debug("model presence check skipped: catalog unreadable", exc_info=True)
-        return ModelPresence(missing=(), built_count=0, built_staging_count=0)
+        return ModelPresence(missing=(), built_beyond_init_count=0)
     registered = registered_model_names()
-    present = registered & built
     return ModelPresence(
         missing=tuple(sorted(registered - built)),
-        built_count=len(present),
-        built_staging_count=sum(1 for name in built if name.startswith("prep.")),
+        built_beyond_init_count=len((registered & built) - INIT_CREATED_MODELS),
     )

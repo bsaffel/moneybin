@@ -1927,10 +1927,8 @@ def test_missing_registered_model_fails_an_invariant(
         yield mock_ctx
 
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
-    # A built warehouse: only a SQLMesh apply creates a `prep.*` relation, so
-    # without one this is the never-refreshed state, which is not a failure.
-    doctor_db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    doctor_db.execute("CREATE VIEW prep.stg_probe AS SELECT 1 AS x")
+    # `doctor_db` already builds `core.fct_transactions`, which no `db init`
+    # creates — that alone marks the warehouse as built, staging layer or not.
     svc = DoctorService(doctor_db)
 
     report = svc.run_all()
