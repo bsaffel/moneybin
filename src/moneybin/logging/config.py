@@ -63,14 +63,16 @@ class _ConsoleNoiseFilter(logging.Filter):
     WARNING and above always pass — quieting noise must never quiet a problem.
     """
 
-    def __init__(self, *, verbose: bool = False) -> None:
+    def __init__(self, *, unfiltered: bool = False) -> None:
         super().__init__()
-        # --verbose is the escape hatch users reach for when something is
-        # wrong; it must defeat the allowlist, not be narrowed by it.
-        self._verbose = verbose
+        # Asking for DEBUG — via --verbose or a profile's logging.level — is
+        # the escape hatch users reach for when something is wrong. It must
+        # defeat the allowlist rather than be narrowed by it, or the most
+        # detailed setting would produce a quieter console than the default.
+        self._unfiltered = unfiltered
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if self._verbose or record.levelno >= logging.WARNING:
+        if self._unfiltered or record.levelno >= logging.WARNING:
             return True
         return any(
             record.name == p or record.name.startswith(f"{p}.")
@@ -237,7 +239,9 @@ def setup_logging(
     # Console handler (always present, writes to stderr)
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
-    console_handler.addFilter(_ConsoleNoiseFilter(verbose=verbose))
+    console_handler.addFilter(
+        _ConsoleNoiseFilter(unfiltered=resolved_level <= logging.DEBUG)
+    )
     handlers.append(console_handler)
 
     # File handler — only write to file if the log directory's parent exists.

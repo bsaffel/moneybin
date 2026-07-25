@@ -257,6 +257,26 @@ class TestConsoleInfoAllowlist:
         assert handler.filter(record)
 
     @pytest.mark.unit
+    def test_debug_level_restores_undeclared_dependency_output(self) -> None:
+        """Configuring DEBUG must show DEBUG, not file it away silently.
+
+        `--verbose` is not the only way in: a profile can set
+        `logging.level: DEBUG`. Asking for the most detailed level and
+        getting a quieter console than INFO would be backwards.
+        """
+        setup_logging(stream="cli", level="DEBUG")
+        console = [
+            h
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert console, "Expected a console StreamHandler"
+        record = self._record("some_vendor_lib.client", logging.INFO)
+
+        assert console[0].filter(record)
+
+    @pytest.mark.unit
     def test_verbose_restores_undeclared_dependency_output(self) -> None:
         """`--verbose` is the escape hatch and must defeat the allowlist.
 

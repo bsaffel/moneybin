@@ -132,9 +132,11 @@ Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `S
 
 WARNING and above always reach the console. **Sub-WARNING records reach it only
 from the logger prefixes in `_CONSOLE_INFO_ALLOWLIST`** (`logging/config.py`);
-everything else goes to the log file, and returns to the console under
-`--verbose`. It is an allowlist, not a denylist, so a newly-added dependency or
-service `logger.info` is quiet by default rather than after someone notices it.
+everything else goes to the log file. Asking for DEBUG — `--verbose` or a
+profile's `logging.level` — turns the filter off entirely, so the most detailed
+setting is never quieter than the default. It is an allowlist, not a denylist,
+so a newly-added dependency or service `logger.info` is quiet by default rather
+than after someone notices it.
 
 What this means when you write code:
 
