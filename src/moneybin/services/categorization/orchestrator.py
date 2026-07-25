@@ -670,7 +670,9 @@ class CategorizationOrchestrator:
                 applied.add(row.transaction_id)
 
         if applied:
-            logger.info(f"Rule engine categorized {len(applied)} transactions")
+            # Per-engine counts are re-reported by the run summary's breakdown;
+            # at info they'd say the same thing a second time.
+            logger.debug(f"Rule engine categorized {len(applied)} transactions")
         return applied
 
     def apply_merchant_categories(
@@ -836,7 +838,8 @@ class CategorizationOrchestrator:
                 categorized_count += 1
 
         if categorized_count:
-            logger.info(
+            # See the rule-engine site: the run summary carries this count.
+            logger.debug(
                 f"Merchant matching categorized {categorized_count} transactions"
             )
         # Refresh the review-queue gauge once per batch, not once per proposal
@@ -1007,7 +1010,8 @@ class CategorizationOrchestrator:
                 ).inc()
 
         if count:
-            logger.info(f"Plaid PFC categorization assigned {count} transactions")
+            # See the rule-engine site: the run summary carries this count.
+            logger.debug(f"Plaid PFC categorization assigned {count} transactions")
         return count
 
     def categorize_pending(self, *, include_plaid: bool = True) -> dict[str, int]:

@@ -295,7 +295,9 @@ class TransactionMatcher:
             ))
 
         if tier_merged or tier_pending:
-            logger.info(
+            # Tier numbers are the engine's own vocabulary. Callers render the
+            # same counts in user language via MatchResult.summary().
+            logger.debug(
                 f"Tier {tier}: {tier_merged} auto-merged, {tier_pending} pending review"
             )
 
@@ -432,4 +434,5 @@ class TransactionMatcher:
 
         if tier_pending:
             verb = "auto-accepted" if auto_accept else "potential"
-            logger.info(f"Tier 4: {tier_pending} {verb} transfers found")
+            # See the tier-summary site above: reported to users via summary().
+            logger.debug(f"Tier 4: {tier_pending} {verb} transfers found")

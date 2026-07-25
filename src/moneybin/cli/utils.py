@@ -270,7 +270,8 @@ def resolve_profile() -> None:
         raise typer.Exit(1)
 
     setup_observability(stream="cli", verbose=_flags.verbose, profile=profile_name)
+    # Where the profile came from is resolution trivia, not something the user
+    # chose to see on every command; it stays in the log for debugging.
+    logger.info(f"Using profile: {profile_name}")
     if source:
-        logger.info(f"Using profile: {profile_name} (from {source})")
-    else:
-        logger.info(f"Using profile: {profile_name}")
+        logger.debug(f"Profile resolved from {source}")

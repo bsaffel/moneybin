@@ -29,27 +29,53 @@ class _SuppressFilter(logging.Filter):
         return "Shutting down the event dispatcher" not in record.getMessage()
 
 
-# Logger-name prefixes whose INFO/DEBUG output is too noisy for the console
-# but should still reach log files for debugging. SQLMesh emits a lot of
-# operational logging (model evaluation, plan creation, state sync, analytics)
-# that drowns out user-facing CLI output — route it all to the sqlmesh log
-# file instead.
-_CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = ("sqlmesh",)
+# Logger-name prefixes whose INFO is user-facing progress and belongs on the
+# console. Everything else is diagnostics: it reaches the log file (and the
+# console under --verbose) but never competes with command output.
+#
+# This is an allowlist on purpose. The denylist it replaced had to name each
+# offender — so every new dependency, and every new logger.info in a service,
+# leaked to the terminal until someone noticed and suppressed it. An allowlist
+# is silent by default and loud only where we said so.
+#
+# Adding a prefix here makes that module's INFO part of the CLI's visible
+# output. Prefer `typer.echo` for command results; reach for this only when the
+# progress genuinely originates below the CLI layer.
+_CONSOLE_INFO_ALLOWLIST: tuple[str, ...] = (
+    "moneybin.cli",
+    # Pipeline stages that run long enough that silence reads as a hang.
+    # These sit below the CLI layer because MCP drives them too, so their
+    # progress cannot move up into `typer.echo`.
+    #
+    # Note these are the modules that phrase results for a person. Engines
+    # below them (matching.engine, categorization.applier) report through
+    # return values and log in their own vocabulary — that stays diagnostic.
+    "moneybin.services.refresh",
+    "moneybin.services.transform_service",
+    "moneybin.services.categorization.orchestrator",
+)
 
 
 class _ConsoleNoiseFilter(logging.Filter):
-    """Suppress noisy third-party INFO messages from the console only.
+    """Keep sub-WARNING console output to the declared user-facing loggers.
 
     Attached to the console handler so file handlers still see everything.
+    WARNING and above always pass — quieting noise must never quiet a problem.
     """
 
+    def __init__(self, *, verbose: bool = False) -> None:
+        super().__init__()
+        # --verbose is the escape hatch users reach for when something is
+        # wrong; it must defeat the allowlist, not be narrowed by it.
+        self._verbose = verbose
+
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno < logging.WARNING and any(
+        if self._verbose or record.levelno >= logging.WARNING:
+            return True
+        return any(
             record.name == p or record.name.startswith(f"{p}.")
-            for p in _CONSOLE_SUPPRESSED_PREFIXES
-        ):
-            return False
-        return True
+            for p in _CONSOLE_INFO_ALLOWLIST
+        )
 
 
 def session_log_path(
@@ -211,7 +237,7 @@ def setup_logging(
     # Console handler (always present, writes to stderr)
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
-    console_handler.addFilter(_ConsoleNoiseFilter())
+    console_handler.addFilter(_ConsoleNoiseFilter(verbose=verbose))
     handlers.append(console_handler)
 
     # File handler — only write to file if the log directory's parent exists.

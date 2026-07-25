@@ -158,6 +158,124 @@ class TestSetupLogging:
                 )
 
 
+class TestConsoleInfoAllowlist:
+    """The console shows INFO only from loggers declared user-facing.
+
+    Diagnostics from every other logger reach the log file but not the
+    user's terminal. The allowlist is the load-bearing part: a denylist
+    would leak every dependency nobody has thought to suppress yet.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_root_logger(self) -> Generator[None, Any, None]:
+        root = logging.getLogger()
+        original_handlers = list(root.handlers)
+        original_level = root.level
+        yield
+        for h in root.handlers[:]:
+            if h not in original_handlers:
+                h.close()
+        root.handlers = original_handlers
+        root.level = original_level
+
+    @staticmethod
+    def _console_handler() -> logging.Handler:
+        setup_logging(stream="cli")
+        console = [
+            h
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert console, "Expected a console StreamHandler"
+        return console[0]
+
+    @staticmethod
+    def _record(name: str, level: int) -> logging.LogRecord:
+        return logging.LogRecord(
+            name=name,
+            level=level,
+            pathname="",
+            lineno=0,
+            msg="test",
+            args=(),
+            exc_info=None,
+        )
+
+    @pytest.mark.unit
+    def test_info_from_undeclared_dependency_is_hidden(self) -> None:
+        """An INFO logger nobody named must not reach the console.
+
+        The fixture is a library that appears on no list. A denylist
+        passes it (it isn't suppressed); only an allowlist rejects it.
+        Named dependencies like httpx are the wrong fixture here — they
+        cannot tell the two designs apart.
+        """
+        handler = self._console_handler()
+        record = self._record("some_vendor_lib.client", logging.INFO)
+
+        assert not handler.filter(record)
+
+    @pytest.mark.unit
+    def test_info_from_cli_reaches_console(self) -> None:
+        """CLI progress is user-facing and must survive the allowlist."""
+        handler = self._console_handler()
+        record = self._record("moneybin.cli.commands.sync", logging.INFO)
+
+        assert handler.filter(record)
+
+    @pytest.mark.unit
+    def test_warning_from_undeclared_dependency_reaches_console(self) -> None:
+        """Quieting INFO must never quiet a problem."""
+        handler = self._console_handler()
+        record = self._record("some_vendor_lib.client", logging.WARNING)
+
+        assert handler.filter(record)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "module_path",
+        [
+            "moneybin.services.refresh",
+            "moneybin.services.transform_service",
+            "moneybin.services.categorization.orchestrator",
+        ],
+    )
+    def test_pipeline_progress_reaches_console(self, module_path: str) -> None:
+        """Long-running pipeline stages report progress below the CLI layer.
+
+        The logger name is read off the real module rather than hardcoded,
+        so moving or renaming one of these fails here instead of silently
+        going quiet during a two-minute sync.
+        """
+        import importlib
+
+        module = importlib.import_module(module_path)
+        handler = self._console_handler()
+        record = self._record(module.logger.name, logging.INFO)
+
+        assert handler.filter(record)
+
+    @pytest.mark.unit
+    def test_verbose_restores_undeclared_dependency_output(self) -> None:
+        """`--verbose` is the escape hatch and must defeat the allowlist.
+
+        Without this, the one flag a user reaches for when debugging is
+        the flag that hides the evidence.
+        """
+        setup_logging(stream="cli", verbose=True)
+        console = [
+            h
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert console, "Expected a console StreamHandler"
+        record = self._record("some_vendor_lib.client", logging.INFO)
+
+        assert console[0].filter(record)
+
+
 class TestPydanticLoggingConfig:
     """Tests for the Pydantic LoggingConfig on MoneyBinSettings."""
 

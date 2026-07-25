@@ -128,6 +128,30 @@ Diagnostic output (errors, warnings, progress, status) goes to **stderr** (fd 2)
 
 Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `StreamHandler` already targets `sys.stderr` (see `src/moneybin/logging/config.py`). `logger.error()` and `logger.warning()` reach fd 2; `logger.info()` may reach either as long as it doesn't pollute scripts capturing stdout. Locked by `tests/moneybin/test_cli/test_error_routing.py`.
 
+### The console INFO allowlist
+
+WARNING and above always reach the console. **Sub-WARNING records reach it only
+from the logger prefixes in `_CONSOLE_INFO_ALLOWLIST`** (`logging/config.py`);
+everything else goes to the log file, and returns to the console under
+`--verbose`. It is an allowlist, not a denylist, so a newly-added dependency or
+service `logger.info` is quiet by default rather than after someone notices it.
+
+What this means when you write code:
+
+- **In `moneybin.cli.*`** — nothing changes. The whole package is allowlisted, so
+  the Standard Pattern above still prints. Prefer `typer.echo` for command
+  results; `logger.info` is fine for progress.
+- **In a service, extractor, or engine** — `logger.info` is diagnostics and will
+  not be seen. Return the numbers and let the CLI render them.
+- **Adding a prefix to the allowlist** is the exception, for progress that
+  genuinely originates below the CLI because MCP drives the same code path (a
+  long transform, a pipeline stage). Log in the user's vocabulary if you do —
+  allowlisting a module makes its internal wording user-facing.
+
+Locked by `tests/moneybin/test_logging_config.py::TestConsoleInfoAllowlist`,
+which drives the allowlisted modules' real logger names so a rename fails the
+test instead of silently muting a stage.
+
 ## Standard Flags on Read-Only Commands
 
 Every command that **reads but does not mutate** state MUST accept:
