@@ -203,7 +203,7 @@ def test_reviewed_plan_rejects_parse_or_mapping_drift(
             save_format=False,
         )
 
-    assert exc.value.code == "IMPORT_PREVIEW_PLAN_MISMATCH"
+    assert exc.value.code == "import_preview_plan_mismatch"
 
 
 def test_reimport_writes_single_accepted_source_native_link(
@@ -743,7 +743,7 @@ class TestTabularConfirmationFlow:
                 save_format=False,
             )
 
-        assert exc.value.code == "invalid_sign_convention"
+        assert exc.value.code == "import_invalid_sign_convention"
         assert "--sign negative_is_expense" in exc.value.message
         log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
         assert log_rows is not None and log_rows[0] == 0
@@ -789,7 +789,7 @@ class TestTabularConfirmationFlow:
                 save_format=False,
             )
 
-        assert exc.value.code == "invalid_sign_convention"
+        assert exc.value.code == "import_invalid_sign_convention"
         assert "--sign split_debit_credit" in exc.value.message
         log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
         assert log_rows is not None and log_rows[0] == 0

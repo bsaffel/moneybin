@@ -184,10 +184,17 @@ class SystemStatusCategorizationInfo:
 
 @dataclass(frozen=True, slots=True)
 class SystemStatusTransformsInfo:
-    """Transform freshness sub-object inside SystemStatusPayload."""
+    """Transform freshness sub-object inside SystemStatusPayload.
+
+    ``missing_models`` names registered SQLMesh models with no relation built.
+    A bare ``pending`` flag cannot distinguish "one import is waiting" from
+    "a table your query needs does not exist", and only the second is a reason
+    to stop and rebuild before trusting a result.
+    """
 
     pending: Annotated[bool, DataClass.TXN_TYPE]
     last_apply_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    missing_models: Annotated[list[str], DataClass.TXN_TYPE]
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,8 +394,39 @@ class SystemStatusCLIPayload:
     exports: list[SystemStatusExportDestination]
 
 
+class SectionUnavailable(BaseModel):
+    """A requested section that could not be produced, and why.
+
+    Keeps one failing section from destroying the rest: every healthy section
+    still returns, this marker names the one that did not, and
+    ``summary.degraded`` flags the response as partial. ``reason`` carries whatever
+    ``classify_user_error`` produced. That is the same string an
+    undegraded error envelope would have carried, not a stricter guarantee:
+    several classifier branches build the message from the exception itself
+    (``OSError`` includes ``filename``; ``ValueError`` / ``LookupError`` use
+    ``str(exc)``), so treat it with the same care as any error message.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["unavailable"] = "unavailable"
+    section: Annotated[
+        Literal["overview", "doctor", "categorization", "exports"], DataClass.TXN_TYPE
+    ]
+    code: Annotated[str, DataClass.TXN_TYPE]
+    # Free text, not a curated label: the classifier branches above interpolate
+    # the exception, so this is classified like any other free-form string
+    # rather than as the low-tier enum `code` genuinely is.
+    reason: Annotated[str, DataClass.DESCRIPTION]
+    hint: Annotated[str | None, DataClass.DESCRIPTION] = None
+
+
 SystemStatusSection = Annotated[
-    OverviewStatus | DoctorStatus | CategorizationStatus | ExportsStatus,
+    OverviewStatus
+    | DoctorStatus
+    | CategorizationStatus
+    | ExportsStatus
+    | SectionUnavailable,
     Field(discriminator="kind"),
 ]
 

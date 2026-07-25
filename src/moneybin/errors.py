@@ -14,6 +14,7 @@ translated into user-facing messages.
 from __future__ import annotations
 
 import platform
+import traceback
 from decimal import InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
@@ -228,6 +229,28 @@ def _protected_root_for(platform: str, path: Path | None) -> str | None:
         if resolved.is_relative_to(home / root):
             return f"~/{root}"
     return None
+
+
+def exception_origin(exc: BaseException) -> str:
+    """Where an exception was raised, without any of what it said.
+
+    ``logger.exception`` writes the whole traceback, whose last line is
+    ``<Type>: <str(exc)>`` — and an exception message can carry an amount, a
+    description, or a SQL fragment. ``SanitizedLogFormatter`` is not a backstop
+    for that: its money pattern requires a literal ``$``, so a bare
+    ``-2412.55`` passes through unmasked. AGENTS.md forbids financial data in
+    logs with no local-log carve-out, so the diagnosable part — the frame
+    chain — is extracted and the message is dropped.
+
+    Returns innermost-last, e.g. ``"tools/system.py:412 in doctor"``.
+    """
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return "origin unavailable"
+    return " -> ".join(
+        f"{Path(frame.filename).name}:{frame.lineno} in {frame.name}"
+        for frame in frames[-3:]
+    )
 
 
 def classify_user_error(exc: BaseException) -> UserError | None:

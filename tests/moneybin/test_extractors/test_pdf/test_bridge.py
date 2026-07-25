@@ -221,7 +221,7 @@ def test_parse_bridge_response_raises_bridge_response_error_subtype() -> None:
 
     Lets the confirm path catch a bad agent response narrowly without also
     swallowing unrelated ValueErrors raised later by extraction/load — those
-    would mislabel a malformed-PDF failure as ``bridge_response_invalid``.
+    would mislabel a malformed-PDF failure as ``import_bridge_response_invalid``.
     """
     from moneybin.extractors.pdf.bridge import BridgeResponseError
 
@@ -232,7 +232,7 @@ def test_parse_bridge_response_raises_bridge_response_error_subtype() -> None:
 def test_parse_bridge_response_rejects_uncompilable_regex() -> None:
     """Reject an uncompilable recipe regex at parse time, not at execution.
 
-    Surfaces as ``BridgeResponseError`` (→ ``bridge_response_invalid``) instead
+    Surfaces as ``BridgeResponseError`` (→ ``import_bridge_response_invalid``) instead
     of a cryptic ``regex.error`` raised later inside ``route_forced_recipe``.
     """
     from moneybin.extractors.pdf.bridge import BridgeResponseError
@@ -271,7 +271,7 @@ def test_parse_bridge_response_rejects_recipe_without_primary_date_field() -> No
     The load writes ``row['date']`` into ``transaction_date`` (NOT NULL); a
     recipe with only an amount (or only ``post_date``) passes confidence +
     reconciliation, then fails with a generic DB constraint error instead of a
-    clean ``bridge_response_invalid``.
+    clean ``import_bridge_response_invalid``.
     """
     from moneybin.extractors.pdf.bridge import BridgeResponseError
 

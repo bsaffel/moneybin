@@ -30,11 +30,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.consent import ConsentMode
 from moneybin.privacy.introspection import extract_data_classes
@@ -56,6 +51,11 @@ from moneybin.privacy.payloads.consent import (
 )
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.services.consent_service import (
     ConsentService,
     ConsentTargetPlan,
@@ -215,7 +215,7 @@ def _privacy_position(cursor: str | None) -> KeysetPosition | None:
     except ValueError as exc:
         raise UserError(
             "Invalid privacy pagination cursor.",
-            code="PRIVACY_CURSOR_INVALID",
+            code=error_codes.PRIVACY_CURSOR_INVALID,
         ) from exc
 
 
@@ -265,7 +265,7 @@ def privacy_coarse(
         if limit != 100 or cursor is not None:
             raise UserError(
                 "Privacy status does not accept pagination overrides.",
-                code="PRIVACY_PAGINATION_NOT_ALLOWED",
+                code=error_codes.PRIVACY_PAGINATION_NOT_ALLOWED,
             )
         with get_database(read_only=True) as db:
             status = ConsentService(db).status()
@@ -308,7 +308,7 @@ def privacy_coarse(
     except ValueError as exc:
         raise UserError(
             "Invalid privacy pagination cursor.",
-            code="PRIVACY_CURSOR_INVALID",
+            code=error_codes.PRIVACY_CURSOR_INVALID,
         ) from exc
     rows = [PrivacyLogRow.from_event(event) for event in page.events]
     next_cursor = (

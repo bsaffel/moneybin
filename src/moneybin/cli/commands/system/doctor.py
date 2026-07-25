@@ -7,6 +7,7 @@ import logging
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     output_option,
@@ -94,7 +95,7 @@ def doctor_command(
             envelope = build_error_envelope(
                 error=UserError(
                     f"{failing} invariant(s) failing",
-                    code="invariant_failure",
+                    code=error_codes.AUDIT_INVARIANT_FAILURE,
                 ),
                 actions=base.actions,
             )

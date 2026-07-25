@@ -9,7 +9,6 @@ from unittest.mock import patch
 import pytest
 
 from moneybin import error_codes
-from moneybin.mcp.pagination import encode_keyset_cursor
 from moneybin.mcp.tools.taxonomy import (
     register_taxonomy_coarse_reads,
     register_taxonomy_coarse_writes,
@@ -23,6 +22,7 @@ from moneybin.privacy.payloads.categories import (
     MerchantRow,
     MerchantsPayload,
 )
+from moneybin.protocol.pagination import encode_keyset_cursor
 from moneybin.services.categorization import CategorizationService
 
 from .schema_assertions import (
@@ -191,7 +191,7 @@ async def test_taxonomy_category_delete_preflights_usage_before_confirmation() -
     )
 
     assert response.error is not None
-    assert response.error.code == "CATEGORY_HAS_REFERENCES"
+    assert response.error.code == "taxonomy_category_has_references"
     assert "confirmation_token" not in response.error.details
 
 
@@ -812,7 +812,7 @@ async def test_taxonomy_filters_sorts_and_paginates_exactly() -> None:
             cursor=first.next_cursor,
         )
         assert incompatible.error is not None
-        assert incompatible.error.code == "TAXONOMY_CURSOR_INVALID"
+        assert incompatible.error.code == "taxonomy_cursor_invalid"
 
 
 async def test_taxonomy_merchants_filter_is_deterministic() -> None:
@@ -936,7 +936,7 @@ async def test_taxonomy_rejects_typed_key_shape_before_reading_live_rows(
         response = await taxonomy_coarse(view=view, cursor=cursor)
 
     assert response.error is not None
-    assert response.error.code == "TAXONOMY_CURSOR_INVALID"
+    assert response.error.code == "taxonomy_cursor_invalid"
     read.assert_not_called()
 
 
@@ -959,7 +959,7 @@ async def test_taxonomy_rejects_after_beyond_snapshot_before_reading_live_rows(
         response = await taxonomy_coarse(view=view, cursor=cursor)
 
     assert response.error is not None
-    assert response.error.code == "TAXONOMY_CURSOR_INVALID"
+    assert response.error.code == "taxonomy_cursor_invalid"
     read.assert_not_called()
 
 
@@ -985,7 +985,7 @@ async def test_taxonomy_cursor_is_bound_to_view() -> None:
         )
 
     assert response.error is not None
-    assert response.error.code == "TAXONOMY_CURSOR_INVALID"
+    assert response.error.code == "taxonomy_cursor_invalid"
     read.assert_not_called()
 
 
@@ -1011,7 +1011,7 @@ async def test_taxonomy_rejects_category_only_argument_for_merchants() -> None:
     response = await taxonomy_coarse(view="merchants", include_inactive=True)
 
     assert response.error is not None
-    assert response.error.code == "TAXONOMY_INCLUDE_INACTIVE_NOT_ALLOWED"
+    assert response.error.code == "taxonomy_include_inactive_not_allowed"
 
 
 async def test_taxonomy_standard_registrar_renders_closed_contract() -> None:
@@ -1080,7 +1080,7 @@ async def test_taxonomy_cursor_error_is_canonical_and_sanitized() -> None:
     assert hasattr(text, "text")
     assert response.structuredContent is not None
     assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
-    assert response.structuredContent["error"]["code"] == "TAXONOMY_CURSOR_INVALID"
+    assert response.structuredContent["error"]["code"] == "taxonomy_cursor_invalid"
     assert invalid_cursor not in text.text  # type: ignore[union-attr]
 
 

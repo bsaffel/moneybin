@@ -10,6 +10,7 @@ from typing import Literal, cast
 
 from pydantic import JsonValue
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
@@ -139,7 +140,7 @@ _ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 def _invalid_iso_date(report_id: str, parameter: str) -> UserError:
     return UserError(
         "Report parameter must be an ISO date.",
-        code="REPORT_PARAMETER_INVALID_VALUE",
+        code=error_codes.REPORT_PARAMETER_INVALID_VALUE,
         details={
             "report_id": report_id,
             "parameter": parameter,
@@ -190,7 +191,7 @@ def _validate_networth_history_parameters(
     if from_date is not None and to_date is not None and from_date > to_date:
         raise UserError(
             "Report date range is invalid.",
-            code="REPORT_PARAMETER_INVALID_RANGE",
+            code=error_codes.REPORT_PARAMETER_INVALID_RANGE,
             details={
                 "report_id": "core:networth_history",
                 "parameters": ["from_date", "to_date"],

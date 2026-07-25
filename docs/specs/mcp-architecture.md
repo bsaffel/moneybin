@@ -319,6 +319,7 @@ Every tool returns a consistent envelope:
 Three sections:
 
 - **`summary`** — Metadata the AI needs to frame its response: counts, whether results are truncated, the time period covered, the sensitivity tier of the data returned, the currency amounts are denominated in. Always present, even on empty results.
+  - **`total_count` means every row matching the request**, not the number returned — `returned_count` already carries the page size. A caller sizing a backlog reads `total_count`, so a surface that reports its own page length there is wrong, not merely terse. This holds for the CLI's `--output json` as much as for MCP: both build the envelope through `moneybin.protocol.envelope`, and the same query must produce the same number on either surface. Where a bounded execution cannot know the true total (`reports`, `sql_query` — see Pagination), it is a lower bound paired with `has_more`.
 - **`data`** — The payload. Structured objects, never pre-formatted strings. Shape is tool-specific but consistent within a namespace (all `spending.*` tools return amounts in the same format with the same field names).
 - **`actions`** — Contextual next steps. Not prescriptive — the AI decides whether to surface them. Helps the AI discover composable follow-up tools without scanning the full tool catalog. Empty list when no follow-ups are relevant.
 

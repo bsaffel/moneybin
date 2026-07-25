@@ -13,6 +13,7 @@ from typing import Literal, cast
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     output_option,
@@ -237,15 +238,16 @@ def categorize_commit(
         sensitivity="medium",
         total_count=input_count,
         actions=[
-            "Use transactions_categorize_rules to review auto-created rules",
-            "Use transactions_categorize_pending to fetch the next batch",
+            "Use `moneybin transactions categorize rules list` to review "
+            "auto-created rules",
+            "Use `moneybin transactions categorize pending` to fetch the next batch",
         ],
     )
     if result.errors > 0:
         envelope = envelope.with_error(
             ErrorDetail(
                 message=f"{result.errors} item(s) failed to categorize",
-                code="categorization_errors",
+                code=error_codes.TRANSACTION_CATEGORIZATION_ERRORS,
             )
         )
     render_or_json(

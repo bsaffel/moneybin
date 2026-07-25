@@ -223,7 +223,7 @@ class TestStandardCoarseAccountReads:
         response = await accounts_coarse(view="detail", reference="Savings")
 
         assert response.error is not None
-        assert response.error.code == "ENTITY_REFERENCE_AMBIGUOUS"
+        assert response.error.code == "entity_reference_ambiguous"
         assert response.error.details == {
             "candidate_ids": sorted(["ACC002", *savings_ids])
         }
@@ -235,7 +235,7 @@ class TestStandardCoarseAccountReads:
         response = await accounts_coarse(view="detail", reference="Vacation")
 
         assert response.error is not None
-        assert response.error.code == "ENTITY_REFERENCE_NOT_FOUND"
+        assert response.error.code == "entity_reference_not_found"
         assert response.error.details == {"candidate_ids": []}
 
     @pytest.mark.unit
@@ -306,7 +306,7 @@ class TestStandardCoarseAccountReads:
         )
 
         assert reused.error is not None
-        assert reused.error.code == "ACCOUNT_CURSOR_INVALID"
+        assert reused.error.code == "account_cursor_invalid"
 
     @pytest.mark.unit
     async def test_account_resolve_ranks_exact_stable_ties(self, mcp_db: Path) -> None:
@@ -409,41 +409,41 @@ class TestStandardCoarseAccountReads:
     @pytest.mark.parametrize(
         ("kwargs", "code"),
         [
-            ({"view": "list", "reference": "ACC001"}, "ACCOUNT_REFERENCE_NOT_ALLOWED"),
-            ({"view": "summary", "query": "checking"}, "ACCOUNT_QUERY_NOT_ALLOWED"),
-            ({"view": "detail"}, "ACCOUNT_REFERENCE_REQUIRED"),
+            ({"view": "list", "reference": "ACC001"}, "account_reference_not_allowed"),
+            ({"view": "summary", "query": "checking"}, "account_query_not_allowed"),
+            ({"view": "detail"}, "account_reference_required"),
             (
                 {"view": "detail", "reference": "ACC001", "query": "checking"},
-                "ACCOUNT_QUERY_NOT_ALLOWED",
+                "account_query_not_allowed",
             ),
-            ({"view": "resolve"}, "ACCOUNT_QUERY_REQUIRED"),
+            ({"view": "resolve"}, "account_query_required"),
             (
                 {"view": "resolve", "query": "checking", "reference": "ACC001"},
-                "ACCOUNT_REFERENCE_NOT_ALLOWED",
+                "account_reference_not_allowed",
             ),
             (
                 {"view": "summary", "cursor": "opaque"},
-                "ACCOUNT_CURSOR_NOT_ALLOWED",
+                "account_cursor_not_allowed",
             ),
             (
                 {"view": "resolve", "query": "checking", "cursor": "opaque"},
-                "ACCOUNT_CURSOR_NOT_ALLOWED",
+                "account_cursor_not_allowed",
             ),
             (
                 {"view": "summary", "include_closed": True},
-                "ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+                "account_include_closed_not_allowed",
             ),
             (
                 {"view": "resolve", "query": "checking", "include_closed": True},
-                "ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+                "account_include_closed_not_allowed",
             ),
             (
                 {"view": "detail", "reference": "ACC001", "limit": 1},
-                "ACCOUNT_LIMIT_NOT_ALLOWED",
+                "account_limit_not_allowed",
             ),
             (
                 {"view": "summary", "limit": 1},
-                "ACCOUNT_LIMIT_NOT_ALLOWED",
+                "account_limit_not_allowed",
             ),
         ],
     )
@@ -510,7 +510,7 @@ class TestStandardCoarseAccountReads:
         )
 
         assert reused.error is not None
-        assert reused.error.code == "BALANCE_CURSOR_INVALID"
+        assert reused.error.code == "account_balance_cursor_invalid"
 
     @pytest.mark.unit
     async def test_balance_history_cursor_survives_prepended_observation(
@@ -590,7 +590,7 @@ class TestStandardCoarseAccountReads:
             cursor=reconcile.next_cursor,
         )
         assert reused.error is not None
-        assert reused.error.code == "BALANCE_CURSOR_INVALID"
+        assert reused.error.code == "account_balance_cursor_invalid"
 
     @pytest.mark.unit
     async def test_account_list_rejects_wrong_typed_cursor_keys(
@@ -607,7 +607,7 @@ class TestStandardCoarseAccountReads:
         )
 
         assert response.error is not None
-        assert response.error.code == "ACCOUNT_CURSOR_INVALID"
+        assert response.error.code == "account_cursor_invalid"
         assert response.error.message == "Invalid pagination cursor."
 
     @pytest.mark.unit
@@ -639,7 +639,7 @@ class TestStandardCoarseAccountReads:
         )
 
         assert response.error is not None
-        assert response.error.code == "BALANCE_CURSOR_INVALID"
+        assert response.error.code == "account_balance_cursor_invalid"
         assert response.error.message == "Invalid pagination cursor."
 
     @pytest.mark.unit
@@ -710,19 +710,28 @@ class TestStandardCoarseAccountReads:
         [
             (
                 {"view": "latest", "start": "2025-01-01"},
-                "BALANCE_DATES_NOT_ALLOWED",
+                "account_balance_dates_not_allowed",
             ),
             (
                 {"view": "assertions", "end": "2025-01-31"},
-                "BALANCE_DATES_NOT_ALLOWED",
+                "account_balance_dates_not_allowed",
             ),
-            ({"view": "history", "as_of": "2025-01-31"}, "BALANCE_AS_OF_NOT_ALLOWED"),
-            ({"view": "latest", "threshold": "1"}, "BALANCE_THRESHOLD_NOT_ALLOWED"),
-            ({"view": "reconcile", "start": "2025-01-31"}, "BALANCE_DATES_NOT_ALLOWED"),
-            ({"view": "history"}, "ACCOUNT_REFERENCE_REQUIRED"),
+            (
+                {"view": "history", "as_of": "2025-01-31"},
+                "account_balance_as_of_not_allowed",
+            ),
+            (
+                {"view": "latest", "threshold": "1"},
+                "account_balance_threshold_not_allowed",
+            ),
+            (
+                {"view": "reconcile", "start": "2025-01-31"},
+                "account_balance_dates_not_allowed",
+            ),
+            ({"view": "history"}, "account_reference_required"),
             (
                 {"view": "latest", "cursor": "not-a-cursor"},
-                "BALANCE_CURSOR_INVALID",
+                "account_balance_cursor_invalid",
             ),
         ],
     )
@@ -741,8 +750,8 @@ class TestStandardCoarseAccountReads:
     @pytest.mark.parametrize(
         ("callback", "code"),
         [
-            (accounts_coarse, "ACCOUNT_CURSOR_INVALID"),
-            (accounts_balances_coarse, "BALANCE_CURSOR_INVALID"),
+            (accounts_coarse, "account_cursor_invalid"),
+            (accounts_balances_coarse, "account_balance_cursor_invalid"),
         ],
     )
     async def test_malformed_cursor_is_rejected_before_account_data_access(

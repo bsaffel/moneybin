@@ -1,4 +1,12 @@
-"""Shared compact cursor contract for stateless MCP keyset pagination."""
+"""Shared compact cursor contract for stateless keyset pagination.
+
+Lives beside :mod:`moneybin.protocol.envelope` because both surfaces page:
+an agent driving ``moneybin transactions list --output json`` needs the same
+skip-and-duplicate-free continuation an agent driving the ``transactions``
+tool gets. Nothing here is MCP-specific — the namespace and scope a cursor
+binds to are supplied by the caller, so each surface binds its own public
+filter names.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +14,7 @@ import base64
 import binascii
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
@@ -106,6 +114,35 @@ def decode_keyset_cursor(
     return KeysetPosition(
         snapshot=tuple(cast(list[KeysetScalar], snapshot_values)),
         after=tuple(cast(list[KeysetScalar], after_values)),
+        total=total,
+    )
+
+
+def build_keyset_page[T](
+    rows: Sequence[T],
+    *,
+    limit: int,
+    key_of: Callable[[T], tuple[KeysetScalar, ...]],
+    namespace: str,
+    scope: Mapping[str, object],
+    snapshot: tuple[KeysetScalar, ...] | None,
+    total: int,
+) -> tuple[list[T], str | None]:
+    """Trim a ``limit + 1`` fetch to one page and mint its continuation.
+
+    ``rows`` must be the over-fetch: one extra row is how a caller learns there
+    is a next page without a second count. ``snapshot`` is the high-water key
+    carried by the incoming cursor, or ``None`` on the first page — in which
+    case the first row of this page becomes it, freezing the top of the walk.
+    """
+    page = list(rows[:limit])
+    if len(rows) <= limit or not page:
+        return page, None
+    return page, encode_keyset_cursor(
+        namespace=namespace,
+        scope=scope,
+        snapshot=snapshot if snapshot is not None else key_of(page[0]),
+        after=key_of(page[-1]),
         total=total,
     )
 

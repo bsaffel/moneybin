@@ -263,11 +263,11 @@ def test_prepare_report_exports_every_row_without_the_mcp_response_cap(
 @pytest.mark.parametrize(
     ("report_id", "parameters", "code"),
     [
-        ("missing:report", {}, "REPORT_ID_NOT_FOUND"),
-        ("test:export,test:other", {}, "REPORT_ID_NOT_FOUND"),
-        ("SELECT * FROM reports.test_export", {}, "REPORT_ID_NOT_FOUND"),
-        ("test:export", {"unknown": 1}, "REPORT_PARAMETER_UNKNOWN"),
-        ("test:export", {"top": "two"}, "REPORT_PARAMETER_INVALID_TYPE"),
+        ("missing:report", {}, "report_id_not_found"),
+        ("test:export,test:other", {}, "report_id_not_found"),
+        ("SELECT * FROM reports.test_export", {}, "report_id_not_found"),
+        ("test:export", {"unknown": 1}, "report_parameter_unknown"),
+        ("test:export", {"top": "two"}, "report_parameter_invalid_type"),
     ],
 )
 def test_prepare_report_uses_catalog_errors_for_invalid_subjects_and_parameters(
@@ -364,7 +364,7 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
             report_id="test:service_export",
             report_parameters={"unknown": 1},
         )
-    assert exc_info.value.code == "REPORT_PARAMETER_UNKNOWN"
+    assert exc_info.value.code == "report_parameter_unknown"
     assert calls == 2
 
 

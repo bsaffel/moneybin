@@ -249,7 +249,7 @@ Browsing transactions and per-transaction state (notes, tags, splits, manual ent
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `transactions list` | List transactions with filters. | `--account-id`, `--from`, `--to`, `--limit`, `--category`, `--uncategorized` |
+| `transactions list` | List transactions with filters. `--cursor` takes the `next_cursor` from a previous `--output json` response; treat it as opaque and restart from page one if it is rejected. | `--account`, `--from`, `--to`, `--limit`, `--category`, `--uncategorized`, `--cursor` |
 | `transactions create` | Create a manual transaction (no upstream source). | `--account-id`, `--date`, `--amount`, `--description`, `--category` |
 | `transactions audit <transaction-id>` | Show the audit chain for one transaction. | — |
 | `transactions review` | Deprecated alias for the top-level `review`; removed after one minor release. | Same flags as `review` |

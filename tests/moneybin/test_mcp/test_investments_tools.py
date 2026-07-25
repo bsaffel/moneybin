@@ -25,7 +25,6 @@ import pytest
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
-from moneybin.mcp.pagination import encode_keyset_cursor
 from moneybin.mcp.tools.investments import (
     investments_coarse,
     investments_lots_select,
@@ -35,6 +34,7 @@ from moneybin.mcp.tools.investments import (
     register_investment_coarse_reads,
     register_investments_tools,
 )
+from moneybin.protocol.pagination import encode_keyset_cursor
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.services.investment_service import (
     EventRow,
@@ -315,11 +315,11 @@ async def test_investment_coarse_views_are_typed(
         (
             "holdings",
             {"start": date(2024, 1, 1)},
-            "INVESTMENT_DATES_NOT_ALLOWED",
+            "investment_dates_not_allowed",
         ),
-        ("lots", {"end": date(2024, 12, 31)}, "INVESTMENT_DATES_NOT_ALLOWED"),
-        ("events", {"open_only": False}, "INVESTMENT_OPEN_ONLY_NOT_ALLOWED"),
-        ("securities", {"account": _ACCOUNT}, "INVESTMENT_ACCOUNT_NOT_ALLOWED"),
+        ("lots", {"end": date(2024, 12, 31)}, "investment_dates_not_allowed"),
+        ("events", {"open_only": False}, "investment_open_only_not_allowed"),
+        ("securities", {"account": _ACCOUNT}, "investment_account_not_allowed"),
     ],
 )
 async def test_investment_coarse_rejects_unused_arguments(
@@ -515,7 +515,7 @@ async def test_investment_rejects_typed_key_shape_before_reading_live_rows(
         response = await investments_coarse(view=view, cursor=cursor)
 
     assert response.error is not None
-    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+    assert response.error.code == "investment_cursor_invalid"
     read.assert_not_called()
 
 
@@ -539,7 +539,7 @@ async def test_investment_rejects_cursor_after_beyond_high_water() -> None:
         response = await investments_coarse(view="events", cursor=cursor)
 
     assert response.error is not None
-    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+    assert response.error.code == "investment_cursor_invalid"
     read.assert_not_called()
 
 
@@ -564,7 +564,7 @@ async def test_investment_coarse_cursor_is_bound_to_filters(
     )
 
     assert response.error is not None
-    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+    assert response.error.code == "investment_cursor_invalid"
 
 
 async def test_investment_cursor_is_validated_before_reference_data_access() -> None:
@@ -594,7 +594,7 @@ async def test_investment_cursor_is_validated_before_reference_data_access() -> 
         )
 
     assert response.error is not None
-    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+    assert response.error.code == "investment_cursor_invalid"
 
 
 async def test_investment_coarse_cursor_is_bound_to_view(
@@ -617,7 +617,7 @@ async def test_investment_coarse_cursor_is_bound_to_view(
     )
 
     assert response.error is not None
-    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+    assert response.error.code == "investment_cursor_invalid"
 
 
 async def test_investment_lots_open_only_matches_the_cli_selector(
@@ -657,7 +657,7 @@ async def test_investment_lots_open_only_matches_the_cli_selector(
         cursor=all_lots.next_cursor,
     )
     assert reused.error is not None
-    assert reused.error.code == "INVESTMENT_CURSOR_INVALID"
+    assert reused.error.code == "investment_cursor_invalid"
 
 
 async def test_investment_coarse_returns_sanitized_ambiguity(
@@ -673,7 +673,7 @@ async def test_investment_coarse_returns_sanitized_ambiguity(
     )
 
     assert response.error is not None
-    assert response.error.code == "ENTITY_REFERENCE_AMBIGUOUS"
+    assert response.error.code == "entity_reference_ambiguous"
     assert response.error.details == {"candidate_ids": ["sec_a", "sec_b"]}
     assert "Shared Fund" not in response.error.message
 

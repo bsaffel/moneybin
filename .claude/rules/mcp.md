@@ -97,8 +97,10 @@ MUST match runtime `structuredContent` exactly.
 ### Pagination
 
 Every standard **resumable collection read** uses the shared versioned keyset
-cursor in `moneybin.mcp.pagination`; do not add an offset cursor or a second
-opaque envelope. Bind the cursor to the exact public view and canonicalized
+cursor in `moneybin.protocol.pagination`; do not add an offset cursor or a second
+opaque envelope. The contract is cross-surface — a CLI command exposing
+`--cursor` binds the same envelope to its own public filter names, because an
+agent driving the CLI is owed the same skip-free continuation. Bind the cursor to the exact public view and canonicalized
 public filters, order by immutable keys with an explicit unique tie-breaker,
 validate decoded key types before reference resolution or data access, and push
 snapshot/continuation predicates into the service query when practical. The

@@ -624,3 +624,39 @@ async def test_registered_result_uses_one_canonical_wire_value() -> None:
     assert json.loads(text) == structured_content
     assert structured_content["data"][0]["amount"] == 12.34
     assert structured_content["recovery_actions"][0]["tool"] == "sql_query"
+
+
+@pytest.mark.unit
+def test_unclassified_failure_hint_matches_what_is_actually_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The hint must not promise a traceback the logger deliberately omits.
+
+    `_classify_or_envelope` logs the exception type and frame origin without
+    `exc_info` on purpose — a traceback would append `str(exc)`, which can
+    carry an amount, a SQL fragment, or a file path. Telling the operator the
+    log "holds the traceback" sends them looking for something that was never
+    written, and the only other place to find it is the thing we refused to
+    log.
+    """
+    from moneybin.mcp.decorator import (
+        _classify_or_envelope,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    class _UnclassifiableError(Exception):
+        """No `classify_user_error` branch matches this."""
+
+    exc = _UnclassifiableError("balance was $1,234.56 for account 000123456789")
+
+    with caplog.at_level("DEBUG"):
+        envelope = _classify_or_envelope("some_tool", exc)
+
+    assert envelope.error is not None
+    assert envelope.error.code == error_codes.INFRA_UNCLASSIFIED_ERROR
+    # The log genuinely carries neither the message nor a traceback...
+    assert "balance was" not in caplog.text
+    assert "Traceback" not in caplog.text
+    assert "_UnclassifiableError" in caplog.text
+    # ...so the hint must not send an operator looking for one.
+    assert envelope.error.hint is not None
+    assert "traceback" not in envelope.error.hint.lower()

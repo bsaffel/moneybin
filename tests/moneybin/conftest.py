@@ -5,7 +5,7 @@ the test suite, including profile cleanup and configuration management.
 """
 
 import shutil
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -397,3 +397,28 @@ def db(
         )
     yield database
     database.close()
+
+
+@pytest.fixture()
+def declare_only_models(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
+    """Scope the registered SQLMesh model set to what a fixture actually builds.
+
+    ``TransformService.freshness()`` reports pending when a *partially* built
+    warehouse is missing a registered model. The real project declares 52, so
+    a fixture that stands up a handful of core tables is pending on that half
+    regardless of its timestamps — which would make a timestamp assertion pass
+    for the wrong reason. The registry reads project files, not the DB: it is
+    an input to freshness, not the mechanism under test, and the missing-model
+    half has its own tests that leave it alone.
+
+    Not needed for a fixture that builds *nothing* — a never-built warehouse
+    is its own state and reports neither missing models nor pending.
+    """
+
+    def _declare(*names: str) -> None:
+        monkeypatch.setattr(
+            "moneybin.sqlmesh_registry.registered_model_names",
+            lambda: frozenset(names),
+        )
+
+    return _declare

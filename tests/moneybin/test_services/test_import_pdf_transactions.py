@@ -1063,7 +1063,7 @@ def test_sign_override_shape_mismatch_names_the_shape_the_recipe_extracts(
     with pytest.raises(UserError) as exc:
         svc.import_file(pdf, refresh=False, sign="split_debit_credit")
 
-    assert exc.value.code == "invalid_sign_convention"
+    assert exc.value.code == "import_invalid_sign_convention"
     assert "single amount column" in exc.value.message
     assert "debit/credit pair" not in exc.value.message
     assert _row_count(db) == 0

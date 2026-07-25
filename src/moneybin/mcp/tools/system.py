@@ -6,6 +6,7 @@ import asyncio
 import fcntl  # POSIX-only: project targets macOS/Linux
 import inspect
 import json
+import logging
 import os
 from collections.abc import Callable
 from datetime import datetime
@@ -16,15 +17,15 @@ import duckdb
 from fastmcp import FastMCP
 from pydantic import Field
 
+from moneybin import error_codes
 from moneybin.db_lock import lock_path_for
-from moneybin.errors import UserError
+from moneybin.errors import (
+    UserError,
+    classify_user_error,
+    exception_origin,
+)
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.system import (
@@ -38,6 +39,7 @@ from moneybin.privacy.payloads.system import (
     OverviewStatus,
     RecoveryActionPayload,
     SchemaDriftTable,
+    SectionUnavailable,
     SystemAuditCoarsePayload,
     SystemAuditEventPayload,
     SystemAuditGetPayload,
@@ -65,7 +67,14 @@ from moneybin.privacy.payloads.system import (
 )
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.utils.db_processes import describe_process, find_blocking_processes
+
+logger = logging.getLogger(__name__)
 
 _HEALTHY_STATUSES = frozenset({"healthy"})
 _DISCONNECTED_STATUSES = frozenset({"disconnected"})
@@ -294,7 +303,9 @@ def _locked_status_envelope(
             merchant_links=SystemStatusMerchantLinksInfo(pending_review=0),
             security_links=SystemStatusSecurityLinksInfo(pending_review=0),
             categorization=SystemStatusCategorizationInfo(uncategorized=0),
-            transforms=SystemStatusTransformsInfo(pending=False, last_apply_at=None),
+            transforms=SystemStatusTransformsInfo(
+                pending=False, last_apply_at=None, missing_models=[]
+            ),
             schema_drift=None,
             gsheet=SystemStatusGsheetInfo(
                 total_connections=0, by_status={}, needs_attention=[]
@@ -372,10 +383,14 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
         )
 
     if status.transforms_pending:
-        actions.append(
-            "Run refresh_run to refresh derived tables "
-            "(raw imports are newer than the last refresh)"
+        # Name the cause that actually fired. "raw imports are newer" is wrong
+        # when a model was never built, and the payload already knows which.
+        cause = (
+            f"{len(status.transforms_missing_models)} registered model(s) are not built"
+            if status.transforms_missing_models
+            else "raw imports are newer than the last refresh"
         )
+        actions.append(f"Run refresh_run to refresh derived tables ({cause})")
 
     actions.extend(_gsheet_action_hints(gsheet["needs_attention"]))
 
@@ -412,6 +427,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
                     if status.transforms_last_apply_at
                     else None
                 ),
+                missing_models=list(status.transforms_missing_models),
             ),
             schema_drift=schema_drift_payload,
             gsheet=SystemStatusGsheetInfo(
@@ -705,6 +721,37 @@ async def _run_tool_body[T](
     return await asyncio.to_thread(body, *args, **kwargs)
 
 
+def _unavailable_section(section: str, exc: Exception) -> SectionUnavailable:
+    """Mark one status section unavailable instead of failing the whole call.
+
+    ``_run_tool_body`` unwraps the tool decorator, so a section body raises
+    rather than returning an error envelope — this is the path a genuinely
+    broken section takes.
+    """
+    classified = classify_user_error(exc)
+    if classified is not None:
+        # Carry the hint too: classify_user_error already built the remedy
+        # (a locked database says to close the other connection), and dropping
+        # it leaves the agent a code with no way forward.
+        return SectionUnavailable(
+            section=cast(Any, section),
+            code=classified.code,
+            reason=classified.message,
+            hint=classified.hint,
+        )
+    # Frame chain only — an exception message can embed SQL fragments and
+    # financial data, and the log is not exempt from that (see exception_origin).
+    logger.error(
+        f"system_status section {section} raised {type(exc).__name__} "
+        f"at {exception_origin(exc)}"
+    )
+    return SectionUnavailable(
+        section=cast(Any, section),
+        code=error_codes.INFRA_UNCLASSIFIED_ERROR,
+        reason=f"Section failed with an unhandled {type(exc).__name__}",
+    )
+
+
 def _export_status_section() -> ExportsStatus:
     """Load export readiness synchronously inside one database lifetime."""
     from moneybin.database import get_database  # noqa: PLC0415
@@ -838,39 +885,68 @@ async def system_status_coarse(
         raise ValueError("System status sections must not contain duplicates.")
 
     selected: list[
-        OverviewStatus | DoctorStatus | CategorizationStatus | ExportsStatus
+        OverviewStatus
+        | DoctorStatus
+        | CategorizationStatus
+        | ExportsStatus
+        | SectionUnavailable
     ] = []
     actions: list[str] = []
     degraded_reasons: list[str] = []
+    degraded = False
+    # Declared once: each branch assigns a differently-parameterized envelope,
+    # and the payload is narrowed by the section it belongs to.
+    response: ResponseEnvelope[Any]
     for section in requested:
+        if section not in ("overview", "doctor", "categorization", "exports"):
+            raise ValueError("Unknown system status section.")
+        # One failing section must not destroy the others: every section is
+        # produced independently and an unavailable marker takes its place.
+        try:
+            if section == "exports":
+                selected.append(await _run_tool_body(_export_status_section))
+                actions.extend([
+                    "Deliver a bundle or report with export_run.",
+                    "Configure a named destination with exports_set.",
+                ])
+                continue
+            if section == "overview":
+                response = await _run_tool_body(system_status)
+            elif section == "doctor":
+                response = await _run_tool_body(system_doctor, full=detail == "full")
+            else:
+                response = await _run_tool_body(
+                    transactions_categorize_stats, include_auto=detail == "full"
+                )
+        except Exception as exc:  # noqa: BLE001 — degrade this section, keep the rest
+            unavailable = _unavailable_section(section, exc)
+            selected.append(unavailable)
+            degraded_reasons.append(f"{section}: {unavailable.reason}")
+            continue
+
+        if response.error is not None:
+            selected.append(
+                SectionUnavailable(
+                    section=cast(Any, section),
+                    code=response.error.code,
+                    reason=response.error.message,
+                )
+            )
+            degraded_reasons.append(f"{section}: {response.error.message}")
+            continue
+
         if section == "overview":
-            response = await _run_tool_body(system_status)
-            if response.error is not None:
-                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
             selected.append(OverviewStatus(overview=response.data))
         elif section == "doctor":
-            response = await _run_tool_body(system_doctor, full=detail == "full")
-            if response.error is not None:
-                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
             selected.append(DoctorStatus(doctor=response.data))
-        elif section == "categorization":
-            response = await _run_tool_body(
-                transactions_categorize_stats, include_auto=detail == "full"
-            )
-            if response.error is not None:
-                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
-            selected.append(CategorizationStatus(statistics=response.data))
-        elif section == "exports":
-            selected.append(await _run_tool_body(_export_status_section))
-            actions.extend([
-                "Deliver a bundle or report with export_run.",
-                "Configure a named destination with exports_set.",
-            ])
-            continue
         else:
-            raise ValueError("Unknown system status section.")
+            selected.append(CategorizationStatus(statistics=response.data))
         actions.extend(response.actions)
         if response.summary.degraded:
+            # Track the flag independently of the reason: a section that
+            # degrades without supplying one must not be aggregated away as
+            # healthy just because it left the reason blank.
+            degraded = True
             reason = response.summary.degraded_reason
             if reason is not None:
                 degraded_reasons.append(reason)
@@ -882,7 +958,7 @@ async def system_status_coarse(
         total_count=len(selected),
         returned_count=len(selected),
         actions=list(dict.fromkeys(actions)),
-        degraded=bool(degraded_reasons),
+        degraded=degraded or bool(degraded_reasons),
         degraded_reason=" ".join(dict.fromkeys(degraded_reasons)) or None,
     )
 
@@ -900,17 +976,17 @@ async def system_audit_coarse(
         if (operation_id is None) == (audit_id is None):
             raise UserError(
                 "Audit detail requires exactly one of operation_id or audit_id.",
-                code="AUDIT_IDENTIFIER_REQUIRED",
+                code=error_codes.AUDIT_IDENTIFIER_REQUIRED,
             )
         if cursor is not None:
             raise UserError(
                 "Audit detail does not accept a cursor.",
-                code="AUDIT_CURSOR_NOT_ALLOWED",
+                code=error_codes.AUDIT_CURSOR_NOT_ALLOWED,
             )
     elif operation_id is not None or audit_id is not None:
         raise UserError(
             "operation_id and audit_id are only valid for audit detail.",
-            code="AUDIT_IDENTIFIER_NOT_ALLOWED",
+            code=error_codes.AUDIT_IDENTIFIER_NOT_ALLOWED,
         )
 
     if view == "events":
@@ -1041,7 +1117,7 @@ async def system_audit_coarse(
     if not events:
         raise UserError(
             "No audit event found for the supplied audit_id.",
-            code="AUDIT_IDENTIFIER_NOT_FOUND",
+            code=error_codes.AUDIT_IDENTIFIER_NOT_FOUND,
         )
     payload = AuditDetail(
         operation_id=None,

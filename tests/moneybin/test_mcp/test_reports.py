@@ -160,7 +160,7 @@ async def test_reports_without_id_rejects_execution_arguments(
 
     assert response.to_dict()["status"] == "error"
     assert response.error is not None
-    assert response.error.code == "REPORT_ID_REQUIRED"
+    assert response.error.code == "report_id_required"
 
 
 @pytest.mark.unit
@@ -295,7 +295,7 @@ async def test_reports_rejects_non_positive_limit(limit: int) -> None:
 
     assert response.to_dict()["status"] == "error"
     assert response.error is not None
-    assert response.error.code == "REPORT_LIMIT_INVALID"
+    assert response.error.code == "report_limit_invalid"
 
 
 @pytest.mark.unit

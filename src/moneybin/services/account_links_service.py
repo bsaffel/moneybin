@@ -329,7 +329,7 @@ class AccountLinksService:
             raise
 
         refresh_account_link_pending_gauge(self._db)
-        logger.info(f"accounts_links_run: wrote {new_count} new pending decisions")
+        logger.info(f"Account-link backfill wrote {new_count} new pending decisions")
         return new_count
 
     def record_committed_outer_decisions(self) -> None:

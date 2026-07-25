@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -58,8 +58,9 @@ def freshness_db(db: Database) -> Database:
 
 
 def test_freshness_pending_when_raw_newer_than_dim(
-    freshness_db: Database,
+    freshness_db: Database, declare_only_models: Callable[..., None]
 ) -> None:
+    declare_only_models("core.dim_accounts")
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
         [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
@@ -72,7 +73,10 @@ def test_freshness_pending_when_raw_newer_than_dim(
     assert f.latest_import_at == _ts(2026, 5, 13, 18, 24)
 
 
-def test_freshness_not_pending_when_dim_caught_up(freshness_db: Database) -> None:
+def test_freshness_not_pending_when_dim_caught_up(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    declare_only_models("core.dim_accounts")
     extracted = _ts(2026, 5, 13, 18, 24)
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
@@ -85,9 +89,10 @@ def test_freshness_not_pending_when_dim_caught_up(freshness_db: Database) -> Non
 
 
 def test_freshness_pending_when_dim_table_missing(
-    db: Database,
+    db: Database, declare_only_models: Callable[..., None]
 ) -> None:
     """Pre-first-transform: dim_accounts doesn't exist; pending if any raw rows."""
+    declare_only_models("core.dim_accounts")
     db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), None])
     f = TransformService(db).freshness()
     assert f.pending is True
@@ -95,19 +100,54 @@ def test_freshness_pending_when_dim_table_missing(
 
 
 def test_freshness_no_raw_no_pending(
-    db: Database,
+    db: Database, declare_only_models: Callable[..., None]
 ) -> None:
     """No raw rows yet: pending=False (nothing waiting to be refreshed)."""
+    declare_only_models()
     f = TransformService(db).freshness()
     assert f.pending is False
     assert f.last_apply_at is None
     assert f.latest_import_at is None
 
 
+def test_freshness_does_not_report_healthy_when_the_catalog_is_unreadable(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable catalog must not surface as `pending=False`.
+
+    `freshness()` discards the missing set on a never-built warehouse, so a
+    swallowed catalog error reached this branch and reported the same value a
+    healthy first run does — the one signal watching for absent models going
+    quiet on a database that cannot be inspected at all.
+
+    It must also stay *classified* on the way out. `freshness()` has no catch
+    of its own, so this exception is what `moneybin system status` and
+    `moneybin transform status` surface, and `handle_cli_errors` re-raises
+    anything `classify_user_error` returns None for — an unclassified error
+    here is a traceback on a user-facing command.
+    """
+    from moneybin.errors import UserError, classify_user_error
+
+    real_execute = db.execute
+
+    def _fail_catalog_reads(sql: str, *args: object, **kwargs: object) -> object:
+        if "duckdb_tables" in sql:
+            raise RuntimeError("catalog unreadable")
+        return real_execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(db, "execute", _fail_catalog_reads)
+
+    with pytest.raises(UserError) as excinfo:
+        TransformService(db).freshness()
+
+    assert classify_user_error(excinfo.value) is not None
+
+
 def test_freshness_filters_reverted_and_failed_imports(
-    freshness_db: Database,
+    freshness_db: Database, declare_only_models: Callable[..., None]
 ) -> None:
     """Raw rows tied to reverted/failed imports must not count toward staleness."""
+    declare_only_models("core.dim_accounts")
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
         [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
@@ -123,8 +163,11 @@ def test_freshness_filters_reverted_and_failed_imports(
     assert f.latest_import_at is None
 
 
-def test_freshness_counts_partial_imports(freshness_db: Database) -> None:
+def test_freshness_counts_partial_imports(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
     """Partial imports landed some rows; they count toward staleness."""
+    declare_only_models("core.dim_accounts")
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
         [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
@@ -323,9 +366,12 @@ def test_import_service_run_transforms_delegates_to_transform_service(
 
 
 def test_status_uninitialized_environment(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    declare_only_models: Callable[..., None],
 ) -> None:
     """Fresh DB: no SQLMesh env → initialized=False, pending=False."""
+    declare_only_models()
     from contextlib import contextmanager
 
     fake_ctx = MagicMock()
@@ -531,3 +577,44 @@ def test_audit_aggregates_pass_fail_counts(
     names = [a["name"] for a in result.audits]
     assert "fct_transactions_pk" in names
     assert "fct_transactions_fk" in names
+
+
+def test_freshness_pending_and_named_when_a_registered_model_was_never_built(
+    freshness_db: Database,
+) -> None:
+    """An unbuilt model is staleness, and freshness must say which one.
+
+    Breaks under the timestamp-only proxy: a model with no relation has no
+    timestamp to compare, so it reads as fresh forever.
+    """
+    # `core.dim_accounts` below is a registered model no `db init` creates, so
+    # its presence is what marks this warehouse built rather than brand new.
+    extracted = _ts(2026, 5, 13, 18, 24)
+    freshness_db.execute(
+        "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
+        [extracted, _ts(2026, 5, 13, 19, 0)],
+    )
+    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", extracted, "i1"])
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 30)])
+
+    f = TransformService(freshness_db).freshness()
+
+    assert f.pending is True
+    assert "core.fct_transactions" in f.missing_models
+    assert "core.dim_accounts" not in f.missing_models
+
+
+@pytest.mark.fresh_db
+def test_freshness_not_pending_on_a_never_built_warehouse(db: Database) -> None:
+    """A profile between `db init` and its first refresh is not stale.
+
+    Deliberately runs against the REAL 52-model registry on a database with
+    none of them built — the state every new user hits first. Breaks if a
+    never-built warehouse is treated as missing-models: `pending` would be
+    permanently true and `moneybin system doctor` would exit 1 on a profile
+    where nothing is wrong.
+    """
+    f = TransformService(db).freshness()
+
+    assert f.pending is False
+    assert f.missing_models == ()

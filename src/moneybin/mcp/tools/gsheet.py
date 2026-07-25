@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from fastmcp import FastMCP
 from pydantic import JsonValue, StrictBool
 
+from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.connectors.gsheet.adapters.base import GSheetConnection
 from moneybin.connectors.gsheet.errors import GSheetSignConfirmationRequiredError
@@ -479,7 +480,7 @@ def gsheet_coarse(
     if view == "connections" and connection_id is not None:
         raise UserError(
             "connection_id is valid only for the status view.",
-            code="GSHEET_CONNECTION_ID_NOT_ALLOWED",
+            code=error_codes.GSHEET_CONNECTION_ID_NOT_ALLOWED,
         )
 
     with _build_connection_service() as service:
@@ -618,7 +619,7 @@ async def gsheet_connect_coarse(
     if url is not None and connection_id is not None:
         raise UserError(
             "url and connection_id select different modes and cannot be combined.",
-            code="GSHEET_CONNECT_MODE_CONFLICT",
+            code=error_codes.GSHEET_CONNECT_MODE_CONFLICT,
         )
     if url is None and connection_id is None:
         auth_only = {
@@ -635,7 +636,7 @@ async def gsheet_connect_coarse(
         if supplied:
             raise UserError(
                 f"Authentication-only mode does not accept: {', '.join(supplied)}.",
-                code="GSHEET_AUTH_ARGUMENT_CONFLICT",
+                code=error_codes.GSHEET_AUTH_ARGUMENT_CONFLICT,
             )
         response = await gsheet_auth(force_reauth=bool(force_reauth))
         if response.error is not None:
@@ -688,7 +689,7 @@ async def gsheet_connect_coarse(
     if supplied:
         raise UserError(
             f"Reconnect mode does not accept: {', '.join(supplied)}.",
-            code="GSHEET_RECONNECT_ARGUMENT_CONFLICT",
+            code=error_codes.GSHEET_RECONNECT_ARGUMENT_CONFLICT,
         )
     response = await gsheet_reconnect(
         connection_id=cast(str, connection_id),
@@ -798,7 +799,7 @@ async def gsheet_disconnect_coarse(
         if confirmation_token is not None:
             raise UserError(
                 "confirmation_token is valid only for state='absent'.",
-                code="GSHEET_CONFIRMATION_NOT_ALLOWED",
+                code=error_codes.GSHEET_CONFIRMATION_NOT_ALLOWED,
             )
         await asyncio.to_thread(_disconnect_gsheet, connection_id)
         return _gsheet_disconnect_envelope(

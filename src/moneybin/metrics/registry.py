@@ -462,7 +462,7 @@ MERCHANT_RESOLUTION_OUTCOME_TOTAL = Counter(
 
 MERCHANT_LINK_OUTCOMES_TOTAL = Counter(
     "moneybin_merchant_link_outcomes_total",
-    "Outcomes of merchant-link review decisions via merchants_links_set.",
+    "Outcomes of merchant-link review decisions via identity_links_decide.",
     # outcome: accepted | rejected
     ["outcome"],
 )

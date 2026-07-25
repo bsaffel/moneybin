@@ -30,6 +30,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
@@ -100,11 +101,11 @@ def _coerce_amount(value: Any, where: str) -> Decimal:
         except InvalidOperation as e:
             raise UserError(
                 f"{where}: amount {value!r} is not a valid decimal",
-                code="invalid_amount",
+                code=error_codes.TRANSACTION_INVALID_AMOUNT,
             ) from e
     raise UserError(
         f"{where}: amount must be a number or string, got {type(value).__name__}",
-        code="invalid_amount",
+        code=error_codes.TRANSACTION_INVALID_AMOUNT,
     )
 
 
@@ -118,7 +119,7 @@ def _prepare_manual_entries(transactions: list[dict[str, Any]]) -> list[dict[str
     if not 1 <= len(transactions) <= _MANUAL_BATCH_MAX:
         raise UserError(
             f"batch size must be 1..{_MANUAL_BATCH_MAX}, got {len(transactions)}",
-            code="invalid_batch_size",
+            code=error_codes.TRANSACTION_INVALID_BATCH_SIZE,
         )
     out: list[dict[str, Any]] = []
     for idx, entry in enumerate(transactions):
@@ -137,7 +138,8 @@ def _prepare_splits(splits: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prepared = dict(s)
         if "amount" not in prepared:
             raise UserError(
-                f"splits[{idx}] missing required 'amount'", code="invalid_input"
+                f"splits[{idx}] missing required 'amount'",
+                code=error_codes.TRANSACTION_INVALID_INPUT,
             )
         prepared["amount"] = _coerce_amount(prepared["amount"], f"splits[{idx}]")
         out.append(prepared)
