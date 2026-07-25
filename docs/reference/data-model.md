@@ -436,7 +436,7 @@ All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `rep
 | What's my net worth? | `reports.net_worth` | Daily snapshot from `fct_balances_daily`. |
 | Which transactions are unusually large? | `reports.large_transactions` | Modified z-scores against account and category baselines + `is_top_100`. |
 | Which subscriptions am I paying for? | `reports.recurring_subscriptions` | Heuristic candidates with confidence scores; does not auto-classify. |
-| Are my balances drifting from reality? | `reports.balance_drift` | Per-assertion deltas vs computed balance; feeds `moneybin system doctor`. |
+| Are my balances drifting from reality? | `reports.balance_drift` | Per-assertion deltas vs computed balance; query it directly; `moneybin system doctor` does not read it. |
 
 What's not categorized yet is answered by `core.uncategorized_queue` (above) rather than a `reports.*` view — it's service-internal, reached via `moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`, not a standalone report.
 
@@ -537,7 +537,7 @@ All non-transfer transactions with z-scores against account and category baselin
 
 ### `reports.balance_drift`
 
-Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed balance. Grain: one row per balance assertion. Feeds `moneybin system doctor`.
+Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed balance. Grain: one row per balance assertion. Query it directly; `moneybin system doctor` does not read it.
 
 | Column | Type | Description |
 |---|---|---|

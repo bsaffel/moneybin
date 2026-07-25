@@ -190,7 +190,7 @@ Generic PDF ingestion, not a per-institution parser — one extractor drives eve
 | Outcome | Where it lands | Notes |
 |---|---|---|
 | Transaction-shaped, reconciles | `raw.tabular_transactions`, `source_type='pdf'` | Same matching / categorization / reports pipeline as every other tabular source. Account resolves through the existing tabular account-matching (`extractors/tabular/account_matching.py`) — a PDF transaction never lands account-less. |
-| Not transaction-shaped (`no_transaction_table`), or transaction-shaped with a non-US number locale (`unsupported_number_format`) | `raw.pdf_seeds` (JSON) + auto-generated `raw.pdf_<alias>` typed view | Catch-all; requires an `--alias`. Does not participate in matching, categorization, or `reports.*` — queryable via `sql_query` MCP, the REPL, or a direct SQL join to `fct_transactions`. |
+| Not transaction-shaped (`no_transaction_table`), or transaction-shaped with a non-US number locale (`unsupported_number_format`) | `raw.pdf_seeds` (JSON) + auto-generated `raw.pdf_<alias>` typed view | Catch-all; requires an `--alias`. Does not participate in matching, categorization, or `reports.*`. The view lives in `raw`, which `sql_query` refuses — read it with `moneybin db query` / `db shell` or an external client. |
 
 **Sign convention.** A bank statement is `negative_is_expense`, like OFX. A credit-card statement is natively `negative_is_income` (charges post positive, payments negative) — the inverse of every other source. MoneyBin requires explicit human ratification before a `negative_is_income` recipe writes anything: MCP elicitation when the client supports it, otherwise `moneybin import confirm <file> --bridge-response response.json --confirm`. The confirmation carries the evidence (a printed-vs-recorded sample) and is never applied silently — a wrong inversion corrupts every row, and a saved recipe would replay the error forever. `--sign` is a durable override but only ratifies; an agent actor can never set it (rejected at the bridge boundary).
 
@@ -205,7 +205,7 @@ Live banking sync brokered through `moneybin-sync`. Implementation: `src/moneybi
 **What's pulled per sync:**
 
 - **Accounts** (`raw.plaid_accounts`): `account_id`, `account_type`, `account_subtype`, `institution_name`, `official_name`, `mask` (last-4).
-- **Transactions** (`raw.plaid_transactions`): `transaction_id`, `account_id`, `transaction_date`, `amount`, `description`, `merchant_name`, `category`, `pending`, `iso_currency_code` / `unofficial_currency_code`.
+- **Transactions** (`raw.plaid_transactions`): `transaction_id`, `account_id`, `transaction_date`, `amount`, `description`, `merchant_name`, `category`, `pending`, `iso_currency_code`. Transactions carry the ISO field only — `unofficial_currency_code` is captured for balances, securities, investment transactions, and holdings, but not here.
 - **Balances** (`raw.plaid_balances`): `account_id`, `balance_date`, `current_balance`, `available_balance`, `iso_currency_code` / `unofficial_currency_code`.
 - **Removed transactions:** Plaid's incremental sync emits a separate `removed_transactions` list; corresponding rows are deleted from `raw.plaid_transactions` and surfaced as `transactions_removed` in the `PullResult`.
 

@@ -478,7 +478,7 @@ The same contract applies to `moneybin import inbox`: the command exits 0 when t
 
 **Concurrency.** The inbox lockfile serializes inbox drains within a profile. There is no equivalent lock around bare `moneybin import files` — two parallel invocations against the same profile race on the import log. The supported pattern is: serialize at the caller (one cron job, one agent worker), or drop files in the inbox and let the inbox lock handle ordering.
 
-**SIGTERM mid-import.** Not yet a guaranteed clean rollback. If a file is mid-load when the process dies, the import-log row may stay in `in_progress` state; rerun against a fresh process and the next `import files` against the same file is short-circuited by the file-hash log. A clean partial-batch rollback contract is planned — for now, treat SIGTERM as "may need a manual `import revert` on the partial batch."
+**SIGTERM mid-import.** Not yet a guaranteed clean rollback. If a file is mid-load when the process dies, the import-log row may stay in `importing` state. What happens on rerun depends on the format: an OFX rerun is refused while that row is stuck, and needs `--force`; a tabular or PDF rerun starts a fresh batch rather than short-circuiting, so it can double-load the file. A clean partial-batch rollback contract is planned — for now, treat SIGTERM as "may need a manual `import revert` on the partial batch."
 
 ## What's not supported yet
 
