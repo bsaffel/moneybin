@@ -165,6 +165,34 @@ async def test_permission_failure_row_carries_structured_details(
     assert env.error.details == row.details
 
 
+async def test_hard_refresh_failure_is_not_reported_as_a_parse_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash after the rows landed is a refresh failure, not a parse failure.
+
+    The file parsed and loaded; only the SQLMesh apply blew up. Falling back to
+    `import_parse_error` at the batch level steers an agent toward "fix the
+    file and re-import" when the correct move is retry-refresh or
+    `import_revert` on the orphaned raw load — and `import_id` is deliberately
+    preserved on the row for exactly that.
+    """
+    _setup_db(tmp_path, monkeypatch)
+    fixture = _copy_fixture(FIXTURES_DIR / "sample_minimal.ofx", tmp_path)
+    monkeypatch.setattr(
+        "moneybin.services.refresh.refresh",
+        MagicMock(side_effect=RuntimeError("sqlmesh exploded")),
+    )
+
+    env = import_files(paths=[str(fixture)], refresh=True)
+
+    assert env.data.failed_count == 1
+    row = env.data.files[0]
+    # The revert handle survives — that is the recovery this path protects.
+    assert row.import_id is not None
+    assert env.error is not None
+    assert env.error.code == "refresh_model_failed"
+
+
 async def test_clean_batch_stays_low_sensitivity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

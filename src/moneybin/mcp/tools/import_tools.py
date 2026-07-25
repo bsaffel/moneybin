@@ -573,6 +573,15 @@ def import_files(
             )
 
             error_message, error_code, error_hint, error_details = per_file_failure(e)
+            if error_code is None and loaded_import_id is not None:
+                # The rows landed, so nothing here was a parse failure — the
+                # only work after the load is the refresh block above. Left
+                # unclassified, `mark_total_failure` falls back to
+                # IMPORT_PARSE_ERROR at the envelope level, which tells an
+                # agent to fix the file and re-import when the actual
+                # recoveries are retry-refresh or `import_revert` on the
+                # orphaned load (the `import_id` kept on the row below).
+                error_code = error_codes.REFRESH_MODEL_FAILED
             # Log the class name, never the message: a classified message is
             # user-safe but still names the path, and logs stay PII-free.
             logger.warning(f"Import failed for {validated[0]}: {type(e).__name__}")
