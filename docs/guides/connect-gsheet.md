@@ -90,7 +90,7 @@ Best for: Tiller, Tiller-style hand-maintained ledgers, anything with date / amo
 Best for: anything else. Asset valuations, a subscription tracker, a budget tab, scratch data you want SQL access to.
 
 - Rows land in `raw.gsheet_seeds` as JSON, one row per sheet row.
-- An **auto-generated typed view** at `raw.gsheet_<alias>` exposes the rows with inferred column types (string, number, date), visible in `moneybin://schema`. Read it with `moneybin db query` or `db shell` — the view lives in `raw`, and both `sql_query` and `moneybin sql query` are restricted to `core`, `app`, and `reports`.
+- An **auto-generated typed view** at `raw.gsheet_<alias>` exposes the rows with inferred column types (string, number, date), visible in `moneybin://schema`. Read it with `moneybin db query` or `db shell` — the view lives in `raw`, and both `sql_query` and `moneybin sql query` are restricted to reading rows from `core`, `app`, and `reports`.
 - Does **not** participate in matching, categorization, or reports — there's no schema contract beyond "rectangular tabular data."
 - `--alias=<slug>` names the generated view (required for the seed adapter; derived from sheet name if omitted).
 

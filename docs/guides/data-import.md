@@ -271,7 +271,7 @@ A statement whose own disclosures (minimum payment, credit limit, APR) name it a
 **What happens to your data:**
 
 - **Transaction-shaped PDFs** (statements with a date / description / amount table) land in `raw.tabular_transactions` (`source_type='pdf'`) and flow through the SQLMesh pipeline to `core.fct_transactions` like any other source. Categorization, search, reports — all work the same. *Caveat for inbox-routed PDFs:* `moneybin import inbox` does not yet trigger the SQLMesh refresh for `file_type='pdf'`, so raw rows land but core/reports won't see them until a `moneybin transform apply` runs. Inbox-routed OFX and tabular files refresh automatically; the inbox refresh gate will be extended to PDFs in a follow-up.
-- **Non-transaction PDFs**, and transaction PDFs that don't reconcile cleanly, fall back to the seed path: the extracted tables land as queryable JSON in `raw.pdf_seeds` with an auto-generated typed view (`raw.pdf_<alias>`). The rows do not flow to `core.fct_transactions`. Read the view with `moneybin db query` or `db shell` — `moneybin sql query` and the `sql_query` MCP tool are restricted to `core`, `app`, and `reports`, so neither can reach `raw`.
+- **Non-transaction PDFs**, and transaction PDFs that don't reconcile cleanly, fall back to the seed path: the extracted tables land as queryable JSON in `raw.pdf_seeds` with an auto-generated typed view (`raw.pdf_<alias>`). The rows do not flow to `core.fct_transactions`. Read the view with `moneybin db query` or `db shell` — `moneybin sql query` and the `sql_query` MCP tool are restricted to `core`, `app`, and `reports`, so neither can read rows out of `raw`.
 
 **When the fallback triggers** (any one of):
 

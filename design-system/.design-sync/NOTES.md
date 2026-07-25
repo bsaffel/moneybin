@@ -72,7 +72,10 @@ node .ds-sync/package-validate.mjs ./ds-bundle --no-render-check
 - **A git worktree starts with no converter.** `.ds-sync/` is gitignored, so
   everything above assumes the main checkout — which is also the only place the
   scripts exist on disk. Bootstrap a worktree by staging them from there:
-  `cp -r <main-checkout>/design-system/.ds-sync/{package-*.mjs,resync.mjs,lib,storybook} .ds-sync/`.
+  `mkdir -p .ds-sync && cp -r <main-checkout>/design-system/.ds-sync/{package-*.mjs,resync.mjs,lib,storybook} .ds-sync/`
+  — the `mkdir` is required, not defensive: with several sources `cp` needs the
+  destination to already be a directory, and `.ds-sync/` is gitignored so a
+  fresh worktree has none.
   Then run **two** installs, not one — `npm i esbuild ts-morph @types/react` and
   `npm i react@18 react-dom@18` (a fresh worktree has neither set; the React 18
   pin is the one noted above). Both still need
