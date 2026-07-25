@@ -85,7 +85,7 @@ time, derive *proposed* report-column classes from the logical model query and
 surface them for a human to confirm into the declared map. That keeps the
 declared-map as the source of truth (resolving consequence #2 — a human
 confirms the derived/aggregate judgments) while removing the tedium of the
-passthrough columns. Tracked as a follow-up.
+passthrough columns.
 
 ## Alternatives considered
 

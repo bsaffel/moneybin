@@ -162,6 +162,7 @@ Every essential analysis feature a serious user (and the PFM field) expects, bui
 | **M2K** | Asset tracking (real estate, vehicles, valuables) | 📐 | Periodic valuations, net-worth integration. [`asset-tracking.md`](specs/asset-tracking.md). |
 | **M2M** | Reference packages: `assets` + `us_tax` | 📐 | Ship at Platinum; `us_tax` builds on M1J investments. Worked examples for community packages. |
 | **M2N** | LLM prose summaries | 🗓️ | Deterministic numbers; AI writes prose only from cited refs. |
+| **M2P** | Reports surface: one report contract, dynamic + materialized modes | 🚧 | M2P.1 foundation ✅ shipped; M2P.2 dynamic reports 📐 (absorbs M2I); M2P.3 materialization & distribution 🗓️. [`reports-overview.md`](specs/reports-overview.md). |
 
 > **Analysis-Complete gate.** M2 closes when each major report has a correctness scenario checked against synthetic ground truth; categorization and transfer-detection accuracy hold their thresholds; budget/recurring/reimbursement scenarios pass; and every report number is explainable through lineage.
 

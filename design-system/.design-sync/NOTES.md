@@ -57,6 +57,30 @@ node .ds-sync/package-validate.mjs ./ds-bundle --no-render-check
   the polluted dir — its `.claude/` triggers a protective delete prompt. This is
   an anomaly (the cwd normally isn't the build dir), so the fallback is a safety
   net, not the default.
+- **Drive it with `resync.mjs` — the upload plan needs its diff output.** The
+  driver chains build → diff → validate → capture and runs clean through build
+  and diff. Its **diff** stage emits the `upload.components` /
+  `upload.deletePaths` partition, which the upload plan must copy **verbatim**;
+  hand-deriving that partition is not allowed. With no npm `playwright`
+  installed (deliberate — see *Verification*), the **validate** stage exits 1 on
+  `[RENDER_SKIPPED]`, which cascades to `capture: skipped (prior_failure)` and
+  `ok: false` in the verdict. That is the known render-verification gap, **not**
+  a sign the driver doesn't work in this environment — do not read `ok: false`
+  that way. Take the partition from the diff stage, then re-run
+  `node .ds-sync/package-validate.mjs ./ds-bundle --no-render-check` (exits 0)
+  and verify the changed cards in the Playwright MCP browser.
+- **A git worktree starts with no converter.** `.ds-sync/` is gitignored, so
+  everything above assumes the main checkout — which is also the only place the
+  scripts exist on disk. Bootstrap a worktree by staging them from there:
+  `mkdir -p .ds-sync && cp -r <main-checkout>/design-system/.ds-sync/{package-*.mjs,resync.mjs,lib,storybook} .ds-sync/`
+  — the `mkdir` is required, not defensive: with several sources `cp` needs the
+  destination to already be a directory, and `.ds-sync/` is gitignored so a
+  fresh worktree has none.
+  Then run **two** installs, not one — `npm i esbuild ts-morph @types/react` and
+  `npm i react@18 react-dom@18` (a fresh worktree has neither set; the React 18
+  pin is the one noted above). Both still need
+  `--cache "$TMPDIR/npm-cache-ds"`. Do not copy `node_modules/` — reinstall it,
+  or the platform-specific `esbuild` binary comes along and fails.
 
 ## CSS / tokens (the non-obvious part)
 

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-24 -->
 # Server API Contract
 
 `moneybin-sync` is a thin HTTP service that brokers connections to upstream banking providers (Plaid today). The MoneyBin client treats it as opaque — this page documents the contract the client *expects*, so a self-hoster running their own `moneybin-sync` (or anyone evaluating the architecture) can reason about the surface from the client's perspective.
@@ -48,7 +48,8 @@ Every endpoint below is exercised by `SyncClient`. Paths and methods are taken d
 | `POST` | `/sync/link/initiate` | bearer | Start a link session (Plaid Link today). Returns a hosted `link_url` for the user to open. |
 | `GET` | `/sync/link/status` | bearer | Read the current state of a link session (`pending` / `linked` / `failed`). |
 | `POST` | `/sync/trigger` | bearer | Run a sync. Synchronous from the client's perspective — blocks until the server completes the pull. |
-| `GET` | `/sync/data` | bearer | One-shot read of the most recent sync payload by `job_id`. Server deletes from its TTL store after read. |
+| `GET` | `/sync/data` | bearer | Re-readable fetch of the most recent sync payload by `job_id`. The server holds the payload until the client acks or its TTL lapses. |
+| `POST` | `/sync/ack` | bearer | Confirm a durable local load of `job_id`'s payload. The server advances its per-institution cursors and frees the held payload. Idempotent. |
 
 Properties across the catalog: bearer-token auth everywhere except the device-flow bootstrap (no cookies, no sessions); JSON request and response bodies (errors included); synchronous semantics — `POST /sync/trigger` blocks until the server-side pull completes, then `GET /sync/data` returns the payload. No webhooks; polling exists only for the link flow, where the user takes the wheel.
 
@@ -56,12 +57,12 @@ Properties across the catalog: bearer-token auth everywhere except the device-fl
 
 1. Client calls `POST /sync/trigger`.
 2. Server runs the upstream provider pull synchronously (may take up to ~120 seconds for multi-institution syncs).
-3. Server stores the result in a short-lived TTL cache keyed by `job_id`.
+3. Server stores the result in a held cache keyed by `job_id`, with cursors not yet advanced.
 4. Server returns `200` with a sync summary (`job_id`, `status`, `transaction_count`).
-5. Client calls `GET /sync/data?job_id=<id>`.
-6. Server returns the payload and drops it from the TTL cache.
+5. Client calls `GET /sync/data?job_id=<id>` and loads the payload into its local DuckDB profile. This read does not advance cursors — a repeated `GET /sync/data` with the same `job_id` re-serves the same payload.
+6. Once the load is durable, client calls `POST /sync/ack` with `job_id`. The server advances its per-institution cursors and frees the held payload.
 
-The trigger blocks because the contract avoids a job-queue/webhook protocol — the client has no inbound port, and the CLI/MCP host is already waiting on the call.
+If the client crashes or the ack call fails after step 5 but before step 6, the next `POST /sync/trigger` re-pulls the same unacked window — the loader's dedup on `transaction_id` makes the re-load loss-free. The trigger blocks because the contract avoids a job-queue/webhook protocol — the client has no inbound port, and the CLI/MCP host is already waiting on the call.
 
 ## Request and response shapes
 
@@ -264,7 +265,7 @@ Begin a link session. The response includes a hosted URL the user opens in a bro
 }
 ```
 
-`status` is always terminal — the server completes the pull synchronously before responding. `transaction_count` is the total across all institutions in the job. A client-side timeout does not mean the server-side job failed; cursor-based sync makes retry safe.
+`status` is expected to be `"completed"` — the server completes the pull synchronously before responding. The client's model also accepts `"pending"`, `"running"`, and `"failed"` for forward-compatible parsing, but treats any value other than `"completed"` as a contract violation: it raises before calling `GET /sync/data` rather than proceeding against a job that may not have produced a payload. `transaction_count` is the total across all institutions in the job. A client-side timeout does not mean the server-side job failed; cursor-based sync makes retry safe.
 
 ### `GET /sync/data`
 
@@ -305,6 +306,44 @@ Begin a link session. The response includes a hosted URL the user opens in a bro
     }
   ],
   "removed_transactions": ["txn_old_001"],
+  "securities": [
+    {
+      "security_id": "sec_plaid_1",
+      "provider_item_id": "item_abc",
+      "ticker_symbol": "AAPL",
+      "name": "Apple Inc.",
+      "type": "equity",
+      "close_price": "214.55",
+      "close_price_as_of": "2026-05-12",
+      "iso_currency_code": "USD"
+    }
+  ],
+  "investment_transactions": [
+    {
+      "investment_transaction_id": "itx_1",
+      "account_id": "acc_inv_001",
+      "provider_item_id": "item_abc",
+      "security_id": "sec_plaid_1",
+      "date": "2026-05-12",
+      "name": "BUY AAPL",
+      "quantity": "10.0",
+      "amount": "2145.50",
+      "price": "214.55",
+      "type": "buy",
+      "subtype": "buy"
+    }
+  ],
+  "investment_holdings": [
+    {
+      "account_id": "acc_inv_001",
+      "provider_item_id": "item_abc",
+      "security_id": "sec_plaid_1",
+      "quantity": "10.0",
+      "cost_basis": "1980.00",
+      "iso_currency_code": "USD",
+      "tax_lots": []
+    }
+  ],
   "metadata": {
     "job_id": "550e8400-e29b-41d4-a716-446655440000",
     "synced_at": "2026-05-13T12:00:00Z",
@@ -315,14 +354,15 @@ Begin a link session. The response includes a hosted URL the user opens in a bro
         "status": "completed",
         "transaction_count": 142,
         "error": null,
-        "error_code": null
+        "error_code": null,
+        "transactions_window_start": "2026-02-12"
       }
     ]
   }
 }
 ```
 
-`accounts[]`, `transactions[]`, `balances[]`, and `removed_transactions[]` are guaranteed to be present (possibly empty). `metadata` is always present. This endpoint is a one-shot read — see [Failure semantics](#failure-semantics) for retry behavior.
+`accounts[]`, `transactions[]`, `balances[]`, and `removed_transactions[]` are guaranteed to be present (possibly empty). `securities[]`, `investment_transactions[]`, and `investment_holdings[]` default to an empty list when the field is absent from the response — a broker predating investments support still validates. `metadata` is always present. This endpoint is re-readable — see [Failure semantics](#failure-semantics) for retry and ack behavior.
 
 #### `accounts[]`
 
@@ -347,6 +387,19 @@ Begin a link session. The response includes a hosted URL the user opens in a bro
 | `merchant_name` | string \| null | Provider's normalized merchant name (`null` when unknown). |
 | `category` | string \| null | Provider's primary category. For Plaid this is `personal_finance_category.primary`. |
 | `pending` | bool | `true` if not yet posted; may transition to `false` (with the same `transaction_id`) in a later sync. |
+| `original_description` | string \| null | Institution's unprocessed description text, when distinct from `description`. |
+| `iso_currency_code` | string \| null | ISO 4217 code the amount is denominated in; a blank string is normalized to `null`. |
+| `authorized_date` | `YYYY-MM-DD` \| null | Date the transaction was authorized, when the institution reports it separately from `transaction_date`. |
+| `pending_transaction_id` | string \| null | The `transaction_id` of the pending predecessor, once this transaction has posted. |
+| `payment_channel` | string \| null | Provider's channel classification (e.g., `online`, `in store`). |
+| `check_number` | string \| null | Check number, when the transaction is a paper check. |
+| `merchant_entity_id` | string \| null | Provider's stable identifier for the resolved merchant entity, distinct from `merchant_name`. |
+| `location_address`, `location_city`, `location_region`, `location_postal_code`, `location_country` | string \| null | Provider-reported merchant location, when available. |
+| `location_latitude`, `location_longitude` | float \| null | Provider-reported merchant coordinates, when available. |
+| `category_detailed` | string \| null | Provider's most granular category value. For Plaid this is `personal_finance_category.detailed`. |
+| `category_confidence` | string \| null | Provider's confidence label for the category assignment (e.g., Plaid's `personal_finance_category.confidence_level`). |
+
+Every field after `pending` is optional — a broker predating extended-field capture still validates.
 
 #### `balances[]`
 
@@ -356,10 +409,83 @@ Begin a link session. The response includes a hosted URL the user opens in a bro
 | `balance_date` | `YYYY-MM-DD` | Date the snapshot was captured. |
 | `current_balance` | decimal \| null | Current balance including pending. |
 | `available_balance` | decimal \| null | Available balance after holds; often `null` for credit accounts. |
+| `iso_currency_code` | string \| null | ISO 4217 code the balance is denominated in; a blank string is normalized to `null`. |
+| `unofficial_currency_code` | string \| null | Provider-defined code for currencies without an ISO 4217 assignment (e.g., some cryptocurrencies); a blank string is normalized to `null`. |
 
 #### `removed_transactions[]`
 
 Array of `transaction_id` strings the provider has retracted (reversal, dedup, error correction). The client deletes these rows from `raw.plaid_transactions`.
+
+#### `securities[]`
+
+One entry per security referenced by this job's investment transactions or holdings. Item-scoped — the same underlying security re-appears per connected institution that holds it.
+
+| Field | Type | Notes |
+|---|---|---|
+| `security_id` | string | Provider security ID. |
+| `provider_item_id` | string | Which connection this security was reported under. |
+| `institution_security_id` | string \| null | Institution's own identifier for the security, when distinct from `security_id`. |
+| `institution_id` | string \| null | Provider's identifier for the institution, when the security carries one directly. |
+| `ticker_symbol` | string \| null | Trading symbol, when the security has one. |
+| `market_identifier_code` | string \| null | ISO 10383 market identifier code (MIC) for the listing venue. |
+| `name` | string \| null | Security name (e.g., `"Apple Inc."`). |
+| `type` | string \| null | Provider's security type (e.g., `equity`, `etf`, `cash`). |
+| `close_price` | decimal \| null | Most recent close price the provider returned. |
+| `close_price_as_of` | `YYYY-MM-DD` \| null | Date `close_price` was captured. |
+| `iso_currency_code`, `unofficial_currency_code` | string \| null | Same normalization as `balances[]`. |
+| `cusip`, `isin` | string \| null | Standard security identifiers, when the provider supplies them. |
+| `is_cash_equivalent` | bool \| null | `true` for cash and cash-equivalent positions (e.g., money market sweep). |
+
+#### `investment_transactions[]`
+
+One entry per investment ledger event (buy, sell, dividend, transfer, fee).
+
+| Field | Type | Notes |
+|---|---|---|
+| `investment_transaction_id` | string | Provider investment-transaction ID. |
+| `account_id` | string | Provider account ID. |
+| `provider_item_id` | string | Which connection this entry was reported under. |
+| `security_id` | string \| null | Resolves against `securities[]`; `null` for cash-only events. |
+| `date` | `YYYY-MM-DD` | Transaction date. |
+| `transaction_datetime` | ISO 8601 \| null | Timestamped variant of `date`, when the provider reports intraday timing. Unlike `date`/`name`/`type`/`subtype`, this field has no separate wire alias. |
+| `name` | string \| null | Provider's description of the event (e.g., `"BUY AAPL"`). |
+| `quantity` | decimal \| null | Signed unit quantity, when the event moves units. |
+| `amount` | decimal | **Provider sign convention** — Plaid emits positive for cash leaving the account (buys, fees) and negative for cash entering it (sells, dividends). The staging flip mirrors `transactions[]`; see [Sign convention](#sign-convention). |
+| `price` | decimal \| null | Per-unit price at execution. |
+| `fees` | decimal \| null | Fees charged on the transaction. |
+| `iso_currency_code`, `unofficial_currency_code` | string \| null | Same normalization as `balances[]`. |
+| `type` | string \| null | Provider's transaction type (e.g., `buy`, `sell`, `cash`, `fee`). |
+| `subtype` | string \| null | Provider's transaction subtype (e.g., `dividend`, `transfer`). |
+
+#### `investment_holdings[]`
+
+One entry per security position, as of the sync. A holdings snapshot, not a ledger — it replaces the prior snapshot for the same `(account_id, security_id)` rather than accumulating.
+
+| Field | Type | Notes |
+|---|---|---|
+| `account_id` | string | Provider account ID. |
+| `provider_item_id` | string | Which connection this holding was reported under. |
+| `security_id` | string | Resolves against `securities[]`. |
+| `institution_price` | decimal \| null | Per-unit price the institution used to value the position. |
+| `institution_price_as_of` | `YYYY-MM-DD` \| null | Date `institution_price` was captured. |
+| `institution_value` | decimal \| null | Total position value the institution reports. |
+| `cost_basis` | decimal \| null | Aggregate cost basis for the position, when the institution reports one. |
+| `quantity` | decimal \| null | Units held. |
+| `iso_currency_code`, `unofficial_currency_code` | string \| null | Same normalization as `balances[]`. |
+| `vested_quantity`, `vested_value` | decimal \| null | Vested subset of `quantity`/`institution_value`, for equity-compensation positions. |
+| `tax_lots` | array | Per-lot detail; see below. Empty array when the provider does not report lots. |
+
+Each entry of `investment_holdings[].tax_lots[]`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `institution_lot_id` | string \| null | Institution's identifier for the lot. |
+| `original_purchase_datetime` | ISO 8601 \| null | When the lot was acquired. |
+| `quantity` | decimal \| null | Units in this lot. |
+| `purchase_price` | decimal \| null | Per-unit price at acquisition. |
+| `cost_basis` | decimal \| null | Cost basis for this lot. |
+| `current_value` | decimal \| null | Current value of this lot. |
+| `position_type` | string \| null | e.g., `long`, `short`. |
 
 #### `metadata`
 
@@ -379,8 +505,29 @@ Each entry of `metadata.institutions[]`:
 | `transaction_count` | int \| null | Transactions in this batch from this institution. |
 | `error` | string \| null | Error message when `status == "failed"`. |
 | `error_code` | string \| null | Provider error code (e.g., `ITEM_LOGIN_REQUIRED`). |
+| `transactions_window_start` | `YYYY-MM-DD` \| null | The start boundary the server used for this item's investment-transaction pull. Non-null whenever the item's investments flow completed — **including when it returned zero holdings**; `null` only for a cash-only item or `status == "failed"`. See the note below. |
 
-The client uses `institutions[]` to update `app.sync_connections` with per-institution status and to surface targeted re-auth guidance.
+**`transactions_window_start` is the only wire signal that an item's investments flow ran**, so its presence is load-bearing rather than informational. The client treats an item as having reported iff `status == "completed"` and this field is non-null, and writes a holdings-snapshot receipt for it — `holdings_count` of zero included. A server that omits the field for an item that legitimately returned no holdings makes the client skip that receipt, and the previous non-empty snapshot keeps reading as current: a fully-liquidated brokerage account then reports its old positions indefinitely, the largest overstatement the sync path can produce. Omitting it for an item that *did* return holdings is a hard contract violation — the client rejects the pull with a `ValueError` rather than guessing a window.
+
+The client carries `institutions[]` into its pull result (per-institution status, counts, and error codes) and increments a failed-institution metric keyed by `error_code`. It keeps no local connection-state table: `sync status` calls `GET /institutions` on every invocation and attaches re-auth guidance to that live response, so the server stays the system of record.
+
+### `POST /sync/ack`
+
+Confirms a durable local load so the broker advances its per-institution cursors and frees the held payload. The client calls this unconditionally once `get_data`'s payload has been loaded, immediately before the pull is reported as successful.
+
+**Request:**
+
+```json
+{ "job_id": "550e8400-e29b-41d4-a716-446655440000" }
+```
+
+**Response (200):** `SyncAckResponse`
+
+```json
+{ "job_id": "550e8400-e29b-41d4-a716-446655440000", "status": "acked" }
+```
+
+Idempotent — re-acking an already-acked `job_id` is a no-op `200`. The client treats an ack failure (network error, server 5xx) as best-effort: the load is already durable locally, so a failed ack does not fail the pull. The broker's cursor for that job stays un-advanced, and the next `POST /sync/trigger` re-pulls the same window; the loader's `transaction_id` dedup makes the re-load loss-free.
 
 ## Sign convention
 
@@ -391,6 +538,8 @@ Plaid and MoneyBin use opposite sign conventions. This contract preserves the **
 | `/sync/data` response (this contract) | Positive | Negative |
 | `raw.plaid_transactions` | Positive (faithful to source) | Negative |
 | `prep.stg_plaid__transactions` and downstream `core.*` | Negative | Positive |
+
+`investment_transactions[].amount` carries the same provider convention, read as cash flow rather than expense/income: positive for cash leaving the account (buys, fees), negative for cash entering it (sells, dividends). The flip happens once, in `prep.stg_plaid__investment_transactions` — same rule, same layer boundary.
 
 If a future provider arrives with a different native convention, the same rule holds: raw preserves the source; staging flips to MoneyBin convention.
 
@@ -429,7 +578,7 @@ What stays on the client, what crosses to the server, and what never appears on 
 | Bank password / online banking credentials | Never | Never | Entered into Plaid's hosted UI in your browser; goes directly from your browser to Plaid. |
 | Plaid `public_token` | Briefly (in URL fragment during redirect) | Yes — exchanged for `access_token` | Short-lived, single-use. |
 | Plaid `access_token` | Never | Yes — encrypted at rest | Long-lived bearer that lets the server pull data from Plaid on your behalf. |
-| Bank transaction data (amounts, descriptions, merchants) | Yes — in your encrypted DuckDB profile | Yes — transiently during the sync, then in a short-TTL store until you fetch it | After `GET /sync/data` the server drops the payload from its TTL store. |
+| Bank transaction data (amounts, descriptions, merchants) | Yes — in your encrypted DuckDB profile | Yes — transiently during the sync, then held until the client acks or the TTL lapses | The client acks after a durable local load (`POST /sync/ack`); the server frees the payload on ack or TTL expiry, whichever comes first. |
 | DuckDB encryption key | Yes — OS keychain or passphrase | Never | The server has no way to read your local database. |
 | OFX / CSV / PDF imports | Yes | Never | The bank-direct sync server is irrelevant to file-based imports. |
 
@@ -457,7 +606,7 @@ What the client assumes about the transport.
 | TLS | HTTPS required. Client uses `httpx` defaults — system CA bundle via `certifi`; no certificate pinning; `SSL_CERT_FILE` / `SSL_CERT_DIR` env vars honored. |
 | Connection reuse | One persistent `httpx.Client` per `SyncClient`. Connect timeout 10 s; read timeout 15 s for most calls, 120 s for `/sync/trigger` and connect polling. |
 | Server-side rate limits | No specified `429` / `Retry-After` shape. The client does not handle `429` specially — it surfaces as a generic `SyncAPIError`. A future revision should pin this down. |
-| Server retention | `access_token`s persist until `DELETE /institutions/{id}`. Sync cursors live server-side and survive across syncs (incremental sync depends on this). The `/sync/data` TTL cache drops the payload after a successful read. Audit-log and metrics retention are server-policy concerns. |
+| Server retention | `access_token`s persist until `DELETE /institutions/{id}`. Sync cursors live server-side and survive across syncs (incremental sync depends on this) — an unacked job's cursor does not advance. The held `/sync/data` payload is freed on `POST /sync/ack` or TTL expiry, whichever comes first. Audit-log and metrics retention are server-policy concerns. |
 | Telemetry / egress | The contract requires nothing of the server beyond these endpoints. Any phone-home behavior is documented by the deployment, not by this contract. |
 | SLO / latency | None. The 120-second client timeout on `/sync/trigger` is client-side defense, not a server guarantee. |
 | Correlation IDs | Not implemented today — no request-ID header sent or parsed. A future revision may add `X-Request-Id` or similar. |
@@ -466,7 +615,7 @@ What the client assumes about the transport.
 
 What the contract guarantees when things partially fail.
 
-- **TTL atomicity for `/sync/data`.** The contract intent is that the server drops the payload only after handing a complete `200` response to the client; a mid-read drop should leave the payload available for one retry. The exact mechanism is server-implementation detail and not pinned down today. **If the client lost the payload, the safe recovery is to call `POST /sync/trigger` again** — sync is idempotent against the cursor, so re-triggering re-pulls the same incremental window without double-counting.
+- **Loss-free recovery around `/sync/data` and `/sync/ack`.** `GET /sync/data` is re-readable and does not advance cursors on its own — a client that crashes mid-load, or whose `POST /sync/ack` call fails, simply has an unacked job. **The safe recovery is to call `POST /sync/trigger` again** — the broker's cursor for that item never advanced, so the retrigger re-pulls the same window, and the loader's `transaction_id` dedup makes the re-load idempotent. Acking is unconditional and best-effort on the client's side (see `POST /sync/ack` above); a failed ack degrades to a redundant re-pull next sync, never data loss.
 - **Concurrent `/sync/trigger` calls.** No `Idempotency-Key` header, no specified lock or queue model. The client never issues concurrent triggers; treat concurrent triggers as undefined behavior in any other client until the contract pins this down.
 - **Link session reuse.** Opening `link_url` twice is provider-side behavior (Plaid Link manages its own session). The client treats whatever terminal state `/sync/link/status` reports as authoritative.
 - **Payload size for `/sync/data`.** Single JSON body, no chunking, no documented maximum. Initial syncs with multi-year history can be large; the client validates the whole payload in memory. Servers emitting payloads above a few hundred MB will cause client-side memory pressure — a known sharp edge.
