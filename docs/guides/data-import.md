@@ -133,7 +133,7 @@ The migration question that matters: **what carries over from your old tool, and
 | **Maybe / Sure** | ✅ | ✅ (note) | ❌ (tags column dropped) | ❌ | 🟡 detected post-load | ✅ |
 | **Generic CSV** (Lunch Money, Monarch, Copilot) | ✅ if a category column is detected | ✅ if a memo/notes column is detected | ❌ | ❌ | 🟡 detected post-load | ✅ if column present, else use `--account-name` |
 | **OFX / QFX / QBO** | ❌ (format carries none) | ✅ (`<MEMO>`) | ❌ | ❌ | 🟡 detected post-load | ✅ |
-| **Plaid sync** | 🟡 (Plaid's PFC taxonomy, separate from MoneyBin categories) | ✅ (`original_description`) | ❌ | ❌ | 🟡 detected post-load | ✅ |
+| **Plaid sync** | 🟡 (Plaid's PFC taxonomy, separate from MoneyBin categories) | 🟡 (`memo` is always NULL; Plaid's raw text lands in the separate `original_description` column) | ❌ | ❌ | 🟡 detected post-load | ✅ |
 
 **A few specifics to set expectations:**
 
@@ -283,7 +283,7 @@ A statement whose own disclosures (minimum payment, credit limit, APR) name it a
 
 In every fallback case the recipe is NOT saved — MoneyBin only persists recipes that round-trip cleanly. Re-imports of the same statement either replay the saved recipe (no derivation cost) or fall back again to the seed path.
 
-**Preview before committing.** `moneybin import preview <path>.pdf` runs the same deterministic-recipe rung with no writes — it reports whether the statement would extract cleanly, how many rows, and any pending sign-convention confirmation, the same way `import preview` does for tabular files.
+**Preview before committing.** `moneybin import preview <path>.pdf` runs the same deterministic-recipe rung without importing — no `raw.*` rows, no `raw.import_log` entry — and reports whether the statement would extract cleanly, how many rows, and any pending sign-convention confirmation, the same way `import preview` does for tabular files. One exception to "no writes": a bridge-eligible layout escalates during the preview and writes its `smart_import_parse` audit row, so the preview opens the database writable. See [Privacy posture](#pdf-native-text) below.
 
 **Privacy posture.** The deterministic recipe ladder runs entirely on your machine — no network egress, no model call — and handles the column shapes statements typically use. A layout it can't crack escalates to the LLM agent you're already driving MoneyBin with, on MCP clients that support it, rather than silently falling back to the seed path.
 
@@ -403,8 +403,8 @@ For anything beyond those (rewriting the amount or date on a single row), the cu
 For cash, gifts, reimbursements, and anything else that doesn't come from a file or sync.
 
 ```bash
-moneybin transactions create --date 2026-05-17 --amount -42.50 \
-  --description "Coffee with Alex" --account-name "Cash"
+moneybin transactions create --account chk_001 --date 2026-05-17 \
+  -- -42.50 "Coffee with Alex"
 ```
 
 One transaction at a time. For bulk paste, build a small CSV and run it through `moneybin import files`. Once a transaction exists, notes, tags, and splits live on top — see the [categorization guide](categorization.md).

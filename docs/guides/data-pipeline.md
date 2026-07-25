@@ -333,7 +333,7 @@ Read from `core.*` and `reports.*`. The full column reference is in [`docs/refer
 
 ```bash
 moneybin transactions list --from 2026-04-01 --category Groceries
-moneybin reports cashflow --period month
+moneybin reports cashflow --from-month 2026-01 --by category
 moneybin accounts list
 ```
 

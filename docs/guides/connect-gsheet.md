@@ -69,7 +69,7 @@ moneybin gsheet connect \
 moneybin refresh
 
 # 5. Query the result like any other source
-moneybin reports cashflow --from 2026-01
+moneybin reports cashflow --from-month 2026-01
 ```
 
 After step 2, rows flow into `raw.tabular_transactions` (with `source_origin = <connection_id>`), through the staging layer, into `core.fct_transactions`, and through matching and categorization the same way OFX or CSV imports do.
