@@ -286,3 +286,59 @@ def test_an_empty_series_is_a_failure_naming_the_security() -> None:
 
     assert not result.observations
     assert [f.provider_security_key for f in result.failures] == ["AAPL"]
+
+
+def _meta_route(ticker: str = "AAPL") -> str:
+    return f"{TIINGO_BASE_URL}/tiingo/daily/{ticker}"
+
+
+@respx.mock
+def test_metadata_reads_the_name_and_exchange_code() -> None:
+    """The two fields that let a feed key be verified rather than assumed.
+
+    A ticker is not an identifier — BHP names different securities on NYSE and
+    ASX — so binding one needs a signal beyond the symbol itself.
+    """
+    respx.get(_meta_route()).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "ticker": "AAPL",
+                "name": "Apple Inc",
+                "exchangeCode": "NASDAQ",
+                "description": "Apple Inc. designs...",
+                "startDate": "1980-12-12",
+                "endDate": "2026-07-23",
+            },
+        )
+    )
+
+    meta = _adapter().fetch_metadata("AAPL")
+
+    assert meta is not None
+    assert (meta.name, meta.exchange_code) == ("Apple Inc", "NASDAQ")
+
+
+@respx.mock
+def test_metadata_returns_none_for_a_ticker_tiingo_does_not_know() -> None:
+    """An unknown symbol is not an error — it means no feed covers this security."""
+    respx.get(_meta_route("NOPE")).mock(
+        return_value=httpx.Response(404, json={"detail": "Not found"})
+    )
+
+    assert _adapter().fetch_metadata("NOPE") is None
+
+
+@respx.mock
+def test_metadata_sends_the_token_in_a_header() -> None:
+    """Same credential rule as the price path: never in the URL."""
+    route = respx.get(_meta_route()).mock(
+        return_value=httpx.Response(
+            200, json={"ticker": "AAPL", "name": "Apple Inc", "exchangeCode": "NASDAQ"}
+        )
+    )
+
+    _adapter().fetch_metadata("AAPL")
+
+    assert route.calls.last.request.headers["Authorization"] == f"Token {_TOKEN}"
+    assert _TOKEN not in str(route.calls.last.request.url)

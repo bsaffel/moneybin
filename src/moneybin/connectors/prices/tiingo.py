@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Protocol
@@ -40,6 +41,19 @@ from moneybin.secrets import TIINGO_API_TOKEN_KEY, SecretNotFoundError
 logger = logging.getLogger(__name__)
 
 TIINGO_BASE_URL = "https://api.tiingo.com"
+
+
+@dataclass(frozen=True, slots=True)
+class TickerMetadata:
+    """What Tiingo says a symbol is, used to verify a feed key rather than assume it.
+
+    Only the two fields a binding decision needs. Tiingo's meta response also
+    carries `description`, `startDate`, and `endDate`; none of them discriminates
+    between two listings sharing a symbol, so none is read.
+    """
+
+    name: str
+    exchange_code: str | None
 
 
 class SecretReader(Protocol):
@@ -118,6 +132,42 @@ class TiingoPriceAdapter:
                 continue
             observations.extend(priced)
         return PriceFetchResult(tuple(observations), tuple(failures))
+
+    def fetch_metadata(self, ticker: str) -> TickerMetadata | None:
+        """What Tiingo says this symbol is, or ``None`` if it does not know it.
+
+        A ticker is not an identifier: the same symbol names different securities
+        across exchanges, share classes collide, and symbols are recycled after a
+        delisting. This is the independent signal that lets a feed key bind on
+        evidence instead of on the symbol string alone.
+
+        ``None`` is not an error — it means no Tiingo series covers this security,
+        which is a valuation gap for the held-but-unpriced check to surface, not
+        a failed request.
+        """
+        try:
+            body = fetch_json(
+                self._client,
+                f"{TIINGO_BASE_URL}/tiingo/daily/{ticker}",
+                params={},
+                headers={"Authorization": f"Token {self._token()}"},
+                sleep=self._sleep,
+            )
+        except PriceFeedAuthError:
+            raise
+        except PriceFeedError:
+            return None
+        if not isinstance(body, dict):
+            return None
+        fields: dict[str, object] = body
+        name = fields.get("name")
+        exchange = fields.get("exchangeCode")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        return TickerMetadata(
+            name=name.strip(),
+            exchange_code=exchange.strip() if isinstance(exchange, str) else None,
+        )
 
     def _token(self) -> str:
         try:

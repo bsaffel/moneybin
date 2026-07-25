@@ -253,6 +253,34 @@ those two cases cannot share a path.
 | Ticker matches but the provider name diverges from the catalog name | Route to review. |
 | No match at all | Leave unbound. Nothing to propose, so no queue row — the held-but-unpriced doctor check is what surfaces it. |
 
+**The divergence checks read Tiingo's metadata endpoint, not just our catalog.**
+`GET /tiingo/daily/<ticker>` returns documented `name` and `exchangeCode` fields,
+so a binding rests on the provider's own statement of what the symbol names
+rather than on the symbol string alone. The exchange comparison is what actually
+resolves the BHP-on-two-exchanges case the paragraph above names; comparing names
+only would not. The cost is one extra request per security, paid once — rung 1
+adopts the binding on every later pull, so a steady-state refresh makes no
+metadata calls at all.
+
+**Name comparison drops corporate-form suffixes before comparing.** A catalog
+"Apple" against a provider "Apple Inc" is one issuer, and asking a user to ratify
+that difference is precisely the queue noise the near-empty-queue rule forbids.
+What survives the suffix strip is compared at `SecurityResolver`'s existing name
+cutoff, so "do these two strings name the same issuer?" has one answer across the
+codebase rather than two.
+
+**The exchange comparison is deliberately weak.** Either label absent does not
+contradict — an absent signal never votes — and a label that prefixes the other
+(`NASDAQ` vs `NASDAQ-GS`) agrees. Treating every spelling difference as a
+contradiction would queue a review for most of a real portfolio, which fails the
+same rule.
+
+**Derivation lives in `PriceService`, not in an adapter.** An adapter takes a key
+and never infers one, so the certainty judgement sits in one place for every
+provider instead of being re-implemented per feed. A pending decision suppresses
+re-derivation, so a second pull does not file a duplicate row for a question
+already awaiting a human.
+
 `app.security_link_decisions.ref_kind` is therefore widened alongside
 `app.security_links.ref_kind`. It carries a second *kind* of decision — a
 pull-side derivation MoneyBin proposes about its own catalog, rather than a
