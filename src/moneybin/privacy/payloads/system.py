@@ -414,8 +414,11 @@ class SectionUnavailable(BaseModel):
         Literal["overview", "doctor", "categorization", "exports"], DataClass.TXN_TYPE
     ]
     code: Annotated[str, DataClass.TXN_TYPE]
-    reason: Annotated[str, DataClass.TXN_TYPE]
-    hint: Annotated[str | None, DataClass.TXN_TYPE] = None
+    # Free text, not a curated label: the classifier branches above interpolate
+    # the exception, so this is classified like any other free-form string
+    # rather than as the low-tier enum `code` genuinely is.
+    reason: Annotated[str, DataClass.DESCRIPTION]
+    hint: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 SystemStatusSection = Annotated[

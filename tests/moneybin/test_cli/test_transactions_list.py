@@ -128,6 +128,38 @@ def test_list_json_reports_the_service_total_not_the_page_size() -> None:
 
 
 @pytest.mark.unit
+def test_list_json_has_more_is_false_on_the_last_page_of_a_walk() -> None:
+    """The final page must not tell an agent to keep paginating.
+
+    ``build_envelope`` defaults ``has_more`` to
+    ``next_cursor is not None or total_count > returned_count``. Once the real
+    cross-page ``total_count`` is threaded through, that second clause is true
+    on every page of a multi-page walk — including the last, where there is no
+    cursor left to follow. Its sibling test cannot see this: it exercises a
+    page that *does* carry a cursor, where the buggy default agrees with the
+    right answer by coincidence.
+    """
+    import json
+
+    page = [_make_txn(transaction_id="T3"), _make_txn(transaction_id="T4")]
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService,
+                "get",
+                return_value=_mock_result(page, next_cursor=None, total_count=4),
+            ):
+                result = runner.invoke(
+                    app, ["transactions", "list", "--limit", "2", "--output", "json"]
+                )
+    assert result.exit_code == 0
+    summary = json.loads(result.stdout)["summary"]
+    assert summary["total_count"] == 4
+    assert summary["returned_count"] == 2
+    assert summary["has_more"] is False
+
+
+@pytest.mark.unit
 def test_list_actions_name_cli_commands_not_mcp_tools() -> None:
     """Hints must be runnable by the agent that received them.
 

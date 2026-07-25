@@ -662,7 +662,14 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
 @pytest.mark.parametrize(
     ("kind", "expected_sensitivity", "expected_classes"),
     [
-        ("summary", "low", ["aggregate", "txn_type"]),
+        # `description`/medium even on a summary where every queue reported:
+        # `ReviewsSummaryView` statically declares `unavailable:
+        # list[QueueUnavailable]`, whose `reason`/`hint` carry exception-derived
+        # text, and this path classifies the declared container rather than the
+        # variants a given call actually returned (`system_status` does the
+        # latter, so it stays low until it degrades). Over-reporting is the safe
+        # direction; narrowing it needs an instance-walking classifier.
+        ("summary", "medium", ["aggregate", "description", "txn_type"]),
         (
             "auto_rules",
             "medium",

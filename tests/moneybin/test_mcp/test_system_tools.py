@@ -63,6 +63,46 @@ async def test_system_status_degrades_when_one_section_raises(
     assert response.summary.degraded is True
 
 
+async def test_a_degraded_section_lifts_the_reported_sensitivity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A response carrying exception-derived text must not advertise itself low.
+
+    ``SectionUnavailable.reason``/``hint`` hold whatever ``classify_user_error``
+    built, and several of its branches interpolate the exception —
+    ``OSError`` contributes ``filename``, ``ValueError``/``LookupError`` use
+    ``str(exc)``. Classified as a low-tier label, a degraded response
+    self-reported and audited as ``sensitivity: low`` regardless of what that
+    text actually held.
+    """
+
+    def exploding_doctor(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("doctor scan failed")
+
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system.system_doctor", exploding_doctor, raising=True
+    )
+
+    response = await system_status_coarse(sections=["overview", "doctor"])
+
+    assert response.summary.degraded is True
+    assert response.summary.sensitivity == "medium"
+
+
+async def test_a_healthy_status_still_reports_the_low_tier() -> None:
+    """The other direction: nothing degraded must not inflate the tier.
+
+    The classification is derived from the section variants actually present,
+    so raising the degraded marker's class must not leak into a clean call —
+    no privacy test fails on over-reporting, which is what makes this the easy
+    half to get silently wrong.
+    """
+    response = await system_status_coarse(sections=["overview"])
+
+    assert response.summary.degraded is False
+    assert response.summary.sensitivity == "low"
+
+
 async def test_system_status_degrades_when_one_section_returns_an_error_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

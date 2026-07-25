@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from moneybin.database import Database
@@ -9,20 +11,8 @@ from moneybin.seeds import INIT_CREATED_MODELS
 from moneybin.sqlmesh_registry import model_presence, registered_model_names
 
 
-@pytest.mark.unit
-@pytest.mark.fresh_db
-def test_init_created_models_matches_what_db_init_actually_builds(
-    db: Database,
-) -> None:
-    """The declared init set must equal the observed one, or `never_built` lies.
-
-    ``never_built`` subtracts :data:`INIT_CREATED_MODELS` from the built set, so
-    a stale declaration breaks it silently in both directions: a name that
-    ``db init`` stopped creating makes a fresh profile look built, and a new
-    init-created model makes a built warehouse look never-built. Neither shows
-    up as a failure anywhere else — this is the only thing watching.
-    """
-    built = {
+def _built_relations(db: Database) -> set[str]:
+    return {
         row[0]
         for row in db.execute(
             "SELECT LOWER(schema_name || '.' || table_name) FROM duckdb_tables() "
@@ -31,18 +21,55 @@ def test_init_created_models_matches_what_db_init_actually_builds(
         ).fetchall()
     }
 
-    assert registered_model_names() & built == INIT_CREATED_MODELS
+
+@pytest.mark.integration
+def test_init_created_models_matches_what_a_real_db_init_builds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The declared init set must equal the observed one, or `never_built` lies.
+
+    Runs the real :func:`init_db`, not the ``db`` fixture. Only ``init_db``
+    calls ``materialize_seeds``, whose SQLMesh plan materializes every model in
+    ``_SEED_MODELS`` — opening a ``Database`` runs ``refresh_views`` alone and
+    builds a strictly smaller set. A declaration checked against the fixture
+    therefore passes while omitting a seed the real path creates, which is
+    exactly how ``seeds.exchange_mic_map`` went missing from the baseline and
+    flipped ``never_built`` to False on a healthy freshly-initialized profile.
+
+    ``never_built`` subtracts this set from the built set, so a stale
+    declaration breaks it silently in both directions: a name ``db init``
+    stopped creating makes a fresh profile look built, and a new init-created
+    model makes a built warehouse look never-built. Nothing else is watching.
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    from moneybin.database import Database as Db
+    from moneybin.database import init_db
+    from moneybin.secrets import SecretStore
+
+    db_path = tmp_path / "profiles" / "probe" / "moneybin.duckdb"
+    db_path.parent.mkdir(parents=True)
+    init_db(db_path, profile="probe")
+
+    with Db(
+        db_path,
+        read_only=True,
+        secret_store=SecretStore(profile="probe"),
+        no_auto_upgrade=True,
+    ) as db:
+        assert registered_model_names() & _built_relations(db) == INIT_CREATED_MODELS
+        assert model_presence(db).never_built is True
 
 
 @pytest.mark.unit
 @pytest.mark.fresh_db
-def test_a_freshly_initialized_profile_reads_as_never_built(db: Database) -> None:
-    """`db init` alone must not count as a build.
+def test_opening_a_database_reads_as_never_built(db: Database) -> None:
+    """Opening a database must not count as a build either.
 
-    It creates five registered relations of its own (the ``core`` dim views and
-    the seed tables), so "anything registered exists" is true before the first
-    refresh ever runs.
+    ``refresh_views`` runs on every open and creates registered relations of
+    its own, so "anything registered exists" is true before a refresh ever
+    runs. This is the subset of the real init path, checked cheaply.
     """
+    assert registered_model_names() & _built_relations(db) <= INIT_CREATED_MODELS
     assert model_presence(db).never_built is True
 
 

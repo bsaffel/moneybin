@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from decimal import Decimal
 
 import typer
@@ -127,6 +128,15 @@ def transactions_list(
         returned_count=len(result.transactions),
         next_cursor=result.next_cursor,
         actions=_list_actions(result.next_cursor),
+    )
+    # Under keyset pagination the cursor is the only truth about "more".
+    # `build_envelope` also infers has_more from `total_count > returned_count`,
+    # which is true on every page of a multi-page walk — including the last,
+    # where there is nothing left to fetch. Every other keyset call site applies
+    # this same override.
+    envelope = replace(
+        envelope,
+        summary=replace(envelope.summary, has_more=result.next_cursor is not None),
     )
 
     def _render_text(_: object) -> None:
