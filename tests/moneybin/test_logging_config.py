@@ -238,10 +238,14 @@ class TestConsoleInfoAllowlist(_LoggingSetupTestBase):
             "moneybin.services.refresh",
             "moneybin.services.transform_service",
             "moneybin.services.categorization.orchestrator",
+            # Schema init and migrations run inline on the first command after
+            # an upgrade and can take a while. Every command opens the DB, and
+            # no CLI-layer line repeats this progress afterward.
+            "moneybin.database",
         ],
     )
     def test_pipeline_progress_reaches_console(self, module_path: str) -> None:
-        """Long-running pipeline stages report progress below the CLI layer.
+        """Long-running stages report progress from below the CLI layer.
 
         The logger name is read off the real module rather than hardcoded,
         so moving or renaming one of these fails here instead of silently
@@ -296,6 +300,20 @@ class TestMcpStreamKeepsInfoOnStderr(_LoggingSetupTestBase):
         handler = self._console_handler("mcp")
 
         assert handler.filter(self._record("moneybin.mcp.server"))
+
+    @pytest.mark.unit
+    def test_verbose_does_not_open_the_host_channel_to_sqlmesh(self) -> None:
+        """`mcp serve --verbose` must not flood the host with SQLMesh chatter.
+
+        The DEBUG escape hatch exists so a person can see more in their own
+        terminal. On the MCP stream there is no person and no file behind
+        stderr, so raising the level must not also lift the denylist — that
+        protection was unconditional before the allowlist existed. SQLMesh
+        detail is still reachable in `sqlmesh_YYYY-MM-DD.log`.
+        """
+        handler = self._console_handler("mcp", verbose=True)
+
+        assert not handler.filter(self._record("sqlmesh.core.context"))
 
     @pytest.mark.unit
     def test_mcp_stream_still_suppresses_sqlmesh_noise(self) -> None:

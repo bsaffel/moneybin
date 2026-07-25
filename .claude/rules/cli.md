@@ -138,13 +138,17 @@ the most detailed setting is never quieter than the default. It is an allowlist,
 not a denylist, so a newly-added dependency or service `logger.info` is quiet by
 default rather than after someone notices it.
 
-**The allowlist is CLI-only.** The `mcp` and `sqlmesh` streams keep the older
-`_CONSOLE_SUPPRESSED_PREFIXES` denylist. That asymmetry is deliberate: the CLI's
-stderr is a person's terminal with a log file behind it, so dropping an
-unrecognized record costs nothing. MCP's stderr is the host's log channel —
+**The allowlist is CLI-only, and so is the DEBUG escape hatch.** The `mcp` and
+`sqlmesh` streams keep the older `_CONSOLE_SUPPRESSED_PREFIXES` denylist, which
+applies at every level — `mcp serve --verbose` does not lift it. That asymmetry
+is deliberate: the CLI's stderr is a person's terminal with a log file behind
+it, so dropping an unrecognized record costs nothing and "show me more" has an
+obvious audience. MCP's stderr is the host's log channel —
 `docs/specs/observability.md` marks it "Always", and stdio transport turns the
-file handler off — so an over-broad filter there destroys records instead of
-relocating them. When you change one stream's policy, check the other.
+file handler off — so an over-broad filter there destroys records, and an
+over-broad *un*-filter aims SQLMesh's chatter at a channel nobody asked to
+widen. SQLMesh detail stays reachable in `sqlmesh_YYYY-MM-DD.log` either way.
+When you change one stream's policy, check the other.
 
 What this means when you write code:
 

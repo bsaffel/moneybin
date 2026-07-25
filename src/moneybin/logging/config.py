@@ -63,6 +63,10 @@ _CONSOLE_INFO_ALLOWLIST: tuple[str, ...] = (
     "moneybin.services.refresh",
     "moneybin.services.transform_service",
     "moneybin.services.categorization.orchestrator",
+    # Schema init and migrations, which every command runs inline on the first
+    # invocation after an upgrade. Same rationale as the stages above, and no
+    # CLI-layer line repeats this progress once it has scrolled past.
+    "moneybin.database",
 )
 
 
@@ -99,10 +103,15 @@ class _ConsoleNoiseFilter(logging.Filter):
         self._allowlist_mode = stream == "cli"
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if self._unfiltered or record.levelno >= logging.WARNING:
+        if record.levelno >= logging.WARNING:
             return True
         if self._allowlist_mode:
-            return _matches(record.name, _CONSOLE_INFO_ALLOWLIST)
+            # The escape hatch is scoped to this branch on purpose. It answers
+            # "show me more in my terminal", which presumes a person reading
+            # one. Letting it also lift the denylist below would aim SQLMesh's
+            # chatter at the MCP host's stderr, where nobody asked for it and
+            # no file catches the overflow; `sqlmesh_*.log` still has it.
+            return self._unfiltered or _matches(record.name, _CONSOLE_INFO_ALLOWLIST)
         return not _matches(record.name, _CONSOLE_SUPPRESSED_PREFIXES)
 
 
