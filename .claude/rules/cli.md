@@ -130,13 +130,21 @@ Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `S
 
 ### The console INFO allowlist
 
-WARNING and above always reach the console. **Sub-WARNING records reach it only
-from the logger prefixes in `_CONSOLE_INFO_ALLOWLIST`** (`logging/config.py`);
-everything else goes to the log file. Asking for DEBUG — `--verbose` or a
-profile's `logging.level` — turns the filter off entirely, so the most detailed
-setting is never quieter than the default. It is an allowlist, not a denylist,
-so a newly-added dependency or service `logger.info` is quiet by default rather
-than after someone notices it.
+WARNING and above always reach the console. On the **`cli` stream**, sub-WARNING
+records reach it only from the logger prefixes in `_CONSOLE_INFO_ALLOWLIST`
+(`logging/config.py`); everything else goes to the log file. Asking for DEBUG —
+`--verbose` or a profile's `logging.level` — turns the filter off entirely, so
+the most detailed setting is never quieter than the default. It is an allowlist,
+not a denylist, so a newly-added dependency or service `logger.info` is quiet by
+default rather than after someone notices it.
+
+**The allowlist is CLI-only.** The `mcp` and `sqlmesh` streams keep the older
+`_CONSOLE_SUPPRESSED_PREFIXES` denylist. That asymmetry is deliberate: the CLI's
+stderr is a person's terminal with a log file behind it, so dropping an
+unrecognized record costs nothing. MCP's stderr is the host's log channel —
+`docs/specs/observability.md` marks it "Always", and stdio transport turns the
+file handler off — so an over-broad filter there destroys records instead of
+relocating them. When you change one stream's policy, check the other.
 
 What this means when you write code:
 

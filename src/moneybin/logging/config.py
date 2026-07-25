@@ -29,14 +29,24 @@ class _SuppressFilter(logging.Filter):
         return "Shutting down the event dispatcher" not in record.getMessage()
 
 
+# Prefixes too noisy for stderr on the NON-CLI streams. MCP's stderr is the
+# host's log channel, not a terminal — `docs/specs/observability.md` marks it
+# "Always" and stdio transport turns the file handler off, so anything filtered
+# here is destroyed rather than relocated. Only SQLMesh's operational chatter
+# earns that, and only because it has nowhere useful to go on this path.
+_CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = ("sqlmesh",)
+
 # Logger-name prefixes whose INFO is user-facing progress and belongs on the
-# console. Everything else is diagnostics: it reaches the log file (and the
+# CLI console. Everything else is diagnostics: it reaches the log file (and the
 # console under --verbose) but never competes with command output.
 #
-# This is an allowlist on purpose. The denylist it replaced had to name each
-# offender — so every new dependency, and every new logger.info in a service,
-# leaked to the terminal until someone noticed and suppressed it. An allowlist
-# is silent by default and loud only where we said so.
+# This is an allowlist on purpose. The denylist above is what the CLI used to
+# use, and it had to name each offender — so every new dependency, and every
+# new logger.info in a service, leaked to the terminal until someone noticed
+# and suppressed it. An allowlist is silent by default and loud only where we
+# said so. That trade only works where a human is reading: it applies to the
+# `cli` stream alone, because a machine-read stream would rather have the
+# extra records than silently lose one.
 #
 # Adding a prefix here makes that module's INFO part of the CLI's visible
 # output. Prefer `typer.echo` for command results; reach for this only when the
@@ -56,28 +66,44 @@ _CONSOLE_INFO_ALLOWLIST: tuple[str, ...] = (
 )
 
 
+def _matches(name: str, prefixes: tuple[str, ...]) -> bool:
+    """True when ``name`` is one of ``prefixes`` or a descendant of one."""
+    return any(name == p or name.startswith(f"{p}.") for p in prefixes)
+
+
 class _ConsoleNoiseFilter(logging.Filter):
-    """Keep sub-WARNING console output to the declared user-facing loggers.
+    """Gate sub-WARNING records on the console handler.
 
     Attached to the console handler so file handlers still see everything.
     WARNING and above always pass — quieting noise must never quiet a problem.
+
+    The policy differs by stream because the reader does. The CLI's stderr is
+    a person's terminal, so it takes an allowlist: unrecognized INFO is noise
+    competing with command output, and the log file keeps a copy. MCP's stderr
+    is the host's log channel with no file behind it under stdio, so it keeps
+    the old denylist: dropping an unrecognized record there loses it outright.
     """
 
-    def __init__(self, *, unfiltered: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        stream: Literal["cli", "mcp", "sqlmesh"] = "cli",
+        unfiltered: bool = False,
+    ) -> None:
         super().__init__()
         # Asking for DEBUG — via --verbose or a profile's logging.level — is
         # the escape hatch users reach for when something is wrong. It must
         # defeat the allowlist rather than be narrowed by it, or the most
         # detailed setting would produce a quieter console than the default.
         self._unfiltered = unfiltered
+        self._allowlist_mode = stream == "cli"
 
     def filter(self, record: logging.LogRecord) -> bool:
         if self._unfiltered or record.levelno >= logging.WARNING:
             return True
-        return any(
-            record.name == p or record.name.startswith(f"{p}.")
-            for p in _CONSOLE_INFO_ALLOWLIST
-        )
+        if self._allowlist_mode:
+            return _matches(record.name, _CONSOLE_INFO_ALLOWLIST)
+        return not _matches(record.name, _CONSOLE_SUPPRESSED_PREFIXES)
 
 
 def session_log_path(
@@ -240,7 +266,7 @@ def setup_logging(
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
     console_handler.addFilter(
-        _ConsoleNoiseFilter(unfiltered=resolved_level <= logging.DEBUG)
+        _ConsoleNoiseFilter(stream=stream, unfiltered=resolved_level <= logging.DEBUG)
     )
     handlers.append(console_handler)
 

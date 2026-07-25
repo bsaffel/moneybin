@@ -5,7 +5,7 @@ import sys
 from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -294,6 +294,73 @@ class TestConsoleInfoAllowlist:
         record = self._record("some_vendor_lib.client", logging.INFO)
 
         assert console[0].filter(record)
+
+
+class TestMcpStreamKeepsInfoOnStderr:
+    """The MCP stream's stderr is a host-visible channel, not a terminal.
+
+    `docs/specs/observability.md` marks MCP stderr "Always" and shows
+    `moneybin.mcp - INFO` lines as what the AI host sees. Under stdio
+    transport the file handler is off by default, so filtering INFO here
+    doesn't relocate those records — it destroys them.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_root_logger(self) -> Generator[None, Any, None]:
+        root = logging.getLogger()
+        original_handlers = list(root.handlers)
+        original_level = root.level
+        yield
+        for h in root.handlers[:]:
+            if h not in original_handlers:
+                h.close()
+        root.handlers = original_handlers
+        root.level = original_level
+
+    @staticmethod
+    def _console_handler(stream: Literal["cli", "mcp", "sqlmesh"]) -> logging.Handler:
+        setup_logging(stream=stream)
+        console = [
+            h
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert console, "Expected a console StreamHandler"
+        return console[0]
+
+    @staticmethod
+    def _record(name: str) -> logging.LogRecord:
+        return logging.LogRecord(
+            name=name,
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="test",
+            args=(),
+            exc_info=None,
+        )
+
+    @pytest.mark.unit
+    def test_mcp_server_info_reaches_host_stderr(self) -> None:
+        """Server startup, tool calls, and shutdown must stay visible."""
+        handler = self._console_handler("mcp")
+
+        assert handler.filter(self._record("moneybin.mcp.server"))
+
+    @pytest.mark.unit
+    def test_mcp_stream_still_suppresses_sqlmesh_noise(self) -> None:
+        """Exempting MCP from the allowlist must not un-mute SQLMesh.
+
+        SQLMesh INFO was suppressed on every stream before the allowlist
+        existed. Its dedicated file handler — the other thing that keeps
+        it off stderr — is only installed when file logging is on, which
+        stdio transport turns off by default. So the filter is the only
+        guard left on exactly the path the host reads.
+        """
+        handler = self._console_handler("mcp")
+
+        assert not handler.filter(self._record("sqlmesh.core.context"))
 
 
 class TestPydanticLoggingConfig:
