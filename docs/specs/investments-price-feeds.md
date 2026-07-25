@@ -200,10 +200,13 @@ User marks. Written through a `SecurityPriceRepo` per Invariant 10.
 Primary key `(security_id, price_date, quote_currency)`. No provider write
 touches this table.
 
-`CHECK (close > 0)`, mirroring `raw.security_prices`. A mark is the one other row
-that can reach `core.fct_security_prices`, so without the floor the guarantee
+`CHECK (close > 0)`, mirroring `raw.security_prices`. Without it the guarantee
 "an unpriced holding is NULL, never zero" has a hole on exactly the path a user
-controls. A genuinely worthless position is a ledger event — a disposal or
+controls. Two of the three sources reaching `core.fct_security_prices` enforce
+positivity in the schema this way; the third cannot —
+`core.fct_investment_transactions.price` legitimately records `0` for a vesting
+grant or a stock dividend, so the trade-implied branch filters `price > 0` in the
+model instead. A genuinely worthless position is a ledger event — a disposal or
 write-off — not a zero price: that keeps "what is this worth" and "do I still
 own this" as separate questions, and it is what the tax treatment wants anyway.
 The alternative, admitting `0` as a distinct "worthless" value, would make
@@ -429,8 +432,6 @@ date, which price applies?
 candidates = union of provider observations, overrides, and trade-implied prices
              where price_date <= as_of_date
                and price_basis = 'raw'
-               and (source not in ('plaid', 'tiingo', 'coingecko')  -- non-provider
-                    or price_date >= first_available_price_on(security, source))
 
 winner     = first row ordered by
                price_date DESC,          -- freshness dominates
@@ -439,13 +440,23 @@ winner     = first row ordered by
                observation_key ASC       -- then the row's own identifier
 ```
 
-The floor applies to provider observations only, predicated on **source
-identity** rather than rank. Overrides and trade-implied prices are not rows in
-`raw.security_prices`, so their floor evaluates to NULL and `price_date >= NULL`
-would silently discard every one of them, taking manual valuation for feedless
-securities with it. Rank cannot carry this test: `override` is rank 1 and
-`trade_implied` is rank 5, so no threshold separates the two non-provider sources
-from the three provider ones.
+**The two halves live in different models.** `core.fct_security_prices` has
+grain `(security_id, price_date, quote_currency)` — one row per observation date
+— so it resolves competition *within* a date and its ORDER BY therefore leads
+with `source_rank`. The `price_date DESC` half is the as-of pick *across* dates,
+and it belongs to the consumer: `core.dim_holdings` today
+(`price_date <= CURRENT_DATE` ordered `price_date DESC`), `core.fct_holdings_daily`
+per spine date in C.3. Reading the pseudocode as one query is what makes the
+first-available floor below look necessary.
+
+**The same-pull withhold is scoped by source identity, not by rank.** Two
+partial fills of one security on one day share `source_type`, `source_origin`,
+and `extracted_at` while carrying different transaction ids and different
+prices — every condition the provider key-churn conflict tests for. Withholding
+there blanks a routine grain and reports the position unpriced. Rank cannot
+carry the distinction: `override` is rank 1 and `trade_implied` is rank 5, so
+the two derived sources bracket the three provider ones, and a rank *range*
+would break silently the first time a new adapter takes rank 6.
 
 The ordering is a **total** order, not a partial one. `price_date` and
 `source_rank` alone leave ties: two Plaid connections differ only by
@@ -533,18 +544,31 @@ fund, or a private placement will ever have. Without it those securities value a
 nothing forever, and the user is asked to re-enter by hand a number already
 recorded on the transaction.
 
-### First-available floor
+### First-available floor — not built, deliberately
 
-`first_available_price_on(security, source)` is the earliest date a source served
-data for a security, derived as `MIN(price_date)` per `(security_id, source)` over
-`raw.security_prices` — no separate storage. Forward-fill never reaches back past
-it.
+Earlier drafts specified `first_available_price_on(security, source)` as
+`MIN(price_date)` per `(security_id, source)`, with resolution admitting a
+provider row only when `price_date >= ` that value. **It is a no-op and C.2 does
+not implement it.** The reasoning is recorded here because the idea is
+intuitive enough to be re-proposed.
 
-Without the floor, a position held in 2018 is valued from a 2024 listing price.
-The carry rule looks backward for the most recent earlier close, and for a
-security that listed in 2024 the earliest row that exists is already later than
-the date being valued — so every pre-listing date resolves to the listing price
-rather than to nothing.
+The predicate is taken over the very set it filters, so every row satisfies it by
+the definition of `MIN`. The failure it was meant to prevent — "a position held in
+2018 is valued from a 2024 listing price" — requires resolution to reach *forward*
+in time, and bounded lookback already forbids that: `core.dim_holdings` takes
+`price_date <= CURRENT_DATE` ordered `price_date DESC`, so a 2024 row is not a
+candidate for an earlier date at all. A security that listed in 2024 has no row
+on or before any 2018 date, which resolves to `unpriced` — the correct answer —
+without a floor.
+
+A floor becomes meaningful only if `core.fct_holdings_daily` fills its spine
+*backward* from the first observation. It must not: C.3 carries the most recent
+earlier close forward, and a date before a position's first price is `unpriced`
+(or `unreconstructable` before the ledger window). Should that ever change, the
+floor has to be predicated on **source identity** rather than rank — overrides and
+trade-implied prices are not rows in `raw.security_prices`, so a provider-derived
+floor evaluates to NULL for them and `price_date >= NULL` would discard every
+manual valuation for feedless securities.
 
 ---
 
@@ -776,8 +800,9 @@ that integration remains Pillar D.
 ## Testing strategy
 
 - **Resolution comparator** — table-driven over the as-of date, source rank, and
-  override matrix. Covers an override losing to a newer provider row, a future
-  price never valuing a past date, and the first-available floor.
+  override matrix. Covers an override winning its own date over a fresher provider
+  row, an override not suppressing another date's close, and a future price never
+  valuing a past date.
 - **Split arithmetic** — a 2:1 split with historical quantity from the ledger
   replay, asserting pre-split dates value at the pre-split quantity and price.
   Assert against the replay specifically: `fct_investment_lots` stores post-split
@@ -802,9 +827,17 @@ that integration remains Pillar D.
 - **Resolution totality** — two Plaid connections reporting the same security,
   date, and currency pick the same winner across repeated rebuilds; likewise two
   trade-implied executions on one day.
-- **Non-provider floor exemption** — an override and a trade-implied price for a
-  security with no provider rows both survive resolution rather than being
-  filtered out by a NULL floor.
+- **Derived sources reach the model without a binding** — an override and a
+  trade-implied price for a security with no provider rows and no accepted
+  `app.security_links` row both resolve. Neither passes through
+  `prep.stg_security_prices`' INNER JOIN, and that is what makes a feedless
+  security priceable at all.
+- **Partial fills are not a key churn** — two same-day fills at different prices,
+  sharing one `extracted_at`, resolve to the lower-sorting transaction id rather
+  than withholding the grain.
+- **Zero never becomes a close** — a vesting grant or stock dividend recorded at
+  `price = 0` yields no price observation while the ledger event survives, and a
+  priced trade whose security never bound yields none either.
 - **Carry-forward** — a weekend and a holiday produce continuous daily rows with
   `carried_forward` status and correct `days_since_observed`.
 - **Unpriced** — a security with no source yields NULL market value, and a
@@ -864,9 +897,10 @@ sits between them.
 
 **C.2 — feeds, overrides, and staleness.** The two adapters, the `ref_kind`
 extension that lets their keys bind, the override table and repo, trade-implied
-prices, the first-available floor, staleness surfacing,
-`investment_price_disagreement` (the first phase in which one security can carry
-two sources), the CLI surface, and the existing investment/report integration.
+prices, staleness surfacing, `investment_price_disagreement` (the first phase in
+which one security can carry two sources), the CLI surface, and the existing
+investment/report integration. The first-available floor was dropped as a no-op
+— see "First-available floor — not built, deliberately".
 
 **C.3 — the daily series.** `core.fct_holdings_daily` and
 `investment_price_discontinuity`. Unblocks Pillar D. Pre-window dates report

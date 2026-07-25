@@ -11,12 +11,13 @@ from moneybin.database import Database, sqlmesh_context
 
 pytestmark = pytest.mark.integration
 
-# source_rank is the first ORDER BY key, but it cannot be mutation-tested across two
-# source_type values yet: only 'plaid' resolves to a canonical security_id through
-# prep.stg_security_prices' 'plaid_security_id' link, so a second source (tiingo,
-# coingecko) has no binding to reach this core model. That cross-source ordering test
-# lands with C.2's adapters and their ref_kind bindings. Until then every fixture here
-# is source='plaid' and source_rank is exercised only as a constant. Tracked for C.2.
+# source_rank is now mutation-tested across sources, but only via the two DERIVED ones:
+# 'override' (rank 1) and 'trade_implied' (rank 5) reach this model without a
+# provider binding, because neither is a row in raw.security_prices. The three
+# PROVIDER ranks still cannot be tested against each other — only 'plaid' resolves to
+# a canonical security_id through prep.stg_security_prices' 'plaid_security_id' link,
+# so tiingo and coingecko have no binding to reach this model. That provider-vs-provider
+# ordering test lands with C.2's adapters and their ref_kind bindings.
 
 
 def _insert_price(
@@ -53,6 +54,83 @@ def _accept_link(db: Database, *, key: str, canonical_id: str) -> None:
                 CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
         [f"link_{key}", canonical_id, key],
+    )
+
+
+def _seed_security(db: Database, *, security_id: str) -> None:
+    """The canonical catalog row a derived price is authored against."""
+    db.execute(
+        """
+        INSERT INTO app.securities (security_id, name, security_type, ticker)
+        VALUES (?, 'Vanguard Total Stock Market ETF', 'etf', 'VTI')
+        ON CONFLICT DO NOTHING
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [security_id],
+    )
+
+
+def _insert_override(
+    db: Database,
+    *,
+    security_id: str,
+    close: str,
+    price_date: str = "2026-07-15",
+    quote_currency: str = "USD",
+    updated_at: str | None = None,
+) -> None:
+    """A user price mark, written straight to app.security_price_overrides.
+
+    Deliberately not routed through ``SecurityPriceRepo``: the mechanism under test
+    here is the model's resolution, not the repo's Invariant-10 audit pairing, which
+    has its own tests. This mirrors ``_insert_price`` writing raw directly.
+    """
+    db.execute(
+        """
+        INSERT INTO app.security_price_overrides
+            (security_id, price_date, quote_currency, close, updated_at)
+        VALUES (?, ?::DATE, ?, ?, COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [security_id, price_date, quote_currency, close, updated_at],
+    )
+
+
+def _insert_manual_trade(
+    db: Database,
+    *,
+    txn_id: str,
+    security_id: str | None,
+    price: str | None,
+    trade_date: str = "2026-07-15",
+    quantity: str | None = "10",
+    currency_code: str = "USD",
+    txn_type: str = "buy",
+    created_at: str | None = None,
+) -> None:
+    """A manual ledger event — the trade-implied price's real upstream mechanism.
+
+    ``created_at`` is settable so two fills can be made to tie on the freshness key
+    the way one sync's rows do, which is what forces the observation_key tiebreak.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, fees,
+            created_by, investment_transaction_id, currency_code, created_at
+        ) VALUES (?, 'imp_1', 'acc_1', ?, 'VTI', ?, ?::DATE, ?, ?, -1000.00, 0.00,
+                  'test', ?, ?, COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [
+            txn_id,
+            security_id,
+            txn_type,
+            trade_date,
+            quantity,
+            price,
+            txn_id,
+            currency_code,
+            created_at,
+        ],
     )
 
 
@@ -425,3 +503,270 @@ def test_quote_currency_case_variant_close_is_the_final_tiebreak(db: Database) -
         "SELECT quote_currency, close FROM core.fct_security_prices"
     ).fetchall()
     assert rows == [("USD", Decimal("205.0000000000"))]
+
+
+@pytest.mark.slow
+def test_an_override_outranks_a_provider_close_on_the_same_date(db: Database) -> None:
+    """A user mark beats every provider for its own (security, date, currency).
+
+    Adversarial orientation: the provider row is inserted FIRST and carries the
+    FRESHER extracted_at, so both realistic mutants land on it rather than on the
+    correct answer. Dropping 'override' from the rank CASE sends it to the ELSE 99
+    bucket and plaid's rank 2 wins; consulting freshness before rank also picks
+    plaid. Either publishes 214.55 instead of the user's 300.00.
+    """
+    _seed_security(db, security_id="canonvti0000001")
+    _insert_price(db, key="sec_vti", close="214.55", extracted_at="2026-07-20 10:00:00")
+    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
+    _insert_override(
+        db,
+        security_id="canonvti0000001",
+        close="300.00",
+        updated_at="2026-07-15 08:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        "SELECT source_type, close FROM core.fct_security_prices"
+    ).fetchall()
+    assert rows == [("override", Decimal("300.0000000000"))], (
+        "the mark must win its own date despite the provider row being fresher"
+    )
+
+
+@pytest.mark.slow
+def test_an_override_does_not_suppress_a_close_on_another_date(db: Database) -> None:
+    """A mark is scoped to one date — it must not blank the rest of the series.
+
+    This is the per-date half of "a later provider refresh never silently
+    overwrites it". At this model's observation grain both dates keep their own
+    row; which one *values a holding* is dim_holdings' as-of pick. A model that let
+    an override win its whole security rather than its own date emits one row here
+    instead of two.
+    """
+    _seed_security(db, security_id="canonvti0000001")
+    _insert_override(
+        db, security_id="canonvti0000001", close="300.00", price_date="2026-07-15"
+    )
+    _insert_price(db, key="sec_vti", close="214.55", price_date="2026-07-16")
+    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        "SELECT price_date, source_type, close FROM core.fct_security_prices "
+        "ORDER BY price_date"
+    ).fetchall()
+    assert rows == [
+        (date(2026, 7, 15), "override", Decimal("300.0000000000")),
+        (date(2026, 7, 16), "plaid", Decimal("214.5500000000")),
+    ]
+
+
+@pytest.mark.slow
+def test_an_override_resolves_for_a_security_no_feed_covers(db: Database) -> None:
+    """The feedless case the override path exists to serve.
+
+    A restricted grant or private fund has no raw.security_prices row and no accepted
+    app.security_links binding, so it never passes prep.stg_security_prices' INNER
+    JOIN. The override branch must reach this model without one. A union that gated
+    marks behind the provider join — or that applied a provider-derived floor to them
+    — emits nothing here, taking manual valuation for feedless securities with it.
+    """
+    _seed_security(db, security_id="privateco00001")
+    _insert_override(db, security_id="privateco00001", close="42.50")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    staged = db.execute("SELECT COUNT(*) FROM prep.stg_security_prices").fetchone()
+    assert staged is not None and staged[0] == 0, (
+        "no provider observation exists — this must exercise the override branch alone"
+    )
+
+    rows = db.execute(
+        "SELECT security_id, source_type, price_basis, close "
+        "FROM core.fct_security_prices"
+    ).fetchall()
+    assert rows == [("privateco00001", "override", "raw", Decimal("42.5000000000"))]
+
+
+@pytest.mark.slow
+def test_a_trade_price_becomes_an_observation_on_its_trade_date(db: Database) -> None:
+    """An executed trade is a raw observation by construction.
+
+    Without this branch a restricted grant, pre-IPO holding, or private placement
+    values at nothing forever, and the user is asked to re-enter by hand a number
+    already recorded on the transaction.
+    """
+    _seed_security(db, security_id="privateco00001")
+    _insert_manual_trade(
+        db, txn_id="buy_1", security_id="privateco00001", price="137.25"
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        "SELECT security_id, price_date, source_type, price_basis, close "
+        "FROM core.fct_security_prices"
+    ).fetchall()
+    assert rows == [
+        (
+            "privateco00001",
+            date(2026, 7, 15),
+            "trade_implied",
+            "raw",
+            Decimal("137.2500000000"),
+        )
+    ]
+
+
+@pytest.mark.slow
+def test_a_provider_close_outranks_a_trade_implied_price(db: Database) -> None:
+    """An execution reflects one order's size and spread; the day's close beats it.
+
+    Adversarial orientation: the trade is BOTH fresher and cheaper than the provider
+    close, so a freshness-before-rank mutant and an ORDER BY falling through to
+    `close` ascending both publish 137.25 instead of the correct 214.55.
+    """
+    _seed_security(db, security_id="canonvti0000001")
+    _insert_price(db, key="sec_vti", close="214.55", extracted_at="2026-07-15 09:00:00")
+    _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
+    _insert_manual_trade(
+        db,
+        txn_id="buy_1",
+        security_id="canonvti0000001",
+        price="137.25",
+        created_at="2026-07-20 09:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        "SELECT source_type, close FROM core.fct_security_prices"
+    ).fetchall()
+    assert rows == [("plaid", Decimal("214.5500000000"))]
+
+
+@pytest.mark.slow
+def test_two_same_day_fills_at_different_prices_still_resolve(db: Database) -> None:
+    """The same-pull withhold is a PROVIDER guard — partial fills must not trip it.
+
+    Two fills of one security on one day share source_type, source_origin, and — set
+    explicitly here, as one sync's rows do in production — extracted_at, while
+    carrying different transaction ids and different prices. That is every condition
+    same_pull_key_conflict tests for, so a withhold scoped by rank range or left
+    unscoped blanks this grain entirely and the position reads unpriced. Partial
+    fills are routine, so the failure would be common and silent.
+
+    The correct winner is the LOWER-sorting transaction id, and it is deliberately
+    the MORE expensive fill: a model that dropped observation_key from the ORDER BY
+    falls through to `close` ascending and publishes fill_b's 240.00 instead.
+    """
+    _seed_security(db, security_id="canonvti0000001")
+    _insert_manual_trade(
+        db,
+        txn_id="fill_a",
+        security_id="canonvti0000001",
+        price="250.00",
+        created_at="2026-07-15 09:00:00",
+    )
+    _insert_manual_trade(
+        db,
+        txn_id="fill_b",
+        security_id="canonvti0000001",
+        price="240.00",
+        created_at="2026-07-15 09:00:00",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    ledger = db.execute(
+        "SELECT COUNT(*) FROM core.fct_investment_transactions"
+    ).fetchone()
+    assert ledger is not None and ledger[0] == 2, (
+        "both fills must reach the ledger for this to exercise the core-layer "
+        "withhold scoping rather than an upstream filter"
+    )
+
+    rows = db.execute(
+        "SELECT source_type, close FROM core.fct_security_prices"
+    ).fetchall()
+    assert rows == [("trade_implied", Decimal("250.0000000000"))], (
+        "two fills are not a provider key churn — the grain must resolve, not withhold"
+    )
+
+
+@pytest.mark.slow
+def test_a_zero_priced_ledger_event_never_becomes_a_close(db: Database) -> None:
+    """Zero is the value 'an unpriced holding is NULL, never zero' exists to refuse.
+
+    raw.security_prices and app.security_price_overrides both CHECK (close > 0), but
+    core.fct_investment_transactions.price carries no such constraint — a vesting
+    grant or a stock dividend legitimately records price 0. Unioned unfiltered, that
+    zero becomes the resolved close and values the whole position at nothing while
+    reporting valuation_status 'valued'. The ledger event itself is legitimate and
+    must survive; only the price observation is refused.
+    """
+    _seed_security(db, security_id="privateco00001")
+    _insert_manual_trade(
+        db,
+        txn_id="vest_1",
+        security_id="privateco00001",
+        price="0",
+        txn_type="transfer_in",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    ledger = db.execute(
+        "SELECT COUNT(*) FROM core.fct_investment_transactions"
+    ).fetchone()
+    assert ledger is not None and ledger[0] == 1, "the ledger event must survive"
+
+    resolved = db.execute("SELECT COUNT(*) FROM core.fct_security_prices").fetchone()
+    assert resolved is not None and resolved[0] == 0
+
+
+@pytest.mark.slow
+def test_an_unbound_security_contributes_no_price(db: Database) -> None:
+    """A priced trade whose security never bound must not emit a NULL-keyed row.
+
+    core.fct_investment_transactions.security_id is NULL in two situations, and only
+    one of them is caught by the positivity filter. A cash-only event (deposit,
+    withdrawal, fee) carries a NULL price, which already fails `price > 0` — so a
+    cash-only fixture trips BOTH guards and would prove nothing about either.
+
+    The case that isolates the NULL guard is the other one the ledger documents: a
+    synced security with no accepted binding. That row carries a real, positive
+    price and a NULL security_id, so the positivity filter passes it through. Without
+    the NULL guard it lands in a table whose grain leads with security_id, and every
+    downstream join against that grain either drops it or fans out.
+
+    The fixture reaches the state through the manual branch because this model cannot
+    tell which staging branch a ledger row came from; the production shape is a Plaid
+    buy whose SecurityResolver binding was never accepted.
+    """
+    _insert_manual_trade(db, txn_id="unbound_1", security_id=None, price="137.25")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    ledger = db.execute(
+        "SELECT COUNT(*) FROM core.fct_investment_transactions "
+        "WHERE security_id IS NULL AND price > 0"
+    ).fetchone()
+    assert ledger is not None and ledger[0] == 1, (
+        "the priced-but-unbound row must reach the ledger for this to isolate the "
+        "NULL guard rather than the positivity filter"
+    )
+
+    resolved = db.execute("SELECT COUNT(*) FROM core.fct_security_prices").fetchone()
+    assert resolved is not None and resolved[0] == 0

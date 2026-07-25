@@ -68,13 +68,26 @@ def _seed_security(db: Database, *, security_id: str = _DEFAULT_SECURITY_ID) -> 
     )
 
 
+_POSITION_TRADE_DATE = date(2026, 1, 5)
+
+
 def _seed_position(
     db: Database,
     *,
     security_id: str = _DEFAULT_SECURITY_ID,
     currency_code: str = "USD",
+    price: str | None = "100.00",
 ) -> None:
-    """A MANUAL position: 10 units at 100.00, cost basis 1000.00, in account acc_1."""
+    """A MANUAL position: 10 units at 100.00, cost basis 1000.00, in account acc_1.
+
+    ``price=None`` records the total without a per-unit price — a real shape for a
+    broker CSV or a transfer-in, and the only way to seed a position that carries NO
+    price at all. Since C.2, a per-unit price on a ledger event becomes a
+    ``trade_implied`` observation in ``core.fct_security_prices`` on its trade date,
+    so the default fixture is priced from ``_POSITION_TRADE_DATE`` onward whether or
+    not a provider close is seeded. Tests isolating a *provider* pricing rule pass
+    ``price=None`` so the trade-implied branch does not supply a competing close.
+    """
     _seed_security(db, security_id=security_id)
     db.execute(
         """
@@ -83,9 +96,9 @@ def _seed_position(
             security_ref, type, trade_date, quantity, price, amount, fees, created_by,
             investment_transaction_id, currency_code
         ) VALUES ('buy_1', 'imp_1', 'acc_1', ?, 'VTI', 'buy',
-                  DATE '2026-01-05', 10, 100.00, -1000.00, 0.00, 'test', 'buy_1', ?)
+                  ?::DATE, 10, ?, -1000.00, 0.00, 'test', 'buy_1', ?)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [security_id, currency_code],
+        [security_id, _POSITION_TRADE_DATE, price, currency_code],
     )
 
 
@@ -375,22 +388,43 @@ def test_most_recent_of_two_past_prices_wins(db: Database) -> None:
 
 @pytest.mark.slow
 def test_future_price_never_values_an_earlier_date(db: Database) -> None:
+    """A close dated ahead of today is not a candidate — the trade price is.
+
+    Before C.2 this position had no usable price at all and the assertion was simply
+    'unpriced'. The trade-implied branch now supplies a legitimate past observation on
+    the trade date, which makes the test strictly stronger: the future close must lose
+    to that older close rather than merely fail to resolve. A model that admitted
+    future dates would publish 5000.00 here instead of 1000.00.
+    """
+    anchor = _db_today(db)
     _seed_position(db)
     # +5 days, so the row stays in the future even if the plan crosses midnight.
-    _seed_price(db, price_date=_db_today(db) + timedelta(days=5), close="500.00")
+    _seed_price(db, price_date=anchor + timedelta(days=5), close="500.00")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    market_value, _gain, _pd, _source, _days, status = _holding(db)
-    assert market_value is None
-    assert status == "unpriced"
+    market_value, gain, price_date, source, days, status = _holding(db)
+    assert market_value == Decimal("1000.00"), (
+        "10 units at the 100.00 trade price — not 5000.00 from the future close"
+    )
+    assert gain == Decimal("0.00")
+    assert price_date == _POSITION_TRADE_DATE
+    assert source == "trade_implied"
+    assert days == (anchor - _POSITION_TRADE_DATE).days
+    assert status == "carried_forward"
 
 
 @pytest.mark.slow
 def test_unpriced_holding_is_null_never_zero(db: Database) -> None:
-    """Zero is indistinguishable from a worthless position and understates every total."""
-    _seed_position(db)
+    """Zero is indistinguishable from a worthless position and understates every total.
+
+    ``price=None`` is what makes this position genuinely unpriced since C.2: a ledger
+    event carrying a per-unit price becomes a trade_implied observation, so the priced
+    default fixture no longer reaches the unpriced path at all. The total (-1000.00)
+    still funds cost basis, which is what keeps this a position rather than a no-op.
+    """
+    _seed_position(db, price=None)
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
@@ -406,9 +440,15 @@ def test_unpriced_holding_is_null_never_zero(db: Database) -> None:
 
 @pytest.mark.slow
 def test_price_in_another_currency_does_not_value_the_position(db: Database) -> None:
-    """Valuing a USD position at a GBP close would be silently wrong; M1K.2 converts."""
+    """Valuing a USD position at a GBP close would be silently wrong; M1K.2 converts.
+
+    ``price=None`` keeps the trade-implied branch out of this fixture so the currency
+    predicate is the only rule under test. With a trade price the position would carry
+    a USD observation newer than the 400-day-old seeded close, and the assertion below
+    would pass for a reason having nothing to do with currency.
+    """
     anchor = _db_today(db)
-    _seed_position(db)
+    _seed_position(db, price=None)
     db.execute(
         """
         INSERT INTO raw.security_prices
