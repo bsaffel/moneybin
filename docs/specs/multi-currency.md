@@ -424,11 +424,11 @@ realized FX gain/loss on the conversion pairs.
 
    The original text here assumed the MCP-parameter rename needed the
    ship-alongside-the-old-name-for-one-release protocol from
-   `design-principles-depth.md`. That
-   protocol is explicitly **post-launch only**; per that doc's own launch trigger
-   (**M3H** hosted launch, or the first tagged release adopted by a non-author user —
-   `design-principles.md` itself currently misstates this as "M3E," a separate stale
-   milestone-code reference worth fixing there independently of this spec), MoneyBin is
+   `design-principles-depth.md`. That protocol is explicitly **post-launch
+   only**; per the launch trigger in `design-principles.md` (**M3H** hosted
+   launch, or the first tagged release adopted by a non-author user — that rule
+   currently misstates this as "M3E," a separate stale milestone-code reference
+   worth fixing there independently of this spec), MoneyBin is
    still pre-launch — no tag has been cut and no non-author user has adopted the MCP
    contract yet. So the rename is a direct, one-time change: no shim, no follow-up removal
    PR. Implementation is scoped to M1K.1, not this spec pass — see Requirement 3.
