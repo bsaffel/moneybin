@@ -24,7 +24,7 @@ default terminal width.
 Origin: a 2026-07-25 audit of the CLI's text output, conducted by running every
 representative command against a populated profile and reading what came back. It
 produced twelve reproducible defects, referenced throughout this spec as F1–F12
-and each named at the requirement that closes it. Four of them are worth stating
+and each named at the requirement that closes it. Five of them are worth stating
 up front, because they set the scope:
 
 - **F1** — `reports spending` renders eleven columns into an 80-column terminal.
@@ -33,9 +33,9 @@ up front, because they set the scope:
   read-projections returning rows, and each renders in a different idiom.
 - **F3** — four commands print MCP tool names, Python function names, `repr`
   fragments, or `key=value` debug output at the user.
-- **F11** — every invocation prints a profile banner whose parenthetical names two
-  possible sources rather than the one that resolved, costing a line per command
-  and telling the reader nothing actionable.
+- **F11** — every invocation prints a profile banner naming two possible sources
+  rather than the one that resolved, costing a line per command and telling the
+  reader nothing actionable.
 - **F12** — `moneybin refresh` narrates one pipeline stage of three, so a run that
   changed nothing and a run that recategorized 400 transactions are nearly
   indistinguishable from its output.
@@ -61,7 +61,9 @@ Governing rules, none of which this spec supersedes:
 - [`design-system/readme.md`](../../design-system/readme.md) → Content
   fundamentals + Visual foundations — the CLI is named there as a surface sharing
   the product's language. Money is always mono with redundant sign; balances
-  unsigned; numbers first.
+  unsigned; numbers first. Requirement 12 reads "balances unsigned" as its intent
+  — no decorative `+` on a positive position — and keeps the `−` on a negative
+  one, which that rule was never meant to suppress.
 - [`moneybin-cli.md`](moneybin-cli.md) — command taxonomy. **Unchanged by this
   spec.** No command is added, removed, renamed, or re-parented.
 
@@ -77,7 +79,7 @@ Requirement 35 exists to prevent exactly that.
 
 Numbered, each independently testable.
 
-**Renderers**
+**Renderers (F2)**
 
 1. A module `moneybin.cli.render` exposes exactly three text renderers —
    `render_rows`, `render_summary`, `render_note` — and no command in
@@ -111,15 +113,18 @@ Numbered, each independently testable.
    `src/moneybin/reports/_framework/registry.py:34`) share the same `@report` /
    `ReportSpec` contract and the same `register_report_cli` path, so the field is
    **optional** on `ReportSpec`: an extension that declares nothing keeps working
-   unchanged. Its fallback is not "all columns" — that would let a third-party
-   report bypass requirement 9's guarantee — but the leading columns of the
-   declared projection that fit **requirement 9's fixed 80-column contract
-   bound**, with the remainder reachable via `--wide`. The bound is the constant
-   80, *not* the runtime terminal width: a width-sensitive fallback would select
-   different columns on different terminals, which the Key Decisions section
-   rules out as magic. The same extension therefore renders the same columns
-   everywhere. Declaring `DEFAULT_COLUMNS` is an ordering refinement rather than
-   a migration burden.
+   unchanged. Its fallback is the **first six columns** of the declared
+   projection, with the remainder reachable via `--wide`. Six is a fixed count,
+   not a computed fit: `OutputColumn` carries only `name`, `description`, and
+   `data_class` (`src/moneybin/reports/_framework/contract.py:62-67`) — no
+   display width — so "the columns that fit 80" is not computable without
+   measuring runtime values, which would make an extension's column set vary with
+   its data. A fixed count is deterministic and needs no new metadata. The
+   consequence is stated rather than hidden: **requirement 9's 80-column
+   guarantee is contract-tested for in-tree reports and best-effort for
+   extensions** until one declares `DEFAULT_COLUMNS`. Requirement 10's framing
+   line discloses the omission either way, so a wide extension report is legible
+   as truncated rather than silently clipped.
    `docs/specs/extension-contracts.md` gains the optional field and its fallback
    in the same change.
 7. Every command with a `DEFAULT_COLUMNS` narrower than its full projection
@@ -155,16 +160,41 @@ Numbered, each independently testable.
       (more / less) rather than income / expense. Declares the polarity of the
       thing it measures, because that determines whether an increase is good or
       bad. `spending_trend.mom_delta` is current-minus-previous spend
-      (`src/moneybin/reports/definitions/spending_trend.py:52-56`): a positive
+      (`src/moneybin/reports/definitions/spending_trend.py:54-58`): a positive
       value means spending *rose*. It renders signed — the direction is the
       column's entire purpose — and colors against the declared polarity, so a
       rise in spending is `--neg-expense`, not `--pos-income`.
-    - `balance` — a position, not a movement. Renders unsigned.
+    - `balance` — a position, not a movement. Renders **unsigned when
+      non-negative, and always retains `−` when negative**. The design system's
+      "balances unsigned" rule exists so a checking balance is not decorated with
+      a `+`; it does not license dropping a minus. `reports.net_worth` is
+      `SUM(d.balance)` over accounts whose liabilities are kept negative
+      (`src/moneybin/sqlmesh/models/reports/net_worth.sql:12`), so a net worth of
+      −50,000.00 is reachable and would otherwise render identically to
+      +50,000.00 — the single worst misread this spec could ship.
 
     `delta` exists because neither of the other kinds fits a signed delta:
     `flow` would color a spending increase green, and `magnitude` renders
     unsigned, erasing the increase-versus-decrease distinction the column exists
     to convey.
+
+    The kind is declared **per column**, as `money_kind` on `OutputColumn`. It is
+    deliberately *not* named `kind`, because `ReportSemantics.kind` already exists
+    with the values `position | flow | ratio | count`
+    (`src/moneybin/reports/_framework/contract.py:77`). That one is **report**-level
+    and cannot serve here: `spending_trend` carries a `magnitude` and a `delta` in
+    the same result, so one report-level value cannot describe both columns. The
+    two overlap in vocabulary (`flow`, and `position` ≈ `balance`) without being
+    the same thing, so the distinct field name is load-bearing — a shared `kind`
+    would read as one concept and rot into two.
+
+    For **extension reports**, `money_kind` is optional, defaulting to `flow`.
+    Requiring it would break every existing `@report` extension, since
+    `OutputColumn` has no such field today. `flow` is the safe default because it
+    renders *signed*: an unnecessary `+` on a magnitude column is cosmetic, while
+    a dropped `−` is a misread balance. Defaulting to `magnitude` would invert
+    that risk. `docs/specs/extension-contracts.md` documents the field and this
+    default alongside `DEFAULT_COLUMNS`.
 13. Amounts are right-aligned in `render_rows` columns.
 14. Color is driven by the money kind plus the value, never by the value alone.
     A `flow` colors `--pos-income` when positive and `--neg-expense` when
@@ -172,7 +202,9 @@ Numbered, each independently testable.
     colors against its declared polarity, so a rise in an expense magnitude reads
     `--neg-expense`; a `balance` is uncolored. The sign glyph — where the kind has
     one — is present regardless of color, so the encoding survives a pipe, a
-    non-TTY, and `NO_COLOR`.
+    non-TTY, and `NO_COLOR`. A negative `balance` is the load-bearing case: it
+    carries `−` with no color, so the sign is the only channel and must never be
+    dropped.
     **Rationale:** `spending_trend.py` declares `total_spend` as a positive
     absolute outflow and `mom_delta` as current-minus-previous spend. Coloring on
     raw sign would render spending green as income and invert the meaning of a
@@ -197,7 +229,7 @@ Numbered, each independently testable.
     error path render `action.tool(key=value, …)` deliberately
     (`src/moneybin/cli/commands/system/doctor.py:140`), because
     `RecoveryAction.tool` *is* an MCP tool name by contract
-    (`src/moneybin/errors.py:43`) and the rendered call is meant to be pasted
+    (`src/moneybin/errors.py:59`) and the rendered call is meant to be pasted
     directly by an agent. This is a designed AX affordance, not a leak, and
     requirement 22 preserves it. The audit skips recovery-action lines.
 17. No user-facing message names an internal dependency. `SQLMesh` is not a user
@@ -214,8 +246,10 @@ Numbered, each independently testable.
     steps already compute. This is the **one** requirement in this spec that
     reaches below the CLI layer, and it is deliberate: the outcome per stage is
     the payload, so no render-layer-only change can satisfy it.
-19. The profile banner states the resolved source or omits the parenthetical. The
-    string `(from config.yaml or first-run wizard)` does not survive.
+19. The profile banner names the source that actually resolved, or says nothing.
+    The ambiguous string `config.yaml or first-run wizard`
+    (`src/moneybin/cli/utils.py:254`) does not survive: it lists two candidates
+    and confirms neither, costing a line per invocation to say nothing.
 
 **Quiet on success (F6)**
 
@@ -315,7 +349,7 @@ Numbered, each independently testable.
     `next_cursor` only, computing `total_count` to derive `has_more`
     (`src/moneybin/services/transaction_service.py:793`) and then dropping it
     rather than carrying it onto the result
-    (`src/moneybin/services/transaction_service.py:136-148`).
+    (`src/moneybin/services/transaction_service.py:136-140`).
     Surfacing a total would be a service and payload change, which requirement 8
     excludes. `has_more` is sufficient to close F10 — the defect was a base64
     cursor shown to a human, not a missing count.
@@ -364,9 +398,9 @@ removed field and costs a `stats` surface that cannot label nine of its metrics.
 | `src/moneybin/reports/definitions/*.py` | Declare each report's `DEFAULT_COLUMNS`, `spending_trend.py` first (F1) |
 | `src/moneybin/cli/commands/reports/networth.py` | The two hand-written NetworthService-backed commands; adopt `render_summary` / `render_rows` |
 | `src/moneybin/cli/commands/accounts/__init__.py` | Account ID column (26); adopt `render_rows` |
-| `src/moneybin/cli/commands/transactions/list_.py` | Account name (27); drop the `transactions_get …` line (16); human paging (34) |
+| `src/moneybin/cli/commands/transactions/list_.py` | Keep rendering the account ID only — requirement 27 excludes the display name (27); drop the `transactions_get …` line (16); human paging (34) |
 | `src/moneybin/cli/commands/transactions/categorize/__init__.py` | Uncategorized queue is a Shape-5 read-projection — migrate off `render_rich_table` (1) |
-| `src/moneybin/cli/commands/accounts/links.py` | `links pending` / `links list` hand-format an aligned table via `typer.echo` (lines 70-89) — requirement 1 applies from day one |
+| `src/moneybin/cli/commands/accounts/links.py` | `links pending` (lines 70-89) and `links history` (lines 141-185) hand-format an aligned table via `typer.echo`; there is no `links list` subcommand — requirement 1 applies from day one |
 | `src/moneybin/cli/commands/investments/security_links.py` | `links pending` / `links history` hand-format the same padded-column table (lines 78-99, 199-215) |
 | `src/moneybin/cli/commands/transactions/notes.py` | `notes list` emits one `typer.echo` per note (line 103) |
 | `src/moneybin/cli/commands/transactions/tags.py` | `tags list` emits a tab-separated tag/count list (line 150) |
@@ -496,7 +530,7 @@ command label, per the PII-in-logs rule.
 
 **These counters persist only on sessions that also write business data.**
 `flush_metrics()` returns without flushing when `database_was_written()` is false
-(`src/moneybin/observability.py:105`), so a read-only `reports` or stub
+(`src/moneybin/observability.py:116`), so a read-only `reports` or stub
 invocation discards its observations at exit. That is deliberate and stays:
 turning an otherwise read-only command into a write-lock holder is not a trade
 this project makes for telemetry, and `--wide` is common enough that the lock
@@ -551,7 +585,7 @@ today's code. Two need specific shapes:
   not the 48 passing ones. A fixture where everything passes cannot distinguish
   quiet-on-success from a renderer that prints nothing at all.
 - **F8** — a fixture containing both a mapped and an unmapped category, asserting
-  the column is homogeneous and the unmapped one is counted in a note. A
+  the column is homogeneous and the unmapped one is counted in the result framing — not a `render_note`, which requirement 4 suppresses under `-q`. A
   fully-mapped fixture passes trivially.
 
 **Not covered by the default gate:** these are CLI-surface tests in
