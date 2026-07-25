@@ -155,7 +155,7 @@ Numbered, each independently testable.
 
     **Explicit exception — `RecoveryAction` rendering.** `system doctor` and the
     error path render `action.tool(key=value, …)` deliberately
-    (`src/moneybin/cli/commands/system/doctor.py:138`), because
+    (`src/moneybin/cli/commands/system/doctor.py:140`), because
     `RecoveryAction.tool` *is* an MCP tool name by contract
     (`src/moneybin/errors.py:43`) and the rendered call is meant to be pasted
     directly by an agent. This is a designed AX affordance, not a leak, and
@@ -257,7 +257,7 @@ a `unit` field to the metric declaration — a registry change, not a database o
 |---|---|
 | `src/moneybin/cli/output.py` | `render_or_json` delegates its text branch to the new renderers; `--wide` joins the shared option set |
 | `src/moneybin/reports/_framework/registry.py` (`ReportSpec`) | Carry `DEFAULT_COLUMNS` as spec metadata — **this is where the column policy lives** |
-| `src/moneybin/reports/_framework/cli_register.py` | `register_reports_cli` generates the `--wide` option and applies `DEFAULT_COLUMNS` to the generated signature |
+| `src/moneybin/reports/_framework/cli_register.py` | `build_cli_command(spec)` (called by `register_report_cli`, line 115) builds each report's Typer signature — this is where the generated `--wide` option and the `DEFAULT_COLUMNS` application land. Note `register_reports_cli`, the plural fan-out, lives in `registry.py:73` and only loops specs; it likely needs no change |
 | `src/moneybin/reports/definitions/*.py` | Declare each report's `DEFAULT_COLUMNS`, `spending_trend.py` first (F1) |
 | `src/moneybin/cli/commands/reports/networth.py` | The two hand-written NetworthService-backed commands; adopt `render_summary` / `render_rows` |
 | `src/moneybin/cli/commands/accounts/__init__.py` | Account ID column (26); adopt `render_rows` |
@@ -356,8 +356,9 @@ contract:
 
 - Every read-only command's text branch renders through one of the three
   renderers (1).
-- Every `reports` command's `DEFAULT_COLUMNS` renders within 100 columns with no
-  header elided (9).
+- Every `reports` command's `DEFAULT_COLUMNS` renders within **80** columns with
+  no header elided (9) — the same threshold requirement 9 sets, and the width F1
+  was reproduced at.
 - Rendered output contains no registered MCP tool name and no `_run:`-shaped
   prefix (16).
 - No reachable message contains `docs/specs/` (32).
