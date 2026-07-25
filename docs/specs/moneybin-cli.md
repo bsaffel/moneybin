@@ -196,17 +196,20 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--output json] [-q]
 |
 +-- review                         -- What needs my attention? Pending counts across all review queues.
-|     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all; walks matches first then categorize
-|     [--status]                        Counts only, no interactive loop
+|     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all
+|     [--status]                        Counts — the default; the flag states it explicitly
+|     [--interactive]                   Walk the queue item by item (not yet built)
 |     [--confirm <id>]                  Non-interactive: confirm one match by ID
 |     [--reject <id>]                   Non-interactive: reject one match by ID
 |     [--confirm-all]                   Non-interactive: confirm all items in scope
-|     [--limit N]                       Cap items per session
+|     [--limit N]                       Cap items per session (applies to --interactive)
 |     [--output text|json] [-q]
 |   Aggregates matches_pending + categorize_pending + account_links_pending + merchant_links_pending
-|   + security_links_pending in one sweep. Use `--status` for counts only; drill into
+|   + security_links_pending in one sweep. Counts are what a bare invocation prints; drill into
 |   `accounts links pending`, `merchants links pending`, `investments securities links pending`,
-|   `transactions matches list`, or `transactions categorize pending` for queue contents.
+|   `transactions matches pending`, or `transactions categorize pending` for queue contents.
+|   `--status`, `--interactive`, and the decision flags are mutually exclusive; passing two is a
+|   usage error (exit 2) rather than a silent pick.
 |
 +-- accounts
 |   +-- list                       -- List accounts [--include-archived] [--type TYPE]
@@ -277,8 +280,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- audit                      -- Audit one transaction's curation history (notes, tags, splits)
 |   +-- review                     -- DEPRECATED: use `moneybin review` (removed after one minor release)
 |   |                                  Unified review queue (matches + categorize + account-links + merchant-links + security-links)
-|   |     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all; walks matches first then categorize
-|   |     [--status]                        Counts only, no interactive loop
+|   |     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all
+|   |     [--status]                        Counts — the default; the flag states it explicitly
+|   |     [--interactive]                   Walk the queue item by item (not yet built)
 |   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID
 |   |     [--reject <id>]                   Non-interactive: reject one match by ID
 |   |     [--confirm-all]                   Non-interactive: confirm all items in scope
@@ -286,7 +290,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   Note: --confirm/--reject/--confirm-all are fully implemented for --type matches.
 |   |         --type categorize review is not yet wired (stub); categorize items use
 |   |         transactions categorize commit instead.
-|   +-- matches                    -- Transfer detection + dedup workflow (no review — see transactions review)
+|   +-- matches                    -- Transfer detection + dedup workflow (no review — see the top-level `review`)
 |   |   +-- list [--type dedup|transfer] [--limit N] [-o json|text]
 |   |   |         Pending proposals grouped by component_key (N-way dedup clusters appear
 |   |   |         as one block each). --output json returns rows incl. component_key.
@@ -295,7 +299,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   +-- history [--type dedup|transfer] [--limit N]
 |   |   +-- undo <match_id> [--yes]
 |   |   +-- backfill [--skip-transform] [--auto-accept-transfers]
-|   +-- categorize                 -- Categorization workflow + rules (taxonomy/merchants live in top-level groups; review lives at transactions review)
+|   +-- categorize                 -- Categorization workflow + rules (taxonomy/merchants live in top-level groups; review lives at the top-level `review`)
 |   |   +-- commit                  -- Commit externally-decided categorizations (--input <path> or stdin '-')
 |   |   +-- commit-from-file <path> -- Commit from a JSON file (convenience wrapper)
 |   |   +-- run                     -- Run engine cascade (--methods rules,merchants)
@@ -711,7 +715,7 @@ $ moneybin import files march-statement.csv
   Categorized: 38 auto-classified, 4 need review
 ✅ Imported 44 new transactions
 👀 4 uncategorized transactions and 2 transfers need review
-💡 Run 'moneybin transactions categorize auto review' or 'moneybin transactions review --type matches'
+💡 Run 'moneybin transactions categorize auto review' or 'moneybin transactions matches pending'
 ```
 
 Error handling: if any pipeline stage fails, prior stages' data is preserved (raw data is already loaded). The error message identifies which stage failed and how to retry just that stage.

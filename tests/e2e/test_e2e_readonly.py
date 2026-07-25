@@ -155,6 +155,8 @@ class TestStubCommands:
             ["sync", "schedule", "remove"],
             ["budget", "set", "Food", "500"],
             ["budget", "delete", "Food"],
+            # Only the explicit walk is a stub; a bare `review` prints counts.
+            ["review", "--interactive"],
         ],
         ids=lambda c: " ".join(c),
     )

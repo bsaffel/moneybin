@@ -5,7 +5,9 @@ CLI-only collapse (per moneybin-cli.md v2). MCP keeps separate
 tools because their result shapes differ; the orientation tool
 ``review`` returns the counts.
 
-Interactive loop UX is stubbed for v2; --status works end-to-end.
+Counts are the default. The item-by-item walk is stubbed for v2 and reachable
+only via ``--interactive``, so no invocation a user is likely to type lands on
+the stub.
 
 ``transactions_review`` is a **deprecated alias** for the top-level
 ``review_command`` (``moneybin review``). It emits a deprecation warning
@@ -44,14 +46,15 @@ _VALID_TYPES = {
 def review_impl(
     type_: str,
     status: bool,
+    interactive: bool,
     confirm_id: str | None,
     reject_id: str | None,
     confirm_all: bool,
     limit: int,
     output: OutputFormat,
-    quiet: bool,  # noqa: ARG001 — --status emits data only; nothing to suppress
+    quiet: bool,  # noqa: ARG001 — the status path emits data only; nothing to suppress
 ) -> None:
-    """Shared implementation for `moneybin review` and `moneybin transactions review`.
+    """Shared impl for `moneybin review` and its deprecated `transactions review` alias.
 
     Extracted so both the top-level leaf and the deprecated alias can call it
     without duplicating logic.
@@ -61,11 +64,23 @@ def review_impl(
             f"--type must be one of {sorted(_VALID_TYPES)}, got {type_!r}"
         )
 
-    if status:
-        _print_status(type_, output)
-        return
+    # Three mutually exclusive modes. Silently letting one win would either drop
+    # a requested mutation or perform an unrequested one, so say so instead —
+    # the same call the two guards in `_review_matches_noninteractive` make.
+    decides = bool(confirm_id or reject_id or confirm_all)
+    if sum((status, interactive, decides)) > 1:
+        logger.error(
+            "❌ --status, --interactive, and --confirm/--reject/--confirm-all "
+            "select different modes; pass only one"
+        )
+        raise typer.Exit(2)
 
-    if confirm_id or reject_id or confirm_all:
+    if decides:
+        # `--type matches` stays explicit rather than being inferred from the
+        # decide flags. They are match-only today, but the queued work extends
+        # them to categorize and the three link queues — at which point a bare
+        # `--confirm <id>` names an id whose queue we would have to guess, and
+        # guessing wrong accepts the wrong decision silently.
         if type_ != "matches":
             logger.error(
                 "❌ --confirm/--reject/--confirm-all require --type matches "
@@ -77,7 +92,13 @@ def review_impl(
         )
         return
 
-    _not_implemented("moneybin-cli.md (review collapse — interactive loop pending)")
+    if interactive:
+        _not_implemented("moneybin-cli.md (review collapse — interactive loop pending)")
+        return
+
+    # Counts are the default: they are what `--help` describes, and the only
+    # thing the command can do for every queue today.
+    _print_status(type_, output)
 
 
 def transactions_review(
@@ -87,7 +108,10 @@ def transactions_review(
         help="all | matches | categorize | account-links | merchant-links | security-links",
     ),
     status: bool = typer.Option(
-        False, "--status", help="Show queue counts only, no interactive loop"
+        False, "--status", help="Show queue counts (the default)"
+    ),
+    interactive: bool = typer.Option(
+        False, "--interactive", help="Walk the queue item by item (not yet built)"
     ),
     confirm_id: str | None = typer.Option(
         None, "--confirm", help="Non-interactive: confirm one item by ID"
@@ -102,7 +126,7 @@ def transactions_review(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
-    """Walk pending matches first, then uncategorized transactions.
+    """Pending counts across all review queues.
 
     DEPRECATED: use `moneybin review` instead. Removed after one minor release.
     """
@@ -114,6 +138,7 @@ def transactions_review(
     review_impl(
         type_=type_,
         status=status,
+        interactive=interactive,
         confirm_id=confirm_id,
         reject_id=reject_id,
         confirm_all=confirm_all,

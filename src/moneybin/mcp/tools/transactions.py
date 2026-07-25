@@ -774,8 +774,8 @@ def transactions_matches_pending(
             "Use reviews_decide with kind='match' to accept or reject a match",
             "Group rows by component_key to review all edges of one N-way dedup "
             "cluster together",
-            "For full pair context (both transactions side by side), use the CLI "
-            "`moneybin transactions review --type matches` queue",
+            "For a terminal view of this same queue, the CLI equivalent is "
+            "`moneybin transactions matches pending`",
         ],
     )
 

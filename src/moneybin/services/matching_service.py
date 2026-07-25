@@ -35,6 +35,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Printed verbatim wherever a run leaves pending matches: `matches run`,
+# `matches backfill`, and the refresh pipeline. One constant because all three
+# once drifted into the same unrunnable invocation — `--type matches` is
+# required, since `review`'s `--type` defaults to "all" and its decide-flags
+# guard rejects every other value. `test_pending_matches_hint_is_runnable`
+# executes what this string advertises.
+PENDING_MATCHES_HINT = (
+    "Run 'moneybin transactions matches pending' to see them, then "
+    "'moneybin review --type matches --confirm <match-id>' to decide"
+)
+
 _SETTABLE_STATUSES: frozenset[str] = frozenset({"accepted", "rejected"})
 
 

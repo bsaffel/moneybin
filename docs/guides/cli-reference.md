@@ -115,7 +115,7 @@ The CLI has a few task-shaped overlaps; this section disambiguates the common on
 
 - **`transactions list`** — filtered scanning ("show me April groceries"). Supports `--account-id`, `--from`/`--to`, `--category`, `--uncategorized`, `--limit`. Returns raw rows; no workflow.
 - **`transactions categorize pending`** — specifically hunting uncategorized rows for a categorization pass. Supports `--sort {date,impact}`, `--min-amount`, and `--account`.
-- **`transactions review`** — the interactive curator queue: pending dedup/transfer matches plus uncategorized rows in one stream. Use `--type {matches,categorize,all}` and `--confirm`/`--reject` to drive it from a script.
+- **`review`** — the curator queue across every pending decision: dedup/transfer matches, uncategorized rows, and account/merchant/security links. A bare `moneybin review` prints the counts; `--type` narrows to one queue and `--confirm`/`--reject` drive matches from a script.
 
 **"Refresh / transform / categorize run — which?"**
 
@@ -157,6 +157,22 @@ Top-level orientation: where the data lives, whether it's healthy, what the audi
 | `system audit show <audit-id>` | Show one audit event plus any chained children. |
 
 **Related guides:** [`profiles.md`](profiles.md).
+
+### `review`
+
+What needs your attention, across every queue that holds a pending decision.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `review` | Pending counts for all five queues: matches, uncategorized, account-links, merchant-links, security-links. | `--type {all,matches,categorize,account-links,merchant-links,security-links}`, `--status`, `--interactive`, `-o/--output`, `-q` |
+| `review --confirm <id>` / `--reject <id>` | Decide one pending match without opening a queue command. Requires `--type matches`. | `--confirm-all` to accept the whole match queue |
+
+Counts are what a bare `moneybin review` prints. To see the rows behind a
+count, use that queue's own command — `transactions matches pending`,
+`transactions categorize pending`, `accounts links pending`, `merchants links
+pending`, `investments securities links pending`. The item-by-item walk
+(`--interactive`) is not built yet; the decision flags cover the same ground
+non-interactively for matches.
 
 ## Ingestion
 
@@ -236,7 +252,7 @@ Browsing transactions and per-transaction state (notes, tags, splits, manual ent
 | `transactions list` | List transactions with filters. `--cursor` takes the `next_cursor` from a previous `--output json` response; treat it as opaque and restart from page one if it is rejected. | `--account`, `--from`, `--to`, `--limit`, `--category`, `--uncategorized`, `--cursor` |
 | `transactions create` | Create a manual transaction (no upstream source). | `--account-id`, `--date`, `--amount`, `--description`, `--category` |
 | `transactions audit <transaction-id>` | Show the audit chain for one transaction. | — |
-| `transactions review` | Unified review queue: pending matches and uncategorized rows. | `--status`, `--type {matches,categorize,all}`, `--confirm <id>`, `--reject <id>`, `--confirm-all`, `--limit` |
+| `transactions review` | Deprecated alias for the top-level `review`; removed after one minor release. | Same flags as `review` |
 
 ### `transactions notes`
 
@@ -525,7 +541,7 @@ moneybin sync pull                          # latest from connected banks
 moneybin import files ~/Downloads/*.ofx     # any OFX files you downloaded
 moneybin refresh                            # run the post-load pipeline
 moneybin transactions categorize pending    # see what's still uncategorized
-# ... categorize via transactions review or transactions categorize rules ...
+# ... categorize via review or transactions categorize rules ...
 moneybin reports networth                   # this month's net worth
 moneybin reports cashflow                   # this month's income vs spending
 ```

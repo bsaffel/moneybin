@@ -262,7 +262,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     | MCP tool | Shape | CLI equivalent |
     |----------|-------|----------------|
     | `refresh_run(steps=["match"])` | 3 (discrete-verb batch) | `moneybin transactions matches run` |
-    | `reviews(kind="matches", status="pending")` | 5 (collection projection) | `moneybin transactions review --type matches` |
+    | `reviews(kind="matches", status="pending")` | 5 (collection projection) | `moneybin transactions matches pending` |
     | `reviews_decide(decisions=[...])` | 1b (accept/reject one decision) | `moneybin transactions matches set` |
     | `reviews(kind="matches", status="history")` | 5 (time-series) | `moneybin transactions matches history` |
 

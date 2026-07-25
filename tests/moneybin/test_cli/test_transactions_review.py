@@ -1,11 +1,15 @@
 """Tests for the unified `transactions review` command."""
 
 import json
+import re
+import shlex
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.services.matching_service import PENDING_MATCHES_HINT
 
 runner = CliRunner()
 
@@ -25,6 +29,98 @@ def test_review_type_invalid() -> None:
         app, ["transactions", "review", "--type", "bogus", "--status"]
     )
     assert result.exit_code != 0
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
+def test_bare_review_answers_its_own_help_text(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """`moneybin review` with no flags prints the counts its help advertises."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(app, ["review"])
+    assert result.exit_code == 0
+    out = result.output.lower()
+    assert "not yet implemented" not in out
+    assert "matches pending" in out
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
+def test_review_type_filter_without_status_prints_the_count(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """`--type matches` alone selects the count, not the unbuilt walk."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(app, ["review", "--type", "matches"])
+    assert result.exit_code == 0
+    out = result.output.lower()
+    assert "not yet implemented" not in out
+    assert "matches pending" in out
+
+
+def test_interactive_is_the_only_stubbed_path() -> None:
+    """The unbuilt walk is reachable only by asking for it by name."""
+    result = runner.invoke(app, ["review", "--interactive"])
+    assert result.exit_code == 0
+    assert "not yet implemented" in result.output.lower()
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.services.matching_service.MatchingService.set_status")
+def test_pending_matches_hint_is_runnable(
+    mock_set_status: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """Run the command the hint prints; a usage error means we published a dead end.
+
+    Extracts the invocation from `PENDING_MATCHES_HINT` rather than restating
+    it, so editing the constant to drop `--type matches` fails here instead of
+    in a user's terminal — which is how the flag went missing the first time.
+    """
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+    invocation = re.search(r"'moneybin (review [^']+)'", PENDING_MATCHES_HINT)
+    assert invocation, f"no `moneybin review` command found in {PENDING_MATCHES_HINT!r}"
+    args = [
+        arg.replace("<match-id>", "deadbeefcafe")
+        for arg in shlex.split(invocation.group(1))
+    ]
+
+    result = runner.invoke(app, args)
+    assert result.exit_code != 2, (
+        f"the hint prints `moneybin {invocation.group(1)}`, which exits 2: "
+        f"{result.output}"
+    )
+    mock_set_status.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param(["--status", "--interactive"], id="status-and-interactive"),
+        pytest.param(
+            ["--status", "--type", "matches", "--confirm", "abc123"],
+            id="status-and-confirm",
+        ),
+        pytest.param(
+            ["--interactive", "--type", "matches", "--confirm-all"],
+            id="interactive-and-confirm-all",
+        ),
+    ],
+)
+def test_review_modes_are_mutually_exclusive(extra: list[str]) -> None:
+    """Two modes at once is a usage error, not a silent pick between them."""
+    result = runner.invoke(app, ["review", *extra])
+    assert result.exit_code == 2
+    assert "pass only one" in result.output
 
 
 @patch("moneybin.cli.commands.transactions.review.get_database")

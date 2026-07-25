@@ -327,6 +327,14 @@ Numbered, each independently testable.
 31. Unimplemented commands are hidden from `--help` output at every level
     (`hidden=True`), while remaining invocable so the namespace stays reserved and
     any existing script keeps its exit code.
+    **Scope is whole-command stubs only.** A command that reaches
+    `_not_implemented` on *some* paths is not a stub and is not hidden — hiding it
+    would remove working behavior from `--help`, the opposite of the trust repair
+    F4 exists for. The enumeration is the four `sync` stubs (`key rotate`,
+    `schedule set|show|remove`), the two `budget` stubs (`set`, `delete`), and the
+    three `transactions categorize ml` stubs — **not** a grep for
+    `_not_implemented`, which also matches `review`'s `--interactive` branch
+    (#358) and any future partial.
 32. The not-implemented message names a user-facing next action, not a repo path.
      `docs/specs/*.md` does not appear in any message reachable by an installed
      user.
@@ -576,7 +584,11 @@ contract:
   the assertion more broadly than the requirement would fail on legitimate output
   like `Accounts: 5`.
 - No reachable message contains `docs/specs/` (32).
-- No stub command appears in any `--help` output (31).
+- No stub command appears in any `--help` output, **and every
+  partially-implemented command still does** (31). Both directions are required:
+  the one-sided assertion passes trivially against an implementation that hides
+  everything matching `_not_implemented`, which is exactly the over-broad reading
+  requirement 31 rules out.
 
 **Regression, F-numbered** — one test per finding, each written to fail against
 today's code. Two need specific shapes:
