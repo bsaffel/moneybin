@@ -103,6 +103,7 @@ class _ConsoleNoiseFilter(logging.Filter):
         *,
         stream: Literal["cli", "mcp", "sqlmesh"] = "cli",
         unfiltered: bool = False,
+        file_sink: bool = False,
     ) -> None:
         super().__init__()
         # Asking for DEBUG — via --verbose or a profile's logging.level — is
@@ -110,7 +111,12 @@ class _ConsoleNoiseFilter(logging.Filter):
         # defeat the allowlist rather than be narrowed by it, or the most
         # detailed setting would produce a quieter console than the default.
         self._unfiltered = unfiltered
-        self._allowlist_mode = stream == "cli"
+        # The allowlist is only defensible because a log file keeps the copy of
+        # what stderr drops. With `log_to_file: false` stderr is the only sink,
+        # and both docs/guides/observability.md and threat-model.md promise it
+        # stays "unaffected" so containers and journald can capture it — so
+        # filtering there would delete records, not relocate them.
+        self._allowlist_mode = stream == "cli" and file_sink
 
     def filter(self, record: logging.LogRecord) -> bool:
         if record.levelno >= logging.WARNING:
@@ -281,12 +287,10 @@ def setup_logging(
     # Prepare handlers
     handlers: list[logging.Handler] = []
 
-    # Console handler (always present, writes to stderr)
+    # Console handler (always present, writes to stderr). Its filter is
+    # attached below, once we know whether a file handler actually landed.
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
-    console_handler.addFilter(
-        _ConsoleNoiseFilter(stream=stream, unfiltered=resolved_level <= logging.DEBUG)
-    )
     handlers.append(console_handler)
 
     # File handler — only write to file if the log directory's parent exists.
@@ -309,6 +313,17 @@ def setup_logging(
             # console filter already suppresses these from stderr; this
             # ensures they still reach a log file for debugging.
             _setup_sqlmesh_file_handler(log_file_path, inner_formatter)
+
+    # Attach the console filter now that the file-handler outcome is known —
+    # including the mkdir failure above, which leaves stderr as the only sink
+    # just as surely as `log_to_file: false` does.
+    console_handler.addFilter(
+        _ConsoleNoiseFilter(
+            stream=stream,
+            unfiltered=resolved_level <= logging.DEBUG,
+            file_sink=any(isinstance(h, logging.FileHandler) for h in handlers),
+        )
+    )
 
     # Configure root logger
     logging.basicConfig(

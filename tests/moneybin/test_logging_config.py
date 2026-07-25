@@ -52,11 +52,24 @@ class _LoggingSetupTestBase:
         root.handlers = original_handlers
         root.level = original_level
 
-    @staticmethod
+    @pytest.fixture(autouse=True)
+    def _log_file(self, tmp_path: Path) -> Path:
+        """A writable log path so tests run the real, file-logging default.
+
+        ``setup_logging``'s own signature defaults ``log_to_file`` to False,
+        but ``MoneyBinSettings.logging.log_to_file`` defaults to True — so
+        the no-file path is the exception, not the norm, and tests that
+        forget the distinction silently assert against the wrong config.
+        """
+        self._log_path = tmp_path / "moneybin.log"
+        return self._log_path
+
     def _console_handler(
-        stream: Literal["cli", "mcp", "sqlmesh"] = "cli", **kwargs: Any
+        self, stream: Literal["cli", "mcp", "sqlmesh"] = "cli", **kwargs: Any
     ) -> logging.Handler:
         """Configure logging and return the console (non-file) handler."""
+        kwargs.setdefault("log_to_file", True)
+        kwargs.setdefault("log_file_path", self._log_path)
         setup_logging(stream=stream, **kwargs)
         console = [
             h
@@ -214,6 +227,19 @@ class TestConsoleInfoAllowlist(_LoggingSetupTestBase):
         record = self._record("some_vendor_lib.client", logging.INFO)
 
         assert not handler.filter(record)
+
+    @pytest.mark.unit
+    def test_no_file_logging_keeps_everything_on_stderr(self) -> None:
+        """With no log file, stderr is the only sink — it must keep everything.
+
+        `docs/guides/observability.md` and `threat-model.md` both promise
+        that `log_to_file: false` leaves stderr "unaffected", so containers
+        and journald can capture it. The allowlist is only defensible
+        because a file keeps the copy; with no file it deletes the record.
+        """
+        handler = self._console_handler(log_to_file=False)
+
+        assert handler.filter(self._record("some_vendor_lib.client", logging.INFO))
 
     @pytest.mark.unit
     def test_info_from_cli_reaches_console(self) -> None:

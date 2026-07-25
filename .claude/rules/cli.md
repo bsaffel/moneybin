@@ -130,9 +130,11 @@ Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `S
 
 ### The console INFO allowlist
 
-WARNING and above always reach the console. On the **`cli` stream**, sub-WARNING
-records reach it only from the logger prefixes in `_CONSOLE_INFO_ALLOWLIST`
-(`logging/config.py`); everything else goes to the log file. Asking for DEBUG —
+WARNING and above always reach the console. On the **`cli` stream with file
+logging on**, sub-WARNING records reach it only from the logger prefixes in
+`_CONSOLE_INFO_ALLOWLIST` (`logging/config.py`); everything else goes to the log
+file. Under `log_to_file: false` — or if the log directory is missing — stderr is
+the only sink, so the filter stands down entirely and everything passes. Asking for DEBUG —
 `--verbose` or a profile's `logging.level` — turns the filter off entirely, so
 the most detailed setting is never quieter than the default. It is an allowlist,
 not a denylist, so a newly-added dependency or service `logger.info` is quiet by
