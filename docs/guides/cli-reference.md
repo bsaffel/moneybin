@@ -164,7 +164,7 @@ What needs your attention, across every queue that holds a pending decision.
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `review` | Pending counts for all five queues: matches, uncategorized, account-links, merchant-links, security-links. | `--type {all,matches,categorize,account-links,merchant-links,security-links}`, `--status`, `-o/--output`, `-q` |
+| `review` | Pending counts for all five queues: matches, uncategorized, account-links, merchant-links, security-links. | `--type {all,matches,categorize,account-links,merchant-links,security-links}`, `--status`, `--interactive`, `-o/--output`, `-q` |
 | `review --confirm <id>` / `--reject <id>` | Decide one pending match without opening a queue command. Requires `--type matches`. | `--confirm-all` to accept the whole match queue |
 
 Counts are what a bare `moneybin review` prints. To see the rows behind a

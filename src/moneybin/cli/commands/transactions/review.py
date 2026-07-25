@@ -54,7 +54,7 @@ def review_impl(
     output: OutputFormat,
     quiet: bool,  # noqa: ARG001 — the status path emits data only; nothing to suppress
 ) -> None:
-    """Shared impl for `moneybin review` and the deprecated `moneybin transactions review`.
+    """Shared impl for `moneybin review` and its deprecated `transactions review` alias.
 
     Extracted so both the top-level leaf and the deprecated alias can call it
     without duplicating logic.
