@@ -32,8 +32,12 @@ class TestSessionLogPath:
         assert result == Path("logs/prod/sqlmesh_2025-04-11.log")
 
 
-class TestSetupLogging:
-    """Tests for setup_logging handler configuration."""
+class _LoggingSetupTestBase:
+    """Shared scaffolding for tests that call ``setup_logging``.
+
+    ``setup_logging`` reconfigures the root logger process-wide, so every
+    test that calls it has to put the root logger back.
+    """
 
     @pytest.fixture(autouse=True)
     def _reset_root_logger(self) -> Generator[None, Any, None]:
@@ -47,6 +51,37 @@ class TestSetupLogging:
                 h.close()
         root.handlers = original_handlers
         root.level = original_level
+
+    @staticmethod
+    def _console_handler(
+        stream: Literal["cli", "mcp", "sqlmesh"] = "cli", **kwargs: Any
+    ) -> logging.Handler:
+        """Configure logging and return the console (non-file) handler."""
+        setup_logging(stream=stream, **kwargs)
+        console = [
+            h
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert console, "Expected a console StreamHandler"
+        return console[0]
+
+    @staticmethod
+    def _record(name: str, level: int = logging.INFO) -> logging.LogRecord:
+        return logging.LogRecord(
+            name=name,
+            level=level,
+            pathname="",
+            lineno=0,
+            msg="test",
+            args=(),
+            exc_info=None,
+        )
+
+
+class TestSetupLogging(_LoggingSetupTestBase):
+    """Tests for setup_logging handler configuration."""
 
     @pytest.mark.unit
     def test_console_handler_uses_stderr(self) -> None:
@@ -158,49 +193,13 @@ class TestSetupLogging:
                 )
 
 
-class TestConsoleInfoAllowlist:
+class TestConsoleInfoAllowlist(_LoggingSetupTestBase):
     """The console shows INFO only from loggers declared user-facing.
 
     Diagnostics from every other logger reach the log file but not the
     user's terminal. The allowlist is the load-bearing part: a denylist
     would leak every dependency nobody has thought to suppress yet.
     """
-
-    @pytest.fixture(autouse=True)
-    def _reset_root_logger(self) -> Generator[None, Any, None]:
-        root = logging.getLogger()
-        original_handlers = list(root.handlers)
-        original_level = root.level
-        yield
-        for h in root.handlers[:]:
-            if h not in original_handlers:
-                h.close()
-        root.handlers = original_handlers
-        root.level = original_level
-
-    @staticmethod
-    def _console_handler() -> logging.Handler:
-        setup_logging(stream="cli")
-        console = [
-            h
-            for h in logging.getLogger().handlers
-            if isinstance(h, logging.StreamHandler)
-            and not isinstance(h, logging.FileHandler)
-        ]
-        assert console, "Expected a console StreamHandler"
-        return console[0]
-
-    @staticmethod
-    def _record(name: str, level: int) -> logging.LogRecord:
-        return logging.LogRecord(
-            name=name,
-            level=level,
-            pathname="",
-            lineno=0,
-            msg="test",
-            args=(),
-            exc_info=None,
-        )
 
     @pytest.mark.unit
     def test_info_from_undeclared_dependency_is_hidden(self) -> None:
@@ -264,17 +263,10 @@ class TestConsoleInfoAllowlist:
         `logging.level: DEBUG`. Asking for the most detailed level and
         getting a quieter console than INFO would be backwards.
         """
-        setup_logging(stream="cli", level="DEBUG")
-        console = [
-            h
-            for h in logging.getLogger().handlers
-            if isinstance(h, logging.StreamHandler)
-            and not isinstance(h, logging.FileHandler)
-        ]
-        assert console, "Expected a console StreamHandler"
+        handler = self._console_handler(level="DEBUG")
         record = self._record("some_vendor_lib.client", logging.INFO)
 
-        assert console[0].filter(record)
+        assert handler.filter(record)
 
     @pytest.mark.unit
     def test_verbose_restores_undeclared_dependency_output(self) -> None:
@@ -283,20 +275,13 @@ class TestConsoleInfoAllowlist:
         Without this, the one flag a user reaches for when debugging is
         the flag that hides the evidence.
         """
-        setup_logging(stream="cli", verbose=True)
-        console = [
-            h
-            for h in logging.getLogger().handlers
-            if isinstance(h, logging.StreamHandler)
-            and not isinstance(h, logging.FileHandler)
-        ]
-        assert console, "Expected a console StreamHandler"
+        handler = self._console_handler(verbose=True)
         record = self._record("some_vendor_lib.client", logging.INFO)
 
-        assert console[0].filter(record)
+        assert handler.filter(record)
 
 
-class TestMcpStreamKeepsInfoOnStderr:
+class TestMcpStreamKeepsInfoOnStderr(_LoggingSetupTestBase):
     """The MCP stream's stderr is a host-visible channel, not a terminal.
 
     `docs/specs/observability.md` marks MCP stderr "Always" and shows
@@ -304,42 +289,6 @@ class TestMcpStreamKeepsInfoOnStderr:
     transport the file handler is off by default, so filtering INFO here
     doesn't relocate those records — it destroys them.
     """
-
-    @pytest.fixture(autouse=True)
-    def _reset_root_logger(self) -> Generator[None, Any, None]:
-        root = logging.getLogger()
-        original_handlers = list(root.handlers)
-        original_level = root.level
-        yield
-        for h in root.handlers[:]:
-            if h not in original_handlers:
-                h.close()
-        root.handlers = original_handlers
-        root.level = original_level
-
-    @staticmethod
-    def _console_handler(stream: Literal["cli", "mcp", "sqlmesh"]) -> logging.Handler:
-        setup_logging(stream=stream)
-        console = [
-            h
-            for h in logging.getLogger().handlers
-            if isinstance(h, logging.StreamHandler)
-            and not isinstance(h, logging.FileHandler)
-        ]
-        assert console, "Expected a console StreamHandler"
-        return console[0]
-
-    @staticmethod
-    def _record(name: str) -> logging.LogRecord:
-        return logging.LogRecord(
-            name=name,
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test",
-            args=(),
-            exc_info=None,
-        )
 
     @pytest.mark.unit
     def test_mcp_server_info_reaches_host_stderr(self) -> None:

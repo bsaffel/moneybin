@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from typing import cast
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -1677,8 +1678,6 @@ def test_committed_review_merchants_log_once_for_the_batch(
     reader can act on; the ids stay available at debug. Merchant names are
     never logged (`.claude/rules/security.md`).
     """
-    from unittest.mock import MagicMock
-
     applier = MatchApplier(cast("Database", MagicMock()), audit=MagicMock())
 
     with caplog.at_level(logging.INFO, logger="moneybin.services.categorization"):
