@@ -50,6 +50,7 @@ from moneybin.repositories.security_link_decisions_repo import (
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.repositories.security_price_repo import SecurityPriceRepo
 from moneybin.tables import (
+    AUDIT_LOG,
     DIM_HOLDINGS,
     FCT_SECURITY_PRICES,
     SECURITIES,
@@ -131,6 +132,19 @@ _RAW_PRICE_SCHEMA = {
 # for a stored price no downstream total could represent either.
 _MIN_STORABLE_CLOSE = Decimal("1E-10")
 
+# app.security_links.reversed_by is a closed vocabulary ('auto' | 'user' |
+# 'system'). A reversal this service performs to retire a binding whose catalog
+# value moved is machine bookkeeping, so it records 'auto' — and must stay
+# distinguishable from 'user', which is a judgement about the pairing that a
+# later pull must not silently overturn.
+_AUTO_REVERSAL = "auto"
+
+# The audit action a `system audit undo` of a feed-key binding leaves behind.
+# BaseRepo.undo_event names an undo "<original action>.undo" and carries the
+# deleted row in its before_value, which is the only surviving record that the
+# binding existed — undoing an INSERT removes the app.security_links row itself.
+_LINK_INSERT_UNDO = "security_link.insert.undo"
+
 
 @dataclass(frozen=True, slots=True)
 class HeldSecurity:
@@ -211,11 +225,19 @@ class _TiingoLike(_PriceAdapter, Protocol):
 
 @dataclass(frozen=True, slots=True)
 class _Derivation:
-    """The outcome of deriving one feed key."""
+    """The outcome of deriving one feed key.
+
+    ``provider_ticker`` / ``provider_name`` carry what the provider said about
+    the symbol, so a queued review can record the divergence that caused it.
+    They stay ``None`` when the provider was never consulted — a ticker that is
+    ambiguous inside our own catalog is refused before any round-trip.
+    """
 
     ref_value: str | None
     review_reason: str | None = None
     unpriced_reason: str | None = None
+    provider_ticker: str | None = None
+    provider_name: str | None = None
 
 
 class PriceService:
@@ -562,15 +584,36 @@ class PriceService:
         )
         bound = self._bound_ref(security.security_id, ref_kind, source_type)
         if bound is not None:
-            return _Derivation(ref_value=bound)
+            if not self._binding_is_stale(security, source_type, bound):
+                return _Derivation(ref_value=bound)
+            # The catalog value this key was derived from has since changed, so
+            # the binding now points at a different company's series. Retire it
+            # through the audited path before re-deriving; leaving it accepted
+            # would give this security two accepted links for one ref_kind.
+            self._retire_stale_binding(security.security_id, ref_kind, source_type)
 
-        if self._review_pending(ref_kind, source_type, security):
-            return _Derivation(ref_value=None, unpriced_reason="queued_for_review")
+        settled = self._review_settled(ref_kind, source_type, security)
+        if settled is not None:
+            return _Derivation(ref_value=None, unpriced_reason=settled)
 
         if source_type == COINGECKO_SOURCE_TYPE:
             derivation = self._coingecko_key(security)
         else:
             derivation = self._tiingo_key(security, adapter)
+
+        if derivation.ref_value is not None and self._was_reversed_by_user(
+            security.security_id, ref_kind, source_type, derivation.ref_value
+        ):
+            # The user reversed exactly this binding. Re-deriving reaches the same
+            # conclusion from the same inputs, so re-binding silently would undo
+            # their undo and restore the valuation they rejected. The reversal is
+            # the signal the derivation itself cannot see.
+            return _Derivation(
+                ref_value=None,
+                review_reason="binding_was_reversed",
+                provider_ticker=derivation.provider_ticker,
+                provider_name=derivation.provider_name,
+            )
 
         if derivation.ref_value is not None:
             try:
@@ -628,11 +671,16 @@ class PriceService:
             # Not an ambiguity — no Tiingo series covers this security. Nothing to
             # propose, so no queue row; the held-but-unpriced check surfaces it.
             return _Derivation(ref_value=None, unpriced_reason="no_provider_coverage")
+        # From here every outcome carries the provider's own answer: it is the
+        # evidence a reviewer needs, and it is the only place it exists.
+        said = {"provider_ticker": security.ticker, "provider_name": meta.name}
         if _exchanges_contradict(security.exchange, meta.exchange_code):
-            return _Derivation(ref_value=None, review_reason="exchange_contradiction")
+            return _Derivation(
+                ref_value=None, review_reason="exchange_contradiction", **said
+            )
         if not _names_agree(security.name, meta.name):
-            return _Derivation(ref_value=None, review_reason="name_divergence")
-        return _Derivation(ref_value=security.ticker)
+            return _Derivation(ref_value=None, review_reason="name_divergence", **said)
+        return _Derivation(ref_value=security.ticker, **said)
 
     def _metadata(self, adapter: _PriceAdapter, ticker: str) -> TickerMetadata | None:
         fetch_metadata = getattr(adapter, "fetch_metadata", None)
@@ -671,34 +719,123 @@ class PriceService:
             return None
         return str(row[0]) if row is not None else None
 
-    def _review_pending(
-        self, ref_kind: str, source_type: str, security: HeldSecurity
-    ) -> bool:
-        """Whether this security already has a pending decision awaiting a human.
-
-        Without this a second pull files a duplicate row for the same question,
-        and a queue that grows on every sync trains people to accept without
-        reading — the failure the spec's near-empty-queue rule exists to prevent.
-        """
-        if security.ticker is None and security.coingecko_id is None:
-            return False
-        ref_value = (
+    def _catalog_ref(self, security: HeldSecurity, source_type: str) -> str | None:
+        """The catalog value a feed key for this source is derived from."""
+        return (
             security.coingecko_id
             if source_type == COINGECKO_SOURCE_TYPE
             else security.ticker
         )
-        if ref_value is None:
+
+    def _binding_is_stale(
+        self, security: HeldSecurity, source_type: str, bound: str
+    ) -> bool:
+        """Whether an auto-derived binding no longer matches the catalog it came from.
+
+        Only ``auto`` bindings are checked. A user-confirmed binding deliberately
+        may differ from the ticker — provider symbol formats diverge from ours
+        (``BRK.B`` against ``BRK-B``), and overriding that would re-ask a question
+        the user already answered.
+        """
+        catalog = self._catalog_ref(security, source_type)
+        if catalog is None:
+            # Nothing to compare against. The binding is the only key there is.
             return False
+        return catalog.strip().upper() != bound.strip().upper()
+
+    def _retire_stale_binding(
+        self, security_id: str, ref_kind: str, source_type: str
+    ) -> None:
+        """Reverse the accepted auto-binding whose catalog value moved."""
+        row = self._db.execute(
+            f"SELECT link_id FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef constant
+            "WHERE status = 'accepted' AND security_id = ? AND ref_kind = ? "
+            "AND source_type = ? AND decided_by = 'auto' LIMIT 1",
+            [security_id, ref_kind, source_type],
+        ).fetchone()
+        if row is None:  # pragma: no cover — guarded by _binding_is_stale
+            return
+        self._links.reverse(
+            link_id=str(row[0]), reversed_by=_AUTO_REVERSAL, actor=self._actor
+        )
+
+    def _was_reversed_by_user(
+        self, security_id: str, ref_kind: str, source_type: str, ref_value: str
+    ) -> bool:
+        """Whether the user undid this exact binding.
+
+        Scoped to the identical ``ref_value``: a derivation that now produces a
+        *different* key is new information and may still bind.
+
+        Two mechanisms, because undoing a binding leaves two different traces.
+        ``system audit undo`` — the path a user has today — DELETEs the row, so
+        nothing survives in ``app.security_links`` and the audit log is the only
+        record. ``SecurityLinksRepo.reverse`` leaves a ``reversed`` row instead;
+        no surface calls it on a feed key yet, so that arm is checked for the
+        surfaces that will. Reversals this service made itself record ``auto``
+        and are excluded — retiring a binding whose catalog value moved is
+        bookkeeping, not a judgement about the pairing.
+        """
         try:
-            row = self._db.execute(
-                f"SELECT COUNT(*) FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant
-                "WHERE status = 'pending' AND ref_kind = ? AND ref_value = ? "
-                "AND source_type = ? AND candidate_security_id = ?",
-                [ref_kind, ref_value, source_type, security.security_id],
+            reversed_row = self._db.execute(
+                f"SELECT 1 FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef constant
+                "WHERE status = 'reversed' AND security_id = ? AND ref_kind = ? "
+                "AND source_type = ? AND ref_value = ? "
+                "AND reversed_by IS DISTINCT FROM ? LIMIT 1",
+                [security_id, ref_kind, source_type, ref_value, _AUTO_REVERSAL],
+            ).fetchone()
+            if reversed_row is not None:
+                return True
+            undone = self._db.execute(
+                f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # noqa: S608  # TableRef constant
+                "WHERE is_undo AND action = ? "
+                "AND json_extract_string(before_value, '$.security_id') = ? "
+                "AND json_extract_string(before_value, '$.ref_kind') = ? "
+                "AND json_extract_string(before_value, '$.source_type') = ? "
+                "AND json_extract_string(before_value, '$.ref_value') = ? LIMIT 1",
+                [
+                    _LINK_INSERT_UNDO,
+                    security_id,
+                    ref_kind,
+                    source_type,
+                    ref_value,
+                ],
             ).fetchone()
         except duckdb.CatalogException:
             return False
-        return row is not None and int(row[0]) > 0
+        return undone is not None
+
+    def _review_settled(
+        self, ref_kind: str, source_type: str, security: HeldSecurity
+    ) -> str | None:
+        """Why a fresh proposal for this pairing is blocked, or ``None``.
+
+        Two states block it, for the same reason: without them a second pull
+        files a duplicate row for a question already asked, and a queue that
+        grows on every sync trains people to accept without reading — the
+        failure the spec's near-empty-queue rule exists to prevent.
+
+        ``rejected`` counts, matching ``SecurityLinkDecisionsRepo.list_rejected``
+        — "the never-re-propose set" the Plaid path already honours. A *reversed*
+        rejection does not count, because reversing a decision is what re-opens
+        the proposal.
+        """
+        ref_value = self._catalog_ref(security, source_type)
+        if ref_value is None:
+            return None
+        try:
+            row = self._db.execute(
+                f"SELECT status FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant
+                "WHERE ref_kind = ? AND ref_value = ? AND source_type = ? "
+                "AND candidate_security_id = ? AND (status = 'pending' OR "
+                "(status = 'rejected' AND reversed_at IS NULL)) LIMIT 1",
+                [ref_kind, ref_value, source_type, security.security_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return None
+        if row is None:
+            return None
+        return "queued_for_review" if str(row[0]) == "pending" else "feed_key_rejected"
 
     def _queue_review(
         self, security: HeldSecurity, source_type: str, derivation: _Derivation
@@ -721,8 +858,12 @@ class PriceService:
             ref_value=ref_value,
             source_type=source_type,
             candidate_security_id=security.security_id,
-            provider_ticker=security.ticker,
-            provider_name=security.name,
+            # The provider's own answer, never the catalog's. These columns are
+            # documented as the provider's values and SecurityResolver fills them
+            # that way; echoing the catalog back would show the reviewer two
+            # identical names and hide the very divergence under review.
+            provider_ticker=derivation.provider_ticker,
+            provider_name=derivation.provider_name,
             match_reason=derivation.review_reason,
             match_signals={
                 "signal": derivation.review_reason,
@@ -812,14 +953,28 @@ def _names_agree(catalog: str, provider: str) -> bool:
     one issuer, and asking a user to confirm that difference is the queue noise
     the spec forbids. What survives is compared at SecurityResolver's cutoff, so
     "do these name the same thing?" has one answer across the codebase.
+
+    A name can reduce to nothing — every word of "The Trust" or "Class A Fund" is
+    a suffix. That is an absence of evidence, not agreement: reading it as
+    agreement turns this check, one of the three signals gating a silent bind,
+    into an unconditional pass and leaves the exchange test authorizing the
+    binding alone. So an empty side falls back to the literal names, which still
+    agree when they are the same string, and otherwise refuses.
     """
+    if _normalized_name(catalog) == _normalized_name(provider):
+        return True
     left, right = _name_tokens(catalog), _name_tokens(provider)
     if not left or not right:
-        return True
+        return False
     if left == right:
         return True
     ratio = difflib.SequenceMatcher(None, " ".join(left), " ".join(right)).ratio()
     return ratio >= _NAME_AGREEMENT_CUTOFF
+
+
+def _normalized_name(name: str) -> str:
+    """The name reduced to its alphanumeric words, for a literal-equality test."""
+    return " ".join(re.findall(r"[a-z0-9]+", name.lower()))
 
 
 def _name_tokens(name: str) -> list[str]:

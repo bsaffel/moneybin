@@ -251,6 +251,9 @@ those two cases cannot share a path.
 | Exact `ticker` + `exchange`, exactly one candidate | Bind silently. |
 | Bare ticker, no exchange, no CUSIP/ISIN, >1 candidate | Route to `app.security_link_decisions` for review. |
 | Ticker matches but the provider name diverges from the catalog name | Route to review. |
+| The derived key is one the user already undid | Route to review (`binding_was_reversed`). Never re-bind it silently. |
+| A decision for this pairing is already pending, or was rejected | Propose nothing. A rejected pairing is the never-re-propose set. |
+| The bound key no longer matches the catalog value it came from | Retire the binding and re-derive — but only when it was bound automatically. |
 | No match at all | Leave unbound. Nothing to propose, so no queue row — the held-but-unpriced doctor check is what surfaces it. |
 
 **The divergence checks read Tiingo's metadata endpoint, not just our catalog.**
@@ -268,6 +271,36 @@ that difference is precisely the queue noise the near-empty-queue rule forbids.
 What survives the suffix strip is compared at `SecurityResolver`'s existing name
 cutoff, so "do these two strings name the same issuer?" has one answer across the
 codebase rather than two.
+
+A name can strip to nothing — every word of "The Trust" or "Class A Fund" is a
+suffix. That is an absence of evidence, not agreement, and it must not satisfy
+the check: doing so leaves the exchange comparison authorizing a silent binding
+by itself, on a symbol the provider may attach to any issuer. An empty side falls
+back to comparing the literal names, which still agree when they are the same
+string, and otherwise routes to review.
+
+**A queued review records what the provider said**, not what the catalog already
+holds. `provider_ticker` and `provider_name` are the provider's values — the same
+contract `SecurityResolver` honours on the Plaid path. Filling them from the
+catalog would show the reviewer two identical names and withhold the one piece of
+evidence the decision turns on.
+
+**An undone binding stays undone.** A key the user removed is not re-derived and
+re-bound on the next pull: re-deriving reaches the same conclusion from the same
+inputs, so a silent re-bind would restore the valuation the user rejected, with
+no confirm and no queue row. Both removal paths count — `system audit undo`,
+which deletes the row and leaves only an audit entry, and a reversal, which
+leaves a `reversed` row. Reversals MoneyBin performs itself, retiring a binding
+whose catalog value moved, record `auto` and are excluded; that is bookkeeping,
+not a judgement about the pairing.
+
+**A binding is revalidated against the catalog before it is reused.** Correcting a
+typo'd ticker writes only `app.securities` — nothing cascades to
+`app.security_links` — so without this the position keeps fetching the old
+symbol's closes forever and reports them as `valued`. Only automatic bindings are
+revalidated: a user-confirmed key may deliberately differ from the ticker, since
+provider symbol formats diverge from ours (`BRK.B` against `BRK-B`), and
+overriding that would re-ask a settled question.
 
 **The exchange comparison is deliberately weak.** Either label absent does not
 contradict — an absent signal never votes — and a label that prefixes the other

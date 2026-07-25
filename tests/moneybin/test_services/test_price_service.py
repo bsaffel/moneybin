@@ -26,6 +26,10 @@ from moneybin.connectors.prices.protocol import (
 )
 from moneybin.connectors.prices.tiingo import TickerMetadata
 from moneybin.database import Database
+from moneybin.repositories.security_link_decisions_repo import (
+    SecurityLinkDecisionsRepo,
+)
+from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.price_service import (
     COINGECKO_REF_KIND,
     COINGECKO_SOURCE_TYPE,
@@ -33,7 +37,13 @@ from moneybin.services.price_service import (
     TIINGO_SOURCE_TYPE,
     PriceService,
 )
-from moneybin.tables import SECURITIES, SECURITY_LINK_DECISIONS, SECURITY_LINKS
+from moneybin.services.undo_service import UndoService
+from moneybin.tables import (
+    AUDIT_LOG,
+    SECURITIES,
+    SECURITY_LINK_DECISIONS,
+    SECURITY_LINKS,
+)
 from tests.moneybin.price_model_helpers import ref_kind_mapping
 
 if TYPE_CHECKING:
@@ -202,6 +212,13 @@ def _rows_written(source_type: str) -> float:
         )
         or 0.0
     )
+
+
+def _scalar(db: Database, sql: str) -> str:
+    """The first column of a query that must return exactly one row."""
+    row = db.execute(sql).fetchone()
+    assert row is not None, f"expected a row from: {sql}"
+    return str(row[0])
 
 
 def _links(db: Database) -> list[tuple[str, str, str]]:
@@ -425,6 +442,173 @@ def test_a_pending_review_is_not_re_queued_on_the_next_pull(db: Database) -> Non
     service.pull()
 
     assert len(_decisions(db)) == first
+
+
+def test_a_name_that_reduces_to_no_tokens_is_not_treated_as_agreement(
+    db: Database,
+) -> None:
+    """No tokens is no evidence, and no evidence is not agreement.
+
+    Every word of "The Trust" is a corporate-form suffix, so the token list is
+    empty. Reading that as agreement makes the issuer check — one of the three
+    signals required before a silent bind — an unconditional pass, leaving the
+    exchange check alone to authorize the binding. Both exchanges are NULL here
+    precisely so the exchange check cannot contradict: this fixture isolates the
+    name signal, and nothing else can refuse the bind.
+    """
+    _seed_security(db, security_id="s_trust", name="The Trust", ticker="TRST")
+    _hold(db, "s_trust")
+    tiingo = _FakeTiingo(
+        metadata={"TRST": TickerMetadata("Bharat Heavy Electricals", None)}
+    )
+
+    _service(db, tiingo).pull()
+
+    assert _links(db) == []
+    assert _decisions(db) == [(TIINGO_REF_KIND, "TRST", "name_divergence")]
+
+
+def test_a_rejected_feed_key_is_not_re_proposed_on_the_next_pull(
+    db: Database,
+) -> None:
+    """A rejected decision is the never-re-propose set, on this path as on Plaid's.
+
+    Suppressing only `pending` re-files the identical question on every pull, so
+    the queue grows without bound and trains the user to accept without reading
+    — the failure `_review_pending` exists to prevent.
+    """
+    _seed_security(db, security_id="s_bhp_a", name="BHP Group", ticker="BHP")
+    _seed_security(db, security_id="s_bhp_b", name="BHP Billiton", ticker="BHP")
+    _hold(db, "s_bhp_a")
+    service = _service(db, _FakeTiingo())
+    service.pull()
+    decision_id = _scalar(
+        db,
+        f"SELECT decision_id FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant
+        "WHERE status = 'pending'",
+    )
+    SecurityLinkDecisionsRepo(db).update_status(
+        decision_id, status="rejected", decided_by="user", actor="test"
+    )
+
+    service.pull()
+
+    assert _decisions(db) == []
+
+
+def test_an_undone_binding_is_not_silently_recreated(db: Database) -> None:
+    """Undoing an auto-binding must stick, or the undo is theatre.
+
+    The user undoes a binding because the position was valued from the wrong
+    listing. Re-deriving it on the next pull reaches the same conclusion from the
+    same inputs and re-binds silently, so the wrong valuation returns with no
+    confirm and no queue row. The undo is the signal the derivation lacks.
+
+    Driven through `system audit undo` because that is the path a user has
+    today — and it DELETEs the link row, so the audit log is the only surviving
+    evidence the binding ever existed.
+    """
+    _seed_security(db, security_id="s_soh", name="Sonic Healthcare", ticker="SOH")
+    _hold(db, "s_soh")
+    tiingo = _FakeTiingo(metadata={"SOH": TickerMetadata("Sonic Healthcare", None)})
+    service = _service(db, tiingo)
+    service.pull()
+    operation_id = _scalar(
+        db,
+        f"SELECT operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # TableRef constant
+        "WHERE action = 'security_link.insert'",
+    )
+    UndoService(db).undo(operation_id, actor="test")
+    assert _links(db) == []
+
+    service.pull()
+
+    assert _links(db) == []
+    assert _decisions(db) == [(TIINGO_REF_KIND, "SOH", "binding_was_reversed")]
+
+
+def test_a_reversed_binding_is_not_silently_recreated(db: Database) -> None:
+    """The same refusal through the reversal path, which leaves the row in place.
+
+    Separate from the undo test because the two leave different evidence — a
+    `reversed` row here, an audit entry and no row there — so one fixture cannot
+    isolate both arms. No surface reverses a feed-key link yet; this holds the
+    behaviour for the ones that will.
+    """
+    _seed_security(db, security_id="s_soh", name="Sonic Healthcare", ticker="SOH")
+    _hold(db, "s_soh")
+    tiingo = _FakeTiingo(metadata={"SOH": TickerMetadata("Sonic Healthcare", None)})
+    service = _service(db, tiingo)
+    service.pull()
+    link_id = _scalar(
+        db,
+        f"SELECT link_id FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef constant
+        "WHERE status = 'accepted'",
+    )
+    SecurityLinksRepo(db).reverse(link_id=link_id, reversed_by="user", actor="test")
+
+    service.pull()
+
+    assert _links(db) == []
+    assert _decisions(db) == [(TIINGO_REF_KIND, "SOH", "binding_was_reversed")]
+
+
+def test_correcting_a_typod_ticker_stops_the_old_symbols_prices(
+    db: Database,
+) -> None:
+    """A bound ref outlives the catalog value it was derived from.
+
+    `SecuritiesRepo.set` writes only `app.securities`; nothing cascades to
+    `app.security_links`. So a ticker typo fixed after the first pull leaves the
+    position fetching — and valuing from — the wrong company's closes forever,
+    reported as `valued`, with no surface revealing the mismatch.
+    """
+    _seed_security(db, security_id="s_typo", name="AppTech Payments", ticker="AAPL")
+    _hold(db, "s_typo")
+    tiingo = _FakeTiingo(
+        metadata={
+            "AAPL": TickerMetadata("AppTech Payments", None),
+            "AAPU": TickerMetadata("AppTech Payments", None),
+        }
+    )
+    service = _service(db, tiingo)
+    service.pull()
+    db.execute(
+        f"UPDATE {SECURITIES.full_name} SET ticker = ? WHERE security_id = ?",  # noqa: S608  # TableRef constant
+        ["AAPU", "s_typo"],
+    )
+    tiingo.fetched.clear()
+
+    service.pull()
+
+    assert [ref.provider_security_key for ref in tiingo.fetched] == ["AAPU"]
+
+
+def test_a_queued_review_records_what_the_provider_said_not_the_catalog(
+    db: Database,
+) -> None:
+    """The reviewer's only evidence is the divergence, so it has to be stored.
+
+    `provider_ticker`/`provider_name` are documented as the provider's values and
+    `SecurityResolver` fills them that way. Writing the catalog's own name into
+    them shows the reviewer two identical names and no reason to decide either
+    way — and makes the column mean the opposite of what it means for every
+    Plaid-authored row in the same table.
+    """
+    _seed_security(db, security_id="s_bhp", name="BHP Group Ltd", ticker="BHP")
+    _hold(db, "s_bhp")
+    tiingo = _FakeTiingo(
+        metadata={"BHP": TickerMetadata("Bharat Heavy Electricals", "NSE")}
+    )
+
+    _service(db, tiingo).pull()
+
+    row = db.execute(
+        f"SELECT provider_ticker, provider_name FROM "  # noqa: S608  # TableRef constant
+        f"{SECURITY_LINK_DECISIONS.full_name} WHERE status = 'pending'"
+    ).fetchone()
+    assert row is not None
+    assert (str(row[0]), str(row[1])) == ("BHP", "Bharat Heavy Electricals")
 
 
 # --------------------------------------------------------------------------
