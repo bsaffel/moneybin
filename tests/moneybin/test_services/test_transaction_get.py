@@ -367,6 +367,50 @@ class TestTransactionGet:
             service.get(limit=2, cursor=forged)
 
     @pytest.mark.unit
+    def test_continuation_that_precedes_its_snapshot_is_rejected(
+        self, txn_db: Database
+    ) -> None:
+        """`after` may never sort ahead of the snapshot it continues.
+
+        Both keys are individually well-formed, so the shape checks pass. But
+        an `after` that precedes its snapshot in display order makes the
+        continuation predicate *weaker* than the snapshot predicate rather than
+        narrower, and the page re-serves rows the first page already returned —
+        here T1, served on page one, comes back. Cursors are unsigned, so this
+        is a reachable forgery, and the accounts keyset path already rejects it
+        ("continuation precedes snapshot").
+        """
+        from moneybin.protocol.pagination import encode_keyset_cursor
+        from moneybin.services.transaction_service import (
+            _TRANSACTION_LIST_CURSOR,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        service = TransactionService(txn_db)
+        scope = service._get_cursor_scope(  # pyright: ignore[reportPrivateUsage]
+            accounts=None,
+            date_from=None,
+            date_to=None,
+            categories=None,
+            amount_min=None,
+            amount_max=None,
+            description=None,
+            uncategorized_only=False,
+        )
+        # Rows sort transaction_date DESC, transaction_id ASC: T2, T1, T3, T4.
+        # Swapping a real page-two cursor's two keys puts `after` (T2, newer)
+        # ahead of `snapshot` (T1) instead of behind it.
+        forged = encode_keyset_cursor(
+            namespace=_TRANSACTION_LIST_CURSOR,
+            scope=scope,
+            snapshot=("2026-04-10", "T1"),
+            after=("2026-04-15", "T2"),
+            total=4,
+        )
+
+        with pytest.raises(ValueError, match="invalid cursor"):
+            service.get(limit=2, cursor=forged)
+
+    @pytest.mark.unit
     def test_uncategorized_only_includes_source_categorized(self, db: Database) -> None:
         """uncategorized_only returns rows with source-provided category but no user categorization."""
         create_core_tables_raw(db.conn)

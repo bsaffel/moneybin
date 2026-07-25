@@ -276,7 +276,15 @@ class DoctorService:
         and calling that a failure would exit non-zero on a healthy first run.
         That reports ``skipped`` with the remedy instead.
         """
-        presence = model_presence(self._db)
+        try:
+            presence = model_presence(self._db)
+        except Exception as e:  # noqa: BLE001 — per-invariant isolation; an unreadable catalog is not a fresh profile
+            return InvariantResult(
+                name="sqlmesh_model_presence",
+                status="skipped",
+                detail=f"model catalog unavailable: {e}",
+                affected_ids=[],
+            )
         if presence.never_built:
             return InvariantResult(
                 name="sqlmesh_model_presence",

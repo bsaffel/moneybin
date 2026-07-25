@@ -110,6 +110,29 @@ def test_freshness_no_raw_no_pending(
     assert f.latest_import_at is None
 
 
+def test_freshness_does_not_report_healthy_when_the_catalog_is_unreadable(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable catalog must not surface as `pending=False`.
+
+    `freshness()` discards the missing set on a never-built warehouse, so a
+    swallowed catalog error reached this branch and reported the same value a
+    healthy first run does — the one signal watching for absent models going
+    quiet on a database that cannot be inspected at all.
+    """
+    real_execute = db.execute
+
+    def _fail_catalog_reads(sql: str, *args: object, **kwargs: object) -> object:
+        if "duckdb_tables" in sql:
+            raise RuntimeError("catalog unreadable")
+        return real_execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(db, "execute", _fail_catalog_reads)
+
+    with pytest.raises(RuntimeError, match="catalog unreadable"):
+        TransformService(db).freshness()
+
+
 def test_freshness_filters_reverted_and_failed_imports(
     freshness_db: Database, declare_only_models: Callable[..., None]
 ) -> None:

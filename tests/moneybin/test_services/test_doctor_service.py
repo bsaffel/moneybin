@@ -1943,6 +1943,38 @@ def test_missing_registered_model_fails_an_invariant(
 
 
 @pytest.mark.unit
+def test_unreadable_catalog_reports_unavailable_not_a_fresh_profile(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catalog read that fails must not hand back the first-run remedy.
+
+    "no SQLMesh models built yet; run refresh_run" is an actively wrong
+    instruction for a database whose catalog cannot be read — it names a
+    healthy state and a remedy that will not help. The invariant catches its
+    own failure and says so, matching every other `_run_*` method.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    def _raise(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("catalog unreadable")
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.services.doctor_service.model_presence", _raise)
+
+    report = DoctorService(doctor_db).run_all()
+    result = next(r for r in report.invariants if r.name == "sqlmesh_model_presence")
+
+    assert result.status == "skipped"
+    assert result.detail is not None
+    assert "refresh_run" not in result.detail
+    assert "catalog unreadable" in result.detail
+
+
+@pytest.mark.unit
 def test_model_presence_passes_when_every_registered_model_exists(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

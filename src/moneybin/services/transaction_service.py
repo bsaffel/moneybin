@@ -33,6 +33,7 @@ from moneybin.protocol.pagination import (
     KeysetPosition,
     KeysetScalar,
     build_keyset_page,
+    compare_keyset,
     decode_keyset_cursor,
 )
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
@@ -59,6 +60,9 @@ logger = logging.getLogger(__name__)
 # MCP `transactions` tool's namespace: same table, different public filter set,
 # so a cursor from one must not decode against the other.
 _TRANSACTION_LIST_CURSOR = "transactions_list"
+
+# Display order of the keyset: `ORDER BY transaction_date DESC, transaction_id`.
+_TRANSACTION_KEY_DIRECTIONS: tuple[Literal["asc", "desc"], ...] = ("desc", "asc")
 
 
 def _is_transaction_key(key: tuple[KeysetScalar, ...]) -> bool:
@@ -826,6 +830,17 @@ class TransactionService:
                 raise ValueError("invalid cursor") from e
             if not _is_transaction_key(position.snapshot) or not _is_transaction_key(
                 position.after
+            ):
+                raise ValueError("invalid cursor")
+            # Both keys are well-formed on their own, but an `after` that sorts
+            # ahead of its snapshot makes the continuation predicate weaker
+            # than the snapshot predicate instead of narrower, re-serving rows
+            # page one already returned. Matches the accounts keyset path.
+            if (
+                compare_keyset(
+                    position.after, position.snapshot, _TRANSACTION_KEY_DIRECTIONS
+                )
+                < 0
             ):
                 raise ValueError("invalid cursor")
 

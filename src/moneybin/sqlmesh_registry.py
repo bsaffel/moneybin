@@ -109,19 +109,23 @@ def model_presence(db: Database) -> ModelPresence:
     Shared by the doctor invariant and ``TransformService.freshness()`` so the
     two cannot drift — they previously ran the same query with different
     exception scopes.
+
+    A failing catalog read propagates: there is no ``ModelPresence`` that means
+    "unknown". Swallowing it returned ``built_beyond_init_count=0``, the exact
+    value :attr:`ModelPresence.never_built` keys on, so an unreadable catalog
+    took the healthy first-run branch in both callers — the doctor answered
+    "run refresh_run" and ``freshness()`` reported ``pending=False`` for a
+    database it could not inspect at all. Each caller isolates the failure
+    itself and reports that it could not answer.
     """
-    try:
-        rows = db.execute(
-            """
-            SELECT LOWER(schema_name || '.' || table_name) FROM duckdb_tables()
-            UNION
-            SELECT LOWER(schema_name || '.' || view_name) FROM duckdb_views()
-            """
-        ).fetchall()
-        built = {str(row[0]) for row in rows}
-    except Exception:  # noqa: BLE001 — an unreadable catalog is "unknown", not "missing"
-        logger.debug("model presence check skipped: catalog unreadable", exc_info=True)
-        return ModelPresence(missing=(), built_beyond_init_count=0)
+    rows = db.execute(
+        """
+        SELECT LOWER(schema_name || '.' || table_name) FROM duckdb_tables()
+        UNION
+        SELECT LOWER(schema_name || '.' || view_name) FROM duckdb_views()
+        """
+    ).fetchall()
+    built = {str(row[0]) for row in rows}
     registered = registered_model_names()
     return ModelPresence(
         missing=tuple(sorted(registered - built)),

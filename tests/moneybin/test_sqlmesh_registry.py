@@ -74,6 +74,29 @@ def test_opening_a_database_reads_as_never_built(db: Database) -> None:
 
 
 @pytest.mark.unit
+def test_an_unreadable_catalog_is_not_reported_as_never_built(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catalog that cannot be read is unknown — not a fresh profile.
+
+    Swallowing the error returned ``built_beyond_init_count=0``, the exact
+    value ``never_built`` keys on, so an unreadable catalog took the healthy
+    first-run branch in *both* consumers: the doctor reported ``skipped`` with
+    "run refresh_run" as the remedy, and ``freshness()`` dropped the missing
+    set and reported ``pending=False``. Propagating is what lets each caller
+    say it could not answer instead of answering wrongly.
+    """
+
+    def _raise(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("catalog unreadable")
+
+    monkeypatch.setattr(db, "execute", _raise)
+
+    with pytest.raises(RuntimeError, match="catalog unreadable"):
+        model_presence(db)
+
+
+@pytest.mark.unit
 def test_a_wiped_staging_layer_does_not_read_as_never_built(db: Database) -> None:
     """A built warehouse that lost its `prep` layer is broken, not brand new.
 
