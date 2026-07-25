@@ -357,7 +357,7 @@ Physical assets (real estate, vehicles, valuables). Group is reserved; commands 
 
 ### `investments`
 
-Investment ledger, positions, tax lots, realized gains, and the manually-maintained securities catalog. Promotes the former `accounts investments` placeholder to a top-level group. All commands support `--output json`.
+Investment ledger, positions, tax lots, realized gains, and the securities catalog (user-created entries plus those minted during a Plaid sync). Promotes the former `accounts investments` placeholder to a top-level group. All commands support `--output json`.
 
 | Command | Purpose | Key flags |
 |---|---|---|

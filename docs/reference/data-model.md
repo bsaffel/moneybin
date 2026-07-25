@@ -292,7 +292,7 @@ Canonical securities dimension. Grain: one row per `security_id`. `VIEW` over `a
 | `security_type` | VARCHAR | `equity` \| `etf` \| `mutual_fund` \| `bond` \| `crypto` \| `cash` \| `other`. `cash` covers money-market/sweep positions. |
 | `ticker` | VARCHAR | Display/lookup ticker; not unique (tickers get reused) — carry `security_id` for joins/aggregation (identifiers.md Guard 1). |
 | `exchange` | VARCHAR | Listing exchange; disambiguates duplicate tickers. |
-| `cusip` | VARCHAR | Licensed identifier; NULL unless user-supplied. |
+| `cusip` | VARCHAR | Licensed identifier. User-entered, or passed through from a provider that sends one — Plaid has gated CUSIP behind a license since 2024-03, so Plaid-sourced rows are NULL in practice. |
 | `isin` | VARCHAR | International identifier. |
 | `figi` | VARCHAR | OpenFIGI mapping. |
 | `coingecko_id` | VARCHAR | Crypto price-lookup slug. |
@@ -703,7 +703,7 @@ Tables here capture state that cannot be re-derived from raw sources: categoriza
 | `app.audit_log` | One row per mutation | Unified audit log; emitted synchronously in the same transaction as the mutation. |
 | `app.match_decisions` | One row per `match_id` | Matcher + user-review decisions. `match_type` ∈ `{dedup, transfer}`. Source for `core.bridge_transfers`. |
 | `app.tabular_formats` | One row per format `name` | Saved column mappings for tabular imports (Chase, Citi, Tiller, Mint, YNAB built-ins + auto-detected). |
-| `app.securities` | One row per `security_id` | Manually-maintained security catalog (ticker, CUSIP, ISIN, FIGI, `cost_basis_method` override). Surfaced via `core.dim_securities`. |
+| `app.securities` | One row per `security_id` | Security catalog (ticker, CUSIP, ISIN, FIGI, `cost_basis_method` override). Entries are user-created or minted by `SecurityResolver` during a Plaid sync; `created_by` records which. Surfaced via `core.dim_securities`. |
 | `app.lot_selections` | One row per `(investment_transaction_id, lot_id)` | Specific-identification overrides: which lots a disposal draws from and how much; unselected remainder falls back to FIFO. |
 
 **Internal `app.*` tables (do not query directly):** `app.seed_source_priority`, `app.metrics`, `app.versions`, `app.schema_migrations`. These are ops plumbing — source-priority ranking, Prometheus snapshots, component versions, migration history.
