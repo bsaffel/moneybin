@@ -490,6 +490,31 @@ A new adapter takes the next free rank. Where two providers disagree on the same
 date the rank picks one deterministically and `system doctor` reports the
 disagreement — resolution stays stable, and the conflict stays visible.
 
+**Adding or retiring a provider — two rules that outlive any one adapter.**
+Both are cheap to honour and expensive to discover late.
+
+- **Append ranks; never reorder them.** Inserting a provider at rank 3 and
+  demoting the incumbent changes which close wins on every historical date where
+  both hold a row, which silently revalues `core.dim_holdings.market_value` and
+  the C.3 daily series. The code change is one line either way; the consequence
+  is not. Reordering is a deliberate, announced revaluation, not a refactor.
+- **A retired provider's `source_type` mapping stays forever.** Because
+  `raw.security_prices` is append-only, a provider's rows outlive the decision to
+  stop fetching from it — and `prep.stg_security_prices` resolves each row through
+  a per-`source_type` `ref_kind` CASE with an INNER JOIN. Deleting a retired
+  source's arm of that CASE therefore discards every historical row it wrote,
+  silently and unrecoverably. Retiring a provider means ceasing to *write*, never
+  removing its mapping or its `ref_kind`.
+
+  **No test currently catches that deletion.**
+  `tests/moneybin/test_stg_security_prices.py::test_every_mapped_source_resolves_end_to_end`
+  derives its source list by parsing the CASE out of the model file, which is what
+  makes adding an arm without widening the `ref_kind` CHECK fail loudly — but it
+  also means removing an arm merely shrinks the set the test iterates. The guard
+  that would close this is a check that every `source_type` present in
+  `raw.security_prices` has a mapping, which belongs with the held-but-unpriced
+  doctor work rather than in staging.
+
 **Freshness dominates rank.** An override applies to one
 `(security_id, price_date, quote_currency)`. Within that date it beats every
 provider row; across dates the latest price wins, including over an older
