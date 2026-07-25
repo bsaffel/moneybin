@@ -29,27 +29,71 @@ class _SuppressFilter(logging.Filter):
         return "Shutting down the event dispatcher" not in record.getMessage()
 
 
-# Logger-name prefixes whose INFO/DEBUG output is too noisy for the console
-# but should still reach log files for debugging. SQLMesh emits a lot of
-# operational logging (model evaluation, plan creation, state sync, analytics)
-# that drowns out user-facing CLI output — route it all to the sqlmesh log
-# file instead.
-_CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = ("sqlmesh",)
+# Logger-name prefixes whose INFO/DEBUG output is too noisy for the console but
+# should still reach the log file. That second half is the point: `logger.debug`
+# would drop these records everywhere, because the root logger sits at INFO and
+# never emits them at all. Use this list when the detail belongs in the file;
+# use `logger.debug` only when a surviving INFO line already carries it.
+#
+# - sqlmesh: model evaluation, plan creation, state sync, analytics. Has its own
+#   file via _setup_sqlmesh_file_handler.
+# - httpx/httpcore: one line per request, so a `sync pull` becomes a wall of
+#   "HTTP/1.1 201 Created".
+# - matching.engine: per-tier counts in the engine's own vocabulary. The file
+#   keeps them because MatchResult.summary() reports only run-wide totals.
+# - extractors.plaid: per-table row counts that name a Chase card a "Plaid
+#   account". The file keeps them because the CLI's per-institution totals go
+#   out through typer.echo, which never reaches the log file.
+#
+# This is a denylist: anything not named here reaches the console. That is the
+# deliberate choice. An allowlist would be quiet by default — nicer as new
+# dependencies arrive — but it inverts the default for every one of the ~168
+# `logger.info` sites in the tree, and each one whose output a user actually
+# needs becomes a silent regression. The cases worth hiding are enumerable; the
+# cases that must stay visible are not.
+_CONSOLE_SUPPRESSED_PREFIXES: tuple[str, ...] = (
+    "sqlmesh",
+    "httpx",
+    "httpcore",
+    "moneybin.matching.engine",
+    "moneybin.extractors.plaid",
+    # Which of --profile / MONEYBIN_PROFILE / config.yaml chose the profile.
+    # A child logger so this one line can be suppressed without silencing
+    # `moneybin.cli`, which is ordinary user-facing output.
+    "moneybin.cli.utils.profile_source",
+    # Per-engine categorization counts. `categorize_pending()` restates them
+    # in its run summary, so they duplicate on the console — but the
+    # per-method path calls the engines directly with no summary, so the file
+    # needs them. A child logger keeps the parent's run summary visible.
+    "moneybin.services.categorization.orchestrator.engine_counts",
+)
+
+
+def _matches(name: str, prefixes: tuple[str, ...]) -> bool:
+    """True when ``name`` is one of ``prefixes`` or a descendant of one."""
+    return any(name == p or name.startswith(f"{p}.") for p in prefixes)
 
 
 class _ConsoleNoiseFilter(logging.Filter):
-    """Suppress noisy third-party INFO messages from the console only.
+    """Suppress noisy INFO messages from the console only.
 
     Attached to the console handler so file handlers still see everything.
+    WARNING and above always pass — quieting noise must never quiet a problem.
     """
 
+    def __init__(self, *, file_sink: bool = False) -> None:
+        super().__init__()
+        # Suppression assumes the log file keeps a copy of what stderr drops.
+        # With `log_to_file: false` there is no copy, and both
+        # docs/guides/observability.md and threat-model.md promise stderr stays
+        # "unaffected" so containers and journald can capture it — so filtering
+        # there would destroy records, not relocate them. Stand down instead.
+        self._file_sink = file_sink
+
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno < logging.WARNING and any(
-            record.name == p or record.name.startswith(f"{p}.")
-            for p in _CONSOLE_SUPPRESSED_PREFIXES
-        ):
-            return False
-        return True
+        if record.levelno >= logging.WARNING or not self._file_sink:
+            return True
+        return not _matches(record.name, _CONSOLE_SUPPRESSED_PREFIXES)
 
 
 def session_log_path(
@@ -208,10 +252,10 @@ def setup_logging(
     # Prepare handlers
     handlers: list[logging.Handler] = []
 
-    # Console handler (always present, writes to stderr)
+    # Console handler (always present, writes to stderr). Its filter is
+    # attached below, once we know whether a file handler actually landed.
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
-    console_handler.addFilter(_ConsoleNoiseFilter())
     handlers.append(console_handler)
 
     # File handler — only write to file if the log directory's parent exists.
@@ -234,6 +278,15 @@ def setup_logging(
             # console filter already suppresses these from stderr; this
             # ensures they still reach a log file for debugging.
             _setup_sqlmesh_file_handler(log_file_path, inner_formatter)
+
+    # Attach the console filter now that the file-handler outcome is known —
+    # including the mkdir failure above, which leaves stderr as the only sink
+    # just as surely as `log_to_file: false` does.
+    console_handler.addFilter(
+        _ConsoleNoiseFilter(
+            file_sink=any(isinstance(h, logging.FileHandler) for h in handlers)
+        )
+    )
 
     # Configure root logger
     logging.basicConfig(

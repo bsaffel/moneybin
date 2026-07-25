@@ -8,6 +8,10 @@ service-layer behavior independently.
 
 from __future__ import annotations
 
+import logging
+from typing import cast
+from unittest.mock import MagicMock
+
 import pytest
 
 from moneybin import error_codes
@@ -1661,3 +1665,27 @@ def test_taxonomy_target_plan_rejects_ambiguous_merchant_natural_key(
 
     assert exc_info.value.code == error_codes.MUTATION_AMBIGUOUS
     assert exc_info.value.details == {"candidate_ids": sorted(merchant_ids)}
+
+
+@pytest.mark.unit
+def test_committed_review_merchants_log_once_for_the_batch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A batch of created merchants emits one record, not one per merchant.
+
+    A sync that creates nine merchants used to write nine near-identical
+    lines whose only payload was an opaque id. The count is the part a
+    reader can act on; the ids stay available at debug. Merchant names are
+    never logged (`.claude/rules/security.md`).
+    """
+    applier = MatchApplier(cast("Database", MagicMock()), audit=MagicMock())
+
+    with caplog.at_level(logging.INFO, logger="moneybin.services.categorization"):
+        applier.record_committed_review_merchants(
+            created_merchant_ids=("a1b2c3d4e5f6", "b2c3d4e5f6a1", "c3d4e5f6a1b2"),
+            touched_merchant_ids=(),
+        )
+
+    info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(info_records) == 1
+    assert "3" in info_records[0].getMessage()

@@ -1236,7 +1236,11 @@ def test_ordinary_late_failure_rolls_back_state_audit_and_observability(
             ReviewDecisionsService(db, actor="mcp").apply_ordinary(requests)
 
     metric_labels.assert_not_called()
-    assert "Created user merchant" not in caplog.text
+    # "user merchant" — not the full sentence. Both applier log sites (the
+    # per-merchant create and the post-commit batch) contain it, so this
+    # catches either firing and survives a reword of the count line, which
+    # silently voided the old `"Created user merchant"` match in #356.
+    assert "user merchant" not in caplog.text
     with get_database(read_only=True) as db:
         assert (
             db.execute(
