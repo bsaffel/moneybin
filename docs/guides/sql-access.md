@@ -113,7 +113,7 @@ Default location: `<base>/profiles/<profile>/moneybin.duckdb`. `<base>` resolves
 
 ### DuckDB version compatibility
 
-The encrypted DuckDB file format is versioned with DuckDB itself; the version that wrote it must be compatible with the version reading it. MoneyBin currently bundles **DuckDB 1.5.4** (pinned in `uv.lock`; `pyproject.toml` only sets a floor, `duckdb>=1.3.2`). Your external client should use a DuckDB release with the same major.minor or one with documented forward-compatibility. A version mismatch typically surfaces as an opaque `IO Error` or `Serialization Error` on ATTACH. `moneybin db info` prints the DuckDB version the file was last opened with.
+The encrypted DuckDB file format is versioned with DuckDB itself; the version that wrote it must be compatible with the version reading it. MoneyBin currently bundles **DuckDB 1.5.4** (pinned in `uv.lock`; `pyproject.toml` only sets a floor, `duckdb>=1.3.2`). Your external client should use a DuckDB release with the same major.minor or one with documented forward-compatibility. A version mismatch typically surfaces as an opaque `IO Error` or `Serialization Error` on ATTACH. `moneybin db info` prints the DuckDB version *currently running* (it runs `SELECT version()`), which is the number to match your external client against. It is not a record of what wrote the file — DuckDB persists no writer-version metadata, so after a MoneyBin upgrade `db info` reports the new runtime even for a file last written by an older release.
 
 ### DuckDB CLI
 
@@ -255,7 +255,7 @@ For schema-aware composition without burning tokens on the full catalog, call `s
 
 MoneyBin is pre-v1. Column names and view shapes in `core.*` and `reports.*` may rename or restructure before launch — but every change lands in [`CHANGELOG.md`](../../CHANGELOG.md). Post-launch, the surface locks: additive changes only, with deprecation windows for anything that has to move.
 
-Practical implication for scripts: pin to MoneyBin versions in your tooling and re-read the changelog when bumping. `meta.model_freshness` reports the SQLMesh model versions in effect (`last_changed_at`, `last_applied_at` per model) — useful for schema-drift checks; `moneybin db info` reports the DuckDB file-format version the database was last opened with — useful for the client-compatibility check in [DuckDB version compatibility](#duckdb-version-compatibility) above. The two are unrelated version axes; neither substitutes for the other.
+Practical implication for scripts: pin to MoneyBin versions in your tooling and re-read the changelog when bumping. `meta.model_freshness` reports the SQLMesh model versions in effect (`last_changed_at`, `last_applied_at` per model) — useful for schema-drift checks; `moneybin db info` reports the running DuckDB version — useful for the client-compatibility check in [DuckDB version compatibility](#duckdb-version-compatibility) above. The two are unrelated version axes; neither substitutes for the other.
 
 ## See also
 
