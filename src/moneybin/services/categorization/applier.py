@@ -598,8 +598,11 @@ class MatchApplier:
             ).fetchone()
             if row is not None:
                 MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(int(row[0]))
-        for merchant_id in dict.fromkeys(created_merchant_ids):
-            logger.info(f"Created user merchant {merchant_id}")
+        created = list(dict.fromkeys(created_merchant_ids))
+        if created:
+            # A count, not one line per id: a categorization run creates these
+            # in bulk. Merchant names are never logged (.claude/rules/security.md).
+            logger.info(f"Created {len(created)} user merchant(s)")
 
     # -- Rule management --
 

@@ -528,6 +528,10 @@ class PlaidExtractor:
             schema=_ACCOUNTS_SCHEMA,
         )
         self.db.ingest_dataframe("raw.plaid_accounts", df, on_conflict="upsert")
+        # Info, not debug: the CLI's per-institution totals go out via
+        # typer.echo, which never reaches the log file — so these row counts
+        # are the only durable record of what a sync loaded. Denylisted from
+        # the console instead, where "Plaid account" misnames a Chase card.
         logger.info(f"Loaded {len(df)} Plaid accounts")
         return len(df)
 

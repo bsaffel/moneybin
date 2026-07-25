@@ -346,7 +346,9 @@ def _run_categorize_step(db: Database) -> str | None:
         )
 
     if stats["total"] > 0:
-        logger.info(
+        # The categorization run already reported this same total and
+        # breakdown; at info the pipeline would echo it a second time.
+        logger.debug(
             f"Auto-categorized {stats['total']} transactions "
             f"({stats['merchant']} merchant, {stats['rule']} rule, "
             f"{stats['plaid']} plaid)"

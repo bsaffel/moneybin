@@ -140,6 +140,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   retired, none of them runnable by whoever received the hint. The four
   import-preview refusals — not found, consumed, expired, changed — now say
   how to recover instead of only stating the fact.
+- **`sync pull` no longer buries its results in diagnostic logging.** HTTP
+  status lines, raw-loader row counts, per-tier match counts, and the
+  profile-resolution source now go to the log file instead of the console, and
+  bulk merchant creation reports a count rather than one line per id. Progress,
+  per-institution totals, and what an AI assistant reads over MCP are
+  unchanged. (#356)
 - **A permission-denied import now tells you how to fix it.** Importing a file
   the OS refuses to open returns the new `infra_permission_denied` code with a
   hint matched to the actual cause: a file-mode problem says to check ownership

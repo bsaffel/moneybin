@@ -24,6 +24,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.services import matching_service
+from moneybin.services.merchant_resolver import HarvestResult
 from moneybin.services.refresh import RefreshResult, refresh
 from moneybin.services.transform_service import ApplyResult
 
@@ -304,8 +305,12 @@ def test_identity_failure_does_not_prevent_other_domain(
         calls.append("accounts")
         raise RuntimeError(sensitive_error)
 
-    def _merchants_run() -> None:
+    def _merchants_run() -> HarvestResult:
         calls.append("merchants")
+        # Mirrors the real return type: refresh reads `.conflicts` to decide
+        # whether to surface a review notice, so a bare None here would only
+        # pass by accident.
+        return HarvestResult(bound=0, conflicts=0)
 
     accounts_run = MagicMock(side_effect=_accounts_run)
     merchants_run = MagicMock(side_effect=_merchants_run)

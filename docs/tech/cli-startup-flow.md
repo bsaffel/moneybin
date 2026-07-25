@@ -180,7 +180,9 @@ After the chain returns a profile name, the resolver:
 1. Calls `set_current_profile(name)`.
 2. Checks `<base>/profiles/<normalized>/` exists. If not, emits a hint to `profile list` / `profile create <name>` and exits 1.
 3. Calls `setup_observability(stream="cli", verbose=_flags.verbose, profile=name)` — this is the call that actually opens the profile- and stream-scoped log file at `<base>/profiles/<profile>/logs/cli_<YYYY-MM-DD>.log` (one file per stream per day; see `session_log_path()` in [`src/moneybin/logging/config.py`](../../src/moneybin/logging/config.py)).
-4. Logs `Using profile: X (from <source>)`.
+4. Logs `Using profile: X` to the console, and the resolution source
+   (`--profile`, `MONEYBIN_PROFILE`, config file, or first-run wizard) to the
+   log file only — see `.claude/rules/cli.md` → "Keeping the console readable".
 
 ### Bare-group invocations and recovery commands
 
