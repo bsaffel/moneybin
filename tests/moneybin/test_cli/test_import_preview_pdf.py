@@ -178,20 +178,35 @@ def test_preview_still_handles_a_csv(tmp_path: Path) -> None:
     assert "Unsupported file type" not in result.output
 
 
-def test_preview_reports_an_unreadable_pdf_cleanly(
-    statement: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+def test_preview_routes_a_tcc_denial_through_the_classifier(
+    statement: Path,
+    mocker: MockerFixture,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unreadable file is an error message, never a traceback.
+    """An unreadable file is a classified error message, never a traceback.
 
     Real trigger: macOS TCC denies reads under ~/Documents, so pdfplumber's
     `open()` raises PermissionError from deep inside the extractor and the CLI
     dumped a full rich traceback at the user. Statements routinely live in
     exactly those protected directories.
+
+    The advice has to come from `permission_advice`, not from this branch: it
+    used to hardcode the "Files and Folders" pane for *any* PermissionError,
+    which is the wrong pane for a TCC block and fires the macOS remedy on Linux
+    and on errnos `chmod` would fix.
+
+    Darwin is pinned rather than read from the host so the conjunction under
+    test is the code's, not the runner's — CI is Linux.
     """
+    monkeypatch.setattr("moneybin.errors.platform.system", lambda: "Darwin")
+    # The classifier reads `exc.filename`, so the protected root is expressed
+    # there; the fixture file itself only has to exist and end in .pdf.
+    blocked = Path.home() / "Documents" / "statement.pdf"
     _patch_service(
         mocker,
         pdf_preview=MagicMock(
-            side_effect=PermissionError(1, "Operation not permitted", str(statement))
+            side_effect=PermissionError(1, "Operation not permitted", str(blocked))
         ),
     )
 
@@ -202,8 +217,36 @@ def test_preview_reports_an_unreadable_pdf_cleanly(
     assert "Traceback" not in result.output
     assert result.exit_code == 1
     # Both halves matter: what failed, and the one-click OS fix for it.
-    assert "cannot read" in caplog.text.lower()
-    assert "privacy" in caplog.text.lower()
+    assert "Operation not permitted" in caplog.text
+    assert "Full Disk Access" in caplog.text
+    # The pane the hardcoded advice used to name.
+    assert "Files and Folders" not in caplog.text
+
+
+def test_preview_does_not_offer_the_tcc_remedy_for_a_mode_denial(
+    statement: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    """EACCES is a `chmod` problem, and saying "System Settings" would be wrong.
+
+    The isolating half: the old hardcoded hint fired the macOS TCC remedy for
+    every PermissionError, so this case got advice that could not fix it. No
+    platform pin is needed — the EACCES branch returns before any platform
+    test, which is itself the property being checked.
+    """
+    _patch_service(
+        mocker,
+        pdf_preview=MagicMock(
+            side_effect=PermissionError(13, "Permission denied", str(statement))
+        ),
+    )
+
+    with caplog.at_level("INFO"):
+        result = runner.invoke(app, ["preview", str(statement)])
+
+    assert result.exit_code == 1
+    assert "Permission denied" in caplog.text
+    assert "chmod" in caplog.text
+    assert "Full Disk Access" not in caplog.text
 
 
 def _patch_key_failure(mocker: MockerFixture, db_path: Path) -> None:
@@ -317,3 +360,61 @@ def test_preview_stays_quiet_when_no_tabular_flags_are_passed(
 
     assert result.exit_code == 0, result.output
     assert "Ignored for a PDF" not in caplog.text
+
+
+def test_tcc_denied_preview_is_classified_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`import preview` on a TCC-blocked file must give the recovery hint.
+
+    Twin of the `import files` preflight: `import_preview` ran its own
+    `source.exists()` check before entering `handle_cli_errors()`, and
+    `Path.exists()` raises under a TCC denial rather than returning False. That
+    made the documented `import preview ~/Documents/...` scenario emit an
+    unhandled traceback — the same defect, one command over.
+    """
+    target = Path.home() / "Documents" / "chase_statement.pdf"
+    real_exists = Path.exists
+
+    def _deny(self: Path, **kwargs: object) -> bool:
+        if self == target:
+            raise PermissionError(1, "Operation not permitted", str(target))
+        return real_exists(self, **kwargs)  # pyright: ignore[reportCallIssue,reportArgumentType]
+
+    monkeypatch.setattr(Path, "exists", _deny)
+
+    result = runner.invoke(app, ["preview", str(target)])
+
+    # `preview` is text-only (no --output), so the classified error surfaces
+    # through handle_cli_errors' log path rather than a JSON envelope.
+    assert result.exit_code == 1, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        f"unhandled exception leaked: {result.exception!r}"
+    )
+
+
+def test_tcc_denied_confirm_is_classified_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`import confirm` is the third command with this preflight shape.
+
+    Same defect as `import files` and `import preview`: an `exists()` check
+    outside `handle_cli_errors()`. Covered here so the fix isn't re-discovered
+    one command per review round.
+    """
+    target = Path.home() / "Documents" / "statement.pdf"
+    real_exists = Path.exists
+
+    def _deny(self: Path, **kwargs: object) -> bool:
+        if self == target:
+            raise PermissionError(1, "Operation not permitted", str(target))
+        return real_exists(self, **kwargs)  # pyright: ignore[reportCallIssue,reportArgumentType]
+
+    monkeypatch.setattr(Path, "exists", _deny)
+
+    result = runner.invoke(app, ["confirm", str(target), "--accept"])
+
+    assert result.exit_code == 1, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        f"unhandled exception leaked: {result.exception!r}"
+    )

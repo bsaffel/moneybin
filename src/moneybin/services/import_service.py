@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import UserError, classify_user_error
 from moneybin.extractors.confidence import Confidence
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
 from moneybin.extractors.tabular.account_label import parse_account_label
@@ -178,6 +178,31 @@ class PerFileResult:
     rows_skipped: int = 0
     import_id: str | None = None
     error: str | None = None
+    error_code: str | None = None
+    """Stable error code from `classify_user_error`; None when unclassified.
+
+    Paired with `error`: when this is set, `error` holds the classified
+    (sanitized) message. When None, `error` holds only the exception class
+    name — raw str(e) may embed PII, so unclassified failures stay opaque.
+    """
+    hint: str | None = None
+    """Actionable recovery advice from the classified `UserError`; None when
+    unclassified.
+
+    Set together with `error_code` and from the same source. This is what makes
+    a permission failure fixable — the chmod/chown advice on EACCES, the macOS
+    Full-Disk-Access walkthrough on a TCC block. Like `error`, it never comes
+    from raw str(e).
+    """
+    details: dict[str, Any] | None = None
+    """Structured facts behind `error_code`, for branching instead of parsing.
+
+    A permission failure carries `errno`, `platform`, and — when the macOS
+    branch fires — `protected_root`. `hint` says the same thing in prose, but
+    prose is not a contract: an agent that wants to know whether this was a TCC
+    denial should read `details["protected_root"]`, not grep the hint. Travels
+    with `error_code` and `hint`; None whenever they are.
+    """
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     sign_override_replayed: bool = False
@@ -406,6 +431,31 @@ def _validate_explicit_tabular_sign_shape(
         )
 
 
+def per_file_failure(
+    exc: Exception,
+) -> tuple[str, str | None, str | None, dict[str, Any] | None]:
+    """Return (error_message, error_code, hint, details) for a PerFileResult.
+
+    Public because the single-file MCP path builds its own PerFileResult and
+    must reach the same verdict this module's batch loop does.
+
+    Classified errors carry their sanitized message, code, recovery hint, and
+    structured `details`. Unclassified ones fall back to the class name with
+    nothing else — raw str(e) may embed PII (see extractors/ofx/extractor.py),
+    and there is no advice to give for an exception we didn't recognize.
+
+    `details` is the fourth element rather than dropped because it is what an
+    agent branches on: a permission failure carries `errno`, `platform`, and
+    (on the macOS branch) `protected_root`. Returning only the hint would force
+    callers to string-match prose to recover facts the classifier already knew
+    — the exact pattern `error_code` exists to replace.
+    """
+    classified = classify_user_error(exc)
+    if classified is None:
+        return type(exc).__name__, None, None, None
+    return classified.message, classified.code, classified.hint, classified.details
+
+
 def _display_label(file_type: str, file_path: Path) -> str:
     """User-facing label for a detected file type.
 
@@ -610,6 +660,13 @@ def _sniff_ofx_content(file_path: Path) -> bool:
     try:
         with open(file_path, "rb") as f:
             head = f.read(1024)
+    except PermissionError:
+        # "Could not look" is not "is not OFX". Returning False here sends an
+        # unreadable file on to the extension checks, where a missing or unknown
+        # suffix reports "Unsupported file type" — blaming the file for a
+        # permission problem the caller can actually fix. Let it propagate so
+        # `classify_user_error` produces the permission code and its hint.
+        raise
     except OSError:
         return False
     head_lstripped = head.lstrip()
@@ -877,10 +934,18 @@ class ImportService:
         # internally. These files are small — the duplicate parse is fine and
         # avoids leaking a parser-internal type into the extractor signature.
         # Wrap read+parse failures as ValueError so MCP's error envelope catches
-        # them; otherwise PermissionError/OSError leak as internal tool errors.
+        # them; otherwise OSError leaks as an internal tool error.
+        # PermissionError is deliberately re-raised intact: `classify_user_error`
+        # keys the `infra_permission_denied` code and its Full-Disk-Access hint
+        # off the exception type, so flattening it to ValueError here would
+        # downgrade a TCC/chmod denial to `infra_invalid_input` with no recovery
+        # advice — the affordance would work for tabular files but not OFX.
         try:
             with open(canonical_path, "rb") as f:
                 content = f.read().decode("utf-8", errors="replace")
+        except PermissionError:
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
+            raise
         except OSError as e:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
             raise ValueError(f"Could not read OFX file: {e}") from e
@@ -896,7 +961,14 @@ class ImportService:
             )
         except Exception as e:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="parse").inc()
-            raise ValueError(f"Invalid OFX file format: {e}") from e
+            # Type name, never `e`: ofxparse exception strings can embed
+            # payee/amount/memo content from the statement, and this message is
+            # no longer log-only — `per_file_failure` puts the classified
+            # message on the wire in `PerFileResult.error`, so interpolating
+            # `e` here publishes statement contents. Matches the identical
+            # guard in extractors/ofx/extractor.py. The `from e` chain keeps
+            # the full detail available in a local traceback.
+            raise ValueError(f"Invalid OFX file format: {type(e).__name__}") from e
 
         # Resolve institution (raises InstitutionResolutionError on non-interactive failure)
         try:
@@ -1943,7 +2015,12 @@ class ImportService:
                 observations=observations,
                 disposition="rollback",
             )
-            raise ValueError(f"Transform failed: {e}") from e
+            # Type name only, same reason as the OFX parse guard above: Polars
+            # conversion errors quote the offending cell ("could not convert
+            # 'SAFEWAY #123'"), and this message now reaches the wire through
+            # `per_file_failure`. The rejection row recorded above keeps the
+            # diagnostic detail on the operator's side of the boundary.
+            raise ValueError(f"Transform failed: {type(e).__name__}") from e
 
         # Stage 5: Load — one account record per unique account
         institution = matched_format.institution_name if matched_format else None
@@ -4028,15 +4105,21 @@ class ImportService:
                     )
                 )
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
-                # error_type only; raw str(e) may embed PII per extractors/ofx/extractor.py
-                error_type = type(e).__name__
-                logger.warning(f"Import failed for {path}: {error_type}")
+                error_message, error_code, error_hint, error_details = per_file_failure(
+                    e
+                )
+                # Log the class name, never the message: a classified message is
+                # user-safe but still names the path, and logs stay PII-free.
+                logger.warning(f"Import failed for {path}: {type(e).__name__}")
                 per_file.append(
                     PerFileResult(
                         path=str(path),
                         status="failed",
                         source_type=None,
-                        error=error_type,
+                        error=error_message,
+                        error_code=error_code,
+                        hint=error_hint,
+                        details=error_details,
                     )
                 )
 

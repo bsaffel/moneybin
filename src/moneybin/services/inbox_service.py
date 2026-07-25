@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import platform
 import re
 import time
 from collections.abc import Generator
@@ -28,6 +29,7 @@ import yaml
 
 from moneybin.config import MoneyBinSettings
 from moneybin.database import Database
+from moneybin.errors import permission_advice
 from moneybin.metrics.registry import (
     INBOX_SYNC_DURATION_SECONDS,
     INBOX_SYNC_TOTAL,
@@ -586,7 +588,7 @@ class InboxService:
         error_code, stage = self._classify_error(error)
         error_class = type(error).__name__
         message = str(error)[:_SIDECAR_MESSAGE_MAX]
-        suggestion = self._suggestion_for(error_code)
+        suggestion = self._suggestion_for(error_code, error)
         log_line = f"Inbox import failed: {rel_filename} → {error_code} ({error_class})"
 
         def _base_entry() -> dict[str, object]:
@@ -776,17 +778,30 @@ class InboxService:
         return ("import_error", "import")
 
     @staticmethod
-    def _suggestion_for(error_code: str) -> str | None:
-        """User-facing hint for known error codes."""
+    def _suggestion_for(error_code: str, error: Exception) -> str | None:
+        """User-facing hint for known error codes.
+
+        Permission failures are the one code whose fix depends on the
+        exception, not just the code: a mode denial (EACCES) clears with
+        chmod/chown, while a macOS privacy denial (EPERM under a protected
+        root) never does. Delegating to ``permission_advice`` keeps the sidecar
+        from confidently prescribing chmod for a denial chmod cannot fix.
+
+        ``error`` is required, not defaulted: a caller that omitted it would
+        silently get no permission suggestion at all rather than a wrong one,
+        and that regression would be invisible in the sidecar.
+        """
+        if error_code == "permission_error" and isinstance(error, PermissionError):
+            # None, not cwd: cwd is not the path that failed, and guessing from
+            # it could aim Full-Disk-Access advice at an unrelated EPERM.
+            target = Path(error.filename) if error.filename else None
+            hint, _ = permission_advice(error.errno or 0, platform.system(), target)
+            return hint
         return {
             "unsupported_file_type": (
                 "Convert to OFX/QFX, CSV, TSV, XLSX, Parquet, or PDF."
             ),
             "empty_file": "File contained no data rows; remove or replace.",
-            "permission_error": (
-                "Check file ownership and permissions "
-                "(e.g., chmod 644 or chown to your user)."
-            ),
             "schema_mismatch": (
                 "Database schema is out of date. Run "
                 "'moneybin db migrate' to apply pending migrations, then "

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from moneybin import error_codes
-from moneybin.errors import RecoveryAction, UserError
+from moneybin.errors import ErrorDetail, RecoveryAction, UserError
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     SummaryMeta,
@@ -64,7 +64,9 @@ class TestBuildErrorEnvelope:
             recovery_actions=[_sample_action()],
         )
         env = build_error_envelope(error=err, sensitivity="low")
-        assert env.error is err
+        assert env.error is not None
+        assert env.error.message == "Boom"
+        assert env.error.code == error_codes.MUTATION_NOT_FOUND
         assert env.recovery_actions is not None
         assert env.recovery_actions[0].tool == "system_audit_undo"
 
@@ -106,34 +108,23 @@ class TestBuildErrorEnvelope:
         )
         assert env.recovery_actions == []
 
-    def test_direct_construction_with_error_actions_serializes_top_level(self):
-        """Directly-built envelope still serializes the error's actions top-level.
+    def test_nested_error_cannot_carry_recovery_actions(self):
+        """The envelope's top-level field is the only wire home for actions.
 
-        ResponseEnvelope(error=err) built directly (not via build_error_envelope)
-        must still emit the error's recovery_actions at the top level. Regression
-        guard: to_dict() strips recovery_actions from the nested error dict, so
-        if the top-level field weren't backfilled from the error, the actions
-        would vanish entirely from the wire for this already-used construction
-        pattern.
+        This previously needed a runtime backfill: an envelope built directly
+        with `error=UserError(..., recovery_actions=[...])` had to have those
+        actions hoisted to the top level, and the nested copy stripped. The
+        envelope now holds an `ErrorDetail`, which structurally has no
+        `recovery_actions` field, so the duplicate wire location cannot exist —
+        the type replaces the backfill. Guards against reintroducing it.
         """
         err = UserError(
             "boom",
             code=error_codes.MUTATION_NOT_FOUND,
             recovery_actions=[_sample_action()],
         )
-        env = ResponseEnvelope(
-            summary=SummaryMeta(
-                total_count=0,
-                returned_count=0,
-                has_more=False,
-                sensitivity="low",
-                display_currency="USD",
-                degraded=False,
-            ),
-            data=[],
-            error=err,
-            # NOTE: recovery_actions NOT passed — left at default None
-        )
+        assert "recovery_actions" not in ErrorDetail.model_fields
+        env = build_error_envelope(error=err, sensitivity="low")
         d = env.to_dict()
         assert d["recovery_actions"][0]["tool"] == "system_audit_undo"
         assert "recovery_actions" not in d["error"]

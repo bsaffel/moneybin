@@ -458,6 +458,7 @@ def import_files(
         positive=income; transfers exempt. Display currency is set
         in summary.display_currency.
     """
+    from moneybin.protocol.import_envelope import mark_total_failure
     from moneybin.services.import_confirmation import ImportConfirmationRequiredError
     from moneybin.services.import_service import ImportService
 
@@ -568,10 +569,22 @@ def import_files(
             from moneybin.services.import_service import (
                 BatchImportResult,
                 PerFileResult,
+                per_file_failure,
             )
 
-            error_type = type(e).__name__
-            logger.warning(f"Import failed for {validated[0]}: {error_type}")
+            error_message, error_code, error_hint, error_details = per_file_failure(e)
+            if error_code is None and loaded_import_id is not None:
+                # The rows landed, so nothing here was a parse failure — the
+                # only work after the load is the refresh block above. Left
+                # unclassified, `mark_total_failure` falls back to
+                # IMPORT_PARSE_ERROR at the envelope level, which tells an
+                # agent to fix the file and re-import when the actual
+                # recoveries are retry-refresh or `import_revert` on the
+                # orphaned load (the `import_id` kept on the row below).
+                error_code = error_codes.REFRESH_MODEL_FAILED
+            # Log the class name, never the message: a classified message is
+            # user-safe but still names the path, and logs stay PII-free.
+            logger.warning(f"Import failed for {validated[0]}: {type(e).__name__}")
             batch = BatchImportResult(
                 per_file=[
                     PerFileResult(
@@ -580,7 +593,10 @@ def import_files(
                         source_type=None,
                         rows_loaded=0,
                         import_id=loaded_import_id,
-                        error=error_type,
+                        error=error_message,
+                        error_code=error_code,
+                        hint=error_hint,
+                        details=error_details,
                     )
                 ],
                 transforms_applied=False,
@@ -630,6 +646,9 @@ def import_files(
             rows_loaded=r.rows_loaded,
             import_id=r.import_id,
             error=r.error,
+            error_code=r.error_code,
+            hint=r.hint,
+            details=r.details,
             sign_correction_suggested=r.sign_correction_suggested,
             sign_override_replayed=r.sign_override_replayed,
             confirmation_payload=cast(
@@ -739,7 +758,7 @@ def import_files(
         actions.append("Refresh failed after import — call refresh_run to retry")
     actions.append("Use system_status to confirm refreshed counts")
 
-    return build_envelope(
+    envelope = build_envelope(
         data=ImportFilesPayload(
             imported_count=batch.imported_count,
             failed_count=batch.failed_count,
@@ -753,9 +772,17 @@ def import_files(
         # (DataClass.DESCRIPTION, MEDIUM). Per moneybin-mcp.md the envelope's
         # summary.sensitivity must reflect that — agents read summary.sensitivity
         # to drive consent prompts, not the per-field annotations directly.
-        sensitivity="medium" if pending_files else "low",
+        # A failed row's `error`/`hint` are DESCRIPTION-tier for the same reason
+        # (`ImportPerFileRow`), so they raise the tier too; deriving from
+        # `pending_files` alone under-declared every failed-file batch.
+        sensitivity=(
+            "medium"
+            if pending_files or any(r.error or r.hint for r in files)
+            else "low"
+        ),
         actions=actions,
     )
+    return mark_total_failure(envelope, batch)
 
 
 def _import_preview_pdf(

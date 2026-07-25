@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, cast
@@ -20,7 +20,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel
 
 from moneybin import error_codes
-from moneybin.errors import RecoveryAction, UserError
+from moneybin.errors import ErrorDetail, RecoveryAction, UserError
 
 
 def _serialize_payload(value: Any) -> Any:
@@ -145,8 +145,12 @@ class ResponseEnvelope[T]:
     - ``summary``: metadata for the AI (counts, truncation, sensitivity)
     - ``data``: the payload — typed object or bare dict/list
     - ``actions``: contextual next-step hints
-    - ``error``: populated when the tool failed with a classified user error;
-      ``data`` is empty in this case
+    - ``error``: populated when the tool failed; this field (mirrored by
+      ``status``) is the canonical failure signal. Envelopes built by
+      ``build_error_envelope`` carry an empty ``data``, but a tool MAY attach
+      ``error`` to a payload-carrying envelope when the payload itself explains
+      the failure — ``import_files`` keeps its per-file ``files[]`` results on
+      an all-failed batch. Never infer "``data`` is empty" from ``error``.
     - ``next_cursor``: opaque pagination token when more results are available
     - ``recovery_actions``: structured actions an agent can execute to fix
       a failure; carried from the UserError when present
@@ -155,13 +159,39 @@ class ResponseEnvelope[T]:
     summary: SummaryMeta
     data: T
     actions: list[str] = field(default_factory=list)
-    error: UserError | None = None
+    error: ErrorDetail | None = None
     next_cursor: str | None = None
     recovery_actions: list[RecoveryAction] | None = None
-    # Internal observability only: per-call DataClass names for dynamic-SQL tools,
-    # read by the @mcp_tool decorator to log accurate classes_returned.
-    # NOT part of the wire contract — never emitted by to_dict().
+    # Derived in __post_init__, never caller-supplied — see the method's docstring.
+    status: Literal["ok", "error"] = "ok"
+    # Internal observability only: per-call DataClass names for dynamic-SQL
+    # tools, read by the @mcp_tool decorator to log accurate classes_returned.
+    # NOT part of the wire contract — `to_dict()` omits it, and `to_dict()` is
+    # what `_wire_result_adapter` sends, so it never reaches the MCP wire.
     classes_returned: list[str] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        """Derive `status` from `error` so the two can never disagree.
+
+        `status` is a real field rather than a `to_dict()` computation so that
+        every consumer of the envelope — the wire, direct dataclass readers,
+        and tests — sees one value from one source. Any caller-supplied value
+        is overwritten on purpose.
+        """
+        self.status = "error" if self.error is not None else "ok"
+
+    def with_error(self, error: ErrorDetail) -> ResponseEnvelope[T]:
+        """Return a copy carrying `error`, with `status` re-derived.
+
+        Use this instead of `dataclasses.replace(envelope, error=...)`.
+        `replace` is typed `**changes: Any`, so it silently accepts a
+        `UserError` — which then raises `AttributeError` inside `to_dict()`
+        at serialization time, turning a structured partial-failure response
+        into an empty one. This signature makes pyright reject that at the
+        call site instead. Rebuilding (rather than assigning) is required
+        regardless: `status` is derived in `__post_init__`.
+        """
+        return replace(self, error=error)  # pyright: ignore[reportUnknownArgumentType]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization.
@@ -171,42 +201,16 @@ class ResponseEnvelope[T]:
         """
         data_serialized = _serialize_payload(self.data)
         d: dict[str, Any] = {
-            "status": "error" if self.error is not None else "ok",
+            "status": self.status,
             "summary": self.summary.to_dict(),
             "data": data_serialized,
             "actions": self.actions,
         }
-        # Effective recovery_actions: the envelope-level field is the canonical
-        # wire location, but fall back to the error's own list when the
-        # envelope field wasn't populated — e.g. a caller building
-        # ResponseEnvelope(error=UserError(..., recovery_actions=[...]))
-        # directly, bypassing build_error_envelope. Without this fallback the
-        # actions would vanish (nested error copy is stripped below, top-level
-        # not emitted). An explicit suppression via recovery_actions=[] is a
-        # non-None empty list, so it is honored — not overridden by the error.
-        effective_recovery = self.recovery_actions
-        if (
-            effective_recovery is None
-            and self.error is not None
-            and self.error.recovery_actions is not None
-        ):
-            effective_recovery = self.error.recovery_actions
-
         if self.error is not None:
-            # Strip recovery_actions from the nested error dict: the envelope
-            # top-level field (emitted below from effective_recovery) is the
-            # single canonical wire location. Without this strip, an explicit
-            # suppression via recovery_actions=[] would still leak the
-            # original actions through error.to_dict() — defeating the
-            # redaction use case. Direct UserError.to_dict() callers (logging,
-            # debugging) still see recovery_actions; only the envelope-nested
-            # form drops the field.
-            err_dict = self.error.to_dict()
-            err_dict.pop("recovery_actions", None)
-            d["error"] = err_dict
+            d["error"] = self.error.model_dump(exclude_none=True)
         if self.next_cursor is not None:
             d["next_cursor"] = self.next_cursor
-        if effective_recovery is not None:
+        if self.recovery_actions is not None:
             # Coerce plain dicts defensively: callers SHOULD pass
             # RecoveryAction instances (the type annotation says so), but a
             # dict slipping in (e.g., from deserialized JSON) would otherwise
@@ -214,7 +218,7 @@ class ResponseEnvelope[T]:
             # internal failure at the wire boundary.
             d["recovery_actions"] = [
                 ra if isinstance(ra, dict) else ra.model_dump()
-                for ra in effective_recovery
+                for ra in self.recovery_actions
             ]
         return d
 
@@ -431,10 +435,15 @@ def build_error_envelope(
     error early-return unifies with any ``-> ResponseEnvelope[T]`` tool
     signature without a per-call-site ``# type: ignore[return-value]``.
 
-    ``data`` is an empty list — the ``error`` field is the canonical signal
-    that the tool failed. Sensitivity defaults to ``low`` because error
-    messages must not leak row-level data. ``actions`` preserves any
-    caller-provided next-step hints (e.g. CLI fallbacks on stub tools).
+    ``data`` is an empty list for every envelope built here — the ``error``
+    field is the canonical signal that the tool failed. The converse does not
+    hold: ``error`` on an envelope does NOT imply empty ``data``, because a
+    tool may attach ``error`` to a payload-carrying envelope when the payload
+    explains the failure (see ``ResponseEnvelope.error``). Use this builder
+    when there is no payload worth returning; attach ``error`` directly when
+    there is. Sensitivity defaults to ``low`` because error messages must not
+    leak row-level data. ``actions`` preserves any caller-provided next-step
+    hints (e.g. CLI fallbacks on stub tools).
 
     ``recovery_actions`` precedence:
 
@@ -463,6 +472,6 @@ def build_error_envelope(
         summary=summary,
         data=[],
         actions=actions or [],
-        error=error,
+        error=ErrorDetail.from_user_error(error),
         recovery_actions=recovery_actions,
     )

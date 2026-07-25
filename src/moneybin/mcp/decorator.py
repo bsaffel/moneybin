@@ -714,10 +714,17 @@ def mcp_tool(
             # would be value-identical and the dataclass-tree rebuild is the
             # most expensive thing on the hot path. Dynamic-classification tools
             # also skip: they already applied redact_records per call.
+            #
+            # Deliberately NOT gated on `envelope.error is None`. That gate was
+            # only safe while every error envelope came from
+            # build_error_envelope, which forces data=[]. A tool may now attach
+            # `error` to a payload-carrying envelope when the payload explains
+            # the failure (import_files' all-failed batch keeps its files[]),
+            # so skipping on `error` would leave real payload data unwalked.
+            # Walking a data=[] error envelope is nearly free.
             if (
                 has_critical
                 and not dynamic_classification
-                and envelope.error is None
                 # ResponseEnvelope.data type param is erased after the
                 # dataclasses.replace above; pyright can't see it's narrowable.
                 and envelope.data is not None  # pyright: ignore[reportUnknownMemberType]

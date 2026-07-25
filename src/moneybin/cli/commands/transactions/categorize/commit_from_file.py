@@ -1,6 +1,5 @@
 """Commit LLM-generated categorizations from a JSON file or stdin."""
 
-import dataclasses
 import json
 import logging
 import sys
@@ -12,7 +11,7 @@ from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, output_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import ErrorDetail
 
 logger = logging.getLogger(__name__)
 
@@ -132,12 +131,11 @@ def categorize_commit_from_file(
         ],
     )
     if result.errors > 0:
-        envelope = dataclasses.replace(
-            envelope,
-            error=UserError(
-                f"{result.errors} item(s) failed to categorize",
+        envelope = envelope.with_error(
+            ErrorDetail(
+                message=f"{result.errors} item(s) failed to categorize",
                 code=error_codes.TRANSACTION_CATEGORIZATION_ERRORS,
-            ),
+            )
         )
     render_or_json(
         envelope,

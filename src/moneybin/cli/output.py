@@ -214,9 +214,15 @@ def render_or_json(
     # rather than envelope.summary.sensitivity, which CLI commands set manually
     # and often understate (e.g. accounts_resolve passes "low" but its payload
     # contains ACCOUNT_IDENTIFIER → an active transform).
+    #
+    # Deliberately NOT gated on `envelope.error is None`. That gate was only
+    # safe while every error envelope came from build_error_envelope, which
+    # forces data=[]. A caller may now attach `error` to a payload-carrying
+    # envelope when the payload explains the failure, so skipping on `error`
+    # would leave real payload data unwalked. Walking a data=[] error envelope
+    # is nearly free. Mirrors the same removal in the @mcp_tool decorator.
     if (
-        envelope.error is None
-        and envelope.data is not None  # pyright: ignore[reportUnknownMemberType]
+        envelope.data is not None  # pyright: ignore[reportUnknownMemberType]
         and _has_active_transform(original_data_type)  # pyright: ignore[reportUnknownArgumentType]
     ):
         redacted_data = redact_typed(envelope.data, consent=None)  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
@@ -357,7 +363,9 @@ def _has_active_transform(payload_type: type) -> bool:
     Used by the JSON output path to skip ``redact_typed`` for payloads that
     would pass through unchanged. Delegates to the same
     ``has_active_transform`` gate the ``@mcp_tool`` decorator's wrapper uses
-    (``decorator.py``), so the CLI and MCP redaction paths stay coherent:
+    (``decorator.py``) — and the call site pairs it with the same
+    data-presence-only check, never an ``envelope.error is None`` clause — so
+    the CLI and MCP redaction paths stay coherent:
     when PR3 wires HIGH/MEDIUM transforms (hash-placeholder for MERCHANT_NAME,
     date-shifting for TXN_DATE), both paths begin redacting those fields
     together. A ``tier == CRITICAL`` check here would be the "CRITICAL-only
