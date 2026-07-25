@@ -242,6 +242,18 @@ class TestConsoleInfoAllowlist(_LoggingSetupTestBase):
             # an upgrade and can take a while. Every command opens the DB, and
             # no CLI-layer line repeats this progress afterward.
             "moneybin.database",
+            # Migration progress and the failure hint that pairs with it —
+            # a sibling of moneybin.database, not a descendant, so the prefix
+            # match does not cover it.
+            "moneybin.migrations",
+            # Tells the user their own --institution flag was overridden. A
+            # silently-ignored argument is the one thing that must never be
+            # quiet, and no CLI-layer line restates it.
+            "moneybin.extractors.institution_resolution",
+            # Both emit ⚙️/✅ progress, which `.claude/rules/cli.md` reserves
+            # for user-facing output.
+            "moneybin.services.demo_service",
+            "moneybin.synthetic.merchant_seed",
         ],
     )
     def test_pipeline_progress_reaches_console(self, module_path: str) -> None:

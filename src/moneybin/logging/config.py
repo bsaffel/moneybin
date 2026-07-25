@@ -67,6 +67,16 @@ _CONSOLE_INFO_ALLOWLIST: tuple[str, ...] = (
     # invocation after an upgrade. Same rationale as the stages above, and no
     # CLI-layer line repeats this progress once it has scrolled past.
     "moneybin.database",
+    # Sibling of moneybin.database, not a descendant — the prefix match does
+    # not reach it. Carries the hint that pairs with a migration failure.
+    "moneybin.migrations",
+    # Reports that the user's own --institution flag was overridden. An
+    # argument that is silently ignored is the worst thing to make quiet.
+    "moneybin.extractors.institution_resolution",
+    # Both emit the ⚙️/✅ progress vocabulary `.claude/rules/cli.md` reserves
+    # for user-facing output, and both are driven straight from a command.
+    "moneybin.services.demo_service",
+    "moneybin.synthetic.merchant_seed",
 )
 
 
