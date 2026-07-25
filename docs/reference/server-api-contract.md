@@ -505,7 +505,9 @@ Each entry of `metadata.institutions[]`:
 | `transaction_count` | int \| null | Transactions in this batch from this institution. |
 | `error` | string \| null | Error message when `status == "failed"`. |
 | `error_code` | string \| null | Provider error code (e.g., `ITEM_LOGIN_REQUIRED`). |
-| `transactions_window_start` | `YYYY-MM-DD` \| null | The start boundary the server used for this item's investment-transaction pull. Present whenever the item has holdings rows; `null` otherwise. |
+| `transactions_window_start` | `YYYY-MM-DD` \| null | The start boundary the server used for this item's investment-transaction pull. Non-null whenever the item's investments flow completed — **including when it returned zero holdings**; `null` only for a cash-only item or `status == "failed"`. See the note below. |
+
+**`transactions_window_start` is the only wire signal that an item's investments flow ran**, so its presence is load-bearing rather than informational. The client treats an item as having reported iff `status == "completed"` and this field is non-null, and writes a holdings-snapshot receipt for it — `holdings_count` of zero included. A server that omits the field for an item that legitimately returned no holdings makes the client skip that receipt, and the previous non-empty snapshot keeps reading as current: a fully-liquidated brokerage account then reports its old positions indefinitely, the largest overstatement the sync path can produce. Omitting it for an item that *did* return holdings is a hard contract violation — the client rejects the pull with a `ValueError` rather than guessing a window.
 
 The client carries `institutions[]` into its pull result (per-institution status, counts, and error codes) and increments a failed-institution metric keyed by `error_code`. It keeps no local connection-state table: `sync status` calls `GET /institutions` on every invocation and attaches re-auth guidance to that live response, so the server stays the system of record.
 
