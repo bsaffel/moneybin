@@ -198,7 +198,7 @@ Exit codes: `0` if every invariant passes or warns; `1` if any fails. `--verbose
 }
 ```
 
-On failure (exit `1`), the top-level `status` flips to `"error"`, an `error` object appears (`{"code": "invariant_failure", "message": "N invariant(s) failing"}`), and the offending entries in `data.invariants[]` carry `"status": "fail"` with `detail` set to `"N violation(s)"`. Match on `data.invariants[].status == "fail"` (or top-level `status == "error"`) to drive alerts. `affected_ids` is populated only when `--verbose` is passed.
+On failure (exit `1`), the top-level `status` flips to `"error"`, an `error` object appears (`{"code": "audit_invariant_failure", "message": "N invariant(s) failing"}`), and the offending entries in `data.invariants[]` carry `"status": "fail"` with `detail` set to `"N violation(s)"`. Match on `data.invariants[].status == "fail"` (or top-level `status == "error"`) to drive alerts. `affected_ids` is populated only when `--verbose` is passed.
 
 ---
 

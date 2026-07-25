@@ -399,9 +399,12 @@ class SectionUnavailable(BaseModel):
 
     Keeps one failing section from destroying the rest: every healthy section
     still returns, this marker names the one that did not, and
-    ``summary.degraded`` flags the response as partial. ``reason`` carries the
-    classified user-facing message only — never a raw exception string, which
-    can embed SQL fragments and financial data.
+    ``summary.degraded`` flags the response as partial. ``reason`` carries whatever
+    ``classify_user_error`` produced. That is the same string an
+    undegraded error envelope would have carried, not a stricter guarantee:
+    several classifier branches build the message from the exception itself
+    (``OSError`` includes ``filename``; ``ValueError`` / ``LookupError`` use
+    ``str(exc)``), so treat it with the same care as any error message.
     """
 
     model_config = ConfigDict(frozen=True)

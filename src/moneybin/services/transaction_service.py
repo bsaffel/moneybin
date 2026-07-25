@@ -62,8 +62,25 @@ _TRANSACTION_LIST_CURSOR = "transactions_list"
 
 
 def _is_transaction_key(key: tuple[KeysetScalar, ...]) -> bool:
-    """Validate a decoded cursor key before it reaches the SQL predicate."""
-    return len(key) == 2 and all(isinstance(part, str) for part in key)
+    """Validate a decoded cursor key before it reaches the SQL predicate.
+
+    Cursors are unsigned base64 JSON, so a caller can forge one. Types alone
+    are not enough: a well-typed but non-ISO date reaches DuckDB and raises a
+    ConversionException, which ``classify_user_error`` does not recognize — the
+    caller gets a traceback instead of an envelope. An empty transaction_id is
+    worse than malformed: ``transaction_id > ''`` is true for every row, so the
+    continuation silently re-serves rows the cursor claims to be past.
+    """
+    if len(key) != 2 or not all(isinstance(part, str) for part in key):
+        return False
+    day, transaction_id = cast("tuple[str, str]", key)
+    if not transaction_id:
+        return False
+    try:
+        date.fromisoformat(day)
+    except ValueError:
+        return False
+    return True
 
 
 # Audit target prefixes (schema, table) for the audit events still emitted

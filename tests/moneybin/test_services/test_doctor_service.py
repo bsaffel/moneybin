@@ -1938,3 +1938,39 @@ def test_missing_registered_model_fails_an_invariant(
     assert result.affected_ids
     assert all("." in name for name in result.affected_ids)
     assert result.detail is not None
+
+
+@pytest.mark.unit
+def test_model_presence_passes_when_every_registered_model_exists(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The invariant must be able to PASS, not just always fail.
+
+    Its sibling test proves it fails on an incomplete catalog — which a
+    permanently-broken check (a normalization regression on either side of the
+    set difference) would also satisfy. This pins the other direction, so the
+    invariant cannot ship green while flipping `moneybin system doctor` to
+    exit 1 on every warehouse.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    # Declare only models this fixture genuinely builds, so a pass is real
+    # rather than an artifact of an empty registered set.
+    monkeypatch.setattr(
+        "moneybin.services.doctor_service.registered_model_names",
+        lambda: frozenset({"core.fct_transactions", "core.dim_accounts"}),
+    )
+    svc = DoctorService(doctor_db)
+
+    result = next(
+        r for r in svc.run_all().invariants if r.name == "sqlmesh_model_presence"
+    )
+
+    assert result.status == "pass"
+    assert result.affected_ids == []
+    assert result.detail is None

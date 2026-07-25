@@ -415,3 +415,59 @@ def test_recovery_recipes_reference_only_standard_tools() -> None:
             unresolved[name] = stale
 
     assert unresolved == {}
+
+
+def _cli_action_strings() -> list[tuple[str, int, str]]:
+    """Literal ``actions=[...]`` entries emitted from CLI command modules."""
+    cli_dir = _ROOT / "src/moneybin/cli/commands"
+    found: list[tuple[str, int, str]] = []
+    for path in sorted(cli_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg != "actions" or not isinstance(keyword.value, ast.List):
+                    continue
+                for element in keyword.value.elts:
+                    text = _joined_constant(element)
+                    if text:
+                        found.append((
+                            str(path.relative_to(_ROOT)),
+                            element.lineno,
+                            text,
+                        ))
+    return found
+
+
+def _joined_constant(node: ast.expr) -> str | None:
+    """Flatten a literal or implicitly-concatenated string expression."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _joined_constant(node.left)
+        right = _joined_constant(node.right)
+        return None if left is None or right is None else left + right
+    return None
+
+
+def test_cli_action_hints_name_cli_commands_not_mcp_tools() -> None:
+    """A CLI envelope's next-step hints must be runnable by whoever got them.
+
+    An agent reading `--output json` from a CLI command can run commands, not
+    MCP tools. Naming a tool there is unactionable *and* drags the CLI into the
+    blast radius of every MCP rename — which is how `transactions_get` outlived
+    its retirement in user-facing output. The retired-name guard above cannot
+    catch this: a hint naming a *current* tool passes it.
+    """
+    known = _known_tool_names()
+    offenders = sorted(
+        f"{path}:{line}: {text!r}"
+        for path, line, text in _cli_action_strings()
+        if _mentioned_names(text, known) and "moneybin " not in text
+    )
+
+    assert offenders == [], (
+        f"{len(offenders)} CLI action hint(s) name an MCP tool instead of a "
+        f"`moneybin ...` command:\n" + "\n".join(offenders)
+    )

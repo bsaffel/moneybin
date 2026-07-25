@@ -20,10 +20,13 @@ Adding a new code:
 3. The constant name is the value uppercased: IMPORT_PARSE_ERROR =
    "import_parse_error".
 
-Never hardcode a code string at a raise site or in a comparison. Both
-sides are checked by ``TestWireCodes`` — a literal that never reaches
-this module is invisible to every other test here, which is how 103
-undeclared codes once shipped on the wire while these tests stayed green.
+Reference these constants; never hardcode the string. ``TestWireCodes``
+checks both sides — every ``code=`` literal and every comparison against
+a ``.code`` attribute must name a *declared value* — which is what a
+literal spelled inline still satisfies, so the convention is on you. It
+exists because a literal that never reaches this module is invisible to
+every other test here: that is how 103 undeclared codes shipped on the
+wire while these tests stayed green.
 
 Codes are stable. Renaming a code is a breaking change for any agent
 that branches on it; treat as one-way per .claude/rules/design-principles.md.
@@ -33,9 +36,6 @@ that branches on it; treat as one-way per .claude/rules/design-principles.md.
 # Import — loading raw data
 # ---------------------------------------------------------------------------
 
-# A scanned / image-only PDF with no selectable text layer: the deterministic
-# rung has nothing to structure, nothing to seed, and the text bridge can't read
-# a page image — extraction needs a vision-capable backend (Req 5, smart-import-pdf).
 IMPORT_BRIDGE_RESPONSE_INVALID = "import_bridge_response_invalid"
 IMPORT_CONFIRM_CHANNEL_CONFLICT = "import_confirm_channel_conflict"
 IMPORT_CONFIRM_REQUIRES_SIGNAL = "import_confirm_requires_signal"
@@ -50,6 +50,9 @@ IMPORT_INVALID_SIGN_CONVENTION = "import_invalid_sign_convention"
 IMPORT_PAGINATION_NOT_ALLOWED = "import_pagination_not_allowed"
 IMPORT_PARSE_ERROR = "import_parse_error"
 IMPORT_PDF_ACCOUNT_SIGNAL_UNSUPPORTED = "import_pdf_account_signal_unsupported"
+# A scanned / image-only PDF with no selectable text layer: the deterministic
+# rung has nothing to structure, nothing to seed, and the text bridge can't read
+# a page image — extraction needs a vision-capable backend (Req 5, smart-import-pdf).
 IMPORT_PDF_NO_TEXT_LAYER = "import_pdf_no_text_layer"
 IMPORT_PREVIEW_BRIDGE_RESPONSE_REQUIRED = "import_preview_bridge_response_required"
 IMPORT_PREVIEW_CHANGED = "import_preview_changed"
@@ -148,10 +151,6 @@ RECOVERY_NO_PATH = "recovery_no_path"
 # Infra — database, migrations, encryption (existing codes retained)
 # ---------------------------------------------------------------------------
 
-# Terminal fallback: an exception classify_user_error does not recognize. The
-# agent still gets a branchable code instead of the bare str(exc) that fastmcp's
-# mask_error_details would otherwise leave. Carries the exception *type* only —
-# never its message, which can embed file paths, SQL, and financial data.
 INFRA_CRYPTO_UNAVAILABLE = "infra_crypto_unavailable"
 INFRA_DATABASE_LOCKED = "infra_database_locked"
 INFRA_DATABASE_NOT_INITIALIZED = "infra_database_not_initialized"
@@ -165,6 +164,10 @@ INFRA_SCHEMA_DRIFT = "infra_schema_drift"
 INFRA_SETUP_REQUIRED = "infra_setup_required"
 INFRA_TIMED_OUT = "infra_timed_out"
 INFRA_TOO_MANY_ITEMS = "infra_too_many_items"
+# Terminal fallback: an exception classify_user_error does not recognize. The
+# agent still gets a branchable code instead of the bare str(exc) that fastmcp's
+# mask_error_details would otherwise leave. Carries the exception *type* only —
+# never its message, which can embed file paths, SQL, and financial data.
 INFRA_UNCLASSIFIED_ERROR = "infra_unclassified_error"
 INFRA_WRONG_KEY = "infra_wrong_key"
 

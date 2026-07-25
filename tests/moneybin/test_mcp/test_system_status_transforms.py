@@ -53,8 +53,11 @@ async def test_system_status_envelope_has_transforms_block(mcp_db: object) -> No
 
 
 @pytest.mark.unit
-async def test_pending_state_adds_action_hint(mcp_db: object) -> None:
+async def test_pending_state_adds_action_hint(
+    mcp_db: object, declare_only_models: Callable[..., None]
+) -> None:
     """When pending=True, actions includes a refresh_run hint."""
+    declare_only_models("core.dim_accounts")
     _seed_pending_import()
     env = system_status()
     parsed = env.to_dict()

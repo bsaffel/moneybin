@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import duckdb
-from sqlglot import exp
 
 from moneybin.database import Database, sqlmesh_context
 from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
@@ -223,14 +222,18 @@ class TransformService:
         * a registered SQLMesh model has no relation in the catalog — it was
           never built, which no timestamp comparison can detect because an
           unbuilt model has no timestamp; or
-        * a raw account row exists whose ``extracted_at`` is newer than the
-          **most-behind** built core model's ``extracted_at``.
+        * a raw account row exists whose ``extracted_at`` is newer than
+          ``core.dim_accounts.extracted_at``.
 
-        The second check reads every built ``core.*`` model carrying
-        ``extracted_at``, not just ``core.dim_accounts``. Taking the minimum is
-        the point: a pipeline is as stale as its furthest-behind model, and
-        checking one model reported fresh whenever that model happened to be
-        current. Both sides still compare the same propagated data value
+        The second check reads ``core.dim_accounts`` alone because it is the
+        only core model that projects a bare ``extracted_at`` — everything else
+        renames it (``source_extracted_at`` on ``fct_transactions``,
+        ``extracted_at AS updated_at`` on ``fct_security_prices``) or drops it.
+        Generalizing the comparison across models is therefore not possible
+        today, and would need care if it became so: models fed by independent
+        provider cadences could pin ``pending`` true permanently, which no
+        ``refresh_run`` could clear. The missing-model check above is the part
+        that does generalize. Both sides compare the same propagated data value
         (Python-set when the loader parses the file, carried unchanged through
         SQLMesh) — so the check stays immune to the DuckDB
         ``CURRENT_TIMESTAMP`` transaction-start race that affects clock-derived
@@ -244,7 +247,7 @@ class TransformService:
         """
         missing_models = self._missing_models()
         pending_extracted = self._max_unapplied_raw_extracted_at()
-        core_extracted = self._min_core_extracted_at()
+        core_extracted = self._max_dim_accounts_extracted_at()
 
         if pending_extracted is None:
             raw_ahead = False
@@ -274,30 +277,6 @@ class TransformService:
             return ()
         built = {str(row[0]) for row in rows}
         return tuple(sorted(registered_model_names() - built))
-
-    def _min_core_extracted_at(self) -> datetime | None:
-        """Oldest ``MAX(extracted_at)`` across built ``core.*`` models.
-
-        The minimum, not the maximum: one refreshed model must not mask a
-        neighbour that never caught up.
-        """
-        columns = self._db.execute(
-            """
-            SELECT table_name FROM duckdb_columns()
-            WHERE schema_name = 'core' AND column_name = 'extracted_at'
-            ORDER BY table_name
-            """
-        ).fetchall()
-        if not columns:
-            return None
-        # Identifiers come from the catalog, so they name relations that exist;
-        # quote them anyway as defense in depth (security.md).
-        selects = " UNION ALL ".join(
-            f"SELECT MAX(extracted_at) AS m FROM core.{exp.to_identifier(str(row[0]), quoted=True).sql('duckdb')}"  # noqa: S608  # catalog-validated identifier, quoted
-            for row in columns
-        )
-        row = self._db.execute(f"SELECT MIN(m) FROM ({selects})").fetchone()  # noqa: S608  # composed from catalog-validated identifiers
-        return row[0] if row and row[0] is not None else None
 
     def status(self) -> TransformStatus:
         """Current SQLMesh environment state plus freshness signal.

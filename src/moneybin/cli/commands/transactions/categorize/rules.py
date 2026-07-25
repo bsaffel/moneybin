@@ -230,7 +230,9 @@ def rules_create(
             data=result.to_payload(),
             sensitivity="low",
             total_count=len(rules),
-            actions=["Use transactions_categorize_rules to review all rules"],
+            actions=[
+                "Use `moneybin transactions categorize rules list` to review all rules"
+            ],
         )
         render_or_json(envelope, output, cli_actor="rules_create")
     elif not quiet:

@@ -58,8 +58,9 @@ def freshness_db(db: Database) -> Database:
 
 
 def test_freshness_pending_when_raw_newer_than_dim(
-    freshness_db: Database,
+    freshness_db: Database, declare_only_models: Callable[..., None]
 ) -> None:
+    declare_only_models("core.dim_accounts")
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
         [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
@@ -88,9 +89,10 @@ def test_freshness_not_pending_when_dim_caught_up(
 
 
 def test_freshness_pending_when_dim_table_missing(
-    db: Database,
+    db: Database, declare_only_models: Callable[..., None]
 ) -> None:
     """Pre-first-transform: dim_accounts doesn't exist; pending if any raw rows."""
+    declare_only_models("core.dim_accounts")
     db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), None])
     f = TransformService(db).freshness()
     assert f.pending is True
@@ -128,8 +130,11 @@ def test_freshness_filters_reverted_and_failed_imports(
     assert f.latest_import_at is None
 
 
-def test_freshness_counts_partial_imports(freshness_db: Database) -> None:
+def test_freshness_counts_partial_imports(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
     """Partial imports landed some rows; they count toward staleness."""
+    declare_only_models("core.dim_accounts")
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
         [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
@@ -539,36 +544,6 @@ def test_audit_aggregates_pass_fail_counts(
     names = [a["name"] for a in result.audits]
     assert "fct_transactions_pk" in names
     assert "fct_transactions_fk" in names
-
-
-def test_freshness_pending_when_a_core_model_lags_behind_dim_accounts(
-    freshness_db: Database, declare_only_models: Callable[..., None]
-) -> None:
-    """Staleness is the most-behind model, not whichever one we happen to check.
-
-    Breaks under the single-model proxy: dim_accounts is caught up, so the old
-    comparison reports fresh while core.fct_transactions is three days behind.
-    """
-    declare_only_models("core.dim_accounts", "core.fct_transactions")
-    extracted = _ts(2026, 5, 13, 18, 24)
-    freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
-        [extracted, _ts(2026, 5, 13, 19, 0)],
-    )
-    freshness_db.execute(
-        "CREATE TABLE core.fct_transactions "
-        "(transaction_id VARCHAR, extracted_at TIMESTAMP)"
-    )
-    freshness_db.execute(
-        "INSERT INTO core.fct_transactions VALUES ('t1', ?)",
-        [_ts(2026, 5, 10, 12, 0)],
-    )
-    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", extracted, "i1"])
-    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 30)])
-
-    f = TransformService(freshness_db).freshness()
-
-    assert f.pending is True
 
 
 def test_freshness_pending_and_named_when_a_registered_model_was_never_built(

@@ -306,24 +306,39 @@ class TestTransactionGet:
             TransactionService(txn_db).get(cursor="not-valid-base64!!!")
 
     @pytest.mark.unit
-    def test_well_formed_base64_that_is_not_a_keyset_cursor_raises(
+    def test_offset_shaped_cursor_from_the_retired_scheme_is_rejected(
         self, txn_db: Database
     ) -> None:
-        """Decodable base64 is not enough — the payload must be a real cursor.
-
-        ``-10`` is the offset token the retired scheme would have accepted.
-        """
+        """A token the old base64(offset) scheme minted is no longer a cursor."""
         import base64
 
-        bad = base64.b64encode(b"-10").decode()
+        stale = base64.b64encode(b"2").decode()
         with pytest.raises(ValueError, match="invalid cursor"):
-            TransactionService(txn_db).get(cursor=bad)
+            TransactionService(txn_db).get(limit=2, cursor=stale)
 
     @pytest.mark.unit
-    def test_cursor_with_non_string_keys_is_rejected_before_the_query(
-        self, txn_db: Database
+    @pytest.mark.parametrize(
+        ("snapshot", "after", "why"),
+        [
+            (("not-a-date", "T1"), ("not-a-date", "T1"), "non-ISO date"),
+            (("2026-04-15", ""), ("2026-04-15", ""), "empty transaction_id"),
+            ((1, 2), (1, 2), "non-string keys"),
+        ],
+    )
+    def test_forged_cursor_keys_are_rejected_before_reaching_sql(
+        self,
+        txn_db: Database,
+        snapshot: tuple[object, object],
+        after: tuple[object, object],
+        why: str,
     ) -> None:
-        """Typed key validation runs before the keys reach a SQL predicate."""
+        """Cursors are unsigned, so a forged key must not reach the predicate.
+
+        Breaks per case: a non-ISO date raises DuckDB's ConversionException,
+        which classify_user_error does not recognize, so the caller gets a
+        traceback rather than an envelope; an empty transaction_id makes
+        ``transaction_id > ''`` true for every row and re-serves a served page.
+        """
         from moneybin.protocol.pagination import encode_keyset_cursor
         from moneybin.services.transaction_service import (
             _TRANSACTION_LIST_CURSOR,  # pyright: ignore[reportPrivateUsage]
@@ -340,16 +355,16 @@ class TestTransactionGet:
             description=None,
             uncategorized_only=False,
         )
-        bad = encode_keyset_cursor(
+        forged = encode_keyset_cursor(
             namespace=_TRANSACTION_LIST_CURSOR,
             scope=scope,
-            snapshot=(1, 2),
-            after=(1, 2),
+            snapshot=snapshot,  # type: ignore[arg-type]
+            after=after,  # type: ignore[arg-type]
             total=4,
         )
 
         with pytest.raises(ValueError, match="invalid cursor"):
-            service.get(limit=2, cursor=bad)
+            service.get(limit=2, cursor=forged)
 
     @pytest.mark.unit
     def test_uncategorized_only_includes_source_categorized(self, db: Database) -> None:

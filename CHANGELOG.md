@@ -43,6 +43,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   asked you in place on spreadsheet and AI-extracted-PDF imports.
 
 ### Changed
+- **BREAKING for anything branching on an error `code`: 104 code values were
+  renamed.** They were raised from tool paths without ever being declared in
+  the taxonomy, so they had never been reviewed for shape; each now carries the
+  prefix of the domain it came from (`ACCOUNT_QUERY_REQUIRED` →
+  `account_query_required`, `NOTE_REFERENCE_NOT_FOUND` →
+  `transaction_note_not_found`, bare `ambiguous` →
+  `sync_institution_ambiguous`, bare `invariant_failure` →
+  `audit_invariant_failure`). Any prompt, script, or watchdog matching an old
+  string stops matching silently — that exact failure occurred inside MoneyBin
+  during this change and is now caught by a test that scans comparisons as well
+  as raise sites. `moneybin system doctor --output json` is the one documented
+  surface affected; `docs/guides/observability.md` is updated.
+- **An unclassified tool failure is now a successful MCP call carrying an error
+  envelope, not a protocol-level error.** Clients see `isError` false with
+  `status: "error"`, a `code`, and a `hint`, where they previously got a
+  transport error whose only content was a bare string.
+- **`moneybin transactions list --cursor` tokens from before this release are
+  rejected.** The cursor changed from base64 offset to the keyset envelope MCP
+  already used; restart the walk from page one.
 - **`reports.*` column privacy classes are now derived from each SQLMesh
   model's source and verified in CI**, replacing a hand-maintained bridge
   file. A report's declared `classes=` map is checked against an
@@ -110,12 +129,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   page boundary silently skipped an unserved one and a newly-arriving row
   silently repeated a served one; it now uses the same keyset cursor MCP does.
   A SQLMesh model that was registered but never built used to be invisible to
-  every health signal — the doctor now fails and names it, and status reports
-  it rather than inferring the whole warehouse from one table. Every error
-  code an assistant can branch on is declared in one place: 103 were being
-  raised from tool paths without ever being registered. Assistant-facing hints
-  that named retired tools, and the four import-preview refusals that offered
-  no way forward, are fixed.
+  every health signal — the doctor now fails and names it, and `system_status`
+  reports which models are absent. Next-step hints in CLI output now name
+  `moneybin ...` commands: they previously named MCP tools, some of them
+  retired, none of them runnable by whoever received the hint. The four
+  import-preview refusals — not found, consumed, expired, changed — now say
+  how to recover instead of only stating the fact.
 - **The consolidated MCP surface now preserves the safety and recovery
   contracts of the operations it replaces.** Permanent institution
   disconnects require payload-bound confirmation; human import decisions keep

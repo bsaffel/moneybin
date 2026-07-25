@@ -55,7 +55,8 @@ class QueueUnavailable(BaseModel):
 
     A queue whose backing view is missing must not fail the whole summary:
     the healthy queues still report exact counts and this names the one that
-    did not. ``reason`` carries the classified user-facing message only.
+    did not. ``reason`` carries whatever ``classify_user_error`` produced —
+    see ``SectionUnavailable`` for what that does and does not guarantee.
     """
 
     model_config = ConfigDict(frozen=True)

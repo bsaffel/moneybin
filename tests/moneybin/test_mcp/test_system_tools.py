@@ -63,6 +63,43 @@ async def test_system_status_degrades_when_one_section_raises(
     assert response.summary.degraded is True
 
 
+async def test_system_status_degrades_when_one_section_returns_an_error_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the contract: a section that RETURNS an error.
+
+    `_run_tool_body` unwraps the decorator but not the body's own return
+    value, and live bodies do return error envelopes — `_locked_status_envelope`
+    does exactly that on a locked database. Breaks if only the raise arm is
+    handled: the whole call would surface that section's error and destroy the
+    healthy ones.
+    """
+    from moneybin import error_codes
+    from moneybin.errors import UserError
+    from moneybin.protocol.envelope import build_error_envelope
+
+    def refusing_doctor(*_args: object, **_kwargs: object) -> object:
+        return build_error_envelope(
+            error=UserError(
+                "Database is locked.", code=error_codes.INFRA_DATABASE_LOCKED
+            ),
+            sensitivity="low",
+        )
+
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.system.system_doctor", refusing_doctor, raising=True
+    )
+
+    response = await system_status_coarse(sections=["overview", "doctor"])
+
+    assert response.error is None
+    unavailable = [s for s in response.data.sections if s.kind == "unavailable"]
+    assert [s.section for s in unavailable] == ["doctor"]
+    assert unavailable[0].code == error_codes.INFRA_DATABASE_LOCKED
+    assert "overview" in [s.kind for s in response.data.sections]
+    assert response.summary.degraded is True
+
+
 async def test_system_status_degraded_section_does_not_leak_exception_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -206,9 +206,10 @@ def _insert_dim_account(
 
 @pytest.mark.unit
 def test_status_transforms_pending_when_raw_newer_than_dim(
-    db: Database,
+    db: Database, declare_only_models: Callable[..., None]
 ) -> None:
     """transforms_pending is True when a raw account row postdates dim_accounts.extracted_at."""
+    declare_only_models("core.dim_accounts")
     create_core_tables_raw(db.conn)
     dim_updated = datetime(2026, 5, 10, 12, 0)
     _insert_dim_account(db, datetime(2025, 1, 1), dim_updated)
