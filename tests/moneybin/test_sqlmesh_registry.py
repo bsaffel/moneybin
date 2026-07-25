@@ -106,6 +106,33 @@ def test_an_unreadable_catalog_is_not_reported_as_never_built(
 
 
 @pytest.mark.unit
+def test_a_failed_catalog_read_does_not_log_the_exception_message(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The debug log gets where it broke, never what the exception said.
+
+    ``exc_info=True`` appends ``<Type>: <str(exc)>`` plus the full traceback,
+    and a DuckDB catalog error carries the database file path.
+    ``SanitizedLogFormatter`` masks SSNs, long digit runs, and dollar amounts —
+    not filesystem paths — so the raw message defeats the generic ``UserError``
+    raised right below it. Same reason the MCP decorator logs
+    ``exception_origin`` instead of calling ``logger.exception``.
+    """
+
+    def _raise(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("/Users/someone/Documents/MoneyBin/private.duckdb is locked")
+
+    monkeypatch.setattr(db, "execute", _raise)
+
+    with caplog.at_level("DEBUG"), pytest.raises(UserError):
+        model_presence(db)
+
+    assert "/Users/someone" not in caplog.text
+    assert "Traceback" not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+@pytest.mark.unit
 def test_a_wiped_staging_layer_does_not_read_as_never_built(db: Database) -> None:
     """A built warehouse that lost its `prep` layer is broken, not brand new.
 

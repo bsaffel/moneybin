@@ -257,12 +257,20 @@ def _build_unclassified_failure_envelope(
     Carries ``type(exc).__name__`` and never ``str(exc)``: exception messages
     embed file paths, SQL fragments, and user financial data (the same reason
     ``TransformService`` logs the type rather than the message).
+
+    The hint names the exception type and origin because that is exactly what
+    ``_classify_or_envelope`` logged. Promising a traceback would send an
+    operator looking for something deliberately never written — and the only
+    place to find it is the message this envelope exists to withhold.
     """
     exception_type = type(exc).__name__ if exc is not None else "unknown"
     err = UserError(
         f"Tool {fn_name} failed with an unhandled {exception_type}",
         code=error_codes.INFRA_UNCLASSIFIED_ERROR,
-        hint="💡 This is a MoneyBin bug — the server log holds the traceback",
+        hint=(
+            "💡 This is a MoneyBin bug — the server log records the exception "
+            "type and where it was raised (the message itself is withheld)"
+        ),
         details={"tool": fn_name, "exception_type": exception_type},
     )
     return build_error_envelope(error=err, sensitivity="low")

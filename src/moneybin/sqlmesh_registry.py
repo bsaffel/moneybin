@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from moneybin import error_codes
-from moneybin.errors import UserError
+from moneybin.errors import UserError, exception_origin
 from moneybin.seeds import INIT_CREATED_MODELS
 
 if TYPE_CHECKING:
@@ -136,7 +136,14 @@ def model_presence(db: Database) -> ModelPresence:
             """
         ).fetchall()
     except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on catalog reads
-        logger.debug("model catalog read failed", exc_info=True)
+        # Frame chain, not the traceback: `exc_info` would append
+        # `<Type>: <str(exc)>`, and DuckDB names the database file in its
+        # catalog errors. `SanitizedLogFormatter` masks amounts and digit runs,
+        # not filesystem paths, so the raw message would defeat the generic
+        # UserError below. Same shape the MCP decorator uses.
+        logger.debug(
+            f"model catalog read failed: {type(e).__name__} at {exception_origin(e)}"
+        )
         raise UserError(
             "Could not read the database model catalog.",
             code=error_codes.INFRA_CATALOG_UNAVAILABLE,
