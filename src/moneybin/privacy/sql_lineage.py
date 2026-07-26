@@ -1284,15 +1284,27 @@ def tables_outside_schemas(
     caller can refuse the query before any masking decision. This is what makes
     the masking guarantee sound: every queryable column lives in a classified
     schema.
+
+    Identifiers are compared case-insensitively, because DuckDB resolves them
+    that way — case-preserving, but matched without regard to case, and quoting
+    does not change that. Callers must not rely on having normalized the tree
+    first: the data path happens to pass a qualified tree (``expand_star``
+    lowercases on the way through), but the metadata path passes the tree
+    exactly as parsed, so the caller's own casing survives to here. Comparing
+    that raw casing against a lowercase allowlist refused
+    ``DESCRIBE CORE.dim_accounts`` while ``SELECT ... FROM CORE.dim_accounts``
+    was allowed — the same table, admitted by one spelling and refused by
+    another. Normalizing in this one place keeps both callers honest.
     """
     known_by_name: dict[str, set[str]] = {}
     for schema, table, _col in snapshot.columns:
-        known_by_name.setdefault(table, set()).add(schema)
-    cte_names = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+        known_by_name.setdefault(table.lower(), set()).add(schema.lower())
+    allowed = frozenset(a.lower() for a in allowed)
+    cte_names = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
     bad: list[str] = []
     for tbl in tree.find_all(exp.Table):
-        schema = tbl.db
-        name = tbl.name
+        schema = tbl.db.lower()
+        name = tbl.name.lower()
         if not schema and name in cte_names:
             continue
         if schema:

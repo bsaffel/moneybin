@@ -296,6 +296,7 @@ def test_metadata_path_cannot_reach_a_schema_the_data_path_refuses(
         "describe RAW.leaky",
         "DESCRIBE SELECT * FROM raw.leaky",
         "SHOW TABLES FROM raw",
+        "SHOW TABLES FROM RAW",
     ):
         with pytest.raises(UserError) as metadata_error:
             execute_sql_query(populated_db, sql, max_rows=100)
@@ -373,6 +374,42 @@ def test_show_all_tables_exposes_internal_shape_but_no_values(
     # The line that must never move: no row values, whole or partial.
     assert "123456789" not in payload
     assert "12345678" not in payload
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "DESCRIBE CORE.dim_accounts",
+        "DESCRIBE Core.Dim_Accounts",
+        'DESCRIBE "CORE".dim_accounts',
+        "SHOW TABLES FROM CORE",
+    ],
+)
+def test_allowed_schema_is_matched_case_insensitively(
+    populated_db: Database, sql: str
+) -> None:
+    """An allowed schema stays allowed however the caller cases it.
+
+    DuckDB identifiers are case-insensitive (case-preserving, but matched
+    without regard to case, quoted or not), so ``CORE.dim_accounts`` and
+    ``core.dim_accounts`` are the same table and DuckDB runs both.
+
+    The data path never had to think about this: it gates the tree returned by
+    ``expand_star``, which qualifies identifiers and normalizes their case on
+    the way. The metadata path gates the raw parsed tree, where the caller's
+    casing survives — so comparing it against a lowercase allowlist refused
+    ``DESCRIBE CORE.dim_accounts`` while ``SELECT ... FROM CORE.dim_accounts``
+    succeeded. That is the same one-spelling-gated/one-not asymmetry this gate
+    exists to remove, pointed the other way: a false refusal rather than a
+    false admission.
+
+    Note ``raw``-cased fixtures cannot catch this — ``RAW`` is refused whatever
+    its case — so only an ALLOWED schema in non-canonical case isolates it.
+    """
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+
+    assert result.is_metadata is True
+    assert len(result.records) > 0
 
 
 def test_snapshot_failure_is_classified_not_raised_raw(

@@ -323,14 +323,40 @@ def _fail_closed(column: str, query: str) -> DataClass:
     return FAIL_CLOSED_CLASS
 
 
+def _shown_schema(tree: exp.Expr) -> str | None:
+    """The schema a ``SHOW ... FROM <schema>`` is scoped to, if it names one.
+
+    sqlglot parses that identifier into a ``Table`` node's NAME slot with no
+    ``db``, so the generic table walk reads it as a *table* called ``core`` —
+    finds no such table, and refuses ``SHOW TABLES FROM core`` for naming an
+    unknown one, with a message that lists ``core`` among the allowed schemas.
+    It is a schema; check it as one. (``SHOW TABLES FROM raw`` was refused
+    before this, but by that same accident rather than by the schema rule.)
+
+    A catalog-qualified form (``SHOW TABLES FROM cat.sch``) fills ``db`` and
+    returns None here, falling through to the generic walk, which refuses it —
+    the conservative answer for a shape this gate cannot resolve.
+    """
+    if not isinstance(tree, exp.Show):
+        return None
+    source = tree.args.get("from_")
+    if isinstance(source, exp.Table) and not source.db:
+        return source.name.lower()
+    return None
+
+
 def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None:
-    """Raise unless every table ``tree`` names resolves to an allowed schema.
+    """Raise unless every schema ``tree`` reaches is an allowed one.
 
     Shared by the data and metadata paths so both refuse the same targets with
     the same code and message — a caller must not be able to learn which
     spelling the gate forgot about.
     """
-    disallowed = tables_outside_schemas(tree, snapshot, _ALLOWED_QUERY_SCHEMAS)
+    shown = _shown_schema(tree)
+    if shown is not None:
+        disallowed = [] if shown in _ALLOWED_QUERY_SCHEMAS else [shown]
+    else:
+        disallowed = tables_outside_schemas(tree, snapshot, _ALLOWED_QUERY_SCHEMAS)
     if disallowed:
         raise UserError(
             "Queries are limited to these schemas: "
@@ -355,9 +381,10 @@ def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None
 def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryResult:
     """Run a read-only SQL query with full privacy enforcement.
 
-    Pipeline: read-only gate → parse → metadata-or-data routing → (data:
-    allowlisted schema gate → sqlglot lineage → execute → CRITICAL masking).
-    Returns redacted rows plus the resolved tier and per-column classes.
+    Pipeline: read-only gate → parse → metadata-or-data routing → allowlisted
+    schema gate (BOTH branches) → (data only: sqlglot lineage → execute →
+    CRITICAL masking). Returns redacted rows plus the resolved tier and
+    per-column classes.
 
     Args:
         db: An open (read-only) database connection.
