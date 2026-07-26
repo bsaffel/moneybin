@@ -91,9 +91,13 @@ def _build_raw_landing_scan(
         )
         arms.append(f'SELECT "{column}" AS landed_at, {batch} FROM raw."{table}"')
     union = "\n    UNION ALL\n    ".join(arms)
-    # The ::TIMESTAMPTZ cast reads each naive landing stamp in the session
-    # zone — the same zone DuckDB wrote it in — so the result is an absolute
-    # instant comparable to SQLMesh's UTC epoch stamp.
+    # The ::TIMESTAMPTZ cast resolves each naive landing stamp in the *reading*
+    # session's zone, which is the writing zone only while the profile stays on
+    # one machine. Carry the database across zones and these stamps skew against
+    # SQLMesh's absolute `finalized_ts` by the offset delta, which can strand
+    # `pending` true or briefly mask real staleness until the next apply
+    # re-anchors it. A naive value cannot yield its instant at read time, so the
+    # fix is storing the landing columns as TIMESTAMPTZ, not a different cast.
     if not filter_bad_imports:
         return f"""
             SELECT MAX(landed_at)::TIMESTAMPTZ FROM (
