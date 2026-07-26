@@ -57,10 +57,22 @@ that a test rather than an intention.
 
 One field needs widening. `ReportSpec.view: TableRef` is required, and a dynamic
 report has no `reports.*` view backing it, so `view` becomes `TableRef | None`
-with `None` meaning "not graph-backed." The one reader of the field,
-`reports_class_map()`, keys on `(spec.view.schema, spec.view.name)` and must
-skip `None`. It iterates the static `ALL_REPORTS` today, so nothing breaks —
-but the skip is required before any code path feeds it a synthesized spec.
+with `None` meaning "not graph-backed." The field has **two** readers, not one:
+
+- `reports_class_map()` keys on `(spec.view.schema, spec.view.name)` and skips
+  `None`. It iterates the static `ALL_REPORTS` today, so nothing breaks — but
+  the skip is required before any code path feeds it a synthesized spec.
+- `exports/service.py` reads it into `PreparedTable.source`, which lands in the
+  on-disk artifact as `manifest.tables[].source`. That field widens to nullable
+  and emits `null` for a view-less report. The pre-existing fallback would have
+  written `reports.<name>` — a view that does not exist — into the manifest, so
+  the export path had to be decided rather than left to a default. Nothing is
+  lost: the receipt's `lineage` already carries every upstream table.
+  `export.md` §"Artifact manifest" states the reader contract.
+
+The export path becomes reachable in the same milestone: `export report <id>`
+resolves through `catalog.resolve()`, and R5 registers saved reports in that
+catalog, so a saved report is exportable by construction.
 
 ### Why `@report` still exists
 

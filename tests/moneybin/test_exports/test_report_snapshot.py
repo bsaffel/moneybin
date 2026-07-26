@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -82,7 +83,7 @@ def _spec() -> ReportSpec:
     )
 
 
-def _service(db: Database) -> ExportService:
+def _service(db: Database, *, catalog: ReportCatalog | None = None) -> ExportService:
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute(
         """
@@ -99,7 +100,7 @@ def _service(db: Database) -> ExportService:
             ('acct_99998888', 100.00)
         """
     )
-    return ExportService(db, report_catalog=ReportCatalog((_spec(),)))
+    return ExportService(db, report_catalog=catalog or ReportCatalog((_spec(),)))
 
 
 def _first_row(snapshot: PreparedExport) -> dict[str, object]:
@@ -190,6 +191,36 @@ def test_prepare_report_executes_once_and_preserves_the_report_receipt(
     assert manifest_receipt["semantics"]["provenance"] == [  # type: ignore[index]
         "reports.test_summary"
     ]
+    json.dumps(snapshot.manifest)
+
+
+def test_a_report_with_no_graph_backed_view_records_a_null_manifest_source(
+    db: Database,
+) -> None:
+    """A report with no ``reports.*`` view records ``source: null``, not a guess.
+
+    A user-created report is evaluated at query time over whatever ``core`` /
+    ``app`` tables its SQL names, so no single source view exists. The
+    alternative — falling back to ``TableRef("reports", <name>)`` — writes a view
+    that does not exist into the artifact, and provenance that cannot be checked
+    is worse than none. Nothing is lost: the complete read-table set is already
+    carried by ``provenance.receipt.lineage``, which this asserts stays intact.
+    """
+    viewless = replace(_spec(), view=None)
+    service = _service(db, catalog=ReportCatalog((viewless,)))
+
+    snapshot = service.prepare_report(
+        profile="test",
+        report_id="test:export",
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    assert snapshot.tables[0].source is None
+    assert snapshot.manifest["tables"][0]["source"] is None  # type: ignore[index]
+    assert snapshot.data_dictionary["tables"][0]["source"] is None  # type: ignore[index]
+    receipt = snapshot.manifest["provenance"]["receipt"]  # type: ignore[index]
+    assert receipt["lineage"] == ["reports.test_summary"]  # type: ignore[index]
     json.dumps(snapshot.manifest)
 
 

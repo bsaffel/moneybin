@@ -332,6 +332,14 @@ parameters, query/provenance receipt, class map, and freshness information.
 Parameters receive the same selected redaction policy as result columns; their
 classes travel with the manifest so a verifier can tell what was withheld.
 
+Each table's `source` names the one relation its rows were read from, or is
+`null` when there is no such relation — a user-created report is evaluated at
+query time over several `core` / `app` tables. Readers must accept `null` and
+take the full read set from the report receipt's `lineage`, which lists every
+upstream table. A bundle table's `source` is always a `core.*` name. Nothing
+synthesizes a `reports.<name>` placeholder: a provenance record a verifier
+cannot check against the database is worse than an explicit absence.
+
 Writers emit the current version. Readers and verification helpers support the
 current and immediately preceding artifact versions once the public contract
 locks at launch.

@@ -6,12 +6,13 @@ import dataclasses
 import re
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Final
 from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import SQLMESH_ROOT, Database
+from moneybin.repositories import concrete_repo_classes
 from moneybin.services.doctor_service import (
     DoctorReport,
     DoctorService,
@@ -19,6 +20,9 @@ from moneybin.services.doctor_service import (
 )
 from moneybin.services.transform_service import TransformService
 from tests.moneybin.db_helpers import create_core_tables
+
+_COVERAGE_PREFIX: Final = "app_audit_coverage_"
+"""Name prefix `_run_app_audit_coverage` builds from a table's bare name."""
 
 
 @pytest.mark.unit
@@ -777,6 +781,73 @@ def test_run_all_returns_expected_invariants(
     assert "app_budgets_category_fk" in names
     assert "app_match_decisions_account_fk" in names
     assert "orphan_app_state" in names
+
+
+_UNCOVERED_REPO_TABLES: Final = {
+    "app.ai_consent_grants": "watermark is GREATEST(granted_at, revoked_at)",
+    "app.categorization_decisions": (
+        "watermark spans proposed_at / decided_at / reversed_at"
+    ),
+    "app.category_source_map": "has updated_at; composite PK needs a pk_expr",
+    "app.export_destinations": "has updated_at",
+    "app.merchant_link_decisions": "watermark is GREATEST(decided_at, reversed_at)",
+    "app.merchant_links": "watermark is GREATEST(decided_at, reversed_at)",
+    "app.security_link_decisions": "watermark is GREATEST(decided_at, reversed_at)",
+    "app.security_links": "watermark is GREATEST(decided_at, reversed_at)",
+    "app.transaction_notes": "insert-shaped: created_at is the only timestamp",
+    "app.transaction_splits": "insert-shaped: created_at is the only timestamp",
+    "app.transaction_tags": "applied_at watermark; composite PK needs a pk_expr",
+    "raw.manual_investment_transactions": (
+        "raw.*, so the app_audit_coverage_* check name does not fit"
+    ),
+}
+"""Repos with no ``app_audit_coverage_*`` invariant — known gaps, not exemptions.
+
+Each reason names what closing it needs: 10 of the 12 lack the default
+``updated_at`` watermark, 5 need a new ``_ALLOWED_UPDATED_EXPRS`` entry, and the
+composite-PK ones need a ``pk_expr`` reconstructing exactly the ``target_id``
+their repo emits. That is a dozen independent correctness decisions, tracked as
+a follow-up rather than smuggled into an unrelated PR.
+"""
+
+
+@pytest.mark.unit
+def test_doctor_audit_coverage_matches_the_repo_registry(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every repo either has an audit-coverage invariant or an explicit reason.
+
+    The ``len(report.invariants) == 48`` assertion above is one-sided: it fires
+    when you *add* an invariant and never when you *forget* one, so a new repo
+    could ship with its writes unverified and the suite would stay green. This
+    compares the live discovered repo set against the live invariant names.
+
+    Asserting set *equality* (not a subset) is what keeps
+    ``_UNCOVERED_REPO_TABLES`` from decaying into a permanent allowlist: wiring
+    a doctor call without deleting its entry fails here, and so does an entry
+    naming a repo that was renamed or removed.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    report = DoctorService(doctor_db).run_all()
+
+    covered = {r.name for r in report.invariants if r.name.startswith(_COVERAGE_PREFIX)}
+    uncovered = {
+        cls.table_ref.full_name
+        for cls in concrete_repo_classes()
+        if f"{_COVERAGE_PREFIX}{cls.table_ref.name}" not in covered
+    }
+
+    expected = set(_UNCOVERED_REPO_TABLES)
+    assert uncovered == expected, (
+        f"repos newly missing audit coverage: {sorted(uncovered - expected)}; "
+        f"stale _UNCOVERED_REPO_TABLES entries to delete: {sorted(expected - uncovered)}"
+    )
 
 
 @pytest.mark.unit

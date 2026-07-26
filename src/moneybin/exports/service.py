@@ -570,23 +570,17 @@ class ExportService:
         return apply_export_redaction(snapshot, redaction_mode)
 
 
-def _report_spec_source(spec: ReportSpec) -> TableRef:
-    """Return the ``reports.*`` view a runner-backed report reads.
+def _report_spec_source(spec: ReportSpec) -> TableRef | None:
+    """Return the ``reports.*`` view a report reads, or ``None`` if it has none.
 
     A dynamic report's ``view`` is ``None``: it is evaluated at query time over
     whatever ``core``/``app`` tables its SQL names, so no single source view
-    exists. Refuse rather than synthesize one — ``TableRef("reports", name)``
-    would write a view that does not exist into the export manifest, and a
-    provenance record that can't be checked is worse than none. The manifest's
-    representation for this tier is an on-disk contract decision M2P.2 does not
-    make; nothing wires a dynamic report into exports yet, so this is
-    unreachable today and exists to keep it that way.
+    exists. Pass that through rather than synthesizing one — the pre-existing
+    ``_service_report_source`` fallback ends at ``TableRef("reports", name)``,
+    which here would write a view that does not exist into the manifest, and
+    provenance that cannot be checked is worse than none. Nothing is lost: the
+    complete read-table set is carried by the receipt's ``lineage``.
     """
-    if spec.view is None:
-        raise ValueError(
-            f"Report {spec.report_id!r} is not graph-backed and cannot be "
-            "exported: a dynamic report has no source view to record."
-        )
     return spec.view
 
 
