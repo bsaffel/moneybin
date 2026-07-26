@@ -18,6 +18,7 @@ from typing import Any, Literal
 import click
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     output_option,
@@ -26,6 +27,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors, render_rich_table
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
@@ -139,6 +141,12 @@ def reports_run(
     from moneybin.cli.report_params import parse_report_parameters
     from moneybin.reports._framework.catalog import get_report_catalog
     from moneybin.reports._framework.cli_register import render_report_result
+
+    # Parity with the `reports` MCP tool, which validates `ge=1`. `--limit 0`
+    # otherwise slices to zero rows and reports `truncated: true` with a
+    # total_count of 1 — an empty result that claims to have been cut short.
+    if limit is not None and limit < 1:
+        raise typer.BadParameter("must be at least 1", param_hint="--limit")
 
     with handle_cli_errors(cli_actor="reports_run"):
         with get_database(read_only=True) as db:
@@ -351,7 +359,11 @@ def reports_set(
         raise typer.BadParameter(
             "--archive and --restore are opposites", param_hint="--archive"
         )
-    query_sql = _query_sql(sql, sql_file) if (sql or sql_file) else None
+    # `is not None`, not truthiness: `--sql ""` must reach the service and be
+    # refused as an invalid query, not be silently dropped from the update.
+    query_sql = (
+        _query_sql(sql, sql_file) if (sql is not None or sql_file is not None) else None
+    )
     fields: dict[str, Any] = {
         "name": UNSET if name is None else name,
         "description": UNSET if description is None else description,
@@ -396,9 +408,7 @@ def reports_delete(
         with get_database(read_only=True) as db:
             row = UserReportsService(db).resolve(handle)
         report_id = str(row["report_id"])
-        if not yes and not typer.confirm(
-            f"Delete saved report {row['name']} ({report_id})?", err=True
-        ):
+        if not yes and not _confirm_delete(row["name"], report_id):
             typer.echo("Delete cancelled.", err=True)
             raise typer.Exit(1)
         with get_database(read_only=False) as db:
@@ -423,6 +433,26 @@ def reports_delete(
         # render, and a bare-dict payload declares neither on its own.
         classes_returned=_LIFECYCLE_CLASSES,
     )
+
+
+def _confirm_delete(name: object, report_id: str) -> bool:
+    """Ask before a permanent delete, failing loudly when nobody can be asked.
+
+    ``typer.confirm`` raises ``click.Abort`` on EOF, which is what a piped or
+    non-TTY invocation without ``--yes`` produces. ``classify_user_error`` does
+    not recognize ``Abort``, so letting it escape spends the interaction on a bare
+    ``Aborted.`` — no error code, and no JSON envelope for a caller that asked for
+    one. Raised as a ``UserError`` instead, the same way
+    :func:`_prompt_for_downgrade` routes its own unaskable case.
+    """
+    try:
+        return typer.confirm(f"Delete saved report {name} ({report_id})?", err=True)
+    except click.Abort as e:
+        raise UserError(
+            "Deleting a saved report needs explicit confirmation.",
+            code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+            hint="This surface had no way to ask. Re-run with --yes to confirm.",
+        ) from e
 
 
 def _prompt_for_downgrade(

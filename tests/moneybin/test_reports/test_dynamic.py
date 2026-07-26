@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.redaction import MaskStrength
@@ -259,9 +260,36 @@ def test_derivation_rejects_a_placeholder_with_no_consistent_type(
         )
 
 
+def test_derivation_names_a_declared_parameter_the_query_never_references(
+    dynamic_db: Database,
+) -> None:
+    """DuckDB refuses the excess binding; the author must learn why.
+
+    Every declared parameter is bound on the DESCRIBE, and DuckDB errors outright
+    on an excess named binding — so this save cannot succeed either way. It failed
+    through ``_describe_result_columns``'s ``duckdb.Error`` handler, whose message
+    ("every column must exist, and each parameter's declared type must fit every
+    position it is used in") is false for this case and sends the author hunting a
+    column and a type that are both fine.
+    """
+    with pytest.raises(UserError) as raised:
+        derive_classification(
+            dynamic_db,
+            query_sql="SELECT account_id FROM core.dim_accounts",
+            params=(_param("unused", str),),
+        )
+
+    # The code, not the prose: the DESCRIBE handler *also* names ``$unused``, in
+    # its "(declared $unused: str)" tail, so matching on the name alone passes
+    # either way and isolates neither refusal.
+    assert raised.value.code == error_codes.REPORT_QUERY_INVALID
+    assert "never references" in str(raised.value)
+
+
 def test_derivation_classes_a_parameter_from_the_column_it_filters(
     dynamic_db: Database,
 ) -> None:
+    """The benign twin of the refusal above: a referenced parameter is fine."""
     derived = derive_classification(
         dynamic_db,
         query_sql=(
@@ -472,6 +500,24 @@ def test_fingerprint_moves_when_a_class_mask_policy_changes(
     )
 
     assert _fingerprint(dynamic_db, sql) != before
+
+
+def test_fingerprint_moves_when_the_query_text_changes(dynamic_db: Database) -> None:
+    """Two projections over one table share every other term in the key.
+
+    ``read_column_classes`` is deliberately *table*-scoped, so swapping which
+    column a query selects moves neither it nor the policy triples: without the
+    query term the fingerprint matched and ``spec_from_row`` served the stored
+    LOW map for a CRITICAL value. ``UserReportsService.update`` re-derives on any
+    SQL change, so this is defence in depth for ``UserReportsRepo.set``, which
+    accepts ``query_sql`` on its own.
+    """
+    low = _fingerprint(dynamic_db, "SELECT account_type AS v FROM core.dim_accounts")
+    critical = _fingerprint(
+        dynamic_db, "SELECT routing_number AS v FROM core.dim_accounts"
+    )
+
+    assert low != critical
 
 
 def test_fingerprint_covers_the_downgrade_map(dynamic_db: Database) -> None:
@@ -941,24 +987,40 @@ def test_the_runner_binds_the_stored_class_when_nothing_drifted(
 
 
 @pytest.mark.parametrize(
-    ("overrides", "detail"),
+    "overrides",
     [
-        ({"params": [{"name": "x", "annotation": "complex"}]}, "annotation token"),
-        ({"classes": {"account_id": "not_a_data_class"}}, "class value"),
+        {"params": [{"name": "x", "annotation": "complex"}]},
+        {"classes": {"account_id": "not_a_data_class"}},
+        {"params": [{"annotation": "str"}]},
+        {"query_sql": "SELECT FROM WHERE"},
     ],
-    ids=["unknown-annotation-token", "unknown-class-value"],
+    ids=[
+        "unknown-annotation-token",
+        "unknown-class-value",
+        "parameter-entry-missing-its-name",
+        "unparseable-stored-sql",
+    ],
 )
-def test_a_row_whose_stored_tokens_no_longer_decode_stays_listed_and_masked(
-    dynamic_db: Database, overrides: dict[str, Any], detail: str
+def test_a_row_whose_stored_text_no_longer_decodes_stays_listed_and_masked(
+    dynamic_db: Database, overrides: dict[str, Any]
 ) -> None:
     """One bad row must not take down every tier's catalog.
 
-    Stored tokens are written from an allowlist, so this becomes reachable the
-    moment a release renames a ``DataClass`` or drops a parameter type — and then
-    it is every saved row at once. The adjacent unresolvable-query branch already
-    decided the answer for a row that cannot be classified: it stays listed and
-    wholly masked. Raising out of ``spec_from_row`` instead makes a *built-in*
-    unreachable, which is the one thing archiving and drift both refuse to do.
+    Every stored *text* this row is rebuilt from is covered, not only the two
+    token columns: the parameter entries, the class values, and the SQL that
+    ``class_fingerprint`` and ``read_tables`` both parse. All are written from
+    allowlists, so this becomes reachable the moment a release renames a
+    ``DataClass``, drops a parameter type, or ships a parser that no longer
+    accepts text an earlier one wrote — and then it is every saved row at once.
+    The adjacent unresolvable-query branch already decided the answer for a row
+    that cannot be classified: it stays listed and wholly masked. Raising out of
+    ``spec_from_row`` instead makes a *built-in* unreachable, which is the one
+    thing archiving and drift both refuse to do.
+
+    The last two cases raise ``KeyError`` and ``SqlParseError`` — neither a
+    ``UserError`` nor a ``ValueError``, so each escaped the original guard and
+    took ``reports list`` / ``run`` / ``export report`` and the ``reports`` MCP
+    tool down with it for every tier.
     """
     dynamic = spec_from_row(dynamic_db, _row(**overrides))
 

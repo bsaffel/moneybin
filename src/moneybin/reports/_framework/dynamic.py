@@ -25,6 +25,7 @@ from moneybin.metrics.registry import USER_REPORT_DRIFT_DETECTED_TOTAL
 from moneybin.privacy.sql_lineage import (
     FAIL_CLOSED_CLASS,
     SchemaSnapshot,
+    SqlParseError,
     get_current_schema_snapshot,
 )
 from moneybin.privacy.taxonomy import DataClass, Tier
@@ -151,26 +152,31 @@ def spec_from_row(
     try:
         declared = declared_params(row.get("params") or ())
         stored_classes = {name: DataClass(value) for name, value in stored.items()}
-    except (UserError, ValueError) as e:
-        # The two decode steps that read stored *tokens*. Both are written from
-        # allowlists, so this becomes reachable the moment a release renames a
-        # `DataClass` or retires a parameter type — and then it is every saved row
-        # at once. Letting it escape takes down the whole catalog, built-ins
-        # included, which is worse than any answer this row can give.
-        return _unreadable_row(row, e)
-    stored_parameter_classes = {
-        parameter.name: parameter.data_class for parameter in declared
-    }
-    downgrades: Mapping[str, Mapping[str, str]] = row.get("class_downgrades") or {}
+        stored_parameter_classes = {
+            parameter.name: parameter.data_class for parameter in declared
+        }
+        downgrades: Mapping[str, Mapping[str, str]] = row.get("class_downgrades") or {}
 
-    current = class_fingerprint(
-        db,
-        query_sql=query_sql,
-        classes=stored_classes,
-        parameter_classes=stored_parameter_classes,
-        class_downgrades=downgrades,
-        snapshot=snapshot,
-    )
+        current = class_fingerprint(
+            db,
+            query_sql=query_sql,
+            classes=stored_classes,
+            parameter_classes=stored_parameter_classes,
+            class_downgrades=downgrades,
+            snapshot=snapshot,
+        )
+        provenance = read_tables(db, query_sql, snapshot=snapshot)
+    except (UserError, ValueError, KeyError, SqlParseError) as e:
+        # Every step that reads stored *text* — the class and annotation tokens,
+        # and the stored SQL the fingerprint and provenance both parse. All are
+        # written from allowlists by this repo, so this becomes reachable the
+        # moment a release renames a `DataClass`, retires a parameter type, or
+        # ships a parser that no longer accepts text an earlier one wrote — and
+        # then it is every saved row at once. Letting it escape takes down the
+        # whole catalog, built-ins included (one unparseable row would break
+        # `reports list`, `reports run`, `export report` and the `reports` MCP
+        # tool for every tier), which is worse than any answer this row can give.
+        return _unreadable_row(row, e)
     unresolvable: UserError | None = None
     if current == str(row.get("class_fingerprint") or ""):
         classes, parameter_classes, changed = (
@@ -222,9 +228,7 @@ def spec_from_row(
             OutputColumn(name=name, description=name, data_class=data_class)
             for name, data_class in classes.items()
         ),
-        semantics=unknown_semantics(
-            provenance=read_tables(db, query_sql, snapshot=snapshot)
-        ),
+        semantics=unknown_semantics(provenance=provenance),
         params=classed,
         class_downgrades={
             column: str(entry.get("reason", "")) for column, entry in downgrades.items()
@@ -385,6 +389,15 @@ def _reresolved(
     it was approved against**. Reapplying by column name alone would let an
     approval collected against a weak class silently suppress a stronger one,
     which is the inverse of what the downgrade was reviewed for.
+
+    **Any** movement fails closed, in either direction — not only a rise. A
+    derived class that moved *down* is a weakening no human reviewed, and only
+    ``reports reclassify`` may lower a floor. The cost is real and worth naming:
+    one upstream reclassification (``account_id``'s ``ACCOUNT_IDENTIFIER →
+    RECORD_ID``, say) masks that column on every saved report reading the table
+    until each is saved again, because reads never refresh the fingerprint.
+    ``.claude/rules/reports.md`` describes this as failing closed on a column
+    that moved "upward"; the code is deliberately stricter.
     """
     # Defaults are stripped for derivation: they cannot affect any class, and
     # leaving them on would let `_refuse_sensitive_defaults` raise on a *read*

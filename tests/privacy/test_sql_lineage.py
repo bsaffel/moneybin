@@ -16,6 +16,8 @@ from sqlglot import exp
 from moneybin.database import Database
 from moneybin.privacy.sql_lineage import (
     _MAX_SCOPE_DEPTH,  # pyright: ignore[reportPrivateUsage]
+    FAIL_CLOSED_CLASS,
+    ProjectionSource,
     SqlParseError,
     _class_of_key,  # pyright: ignore[reportPrivateUsage]
     derive_query_tier,
@@ -609,13 +611,16 @@ def test_nested_set_operation_classifies_the_value_bearing_branches(
 def test_except_takes_classes_from_the_left_branch_only(
     populated_db: Database,
 ) -> None:
-    """``EXCEPT``/``INTERSECT`` emit LEFT-branch values; the right only filters.
+    """``EXCEPT`` emits LEFT-branch values; the right operand only filters.
 
     The counterpart to ``test_union_classifies_every_branch_by_position``: a
     UNION must take the max across branches because both supply values, but
     widening that rule to EXCEPT would over-redact every difference query. Pins
     that the asymmetry is deliberate, so a future "just treat all SetOperations
     like UNION" simplification has to argue with a test.
+
+    ``INTERSECT`` is **not** in this bucket — see
+    ``test_intersect_classifies_both_branches``.
     """
     out = _classes(
         "SELECT account_type AS v FROM core.dim_accounts "
@@ -624,6 +629,23 @@ def test_except_takes_classes_from_the_left_branch_only(
     )
     assert out == {"v": DataClass.TXN_TYPE}
     assert derive_query_tier(out) is Tier.LOW
+
+
+def test_intersect_classifies_both_branches(populated_db: Database) -> None:
+    """``INTERSECT`` draws values from BOTH operands, unlike ``EXCEPT``.
+
+    A row survives an INTERSECT only when the value is present on both sides, so
+    the value it returns *is* the right operand's value. Classifying from the
+    left branch alone made the query an oracle: the LOW/MEDIUM left column named
+    the class while every returned row was a real ``routing_number``.
+    """
+    out = _classes(
+        "SELECT account_type AS v FROM core.dim_accounts "
+        "INTERSECT SELECT routing_number AS v FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"v": DataClass.ROUTING_NUMBER}
+    assert derive_query_tier(out) is Tier.CRITICAL
 
 
 # ---------------------------------------------------------------------------
@@ -1183,6 +1205,56 @@ def test_a_filter_placeholder_still_takes_its_column_class(
     assert resolve_placeholder_classes(tree, snapshot) == {
         "acct": DataClass.ROUTING_NUMBER,
         "top": DataClass.AGGREGATE,
+    }
+
+
+def test_a_placeholder_fails_closed_when_two_tables_bind_its_alias(
+    populated_db: Database,
+) -> None:
+    """A reused alias must not resolve against whichever table sqlglot saw last.
+
+    ``resolve_placeholder_classes`` needs one map for the whole tree — a
+    placeholder can sit in any scope — and ``_build_alias_map`` is
+    last-write-wins. Here both branches legally bind ``a``, to tables whose
+    ``labels`` column carries different classes: the tree-wide map answered
+    ``app.metrics.labels`` (AGGREGATE, LOW) for *both*, so the shared
+    "used with two different classes" guard never fired and ``$tag`` came back
+    LOW — which is the tier at which ``render_sql_forms`` splices a bound value
+    into the published SQL as a literal. The real left-branch class is
+    ``USER_NOTE``.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = expand_star(
+        parse_cached(
+            "SELECT a.labels AS v FROM app.imports a WHERE a.labels = $tag "
+            "UNION ALL "
+            "SELECT a.labels AS v FROM app.metrics a WHERE a.labels = $tag"
+        ),
+        snapshot,
+    )
+
+    assert resolve_placeholder_classes(tree, snapshot) == {"tag": FAIL_CLOSED_CLASS}
+
+
+def test_projection_sources_withhold_an_upstream_two_tables_bind(
+    populated_db: Database,
+) -> None:
+    """The provenance half of the same gap: no upstream beats a wrong one.
+
+    ``resolve_output_classes`` gets this right by building its alias map per
+    branch; ``resolve_projection_sources`` merges positionally and so needs one
+    tree-wide map. It stays a passthrough — that is a fact about the projection
+    text — but names no upstream, rather than pointing ``reports explain`` at a
+    table the value never came from.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached(
+        "SELECT a.labels AS v FROM app.imports a "
+        "UNION ALL SELECT a.labels AS v FROM app.metrics a"
+    )
+
+    assert resolve_projection_sources(tree, snapshot) == {
+        "v": ProjectionSource(passthrough=True, upstream=None)
     }
 
 

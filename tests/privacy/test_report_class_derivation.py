@@ -123,6 +123,41 @@ def test_derivation_rejects_star_in_a_cte_body(tmp_path: Path) -> None:
         _derive_one(model, tmp_path)
 
 
+def test_derivation_rejects_an_unqualified_upstream_read(tmp_path: Path) -> None:
+    """A bare table name names no schema, and derivation resolves by schema.
+
+    ``assert_acyclic`` skipped every table with an empty ``db`` on the grounds
+    that a CTE reference parses that way — but so does ``FROM fct_transactions``,
+    so the schema contract the check exists to enforce could be sidestepped by
+    dropping the prefix. Both other arms read ``table.db``, which is empty here,
+    so this fixture can only trip the new one.
+    """
+    model = """
+        MODEL (name reports.unqualified_probe, kind VIEW);
+        SELECT t.amount AS amount FROM fct_transactions AS t
+    """
+    with pytest.raises(ReportDerivationError, match="without a schema"):
+        _derive_one(model, tmp_path)
+
+
+def test_derivation_accepts_a_cte_reference_with_no_schema(tmp_path: Path) -> None:
+    """The benign twin: the empty-schema case the skip was written for.
+
+    Refusing every schema-less name would refuse every model that names an
+    intermediate result, so the skip survives — narrowed to the names this query
+    actually defines.
+    """
+    model = """
+        MODEL (name reports.cte_probe, kind VIEW);
+        WITH mine AS (SELECT t.amount AS amount FROM core.fct_transactions AS t)
+        SELECT mine.amount AS amount FROM mine
+    """
+
+    derived = _derive_one(model, tmp_path)
+
+    assert derived[("reports", "cte_probe")] == {"amount": DataClass.TXN_AMOUNT}
+
+
 # ---------------------------------------------------------------------------
 # derive_core_view_classes: the generalized engine, applied to core.* views
 #

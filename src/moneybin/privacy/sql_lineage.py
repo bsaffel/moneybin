@@ -262,6 +262,27 @@ def _build_alias_map(tree: exp.Expr) -> dict[str, tuple[str, str]]:
     return alias_map
 
 
+def _ambiguous_aliases(tree: exp.Expr) -> frozenset[str]:
+    """Alias names a **tree-wide** ``_build_alias_map`` cannot answer for.
+
+    ``_build_alias_map`` is last-write-wins, so one alias bound to two different
+    tables anywhere in the tree — legal SQL, and what a ``UNION`` branch or a
+    subquery reusing ``a`` produces — resolves to whichever table sqlglot walked
+    last. ``resolve_output_classes`` sidesteps this by building its map per
+    branch; callers that genuinely need one map for the whole tree consult this
+    set instead and fail closed on the names it holds, rather than resolving a
+    column against a table it never came from.
+    """
+    bound: dict[str, set[tuple[str, str]]] = {}
+    for tbl in tree.find_all(exp.Table):
+        schema, real_name = tbl.db, tbl.name
+        if not (schema and real_name):
+            continue
+        for key in {tbl.alias or real_name, real_name}:
+            bound.setdefault(key, set()).add((schema, real_name))
+    return frozenset(name for name, tables in bound.items() if len(tables) > 1)
+
+
 # ---------------------------------------------------------------------------
 # Star expansion + input-column collection
 # ---------------------------------------------------------------------------
@@ -1118,9 +1139,15 @@ def _union_select_branches(node: exp.Expr) -> list[exp.Select]:
       result takes the first branch's column NAMES but its VALUES come from
       every branch by position, so classifying only the first would let a
       CRITICAL column in a later branch leak.
-    - ``EXCEPT`` / ``INTERSECT`` emit rows drawn from the LEFT branch only
-      (the right operand filters, it does not contribute values), so only the
-      left branch is returned.
+    - ``INTERSECT`` likewise draws from BOTH branches. A row survives an
+      INTERSECT only when the value is present on *both* sides, so the value it
+      returns is the right operand's value just as much as the left's:
+      ``SELECT '021000021' AS v INTERSECT SELECT routing_number FROM
+      core.dim_accounts`` returns a real routing number, and classifying it from
+      the left branch alone calls it ``AGGREGATE`` and publishes it unmasked.
+    - ``EXCEPT`` alone emits rows drawn from the LEFT branch only (the right
+      operand filters, it does not contribute values), so only the left branch
+      is returned.
 
     Recursing on ``node.left`` also matters for correctness, not just clarity:
     ``tree.find(exp.Select)`` walks breadth-first, so for
@@ -1128,9 +1155,9 @@ def _union_select_branches(node: exp.Expr) -> list[exp.Select]:
     output names and classes from the operand that contributes no values while
     A and B go unclassified.
     """
-    if isinstance(node, exp.Union):
+    if isinstance(node, (exp.Union, exp.Intersect)):
         return _union_select_branches(node.left) + _union_select_branches(node.right)
-    if isinstance(node, exp.SetOperation):  # EXCEPT / INTERSECT — left values only
+    if isinstance(node, exp.SetOperation):  # EXCEPT — left values only
         return _union_select_branches(node.left)
     if isinstance(node, exp.Select):
         return [node]
@@ -1425,6 +1452,11 @@ def resolve_placeholder_classes(
     :func:`_is_row_count_position`.
     """
     alias_map = _build_alias_map(tree)
+    # A placeholder can sit in any scope, so this path needs one map for the
+    # whole tree — which is last-write-wins. An alias two tables bind therefore
+    # fails closed rather than resolving against whichever table came last; see
+    # :func:`_ambiguous_aliases`.
+    ambiguous = _ambiguous_aliases(tree)
     shadowed = _scope_source_names(tree)
     found: dict[str, DataClass] = {}
     for placeholder in tree.find_all(*PLACEHOLDER_NODES):
@@ -1434,7 +1466,7 @@ def resolve_placeholder_classes(
         column = _compared_column(placeholder)
         key = (
             None
-            if column is None
+            if column is None or column.table in ambiguous
             else _column_key(column, alias_map, snapshot, shadowed)
         )
         if key is None and _is_row_count_position(placeholder):
@@ -1498,12 +1530,16 @@ def resolve_projection_sources(
         # is strictly more than nothing and never claims an upstream.
         qualified = tree
     alias_map = _build_alias_map(qualified)
+    # Merging is positional across branches, so one tree-wide map is what this
+    # path needs — and an alias two branches bind to different tables would name
+    # an upstream the value never came from. Withhold it instead.
+    ambiguous = _ambiguous_aliases(qualified)
     shadowed = _scope_source_names(qualified)
 
     branches = _union_select_branches(qualified) or [qualified]
     per_branch = [
         [
-            _projection_source(projection, alias_map, snapshot, shadowed)
+            _projection_source(projection, alias_map, snapshot, shadowed, ambiguous)
             for projection in select.expressions
         ]
         for select in branches
@@ -1526,11 +1562,16 @@ def _projection_source(
     alias_map: dict[str, tuple[str, str]],
     snapshot: SchemaSnapshot,
     shadowed: frozenset[str],
+    ambiguous: frozenset[str] = frozenset(),
 ) -> ProjectionSource:
     """Read one projection's passthrough-and-upstream facts."""
     inner = projection.unalias()
     if not isinstance(inner, exp.Column):
         return ProjectionSource(passthrough=False, upstream=None)
+    if inner.table in ambiguous:
+        # Still a passthrough — that is a fact about the projection text — but no
+        # upstream this map can name honestly.
+        return ProjectionSource(passthrough=True, upstream=None)
     key = _column_key(inner, alias_map, snapshot, shadowed)
     return ProjectionSource(
         passthrough=True, upstream=None if key is None else ".".join(key)

@@ -211,11 +211,11 @@ def derive_classification(
     output_classes = resolve_output_classes(
         qualified, snapshot, query_sql, strict=False
     )
-    # Keyed by the *declared* parameters, not by what the SQL contains: a
-    # declared parameter the SQL never mentions still needs a class for the
-    # provenance renderer to withhold, and an undeclared placeholder cannot
-    # reach a run at all — DESCRIBE below refuses it as unbound.
     resolved = resolve_placeholder_classes(qualified, snapshot)
+    _refuse_unused_parameters(params, resolved)
+    # Keyed by the *declared* parameters, not by what the SQL contains: an
+    # undeclared placeholder cannot reach a run at all — DESCRIBE below refuses
+    # it as unbound.
     parameter_classes = {
         parameter.name: resolved.get(parameter.name, FAIL_CLOSED_CLASS)
         for parameter in params
@@ -292,6 +292,13 @@ def class_fingerprint(
     payload = json.dumps(
         {
             "version": DERIVATION_VERSION,
+            # The query text itself, not only its read set: rewriting
+            # `SELECT account_type AS v` to `SELECT routing_number AS v` over the
+            # same table moves neither `read_columns` nor `policy`, so without
+            # this term the key still matches and `spec_from_row` serves the
+            # stale LOW map for a CRITICAL value. `UserReportsService.update`
+            # re-derives on any SQL change, but the repo's own `set` does not.
+            "query": hashlib.sha256(query_sql.encode()).hexdigest(),
             "read_columns": read_column_classes(tree, snapshot),
             "policy": policy,
         },
@@ -415,6 +422,29 @@ def _refuse_sensitive_defaults(
                 code=error_codes.REPORT_PARAMETER_DEFAULT_NOT_ALLOWED,
                 hint="Declare it required — the report catalog publishes defaults unmasked.",
             )
+
+
+def _refuse_unused_parameters(
+    params: Sequence[ParamSpec], resolved: Mapping[str, DataClass]
+) -> None:
+    """Refuse a declared parameter the SQL never references — step 5b.
+
+    DuckDB rejects an excess named binding outright (``Parameter argument/count
+    mismatch, identifiers of the excess parameters: …``), so a declared-but-unused
+    parameter cannot be described *or* run. Named here rather than left to
+    :func:`_describe_result_columns`'s ``duckdb.Error`` handler, whose message —
+    "every column must exist, and each parameter's declared type must fit every
+    position it is used in" — is false for this case and sends the author
+    hunting a column and a type that are both fine.
+    """
+    unused = [parameter.name for parameter in params if parameter.name not in resolved]
+    if unused:
+        raise UserError(
+            "Declared parameter(s) the query never references: "
+            f"{', '.join(f'${name}' for name in unused)}.",
+            code=error_codes.REPORT_QUERY_INVALID,
+            hint="Reference each declared parameter as $name, or drop the declaration.",
+        )
 
 
 def _describe_result_columns(

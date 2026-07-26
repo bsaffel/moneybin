@@ -75,11 +75,24 @@ def assert_acyclic(query: exp.Query, model_name: str) -> None:
     ``@report(classes=...)`` verified against it) — so a model of either kind
     reading reports.* would make the derived map self-referential.
     """
+    # A CTE reference parses with an empty db — but so does an *unqualified* read
+    # of a real table (`FROM large_transactions`), and skipping every bare name
+    # made this check blind to the unqualified spelling of the very read it
+    # exists to reject. Only names a CTE in this query actually defines are
+    # skipped; any other bare name is an upstream read whose schema derivation
+    # cannot know.
+    cte_names = {
+        cte.alias_or_name.lower() for cte in query.find_all(exp.CTE)
+    } | _derived_table_names(query)
     for table in query.find_all(exp.Table):
-        # A CTE or derived-table reference parses with an empty db; only a
-        # schema-qualified read names a real upstream, so skip the rest.
         if not table.db:
-            continue
+            if table.name.lower() in cte_names:
+                continue
+            raise ReportDerivationError(
+                f"{model_name}: reads {table.name} without a schema. Derivation "
+                "resolves upstream columns by schema, so an unqualified read "
+                "names no ground truth — qualify it as core.* or app.*."
+            )
         if table.db == REPORTS_SCHEMA:
             raise ReportDerivationError(
                 f"{model_name}: reads {table.db}.{table.name}. A model derived "
@@ -94,6 +107,15 @@ def assert_acyclic(query: exp.Query, model_name: str) -> None:
                 "columns from an unclassified schema cannot be derived, so the "
                 "resulting map would silently under-describe them."
             )
+
+
+def _derived_table_names(query: exp.Query) -> set[str]:
+    """Aliases of inline derived tables — also bare names that read no upstream."""
+    return {
+        subquery.alias_or_name.lower()
+        for subquery in query.find_all(exp.Subquery)
+        if subquery.alias_or_name
+    }
 
 
 def materialization_blockers(query: exp.Query, model_name: str) -> tuple[str, ...]:

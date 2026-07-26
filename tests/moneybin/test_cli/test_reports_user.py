@@ -224,6 +224,19 @@ def test_run_coerces_a_parameter_to_its_declared_type_before_executing() -> None
     assert catalog.execute.call_args.kwargs["limit"] == 3
 
 
+def test_run_rejects_a_limit_below_one() -> None:
+    """Parity with the ``reports`` MCP tool, which validates ``ge=1``.
+
+    Passed through, ``--limit 0`` slices to zero rows and then reports
+    ``truncated: true`` against a ``total_count`` of 1 — an empty result claiming
+    to have been cut short, from the surface with no schema to refuse it.
+    """
+    result = runner.invoke(app, ["reports", "run", "core:merchants", "--limit", "0"])
+
+    assert result.exit_code == 2
+    assert "at least 1" in result.output
+
+
 # ---------------------------------------------------------------------------
 # create
 # ---------------------------------------------------------------------------
@@ -386,6 +399,24 @@ def test_set_archives_by_clearing_is_active() -> None:
     assert service.update.call_args.kwargs["is_active"] is False
 
 
+def test_set_sends_an_empty_query_to_the_service_instead_of_dropping_it() -> None:
+    """``--sql ""`` is a supplied value, and an invalid one — not an omission.
+
+    Tested for truthiness, an empty string reached the service as ``UNSET``: the
+    rename in the same invocation applied and the SQL change vanished, where
+    ``create --sql ""`` is correctly refused. Silently dropping one field of a
+    multi-field update is the failure mode ``UNSET`` exists to prevent.
+    """
+    service = _service(update=_save_outcome())
+
+    with _patch_database(), _patch_service(service):
+        runner.invoke(
+            app, ["reports", "set", "my_accounts", "--name", "accounts", "--sql", ""]
+        )
+
+    assert service.update.call_args.kwargs["query_sql"] == ""
+
+
 def test_set_warns_when_a_query_change_cleared_an_approved_downgrade() -> None:
     service = _service(update=_save_outcome(cleared_downgrades=("spend",)))
 
@@ -422,6 +453,29 @@ def test_delete_proceeds_without_a_prompt_under_yes() -> None:
 
     assert result.exit_code == 0, result.output
     service.delete.assert_called_once_with(_ROW["report_id"], actor="cli")
+
+
+def test_delete_reports_an_unaskable_confirmation_through_the_envelope() -> None:
+    """A closed stdin is not a decline — and it must not skip the envelope.
+
+    ``typer.confirm`` raises ``click.Abort`` on EOF, which is what a piped or
+    non-TTY invocation without ``--yes`` produces. ``classify_user_error`` does not
+    recognize ``Abort``, so letting it escape spent the whole interaction on a bare
+    ``Aborted.``: no error code, and no JSON for a caller that asked for JSON.
+    """
+    service = _service()
+
+    with _patch_database(), _patch_service(service):
+        result = runner.invoke(
+            app, ["reports", "delete", "my_accounts", "--output", "json"], input=""
+        )
+
+    assert result.exit_code != 0
+    # `result.stdout`, not `result.output`: the prompt itself goes to stderr, and
+    # the combined stream would put that text in front of the JSON.
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "mutation_confirmation_required"
+    service.delete.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

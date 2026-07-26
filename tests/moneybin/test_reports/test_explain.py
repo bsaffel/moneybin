@@ -503,6 +503,32 @@ def test_graduation_is_blocked_by_a_reports_read(
     )
 
 
+def test_graduation_survives_a_cte_whose_name_has_no_schema(
+    saved_db: Database, service: UserReportsService
+) -> None:
+    """``assert_acyclic`` now refuses a schema-less table; a CTE is not one.
+
+    It skipped *every* empty-schema table, which made it blind to an unqualified
+    read of a real table — see
+    ``test_derivation_rejects_an_unqualified_upstream_read`` for that half, which
+    only the build-time caller can reach (a saved report never gets there: DuckDB
+    fails the save-time ``DESCRIBE`` on a bare name first). This is the benign
+    twin the narrowed skip has to keep passing, at the boundary where a
+    regression would block every saved report that names an intermediate result.
+    """
+    explanation = _explain_saved(
+        saved_db,
+        service,
+        sql=(
+            "WITH mine AS (SELECT account_id FROM core.dim_accounts) "
+            "SELECT account_id FROM mine"
+        ),
+    )
+
+    assert explanation.graduation == "eligible"
+    assert explanation.graduation_blockers == ()
+
+
 def test_graduation_is_blocked_by_a_star_projection(
     saved_db: Database, service: UserReportsService
 ) -> None:
