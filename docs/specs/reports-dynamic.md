@@ -87,8 +87,10 @@ SQLMesh view at build time, so it cannot express runtime creation.
 
 New protected `app.*` table, paired per convention across
 `src/moneybin/sql/schema/app_user_reports.sql` and
-`src/moneybin/sql/migrations/V041__create_app_user_reports.py` (`V039` and
-`V040` are taken on `main`), registered as
+`src/moneybin/sql/migrations/V0NN__create_app_user_reports.py` — take the next
+free version **at implementation time**, and check unmerged branches as well as
+`main`, which may hold higher reservations than the tip. (A pinned number here
+has already collided twice.) Registered as
 `USER_REPORTS = TableRef("app", "user_reports", audience="interface")`.
 
 | Column | Type | Notes |
@@ -1059,6 +1061,7 @@ would hide a surface that is refusing every downgrade for mechanical reasons.
   admission test: the implementing PR must first try an existing projection,
   method, batch, target state, report entry, or workflow umbrella, then supply
   the seven-question record, serialized byte delta, and evaluation evidence for
-  every remaining identity. The registry stays at 45 until that evidence passes;
-  the fallback is an existing admitted operation or CLI-only operator control,
-  not a speculative alias or an override of ADR-016's hard maximum.
+  every remaining identity. The 47-tool standard registry does not grow until
+  that evidence passes; the fallback is an existing admitted operation or
+  CLI-only operator control, not a speculative alias or an override of
+  ADR-016's hard maximum.
