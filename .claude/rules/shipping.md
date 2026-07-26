@@ -73,7 +73,12 @@ Enumerate the roadmap's addresses and diff them against any mirror you keep:
 grep -oE 'M[0-3][A-Z](\.[0-9]+)?' docs/roadmap.md | sort -u
 ```
 
-Reconcile in the roadmap's favor: an address the roadmap is missing is the roadmap's bug (fix it here); an address only the mirror has is the mirror's. Do **not** re-mint a retired address — check that the letter is genuinely free before assigning it, not merely absent from one of the two lists.
+When the two lists diverge, the discriminator is **whether real work backs the address** — not which list it happens to sit in:
+
+- **Work exists** (shipped, in progress, or specced) but the roadmap has no row → the roadmap is wrong. Add it here; the roadmap is canonical.
+- **No work backs it** (retired, renamed, or never started) → the mirror is wrong. Drop it there.
+
+Do **not** re-mint a retired address. Before assigning a letter, confirm it is genuinely free — absence from one of the two lists is not evidence that it is.
 
 ## When a New Spec Is Written
 

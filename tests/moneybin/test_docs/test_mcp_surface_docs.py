@@ -1612,6 +1612,19 @@ def test_current_registry_tool_count_patterns_identify_registry_claims() -> None
     assert _current_registry_tool_counts(text) == {44}
 
 
+def test_count_after_noun_registry_claims_are_extracted() -> None:
+    """Count-after-noun phrasing must extract on its own fixture.
+
+    Deliberately isolated from the count-before-noun case above rather than
+    appended to it: that text still yields 44 from the older patterns, so a
+    shared fixture would stay green with this pattern deleted — reinstating the
+    exact vacuous pass the pattern was added to close. These counts appear in no
+    other fixture, so only this pattern can produce them.
+    """
+    assert _current_registry_tool_counts("a registry of 43 intent-shaped tools") == {43}
+    assert _current_registry_tool_counts("registries of 41 tools") == {41}
+
+
 def test_current_mcp_guidance_uses_only_standard_tool_names() -> None:
     prompt_text = PROMPTS.read_text()
     resource_text = RESOURCES.read_text()
