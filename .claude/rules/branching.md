@@ -8,6 +8,21 @@ description: "Branch prefix → PR label mapping, commit message style"
 
 `{type}/{kebab-case-summary}` — e.g., `feat/add-oauth-support`, `fix/null-pointer-auth`, `deps/bump-typer`.
 
+## Native Claude Worktrees
+
+Name a native Claude worktree `{type}+{kebab-case-summary}` — for example,
+`fix+sqlmesh-console-noise`. The project `WorktreeCreate` hook creates the
+corresponding canonical Git branch, `fix/sqlmesh-console-noise`.
+
+`+` is a path-safe transport encoding for Claude's native worktree name; `/`
+remains the Git branch separator. Do not rename a native worktree branch after
+entering it. A newly created sandboxed branch has no upstream configuration,
+so its first push must use:
+
+```bash
+git push origin HEAD:refs/heads/<current-branch>
+```
+
 ## Type → Label Mapping
 
 Every branch must use one of these prefixes. The corresponding GitHub label is applied to the PR.
