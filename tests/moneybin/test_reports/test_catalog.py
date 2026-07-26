@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
+from functools import partial
 from typing import cast
 from unittest.mock import MagicMock
 
@@ -1056,6 +1057,72 @@ def test_report_envelope_names_the_currency_its_rows_are_denominated_in(
     )
 
     assert result.to_envelope().to_dict()["summary"]["display_currency"] == "GBP"
+
+
+@pytest.mark.parametrize(
+    ("second_currency", "case"),
+    [
+        ("USD", "two known currencies"),
+        (None, "one known currency plus an unknown one"),
+    ],
+)
+def test_report_envelope_names_no_currency_when_its_rows_disagree(
+    mocker: MockerFixture, second_currency: str | None, case: str
+) -> None:
+    """Rows in more than one currency leave summary.display_currency null.
+
+    The envelope default is "USD", so a resolver that declines to answer here
+    silently labels the whole response USD — the same blend Requirement 5
+    forbids in the rows, moved up into the summary. The unknown-currency case
+    is the sharper one: it must not resolve to the one currency it *does* know.
+    """
+    segment = partial(
+        NetWorthCurrencySegment,
+        net_worth=Decimal("1000.00"),
+        total_assets=Decimal("1000.00"),
+        total_liabilities=Decimal("0.00"),
+        account_count=1,
+    )
+    mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.current",
+        return_value=NetWorthSnapshotPayload(
+            balance_date=date(2026, 7, 1),
+            currency_code=None,
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            account_count=2,
+            per_currency=[
+                segment(currency_code="GBP"),
+                segment(currency_code=second_currency),
+            ],
+            per_account=[
+                NetWorthAccountRow(
+                    account_id="acct_11112222",
+                    display_name="Current",
+                    balance=Decimal("1000.00"),
+                    observation_source="asserted",
+                    currency_code="GBP",
+                ),
+                NetWorthAccountRow(
+                    account_id="acct_33334444",
+                    display_name="Other",
+                    balance=Decimal("1000.00"),
+                    observation_source="asserted",
+                    currency_code=second_currency,
+                ),
+            ],
+        ),
+    )
+
+    result = ReportCatalog((NETWORTH_REPORT,)).execute(
+        cast(Database, MagicMock(spec=Database)),
+        report_id="core:networth",
+        parameters={},
+        limit=100,
+    )
+
+    assert result.to_envelope().to_dict()["summary"]["display_currency"] is None, case
 
 
 def test_networth_keeps_every_currency_when_the_breakdown_is_filtered(

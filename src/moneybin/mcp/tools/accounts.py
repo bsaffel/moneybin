@@ -797,7 +797,7 @@ def _coarse_envelope[T](
     returned_count: int,
     next_cursor: str | None = None,
     period: str | None = None,
-    display_currency: str = "USD",
+    display_currency: str | None = "USD",
     actions: list[str] | None = None,
     has_more: bool | None = None,
 ) -> ResponseEnvelope[T]:

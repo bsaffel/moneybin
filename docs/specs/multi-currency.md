@@ -152,6 +152,15 @@ Numbered, testable. Tagged by phase.
    **Implemented 2026-07-17:** `dim_accounts.currency_code` (renamed), `fct_balances`/
    `fct_balances_daily.currency_code`, and account-currency inheritance on
    `fct_transactions`/`fct_balances` all shipped.
+   **Completed 2026-07-26:** the account grain itself kept a `COALESCE(..., 'USD')`
+   until this pass — the one place the "never a blind `'USD'`" rule was still
+   broken, and the terminal fallback of the whole chain, so it silently supplied a
+   currency to every row that lacked one. `core.dim_accounts` now resolves
+   user override → the currency the account's own source reported (OFX `CURDEF` via
+   `prep.stg_ofx__balances`, Plaid `iso_currency_code`/`unofficial_currency_code` via
+   `prep.stg_plaid__balances`, the tabular `currency` column) → `NULL`. Until this
+   landed, Requirement 8's unknown-currency rule and Requirement 6's `fail` branch
+   were both unreachable in production.
 4. **Home currency setting.** A profile-level `home_currency` (ISO 4217), **mutable**,
    defaulted by **locale auto-detection with explicit user confirmation** in the
    [first-run wizard](mcp-first-run-setup.md). Distinct from per-account currency. It is
@@ -225,6 +234,11 @@ Numbered, testable. Tagged by phase.
    `src/moneybin/sql/migrations/`.
    **Implemented 2026-07-17** for the capture/inheritance columns above; the Requirements 5
    and 6 behaviors referenced in this item (segmentation, doctor surfacing) are still open.
+   **Completed 2026-07-26:** segmentation and doctor surfacing shipped with Requirements
+   5–7, and the account-grain `'USD'` fallback that made "still `NULL`" impossible is
+   gone (see Requirement 3). `tests/scenarios/test_multi_currency_report_segmentation.py::test_a_transaction_with_no_captured_currency_stays_unknown`
+   holds the whole chain: an uncaptured currency stays `NULL` through core, gets its own
+   report segment, and fails `system doctor`.
 
 ### M1K.2 — Display conversion
 

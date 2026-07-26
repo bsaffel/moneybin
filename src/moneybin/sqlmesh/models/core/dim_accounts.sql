@@ -9,7 +9,30 @@ MODEL (
   grain account_id
 );
 
-WITH ofx_accounts AS (
+WITH ofx_balance_currency AS (
+  /* Account currency per source, taken from the balance rows because no source
+     puts it on the account record: OFX carries <CURDEF> on the statement, Plaid
+     returns iso_currency_code on the balance. Most recent non-NULL wins, matching
+     how `merged` resolves the other descriptive fields. Without this the account
+     grain has no currency of its own, and the terminal COALESCE below would have
+     nothing to fall back on but a literal — which is exactly what
+     multi-currency.md Requirement 3 forbids ("never a blind 'USD'"). */
+  SELECT
+    source_account_key,
+    ARG_MAX(currency_code, extracted_at) FILTER(WHERE
+      NOT currency_code IS NULL) AS source_currency
+  FROM prep.stg_ofx__balances
+  GROUP BY
+    source_account_key
+), plaid_balance_currency AS (
+  SELECT
+    source_account_key,
+    ARG_MAX(COALESCE(iso_currency_code, unofficial_currency_code), extracted_at) FILTER(WHERE
+      NOT COALESCE(iso_currency_code, unofficial_currency_code) IS NULL) AS source_currency
+  FROM prep.stg_plaid__balances
+  GROUP BY
+    source_account_key
+), ofx_accounts AS (
   /* OFX <ORG> is a routing code, not a name — Chase publishes "B1", Wells Fargo
      "WF" — so resolve a display name from the exact <FID> via seeds.institutions
      and fall back to the raw <ORG> when the FID is unregistered. This is a
@@ -31,10 +54,13 @@ WITH ofx_accounts AS (
     CASE
       WHEN LENGTH(REGEXP_REPLACE(a.source_account_key, '[^0-9]', '', 'g')) >= 4
       THEN RIGHT(REGEXP_REPLACE(a.source_account_key, '[^0-9]', '', 'g'), 4)
-    END AS last_four_raw
+    END AS last_four_raw,
+    c.source_currency
   FROM prep.stg_ofx__accounts AS a
   LEFT JOIN seeds.institutions AS i
     ON i.fid = a.institution_fid
+  LEFT JOIN ofx_balance_currency AS c
+    ON c.source_account_key = a.source_account_key
 ), tabular_accounts AS (
   SELECT
     account_id,
@@ -57,27 +83,33 @@ WITH ofx_accounts AS (
         REGEXP_REPLACE(COALESCE(account_number, account_number_masked), '[^0-9]', '', 'g'),
         4
       )
-    END AS last_four_raw
+    END AS last_four_raw,
+    currency AS source_currency /* the one source that carries it on the account itself */
   FROM prep.stg_tabular__accounts
 ), plaid_accounts AS (
+  /* Every column is alias-qualified because the balance-currency join makes
+     bare source_account_key ambiguous. */
   SELECT
-    account_id,
-    source_account_key,
+    a.account_id,
+    a.source_account_key,
     NULL::TEXT AS routing_number,
-    account_type,
-    institution_name,
+    a.account_type,
+    a.institution_name,
     NULL::TEXT AS institution_fid,
     'plaid' AS source_type,
-    source_file,
-    extracted_at,
-    loaded_at,
-    official_name,
-    account_subtype,
+    a.source_file,
+    a.extracted_at,
+    a.loaded_at,
+    a.official_name,
+    a.account_subtype,
     CASE
-      WHEN LENGTH(REGEXP_REPLACE(mask, '[^0-9]', '', 'g')) >= 4
-      THEN RIGHT(REGEXP_REPLACE(mask, '[^0-9]', '', 'g'), 4)
-    END AS last_four_raw
-  FROM prep.stg_plaid__accounts
+      WHEN LENGTH(REGEXP_REPLACE(a.mask, '[^0-9]', '', 'g')) >= 4
+      THEN RIGHT(REGEXP_REPLACE(a.mask, '[^0-9]', '', 'g'), 4)
+    END AS last_four_raw,
+    c.source_currency
+  FROM prep.stg_plaid__accounts AS a
+  LEFT JOIN plaid_balance_currency AS c
+    ON c.source_account_key = a.source_account_key
 ), all_accounts AS (
   SELECT
     *
@@ -145,7 +177,9 @@ WITH ofx_accounts AS (
     MAX(extracted_at) AS extracted_at,
     MAX(loaded_at) AS loaded_at,
     ARG_MIN(last_four_raw, (source_rank, -EPOCH_US(extracted_at))) FILTER(WHERE
-      NOT last_four_raw IS NULL) AS last_four_derived
+      NOT last_four_raw IS NULL) AS last_four_derived,
+    ARG_MAX(source_currency, extracted_at) FILTER(WHERE
+      NOT source_currency IS NULL) AS source_currency
   FROM ranked
   GROUP BY
     grain_key
@@ -174,7 +208,7 @@ SELECT
   COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
   COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */
   s.holder_category, /* 'personal' / 'business' / 'joint' */
-  COALESCE(s.currency_code, 'USD') AS currency_code, /* ISO-4217 currency code; NULL falls back to USD (M1K.1 Part B adds the true no-blend guard) */
+  COALESCE(s.currency_code, w.source_currency) AS currency_code, /* ISO 4217 currency this account is denominated in: user override (app.account_settings) else the currency its own source reported (OFX CURDEF, Plaid iso_currency_code, tabular currency column). NULL means genuinely unknown and stays that way — every monetary grain COALESCEs onto this column, so a literal default here would relabel the whole ledger and make the unknown-currency segment unreachable (multi-currency.md Requirements 3 and 8). system doctor's currency_integrity check surfaces NULLs for the user to resolve with `accounts set --currency`. */
   s.credit_limit, /* User-asserted credit limit on credit cards / lines */
   COALESCE(s.archived, FALSE) AS archived, /* Hides account from default list and from agg_net_worth */
   COALESCE(s.include_in_net_worth, TRUE) AS include_in_net_worth /* Whether this account contributes to agg_net_worth */

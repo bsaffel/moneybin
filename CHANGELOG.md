@@ -44,7 +44,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rest entirely. A single-currency profile gets the same N rows as before.
   `summary.display_currency` now names the currency a report's rows are actually
   denominated in instead of always reporting `USD`; when the rows span more than
-  one, each row's `currency_code` is the answer.
+  one — or the currency is unknown — it is null and each row's `currency_code`
+  is the answer.
+- **An account whose currency nobody stated is now unknown, not USD (M1K.1).**
+  `core.dim_accounts` took `USD` whenever an account had no explicit currency
+  setting, and every transaction and balance inherits its account's currency, so
+  one guess relabelled the whole ledger. An account now takes the currency its
+  own source reported — OFX `CURDEF`, Plaid `iso_currency_code`, the tabular
+  `currency` column — and stays unknown when no source stated one. Imports from
+  OFX and Plaid are unaffected: those formats always carry a currency. A CSV
+  without a currency column now reports unknown, and `moneybin system doctor`
+  names the accounts to fix with `accounts set --currency`. Unknown amounts join
+  no cross-currency total until you set one.
 - **Canonical bundle and registered-report export delivery (M1O).**
   `moneybin export bundle` and `moneybin export report` publish redacted CSV by
   default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named

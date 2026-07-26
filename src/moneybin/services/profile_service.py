@@ -17,7 +17,9 @@ from pathlib import Path
 
 import yaml
 
+from moneybin import error_codes
 from moneybin.config import get_base_dir
+from moneybin.errors import UserError
 from moneybin.utils.user_config import (
     generate_profile_config,
     get_default_profile,
@@ -66,8 +68,18 @@ class ProfileExistsError(Exception):
     """Raised when attempting to create a profile that already exists."""
 
 
-class ProfileNotFoundError(Exception):
-    """Raised when a profile does not exist."""
+class ProfileNotFoundError(UserError):
+    """Raised when a profile does not exist.
+
+    A ``UserError`` so ``classify_user_error`` recognizes it: every CLI command
+    wrapped in ``handle_cli_errors`` (and every MCP tool) then renders the clean
+    message and exit code instead of letting a traceback reach the user. Call
+    sites that pre-date the central handler still catch it by name.
+    """
+
+    def __init__(self, message: str) -> None:
+        """Initialize with the standard not-found code."""
+        super().__init__(message, code=error_codes.MUTATION_NOT_FOUND)
 
 
 class ProfileService:

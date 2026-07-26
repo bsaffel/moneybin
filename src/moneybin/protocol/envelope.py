@@ -70,7 +70,11 @@ class SummaryMeta:
     has_more: bool = False
     period: str | None = None
     sensitivity: Literal["low", "medium", "high", "critical"] = "low"
-    display_currency: str = "USD"
+    # Nullable: a response whose rows span more than one currency — or whose
+    # currency is unknown — has no single display currency, and naming one
+    # would contradict the rows (multi-currency.md Requirement 5). Null means
+    # "read each row's currency_code", not "unset".
+    display_currency: str | None = "USD"
     degraded: bool = False
     degraded_reason: str | None = None
 
@@ -242,7 +246,7 @@ def build_envelope(
     returned_count: int | None = None,
     next_cursor: str | None = None,
     period: str | None = None,
-    display_currency: str = "USD",
+    display_currency: str | None = "USD",
     actions: list[str] | None = None,
     degraded: bool = False,
     degraded_reason: str | None = None,
@@ -272,7 +276,8 @@ def build_envelope(
         next_cursor: Opaque pagination token. When provided, ``summary.has_more``
             is forced to ``True`` regardless of count comparison.
         period: Human-readable period string (e.g., ``"2026-01 to 2026-04"``).
-        display_currency: Currency for all amounts in the response.
+        display_currency: Currency for all amounts in the response; None when
+            they span more than one currency, or the currency is unknown.
         actions: Contextual next-step hints.
         degraded: Whether this is a degraded (no-consent) response.
         degraded_reason: Why the response is degraded.

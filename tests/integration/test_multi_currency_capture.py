@@ -68,3 +68,27 @@ def test_eur_ofx_statement_currency_survives_end_to_end(
         "WHERE source_type = 'ofx' AND balance = 5000.00"
     ).fetchall()
     assert balance_currencies == [("EUR",)]
+
+
+@pytest.mark.slow
+def test_eur_ofx_account_currency_reaches_the_accounts_dimension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The account a EUR statement describes is EUR, not a guessed USD.
+
+    ``dim_accounts.currency_code`` is the terminal fallback for the whole
+    chain — ``fct_transactions`` and ``fct_balances`` both COALESCE onto it —
+    so a literal default here cannot be a local cosmetic issue: it relabels
+    every row whose own currency the source omitted (multi-currency.md
+    Requirement 3, "never a blind 'USD'").
+    """
+    db = _build_db(tmp_path, monkeypatch)
+
+    ImportService(db).import_file(
+        _FIXTURES_DIR / "multi_currency_eur.qfx", refresh=True
+    )
+
+    # Fresh db, one import: an unfiltered query names exactly this account.
+    assert db.execute(
+        "SELECT DISTINCT currency_code FROM core.dim_accounts"
+    ).fetchall() == [("EUR",)]

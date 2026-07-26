@@ -52,7 +52,7 @@ class ReportResult:
     truncated: bool
     actions: list[str] = field(default_factory=list)
     period: str | None = None
-    display_currency: str = "USD"
+    display_currency: str | None = "USD"
 
     @property
     def classes_returned(self) -> list[str]:
@@ -107,7 +107,7 @@ class CatalogReportExecution:
     period: str | None
     semantics: ReportSemantics
     provenance: tuple[str, ...]
-    display_currency: str = "USD"
+    display_currency: str | None = "USD"
 
 
 def _resolve_display_currency(records: list[dict[str, Any]]) -> str | None:
@@ -115,12 +115,11 @@ def _resolve_display_currency(records: list[dict[str, Any]]) -> str | None:
 
     Report rows are segmented per ``currency_code`` (multi-currency.md
     Requirement 5), so the envelope may only name a display currency when the
-    rows agree on one. Mixed rows return None and the caller keeps the envelope
-    default: naming one of several would contradict the rows it wraps, and the
-    per-row ``currency_code`` is the authority in that case.
+    rows agree on exactly one known one. An unknown (NULL) currency is its own
+    segment and never resolves to whichever currency the other rows happen to
+    carry — that would be the Requirement 5 blend, relabelled.
     """
     seen = {record.get("currency_code") for record in records}
-    seen.discard(None)
     if len(seen) != 1:
         return None
     only = next(iter(seen))
@@ -228,7 +227,12 @@ def build_catalog_execution(
     # of ReportSpec. The cast keeps classify_columns' existing public signature
     # stable while both kinds use its fail-closed undeclared-column behavior.
     col_classes = classify_columns(cast(ReportSpec, spec), columns)
-    resolved_currency = _resolve_display_currency(limited)
+    # A report whose rows carry currency_code is authoritative about its own
+    # denomination, including when the answer is "no single one" — falling back
+    # to the "USD" envelope default there would relabel a segmented result as
+    # one currency. Reports with no currency_code column say nothing either way
+    # and keep the default.
+    declares_currency = "currency_code" in columns
     return CatalogReportExecution(
         report_id=spec.report_id,
         parameters=MappingProxyType(dict(parameters)),
@@ -246,7 +250,11 @@ def build_catalog_execution(
         period=period,
         semantics=spec.semantics,
         provenance=spec.semantics.provenance,
-        **({"display_currency": resolved_currency} if resolved_currency else {}),
+        **(
+            {"display_currency": _resolve_display_currency(limited)}
+            if declares_currency
+            else {}
+        ),
     )
 
 
