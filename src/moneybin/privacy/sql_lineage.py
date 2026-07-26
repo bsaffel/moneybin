@@ -1204,9 +1204,10 @@ def resolve_output_classes(
 def is_data_query(tree: exp.Expr) -> bool:
     """True for row-returning queries (SELECT / set operations).
 
-    False for DESCRIBE / SHOW / PRAGMA / EXPLAIN, whose output is schema or
-    plan text, not classified row data — callers route those past the lineage
-    gate and treat them as LOW.
+    False for DESCRIBE / SHOW, whose output is schema text, not classified row
+    data — callers route those past the lineage gate and treat them as LOW.
+    Also False for PRAGMA and EXPLAIN, which :func:`is_metadata_query` likewise
+    rejects, so they reach neither path and are refused.
 
     Must test ``exp.SetOperation``, not ``exp.Union``: on sqlglot 30.8.0
     ``exp.Except`` / ``exp.Intersect`` are siblings of ``exp.Union`` under
@@ -1219,15 +1220,8 @@ def is_data_query(tree: exp.Expr) -> bool:
     return isinstance(tree, (exp.Select, exp.SetOperation))
 
 
-# sqlglot has no EXPLAIN node for the DuckDB dialect — it falls back to the
-# generic exp.Command, which is ALSO what every statement it cannot parse
-# becomes. Matching the command word keeps unparsed syntax from riding in on
-# the same node type.
-_METADATA_COMMANDS = frozenset({"EXPLAIN"})
-
-
 def is_metadata_query(tree: exp.Expr) -> bool:
-    """True for DESCRIBE / SHOW / PRAGMA / EXPLAIN — and nothing else.
+    """True for DESCRIBE / SHOW — and nothing else.
 
     The complement of :func:`is_data_query` is NOT a safe test for "this is
     metadata". Callers run metadata statements unclassified at LOW, so reading
@@ -1235,13 +1229,30 @@ def is_metadata_query(tree: exp.Expr) -> bool:
     can produce a potential unredacted read — the door a top-level ``EXCEPT``
     and a ``;``-separated ``Block`` each walked through. This allowlist is the
     positive test callers need so an unrecognized tree fails closed.
+
+    The membership rule is one line: **a statement is admissible only if the
+    schema gate can resolve every table it names.** ``exp.Describe`` holds a
+    real ``exp.Table``; ``exp.Show`` names no table at all, so there is nothing
+    to resolve.
+
+    ``exp.Pragma`` and ``exp.Command`` (which is what a DuckDB ``EXPLAIN``
+    becomes — sqlglot has no EXPLAIN node — and also what every statement
+    sqlglot cannot parse becomes) are deliberately NOT admitted, because they
+    fail that rule in the most dangerous way: they reference tables while
+    hiding them. A pragma's target is a string literal inside an
+    ``exp.Anonymous`` call; an EXPLAIN's whole payload stays unparsed. Either
+    way ``find_all(exp.Table)`` returns nothing and the gate passes without
+    having examined anything.
+
+    Neither was theoretical. ``PRAGMA storage_info`` reports per-segment min/max
+    statistics — for a VARCHAR, a cleartext prefix of the stored values — and
+    returned a CRITICAL routing number's first eight digits unmasked at LOW,
+    against a schema ``SELECT`` refuses. ``EXPLAIN ANALYZE`` *executes* its
+    inner query, reaching ``raw``/``prep`` and returning their column names and
+    row counts. No allowlist of pragma or command names fixes either: the
+    defect is that the target is invisible, not that the verb is unrecognized.
     """
-    if isinstance(tree, (exp.Describe, exp.Show, exp.Pragma)):
-        return True
-    return (
-        isinstance(tree, exp.Command)
-        and str(tree.this).strip().upper() in _METADATA_COMMANDS
-    )
+    return isinstance(tree, (exp.Describe, exp.Show))
 
 
 def is_multi_statement(tree: exp.Expr) -> bool:

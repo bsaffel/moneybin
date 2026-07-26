@@ -54,11 +54,13 @@ def sql_query_command(
     """Execute a read-only SQL query with privacy enforcement.
 
     The privacy-safe counterpart to ``moneybin db query``: only SELECT, WITH,
-    DESCRIBE, SHOW, PRAGMA, and EXPLAIN are allowed, limited to the ``core``,
-    ``app``, and ``reports`` schemas. Each output column is classified via SQL
-    lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked
-    (****<last4>), exactly like the typed tools and the ``sql_query`` MCP tool.
-    Other tiers (amounts, descriptions, dates) pass through in the clear.
+    DESCRIBE, and SHOW are allowed (PRAGMA and EXPLAIN are not), limited to the
+    ``core``, ``app``, and ``reports`` schemas — DESCRIBE is held to that same
+    schema limit, so a catalog statement cannot inspect a table the data path
+    won't read. Each output column is classified via SQL lineage;
+    CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>),
+    exactly like the typed tools and the ``sql_query`` MCP tool. Other tiers
+    (amounts, descriptions, dates) pass through in the clear.
 
     Amounts use the accounting convention: negative = expense, positive = income.
 

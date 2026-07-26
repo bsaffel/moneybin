@@ -316,9 +316,9 @@ Save pipeline:
    count is taken from the text DuckDB executes. A saved report inherits both
    properties by calling the gate; it adds no statement check of its own.
 2. `is_data_query` — reject anything that is not a row-returning SELECT.
-   `validate_read_only_query` also admits `DESCRIBE`, `SHOW`, `PRAGMA`, and
-   `EXPLAIN` (`privacy/sql_query.py`), but step 5 below raises
-   `SqlSchemaError("Query has no SELECT projection")` on all four. Without this
+   `validate_read_only_query` also admits `DESCRIBE` and `SHOW`
+   (`privacy/sql_query.py`), but step 5 below raises
+   `SqlSchemaError("Query has no SELECT projection")` on both. Without this
    gate, "valid read-only SQL always saves" is false for statements the sole
    documented gate accepts — they would fail midway through the pipeline. The
    primitive already exists (`privacy/sql_lineage.py`) and `sql_query` already
