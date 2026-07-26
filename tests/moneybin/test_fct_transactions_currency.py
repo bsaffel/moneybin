@@ -92,16 +92,18 @@ def test_transaction_own_currency_wins_over_account_currency(db: Database) -> No
 def test_transaction_currency_falls_back_to_account_default_when_neither_known(
     db: Database,
 ) -> None:
-    """No captured or account currency: inherits dim_accounts' 'USD' default.
+    """No captured, source, or account currency: the row stays unknown.
 
     Neither a captured transaction currency nor an explicit account currency is
-    set here, so the row inherits dim_accounts' own still-in-place 'USD' default
-    (Task 1 Step 11) rather than staying NULL.
+    set here, and the OFX fixture carries no balance row to supply one, so
+    nothing in the chain knows what this amount is denominated in.
 
-    This blind default is a known, explicitly-scoped-out-of-Part-A gap — the true
-    no-silent-blend guard that removes it is M1K.1 Part B's job, not this task's.
-    This test documents today's actual (imperfect) behavior so a future change to
-    dim_accounts' default is a deliberate, visible diff here, not a silent one.
+    This assertion used to read ``"USD"``, and its docstring asked that a future
+    change to dim_accounts' default arrive as a deliberate, visible diff here
+    rather than silently. This is that diff: M1K.1 Part B removed the blind
+    default, so an unknown currency is now representable end-to-end
+    (multi-currency.md Requirement 8) instead of being guessed. `system doctor`
+    reports these rows for the user to resolve with `accounts set --currency`.
     """
     _insert_dim_account_inputs(db, account_id="a_unknown")
     # No app.account_settings row at all for this account.
@@ -114,4 +116,4 @@ def test_transaction_currency_falls_back_to_account_default_when_neither_known(
         "SELECT currency_code FROM core.fct_transactions WHERE account_id = 'a_unknown'"
     ).fetchone()
     assert row is not None
-    assert row[0] == "USD"
+    assert row[0] is None
