@@ -1,6 +1,6 @@
 ---
 name: update-docs
-description: Update the public-facing documentation surface — README, CHANGELOG, CONTRIBUTING, top-level docs (architecture, audience, comparison, features, licensing, roadmap), docs/guides/, docs/reference/, docs/architecture/, docs/tech/ — to reflect what the in-scope code change means for users. Persona-aware writing per docs/audience.md; assumes the reader is not an expert on internals. Excludes specs and ADRs (those are /update-specs and by-hand respectively). Use this when finishing user-visible work, before opening a PR that adds capability, when a milestone closes, or whenever the user says "update the docs" / "make sure the docs reflect this." Don't wait to be asked — if user-visible work just shipped, suggest running it.
+description: Update the public doc surface — README, CHANGELOG, CONTRIBUTING, docs/ (architecture, audience, comparison, features, roadmap, guides, reference, tech) — to reflect what an in-scope change means for users; persona-aware per docs/audience.md. Excludes specs and ADRs (use /update-specs). Trigger: user-visible work ships, a PR adds capability, a milestone closes, or "update the docs". Suggest it unprompted.
 ---
 
 # /update-docs
