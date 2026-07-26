@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import logging
 
+import duckdb
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -285,9 +287,19 @@ def test_metadata_path_cannot_reach_a_schema_the_data_path_refuses(
         execute_sql_query(populated_db, "SELECT ssn FROM raw.leaky", max_rows=100)
     assert ei.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED
 
-    with pytest.raises(UserError) as describe_error:
-        execute_sql_query(populated_db, "DESCRIBE raw.leaky", max_rows=100)
-    assert describe_error.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED
+    # Every spelling that names the table, not just the bare-table one. A
+    # DESCRIBE can wrap a whole SELECT, and SHOW takes a FROM-schema form; both
+    # reach the same table by a route the bare-table case would not have
+    # exercised.
+    for sql in (
+        "DESCRIBE raw.leaky",
+        "describe RAW.leaky",
+        "DESCRIBE SELECT * FROM raw.leaky",
+        "SHOW TABLES FROM raw",
+    ):
+        with pytest.raises(UserError) as metadata_error:
+            execute_sql_query(populated_db, sql, max_rows=100)
+        assert metadata_error.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED, sql
 
     for sql in ("PRAGMA storage_info('raw.leaky')", "PRAGMA table_info('raw.leaky')"):
         assert "12345678" not in _payload(populated_db, sql)
@@ -361,6 +373,33 @@ def test_show_all_tables_exposes_internal_shape_but_no_values(
     # The line that must never move: no row values, whole or partial.
     assert "123456789" not in payload
     assert "12345678" not in payload
+
+
+def test_snapshot_failure_is_classified_not_raised_raw(
+    populated_db: Database, mocker: MockerFixture
+) -> None:
+    """A DuckDB failure while building the schema snapshot stays classified.
+
+    The snapshot is fetched before the metadata/data fork so both paths can be
+    schema-gated from it, which puts it ahead of the handler that converts
+    DuckDB errors into ``UserError``. It has to stay inside that handler: a raw
+    ``duckdb.Error`` is not one of the types ``handle_cli_errors`` recognizes,
+    so it would reach the CLI as an unhandled traceback — and DuckDB error text
+    can quote the query verbatim, including its literal values, which is the
+    whole reason this module never echoes ``str(e)`` to the caller.
+    """
+    mocker.patch(
+        "moneybin.privacy.sql_query.get_current_schema_snapshot",
+        side_effect=duckdb.IOException("disk fell over reading 021000021"),
+    )
+
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db, "SELECT account_id FROM core.dim_accounts", max_rows=10
+        )
+
+    assert ei.value.code == error_codes.SQL_QUERY_ERROR
+    assert "021000021" not in str(ei.value)
 
 
 def test_metadata_path_still_answers_schema_questions(populated_db: Database) -> None:

@@ -382,40 +382,45 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
             details={"detail": str(e)},
         ) from e
 
-    snapshot = get_current_schema_snapshot(db)
-
-    # DESCRIBE/SHOW return schema text, not row data — run them directly at
-    # LOW; the lineage gate applies only to data queries.
-    # Route on the positive metadata test, never on `not is_data_query`: this
-    # branch executes its string unclassified, so anything neither recognizably
-    # data nor recognizably metadata must be refused rather than run.
-    if not is_data_query(tree):
-        if not is_metadata_query(tree):
-            raise UserError(
-                "Only SELECT queries and DESCRIBE/SHOW are supported.",
-                code=error_codes.SQL_INVALID_QUERY,
-            )
-        # The SCHEMA gate binds this path too. Lineage does not — metadata rows
-        # carry no classified column — but "which schemas may I be asked
-        # about" is a question about the TARGET, not about the answer's shape,
-        # and DESCRIBE names its target as an ordinary table node. Skipping the
-        # gate here let `DESCRIBE raw.x` describe a table `SELECT ... FROM
-        # raw.x` refuses, so the same secret had a gated spelling and an
-        # ungated one.
-        _refuse_disallowed_schemas(tree, snapshot)
-        columns, rows, truncated = _fetch_metadata(db, query, max_rows)
-        records = [dict(zip(columns, row, strict=False)) for row in rows]
-        return SqlQueryResult(
-            records=records,
-            columns=columns,
-            output_classes={},
-            tier=Tier.LOW,
-            total_count=max_rows + 1 if truncated else len(records),
-            truncated=truncated,
-            is_metadata=True,
-        )
-
+    # Everything below stays inside this handler, including the snapshot fetch
+    # and the whole metadata branch. A raw duckdb.Error escaping here would
+    # reach the CLI as an unhandled traceback (handle_cli_errors passes types it
+    # doesn't recognize straight through) carrying DuckDB's message, which can
+    # quote the query verbatim — the exact leak the `str(e)` note below guards.
     try:
+        snapshot = get_current_schema_snapshot(db)
+
+        # DESCRIBE/SHOW return schema text, not row data — run them directly at
+        # LOW; the lineage gate applies only to data queries.
+        # Route on the positive metadata test, never on `not is_data_query`:
+        # this branch executes its string unclassified, so anything neither
+        # recognizably data nor recognizably metadata must be refused, not run.
+        if not is_data_query(tree):
+            if not is_metadata_query(tree):
+                raise UserError(
+                    "Only SELECT queries and DESCRIBE/SHOW are supported.",
+                    code=error_codes.SQL_INVALID_QUERY,
+                )
+            # The SCHEMA gate binds this path too. Lineage does not — metadata
+            # rows carry no classified column — but "which schemas may I be
+            # asked about" is a question about the TARGET, not about the
+            # answer's shape, and DESCRIBE names its target as an ordinary
+            # table node. Skipping the gate here let `DESCRIBE raw.x` describe
+            # a table `SELECT ... FROM raw.x` refuses, so the same secret had a
+            # gated spelling and an ungated one.
+            _refuse_disallowed_schemas(tree, snapshot)
+            columns, rows, truncated = _fetch_metadata(db, query, max_rows)
+            records = [dict(zip(columns, row, strict=False)) for row in rows]
+            return SqlQueryResult(
+                records=records,
+                columns=columns,
+                output_classes={},
+                tier=Tier.LOW,
+                total_count=max_rows + 1 if truncated else len(records),
+                truncated=truncated,
+                is_metadata=True,
+            )
+
         qtree = expand_star(tree, snapshot)
         _refuse_disallowed_schemas(qtree, snapshot)
         output_classes = resolve_output_classes(qtree, snapshot, query)
