@@ -39,6 +39,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   run `accounts set --currency`, then `moneybin transform`) and warns when a
   profile holds more than one currency, so segmented totals are explained
   rather than surprising.
+- **`accounts` and `accounts_get` report an unknown currency as null, not the
+  string `"None"` (M1K.1).** Both read paths coerced the column with `str()`,
+  which renders SQL NULL as a four-character string. That was unreachable while
+  `dim_accounts` defaulted to `'USD'`; removing the default made it routine, and
+  an agent reading `"currency_code": "None"` could take it for a denomination.
+  `AccountSummary.currency_code` and `AccountDetail.currency_code` are now
+  nullable, matching every other currency-bearing payload.
 - **Daily balances no longer add foreign-currency transactions to an account's
   running balance (M1K.1).** `core.fct_balances_daily` carries a balance forward
   adjusted by the transactions in between. Because a transaction resolves its own
