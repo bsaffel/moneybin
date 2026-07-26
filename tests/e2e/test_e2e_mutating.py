@@ -1718,6 +1718,40 @@ class TestUserReports:
             report_id
         ]
 
+        # R6's verify surface over the same saved report: both SQL forms, the
+        # per-column provenance, and the graduation verdict.
+        explained = run_cli(
+            "reports", "explain", report_id, "--output", "json", env=env
+        )
+        explained.assert_success()
+        evidence = json.loads(explained.stdout)["data"]
+        assert evidence["tier"] == "user"
+        assert evidence["sql"] is not None
+        assert evidence["sql_template"] is not None
+        by_column = {column["column"]: column for column in evidence["columns"]}
+        assert by_column["name"]["upstream"] == "app.user_reports.name"
+        assert by_column["name"]["origin"] == "upstream"
+        assert evidence["lineage"] == ["app.user_reports"]
+        assert evidence["class_fingerprint"]
+        assert evidence["drift_detected"] is False
+        # `app.*` has an independently authored CLASSIFICATION ground truth, so a
+        # named projection over it clears both materialization rules. The blocked
+        # cases (a `reports.*` read, a star projection) are unit-tested; this is
+        # the eligible one, which no assertion about masking would catch.
+        assert evidence["graduation"] == "eligible"
+        assert evidence["graduation_blockers"] == []
+
+        # A parameter with no supplied value withholds the executed form and
+        # names the flag that would produce it.
+        unbound = run_cli(
+            "reports", "explain", "one_report", "--output", "json", env=env
+        )
+        unbound.assert_success()
+        pending = json.loads(unbound.stdout)["data"]
+        assert pending["sql"] is None
+        assert pending["sql_suppressed_by"] == ["wanted"]
+        assert "$wanted" in pending["sql_template"]
+
         downgraded = run_cli(
             "reports",
             "reclassify",

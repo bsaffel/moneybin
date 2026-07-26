@@ -5,6 +5,7 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -171,12 +172,13 @@ def recurring_subscriptions(
         FROM {REPORTS_RECURRING_SUBSCRIPTIONS.full_name}
         WHERE confidence >= ?
     """  # noqa: S608  # TableRef interpolation
-    params: list[object] = [min_confidence]
+    # Each binding declares the class of the value it carries (R9).
+    params: list[Binding] = [Binding(min_confidence, DataClass.AGGREGATE)]
     if status != "all":
         sql += " AND status = ?"
-        params.append(status)
+        params.append(Binding(status, DataClass.TXN_TYPE))
     if cadence:
         sql += " AND cadence = ?"
-        params.append(cadence)
+        params.append(Binding(cadence, DataClass.TXN_TYPE))
     sql += " ORDER BY annualized_cost DESC NULLS LAST"
     return ReportQuery(sql, params)

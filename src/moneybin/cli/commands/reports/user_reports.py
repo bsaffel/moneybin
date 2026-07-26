@@ -144,6 +144,116 @@ def reports_run(
     render_report_result(result, output, cli_actor="reports_run")
 
 
+def reports_explain(
+    handle: str = typer.Argument(..., help="Report ID or name, any tier."),
+    param: list[str] | None = typer.Option(None, "--param", help=_PARAM_BIND_HELP),
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001  # the evidence IS the output
+) -> None:
+    """Show a report's query, class map, lineage, freshness, and portability.
+
+    Runs nothing. The query is returned in two forms: the executed form with
+    parameters rendered as literals, and the stored template with placeholders
+    intact. A parameter classed above the lowest tier keeps its placeholder in
+    the executed form — rendering is not execution, so it never passes through
+    the redaction the report's own rows do.
+    """
+    from moneybin.cli.report_params import coerce_report_parameters
+    from moneybin.reports._framework.catalog import get_report_catalog
+    from moneybin.reports._framework.explain import explain_spec
+
+    with handle_cli_errors(cli_actor="reports_explain"):
+        with get_database(read_only=True) as db:
+            # Resolved here and handed to `explain_spec` rather than calling
+            # `explain_report`, which would build the catalog a second time —
+            # one build derives a spec per saved row.
+            catalog = get_report_catalog(db, include_archived=True)
+            report = catalog.resolve(handle)
+            parameters = coerce_report_parameters(report, param)
+            explanation = explain_spec(db, report, parameters=parameters)
+
+    def _render_text(_: ResponseEnvelope[Any]) -> None:
+        typer.echo(f"{explanation.report_id}  ({explanation.tier})")
+        if explanation.description:
+            typer.echo(explanation.description)
+        render_rich_table(
+            ["column", "class", "origin", "upstream"],
+            [
+                (
+                    column.column,
+                    column.data_class.value,
+                    column.origin,
+                    column.upstream or "-",
+                )
+                for column in explanation.columns
+            ],
+        )
+        for label, value in (
+            ("Reads", ", ".join(explanation.lineage) or "-"),
+            ("Graduation", explanation.graduation),
+            ("Updated", explanation.updated_at or "-"),
+            ("Fingerprint", explanation.class_fingerprint or "-"),
+        ):
+            typer.echo(f"{label}: {value}")
+        for blocker in explanation.graduation_blockers:
+            typer.echo(f"  ⚠️  {blocker}")
+        if explanation.drift_reason:
+            logger.warning(f"⚠️  {explanation.drift_reason}")
+        if explanation.sql_unavailable:
+            typer.echo(f"SQL: {explanation.sql_unavailable}")
+        if explanation.withheld_parameters:
+            typer.echo(
+                "Withheld from the rendered SQL (classed above the lowest tier): "
+                f"{', '.join(explanation.withheld_parameters)}"
+            )
+        if explanation.sql_suppressed_by:
+            typer.echo(
+                "No executed form — supply a value for "
+                f"{', '.join(explanation.sql_suppressed_by)} with --param"
+            )
+        for label, form in (
+            ("SQL", explanation.sql),
+            ("Template", explanation.sql_template),
+        ):
+            if form is not None:
+                typer.echo(f"\n{label}:\n{form}")
+
+    render_or_json(
+        build_envelope(
+            data={
+                "report_id": explanation.report_id,
+                "name": explanation.name,
+                "tier": explanation.tier,
+                "sql": explanation.sql,
+                "sql_template": explanation.sql_template,
+                "sql_unavailable": explanation.sql_unavailable,
+                "withheld_parameters": list(explanation.withheld_parameters),
+                "sql_suppressed_by": list(explanation.sql_suppressed_by),
+                "columns": [
+                    {
+                        "column": column.column,
+                        "data_class": column.data_class.value,
+                        "origin": column.origin,
+                        "upstream": column.upstream,
+                    }
+                    for column in explanation.columns
+                ],
+                "lineage": list(explanation.lineage),
+                "class_fingerprint": explanation.class_fingerprint,
+                "drift_detected": explanation.drift_detected,
+                "drift_reason": explanation.drift_reason,
+                "updated_at": explanation.updated_at,
+                "graduation": explanation.graduation,
+                "graduation_blockers": list(explanation.graduation_blockers),
+            },
+            sensitivity=explanation.sensitivity,
+        ),
+        output,
+        render_fn=_render_text,
+        cli_actor="reports_explain",
+    )
+
+
 def reports_create(
     name: str = typer.Argument(..., help="Report name: lowercase slug, unique."),
     sql: str | None = typer.Option(

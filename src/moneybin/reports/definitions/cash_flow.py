@@ -5,6 +5,7 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -114,13 +115,14 @@ def cash_flow(
         FROM {REPORTS_CASH_FLOW.full_name}
         WHERE 1=1
     """  # noqa: S608  # select_cols + TableRef allowlists
-    params: list[object] = []
+    # Each binding declares the class of the value it carries (R9).
+    params: list[Binding] = []
     if from_month:
         sql += " AND year_month >= substr(?, 1, 7)"
-        params.append(from_month)
+        params.append(Binding(from_month, DataClass.TXN_DATE))
     if to_month:
         sql += " AND year_month <= substr(?, 1, 7)"
-        params.append(to_month)
+        params.append(Binding(to_month, DataClass.TXN_DATE))
     sql += f" GROUP BY {group_cols} ORDER BY year_month"  # noqa: S608  # group_cols allowlist
 
     actions = [

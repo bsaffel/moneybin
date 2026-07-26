@@ -1316,11 +1316,17 @@ _PLACEHOLDER_COMPARISONS: tuple[type[exp.Binary], ...] = (
 # which shape a given process sees depends on import order, and matching only one
 # would make every parameter resolve UNRESOLVED in half the processes — and move
 # the drift fingerprint with it, flipping match/mismatch on import order alone.
-_PLACEHOLDER_NODES: tuple[type[exp.Expr], ...] = (exp.Placeholder, exp.Parameter)
+PLACEHOLDER_NODES: tuple[type[exp.Expr], ...] = (exp.Placeholder, exp.Parameter)
 
 
-def _placeholder_name(node: exp.Expr) -> str:
-    """The parameter name behind either ``$name`` parse shape."""
+def placeholder_name(node: exp.Expr) -> str:
+    """The parameter name behind either ``$name`` parse shape.
+
+    Empty for a positional ``?``, which carries no name at all. Public because
+    the provenance renderer walks the same two node shapes to decide what to
+    substitute — two spellings of this rule would desync on the next dialect
+    quirk.
+    """
     inner = node.this
     # `Placeholder` carries the bare name; `Parameter` wraps it in a `Var`.
     if isinstance(inner, exp.Var):
@@ -1365,8 +1371,8 @@ def resolve_placeholder_classes(
     alias_map = _build_alias_map(tree)
     shadowed = _scope_source_names(tree)
     found: dict[str, DataClass] = {}
-    for placeholder in tree.find_all(*_PLACEHOLDER_NODES):
-        name = _placeholder_name(placeholder)
+    for placeholder in tree.find_all(*PLACEHOLDER_NODES):
+        name = placeholder_name(placeholder)
         if not name:
             continue
         column = _compared_column(placeholder)
@@ -1385,6 +1391,79 @@ def resolve_placeholder_classes(
             resolved if prior is None or prior is resolved else FAIL_CLOSED_CLASS
         )
     return found
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionSource:
+    """Where one output column came from, as far as the query text can say.
+
+    ``passthrough`` is a fact about the projection: it is a bare column
+    reference, not an expression. ``upstream`` is a fact about the *catalog*:
+    the ``schema.table.column`` this database can confirm it names. The two are
+    separate because a passthrough column over a view that has not been built
+    yet is resolvable in principle and unconfirmable in practice, and reporting
+    that as "computed" would be a lie about the query.
+    """
+
+    passthrough: bool
+    upstream: str | None
+
+
+def resolve_projection_sources(
+    tree: exp.Expr, snapshot: SchemaSnapshot
+) -> dict[str, ProjectionSource]:
+    """Map each output column name to the upstream column it passes through.
+
+    The provenance half of :func:`resolve_output_classes`, which answers the
+    same question about *class*. Keyed identically — by projection
+    alias-or-name, insertion-ordered — so a caller can join the two.
+
+    A ``UNION`` whose branches disagree on a column's source names no single
+    upstream for it, the same collapse :func:`_combined_class` performs on
+    class. The two fields collapse independently: two branches that both pass a
+    column through are still a passthrough even when the columns differ, while
+    one branch passing through and another aggregating is not.
+    """
+    try:
+        qualified = _qualified(tree, snapshot)
+    except SqlSchemaError:
+        # A report over a view that has not been built yet cannot be qualified.
+        # Its projections are still readable as passthrough-or-computed, which
+        # is strictly more than nothing and never claims an upstream.
+        qualified = tree
+    alias_map = _build_alias_map(qualified)
+    shadowed = _scope_source_names(qualified)
+
+    branches = _union_select_branches(qualified)
+    sources: dict[str, ProjectionSource] = {}
+    for select in branches or [qualified]:
+        for projection in select.expressions:
+            name = projection.alias_or_name
+            if not name:
+                continue
+            inner = projection.unalias()
+            passthrough = isinstance(inner, exp.Column)
+            key = (
+                _column_key(inner, alias_map, snapshot, shadowed)
+                if isinstance(inner, exp.Column)
+                else None
+            )
+            resolved = ProjectionSource(
+                passthrough=passthrough,
+                upstream=None if key is None else ".".join(key),
+            )
+            prior = sources.get(name)
+            sources[name] = (
+                resolved
+                if prior is None
+                else ProjectionSource(
+                    passthrough=prior.passthrough and resolved.passthrough,
+                    upstream=(
+                        prior.upstream if prior.upstream == resolved.upstream else None
+                    ),
+                )
+            )
+    return sources
 
 
 def read_column_classes(

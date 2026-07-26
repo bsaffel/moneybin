@@ -1,10 +1,11 @@
 """Reports top-level command group — cross-domain read-only views.
 
-``list`` and ``run`` span all three registry tiers and are the CLI twins of the
-shipped ``reports`` MCP catalog/runner. ``create`` / ``set`` / ``delete`` /
-``reclassify`` are the lifecycle capability over saved reports and are CLI-only
-by design (R5 of ``docs/specs/reports-dynamic.md`` names no MCP identity for a
-lifecycle verb).
+``list``, ``run``, and ``explain`` span all three registry tiers. The first two
+are the CLI twins of the shipped ``reports`` MCP catalog/runner; ``explain`` is
+R6's verify surface. ``create`` / ``set`` / ``delete`` / ``reclassify`` are the
+lifecycle capability over saved reports. Everything but ``list`` and ``run`` is
+CLI-only by design — ``reports-dynamic.md`` names no MCP identity for a lifecycle
+verb or for the verify surface.
 
 The view-backed reports (cashflow, spending, recurring, merchants,
 large-transactions, balance-drift) are generated from ``@report`` runners in
@@ -24,6 +25,7 @@ from .networth import reports_networth, reports_networth_history
 from .user_reports import (
     reports_create,
     reports_delete,
+    reports_explain,
     reports_list,
     reports_reclassify,
     reports_run,
@@ -37,6 +39,7 @@ app = typer.Typer(
 
 app.command("list")(reports_list)
 app.command("run")(reports_run)
+app.command("explain")(reports_explain)
 app.command("create")(reports_create)
 app.command("set")(reports_set)
 app.command("delete")(reports_delete)

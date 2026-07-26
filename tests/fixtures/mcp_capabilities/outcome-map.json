@@ -100,6 +100,25 @@
     "exemption": null
   },
   {
+    "capability_id": "reports.verify",
+    "mcp_tools": [],
+    "cli_commands": [
+      "reports explain"
+    ],
+    "service_methods": [
+      "moneybin.reports._framework.explain.explain_report",
+      "moneybin.reports._framework.explain.explain_spec"
+    ],
+    "observable_outcomes": [
+      "the same evidence for every report tier: the query in both provenance forms, the resolved class map with per-column provenance, upstream lineage, drift freshness, and graduation eligibility with its disqualifying reason"
+    ],
+    "exemption": {
+      "surface": "mcp",
+      "category": "admission-pending",
+      "reason": "reports-dynamic.md R6 assigns the verify surface no MCP identity until its outcome is placed behind an admitted projection or passes the bounded-registry admission record"
+    }
+  },
+  {
     "capability_id": "reports.lifecycle",
     "mcp_tools": [],
     "cli_commands": [

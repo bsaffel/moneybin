@@ -5,6 +5,7 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -152,4 +153,4 @@ def large_transactions(
     elif anomaly == "category":
         sql += " WHERE amount_zscore_category > 2.5"
     sql += " ORDER BY ABS(amount) DESC LIMIT ?"
-    return ReportQuery(sql, [top])
+    return ReportQuery(sql, [Binding(top, DataClass.AGGREGATE)])

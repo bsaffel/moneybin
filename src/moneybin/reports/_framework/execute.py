@@ -18,12 +18,17 @@ from pydantic import JsonValue
 
 from moneybin.database import Database
 from moneybin.mcp.privacy import tier_to_sensitivity
-from moneybin.privacy.redaction import redact_records
+from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
 from moneybin.privacy.sql_lineage import derive_query_tier
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.classify import classify_columns
-from moneybin.reports._framework.contract import ParamSpec, ReportSemantics, ReportSpec
+from moneybin.reports._framework.contract import (
+    ParamSpec,
+    ReportSemantics,
+    ReportSpec,
+    bound_value,
+)
 
 type FrozenJsonValue = (
     None
@@ -230,6 +235,35 @@ def build_catalog_execution(
     )
 
 
+def masked_columns(output_classes: Mapping[str, DataClass]) -> tuple[str, ...]:
+    """The columns whose class masks their value, in declaration order.
+
+    Measured from the class's own transform rather than from a tier comparison:
+    all four CRITICAL classes share a tier but two of them mask only partially,
+    and below CRITICAL every transform is passthrough. The transform is what the
+    reader actually sees.
+    """
+    return tuple(
+        name
+        for name, data_class in output_classes.items()
+        if mask_strength(data_class) > MaskStrength.PASSTHROUGH
+    )
+
+
+def inspection_hint(report_id: str, columns: tuple[str, ...]) -> str:
+    """R3's masked-output hint — a ``'*****'`` with no explanation is a two-call fix.
+
+    Names the CLI command, not an MCP tool: R3 requires the hint bind only to an
+    admitted surface, the verify surface has no MCP identity, and pointing an
+    agent at a tool that does not exist is worse than saying nothing.
+    """
+    return (
+        f"Run `moneybin reports explain {report_id}` to see the derived class of "
+        f"each column and why {', '.join(columns)} "
+        f"{'is' if len(columns) == 1 else 'are'} masked"
+    )
+
+
 def redact_catalog_execution(
     spec: _CatalogSpec,
     execution: CatalogReportExecution,
@@ -240,6 +274,13 @@ def redact_catalog_execution(
         execution.output_classes,
         consent=None,
     )
+
+    # R3: masked output self-explains. Appended rather than inserted — a runner
+    # that positions its own hints did so deliberately.
+    masked = masked_columns(execution.output_classes)
+    actions = list(execution.actions)
+    if masked:
+        actions.append(inspection_hint(execution.report_id, masked))
 
     return CatalogReportResult(
         report_id=execution.report_id,
@@ -252,7 +293,7 @@ def redact_catalog_execution(
         tier=execution.tier,
         total_count=execution.total_count,
         truncated=execution.truncated,
-        actions=execution.actions,
+        actions=actions,
         period=execution.period,
     )
 
@@ -264,7 +305,13 @@ def execute_catalog_report(
     rq = spec.runner(db, **params)
     # `list()` on a Mapping yields its KEYS, which would bind parameter names as
     # values. A named-binding runner's params must reach DuckDB as the mapping.
-    bindings = dict(rq.params) if isinstance(rq.params, Mapping) else list(rq.params)
+    # Each entry is unwrapped from its `Binding`: the class travels with the value
+    # for the provenance renderer, and DuckDB is handed the value alone.
+    bindings = (
+        {name: bound_value(item) for name, item in rq.params.items()}
+        if isinstance(rq.params, Mapping)
+        else [bound_value(item) for item in rq.params]
+    )
     cursor = db.execute(rq.sql, bindings)
     descriptions = cursor.description or []
     columns = [str(description[0]) for description in descriptions]

@@ -8,6 +8,7 @@ that reach the service.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -18,6 +19,7 @@ from typer.testing import CliRunner
 from moneybin.cli.main import app
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.execute import ReportResult
+from moneybin.reports._framework.explain import ColumnProvenance, ReportExplanation
 from moneybin.repositories.user_reports_repo import UNSET
 from moneybin.services.user_reports_service import ReclassifyOutcome, SaveOutcome
 
@@ -433,6 +435,166 @@ def test_reclassify_help_states_the_confirmation_is_a_human_decision() -> None:
 def _flatten(output: str) -> str:
     """Join Typer's wrapped help text so a phrase can be matched across lines."""
     return " ".join(output.split())
+
+
+def _explanation(**overrides: Any) -> ReportExplanation:
+    fields: dict[str, Any] = {
+        "report_id": _ROW["report_id"],
+        "name": _ROW["name"],
+        "description": "Accounts and their routing numbers.",
+        "tier": "user",
+        "sql": "SELECT account_id FROM core.dim_accounts WHERE routing_number = $rn",
+        "sql_template": (
+            "SELECT account_id FROM core.dim_accounts WHERE routing_number = $rn"
+        ),
+        "sql_unavailable": None,
+        "withheld_parameters": ("rn",),
+        "sql_suppressed_by": (),
+        "columns": (
+            ColumnProvenance(
+                column="account_id",
+                data_class=DataClass.RECORD_ID,
+                origin="upstream",
+                upstream="core.dim_accounts.account_id",
+            ),
+        ),
+        "lineage": ("core.dim_accounts",),
+        "class_fingerprint": "abc123",
+        "drift_detected": False,
+        "drift_reason": None,
+        "updated_at": "2026-07-26 00:00:00",
+        "graduation": "eligible",
+        "graduation_blockers": (),
+    }
+    return ReportExplanation(**(fields | overrides))
+
+
+def _patch_explain(explanation: ReportExplanation) -> Any:
+    return patch(
+        "moneybin.reports._framework.explain.explain_spec",
+        return_value=explanation,
+    )
+
+
+def test_explain_binds_parameters_and_renders_the_class_map() -> None:
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "moneybin.cli.report_params.coerce_report_parameters",
+            return_value={"rn": "021000021"},
+        ),
+        _patch_explain(_explanation()) as explain,
+    ):
+        result = runner.invoke(
+            app,
+            ["reports", "explain", "my_accounts", "--param", "rn=021000021"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert explain.call_args.kwargs["parameters"] == {"rn": "021000021"}
+    flat = _flatten(result.output)
+    assert "core.dim_accounts.account_id" in flat
+    assert "record_id" in flat
+    assert "eligible" in flat
+    # The withheld parameter is named, and its value never printed.
+    assert "021000021" not in result.output
+    assert "rn" in flat
+
+
+def test_explain_reports_a_suppressed_executed_form_with_the_fix() -> None:
+    """An agent must be told which ``--param`` would produce the executed form."""
+    explanation = _explanation(sql=None, sql_suppressed_by=("acct",))
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(explanation),
+    ):
+        result = runner.invoke(app, ["reports", "explain", "my_accounts"])
+
+    assert result.exit_code == 0, result.output
+    flat = _flatten(result.output)
+    assert "No executed form" in flat
+    assert "acct" in flat
+
+
+def test_explain_json_carries_the_provenance_and_freshness() -> None:
+    explanation = _explanation(drift_detected=True, drift_reason="stale_classification")
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(explanation),
+    ):
+        result = runner.invoke(
+            app, ["reports", "explain", "my_accounts", "--output", "json"]
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["data"]
+    assert payload["columns"][0]["upstream"] == "core.dim_accounts.account_id"
+    assert payload["class_fingerprint"] == "abc123"
+    assert payload["drift_detected"] is True
+    assert payload["graduation"] == "eligible"
+    assert payload["withheld_parameters"] == ["rn"]
+
+
+def test_explain_resolves_an_archived_report() -> None:
+    """Archiving hides a report from the catalog; it must not hide the evidence."""
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ) as catalog,
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(_explanation()),
+    ):
+        result = runner.invoke(app, ["reports", "explain", "my_accounts"])
+
+    assert result.exit_code == 0, result.output
+    assert catalog.call_args.kwargs["include_archived"] is True
+
+
+def test_explain_json_envelope_reports_a_saved_report_as_medium() -> None:
+    """A saved report's SQL and name are user-authored text, not repo prose."""
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(_explanation()),
+    ):
+        saved = runner.invoke(
+            app, ["reports", "explain", "my_accounts", "--output", "json"]
+        )
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(_explanation(tier="builtin")),
+    ):
+        built_in = runner.invoke(
+            app, ["reports", "explain", "core:spending", "--output", "json"]
+        )
+
+    assert json.loads(saved.output)["summary"]["sensitivity"] == "medium"
+    assert json.loads(built_in.output)["summary"]["sensitivity"] == "low"
 
 
 def test_declared_parameter_defaults_to_text() -> None:

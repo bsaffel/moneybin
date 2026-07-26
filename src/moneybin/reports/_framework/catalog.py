@@ -205,7 +205,7 @@ class ReportCatalog:
                 details={"minimum": 0},
             )
         spec = self.resolve(report_id)
-        validated = _validate_parameters(spec, parameters)
+        validated = validate_report_parameters(spec, parameters)
         if isinstance(spec, ServiceReportSpec) and spec.validator is not None:
             spec.validator(validated)
         return spec, validated
@@ -250,10 +250,16 @@ def _parameter_specs(spec: RegisteredReport) -> tuple[ParamSpec, ...]:
     return spec.parameters
 
 
-def _validate_parameters(
+def validate_report_parameters(
     spec: RegisteredReport,
     supplied: Mapping[str, JsonValue],
 ) -> dict[str, JsonValue]:
+    """Reject unknown/missing/mistyped parameters and fill declared defaults.
+
+    Public because the verify surface validates the same way before asking a
+    runner to build its SELECT — one validator, so an explanation can never
+    accept a request an execution would refuse.
+    """
     declared = _parameter_specs(spec)
     declared_by_name = {parameter.name: parameter for parameter in declared}
 

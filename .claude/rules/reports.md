@@ -114,12 +114,15 @@ curator queue) moved out of `reports.*` because its only reader is
 Derivation builds its upstream schema snapshot from the `CLASSIFICATION`
 registry, which covers `core`/`app` only. A `reports.*` model that reads
 another `reports.*` table would make the derived class map self-referential —
-`report_class_derivation.py::_assert_acyclic` rejects any such model outright
-(`ReportDerivationError`), rather than silently deriving a wrong answer.
+`report_materialization.py::assert_acyclic` rejects any such model outright
+(`ReportDerivationError`), rather than silently deriving a wrong answer. The
+same function answers a *saved* report's graduation eligibility, so a dynamic
+report reading `reports.*` runs correctly and reports itself unmaterializable
+for exactly this reason — one rule, two callers.
 
 ## No `SELECT *`, anywhere in the model
 
-`report_class_derivation.py::_assert_no_star` rejects a bare `*` or `t.*`
+`report_materialization.py::assert_no_star` rejects a bare `*` or `t.*`
 projection in **any** `SELECT` in the model — including inside a CTE, not just
 the final projection. Nothing expands a star for a connectionless deriver, so
 an unresolved star would silently degrade a column's class instead of failing

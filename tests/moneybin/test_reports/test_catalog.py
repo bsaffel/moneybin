@@ -33,6 +33,7 @@ from moneybin.reports._framework.catalog import (
     get_report_catalog,
 )
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ParamSpec,
     ReportQuery,
@@ -83,7 +84,7 @@ def _sql_runner(
     """Test SQL report."""
     return ReportQuery(
         "SELECT ? AS value",
-        [count],
+        [Binding(count, DataClass.AGGREGATE)],
         actions=[f"Label present: {label is not None}"],
         period="test period",
     )

@@ -24,6 +24,7 @@ from moneybin.privacy.payloads.networth import (
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import ReportCatalog, ServiceReportSpec
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ParamSpec,
     ReportQuery,
@@ -57,7 +58,12 @@ def _report(
     return ReportQuery(
         "SELECT account_number, amount FROM reports.test_export "
         "WHERE account_number = ? ORDER BY account_number LIMIT ?",
-        [account_number, top],
+        [
+            # The binding carries the class of the value bound: an institution
+            # account number, which the provenance renderer must withhold.
+            Binding(account_number, DataClass.INSTITUTION_ACCOUNT_NUMBER),
+            Binding(top, DataClass.AGGREGATE),
+        ],
         actions=("reports.inspect",),
         period="all time",
     )

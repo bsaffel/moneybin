@@ -36,6 +36,45 @@ USER_REPORT_NAME = re.compile(r"[a-z][a-z0-9_-]*")
 
 
 @dataclass(frozen=True, slots=True)
+class Binding:
+    """One bound query value plus the class of the value **actually bound**.
+
+    R9 of ``reports-dynamic.md``: the class attaches to the binding, not to the
+    runner signature. ``balance_drift`` declares ``account: str`` — free text a
+    user typed, which classifies as the account name it is — and binds
+    ``AccountService.resolve_strict(account)``, a minted opaque ``account_id``
+    (``RECORD_ID``, LOW). Neither class describes the other's value, so a
+    renderer that recovered the class from the signature would print one value
+    under another's class. Positional inference fails one step earlier still:
+    runners append conditionally, so binding *N* is not a fixed offset into the
+    signature.
+
+    Report inspection reads the class off the binding it is about to render and
+    never reconstructs it from anything else.
+    """
+
+    value: object
+    data_class: DataClass
+
+
+def bound_value(binding: object) -> object:
+    """The value to hand DuckDB, tolerating an unclassed extension binding."""
+    return binding.value if isinstance(binding, Binding) else binding
+
+
+def bound_class(binding: object) -> DataClass:
+    """The class governing ``binding``; an unclassed value fails closed.
+
+    ``DataClass.UNRESOLVED`` is ``privacy.sql_lineage.FAIL_CLOSED_CLASS``, named
+    directly here so this module stays clear of the sqlglot import chain. A
+    runner outside this repo is not type-checked against :class:`Binding`, so
+    the runtime answers for a bare value rather than crashing on it — and the
+    answer is the one that withholds.
+    """
+    return binding.data_class if isinstance(binding, Binding) else DataClass.UNRESOLVED
+
+
+@dataclass(frozen=True, slots=True)
 class ReportQuery:
     """A parameterized read-only SELECT that a report runner returns.
 
@@ -45,13 +84,19 @@ class ReportQuery:
     """
 
     sql: str
-    params: Sequence[object] | Mapping[str, object] = ()
-    """Positional ``?`` bindings, or a name→value mapping for ``$name`` SQL.
+    params: Sequence[Binding] | Mapping[str, Binding] = ()
+    """Positional ``?`` bindings, or a name→binding mapping for ``$name`` SQL.
 
     A dynamic report stores named placeholders (R8 of ``reports-dynamic.md``):
     positional storage would need a name→position map maintained beside the SQL,
     and adding a ``WHERE`` clause shifts every later position — mis-binding
-    silently rather than raising. Built-in runners keep binding positionally."""
+    silently rather than raising. Built-in runners keep binding positionally.
+
+    Typed as :class:`Binding` so pyright-strict makes every in-repo binding site
+    declare its class — the completeness check R9 asks for, applied at the
+    author's keyboard rather than in a test run. The runtime still accepts a
+    bare value (see :func:`bound_class`) because an extension runner outside
+    this repo is not checked against this contract."""
     actions: Sequence[str] = ()
     period: str | None = None
 

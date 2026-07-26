@@ -457,6 +457,8 @@ def cash_flow(
     if by not in CASHFLOW_GROUPINGS:
         raise ValueError(f"Unknown by: {by}")
     ...  # build parameterized SELECT
+    # Each binding declares the class of the value it carries.
+    params: list[Binding] = [Binding(from_month, DataClass.TXN_DATE)]
     return ReportQuery(sql, params, actions=[...], period=period)
 ```
 
@@ -468,6 +470,17 @@ How the parts map (introspection rules, `src/moneybin/reports/_framework/introsp
 - `parameter_classes` is required and must cover the runner's non-`db`
   parameters exactly. The class is stored on each `ParamSpec`; missing and
   extra declarations fail registration.
+- Each value the runner *binds* into its `ReportQuery` carries its own class:
+  `params.append(Binding(value, DataClass.TXN_DATE))`. This is a different
+  question from `parameter_classes`, which classifies what the **user passes**.
+  `balance_drift` declares `account: str` (free text, classified as the account
+  name it is) and binds `AccountService.resolve_strict(account)` — a minted
+  opaque `account_id`, `RECORD_ID`. The report-inspection surface renders only
+  LOW-classed bindings as literals, so it reads the class off the binding rather
+  than the signature; recovering it by position cannot work either, because
+  runners append conditionally. A bare value binds as `UNRESOLVED` and keeps its
+  placeholder — an extension outside this repo keeps working and fails closed,
+  while in-repo runners are held to declaring by pyright.
 
 From the `ReportSpec`, the framework generates:
 

@@ -123,6 +123,16 @@ def annotation_of(token: str) -> type:
     return declared.python
 
 
+def type_sentinel(annotation: Any) -> object:
+    """A typed stand-in value of ``annotation``'s type, carrying no meaning.
+
+    The same table the ``DESCRIBE`` probe binds, reused by the verify surface so
+    parameter *validation* can still run over a report whose required values the
+    caller did not supply. It is never rendered into SQL and never executed.
+    """
+    return _PARAM_TYPES[token_of(annotation)].sentinel
+
+
 def token_of(annotation: Any) -> str:
     """Render a parameter's Python type as its stored ``annotation`` token."""
     token = _PARAM_TOKENS.get(annotation)

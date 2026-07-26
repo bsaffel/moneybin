@@ -454,8 +454,8 @@ downgrade capability.
 
 `sql_query` permits reading `reports.*` and permits `SELECT *`; the M2P.3
 graduation path permits neither, because `report_class_derivation` hard-rejects
-both (`_assert_acyclic` on any `reports.*` read, `_assert_no_star` on a star in
-any `SELECT`, including a CTE). A report doing either saves and runs correctly
+both (`assert_acyclic` on any `reports.*` read, `assert_no_star` on a star in
+any `SELECT`, including a CTE — both in `privacy/report_materialization.py`). A report doing either saves and runs correctly
 but can never be materialized.
 
 This spec keeps the wider save-time allowlist — composing on top of a built-in

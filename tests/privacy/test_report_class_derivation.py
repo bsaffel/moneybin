@@ -193,7 +193,7 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
     }
     assert set(view_derivation_failures) == unresolvable
     # Each exclusion must name WHY it could not be derived. "no CLASSIFICATION
-    # ground truth" is the schema-contract refusal (`_assert_acyclic` rejecting
+    # ground truth" is the schema-contract refusal (`assert_acyclic` rejecting
     # a read of seeds/prep/raw/meta); the other two are resolution failures. A
     # bare "excluded" with no stated cause is the silent skip this whole
     # mechanism exists to prevent.

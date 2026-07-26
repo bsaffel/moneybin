@@ -13,7 +13,12 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportSemantics, Runner
+from moneybin.reports._framework.contract import (
+    Binding,
+    ReportSemantics,
+    Runner,
+    bound_value,
+)
 from moneybin.reports._framework.registry import spec_of
 from moneybin.reports.definitions import ALL_REPORTS
 from moneybin.reports.definitions.balance_drift import balance_drift
@@ -57,7 +62,10 @@ _EXPECTED_DESCRIPTIONS = {
 
 def _rows(db: Database, runner: Runner, **params: Any) -> list[dict[str, Any]]:
     rq = runner(db, **params)
-    cur = db.execute(rq.sql, list(rq.params))
+    # Unwrapped through the same accessor `execute_catalog_report` uses: the
+    # class travels with the value for the provenance renderer, and DuckDB is
+    # handed the value alone.
+    cur = db.execute(rq.sql, [bound_value(item) for item in rq.params])
     cols = [d[0] for d in cur.description] if cur.description else []
     return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
@@ -267,6 +275,72 @@ def test_balance_drift_ambiguous_account_raises(db: Database) -> None:
     _install_balance_drift(db)
     with pytest.raises(AmbiguousAccountError):
         balance_drift(db, account="Joint")
+
+
+#: Every binding site in every shipped runner, with the class each declares.
+#: The kwargs fire every conditional append, so ``isinstance`` over the result is
+#: a completeness check rather than a spot check — R9's requirement that every
+#: binding site declare a class, made executable.
+#:
+#: Classes are pinned exactly, not counted, because the failure this guards is a
+#: *wrong* class as much as a missing one. ``balance_drift``'s first entry is
+#: R9's worked example: the parameter is declared ACCOUNT_IDENTIFIER (CRITICAL
+#: free text), the binding is a resolved opaque ``account_id`` (RECORD_ID, LOW),
+#: and reading the class off the signature would render one under the other.
+_BINDING_CLASSES: list[tuple[str, Runner, dict[str, Any], tuple[str, ...]]] = [
+    (
+        "cashflow",
+        cash_flow,
+        {"by": "account", "from_month": "2026-01", "to_month": "2026-12"},
+        ("txn_date", "txn_date"),
+    ),
+    (
+        "spending",
+        spending_trend,
+        {"from_month": "2026-01", "to_month": "2026-12", "category": "Food"},
+        ("txn_date", "txn_date", "category"),
+    ),
+    (
+        "recurring",
+        recurring_subscriptions,
+        {"min_confidence": 0.5, "status": "active", "cadence": "monthly"},
+        ("aggregate", "txn_type", "txn_type"),
+    ),
+    ("merchants", merchant_activity, {"top": 5}, ("aggregate",)),
+    ("large_transactions", large_transactions, {"top": 5}, ("aggregate",)),
+    (
+        "balance_drift",
+        balance_drift,
+        {"account": "A1", "status": "drift", "since": "2026-01-01"},
+        ("record_id", "txn_type", "txn_date"),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "runner", "kwargs", "expected"),
+    _BINDING_CLASSES,
+    ids=[case[0] for case in _BINDING_CLASSES],
+)
+def test_every_binding_a_shipped_runner_returns_declares_its_class(
+    db: Database,
+    name: str,  # noqa: ARG001  # parametrize id only
+    runner: Runner,
+    kwargs: dict[str, Any],
+    expected: tuple[str, ...],
+) -> None:
+    """A bare value would fail closed at render time; none should reach there."""
+    _install_balance_drift(db)  # supplies core.dim_accounts for resolve_strict
+
+    rq = runner(db, **kwargs)
+
+    assert all(isinstance(item, Binding) for item in rq.params), (
+        f"an unwrapped binding would render as UNRESOLVED: {rq.params}"
+    )
+    assert (
+        tuple(item.data_class.value for item in rq.params if isinstance(item, Binding))
+        == expected
+    )
 
 
 def _install_recurring(db: Database) -> None:

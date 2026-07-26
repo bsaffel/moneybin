@@ -45,10 +45,10 @@ As implemented in July 2026, the map contains:
 - 48 non-exempt capability rows covering all 47 standard MCP tools. The counts
   differ by one because `reports` serves two capabilities — the catalog read and
   report execution — under one tool identity.
-- 184 implemented Typer paths, including hidden compatibility aliases, with
+- 185 implemented Typer paths, including hidden compatibility aliases, with
   exact equality against the live command tree after explicit unimplemented
   stubs are removed.
-- 9 policy-exempt rows.
+- 10 policy-exempt rows.
 - 9 reserved Typer paths that are still explicit `_not_implemented` stubs.
 
 The stub list is executable, not documentary: every excluded path is invoked
@@ -63,6 +63,7 @@ is added.
 | System and audit | `system_status`, `system_audit`, `system_audit_undo` | `system status`, `system audit *`, `transactions matches undo` | Same health state, audit history, and reversible operation |
 | Reports | `reports` | `reports list`, `reports run`, `reports networth`, `reports spending`, and other registered reports | Same catalog runner, rows, period, provenance, and truncation across the built-in, extension, and user tiers |
 | Saved-report lifecycle | none — `admission-pending` | `reports create`, `reports set`, `reports delete`, `reports reclassify` | Same audited `app.user_reports` row, derived class map, and human-confirmed downgrade |
+| Report verification | none — `admission-pending` | `reports explain` | Same query in both provenance forms, per-column class provenance, lineage, drift freshness, and graduation eligibility for every tier |
 | Export delivery | `export_run` | `export bundle`, `export report` | Same `ExportService.run` subject, named destination, redaction mode, format, row counts, checksums, receipt identity, and safe failures |
 | Export destination target state | `exports_set`; readiness through `system_status(sections=["exports"])` | `export destination list`, `export destination add local`, `export destination add sheets`, `export destination remove` | Same `ExportService`/repository-owned named destination readiness and typed local or Sheets state |
 | Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert` | `accounts list/get/summary/set`, `accounts balance *` | Same account projections, settings, observations, and assertions |

@@ -139,6 +139,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["investments", "securities", "links", "history"],
     ["reports", "list"],
     ["reports", "run"],
+    ["reports", "explain"],
     ["reports", "create"],
     ["reports", "set"],
     ["reports", "delete"],

@@ -25,6 +25,7 @@ from moneybin.metrics.registry import USER_REPORT_DRIFT_DETECTED_TOTAL
 from moneybin.privacy.sql_lineage import FAIL_CLOSED_CLASS
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ParamSpec,
     ReportQuery,
@@ -371,15 +372,19 @@ def _synthesized_runner(query_sql: str, params: Sequence[ParamSpec]) -> Runner:
                 code=error_codes.REPORT_PARAMETER_UNKNOWN,
                 hint=f"Declared: {', '.join(declared) or 'none'}.",
             )
-        bindings: dict[str, object] = {}
+        # The class on each binding is the one derived from the column the
+        # placeholder is compared against (R9) — never declared by the user, and
+        # never recovered from the signature. The provenance renderer reads it
+        # here to decide whether the value may be rendered as a literal.
+        bindings: dict[str, Binding] = {}
         missing: list[str] = []
         for name, parameter in declared.items():
             if name in values:
-                bindings[name] = values[name]
+                bindings[name] = Binding(values[name], parameter.data_class)
             elif parameter.required:
                 missing.append(name)
             else:
-                bindings[name] = parameter.default
+                bindings[name] = Binding(parameter.default, parameter.data_class)
         if missing:
             raise UserError(
                 f"Missing required report parameter(s): {', '.join(sorted(missing))}.",

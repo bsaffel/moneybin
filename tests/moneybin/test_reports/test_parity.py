@@ -50,6 +50,7 @@ _EXPECTED_CATALOG_CLI = {
 _EXPECTED_LIFECYCLE_CLI = {
     "list",
     "run",
+    "explain",
     "create",
     "set",
     "delete",

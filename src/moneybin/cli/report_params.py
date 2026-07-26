@@ -29,18 +29,24 @@ from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ParamSpec
 
 if TYPE_CHECKING:
-    from moneybin.reports._framework.catalog import ReportCatalog
+    from moneybin.reports._framework.catalog import RegisteredReport, ReportCatalog
 
 
-def parse_report_parameters(
-    catalog: ReportCatalog,
-    report_id: str,
+def coerce_report_parameters(
+    spec: RegisteredReport,
     raw_parameters: list[str] | None,
 ) -> dict[str, JsonValue]:
-    """Bind repeated ``--param key=value`` options through a report's annotations."""
+    """Coerce each ``--param key=value`` through its declared annotation.
+
+    Coercion only — nothing here requires a value to be present. The verify
+    surface must accept a report whose required parameters the caller did not
+    supply (R6: a missing value renders as its ``$name`` placeholder), so the
+    completeness check lives one layer up in
+    :func:`parse_report_parameters` rather than being fused into the grammar
+    every surface shares.
+    """
     from moneybin.reports._framework.catalog import ServiceReportSpec
 
-    spec = catalog.resolve(report_id)
     declared = spec.parameters if isinstance(spec, ServiceReportSpec) else spec.params
     annotations = {parameter.name: parameter.annotation for parameter in declared}
     supplied: dict[str, JsonValue] = {}
@@ -58,7 +64,21 @@ def parse_report_parameters(
             )
         annotation = annotations.get(name, str)
         supplied[name] = parse_parameter_value(value, annotation)
+    return supplied
 
+
+def parse_report_parameters(
+    catalog: ReportCatalog,
+    report_id: str,
+    raw_parameters: list[str] | None,
+) -> dict[str, JsonValue]:
+    """Bind ``--param`` options for an *execution*: coerce, then require and default.
+
+    The binder for every path that runs a report. ``reports explain`` uses
+    :func:`coerce_report_parameters` instead, because it renders a query rather
+    than executing one.
+    """
+    supplied = coerce_report_parameters(catalog.resolve(report_id), raw_parameters)
     _, validated = catalog.resolve_request(
         report_id=report_id,
         parameters=supplied,
