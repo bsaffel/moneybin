@@ -28,6 +28,13 @@ BASELINE_CAPTURE_PATH = FIXTURES / "mcp_eval/captures/baseline-105.json"
 STANDARD_CAPTURE_PATH = FIXTURES / "mcp_eval/captures/standard-47.json"
 COMPARISON_PATH = FIXTURES / "mcp_eval/results/comparison-2026-07-17.json"
 BASELINE_INVENTORY_PATH = FIXTURES / "mcp_surface/baseline-2026-07-17.json"
+# Deliberately the frozen 47-tool snapshot, not the live mcp_surface/standard.json
+# the docs and budget tests track. comparison-2026-07-17.json is a persisted A/B
+# measurement taken against exactly these 47 tools; repointing this at a surface
+# that grew afterwards would make the stored scores a claim about a registry
+# they never measured. The pair goes stale together on purpose — re-running the
+# eval against the current surface is what replaces both, and until that run
+# happens these scores describe the 47-tool registry and nothing else.
 STANDARD_INVENTORY_PATH = FIXTURES / "mcp_surface/standard-47.json"
 REQUIRED_WORKFLOWS = {
     "first-contact-orientation-financial-pulse",

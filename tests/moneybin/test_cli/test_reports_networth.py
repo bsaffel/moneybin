@@ -40,6 +40,7 @@ def _snapshot_result(
     total_assets: Decimal | None = Decimal("15000.00"),
     total_liabilities: Decimal | None = Decimal("-2500.00"),
     account_count: int = 3,
+    currency_code: str | None = "USD",
     account_id: str | None = "****acct_a",
     account_name: str | None = "Checking",
     account_balance: Decimal | None = Decimal("5000.00"),
@@ -48,6 +49,7 @@ def _snapshot_result(
     return _result([
         {
             "balance_date": balance_date,
+            "currency_code": currency_code,
             "net_worth": net_worth,
             "total_assets": total_assets,
             "total_liabilities": total_liabilities,
@@ -186,12 +188,14 @@ class TestReportsNetworthHistory:
         mock_rows: list[dict[str, object]] = [
             {
                 "period": "2026-01-01",
+                "currency_code": "USD",
                 "net_worth": Decimal("1000.00"),
                 "change_abs": None,
                 "change_pct": None,
             },
             {
                 "period": "2026-02-01",
+                "currency_code": "USD",
                 "net_worth": Decimal("1200.00"),
                 "change_abs": Decimal("200.00"),
                 "change_pct": 0.2,

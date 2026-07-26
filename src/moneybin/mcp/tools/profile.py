@@ -39,7 +39,6 @@ def profile() -> ResponseEnvelope[ProfilePayload]:
         data=ProfilePayload(
             name=get_current_profile(auto_resolve=False),
             home_currency=settings.home_currency,
-            database_exists=True,
         ),
         actions=['Use profile_set(home_currency="EUR") to change it'],
     )

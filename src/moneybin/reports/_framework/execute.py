@@ -107,6 +107,24 @@ class CatalogReportExecution:
     period: str | None
     semantics: ReportSemantics
     provenance: tuple[str, ...]
+    display_currency: str = "USD"
+
+
+def _resolve_display_currency(records: list[dict[str, Any]]) -> str | None:
+    """The one currency every row is denominated in, else None.
+
+    Report rows are segmented per ``currency_code`` (multi-currency.md
+    Requirement 5), so the envelope may only name a display currency when the
+    rows agree on one. Mixed rows return None and the caller keeps the envelope
+    default: naming one of several would contradict the rows it wraps, and the
+    per-row ``currency_code`` is the authority in that case.
+    """
+    seen = {record.get("currency_code") for record in records}
+    seen.discard(None)
+    if len(seen) != 1:
+        return None
+    only = next(iter(seen))
+    return str(only) if only else None
 
 
 class _CatalogSpec(Protocol):
@@ -210,6 +228,7 @@ def build_catalog_execution(
     # of ReportSpec. The cast keeps classify_columns' existing public signature
     # stable while both kinds use its fail-closed undeclared-column behavior.
     col_classes = classify_columns(cast(ReportSpec, spec), columns)
+    resolved_currency = _resolve_display_currency(limited)
     return CatalogReportExecution(
         report_id=spec.report_id,
         parameters=MappingProxyType(dict(parameters)),
@@ -227,6 +246,7 @@ def build_catalog_execution(
         period=period,
         semantics=spec.semantics,
         provenance=spec.semantics.provenance,
+        **({"display_currency": resolved_currency} if resolved_currency else {}),
     )
 
 
@@ -254,6 +274,7 @@ def redact_catalog_execution(
         truncated=execution.truncated,
         actions=execution.actions,
         period=execution.period,
+        display_currency=execution.display_currency,
     )
 
 

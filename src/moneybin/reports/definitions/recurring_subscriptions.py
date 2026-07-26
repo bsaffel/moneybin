@@ -89,7 +89,7 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
     ),
     semantics=ReportSemantics(
         unit="currency",
-        currency="summary.display_currency",
+        currency="currency_code",
         sign="cost amounts are positive absolute outflows",
         kind="flow",
         valuation_basis="mean observed transaction amount annualized by inferred cadence",
@@ -144,8 +144,8 @@ def recurring_subscriptions(
 ) -> ReportQuery:
     """Likely-recurring subscription candidates with confidence scores.
 
-    Average and annualized costs are positive absolute outflows in the currency
-    named by summary.display_currency.
+    Average and annualized costs are positive absolute outflows in each row's
+    own currency_code.
 
     Args:
         db: Open read-only database connection.
@@ -184,5 +184,9 @@ def recurring_subscriptions(
     if cadence:
         sql += " AND cadence = ?"
         params.append(cadence)
-    sql += " ORDER BY annualized_cost DESC NULLS LAST"
+    # currency_code leads the sort so candidates stay grouped by the unit they
+    # are billed in; ordering by cost alone would rank a ¥1,200 subscription
+    # above a $60 one on magnitude, and the surface row cap would then truncate
+    # whole currencies out of the tail.
+    sql += " ORDER BY currency_code, annualized_cost DESC NULLS LAST"
     return ReportQuery(sql, params)

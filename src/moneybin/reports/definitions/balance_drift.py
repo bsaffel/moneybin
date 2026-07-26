@@ -84,7 +84,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
     ),
     semantics=ReportSemantics(
         unit="currency",
-        currency="summary.display_currency",
+        currency="currency_code",
         sign="drift is asserted balance minus computed balance; drift_abs is unsigned",
         kind="position",
         valuation_basis=(
@@ -122,7 +122,7 @@ def balance_drift(
 ) -> ReportQuery:
     """Balance reconciliation drift: asserted vs computed, one row per assertion.
 
-    Balances are positions in summary.display_currency. Drift is asserted balance
+    Balances are positions in the account's own currency_code. Drift is asserted balance
     minus the independent transaction-derived position for assertion_date.
 
     Args:

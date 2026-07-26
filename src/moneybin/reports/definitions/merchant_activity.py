@@ -76,7 +76,7 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
     ),
     semantics=ReportSemantics(
         unit="currency",
-        currency="summary.display_currency",
+        currency="currency_code",
         sign=(
             "spend is positive absolute outflow; outflow is negative; inflow is "
             "positive; average and median are signed"
@@ -104,12 +104,15 @@ def merchant_activity(
 
     total_spend is positive absolute outflow; total_outflow is negative;
     total_inflow is positive; avg_amount and median_amount are signed. Monetary
-    values use the currency named by summary.display_currency.
+    values are denominated in each row's own currency_code.
 
     Args:
         db: Open read-only database connection.
-        top: Limit rows (>= 1). On MCP the result is additionally capped at the
-            session max_rows; the CLI is uncapped.
+        top: Limit rows **within each currency** (>= 1). A spend-sorted ranking
+            across currencies compares unlike units, so one high-denomination
+            currency could take every slot. A single-currency profile gets the
+            same N rows it always did. On MCP the result is additionally capped
+            at the session max_rows; the CLI is uncapped.
         sort: spend | count | recent.
 
     Examples:
@@ -124,8 +127,17 @@ def merchant_activity(
                total_outflow, txn_count, avg_amount, median_amount,
                first_seen, last_seen, active_months, top_category,
                account_count
-        FROM {REPORTS_MERCHANT_ACTIVITY.full_name}
-        ORDER BY {MERCHANTS_SORTS[sort]}
-        LIMIT ?
+        FROM (
+            SELECT merchant_id, merchant_normalized, currency_code, total_spend,
+                   total_inflow, total_outflow, txn_count, avg_amount,
+                   median_amount, first_seen, last_seen, active_months,
+                   top_category, account_count,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY currency_code ORDER BY {MERCHANTS_SORTS[sort]}
+                   ) AS rank_in_currency
+            FROM {REPORTS_MERCHANT_ACTIVITY.full_name}
+        )
+        WHERE rank_in_currency <= ?
+        ORDER BY currency_code, {MERCHANTS_SORTS[sort]}
     """  # noqa: S608  # TableRef + MERCHANTS_SORTS allowlists
     return ReportQuery(sql, [top])

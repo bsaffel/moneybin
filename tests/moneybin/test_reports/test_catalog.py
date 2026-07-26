@@ -1012,3 +1012,102 @@ def test_duplicate_extension_report_id_is_rejected(
 
     with pytest.raises(ValueError, match="duplicate extension report_id"):
         register_extension_report(_sql_report(report_id="retirement:summary"))
+
+
+def test_report_envelope_names_the_currency_its_rows_are_denominated_in(
+    mocker: MockerFixture,
+) -> None:
+    """summary.display_currency follows the rows, instead of asserting USD."""
+    mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.current",
+        return_value=NetWorthSnapshotPayload(
+            balance_date=date(2026, 7, 1),
+            currency_code="GBP",
+            net_worth=Decimal("1000.00"),
+            total_assets=Decimal("1000.00"),
+            total_liabilities=Decimal("0.00"),
+            account_count=1,
+            per_currency=[
+                NetWorthCurrencySegment(
+                    currency_code="GBP",
+                    net_worth=Decimal("1000.00"),
+                    total_assets=Decimal("1000.00"),
+                    total_liabilities=Decimal("0.00"),
+                    account_count=1,
+                ),
+            ],
+            per_account=[
+                NetWorthAccountRow(
+                    account_id="acct_11112222",
+                    display_name="Current",
+                    balance=Decimal("1000.00"),
+                    observation_source="asserted",
+                    currency_code="GBP",
+                ),
+            ],
+        ),
+    )
+
+    result = ReportCatalog((NETWORTH_REPORT,)).execute(
+        cast(Database, MagicMock(spec=Database)),
+        report_id="core:networth",
+        parameters={},
+        limit=100,
+    )
+
+    assert result.to_envelope().to_dict()["summary"]["display_currency"] == "GBP"
+
+
+def test_networth_keeps_every_currency_when_the_breakdown_is_filtered(
+    mocker: MockerFixture,
+) -> None:
+    """An account_ids filter narrows the breakdown, not the reported position."""
+    mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.current",
+        return_value=NetWorthSnapshotPayload(
+            balance_date=date(2026, 7, 1),
+            currency_code=None,
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            account_count=2,
+            per_currency=[
+                NetWorthCurrencySegment(
+                    currency_code="EUR",
+                    net_worth=Decimal("800.00"),
+                    total_assets=Decimal("800.00"),
+                    total_liabilities=Decimal("0.00"),
+                    account_count=1,
+                ),
+                NetWorthCurrencySegment(
+                    currency_code="USD",
+                    net_worth=Decimal("500.00"),
+                    total_assets=Decimal("500.00"),
+                    total_liabilities=Decimal("0.00"),
+                    account_count=1,
+                ),
+            ],
+            # Only the USD account survived the filter.
+            per_account=[
+                NetWorthAccountRow(
+                    account_id="acct_usd",
+                    display_name="Checking",
+                    balance=Decimal("500.00"),
+                    observation_source="asserted",
+                    currency_code="USD",
+                ),
+            ],
+        ),
+    )
+
+    result = ReportCatalog((NETWORTH_REPORT,)).execute(
+        cast(Database, MagicMock(spec=Database)),
+        report_id="core:networth",
+        parameters={"account_ids": ["acct_usd"]},
+        limit=100,
+    )
+
+    by_currency = {
+        record["currency_code"]: record["net_worth"] for record in result.records
+    }
+    assert by_currency == {"USD": Decimal("500.00"), "EUR": Decimal("800.00")}

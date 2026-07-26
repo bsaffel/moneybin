@@ -90,7 +90,7 @@ from moneybin.tables import REPORTS_SPENDING_TREND
     ),
     semantics=ReportSemantics(
         unit="currency",
-        currency="summary.display_currency",
+        currency="currency_code",
         sign="spend is positive absolute outflow; deltas are current minus comparison",
         kind="flow",
         valuation_basis="transaction amount",
@@ -134,7 +134,7 @@ def spending_trend(
     columns come from the underlying view (all history), so narrowing the window
     does not null out yoy_pct. Spending amounts are positive absolute outflows;
     comparison deltas are current spend minus comparison-period spend. Monetary
-    values use the currency named by summary.display_currency.
+    values are denominated in each row's own currency_code.
 
     Args:
         db: Open read-only database connection.
@@ -177,7 +177,10 @@ def spending_trend(
     if category:
         sql += " AND category = ?"
         params.append(category)
-    sql += " ORDER BY year_month, total_spend DESC"
+    # currency_code sorts before the magnitude so each month's categories stay
+    # grouped by the unit they are denominated in; ranking spend across
+    # currencies would order by exchange-rate scale rather than by spending.
+    sql += " ORDER BY year_month, currency_code, total_spend DESC"
 
     actions = [
         "Run reports(report_id='core:spending', "

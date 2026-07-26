@@ -21,7 +21,7 @@ registry.
 
 ## Standard registry
 
-The 11 user-facing domains below group 14 literal tool-name prefixes. A prefix
+The 13 user-facing domains below group 17 literal tool-name prefixes. A prefix
 is the portion before the first underscore: `identity_*` belongs to Reviews,
 `gsheet_*` belongs to Sync, and `refresh_*` plus `sql_*` belong to Platform.
 

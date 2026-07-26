@@ -369,35 +369,37 @@ EXAMPLES: dict[str, list[Example]] = {
     ],
     "reports.net_worth": [
         Example(
-            question="Net worth today",
+            question="Net worth today, one row per currency",
             sql="""
-                SELECT balance_date, net_worth, account_count, total_assets, total_liabilities
+                SELECT balance_date, currency_code, net_worth, account_count,
+                       total_assets, total_liabilities
                 FROM reports.net_worth
-                ORDER BY balance_date DESC
-                LIMIT 1
+                WHERE balance_date = (SELECT MAX(balance_date) FROM reports.net_worth)
+                ORDER BY currency_code
             """,
         ),
         Example(
-            question="Net worth trend over the last 12 months (monthly)",
+            question="Net worth trend over the last 12 months (monthly, per currency)",
             sql="""
                 SELECT
                     STRFTIME(balance_date, '%Y-%m') AS month,
-                    MAX(net_worth) AS end_of_month_net_worth
+                    currency_code,
+                    LAST(net_worth ORDER BY balance_date) AS end_of_month_net_worth
                 FROM reports.net_worth
                 WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH
-                GROUP BY month
-                ORDER BY month
+                GROUP BY month, currency_code
+                ORDER BY month, currency_code
             """,
         ),
     ],
     "reports.cash_flow": [
         Example(
-            question="Monthly net cash flow across all accounts",
+            question="Monthly net cash flow across all accounts, per currency",
             sql="""
-                SELECT year_month, SUM(net) AS total_net
+                SELECT year_month, currency_code, SUM(net) AS total_net
                 FROM reports.cash_flow
-                GROUP BY year_month
-                ORDER BY year_month
+                GROUP BY year_month, currency_code
+                ORDER BY year_month, currency_code
             """,
         ),
         Example(
@@ -415,10 +417,10 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Latest month's spending with MoM/YoY deltas",
             sql="""
-                SELECT year_month, category, total_spend, mom_pct, yoy_pct
+                SELECT year_month, category, currency_code, total_spend, mom_pct, yoy_pct
                 FROM reports.spending_trend
                 WHERE year_month = (SELECT MAX(year_month) FROM reports.spending_trend)
-                ORDER BY total_spend DESC
+                ORDER BY currency_code, total_spend DESC
             """,
         ),
     ],
@@ -426,10 +428,11 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Active high-confidence subscriptions ordered by annualized cost",
             sql="""
-                SELECT merchant_normalized, cadence, avg_amount, annualized_cost, confidence
+                SELECT merchant_normalized, currency_code, cadence, avg_amount,
+                       annualized_cost, confidence
                 FROM reports.recurring_subscriptions
                 WHERE status = 'active' AND confidence >= 0.7
-                ORDER BY annualized_cost DESC
+                ORDER BY currency_code, annualized_cost DESC
             """,
         ),
     ],
@@ -437,10 +440,13 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Top merchants by lifetime spend",
             sql="""
-                SELECT merchant_normalized, total_spend, txn_count, top_category
+                SELECT merchant_normalized, currency_code, total_spend, txn_count,
+                       top_category
                 FROM reports.merchant_activity
-                ORDER BY total_spend DESC
-                LIMIT 25
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total_spend DESC
+                ) <= 25
+                ORDER BY currency_code, total_spend DESC
             """,
         ),
     ],

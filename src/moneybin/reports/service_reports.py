@@ -6,13 +6,14 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import JsonValue
 
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.privacy.payloads.networth import NetWorthAccountRow
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import ServiceReportSpec
 from moneybin.reports._framework.contract import (
@@ -73,7 +74,7 @@ _SNAPSHOT_COLUMNS = (
 _SNAPSHOT_CLASSES = {column.name: column.data_class for column in _SNAPSHOT_COLUMNS}
 _SNAPSHOT_SEMANTICS = ReportSemantics(
     unit="currency",
-    currency="summary.display_currency",
+    currency="currency_code",
     sign=(
         "assets and positive account balances are positive; liabilities and "
         "negative account balances are negative; net worth is their signed sum"
@@ -127,7 +128,7 @@ _HISTORY_COLUMNS = (
 _HISTORY_CLASSES = {column.name: column.data_class for column in _HISTORY_COLUMNS}
 _HISTORY_SEMANTICS = ReportSemantics(
     unit="currency",
-    currency="summary.display_currency",
+    currency="currency_code",
     sign=(
         "net worth is a signed position; change is current minus prior period-end "
         "position"
@@ -250,37 +251,30 @@ def _execute_networth(
             "account_count": segment.account_count if segment else 0,
         }
 
-    rows = [
-        {
-            **_headline(account.currency_code),
-            "account_id": account.account_id,
-            "account_name": account.display_name,
-            "account_balance": account.balance,
-            "observation_source": account.observation_source,
+    def _row(
+        currency_code: str | None, account: NetWorthAccountRow | None
+    ) -> dict[str, Any]:
+        return {
+            **_headline(currency_code),
+            "account_id": account.account_id if account else None,
+            "account_name": account.display_name if account else None,
+            "account_balance": account.balance if account else None,
+            "observation_source": account.observation_source if account else None,
         }
-        for account in snapshot.per_account
-    ]
+
+    rows = [_row(account.currency_code, account) for account in snapshot.per_account]
+    # An account_ids filter narrows the breakdown but not the position: without
+    # this, filtering to a USD account would make the profile's EUR total vanish
+    # from a report that shows it when unfiltered. Every currency the profile
+    # holds gets at least one row, breakdown or not.
+    covered = {account.currency_code for account in snapshot.per_account}
+    rows.extend(
+        _row(segment.currency_code, None)
+        for segment in snapshot.per_currency
+        if segment.currency_code not in covered
+    )
     if not rows:
-        # No account breakdown (empty profile, or filtered out): still report one
-        # row per currency so the totals are never lost behind the filter.
-        rows = [
-            {
-                **_headline(segment.currency_code),
-                "account_id": None,
-                "account_name": None,
-                "account_balance": None,
-                "observation_source": None,
-            }
-            for segment in snapshot.per_currency
-        ] or [
-            {
-                **_headline(None),
-                "account_id": None,
-                "account_name": None,
-                "account_balance": None,
-                "observation_source": None,
-            }
-        ]
+        rows = [_row(None, None)]
 
     return build_catalog_execution(
         NETWORTH_REPORT,
@@ -393,7 +387,7 @@ NETWORTH_REPORT = ServiceReportSpec(
     name="networth",
     description=(
         "Current or as-of net worth snapshot with per-account breakdown. "
-        "Amounts are in the currency named by summary.display_currency."
+        "Amounts are denominated in each row's own currency_code."
     ),
     parameters=(
         ParamSpec(
@@ -429,7 +423,7 @@ NETWORTH_HISTORY_REPORT = ServiceReportSpec(
     name="networth_history",
     description=(
         "Net worth history with period-over-period absolute and percentage change. "
-        "Amounts are in the currency named by summary.display_currency."
+        "Amounts are denominated in each row's own currency_code."
     ),
     parameters=(
         ParamSpec(

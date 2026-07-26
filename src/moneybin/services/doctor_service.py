@@ -1884,6 +1884,22 @@ class DoctorService:
                 WHERE currency_code IS NULL
                 """  # noqa: S608 — TableRef constant, not user input
             )
+            # Counted separately from the id lists above, which are capped at
+            # 100 so the envelope stays bounded. Deriving the count from
+            # len(ids) would saturate at 100 and hide the real backlog — the
+            # user would fix rows and see the same number every run.
+            unknown_transaction_count = self._scalar_int(
+                f"""
+                SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}
+                WHERE currency_code IS NULL
+                """  # noqa: S608 — TableRef constant, not user input
+            )
+            unknown_account_count = self._scalar_int(
+                f"""
+                SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}
+                WHERE currency_code IS NULL
+                """  # noqa: S608 — TableRef constant, not user input
+            )
         except Exception as e:  # noqa: BLE001 — degrade gracefully; surface cause at DEBUG
             logger.debug(f"currency_integrity skipped: {e}", exc_info=True)
             return InvariantResult(
@@ -1894,21 +1910,21 @@ class DoctorService:
             )
 
         PROFILE_CURRENCIES.set(len(currencies))
-        UNKNOWN_CURRENCY_ROWS.labels(grain="accounts").set(len(unknown_accounts))
+        UNKNOWN_CURRENCY_ROWS.labels(grain="accounts").set(unknown_account_count)
         UNKNOWN_CURRENCY_ROWS.labels(grain="transactions").set(
-            len(unknown_transactions)
+            unknown_transaction_count
         )
         UNKNOWN_CURRENCY_ROWS.labels(grain="balances").set(unknown_balances)
 
         unknown_total = (
-            len(unknown_transactions) + len(unknown_accounts) + unknown_balances
+            unknown_transaction_count + unknown_account_count + unknown_balances
         )
         if unknown_total:
             parts: list[str] = []
-            if unknown_accounts:
-                parts.append(f"{len(unknown_accounts)} account(s)")
-            if unknown_transactions:
-                parts.append(f"{len(unknown_transactions)} transaction(s)")
+            if unknown_account_count:
+                parts.append(f"{unknown_account_count} account(s)")
+            if unknown_transaction_count:
+                parts.append(f"{unknown_transaction_count} transaction(s)")
             if unknown_balances:
                 parts.append(f"{unknown_balances} balance observation(s)")
             return InvariantResult(

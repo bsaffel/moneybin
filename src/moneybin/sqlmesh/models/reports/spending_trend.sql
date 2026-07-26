@@ -23,10 +23,19 @@ WITH monthly AS (
     t.category,
     t.currency_code
 ), bounds AS (
+  /* One window per currency, not one global window. A user who banked in EUR
+     until 2023 and in USD since would otherwise get zero-spend EUR rows
+     running to the present (reading as a live obligation costing nothing) and
+     zero-spend USD rows back-filled to before they held a dollar account.
+     A single-currency profile has exactly one window, identical to the global
+     one, so its rows are unchanged. */
   SELECT
+    currency_code,
     MIN(month_date) AS first_month,
     MAX(month_date) AS last_month
   FROM monthly
+  GROUP BY
+    currency_code
 ), categories AS (
   /* Observed (category, currency) pairs, not the cross product of the two:
      densifying every category against every currency would invent zero-spend
@@ -37,6 +46,7 @@ WITH monthly AS (
   FROM monthly
 ), calendar AS (
   SELECT
+    currency_code,
     UNNEST(GENERATE_SERIES(first_month, last_month, INTERVAL '1' MONTH))::DATE AS month_date
   FROM bounds
 ), dense_monthly AS (
@@ -47,7 +57,8 @@ WITH monthly AS (
     COALESCE(monthly.total_spend, 0::DECIMAL(18, 2)) AS total_spend,
     COALESCE(monthly.txn_count, 0) AS txn_count
   FROM calendar
-  CROSS JOIN categories
+  INNER JOIN categories
+    ON calendar.currency_code IS NOT DISTINCT FROM categories.currency_code
   LEFT JOIN monthly
     ON calendar.month_date = monthly.month_date
     AND categories.category IS NOT DISTINCT FROM monthly.category

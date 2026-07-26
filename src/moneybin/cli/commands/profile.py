@@ -14,6 +14,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.utils import handle_cli_errors
 from moneybin.config import get_current_profile
 from moneybin.database import get_database
 from moneybin.errors import UserError
@@ -236,7 +237,12 @@ def profile_show(
             name = get_current_profile(auto_resolve=False)
         except RuntimeError:
             name = None
-    try:
+    # `show` reads managed settings out of the encrypted database now, so a
+    # locked or keyless profile raises DatabaseKeyError here. handle_cli_errors
+    # turns that into the "run moneybin db unlock" guidance — a raw traceback on
+    # the command a user reaches for when the database is unhealthy is the worst
+    # possible moment for one.
+    with handle_cli_errors(cli_actor="profile_show"):
         info = svc.show(name)
         info["settings"] = _read_managed_settings(info)
         if output == OutputFormat.JSON:
@@ -263,9 +269,6 @@ def profile_show(
             logger.info("  Settings (database):")
             for k, v in settings.items():
                 logger.info(f"    {k}: {v if v is not None else '(not set)'}")
-    except ProfileNotFoundError as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e
 
 
 @app.command("set")
@@ -294,12 +297,15 @@ def profile_set(
             profiles = svc.list()
             active = next((p["name"] for p in profiles if p["active"]), None)
             target = str(active) if active else "default"
-    try:
-        if key in MANAGED_SETTING_KEYS:
-            _set_managed_setting(svc, target, key, value, explicit_profile=name)
-        else:
-            svc.set(target, key, value)
+    # A managed key writes the encrypted database, so this path can now raise
+    # DatabaseKeyError / DatabaseLockError alongside the config-file errors.
+    with handle_cli_errors(cli_actor="profile_set"):
+        try:
+            if key in MANAGED_SETTING_KEYS:
+                _set_managed_setting(svc, target, key, value, explicit_profile=name)
+            else:
+                svc.set(target, key, value)
+        except (ProfileNotFoundError, ValueError) as e:
+            logger.error(f"❌ {e}")
+            raise typer.Exit(1) from e
         logger.info(f"✅ Set {key}={value}")
-    except (ProfileNotFoundError, UserError, ValueError) as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(1) from e

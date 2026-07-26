@@ -7,6 +7,7 @@ and the enum-allowlist ValueError branches the surfaces rely on.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 import pytest
@@ -43,8 +44,8 @@ _EXPECTED_DESCRIPTIONS = {
         "are current spend minus comparison-period spend."
     ),
     "recurring": (
-        "Average and annualized costs are positive absolute outflows in the "
-        "currency named by summary.display_currency."
+        "Average and annualized costs are positive absolute outflows in each "
+        "row's own currency_code."
     ),
     "merchants": (
         "total_spend is positive absolute outflow; total_outflow is negative; "
@@ -88,7 +89,9 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         monetary_classes = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
         assert monetary_classes.intersection(spec.classes.values())
         assert semantics.unit == "currency"
-        assert semantics.currency == "summary.display_currency"
+        # Rows are segmented, so the per-row column is the authority for
+        # which currency an amount is in — not one envelope-level field.
+        assert semantics.currency == "currency_code"
         assert semantics.fx_basis == _NO_FX_V1
 
         if name in _FLOW_REPORTS:
@@ -293,3 +296,103 @@ def test_recurring_projects_all_declared_interval_columns(db: Database) -> None:
     rows = _rows(db, recurring_subscriptions)
     assert "interval_days_avg" in rows[0]
     assert "interval_days_stddev" in rows[0]
+
+
+# --------------------------------------------------------------------------
+# Runner-level ranking is per currency (multi-currency.md Requirements 5 and 7).
+#
+# Segmenting the model is not enough: a runner that ranks the segmented rows
+# with one cross-currency ORDER BY ... LIMIT compares unlike units, and at the
+# default `top` it can drop an entire currency out of the result. Each fixture
+# below pairs one small-denomination row against enough large-denomination
+# rows to fill the limit on its own.
+# --------------------------------------------------------------------------
+
+
+def _install_large_transactions_view(db: Database, *, jpy_rows: int) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute(
+        """
+        CREATE OR REPLACE VIEW reports.large_transactions AS
+        SELECT 'usd1' AS transaction_id, 'A1' AS account_id, 'Alpha' AS account_name,
+               DATE '2026-01-01' AS txn_date, -40.00 AS amount, 'small' AS description,
+               'm1' AS merchant_id, 'Corner Store' AS merchant_normalized,
+               'Food' AS category, 'USD' AS currency_code,
+               3.0 AS amount_zscore_account, 3.0 AS amount_zscore_category,
+               TRUE AS is_top_100
+        UNION ALL
+        SELECT 'jpy' || i, 'A2', 'Beta', DATE '2026-01-01', -(8000.0 + i), 'big',
+               'm2', 'Depato', 'Food', 'JPY', 3.0, 3.0, TRUE
+        FROM GENERATE_SERIES(1, ?) AS t(i)
+    """.replace("?", str(jpy_rows))
+    )  # noqa: S608  # test-controlled row count
+
+
+def test_large_transactions_keeps_each_currency_inside_the_top_n(
+    db: Database,
+) -> None:
+    """A ¥8,001 charge must not outrank a $40 one out of the result."""
+    _install_large_transactions_view(db, jpy_rows=30)
+
+    rows = _rows(db, large_transactions, top=25)
+
+    assert "usd1" in {row["transaction_id"] for row in rows}
+    per_currency = Counter(str(row["currency_code"]) for row in rows)
+    assert per_currency == Counter({"JPY": 25, "USD": 1})
+
+
+def _install_merchant_activity_view(db: Database, *, jpy_rows: int) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute(
+        """
+        CREATE OR REPLACE VIEW reports.merchant_activity AS
+        SELECT 'm_usd' AS merchant_id, 'Corner Store' AS merchant_normalized,
+               'USD' AS currency_code, 40.00 AS total_spend, 0.00 AS total_inflow,
+               -40.00 AS total_outflow, 2 AS txn_count, -20.00 AS avg_amount,
+               -20.00 AS median_amount, DATE '2026-01-01' AS first_seen,
+               DATE '2026-01-02' AS last_seen, 1 AS active_months,
+               'Food' AS top_category, 1 AS account_count
+        UNION ALL
+        SELECT 'm_jpy' || i, 'Depato' || i, 'JPY', 8000.0 + i, 0.00, -(8000.0 + i),
+               2, -4000.0, -4000.0, DATE '2026-01-01', DATE '2026-01-02', 1,
+               'Food', 1
+        FROM GENERATE_SERIES(1, ?) AS t(i)
+    """.replace("?", str(jpy_rows))
+    )  # noqa: S608  # test-controlled row count
+
+
+def test_merchants_keeps_each_currency_inside_the_top_n(db: Database) -> None:
+    """A ¥-billed merchant list must not evict every $-billed merchant."""
+    _install_merchant_activity_view(db, jpy_rows=30)
+
+    rows = _rows(db, merchant_activity, top=25, sort="spend")
+
+    assert "m_usd" in {row["merchant_id"] for row in rows}
+    assert sum(1 for row in rows if row["currency_code"] == "JPY") == 25
+
+
+def test_recurring_groups_candidates_by_the_currency_they_are_billed_in(
+    db: Database,
+) -> None:
+    """Ordering by cost alone would interleave ¥ and $ candidates."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.recurring_subscriptions AS
+        SELECT * FROM (VALUES
+            ('m1', 'Netflix', 'USD', 15.99, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 191.88, 0.95),
+            ('m2', 'Depato', 'JPY', 1200.0, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 14400.0, 0.95),
+            ('m3', 'Spotify', 'USD', 11.99, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 143.88, 0.95)
+        ) AS t(merchant_id, merchant_normalized, currency_code, avg_amount,
+               cadence, interval_days_avg, interval_days_stddev,
+               occurrence_count, first_seen, last_seen, status,
+               annualized_cost, confidence)
+    """)
+
+    rows = _rows(db, recurring_subscriptions, min_confidence=0.5, status="active")
+
+    # Grouped by currency, cost-ordered within each — not one ¥14,400 row
+    # sitting above both dollar subscriptions on nominal magnitude.
+    assert [row["merchant_id"] for row in rows] == ["m2", "m1", "m3"]

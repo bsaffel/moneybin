@@ -2134,3 +2134,39 @@ def test_currency_integrity_records_what_it_observed(
         UNKNOWN_CURRENCY_ROWS.labels(grain="transactions")._value.get() == 1  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
     )
     assert UNKNOWN_CURRENCY_ROWS.labels(grain="accounts")._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
+@pytest.mark.unit
+def test_currency_integrity_counts_past_the_reported_id_cap(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The count is a real COUNT(*), not the length of the capped id list.
+
+    affected_ids is bounded so the envelope stays small; deriving the count
+    from it would saturate at the cap and show the user the same number every
+    run no matter how many rows they fixed.
+    """
+    doctor_db.execute("""
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            amount_absolute, transaction_direction, description,
+            transaction_type, is_pending, currency_code, source_type,
+            source_extracted_at, loaded_at,
+            transaction_year, transaction_month, transaction_day,
+            transaction_day_of_week, transaction_year_month,
+            transaction_year_quarter
+        )
+        SELECT 'N' || i, 'ACC1', DATE '2026-01-03', -1.00, 1.00, 'expense',
+               'no currency', 'DEBIT', false, NULL, 'ofx',
+               CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+               2026, 1, 3, 5, '2026-01', '2026-Q1'
+        FROM GENERATE_SERIES(1, 150) AS t(i)
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "150 transaction(s)" in (result.detail or "")
+    # The id list stays capped so the envelope does not carry 150 ids.
+    assert len(result.affected_ids) == 100
+    assert UNKNOWN_CURRENCY_ROWS.labels(grain="transactions")._value.get() == 150  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals

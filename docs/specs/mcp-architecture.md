@@ -142,7 +142,7 @@ check consent or substitute a degraded response.
 Tools use a hybrid namespace that reflects the most natural way an AI or user
 would think about the action. The first segment is the **prefix** and the
 second is the **action or view**. The standard registry groups related prefixes
-into user-facing domains: 14 prefixes compose 11 domain groups.
+into user-facing domains: 17 prefixes compose 13 domain groups.
 
 | Namespace | Domain | Purpose |
 |---|---|---|

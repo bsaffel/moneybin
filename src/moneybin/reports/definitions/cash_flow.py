@@ -57,7 +57,7 @@ from moneybin.tables import REPORTS_CASH_FLOW
     ),
     semantics=ReportSemantics(
         unit="currency",
-        currency="summary.display_currency",
+        currency="currency_code",
         sign="negative expense; positive income",
         kind="flow",
         valuation_basis="transaction amount",
@@ -80,7 +80,7 @@ def cash_flow(
 
     Defaults to the last 12 calendar months when both bounds are omitted.
     Amounts use the accounting convention (negative = expense, positive =
-    income) in the currency named by summary.display_currency.
+    income) in each row's own currency_code; rows are segmented per currency, never blended.
 
     Args:
         db: Open read-only database connection.

@@ -38,6 +38,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transaction whose currency is unknown (those amounts join no total until you
   run `accounts set --currency`) and warns when a profile holds more than one
   currency, so segmented totals are explained rather than surprising.
+  `top` on `reports merchants` and `reports large-transactions` now means "top N
+  **within each currency**" — ranking across currencies compares unlike units, so
+  one high-denomination currency could otherwise take every slot and hide the
+  rest entirely. A single-currency profile gets the same N rows as before.
+  `summary.display_currency` now names the currency a report's rows are actually
+  denominated in instead of always reporting `USD`; when the rows span more than
+  one, each row's `currency_code` is the answer.
 - **Canonical bundle and registered-report export delivery (M1O).**
   `moneybin export bundle` and `moneybin export report` publish redacted CSV by
   default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named
