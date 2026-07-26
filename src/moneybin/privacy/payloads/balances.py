@@ -51,6 +51,12 @@ class BalanceAssertionRow:
     balance: Annotated[Decimal, DataClass.BALANCE]
     notes: Annotated[str | None, DataClass.USER_NOTE]
     created_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    # app.balance_assertions stores no currency: an assertion is a statement
+    # about one account, so the account's currency is the only answer. Joined
+    # from dim_accounts rather than stored, so it cannot drift from it.
+    # Nullable because dim_accounts.currency_code is (system doctor's
+    # currency_integrity check surfaces those).
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
 
 
 @dataclass(frozen=True, slots=True)

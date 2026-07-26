@@ -51,7 +51,7 @@ def model_db(
 
 
 def _install_balance_drift_sources(
-    model_db: Database, *, currency: str = "USD"
+    model_db: Database, *, currency: str | None = "USD"
 ) -> None:
     model_db.execute("""
         CREATE TABLE core.dim_accounts (
@@ -729,6 +729,55 @@ def test_balance_drift_withholds_a_drift_across_two_currencies(
     ).fetchone()
     # 5.00 here would be 105 USD minus 100 EUR reported as USD.
     assert row == (None, None, "currency-mismatch")
+
+
+@pytest.mark.parametrize(
+    ("account_currency", "observation_currency"),
+    [("USD", None), (None, "USD"), (None, None)],
+    ids=["observation-unknown", "account-unknown", "both-unknown"],
+)
+def test_balance_drift_still_reports_when_one_side_has_no_currency(
+    model_db: Database,
+    account_currency: str | None,
+    observation_currency: str | None,
+) -> None:
+    """An unknown currency is not a contradiction, so the drift still reports.
+
+    The guard withholds only when two *known* currencies disagree. Withholding
+    on an unknown side instead would blank this report for every account nobody
+    has assigned a currency to yet — which is the state a fresh import leaves
+    behind, and precisely the population `system doctor`'s currency_integrity
+    check exists to walk the user out of.
+
+    The both-known cases are covered above; only these three branches of the
+    `NOT ... IS NULL AND NOT ... IS NULL` guard were unexercised, so a change
+    that started (or stopped) withholding here would not have been caught.
+    """
+    _install_balance_drift_sources(model_db, currency=account_currency)
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES ('checking', '2024-01-02', 105.00)
+        """
+    )
+    model_db.execute(
+        """
+        INSERT INTO core.fct_balances_daily VALUES
+            ('checking', '2024-01-02', 100.00, FALSE, NULL, ?)
+        """,
+        [observation_currency],
+    )
+
+    _install_report(model_db, "balance_drift")
+
+    row = model_db.execute(
+        "SELECT computed_balance, drift, status FROM reports.balance_drift"
+    ).fetchone()
+    # 105.00 asserted - 100.00 computed = 5.00 drift; the model's own bands are
+    # clean (<1) / warning (<10) / drift (>=10), so 5.00 is 'warning'. The point
+    # is that a position is computed at all — the withheld case reports
+    # (None, None, 'currency-mismatch').
+    assert row == (Decimal("100.00"), Decimal("5.00"), "warning")
 
 
 def test_balance_drift_reports_the_currency_the_position_is_denominated_in(

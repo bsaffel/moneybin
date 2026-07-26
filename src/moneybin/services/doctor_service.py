@@ -1940,7 +1940,17 @@ class DoctorService:
                     "MoneyBin never guesses a currency, because a wrong guess "
                     "would silently blend into a figure nothing could flag."
                 ),
-                affected_ids=[*unknown_accounts, *unknown_transactions],
+                # Prefixed by grain, matching orphan_app_state's note:/tag:
+                # convention: the two id kinds need different fixes, and a
+                # recipe reading a bare mixed list cannot tell which is which
+                # without re-querying.
+                affected_ids=[
+                    *(f"account:{account_id}" for account_id in unknown_accounts),
+                    *(
+                        f"transaction:{transaction_id}"
+                        for transaction_id in unknown_transactions
+                    ),
+                ],
             )
         if len(currencies) > 1:
             return InvariantResult(

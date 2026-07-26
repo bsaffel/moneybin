@@ -1360,3 +1360,85 @@ class TestBalanceCurrency:
             "EUR",
             "USD",
         }
+
+    @staticmethod
+    def _set_account_currency(account_id: str, currency: str) -> None:
+        with get_database(read_only=False) as db:
+            db.execute(
+                "UPDATE core.dim_accounts SET currency_code = ? WHERE account_id = ?",
+                [currency, account_id],
+            )
+
+    @pytest.mark.unit
+    async def test_an_assertion_carries_the_account_currency(
+        self, mcp_db: Path
+    ) -> None:
+        """A balance assertion is money, so it must say what unit it is in.
+
+        `app.balance_assertions` stores no currency of its own — the assertion
+        is about an account, so the account's currency is the answer. Without
+        it the assertions view returned a bare number that an agent could only
+        read as the envelope's default.
+        """
+        self._set_account_currency("ACC001", "EUR")
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO app.balance_assertions
+                    (account_id, assertion_date, balance, notes, created_at)
+                VALUES ('ACC001', '2025-06-30', 5000.00, NULL, CURRENT_TIMESTAMP)
+                """
+            )
+
+        response = await accounts_balances_coarse(view="assertions")
+
+        assert [row.currency_code for row in response.data.assertions] == ["EUR"]
+        assert response.summary.display_currency == "EUR"
+
+    @pytest.mark.unit
+    async def test_assertions_across_currencies_name_none(self, mcp_db: Path) -> None:
+        """Two accounts in different currencies leave display_currency null."""
+        self._set_account_currency("ACC001", "EUR")
+        self._set_account_currency("ACC002", "JPY")
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO app.balance_assertions
+                    (account_id, assertion_date, balance, notes, created_at)
+                VALUES
+                    ('ACC001', '2025-06-30', 5000.00, NULL, CURRENT_TIMESTAMP),
+                    ('ACC002', '2025-06-30', 900000.00, NULL, CURRENT_TIMESTAMP)
+                """
+            )
+
+        response = await accounts_balances_coarse(view="assertions")
+
+        assert response.summary.display_currency is None
+        assert {row.currency_code for row in response.data.assertions} == {
+            "EUR",
+            "JPY",
+        }
+
+    @pytest.mark.unit
+    async def test_an_account_with_no_currency_asserts_unknown(
+        self, mcp_db: Path
+    ) -> None:
+        """A NULL account currency stays NULL — it never becomes USD.
+
+        `dim_accounts.currency_code` is genuinely nullable since this milestone
+        removed its blind 'USD' default, and `system doctor`'s currency_integrity
+        check exists to surface exactly these. Filling one in here would hide it.
+        """
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO app.balance_assertions
+                    (account_id, assertion_date, balance, notes, created_at)
+                VALUES ('ACC001', '2025-06-30', 5000.00, NULL, CURRENT_TIMESTAMP)
+                """
+            )
+
+        response = await accounts_balances_coarse(view="assertions")
+
+        assert [row.currency_code for row in response.data.assertions] == [None]
+        assert response.summary.display_currency is None

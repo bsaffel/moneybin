@@ -59,11 +59,16 @@ def _to_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
 def _to_currency(value: object) -> str | None:
     """Normalise a pandas currency cell to a hashable str | None.
 
-    fetchdf() renders SQL NULL as either None or float NaN depending on the
-    column's inferred dtype. Both mean "unknown currency", and both have to
-    collapse to one key — NaN != NaN, so an un-normalised NaN would never match
-    the carried currency and would silently drop the unknown-currency segment's
-    transactions.
+    Unlike ``_to_decimal``, whose NaN branch is load-bearing (fetchdf renders an
+    all-NULL DECIMAL column as float64, so its NULLs really do arrive as NaN),
+    a VARCHAR column comes back as object dtype with None even when every value
+    is NULL — so the NaN check here is defensive, not a live path.
+
+    It stays because the failure it prevents is silent and expensive: NaN !=
+    NaN, so an un-normalised NaN would never match the carried currency, and
+    every unknown-currency account would have its reconciliation voided as a
+    phantom currency change. One isinstance check is cheap insurance against a
+    future reshape (a reindex or merge over this frame) introducing NaN.
     """
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return None

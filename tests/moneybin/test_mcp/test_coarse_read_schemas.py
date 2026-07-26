@@ -502,6 +502,7 @@ async def test_accounts_coarse_transport_variants(
             "high",
             {
                 "balance",
+                "currency",
                 "record_id",
                 "timestamp_observability",
                 "txn_date",

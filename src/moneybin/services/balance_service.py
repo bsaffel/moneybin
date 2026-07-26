@@ -23,7 +23,7 @@ from moneybin.privacy.payloads.balances import (
 from moneybin.protocol.envelope import resolve_display_currency
 from moneybin.services.account_service import assert_account_exists
 from moneybin.services.audit_service import AuditService
-from moneybin.tables import BALANCE_ASSERTIONS, FCT_BALANCES_DAILY
+from moneybin.tables import BALANCE_ASSERTIONS, DIM_ACCOUNTS, FCT_BALANCES_DAILY
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,8 @@ def _observation_row_from_db(row: tuple[object, ...]) -> BalanceObservationRow:
 def _assertion_row_from_db(row: tuple[object, ...]) -> BalanceAssertionRow:
     """Construct a BalanceAssertionRow from a SELECT result tuple.
 
-    Columns: account_id, assertion_date, balance, notes, created_at.
+    Columns: account_id, assertion_date, balance, notes, created_at,
+    currency_code.
     """
     return BalanceAssertionRow(
         account_id=row[0],  # type: ignore[arg-type]
@@ -80,6 +81,7 @@ def _assertion_row_from_db(row: tuple[object, ...]) -> BalanceAssertionRow:
         balance=row[2],  # type: ignore[arg-type]
         notes=row[3],  # type: ignore[arg-type]
         created_at=str(row[4]),
+        currency_code=row[5],  # type: ignore[arg-type]
     )
 
 
@@ -208,14 +210,16 @@ class BalanceService:
     ) -> BalanceAssertionListPayload:
         """List assertions; optionally filter to a single account."""
         sql = f"""
-            SELECT account_id, assertion_date, balance, notes, created_at
-            FROM {BALANCE_ASSERTIONS.full_name}
+            SELECT a.account_id, a.assertion_date, a.balance, a.notes,
+                   a.created_at, d.currency_code
+            FROM {BALANCE_ASSERTIONS.full_name} a
+            LEFT JOIN {DIM_ACCOUNTS.full_name} d USING (account_id)
         """
         params: list[object] = []
         if account_id is not None:
-            sql += " WHERE account_id = ?"
+            sql += " WHERE a.account_id = ?"
             params.append(account_id)
-        sql += " ORDER BY account_id, assertion_date DESC"
+        sql += " ORDER BY a.account_id, a.assertion_date DESC"
         return BalanceAssertionListPayload(
             assertions=[
                 _assertion_row_from_db(row)
@@ -252,9 +256,11 @@ class BalanceService:
         """Return one exact assertion, or ``None`` when absent."""
         row = self._db.execute(
             f"""
-            SELECT account_id, assertion_date, balance, notes, created_at
-            FROM {BALANCE_ASSERTIONS.full_name}
-            WHERE account_id = ? AND assertion_date = ?
+            SELECT a.account_id, a.assertion_date, a.balance, a.notes,
+                   a.created_at, d.currency_code
+            FROM {BALANCE_ASSERTIONS.full_name} a
+            LEFT JOIN {DIM_ACCOUNTS.full_name} d USING (account_id)
+            WHERE a.account_id = ? AND a.assertion_date = ?
             """,
             [account_id, assertion_date],
         ).fetchone()

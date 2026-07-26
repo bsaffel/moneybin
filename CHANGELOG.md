@@ -89,6 +89,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   response shares or is null when its rows span several, matching how registered
   reports already answer. The text output prints the currency beside the amount
   (`?` when unknown).
+- **No response invents a currency it was not told (M1K.1).** The response
+  envelope defaulted `summary.display_currency` to `"USD"`, so every one of the
+  251 places that builds one claimed dollars for free — and nine of the eleven
+  tools that return money never overrode it. `accounts`, `accounts_set` and the
+  five `investments` reads all echoed a EUR account's credit limit, holdings and
+  cost basis labelled USD, while their own descriptions told the agent to read
+  `summary.display_currency`. The envelope now reads the currency off the payload
+  it was handed: a response whose rows carry `currency_code` reports the one they
+  agree on, and reports null when they disagree or none is known. Naming a
+  currency explicitly still overrides it, so a report that resolved the currency
+  across every matching row keeps that answer rather than the returned page's.
+  **A single-currency profile sees the same value it always did.** Responses that
+  carry no money — and the ones whose money has no currency recorded anywhere
+  (`transactions`, `reviews`, `import_files`, `import_preview`, `system_audit`,
+  `investments_lots_select`, `transactions_categorize_rules`) — now report null
+  instead of an unfounded `USD`; threading a currency through those payloads is
+  tracked separately.
+- **Balance assertions state the currency they are in (M1K.1).**
+  `accounts balance assert` / `assertion-list` and the `accounts_balances`
+  assertions view returned a bare number: `app.balance_assertions` stores no
+  currency, so nothing on the response said what unit it was. An assertion is a
+  statement about one account, so each row now carries that account's
+  `currency_code`, joined at read time rather than stored so it cannot drift from
+  the account. The CLI prints it beside the amount (`?` when unknown).
+- **`system doctor`'s `currency_integrity` labels which ids it is naming
+  (M1K.1).** Its `affected_ids` mixed bare account and transaction ids in one
+  list with nothing to tell them apart, though each needs a different fix. They
+  are now prefixed `account:` / `transaction:`, matching the convention the
+  `orphan_app_state` check already uses.
 - **`moneybin profile show` no longer crashes on a database from before this
   release (M1K.1).** Reading the profile's settings opens the database read-only,
   and read-only opens skip schema initialization and migrations — so the first

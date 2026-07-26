@@ -2118,7 +2118,35 @@ def test_currency_integrity_fails_on_a_transaction_with_unknown_currency(
 
     assert result.status == "fail"
     assert "unknown" in (result.detail or "").lower()
-    assert result.affected_ids == ["T2"]
+    assert result.affected_ids == ["transaction:T2"]
+
+
+@pytest.mark.unit
+def test_currency_integrity_prefixes_each_affected_id_with_its_grain(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Account and transaction ids must be distinguishable in one list.
+
+    ``affected_ids`` mixes two grains, and a bare id says nothing about which
+    tool fixes it — an account needs `accounts set --currency`, a transaction
+    needs its own path. ``orphan_app_state`` established the ``note:``/``tag:``
+    prefix convention in this same file for exactly that reason; a recipe
+    written against an unprefixed list would have to re-query to tell them
+    apart.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = NULL
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+    doctor_db.execute("""
+        UPDATE core.dim_accounts SET currency_code = NULL
+        WHERE account_id = 'ACC1'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:ACC1", "transaction:T2"]
 
 
 @pytest.mark.unit
@@ -2167,7 +2195,7 @@ def test_currency_integrity_fails_on_an_account_with_unknown_currency(
     result = _currency_result(doctor_db, monkeypatch)
 
     assert result.status == "fail"
-    assert "ACC1" in result.affected_ids
+    assert "account:ACC1" in result.affected_ids
 
 
 @pytest.mark.unit

@@ -449,6 +449,28 @@ flowchart LR
 - `ResponseEnvelope.summary.display_currency` populated whenever money is returned
   (the profile's home currency for single-currency profiles — never a hardcoded `USD`,
   which would mislabel a EUR/GBP-only user; the requested/home currency under conversion).
+- **The envelope derives it; call sites do not have to remember.** `build_envelope`
+  reads `currency_code` off the payload it is given — the record itself, or the rows
+  of its single primary list — and applies `resolve_display_currency`: one agreed
+  known code, else null. An explicit argument still wins, for the caller that
+  resolved a currency the payload cannot show (the reports framework resolves across
+  every matching row, not just the returned page).
+
+  This is placement, not preference. A default of `"USD"` on the parameter is
+  inherited silently by every call site that omits it, so the guard has to sit
+  where the envelope is *constructed*, not at each of the 251 places that build
+  one. Rounds 10 and 11 of the M1K.1 review fixed named call sites twice and the
+  class reopened both times — nine of the eleven money-bearing tools were still
+  claiming USD when the third round found `accounts_set`. Same lesson as the
+  reconciliation guard below: a currency guard must sit where the value is
+  produced, because downstream nothing can tell an inherited default from a
+  deliberate one.
+
+  A payload that records no currency anywhere reports null rather than a guess.
+  That is honest but uninformative, so the set of such tools is pinned by
+  `tests/moneybin/test_mcp/test_money_tools_name_their_currency.py` — enumerated
+  from the live registry with set equality, so a new money tool cannot join it
+  silently.
 - M1K.2 rate / conversion / exposure operations follow the existing MCP taxonomy —
   multi-currency is a **crosscutting service-layer concern, not its own tool namespace**
   (`mcp-architecture.md`), and tool names use the noun=query / path-prefix-verb-suffix

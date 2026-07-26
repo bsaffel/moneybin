@@ -135,6 +135,7 @@ class TestAccountsBalanceAssert:
             balance=Decimal("1234.56"),
             notes=None,
             created_at="2026-01-31 00:00:00",
+            currency_code="USD",
         )
         mock_service.assert_balance.return_value = BalanceAssertionPayload(
             assertion=assertion_row
@@ -175,6 +176,7 @@ class TestAccountsBalanceAssert:
             balance=Decimal("1234.56"),
             notes="from paper statement",
             created_at="2026-01-31 00:00:00",
+            currency_code="USD",
         )
         mock_service.assert_balance.return_value = BalanceAssertionPayload(
             assertion=assertion_row
@@ -214,6 +216,7 @@ class TestAccountsBalanceList:
             balance=Decimal("1234.56"),
             notes=None,
             created_at="2026-01-31 12:00:00",
+            currency_code="USD",
         )
         mock_payload = BalanceAssertionListPayload(assertions=[assertion_row])
         with (

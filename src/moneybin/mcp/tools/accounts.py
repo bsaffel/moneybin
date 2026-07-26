@@ -81,7 +81,12 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationListPayload,
 )
 from moneybin.privacy.redaction import redact_typed
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import (
+    UNSET,
+    ResponseEnvelope,
+    Unset,
+    build_envelope,
+)
 from moneybin.protocol.pagination import (
     KeysetPosition,
     compare_keyset,
@@ -809,7 +814,7 @@ def _coarse_envelope[T](
     returned_count: int,
     next_cursor: str | None = None,
     period: str | None = None,
-    display_currency: str | None = "USD",
+    display_currency: str | None | Unset = UNSET,
     actions: list[str] | None = None,
     has_more: bool | None = None,
 ) -> ResponseEnvelope[T]:

@@ -133,7 +133,8 @@ def accounts_balance_assert(
                 actor="cli",
             )
     typer.echo(
-        f"✅ Asserted balance for {account_id} on {parsed_date}: {result.assertion.balance}",
+        f"✅ Asserted balance for {account_id} on {parsed_date}: "
+        f"{result.assertion.balance} {result.assertion.currency_code or '?'}",
         err=True,
     )
 
@@ -159,7 +160,9 @@ def accounts_balance_list(
         return
     for assertion in result.assertions:
         typer.echo(
-            f"  {assertion.account_id}  {assertion.assertion_date}  {assertion.balance}  notes={assertion.notes}"
+            f"  {assertion.account_id}  {assertion.assertion_date}  "
+            f"{assertion.balance} {assertion.currency_code or '?'}  "
+            f"notes={assertion.notes}"
         )
 
 
