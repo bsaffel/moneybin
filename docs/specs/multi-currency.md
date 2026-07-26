@@ -205,6 +205,21 @@ Numbered, testable. Tagged by phase.
    whose file carried no currency column, who are almost always single-currency,
    and blanking net worth and cash flow for all of them to guard a case their
    own doctor output already fails on trades a certain harm for a rare one.
+   **The invariant binds `core.*` too, not only `reports.*`.**
+   `core.fct_balances_daily` carries a balance forward adjusted by intervening
+   transactions, and `fct_transactions.currency_code` resolves per row — so an
+   account whose statements are USD can hold a transaction of its own in EUR.
+   Summing them and adding the result to the carry blends currencies one layer
+   *below* every guard: the row still reports the observation's currency, so
+   `balance_drift`'s `currency_mismatch` check compares two matching `USD`
+   values and passes the blended number through to `reports.net_worth`. The
+   carry therefore applies only the transactions denominated in the currency it
+   is carrying. The excluded movement is not dropped silently — it lands in the
+   next observation's `reconciliation_delta` and reads as drift, and the
+   Requirement 6 warn names the behaviour. **Guard placement rule:** a
+   currency guard on a derived value must sit where the arithmetic happens.
+   A guard downstream of the blend can only compare labels, and both labels
+   survive a blend intact.
 
 6. **Doctor check.** `system doctor` reports when a profile holds more than one
    distinct currency across transactions/accounts/balances, **flags accounts/rows whose
@@ -212,8 +227,12 @@ Numbered, testable. Tagged by phase.
    any report path that would violate Requirement 5.
    **Implemented 2026-07-25** as the `currency_integrity` invariant: **fail** on any
    unknown-currency account/transaction/balance (with the `accounts set --currency`
-   fix in the detail and the affected ids attached), **warn** on two or more known
-   currencies with nothing unknown, **pass** otherwise. It publishes
+   fix in the detail, the `moneybin transform` that makes it take effect in `core.*`,
+   and the affected ids attached), **warn** on two or more known
+   currencies with nothing unknown — naming both consequences a user would
+   otherwise read as a bug: reports sub-total per currency, and a transaction
+   denominated differently from its account sits out of that account's carried
+   balance and shows up as its drift — **pass** otherwise. It publishes
    `moneybin_profile_currencies` and `moneybin_unknown_currency_rows{grain}`.
    The third clause — "any report path that would violate Requirement 5" — is a
    **build-time** guard rather than a runtime one, because the set of report paths is

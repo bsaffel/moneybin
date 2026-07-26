@@ -6,6 +6,8 @@ test_fct_balances_plaid.py) to isolate the SQL from the extractor path.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
@@ -56,6 +58,150 @@ def _accept_link(db: Database, *, native_key: str, canonical_id: str) -> None:
         """,  # noqa: S608  # test fixture, not executing user SQL
         [f"link_{native_key}", canonical_id, native_key, _ITEM],
     )
+
+
+def _insert_ofx_account(db: Database, *, account_id: str) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.ofx_accounts
+            (account_id, account_type, source_file, extracted_at,
+             source_type, source_origin)
+        VALUES (?, 'CHECKING', 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank')
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [account_id],
+    )
+
+
+def _insert_ofx_balance(
+    db: Database, *, account_id: str, on_date: str, balance: str, source_file: str
+) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.ofx_balances
+            (account_id, statement_end_date, ledger_balance, ledger_balance_date,
+             source_file, extracted_at, source_type, source_origin, currency_code)
+        VALUES (?, ?::TIMESTAMP, ?::DECIMAL(18, 2), ?::TIMESTAMP, ?,
+                CURRENT_TIMESTAMP, 'ofx', 'test_bank', 'USD')
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [account_id, on_date, balance, on_date, source_file],
+    )
+
+
+def _insert_ofx_transaction_on(
+    db: Database,
+    *,
+    txn_id: str,
+    account_id: str,
+    on_date: str,
+    amount: str,
+    currency_code: str,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.ofx_transactions
+            (source_transaction_id, account_id, transaction_type, date_posted,
+             amount, payee, source_file, extracted_at, source_type,
+             source_origin, currency_code)
+        VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, ?::DECIMAL(18, 2), 'Test Payee',
+                'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [txn_id, account_id, on_date, amount, currency_code],
+    )
+
+
+def _seed_mixed_currency_account(db: Database, *, account_id: str) -> None:
+    """A USD account whose 07-02 activity is one USD and one EUR transaction.
+
+    Both transactions are needed to isolate the defect: with only the EUR one,
+    a carry that correctly excludes it and a carry that never applied any
+    adjustment produce the same number.
+    """
+    _insert_ofx_account(db, account_id=account_id)
+    _insert_ofx_balance(
+        db,
+        account_id=account_id,
+        on_date="2026-07-01",
+        balance="1000.00",
+        source_file="ofx_test_open",
+    )
+    # 873.00 = 1000 - 100 USD - the EUR 25 settling at ~27 USD. MoneyBin cannot
+    # know that rate, which is exactly why the EUR row must not enter the carry.
+    _insert_ofx_balance(
+        db,
+        account_id=account_id,
+        on_date="2026-07-03",
+        balance="873.00",
+        source_file="ofx_test_close",
+    )
+    _insert_ofx_transaction_on(
+        db,
+        txn_id=f"{account_id}_usd",
+        account_id=account_id,
+        on_date="2026-07-02",
+        amount="-100.00",
+        currency_code="USD",
+    )
+    _insert_ofx_transaction_on(
+        db,
+        txn_id=f"{account_id}_eur",
+        account_id=account_id,
+        on_date="2026-07-02",
+        amount="-25.00",
+        currency_code="EUR",
+    )
+
+
+@pytest.mark.slow
+def test_foreign_currency_transaction_stays_out_of_the_carried_balance(
+    db: Database,
+) -> None:
+    """A transaction in another currency is never added to the carried balance.
+
+    multi-currency.md Requirement 5. The carry is denominated in the observation's
+    currency, so adding a EUR amount to a USD balance sums unlike units — and the
+    blend is invisible downstream, because the resulting row still claims USD.
+    """
+    _seed_mixed_currency_account(db, account_id="bal_mix")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        """
+        SELECT balance, is_observed FROM core.fct_balances_daily
+        WHERE account_id = 'bal_mix' AND balance_date = '2026-07-02'::DATE
+        """
+    ).fetchone()
+    assert row is not None
+    assert row[1] is False, "07-02 has no observation; it must be interpolated"
+    # 1000 - 100 USD. Summing the EUR 25 as though it were dollars gives 875.00.
+    assert row[0] == Decimal("900.00")
+
+
+@pytest.mark.slow
+def test_unconverted_foreign_activity_surfaces_as_reconciliation_drift(
+    db: Database,
+) -> None:
+    """Excluding a foreign transaction leaves the gap visible, not silent.
+
+    The next observation's reconciliation_delta is the movement the carry could
+    not explain, which is what `reports.balance_drift` already reports on.
+    """
+    _seed_mixed_currency_account(db, account_id="bal_drift")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        """
+        SELECT reconciliation_delta FROM core.fct_balances_daily
+        WHERE account_id = 'bal_drift' AND balance_date = '2026-07-03'::DATE
+        """
+    ).fetchone()
+    assert row is not None
+    # 873.00 observed - 900.00 carried = the 27.00 of EUR spending MoneyBin
+    # cannot express in USD. Blending the raw 25.00 in would report -2.00.
+    assert row[0] == Decimal("-27.00")
 
 
 @pytest.mark.slow

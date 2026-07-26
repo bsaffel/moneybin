@@ -56,6 +56,20 @@ def _to_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
     return Decimal(str(value))
 
 
+def _to_currency(value: object) -> str | None:
+    """Normalise a pandas currency cell to a hashable str | None.
+
+    fetchdf() renders SQL NULL as either None or float NaN depending on the
+    column's inferred dtype. Both mean "unknown currency", and both have to
+    collapse to one key — NaN != NaN, so an un-normalised NaN would never match
+    the carried currency and would silently drop the unknown-currency segment's
+    transactions.
+    """
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    return str(value)
+
+
 def _select_winning_observations(group: pd.DataFrame) -> pd.DataFrame:
     """Reduce multiple observations for one account to one winner per date.
 
@@ -146,11 +160,18 @@ def execute(
         yield from ()
         return
 
+    # Grouped by currency_code as well as account/date: fct_transactions resolves
+    # currency per row (its own, else the account's), so one account-date can hold
+    # amounts in more than one currency. Summing across them would add unlike
+    # units into a balance carried in a single currency, and the result is
+    # invisible downstream — the row still reports the observation's currency, so
+    # reports.balance_drift's currency_mismatch guard (which compares the balance
+    # against the account) sees two matching USD values and passes the blend.
     txns: pd.DataFrame = context.fetchdf(
         f"""
-        SELECT account_id, transaction_date AS d, SUM(amount) AS net_amount
+        SELECT account_id, transaction_date AS d, currency_code, SUM(amount) AS net_amount
         FROM {fct_transactions_table}
-        GROUP BY account_id, transaction_date
+        GROUP BY account_id, transaction_date, currency_code
         """  # noqa: S608  # table name from context.resolve_table(), not user input
     )
 
@@ -174,11 +195,19 @@ def execute(
         # fetchdf() returns DATE columns as datetime64[us] Timestamps, not Python
         # date objects. Normalise to date so .get(d) matches spine elements.
         acct_txns_df = txns[txns["account_id"] == account_id].copy()  # type: ignore[reportUnknownMemberType]
+        # date -> {currency_code: net_amount}, so the walk below can apply only
+        # the transactions denominated in the currency it is currently carrying.
+        acct_txns: dict[date, dict[str | None, object]] = {}
         if not acct_txns_df.empty:  # type: ignore[reportUnknownMemberType]
             acct_txns_df["d"] = pd.to_datetime(acct_txns_df["d"]).dt.date  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            acct_txns: pd.Series = acct_txns_df.set_index("d")["net_amount"]  # type: ignore[type-arg,reportUnknownMemberType]
-        else:
-            acct_txns = pd.Series(dtype=object)
+            for txn_date, txn_currency, net_amount in zip(  # type: ignore[reportUnknownVariableType]
+                acct_txns_df["d"],  # type: ignore[reportUnknownArgumentType]
+                acct_txns_df["currency_code"],  # type: ignore[reportUnknownArgumentType]
+                acct_txns_df["net_amount"],  # type: ignore[reportUnknownArgumentType]
+                strict=True,
+            ):
+                bucket = acct_txns.setdefault(t.cast(date, txn_date), {})
+                bucket[_to_currency(txn_currency)] = net_amount
 
         # Normalise balance_date to Python date objects so lookups match spine elements
         # regardless of whether fetchdf returns date or Timestamp.
@@ -192,13 +221,17 @@ def execute(
         carry: Decimal | None = None
         carry_currency: str | None = None
         for d in spine:
-            txn_raw = acct_txns.get(d) if not acct_txns.empty else None  # type: ignore[call-overload] — Series.get accepts date keys at runtime
-            txn_adj = _to_decimal(txn_raw)  # type: ignore[reportUnknownArgumentType] — txn_raw type unknown from pandas stubs
+            # Only the movement denominated in the carried currency. A
+            # transaction in any other currency needs an FX rate to become an
+            # amount of this balance, and MoneyBin has none until M1K.2 — it is
+            # left out rather than added as though the units matched, and
+            # resurfaces as reconciliation_delta at the next observation.
+            txn_adj = _to_decimal(acct_txns.get(d, {}).get(carry_currency))
 
             if d in observed_lookup.index:  # type: ignore[reportUnknownMemberType]
                 obs_balance = _to_decimal(observed_lookup.loc[d, "balance"])  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType] — pandas .loc stubs return Unknown; safe at runtime
                 obs_source: str = str(observed_lookup.loc[d, "source_type"])  # type: ignore[reportUnknownMemberType]
-                obs_currency = observed_lookup.loc[d, "currency_code"]  # type: ignore[reportUnknownMemberType]
+                obs_currency = _to_currency(observed_lookup.loc[d, "currency_code"])  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
                 delta: Decimal | None
                 if carry is not None:
                     delta = obs_balance - (carry + txn_adj)

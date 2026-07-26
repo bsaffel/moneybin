@@ -36,8 +36,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it always did**, plus the currency they are denominated in. `moneybin system
   doctor` gained a `currency_integrity` check: it fails on any account or
   transaction whose currency is unknown (those amounts join no total until you
-  run `accounts set --currency`) and warns when a profile holds more than one
-  currency, so segmented totals are explained rather than surprising.
+  run `accounts set --currency`, then `moneybin transform`) and warns when a
+  profile holds more than one currency, so segmented totals are explained
+  rather than surprising.
+- **Daily balances no longer add foreign-currency transactions to an account's
+  running balance (M1K.1).** `core.fct_balances_daily` carries a balance forward
+  adjusted by the transactions in between. Because a transaction resolves its own
+  currency, a USD account can hold a EUR charge — and adding the two produced a
+  number in no unit that nothing downstream could flag, since the row still
+  reported USD. The carry now applies only transactions denominated in the
+  currency being carried. The excluded movement is not lost: it appears in that
+  account's `reconciliation_delta` and as drift in `reports balance-drift`, and
+  the `system doctor` multi-currency warning names the behaviour. **A
+  single-currency profile is unaffected.**
   `top` on `reports merchants` and `reports large-transactions` now means "top N
   **within each currency**" — ranking across currencies compares unlike units, so
   one high-denomination currency could otherwise take every slot and hide the

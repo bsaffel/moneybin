@@ -2059,6 +2059,52 @@ def test_currency_integrity_warns_when_a_profile_holds_two_currencies(
 
 
 @pytest.mark.unit
+def test_currency_integrity_warn_explains_the_withheld_balance_adjustment(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mixed currency also shrinks a carried balance — the warn has to say so.
+
+    core.fct_balances_daily leaves a transaction denominated in another currency
+    out of the account's carry, because no FX rate exists until M1K.2. The
+    amount resurfaces as reconciliation drift, but a user who is never told
+    where it went cannot read that drift as anything but a bug.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    detail = result.detail or ""
+    assert "carried" in detail
+    assert "balance_drift" in detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_fail_names_the_transform_that_applies_the_fix(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`accounts set --currency` writes app state; core.* is a table, not a view.
+
+    Follows dedup_reconciliation's convention in this same file: a remedy that
+    only takes effect after `moneybin transform` must say so, or the user
+    applies it, re-runs the doctor, sees the identical failure, and concludes
+    the documented fix does not work.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = NULL
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "transform" in (result.detail or "")
+
+
+@pytest.mark.unit
 def test_currency_integrity_fails_on_a_transaction_with_unknown_currency(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -141,7 +141,7 @@ Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Jo
 | `last_four` | VARCHAR | User-set or Plaid mask. |
 | `account_subtype` | VARCHAR | Plaid-style subtype (`checking`, `savings`, `credit card`, `mortgage`, ...). User override, else the provider's own subtype, else derived from the source spelling by `seeds.account_type_map`. |
 | `holder_category` | VARCHAR | `personal` / `business` / `joint`. |
-| `currency_code` | VARCHAR | ISO-4217; defaults to `'USD'`. |
+| `currency_code` | VARCHAR | ISO-4217. User override, else the currency the account's own source reported; `NULL` when nobody stated one — there is no `'USD'` default. See "Currency handling" above. |
 | `credit_limit` | DECIMAL(18,2) | User-asserted; drives utilization metrics. |
 | `archived` | BOOLEAN | Hides from default lists and `reports.net_worth`. |
 | `include_in_net_worth` | BOOLEAN | Independent toggle; archiving forces FALSE. |
@@ -249,6 +249,8 @@ Observation-grain balance view: OFX statement balances, tabular running balances
 Per-account daily balance spine. Grain: one row per `(account_id, balance_date)` from each account's first observation to its last. `FULL` Python model.
 
 Observed days use the most authoritative source (per-day precedence: `user assertion > {ofx, plaid} > tabular`; `ofx` and `plaid` tie and are broken by freshest `updated_at`, then `source_type` ascending). Gaps are filled by carrying the last balance forward, adjusted by intervening transactions from `core.fct_transactions`.
+
+Only transactions denominated in the **currency being carried** adjust the balance. A transaction in any other currency needs an exchange rate to become an amount of this balance, and MoneyBin has none until M1K.2, so it is left out rather than added as though the units matched. The excluded movement is not lost: it appears in the next observation's `reconciliation_delta`, and therefore as drift in `reports.balance_drift`. `moneybin system doctor` warns whenever a profile holds more than one currency and names this consequence.
 
 | Column | Type | Description |
 |---|---|---|

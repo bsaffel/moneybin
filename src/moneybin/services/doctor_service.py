@@ -1933,7 +1933,10 @@ class DoctorService:
                 detail=(
                     f"{', '.join(parts)} have an unknown currency. Their amounts "
                     "are segmented out of every total until you assign one — "
-                    "run `moneybin accounts set <account> --currency <ISO 4217>`. "
+                    "run `moneybin accounts set <account> --currency <ISO 4217>`, "
+                    "then `moneybin transform`: the setting is app state, and "
+                    "core.* only picks it up on the next transform, so this check "
+                    "keeps failing until you re-run one. "
                     "MoneyBin never guesses a currency, because a wrong guess "
                     "would silently blend into a figure nothing could flag."
                 ),
@@ -1946,8 +1949,12 @@ class DoctorService:
                 detail=(
                     f"This profile holds {len(currencies)} currencies "
                     f"({', '.join(currencies)}). Reports sub-total each currency "
-                    "separately and withhold any combined figure; conversion to a "
-                    "single display currency is not built yet."
+                    "separately and withhold any combined figure. A transaction "
+                    "denominated differently from its account is also left out of "
+                    "that account's carried daily balance — it cannot be added "
+                    "without a rate — and shows up as the account's "
+                    "reconciliation drift in `moneybin reports balance_drift`. "
+                    "Conversion to a single display currency is not built yet."
                 ),
                 affected_ids=[],
             )
