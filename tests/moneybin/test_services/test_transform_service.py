@@ -237,6 +237,61 @@ def test_freshness_pending_when_a_price_row_lands_after_the_last_apply(
     assert TransformService(freshness_db).freshness().pending is True
 
 
+def test_freshness_still_sees_landings_when_a_declared_raw_table_is_absent(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """A missing raw table must not blind the scan to the other sixteen.
+
+    Read-only opens never run ``init_schemas``, so a raw table a newer release
+    added is genuinely absent until the next write. The whole-union scan raises
+    ``CatalogException`` there, and treating that as "no raw data" reports
+    "transforms up to date" for every source — the exact fail-open this scan
+    exists to close.
+    """
+    declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 10, 12, 0))
+    freshness_db.execute("DROP TABLE raw.security_prices")
+    freshness_db.execute(
+        _INSERT_RAW_ACCOUNT,
+        ["a", _ts(2026, 5, 13, 18, 0), _ts(2026, 5, 13, 18, 24), "i1"],
+    )
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
+
+    assert TransformService(freshness_db).freshness().pending is True
+
+
+def test_freshness_scans_landings_when_import_log_itself_is_absent(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """The bad-import filter is dropped, not the whole scan, without import_log."""
+    declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 10, 12, 0))
+    freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
+    freshness_db.execute("DROP TABLE raw.import_log")
+
+    assert TransformService(freshness_db).freshness().pending is True
+
+
+def test_freshness_reports_pending_when_the_sqlmesh_state_is_unreadable(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """A SQLMesh state table this release cannot read must not crash status.
+
+    SQLMesh owns ``sqlmesh._environments`` and migrates its layout across
+    versions. A read failure degrades to "no apply we can see" — pending — so
+    ``system_status`` keeps answering instead of raising a raw DuckDB error.
+    """
+    declare_only_models("core.dim_accounts")
+    freshness_db.execute("CREATE SCHEMA IF NOT EXISTS sqlmesh")
+    # No `finalized_ts` column: what an un-migrated / future state schema
+    # looks like to this release's SELECT.
+    freshness_db.execute("CREATE TABLE sqlmesh._environments (name VARCHAR)")
+    freshness_db.execute("INSERT INTO sqlmesh._environments VALUES ('prod')")
+    freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
+
+    assert TransformService(freshness_db).freshness().pending is True
+
+
 def test_apply_returns_apply_result_shape(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

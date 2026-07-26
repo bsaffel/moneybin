@@ -129,7 +129,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   when it last finished, and a raw table wired into a model but left out of
   that set now fails the build rather than going unwatched. Manual entries also
   close their import batch on success; a batch left open reads as a crashed
-  write to `import status` and to duplicate detection.
+  write in `import history` and `import status`, with no completion time and no
+  row counts.
 - **`--profile` now logs like any other run.** Naming a profile explicitly —
   `moneybin -p work sync pull`, or `MONEYBIN_PROFILE=work` — wrote no log files
   at all: no `cli_*.log`, no `sqlmesh_*.log`. With no log file to hold them,

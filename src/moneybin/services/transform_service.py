@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -71,15 +72,20 @@ _RAW_IMPORT_SCOPED: frozenset[str] = frozenset({
 })
 
 
-def _build_raw_landing_scan() -> str:
+def _build_raw_landing_scan(
+    tables: Collection[str], *, filter_bad_imports: bool = True
+) -> str:
     """Compose the MAX-over-landing-times query from the declarations above.
 
-    Emitted once at import so the hot path runs a fixed string. Each arm
-    projects the table's landing column and its import batch (NULL where the
-    table has none) so one status filter covers every source.
+    The full-set form is emitted once at import so the hot path runs a fixed
+    string; ``_max_raw_landed_at`` rebuilds a narrowed one only when a table
+    is missing. Each arm projects the table's landing column and its import
+    batch (NULL where the table has none) so one status filter covers every
+    source.
     """
     arms: list[str] = []
-    for table, column in sorted(_RAW_LANDING_COLUMNS.items()):
+    for table in sorted(tables):
+        column = _RAW_LANDING_COLUMNS[table]
         batch = (
             "import_id" if table in _RAW_IMPORT_SCOPED else "NULL::VARCHAR AS import_id"
         )
@@ -88,6 +94,12 @@ def _build_raw_landing_scan() -> str:
     # The ::TIMESTAMPTZ cast reads each naive landing stamp in the session
     # zone — the same zone DuckDB wrote it in — so the result is an absolute
     # instant comparable to SQLMesh's UTC epoch stamp.
+    if not filter_bad_imports:
+        return f"""
+            SELECT MAX(landed_at)::TIMESTAMPTZ FROM (
+            {union}
+            ) AS candidates
+        """  # noqa: S608  # identifiers come from the module constants above
     return f"""
         WITH bad_imports AS (
             SELECT import_id FROM raw.import_log
@@ -101,7 +113,7 @@ def _build_raw_landing_scan() -> str:
     """  # noqa: S608  # identifiers come from the module constants above
 
 
-_RAW_LANDING_SCAN = _build_raw_landing_scan()
+_RAW_LANDING_SCAN = _build_raw_landing_scan(_RAW_LANDING_COLUMNS)
 
 
 @dataclass(frozen=True)
@@ -516,8 +528,27 @@ class TransformService:
         try:
             row = self._db.execute(_RAW_LANDING_SCAN).fetchone()
         except duckdb.CatalogException:
-            return None
+            # One absent table must not blind the scan to the other sixteen.
+            # Read-only opens never run `init_schemas`, so a raw table added
+            # by a newer release is genuinely missing until the next write —
+            # and returning None there reports "nothing pending" for every
+            # source, the exact fail-open this scan exists to close.
+            present, has_import_log = self._present_raw_landing_tables()
+            if not present:
+                return None
+            row = self._db.execute(
+                _build_raw_landing_scan(present, filter_bad_imports=has_import_log)
+            ).fetchone()
         return row[0] if row and row[0] is not None else None
+
+    def _present_raw_landing_tables(self) -> tuple[frozenset[str], bool]:
+        """Declared landing tables this catalog actually has, plus import_log."""
+        rows = self._db.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_catalog = current_database() AND table_schema = 'raw'"
+        ).fetchall()
+        names = {str(row[0]) for row in rows}
+        return frozenset(names & set(_RAW_LANDING_COLUMNS)), "import_log" in names
 
     def _last_apply_finalized_at(self) -> datetime | None:
         """When SQLMesh last finished promoting the ``prod`` environment.
@@ -528,16 +559,26 @@ class TransformService:
         current catalog because an in-process ``memory.sqlmesh._environments``
         can otherwise satisfy it while the SELECT reads the persistent table —
         the catalog split ``_pin_cursor_to_moneybin`` exists to prevent.
+
+        SQLMesh owns this table's layout and migrates it across versions, so a
+        read failure is a real possibility on an un-migrated state schema. It
+        degrades to ``None`` rather than propagating: ``freshness()`` has no
+        catch of its own and is on the ``system_status`` path, and ``None``
+        means "no apply we can see", which reports pending rather than clean.
         """
-        exists = self._db.execute(
-            "SELECT 1 FROM information_schema.tables "
-            "WHERE table_catalog = current_database() "
-            "AND table_schema = 'sqlmesh' AND table_name = '_environments'"
-        ).fetchone()
-        if not exists:
+        try:
+            exists = self._db.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_catalog = current_database() "
+                "AND table_schema = 'sqlmesh' AND table_name = '_environments'"
+            ).fetchone()
+            if not exists:
+                return None
+            row = self._db.execute(
+                "SELECT to_timestamp(MAX(finalized_ts) / 1000.0) "
+                "FROM sqlmesh._environments WHERE name = 'prod'"
+            ).fetchone()
+        except duckdb.Error:
+            logger.debug("SQLMesh apply-stamp read failed", exc_info=True)
             return None
-        row = self._db.execute(
-            "SELECT to_timestamp(MAX(finalized_ts) / 1000.0) "
-            "FROM sqlmesh._environments WHERE name = 'prod'"
-        ).fetchone()
         return row[0] if row and row[0] is not None else None

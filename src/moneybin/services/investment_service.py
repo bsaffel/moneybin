@@ -1287,8 +1287,9 @@ class InvestmentService:
             raise
 
         # Close the batch this path opened. Without it the row stays 'importing'
-        # forever, which find_existing_import cannot tell apart from a genuinely
-        # crashed write — the exact distinction that function exists to draw.
+        # forever with a NULL completed_at and NULL row counts, which
+        # `moneybin import history` / `import_status` cannot tell apart from a
+        # genuinely crashed write.
         import_log.finalize_import(
             self._db,
             import_id,
