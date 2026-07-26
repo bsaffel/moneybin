@@ -403,13 +403,13 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
         Example(
-            question="Top outflow categories over the last 12 months",
+            question="Top outflow categories over the last 12 months, per currency",
             sql="""
-                SELECT category, SUM(outflow) AS total_outflow
+                SELECT category, currency_code, SUM(outflow) AS total_outflow
                 FROM reports.cash_flow
                 WHERE year_month >= strftime(current_date - INTERVAL 12 MONTH, '%Y-%m')
-                GROUP BY category
-                ORDER BY total_outflow ASC
+                GROUP BY category, currency_code
+                ORDER BY currency_code, total_outflow ASC
             """,
         ),
     ],

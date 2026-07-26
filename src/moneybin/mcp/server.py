@@ -34,7 +34,7 @@ mcp = FastMCP(
 
         Every tool returns {summary, data, actions}. Prefer batch tools; list parameters are capped per call, and summary.has_more plus actions explain continuation.
 
-        Money amounts are JSON numbers. summary.display_currency names their currency when every row shares one; it is null when a result spans more than one currency or the currency is unknown, and each row's own currency_code is then the authority. MoneyBin does not convert between currencies, so never add amounts whose currency_code differs. profile() reports which currency the user treats as home. The accounting convention is negative = expense, positive = income; transfers are exempt.
+        Money amounts are JSON numbers. summary.display_currency names the currency of the rows in that response when they all share one; it is null when they span more than one currency or the currency is unknown, and each row's own currency_code is then the authority. It describes the returned rows only — when summary.has_more is true, later pages may carry other currencies. MoneyBin does not convert between currencies, so never add amounts whose currency_code differs. profile() reports which currency the user treats as home. The accounting convention is negative = expense, positive = income; transfers are exempt.
 
         Privacy tiers are low, medium, high, and critical and are logged per call. Critical account and routing fields remain masked; all other fields — including amounts, descriptions, and dates — reach the model provider as-is. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred.
 

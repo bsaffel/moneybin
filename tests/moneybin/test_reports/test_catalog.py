@@ -471,6 +471,29 @@ def test_display_currency_sees_every_row_not_just_the_returned_page() -> None:
     assert execution.display_currency is None
 
 
+def test_display_currency_describes_the_returned_page_when_truncated() -> None:
+    """A truncated but uniform result still names its currency, correctly.
+
+    The field describes the rows in this response — `has_more` is what says
+    more exist. `records` is what the cursor fetched, max_rows + 1, so
+    agreement across it is always true of the returned rows. Withholding here
+    would cost every large single-currency report a correct label and buy no
+    safety, because the page-scoped claim was never wrong.
+    """
+    execution = build_catalog_execution(
+        _sql_report(),
+        parameters={"count": 3},
+        records=[{"value": n, "currency_code": "USD"} for n in range(3)],
+        columns=["value", "currency_code"],
+        column_types=["BIGINT", "VARCHAR"],
+        max_rows=2,
+        sql=None,
+    )
+
+    assert execution.truncated
+    assert execution.display_currency == "USD"
+
+
 def test_service_report_dispatch_uses_same_result_contract() -> None:
     executor = MagicMock()
     service_report = _service_report(executor)

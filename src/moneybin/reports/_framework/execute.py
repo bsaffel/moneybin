@@ -235,6 +235,14 @@ def build_catalog_execution(
     # Resolved over every fetched row, not the truncated page: a mixed-currency
     # result whose first `max_rows` happen to share one currency would otherwise
     # advertise it confidently while the other currency's rows sit past the cap.
+    #
+    # The claim is scoped to the rows in THIS response, which is what the
+    # envelope field means and what `has_more` already qualifies. `records` is
+    # what the cursor fetched — max_rows + 1, one more than is returned — so
+    # agreement across it is always true of the returned rows, never a guess
+    # about rows past the fetch boundary. Withholding it whenever a result
+    # truncates would cost every large single-currency report a correct label
+    # and buy no safety, since the narrower claim was never wrong.
     declares_currency = "currency_code" in columns
     return CatalogReportExecution(
         report_id=spec.report_id,
