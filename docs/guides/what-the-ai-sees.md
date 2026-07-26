@@ -186,12 +186,15 @@ The provider sees the *results of the queries the agent ran*, not your database:
 
 - `sql_query` is walled to the `core`, `app`, and `reports` schemas, is
   read-only (writes, DDL, and file/URL functions are rejected), and caps
-  results at 1,000 rows with a 30-second limit. It cannot **SELECT row data**
-  from `raw`/`prep`, read local files, or exfiltrate to a URL. One narrow
-  exception: catalog statements (`DESCRIBE`, `SHOW`, `PRAGMA`, `EXPLAIN`) run
-  before the schema gate, so an agent can see the *structure* of `raw`/`prep`
-  tables — column names, types, and storage stats — but never their row
-  values.
+  results at 1,000 rows with a 30-second limit. It cannot **read row values**
+  from `raw`/`prep`, read local files, or exfiltrate to a URL. The wall binds
+  every statement that names a table, `DESCRIBE raw.plaid_transactions` as
+  much as the `SELECT`.
+  One statement names no table and so is not gated: `SHOW ALL TABLES` lists
+  the catalog, and DuckDB's listing carries a `column_names` and
+  `column_types` array per table. An agent can therefore still learn the
+  *shape* of `raw`/`prep` — table names, column names, and types — but no
+  statement returns their values.
 - Typed reads return the rows matching the filter the agent chose, capped and
   paginated.
 
