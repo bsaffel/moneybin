@@ -35,7 +35,13 @@ class ReportQuery:
     """
 
     sql: str
-    params: Sequence[object] = ()
+    params: Sequence[object] | Mapping[str, object] = ()
+    """Positional ``?`` bindings, or a name→value mapping for ``$name`` SQL.
+
+    A dynamic report stores named placeholders (R8 of ``reports-dynamic.md``):
+    positional storage would need a name→position map maintained beside the SQL,
+    and adding a ``WHERE`` clause shifts every later position — mis-binding
+    silently rather than raising. Built-in runners keep binding positionally."""
     actions: Sequence[str] = ()
     period: str | None = None
 

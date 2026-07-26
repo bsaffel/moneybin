@@ -205,7 +205,7 @@ def _fetch(
     return columns, rows[:max_rows], truncated
 
 
-def _classes_by_result_column(
+def classes_by_result_column(
     columns: list[str],
     output_classes: dict[str, DataClass],
     query: str,
@@ -391,7 +391,7 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         ) from e
 
     records = [dict(zip(columns, row, strict=False)) for row in rows]
-    col_classes = _classes_by_result_column(columns, output_classes, query)
+    col_classes = classes_by_result_column(columns, output_classes, query)
     redacted = redact_records(records, col_classes, consent=None)
 
     return SqlQueryResult(

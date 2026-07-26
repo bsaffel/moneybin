@@ -1292,6 +1292,132 @@ def tables_outside_schemas(
     return bad
 
 
+# The comparison shapes a parameter's class can be read off. A positive
+# allowlist, not "anything that isn't an expression": a placeholder somewhere
+# this module has not reasoned about must land on FAIL_CLOSED_CLASS, the same
+# way ``is_metadata_query`` refuses to be the complement of ``is_data_query``.
+_PLACEHOLDER_COMPARISONS: tuple[type[exp.Binary], ...] = (
+    exp.EQ,
+    exp.NEQ,
+    exp.GT,
+    exp.GTE,
+    exp.LT,
+    exp.LTE,
+    exp.Like,
+    exp.ILike,
+)
+
+
+# `$name` parses to TWO different node types depending on whether SQLMesh has
+# been imported into the process. Bare sqlglot yields `Placeholder(this="name")`;
+# SQLMesh's dialect extensions rewrite the tokenizer so the same text yields
+# `Parameter(this=Var(this="name"))` — its macro-parameter syntax. MoneyBin
+# imports SQLMesh on several paths (transform, doctor, `sqlmesh_context`), so
+# which shape a given process sees depends on import order, and matching only one
+# would make every parameter resolve UNRESOLVED in half the processes — and move
+# the drift fingerprint with it, flipping match/mismatch on import order alone.
+_PLACEHOLDER_NODES: tuple[type[exp.Expr], ...] = (exp.Placeholder, exp.Parameter)
+
+
+def _placeholder_name(node: exp.Expr) -> str:
+    """The parameter name behind either ``$name`` parse shape."""
+    inner = node.this
+    # `Placeholder` carries the bare name; `Parameter` wraps it in a `Var`.
+    if isinstance(inner, exp.Var):
+        return inner.name
+    return str(inner or "")
+
+
+def _compared_column(placeholder: exp.Expr) -> exp.Column | None:
+    """The one column ``placeholder`` is directly compared against, if any.
+
+    "Directly" is the whole rule. ``WHERE date_part('year', txn_date) = $year``
+    compares against an *expression* that happens to contain a column, and
+    ``$year`` is not a transaction date — reading the class off ``txn_date``
+    there would attach a class to a value it does not describe. Only a bare
+    ``exp.Column`` on the other side resolves.
+    """
+    parent = placeholder.parent
+    if isinstance(parent, _PLACEHOLDER_COMPARISONS):
+        other = parent.right if parent.left is placeholder else parent.left
+        return other if isinstance(other, exp.Column) else None
+    # `col IN ($a, $b)` and `col BETWEEN $lo AND $hi` both hang their operands
+    # off a node whose `this` is the compared column.
+    if isinstance(parent, (exp.In, exp.Between)):
+        return parent.this if isinstance(parent.this, exp.Column) else None
+    return None
+
+
+def resolve_placeholder_classes(
+    tree: exp.Expr, snapshot: SchemaSnapshot
+) -> dict[str, DataClass]:
+    """Map each named ``$placeholder`` to the class of the column it filters.
+
+    A parameter is the same question :func:`resolve_output_classes` asks of a
+    projection, asked of an input, so it fails closed the same way: anything
+    that does not resolve to exactly one classified column is
+    ``FAIL_CLOSED_CLASS``. One placeholder used in two places with *different*
+    classes also fails closed — it identifies neither.
+
+    Consumers render a LOW-classed binding as a literal, so under-classifying
+    here prints a value in the clear beside the rows it selected.
+    """
+    alias_map = _build_alias_map(tree)
+    shadowed = _scope_source_names(tree)
+    found: dict[str, DataClass] = {}
+    for placeholder in tree.find_all(*_PLACEHOLDER_NODES):
+        name = _placeholder_name(placeholder)
+        if not name:
+            continue
+        column = _compared_column(placeholder)
+        key = (
+            None
+            if column is None
+            else _column_key(column, alias_map, snapshot, shadowed)
+        )
+        resolved = (
+            FAIL_CLOSED_CLASS
+            if key is None
+            else (_class_of_key(key) or FAIL_CLOSED_CLASS)
+        )
+        prior = found.get(name)
+        found[name] = (
+            resolved if prior is None or prior is resolved else FAIL_CLOSED_CLASS
+        )
+    return found
+
+
+def read_column_classes(
+    tree: exp.Expr, snapshot: SchemaSnapshot
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Sorted ``(schema, table, column, class)`` for every column ``tree`` reads.
+
+    Table-scoped rather than projection-scoped, because this is the input set a
+    *stored* class map goes stale against: reclassifying any column of a table
+    the query reads can change what the next derivation returns, not only the
+    columns the query names today. Undeclared columns contribute
+    ``FAIL_CLOSED_CLASS`` — the answer ``_scope_input_max`` already gives them —
+    so a registry gap moves the key instead of dropping out of it.
+
+    Callers must pass the **unqualified** parsed tree, the same one on both the
+    save and run paths: ``qualify`` can rewrite table references, and two
+    differently-prepared trees would produce two keys for one query and leave
+    every run on the mismatch branch.
+    """
+    tables = _tables_in_scope(tree, snapshot)
+    read: list[tuple[str, str, str, str]] = []
+    for key in snapshot.columns:
+        schema, table, column = key
+        if (schema, table) in tables:
+            read.append((
+                schema,
+                table,
+                column,
+                (_class_of_key(key) or FAIL_CLOSED_CLASS).value,
+            ))
+    return tuple(sorted(read))
+
+
 def derive_query_tier(output_classes: dict[str, DataClass]) -> Tier:
     """Max tier across all output columns; LOW for an empty projection."""
     if not output_classes:

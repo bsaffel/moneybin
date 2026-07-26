@@ -357,11 +357,11 @@ Save pipeline:
    here costs no additional parse and keeps the user out of a classification
    decision. An unresolvable parameter lands on `UNRESOLVED`, exactly as an
    unresolvable projection does.
-6. `DESCRIBE <query_sql>` **with every declared parameter bound to NULL**, to
-   read real DuckDB result column names, then bridge through
-   `_classes_by_result_column` and persist the reconciled map **keyed by DuckDB
-   column names**. **Duplicate result column names are rejected here**, with an
-   error naming the repeated name.
+6. `DESCRIBE <query_sql>` **with every declared parameter bound to a typed
+   sentinel value**, to read real DuckDB result column names, then bridge
+   through `classes_by_result_column` and persist the reconciled map **keyed by
+   DuckDB column names**. **Duplicate result column names are rejected here**,
+   with an error naming the repeated name.
 
 Step 6 is load-bearing, not an optimization. `resolve_output_classes` returns
 names from sqlglot projections; `classify_columns` looks them up by DuckDB
@@ -382,8 +382,8 @@ downstream can address by name, so this refuses at save rather than becoming a
 named risk: the alternative is masking that is correct only by the accident of
 projection order.
 
-Two properties of step 6, both required for it to work — the first corrected by
-reproduction against DuckDB 1.5.4:
+Three properties of step 6, all required for it to work, and all three
+established by reproduction against DuckDB 1.5.4 rather than from the docs:
 
 - DuckDB raises `InvalidInputException` on `DESCRIBE` of a query with unbound
   parameters, so every placeholder must be bound before the `DESCRIBE`. A
@@ -392,28 +392,41 @@ reproduction against DuckDB 1.5.4:
   `BinderException`. `DESCRIBE SELECT date_part('year', $d)` with `$d` bound to
   `None` fails on exactly the `date_part` / `date_trunc` / `extract` family a
   filter as ordinary as `WHERE date_part('year', txn_date) = $year` uses — a
-  hard crash on a valid query, not one of R2's soft-fail paths. So step 6 binds a
-  **typed** NULL, `CAST(NULL AS <t>)`, where `<t>` is the DuckDB type of the
-  parameter's declared `annotation` (R1). The typed NULL resolves the overload —
-  the identical query bound as `CAST($d AS DATE)` describes cleanly — and column
-  names still derive from projection *structure*, not parameter *values*, so the
-  names returned match a value-bound run. A placeholder whose declared type still
-  cannot bind is the residual case, and it is a genuine authoring error, not a
-  valid query the pipeline must absorb: it means one placeholder sits in two
-  positions demanding incompatible types, so no single declared `annotation`
-  satisfies both. This branch cannot degrade per-column — a query-level
-  `BinderException` returns *no* `DESCRIBE` rows, so there are no column names to
-  mark unresolvable, and inventing them from sqlglot projections would reopen the
-  exact `COUNT(*)`-bridging gap step 6 exists to close. So the save is
-  **rejected**, with an error naming the placeholder and its conflicting
-  positions. R2's invariant is scoped by this rather than broken: a valid
-  read-only SELECT *whose every placeholder has one consistent type* always
-  saves — and a placeholder with no consistent type is not such a query. Saying
-  that plainly beats asserting a soft-fail with no mechanism behind it.
-- `DESCRIBE` returns one row per output column — that is the point of the step —
-  and executes no user rows. Its **type** column is not trustworthy under NULL
-  binding (`SELECT amount * $f` describes as `INTEGER`, not `DECIMAL`), so
-  nothing may read it. Only the name column is used.
+  hard crash on a valid query, not one of R2's soft-fail paths.
+- **The SQL is never rewritten.** Substituting `CAST(NULL AS <t>)` for the
+  placeholder resolves the overload, and was this spec's first answer, but it
+  changes the DESCRIBEd text — and for an *unaliased projection holding a
+  placeholder* that changes the result column name with it. DuckDB names
+  `SELECT $x` as `$x` and `SELECT CAST(NULL AS BIGINT)` after the cast text, so
+  the stored map would be keyed by a name no run ever produces, and
+  `classify_columns` fails closed on a name it cannot find — masking that column
+  on every future run. That is a narrower instance of the exact name divergence
+  step 6 exists to close, reintroduced by the fix. So step 6 binds a **typed
+  sentinel value** of the parameter's declared `annotation` (R1) instead: it
+  resolves the overload just as a typed NULL does, and because column names
+  derive from projection *structure* and never from parameter *values*, the names
+  returned are the same ones a value-bound run returns. The bytes DESCRIBEd are
+  the bytes that will execute. Reproduction also cleared the one risk a real
+  value carries over a NULL — DESCRIBE does not constant-fold, so a sentinel
+  cannot raise a conversion error where a NULL would not (`''` against a `DATE`
+  column, `0` as a divisor and as a `LIMIT`, `False` as a predicate all describe
+  cleanly).
+- A placeholder whose declared type still cannot bind is the residual case, and
+  it is a genuine authoring error, not a valid query the pipeline must absorb: it
+  means one placeholder sits in two positions demanding incompatible types, so no
+  single declared `annotation` satisfies both. This branch cannot degrade
+  per-column — a query-level `BinderException` returns *no* `DESCRIBE` rows, so
+  there are no column names to mark unresolvable, and inventing them from sqlglot
+  projections would reopen the same gap. So the save is **rejected**, with an
+  error naming the placeholder and its declared type. R2's invariant is scoped by
+  this rather than broken: a valid read-only SELECT *whose every placeholder has
+  one consistent type* always saves — and a placeholder with no consistent type
+  is not such a query. Saying that plainly beats asserting a soft-fail with no
+  mechanism behind it.
+
+`DESCRIBE` returns one row per output column — that is the point of the step —
+and executes no user rows. Its **type** column is not read: nothing here needs
+it, and reading it would make the persisted map depend on a value binding.
 
 #### Every SQL or parameter change re-runs this pipeline
 
@@ -513,7 +526,7 @@ Instead, `class_fingerprint` is a hash over three things: the sorted
 the `(DataClass, tier, mask_strength)` triples for **every class in the map and
 in the report's `class_downgrades`**; and a **`DERIVATION_VERSION`** constant
 bumped whenever **any function the persisted map depends on** changes how it
-classifies — `resolve_output_classes` *and* the `_classes_by_result_column`
+classifies — `resolve_output_classes` *and* the `classes_by_result_column`
 bridging step 6 calls load-bearing. The scope is the pipeline, not one function:
 a change to how sqlglot projection names reconcile against DuckDB result names
 moves no tuple and touches no classifier, so scoping the constant to
@@ -550,7 +563,11 @@ classifier's tests own the reminder, the same way M2P.1's derivation check does.
 On each run the fingerprint is recomputed and compared:
 
 - **Match** → `classify_columns` against the stored map, byte-identical to how a
-  built-in runs. No lineage work; the comparison is dictionary lookups, no DB.
+  built-in runs. No lineage work: recomputing the key costs one cached sqlglot
+  parse, the live schema snapshot's two catalog queries (its expensive
+  `MappingSchema` build is memoised), and dictionary lookups. It never runs
+  `resolve_output_classes` or a scope traversal — that is the cost the match
+  branch exists to avoid.
 - **Mismatch** → re-resolve, reapply the report's approved `class_downgrades` to
   the freshly derived map, then compare. An equal map serves the run normally. A
   changed map fails closed for the affected columns and marks the response

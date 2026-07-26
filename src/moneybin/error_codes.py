@@ -275,11 +275,16 @@ REPORT_ID_AMBIGUOUS = "report_id_ambiguous"
 REPORT_ID_NOT_FOUND = "report_id_not_found"
 REPORT_ID_REQUIRED = "report_id_required"
 REPORT_LIMIT_INVALID = "report_limit_invalid"
+REPORT_PARAMETER_DEFAULT_NOT_ALLOWED = "report_parameter_default_not_allowed"
 REPORT_PARAMETER_INVALID_RANGE = "report_parameter_invalid_range"
 REPORT_PARAMETER_INVALID_TYPE = "report_parameter_invalid_type"
 REPORT_PARAMETER_INVALID_VALUE = "report_parameter_invalid_value"
 REPORT_PARAMETER_MISSING = "report_parameter_missing"
 REPORT_PARAMETER_UNKNOWN = "report_parameter_unknown"
+REPORT_QUERY_COLUMN_DUPLICATE = "report_query_column_duplicate"
+REPORT_QUERY_INVALID = "report_query_invalid"
+REPORT_QUERY_SCHEMA_NOT_ALLOWED = "report_query_schema_not_allowed"
+REPORT_QUERY_UNRESOLVABLE = "report_query_unresolvable"
 
 
 # ---------------------------------------------------------------------------

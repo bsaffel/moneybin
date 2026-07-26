@@ -262,7 +262,10 @@ def execute_catalog_report(
 ) -> CatalogReportExecution:
     """Execute a catalog runner once; do not apply terminal redaction."""
     rq = spec.runner(db, **params)
-    cursor = db.execute(rq.sql, list(rq.params))
+    # `list()` on a Mapping yields its KEYS, which would bind parameter names as
+    # values. A named-binding runner's params must reach DuckDB as the mapping.
+    bindings = dict(rq.params) if isinstance(rq.params, Mapping) else list(rq.params)
+    cursor = db.execute(rq.sql, bindings)
     descriptions = cursor.description or []
     columns = [str(description[0]) for description in descriptions]
     column_types = [

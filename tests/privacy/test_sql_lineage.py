@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from sqlglot import exp
 
 from moneybin.database import Database
 from moneybin.privacy.sql_lineage import (
@@ -26,6 +27,7 @@ from moneybin.privacy.sql_lineage import (
     parse_cached,
     reports_class_map,
     resolve_output_classes,
+    resolve_placeholder_classes,
     tables_outside_schemas,
 )
 from moneybin.privacy.taxonomy import DataClass, Tier
@@ -89,8 +91,6 @@ def test_schema_snapshot_cached_until_version_changes(populated_db: Database) ->
 # Task 3: Star expansion + input-column collection
 # ---------------------------------------------------------------------------
 
-
-from sqlglot import exp  # noqa: E402 — imported after stdlib block
 
 from moneybin.privacy.sql_lineage import collect_input_columns  # noqa: E402
 
@@ -1037,3 +1037,50 @@ def test_class_of_key_unknown_reports_column_is_none() -> None:
     # known-table / unknown-column path specifically.)
     (schema, table), _cols = next(iter(reports_class_map().items()))
     assert _class_of_key((schema, table, "no_such_column_xyz")) is None
+
+
+# ---------------------------------------------------------------------------
+# Parameter classing — both `$name` parse shapes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["placeholder", "parameter"],
+    ids=["bare-sqlglot", "sqlmesh-imported"],
+)
+def test_parameter_class_resolves_under_both_dollar_name_parse_shapes(
+    populated_db: Database, shape: str
+) -> None:
+    """``$name`` parses to two different node types, and both must resolve.
+
+    Bare sqlglot yields ``Placeholder(this="acct")``. Importing SQLMesh rewrites
+    the tokenizer process-wide so the identical text yields
+    ``Parameter(this=Var(this="acct"))`` — its macro-parameter syntax. MoneyBin
+    imports SQLMesh on several paths, so which shape a process sees depends on
+    import order.
+
+    Matching one shape only is not merely a missed class: an unmatched
+    placeholder resolves ``UNRESOLVED``, which changes the stored parameter
+    classes, which moves the dynamic-report drift fingerprint — so match and
+    mismatch would flip on import order alone. Both shapes are constructed here
+    rather than inferred from whatever this process happens to have imported.
+    """
+    sql = "SELECT account_id FROM core.dim_accounts WHERE routing_number = $acct"
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = expand_star(parse_cached(sql), snapshot)
+
+    target = next(
+        node
+        for node in tree.walk()
+        if isinstance(node, (exp.Placeholder, exp.Parameter))
+    )
+    target.replace(
+        exp.Placeholder(this="acct")
+        if shape == "placeholder"
+        else exp.Parameter(this=exp.Var(this="acct"))
+    )
+
+    assert resolve_placeholder_classes(tree, snapshot) == {
+        "acct": DataClass.ROUTING_NUMBER
+    }

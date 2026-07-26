@@ -24,7 +24,7 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -925,13 +925,14 @@ class Database:
         return self._db_path
 
     def execute(
-        self, query: str, params: list[Any] | None = None
+        self, query: str, params: list[Any] | Mapping[str, Any] | None = None
     ) -> duckdb.DuckDBPyConnection:
         """Execute a parameterized SQL query.
 
         Args:
-            query: SQL query string with ? placeholders.
-            params: Parameter values for placeholders.
+            query: SQL query string with ``?`` or ``$name`` placeholders.
+            params: Positional values for ``?`` placeholders, or a name→value
+                mapping for ``$name`` ones.
 
         Returns:
             DuckDB connection with query results (call .fetchone(), .fetchall(), etc.).

@@ -410,7 +410,7 @@ def test_unaliased_aggregate_over_critical_column_is_masked(
     onto lineage's own answer (ROUTING_NUMBER) rather than failing closed —
     a different mechanism reaching the same required outcome. What this test
     pins is the outcome: the aggregate of a CRITICAL column is never returned
-    in the clear, whichever branch of ``_classes_by_result_column`` claims it.
+    in the clear, whichever branch of ``classes_by_result_column`` claims it.
     """
     _seed_account(populated_db)
     result = execute_sql_query(
@@ -684,7 +684,7 @@ def test_fail_closed_warning_fires_only_for_genuine_misses(
 ) -> None:
     """The fail-closed WARNING logs once per genuine lineage miss, never more.
 
-    ``_classes_by_result_column`` used to build its map with
+    ``classes_by_result_column`` used to build its map with
     ``output_classes.get(col, _fail_closed(col, query))`` — Python evaluates a
     call's arguments before the call, so ``_fail_closed`` ran on every column
     of every query regardless of whether ``col`` was actually missing from
@@ -712,7 +712,7 @@ def test_fail_closed_warning_fires_only_for_genuine_misses(
         # saw, so the counts disagree and both fail closed. An unaliased
         # MIN(routing_number) is NOT an instance of this — lineage resolved it
         # and only the label differs, so it reconciles positionally and warns
-        # zero times (see _classes_by_result_column).
+        # zero times (see classes_by_result_column).
         execute_sql_query(
             populated_db,
             "SELECT COLUMNS('routing_number|last_four') FROM core.dim_accounts",
