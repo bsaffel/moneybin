@@ -87,8 +87,10 @@ SQLMesh view at build time, so it cannot express runtime creation.
 
 New protected `app.*` table, paired per convention across
 `src/moneybin/sql/schema/app_user_reports.sql` and
-`src/moneybin/sql/migrations/V041__create_app_user_reports.py` (`V039` and
-`V040` are taken on `main`), registered as
+`src/moneybin/sql/migrations/V0NN__create_app_user_reports.py` — take the next
+free version **at implementation time**, and check unmerged branches as well as
+`main`, which may hold higher reservations than the tip. (A pinned number here
+has already collided twice.) Registered as
 `USER_REPORTS = TableRef("app", "user_reports", audience="interface")`.
 
 | Column | Type | Notes |
@@ -316,9 +318,9 @@ Save pipeline:
    count is taken from the text DuckDB executes. A saved report inherits both
    properties by calling the gate; it adds no statement check of its own.
 2. `is_data_query` — reject anything that is not a row-returning SELECT.
-   `validate_read_only_query` also admits `DESCRIBE`, `SHOW`, `PRAGMA`, and
-   `EXPLAIN` (`privacy/sql_query.py`), but step 5 below raises
-   `SqlSchemaError("Query has no SELECT projection")` on all four. Without this
+   `validate_read_only_query` also admits `DESCRIBE` and `SHOW`
+   (`privacy/sql_query.py`), but step 5 below raises
+   `SqlSchemaError("Query has no SELECT projection")` on both. Without this
    gate, "valid read-only SQL always saves" is false for statements the sole
    documented gate accepts — they would fail midway through the pipeline. The
    primitive already exists (`privacy/sql_lineage.py`) and `sql_query` already
@@ -1059,6 +1061,7 @@ would hide a surface that is refusing every downgrade for mechanical reasons.
   admission test: the implementing PR must first try an existing projection,
   method, batch, target state, report entry, or workflow umbrella, then supply
   the seven-question record, serialized byte delta, and evaluation evidence for
-  every remaining identity. The registry stays at 45 until that evidence passes;
-  the fallback is an existing admitted operation or CLI-only operator control,
-  not a speculative alias or an override of ADR-016's hard maximum.
+  every remaining identity. The 49-tool standard registry does not grow until
+  that evidence passes; the fallback is an existing admitted operation or
+  CLI-only operator control, not a speculative alias or an override of
+  ADR-016's hard maximum.

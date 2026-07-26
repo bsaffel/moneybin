@@ -100,12 +100,19 @@ _database_written: bool = False
 #
 # `disabled_filesystems` is one-way by DuckDB's own semantics — it refuses to be
 # shrunk ("has been disabled previously, it cannot be re-enabled"), locked or
-# not. `lock_configuration` closes the *other* door: without it an agent can
+# not. `lock_configuration` closes the *other* door: without it a session can
 # re-enable `autoinstall_known_extensions` and load an extension whose
-# filesystem ISN'T in our disable list (azure), then read `az://`. That is
-# reachable from `sql_query`, whose validator permits `PRAGMA` — and `PRAGMA
-# autoinstall_known_extensions=true` is a config write. So the lock is what
-# makes the agent-facing handle a boundary rather than a suggestion.
+# filesystem ISN'T in our disable list (azure), then read `az://` — and `PRAGMA
+# autoinstall_known_extensions=true` is exactly that config write.
+#
+# `sql_query`'s validator no longer admits PRAGMA at all, so that specific
+# statement can't be reached through the agent surface today. The lock stays
+# regardless: it and the validator are deliberate defense-in-depth for each
+# other, the same pairing `_URL_SCHEME_PATTERNS` documents in
+# `privacy/sql_query.py`. The lock is the hard boundary — DuckDB refuses the
+# config write even if a future surface, extension, or parser gap lets a PRAGMA
+# through — and it is what makes the agent-facing handle a boundary rather than
+# a suggestion.
 #
 # The lock therefore goes on READ-ONLY connections only — the ones that execute
 # agent-supplied SQL. It cannot go on write connections: DuckDB itself issues

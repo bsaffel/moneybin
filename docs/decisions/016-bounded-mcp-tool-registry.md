@@ -87,15 +87,15 @@ service-layer contract, or CLI-first operator exemptions.
 ## Current evidence
 
 The operating contract is the 49-tool standard registry. Its deterministic
-comparison records 51,951 candidate metadata bytes, SHA-256
-`04a3817f8d42adfe0b4dcbf950c16650740d3cd04cae20bea1f3e5bc889e53d7`, against
+comparison records 52,909 candidate metadata bytes, SHA-256
+`a489bf37bba187233edcdca46e579560371ee8f5d4990bceef7b7c24157fd837`, against
 the 90,734-byte frozen baseline, SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`: a
--38,783-byte (-42.7%) delta. It advertises zero output schemas and has
+-37,825-byte (-41.7%) delta. It advertises zero output schemas and has
 `contract_passed: true`.
 
 This ADR remains **Proposed**. `promotion_ready: false`: context budget and
-host-native deferral are both `not_observed`. Generic clients receive all 47
+host-native deferral are both `not_observed`. Generic clients receive all 49
 tools, and supported hosts may defer schemas from that same registry without
 reconnect, packs, or profiles. Those not-observed facts prevent acceptance,
 not operation of the selected registry.

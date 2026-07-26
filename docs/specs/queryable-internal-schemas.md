@@ -240,4 +240,6 @@ by **preserving** the account-number property, not trading it:
   `CLASSIFICATION` is more coherent but pulls those tables into its
   completeness test; a sibling map avoids that. Resolve at `draft →
   ready`.
-- **Exact address (M2O)** — reconcile with the roadmap taxonomy.
+- ~~**Exact address (M2O)** — reconcile with the roadmap taxonomy.~~
+  Resolved: `docs/roadmap.md` carries an **M2O** row (🚧 in flight — Phase 1
+  shipped, Phase 2 designed).

@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import logging
 
+import duckdb
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -209,6 +211,250 @@ def test_metadata_query_not_classified(populated_db: Database) -> None:
     assert result.output_classes == {}
     assert len(result.records) > 0
     assert result.classes_returned == ["aggregate"]
+
+
+# Statements the metadata path used to run unclassified. Each is a spelling an
+# agent can reach today; none may return a CRITICAL value or reach a schema the
+# data path refuses.
+_METADATA_SPELLINGS = [
+    "PRAGMA storage_info('core.dim_accounts')",
+    "PRAGMA table_info('core.dim_accounts')",
+    "PRAGMA metadata_info",
+    "DESCRIBE core.dim_accounts",
+    "SHOW ALL TABLES",
+]
+
+
+def _payload(db: Database, sql: str) -> str:
+    """Everything ``sql`` hands back to the caller, or '' when it is refused.
+
+    A refusal and a masked answer are both acceptable outcomes; returning the
+    value is not. Collapsing them here lets a test assert the invariant that
+    actually matters — the secret never reaches the caller — instead of pinning
+    one particular refusal, which a future change could satisfy while a
+    different statement went on leaking.
+    """
+    try:
+        return repr(execute_sql_query(db, sql, max_rows=200).records)
+    except UserError:
+        return ""
+
+
+@pytest.mark.parametrize("sql", _METADATA_SPELLINGS)
+def test_metadata_path_never_returns_a_critical_value(
+    populated_db: Database, sql: str
+) -> None:
+    """No metadata spelling returns CRITICAL row data, in whole or in part.
+
+    ``PRAGMA storage_info`` reports per-segment min/max statistics, which for a
+    VARCHAR column are a CLEARTEXT PREFIX of the stored value:
+    ``[Min: 02100002, Max: 02100002, ...]`` for a ``routing_number`` of
+    ``021000021``. Eight of nine digits is the whole secret — an ABA routing
+    number's ninth digit is a check digit determined by the first eight
+    (3(d1+d4+d7) + 7(d2+d5+d8) + (d3+d6+d9) ≡ 0 mod 10), so the leaked prefix
+    reconstructs the full number arithmetically.
+
+    Asserting on the PREFIX, not just the full value, is the point. The full
+    string never appears in ``stats`` at all, so a test that looked only for
+    ``021000021`` would have passed against the live leak.
+    """
+    _seed_account(populated_db, last_four="4321")
+    populated_db.execute("CHECKPOINT")  # stats are computed when segments flush
+
+    payload = _payload(populated_db, sql)
+
+    assert "021000021" not in payload
+    assert "02100002" not in payload
+
+
+def test_metadata_path_cannot_reach_a_schema_the_data_path_refuses(
+    populated_db: Database,
+) -> None:
+    """The schema allowlist binds the metadata path too, not just SELECT.
+
+    Without this, the two paths disagree about the same table: ``SELECT ssn
+    FROM raw.leaky`` is refused by the allowlist while ``DESCRIBE raw.leaky``
+    describes it — and ``PRAGMA storage_info('raw.leaky')`` returned that
+    column's min/max outright. The refusal must not depend on which spelling
+    the caller reaches for.
+    """
+    populated_db.execute("CREATE SCHEMA IF NOT EXISTS raw")
+    populated_db.execute("CREATE TABLE raw.leaky (ssn VARCHAR)")
+    populated_db.execute("INSERT INTO raw.leaky VALUES ('123456789')")
+    populated_db.execute("CHECKPOINT")
+
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(populated_db, "SELECT ssn FROM raw.leaky", max_rows=100)
+    assert ei.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED
+
+    # Every spelling that names the table, not just the bare-table one. A
+    # DESCRIBE can wrap a whole SELECT, and SHOW takes a FROM-schema form; both
+    # reach the same table by a route the bare-table case would not have
+    # exercised.
+    for sql in (
+        "DESCRIBE raw.leaky",
+        "describe RAW.leaky",
+        "DESCRIBE SELECT * FROM raw.leaky",
+        "SHOW TABLES FROM raw",
+        "SHOW TABLES FROM RAW",
+    ):
+        with pytest.raises(UserError) as metadata_error:
+            execute_sql_query(populated_db, sql, max_rows=100)
+        assert metadata_error.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED, sql
+
+    for sql in ("PRAGMA storage_info('raw.leaky')", "PRAGMA table_info('raw.leaky')"):
+        assert "12345678" not in _payload(populated_db, sql)
+
+
+_UNGATEABLE_STATEMENTS = [
+    "PRAGMA show_tables",
+    "PRAGMA storage_info('core.dim_accounts')",
+    "EXPLAIN SELECT 1",
+    "EXPLAIN SELECT ssn FROM raw.leaky",
+    "EXPLAIN ANALYZE SELECT count(*) FROM raw.leaky",
+]
+
+
+@pytest.mark.parametrize("sql", _UNGATEABLE_STATEMENTS)
+def test_ungateable_statements_are_refused(populated_db: Database, sql: str) -> None:
+    """PRAGMA and EXPLAIN are refused: the schema gate cannot see their targets.
+
+    Both hide their target from ``tables_outside_schemas``, for different
+    reasons — a PRAGMA's is a string literal inside ``exp.Anonymous``, and an
+    EXPLAIN's whole payload stays unparsed inside ``exp.Command`` (sqlglot has
+    no DuckDB EXPLAIN node). Either way ``find_all(exp.Table)`` returns nothing,
+    so every one of them reads as table-free and passes a gate that never
+    examined anything. Admitting the kind is therefore admitting it ungated.
+
+    That is not theoretical for either: ``PRAGMA storage_info`` returned a
+    CRITICAL routing number's cleartext prefix, and ``EXPLAIN ANALYZE``
+    *executes* its inner query — reaching ``raw``/``prep`` and returning their
+    column names and row counts, at LOW, from a path meant to run schema text.
+
+    The surviving rule is one line: a statement is executable only if the gate
+    can resolve every table it names. SELECT/WITH and DESCRIBE expose real
+    ``exp.Table`` nodes and qualify; SHOW names no table and has nothing to
+    resolve; these two claim to name tables while hiding them, and do not.
+    """
+    assert validate_read_only_query(sql) is not None
+
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(populated_db, sql, max_rows=100)
+    assert ei.value.code == error_codes.SQL_INVALID_QUERY
+
+
+def test_show_all_tables_exposes_internal_shape_but_no_values(
+    populated_db: Database,
+) -> None:
+    """Pins the one hole the schema gate structurally cannot close.
+
+    ``tables_outside_schemas`` works by resolving table REFERENCES, and ``SHOW
+    ALL TABLES`` contains none — it is a catalog listing, so there is nothing
+    for the gate to check. DuckDB's listing happens to carry a
+    ``column_names``/``column_types`` array per table, so the SHAPE of
+    ``raw``/``prep`` stays reachable even though ``DESCRIBE`` on those same
+    tables is now refused.
+
+    That asymmetry is deliberate and documented (``docs/guides/sql-access.md``)
+    rather than accidental, so it is pinned here: the line is structure vs.
+    values. If a later change closes it, this test should fail and be updated
+    deliberately — and the row-value assertion below must survive that change
+    either way.
+    """
+    populated_db.execute("CREATE SCHEMA IF NOT EXISTS raw")
+    populated_db.execute("CREATE TABLE raw.leaky (ssn VARCHAR)")
+    populated_db.execute("INSERT INTO raw.leaky VALUES ('123456789')")
+    populated_db.execute("CHECKPOINT")
+
+    payload = _payload(populated_db, "SHOW ALL TABLES")
+
+    # Current boundary: internal shape is visible.
+    assert "leaky" in payload
+    assert "ssn" in payload
+    # The line that must never move: no row values, whole or partial.
+    assert "123456789" not in payload
+    assert "12345678" not in payload
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "DESCRIBE CORE.dim_accounts",
+        "DESCRIBE Core.Dim_Accounts",
+        'DESCRIBE "CORE".dim_accounts',
+        "SHOW TABLES FROM CORE",
+    ],
+)
+def test_allowed_schema_is_matched_case_insensitively(
+    populated_db: Database, sql: str
+) -> None:
+    """An allowed schema stays allowed however the caller cases it.
+
+    DuckDB identifiers are case-insensitive (case-preserving, but matched
+    without regard to case, quoted or not), so ``CORE.dim_accounts`` and
+    ``core.dim_accounts`` are the same table and DuckDB runs both.
+
+    The data path never had to think about this: it gates the tree returned by
+    ``expand_star``, which qualifies identifiers and normalizes their case on
+    the way. The metadata path gates the raw parsed tree, where the caller's
+    casing survives — so comparing it against a lowercase allowlist refused
+    ``DESCRIBE CORE.dim_accounts`` while ``SELECT ... FROM CORE.dim_accounts``
+    succeeded. That is the same one-spelling-gated/one-not asymmetry this gate
+    exists to remove, pointed the other way: a false refusal rather than a
+    false admission.
+
+    Note ``raw``-cased fixtures cannot catch this — ``RAW`` is refused whatever
+    its case — so only an ALLOWED schema in non-canonical case isolates it.
+    """
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+
+    assert result.is_metadata is True
+    assert len(result.records) > 0
+
+
+def test_snapshot_failure_is_classified_not_raised_raw(
+    populated_db: Database, mocker: MockerFixture
+) -> None:
+    """A DuckDB failure while building the schema snapshot stays classified.
+
+    The snapshot is fetched before the metadata/data fork so both paths can be
+    schema-gated from it, which puts it ahead of the handler that converts
+    DuckDB errors into ``UserError``. It has to stay inside that handler: a raw
+    ``duckdb.Error`` is not one of the types ``handle_cli_errors`` recognizes,
+    so it would reach the CLI as an unhandled traceback — and DuckDB error text
+    can quote the query verbatim, including its literal values, which is the
+    whole reason this module never echoes ``str(e)`` to the caller.
+    """
+    mocker.patch(
+        "moneybin.privacy.sql_query.get_current_schema_snapshot",
+        side_effect=duckdb.IOException("disk fell over reading 021000021"),
+    )
+
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db, "SELECT account_id FROM core.dim_accounts", max_rows=10
+        )
+
+    assert ei.value.code == error_codes.SQL_QUERY_ERROR
+    assert "021000021" not in str(ei.value)
+
+
+def test_metadata_path_still_answers_schema_questions(populated_db: Database) -> None:
+    """The benign case keeps working — the gate must not fail closed on everything.
+
+    A privacy fix that refused all metadata would pass every leak test above
+    while destroying the surface, and no test here would notice. This is that
+    test: DESCRIBE on an allowed schema, and the catalog listing, still return
+    rows.
+    """
+    described = execute_sql_query(
+        populated_db, "DESCRIBE core.dim_accounts", max_rows=100
+    )
+    assert described.is_metadata is True
+    assert [r["column_name"] for r in described.records].count("routing_number") == 1
+
+    listed = execute_sql_query(populated_db, "SHOW ALL TABLES", max_rows=200)
+    assert len(listed.records) > 0
 
 
 def test_disallowed_schema_raises(populated_db: Database) -> None:
