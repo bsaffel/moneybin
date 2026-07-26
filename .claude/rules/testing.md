@@ -1,6 +1,6 @@
 ---
 description: "Testing standards: pytest patterns, fixtures, mocking strategy, database test helpers"
-paths: ["tests/**", "**/conftest.py", "src/moneybin/testing/**", "src/moneybin/schema.py", "src/moneybin/services/doctor_service.py", "src/moneybin/privacy/sql_query.py", "src/moneybin/extractors/pdf/auto_derive.py"]
+paths: ["tests/**", "**/conftest.py", "src/moneybin/testing/**", "src/moneybin/schema.py", "src/moneybin/services/doctor_service.py", "src/moneybin/services/undo_dispatch.py", "src/moneybin/privacy/sql_query.py", "src/moneybin/privacy/sql_lineage.py", "src/moneybin/privacy/report_class_derivation.py", "src/moneybin/extractors/pdf/auto_derive.py"]
 ---
 
 # Testing Standards

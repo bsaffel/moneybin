@@ -26,7 +26,8 @@ construction. Watch the same shape wherever a value is *rendered* rather than
 
 **A guard reading one side of a two-sided contract cannot fire when the other
 side moves** — and "the other side moved" is how these contracts break. A
-tripwire asserted `"tiingo" not in _ref_kind_mapping()` by parsing a `CASE` out
+tripwire asserted `"stooq" not in _ref_kind_mapping()`
+(`tests/moneybin/test_stg_security_prices.py:187`) by parsing a `CASE` out
 of a model file, so it fired only when the **CASE** changed. The adapter shipped
 its *writer* one commit ahead of the mapping: CASE untouched, test green, and
 every row the feature wrote was discarded by an INNER JOIN for three commits.
@@ -208,8 +209,9 @@ have read `unpriced`. Partial fills are common.
   for the new rows. The dangerous ones reference *source-shaped* columns —
   `source_type`, `source_origin`, `extracted_at`, a provider key.
 - Check the schema constraints the old inputs carried that the new one doesn't.
-  `raw.security_prices` and `app.security_price_overrides` both
-  `CHECK (close > 0)`; `fct_investment_transactions.price` has no such constraint
+  `raw.security_prices` enforces `CHECK (close > 0)`
+  (`sql/schema/raw_security_prices.sql:19`); `fct_investment_transactions.price`
+  has no such constraint
   and legitimately records `0` for a vesting grant — which would have valued a
   whole position at nothing while reporting `valued`.
 - Scope such guards by **source identity enumerated explicitly**, never a
