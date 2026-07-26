@@ -16,7 +16,11 @@ from typing import Annotated
 
 import typer
 
-from ..config import register_profile_resolver, set_current_profile
+from ..config import (
+    mark_profile_resolution_pending,
+    register_profile_resolver,
+    set_current_profile,
+)
 from ..observability import setup_observability
 from .commands import (
     accounts,
@@ -132,7 +136,10 @@ def main_callback(
 
     # Set the active profile name eagerly when one is explicit. This only
     # validates the name format and updates module state — no dir check,
-    # no I/O — so it's safe for `--help` and bare-group invocations.
+    # no I/O — so it's safe for `--help` and bare-group invocations. Readers
+    # that skip the lazy resolver on purpose (`get_current_profile(
+    # auto_resolve=False)`, which opts out of the first-run wizard rather than
+    # out of a named profile — `mcp config path` is one) depend on it.
     if explicit := profile_name or os.environ.get("MONEYBIN_PROFILE"):
         try:
             set_current_profile(explicit)
@@ -146,6 +153,13 @@ def main_callback(
         return
 
     register_profile_resolver(resolve_profile)
+
+    # The name above is only a hint: the profile directory has not been
+    # checked and observability still points at no profile's log files. Say so
+    # explicitly, or the eager set silently satisfies the resolver's gate and
+    # the command runs unlogged with SQLMesh's per-statement INFO on stderr.
+    if explicit:
+        mark_profile_resolution_pending()
 
 
 # Command groups ordered by workflow: setup → ingest → enrich → pipeline → analyze → output → integrations → ops

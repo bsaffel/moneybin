@@ -56,6 +56,25 @@ class TestNoDBCommands:
         result = run_cli("logs", "--print-path", env=e2e_env)
         result.assert_success()
 
+    def test_named_profile_writes_its_log_file(
+        self, e2e_env: dict[str, str], e2e_home: Path
+    ) -> None:
+        """A named profile logs to disk — the path this whole suite runs on.
+
+        ``e2e_env`` sets ``MONEYBIN_PROFILE``, which takes the same branch
+        as ``-p``. That branch once skipped profile-aware logging setup
+        outright, so every command in this file ran writing no log file at
+        all, and SQLMesh's per-statement INFO went to the terminal instead.
+        Only a subprocess can catch it: the in-process suite pins an active
+        profile, which suppresses the very resolution under test.
+        """
+        run_cli("logs", "--print-path", env=e2e_env).assert_success()
+
+        logs_dir = e2e_home / "profiles" / "e2e-test" / "logs"
+        found = sorted(p.name for p in logs_dir.glob("cli_*.log"))
+
+        assert found, f"no cli_*.log written under {logs_dir}"
+
     def test_logs_tail(self, e2e_env: dict[str, str]) -> None:
         result = run_cli("logs", "cli", "--lines", "5", env=e2e_env)
         # May exit 0 or 1 if no log files exist yet — no crash is the bar
@@ -83,6 +102,28 @@ class TestNoDBCommands:
     def test_mcp_list_prompts(self) -> None:
         result = run_cli("mcp", "list-prompts")
         result.assert_success()
+
+    def test_mcp_config_path_resolves_an_ambient_profile(
+        self, e2e_env: dict[str, str]
+    ) -> None:
+        """A globally-named profile satisfies a profile-scoped client path.
+
+        ``mcp config path --client claude-code`` reads the active profile
+        through ``get_current_profile(auto_resolve=False)``. That opts out of
+        the lazy resolver to avoid the first-run wizard — not out of a profile
+        the user named explicitly. ``scripts/claude-mcp.sh`` (``make
+        claude-mcp``) shells out to exactly this command with no local
+        ``--profile``, so an ambient ``MONEYBIN_PROFILE`` has to satisfy it.
+
+        Only a subprocess catches this: the in-process suite pins an active
+        profile, so ``auto_resolve=False`` always finds one there.
+        """
+        result = run_cli(
+            "mcp", "config", "path", "--client", "claude-code", env=e2e_env
+        )
+
+        result.assert_success()
+        assert "e2e-test" in result.stdout
 
     def test_mcp_config_show(self, e2e_env: dict[str, str]) -> None:
         result = run_cli("mcp", "config", env=e2e_env)

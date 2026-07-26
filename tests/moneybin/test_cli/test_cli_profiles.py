@@ -9,6 +9,7 @@ without requiring specific data source configurations like Plaid.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -20,7 +21,10 @@ from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.config import get_base_dir, get_current_profile
-from moneybin.utils.user_config import normalize_profile_name
+from moneybin.utils.user_config import (
+    generate_profile_config,
+    normalize_profile_name,
+)
 from tests.moneybin.conftest import temp_profile
 
 runner = CliRunner()
@@ -39,6 +43,34 @@ def _isolated_moneybin_home(  # pyright: ignore[reportUnusedFunction]
     "Profile 'alice' does not exist" error.
     """
     monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging_handlers() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]
+    """Undo the file handlers profile resolution installs.
+
+    Resolving a profile calls ``setup_observability``, which attaches root
+    and ``sqlmesh`` FileHandlers under *this* test's temporary
+    MONEYBIN_HOME. pytest deletes that tree afterwards, so a handler left
+    behind kills the next test in the same xdist worker with
+    ``FileNotFoundError`` the moment anything logs — far from the test that
+    actually leaked it.
+    """
+    root = logging.getLogger()
+    sqlmesh_logger = logging.getLogger("sqlmesh")
+    root_handlers = list(root.handlers)
+    root_level = root.level
+    sqlmesh_handlers = list(sqlmesh_logger.handlers)
+    sqlmesh_propagates = sqlmesh_logger.propagate
+
+    yield
+
+    for handler in (*root.handlers, *sqlmesh_logger.handlers):
+        if handler not in root_handlers and handler not in sqlmesh_handlers:
+            handler.close()
+    root.handlers, root.level = root_handlers, root_level
+    sqlmesh_logger.handlers = sqlmesh_handlers
+    sqlmesh_logger.propagate = sqlmesh_propagates
 
 
 @contextmanager
@@ -212,3 +244,114 @@ class TestProfileCommandsResolveProfileButSkipWizard:
 
             assert result.exit_code == 0
             assert get_current_profile() == "alice"
+
+
+class TestExplicitProfileConfiguresLogging:
+    """``-p X`` must configure logging exactly as switching to X would.
+
+    Profile-aware logging setup — the dedicated sqlmesh log file,
+    ``propagate=False`` on the ``sqlmesh`` logger, and an armed console
+    denylist — runs only from ``resolve_profile``, the lazy resolver
+    registered in ``main_callback``. That callback also sets the profile
+    *eagerly* when ``--profile`` or ``MONEYBIN_PROFILE`` is explicit, so
+    while the resolver fired only on an unset profile the eager set
+    disarmed it: an explicit profile left the process on the callback's
+    console-only setup, writing no log files at all and putting every
+    ``sqlmesh.*`` INFO record — one per executed statement, including full
+    ``CREATE OR REPLACE VIEW`` bodies — on the user's terminal.
+    """
+
+    @pytest.fixture()
+    def profile(self) -> Generator[str, None, None]:
+        """A real profile plus the process state a fresh CLI start has.
+
+        Clears the ``sqlmesh`` logger so each assertion measures what *this*
+        invocation configured. Restoring it afterwards belongs to the
+        module-level ``_restore_logging_handlers`` fixture.
+        """
+        name = normalize_profile_name("logging-probe")
+        profile_dir = get_base_dir() / "profiles" / name
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        generate_profile_config(profile_dir, name)
+
+        sqlmesh_logger = logging.getLogger("sqlmesh")
+        for handler in sqlmesh_logger.handlers[:]:
+            sqlmesh_logger.removeHandler(handler)
+        sqlmesh_logger.propagate = True
+
+        with temp_profile(name):
+            yield name
+
+    @staticmethod
+    def _run(profile: str) -> None:
+        """Drive a real command that resolves settings under ``-p``."""
+        result = runner.invoke(app, ["-p", profile, "logs", "--print-path"])
+        assert result.exit_code == 0, result.output
+
+    @staticmethod
+    def _console_handler() -> logging.Handler:
+        console = [
+            h
+            for h in logging.getLogger().handlers
+            if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert console, "Expected a console StreamHandler"
+        return console[0]
+
+    @staticmethod
+    def _record(name: str, level: int) -> logging.LogRecord:
+        return logging.LogRecord(
+            name=name,
+            level=level,
+            pathname="",
+            lineno=0,
+            msg="test",
+            args=(),
+            exc_info=None,
+        )
+
+    @pytest.mark.unit
+    def test_sqlmesh_output_lands_in_the_sqlmesh_log_file(self, profile: str) -> None:
+        """SQLMesh gets its own file under the named profile's log directory.
+
+        Suppressing these records from the console is only defensible
+        because a file keeps the copy. Under an explicit ``-p`` no file
+        handler was installed at all, so the copy did not exist.
+        """
+        self._run(profile)
+
+        sqlmesh_files = [
+            Path(h.baseFilename)
+            for h in logging.getLogger("sqlmesh").handlers
+            if isinstance(h, logging.FileHandler)
+        ]
+
+        assert sqlmesh_files, "Expected a sqlmesh FileHandler"
+        assert all(
+            f.parent == get_base_dir() / "profiles" / profile / "logs"
+            for f in sqlmesh_files
+        )
+        assert all(f.name.startswith("sqlmesh_") for f in sqlmesh_files)
+
+    @pytest.mark.unit
+    def test_sqlmesh_info_stays_off_the_console(self, profile: str) -> None:
+        """The reported defect: ~1000 SQL lines before four lines of output."""
+        self._run(profile)
+
+        assert not self._console_handler().filter(
+            self._record("sqlmesh.core.engine_adapter.base", logging.INFO)
+        )
+
+    @pytest.mark.unit
+    def test_sqlmesh_warning_still_reaches_the_console(self, profile: str) -> None:
+        """Quieting noise must never quiet a problem.
+
+        ``sync pull`` is exactly where staging rejects and categorization
+        anomalies surface, so the fix must not buy silence at their cost.
+        """
+        self._run(profile)
+
+        assert self._console_handler().filter(
+            self._record("sqlmesh.core.engine_adapter.base", logging.WARNING)
+        )
