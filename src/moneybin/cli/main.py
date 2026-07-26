@@ -130,19 +130,33 @@ def main_callback(
             param_hint="--profile",
         )
 
-    # Set the active profile name eagerly when one is explicit. This only
-    # validates the name format and updates module state — no dir check,
-    # no I/O — so it's safe for `--help` and bare-group invocations.
+    # Validate an explicit profile name eagerly — format only, no dir check
+    # and no I/O, so `--help` and bare-group invocations stay inert.
+    #
+    # Deliberately does NOT set the active profile on the lazy path below.
+    # `resolve_profile` fires only while no profile is set, and it does more
+    # than name one: it checks the profile directory exists and re-initializes
+    # observability against that profile's log files. Setting the name here
+    # satisfied that gate, so `-p X` skipped both — running with no CLI log,
+    # no sqlmesh log, and every `sqlmesh.*` INFO record on the terminal,
+    # because the console denylist stands down when no log file exists.
     if explicit := profile_name or os.environ.get("MONEYBIN_PROFILE"):
+        # Imported here, not at module scope, to keep the CLI cold-start
+        # graph unchanged — `resolve_profile` defers the same symbol.
+        from ..utils.user_config import normalize_profile_name  # noqa: PLC0415
+
         try:
-            set_current_profile(explicit)
+            normalize_profile_name(explicit)
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 
     # Profile commands are recovery tools (`profile create` legitimately runs
     # against a profile that doesn't yet exist), and synthetic + demo commands
     # manage their own profile lifecycle — all skip the lazy dir-check + wizard.
+    # No resolver runs for them, so an explicit name is applied here instead.
     if ctx.invoked_subcommand in ("profile", "synthetic", "demo"):
+        if explicit:
+            set_current_profile(explicit)
         return
 
     register_profile_resolver(resolve_profile)

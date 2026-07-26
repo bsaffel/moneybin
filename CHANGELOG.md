@@ -119,6 +119,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **`--profile` now logs like any other run.** Naming a profile explicitly —
+  `moneybin -p work sync pull`, or `MONEYBIN_PROFILE=work` — wrote no log files
+  at all: no `cli_*.log`, no `sqlmesh_*.log`. With no log file to hold them,
+  the console filter stood down by design rather than destroy records, so
+  `sync pull` printed several thousand `Executing SQL: …` and
+  `Evaluating snapshot …` lines, including every `CREATE OR REPLACE VIEW` and
+  `COMMENT ON COLUMN` body, ahead of the four lines that mattered. Explicitly
+  naming a profile now resolves it exactly as switching to it does: log files
+  written, profile directory checked, and SQLMesh's output in
+  `sqlmesh_YYYY-MM-DD.log` where it belongs. Warnings and errors still reach
+  the console.
 - **An assistant and a person now get the same truthful, structured answer
   from MoneyBin.** `system_status` and `reviews` degrade section by section
   and queue by queue instead of failing whole, so one broken check no longer
