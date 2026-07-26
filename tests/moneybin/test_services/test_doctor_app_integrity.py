@@ -1097,7 +1097,7 @@ def test_pdf_formats_fingerprint_shape_passes_for_repo_saved_row(
 # (verified byte-identical on origin/main). The guard pins the gap by EQUALITY so
 # the set can only shrink: a newly repo-ified table that forgets its coverage
 # call fails here rather than joining the list silently. Removing an entry is the
-# fix; adding one needs a reason. Tracked in private/followups.md.
+# fix; adding one needs a reason.
 _AUDIT_COVERAGE_GAPS = frozenset({
     "ai_consent_grants",
     "categorization_decisions",

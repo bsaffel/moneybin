@@ -333,7 +333,7 @@ class DoctorService:
         but no coverage call here. That gap is pinned by equality in
         ``test_every_repo_table_has_audit_coverage_or_a_named_exemption``, so it
         can shrink but never grow silently — a new repo without a coverage call
-        fails that test. Closing the twelve is tracked in ``private/followups.md``.
+        fails that test. Closing the twelve is planned, not scheduled here.
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
