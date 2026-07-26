@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import types
 import typing
-from collections.abc import Callable, Iterable, Mapping
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, cast, get_args, get_origin
@@ -16,6 +18,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.metrics.registry import USER_REPORT_RUNS_TOTAL
 from moneybin.privacy.payloads.reports import (
     ReportCatalogEntry,
     ReportCatalogPayload,
@@ -25,6 +28,7 @@ from moneybin.privacy.payloads.reports import (
 )
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    USER_NAMESPACE,
     OutputColumn,
     ParamSpec,
     ReportSemantics,
@@ -37,7 +41,11 @@ from moneybin.reports._framework.execute import (
     redact_catalog_execution,
 )
 
+logger = logging.getLogger(__name__)
+
 _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
+
+type ReportTier = Literal["builtin", "extension", "user"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,10 +93,30 @@ class ReportCatalog:
         if duplicate_ids:
             raise ValueError(f"duplicate report_id: {', '.join(duplicate_ids)}")
         self._reports = ordered
+        self._name_collisions = _name_collisions(ordered)
+        for name, report_ids in self._name_collisions.items():
+            logger.warning(
+                f"report name {name!r} is claimed by {len(report_ids)} reports "
+                f"({', '.join(report_ids)}); each stays runnable by report_id."
+            )
 
     def list(self) -> tuple[RegisteredReport, ...]:
         """Return all reports ordered by stable full ID."""
         return self._reports
+
+    def name_collisions(self) -> Mapping[str, tuple[str, ...]]:
+        """Names claimed by more than one report, mapped to the claiming IDs.
+
+        R5's mutation-time checks cannot cover every collision: upgrading
+        MoneyBin can add a built-in whose name a user already took, and neither
+        path calls a lifecycle mutation. So the assembled registry is validated
+        here rather than trusted, and a collision is surfaced instead of
+        silently resolved — shadowing the user's report hides their work behind
+        an upgrade they did not ask for, and shadowing the built-in makes a
+        shipped report vanish with no visible cause. Both stay resolvable by
+        ``report_id``; only the contested *name* stops resolving.
+        """
+        return self._name_collisions
 
     def resolve(self, report_id: str) -> RegisteredReport:
         """Resolve an exact full ID or an unambiguous short report name."""
@@ -145,15 +173,21 @@ class ReportCatalog:
             parameters=parameters,
             limit=limit,
         )
-        if isinstance(spec, ReportSpec):
-            execution = execute_catalog_report(
-                spec,
-                db,
-                max_rows=limit,
-                **validated,
-            )
-        else:
-            execution = spec.executor(db, validated, limit)
+        tier = report_tier(spec)
+        try:
+            if isinstance(spec, ReportSpec):
+                execution = execute_catalog_report(
+                    spec,
+                    db,
+                    max_rows=limit,
+                    **validated,
+                )
+            else:
+                execution = spec.executor(db, validated, limit)
+        except Exception:
+            USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="error").inc()
+            raise
+        USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="ok").inc()
         return spec, execution
 
     def resolve_request(
@@ -175,6 +209,39 @@ class ReportCatalog:
         if isinstance(spec, ServiceReportSpec) and spec.validator is not None:
             spec.validator(validated)
         return spec, validated
+
+
+def _name_collisions(
+    reports: Sequence[RegisteredReport],
+) -> Mapping[str, tuple[str, ...]]:
+    """Group report IDs by any name more than one of them claims."""
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for report in reports:
+        by_name[report.name].append(report.report_id)
+    return MappingProxyType({
+        name: tuple(report_ids)
+        for name, report_ids in sorted(by_name.items())
+        if len(report_ids) > 1
+    })
+
+
+def report_tier(report: RegisteredReport) -> ReportTier:
+    """Which of R5's three tiers ``report`` belongs to.
+
+    Keyed on the ``report_id`` namespace for the user tier and on the extension
+    registry for the rest, because a spec carries no tier field — and adding one
+    would let a spec claim a tier its provenance contradicts.
+    """
+    from moneybin.reports._framework.registry import extension_report_specs
+
+    if report.report_id.startswith(f"{USER_NAMESPACE}:"):
+        return "user"
+    if any(
+        extension.report_id == report.report_id
+        for extension in extension_report_specs()
+    ):
+        return "extension"
+    return "builtin"
 
 
 def _parameter_specs(spec: RegisteredReport) -> tuple[ParamSpec, ...]:
@@ -278,8 +345,19 @@ def _annotation_name(annotation: object) -> str:
     return str(annotation).replace("typing.", "")
 
 
-def get_report_catalog() -> ReportCatalog:
-    """Build the current core, service, and explicitly registered extension union."""
+def get_report_catalog(
+    db: Database | None = None, *, include_archived: bool = False
+) -> ReportCatalog:
+    """Build the union of every registered report across R5's three tiers.
+
+    ``db`` adds the user tier — one ``ReportSpec`` per ``app.user_reports`` row.
+    Pass it on any path that resolves a **caller-supplied** report reference, so
+    a saved report is reachable by the same call a built-in is. Omitting it
+    yields the packaged tiers alone, which is what extension registration needs
+    (it runs before any database is open) and what a built-in's own generated
+    CLI command needs (it resolves one fixed ID it already holds).
+    """
+    from moneybin.reports._framework.dynamic import user_report_specs
     from moneybin.reports._framework.registry import (
         extension_report_specs,
         spec_of,
@@ -288,14 +366,35 @@ def get_report_catalog() -> ReportCatalog:
     from moneybin.reports.service_reports import SERVICE_REPORTS
 
     core = (spec_of(runner) for runner in ALL_REPORTS)
-    return ReportCatalog((*core, *SERVICE_REPORTS, *extension_report_specs()))
+    user = (
+        user_report_specs(db, include_archived=include_archived)
+        if db is not None
+        else ()
+    )
+    return ReportCatalog((*core, *SERVICE_REPORTS, *extension_report_specs(), *user))
 
 
 def catalog_to_payload(catalog: ReportCatalog) -> ReportCatalogPayload:
-    """Expose the catalog's static, aggregate-only metadata."""
+    """Expose the catalog's static metadata."""
     return ReportCatalogPayload(
         reports=[_catalog_entry_to_payload(report) for report in catalog.list()]
     )
+
+
+def catalog_sensitivity(catalog: ReportCatalog) -> Literal["low", "medium"]:
+    """The envelope sensitivity a listing of ``catalog`` actually carries.
+
+    A built-in's name and description are authored in the repo and reviewed, so
+    the entry fields are annotated ``AGGREGATE``. A **user** report's name and
+    description are user-authored free text — ``USER_NOTE``, MEDIUM, the same
+    class the stored columns carry — so a listing that includes one is not a LOW
+    response. The annotations stay AGGREGATE deliberately (masking a user's own
+    report name would make the catalog unusable); what has to be honest is the
+    tier the envelope reports.
+    """
+    if any(report_tier(report) == "user" for report in catalog.list()):
+        return "medium"
+    return "low"
 
 
 def result_to_payload(result: CatalogReportResult) -> ReportResultPayload:
@@ -325,6 +424,7 @@ def result_to_payload(result: CatalogReportResult) -> ReportResultPayload:
 def _catalog_entry_to_payload(report: RegisteredReport) -> ReportCatalogEntry:
     return ReportCatalogEntry(
         report_id=report.report_id,
+        tier=report_tier(report),
         description=report.description,
         parameter_schema=_parameter_schema(report),
         parameter_classes={

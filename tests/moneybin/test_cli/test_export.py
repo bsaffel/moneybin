@@ -216,7 +216,13 @@ def test_export_report_rejects_invalid_parameter_bindings(
     tmp_path: Path,
 ) -> None:
     """Malformed, duplicate, and mistyped --param values fail before delivery."""
-    with patch("moneybin.exports.service.ExportService.run") as run:
+    # The catalog spans the user tier now, so resolving the report opens a
+    # database even though nothing here reads a row from it.
+    with (
+        patch("moneybin.exports.service.ExportService.run") as run,
+        patch("moneybin.database.get_database") as get_database,
+    ):
+        get_database.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(
             app,
             [
@@ -274,7 +280,9 @@ def test_export_resolves_custom_local_path_before_service_call(tmp_path: Path) -
 
 
 def test_export_report_parser_errors_are_safe_stderr() -> None:
-    result = runner.invoke(app, ["export", "report", "core:not_a_report"])
+    with patch("moneybin.database.get_database") as get_database:
+        get_database.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["export", "report", "core:not_a_report"])
 
     assert result.exit_code == 1
     assert "Report not found." in result.stderr

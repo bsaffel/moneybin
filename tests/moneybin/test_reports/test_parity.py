@@ -44,6 +44,17 @@ _EXPECTED_CATALOG_CLI = {
     "core:recurring": "recurring",
     "core:spending": "spending",
 }
+#: R5's tier-spanning catalog/runner plus the CLI-only lifecycle verbs. These
+#: share the group namespace with the generated per-report commands, so a report
+#: named after one of them would be shadowed — locked below.
+_EXPECTED_LIFECYCLE_CLI = {
+    "list",
+    "run",
+    "create",
+    "set",
+    "delete",
+    "reclassify",
+}
 
 
 def registered_report_command_names(app: typer.Typer) -> set[str]:
@@ -83,9 +94,23 @@ def test_cli_surface_matches_expected_set() -> None:
 
 
 def test_every_catalog_report_has_an_ergonomic_cli_command() -> None:
-    assert registered_report_command_names(REPORTS_APP) == set(
-        _EXPECTED_CATALOG_CLI.values()
+    assert registered_report_command_names(REPORTS_APP) == (
+        set(_EXPECTED_CATALOG_CLI.values()) | _EXPECTED_LIFECYCLE_CLI
     )
+
+
+def test_no_report_name_is_shadowed_by_a_lifecycle_verb() -> None:
+    """A report named ``run`` would lose its generated command to the verb.
+
+    Both live in one Typer group, and the group registers the verbs first, so a
+    collision resolves silently in the verb's favour — the report would simply
+    stop being invocable by name from the CLI.
+    """
+    report_commands = {
+        report.name.replace("_", "-") for report in get_report_catalog().list()
+    }
+
+    assert report_commands & _EXPECTED_LIFECYCLE_CLI == set()
 
 
 def test_catalog_ids_map_one_to_one_to_public_cli_commands() -> None:

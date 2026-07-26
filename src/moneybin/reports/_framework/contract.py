@@ -24,6 +24,16 @@ from moneybin.tables import TableRef
 Runner = Callable[..., "ReportQuery"]
 _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 
+#: ``report_id`` namespace owned by the user tier — the one tier whose reports
+#: are database rows rather than code. ``mint_user_report_id`` produces it and
+#: ``report_tier`` reads it; defined here beside the id grammar it belongs to.
+USER_NAMESPACE = "user"
+
+#: A saved report's ``name``. Both surfaces resolve a report by this string and
+#: ``ReportSpec.cli_name`` derives a Typer command name from it, so it is held to
+#: the same slug shape every shipped report's name already has.
+USER_REPORT_NAME = re.compile(r"[a-z][a-z0-9_-]*")
+
 
 @dataclass(frozen=True, slots=True)
 class ReportQuery:

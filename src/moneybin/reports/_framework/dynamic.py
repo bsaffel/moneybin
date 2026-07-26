@@ -21,6 +21,7 @@ from typing import Any, Final
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.metrics.registry import USER_REPORT_DRIFT_DETECTED_TOTAL
 from moneybin.privacy.sql_lineage import FAIL_CLOSED_CLASS
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.contract import (
@@ -45,6 +46,10 @@ logger = logging.getLogger(__name__)
 #: carries the no-consent meaning, and two meanings on one flag with no way to
 #: tell them apart is not acceptable — this is the discriminator R4 requires.
 DEGRADED_STALE_CLASSIFICATION: Final = "stale_classification"
+
+#: Leading token on ``degraded_reason`` when the stored SQL can no longer be
+#: classified at all — an upstream table or column it reads is gone.
+DEGRADED_UNRESOLVABLE_QUERY: Final = "unresolvable_query"
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,7 +126,7 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
     read. A stale fingerprint therefore costs a re-resolution and nothing else.
     """
     query_sql = str(row["query_sql"])
-    declared = _declared_params(row.get("params") or ())
+    declared = declared_params(row.get("params") or ())
     stored: Mapping[str, str] = row.get("classes") or {}
     stored_classes = {name: DataClass(value) for name, value in stored.items()}
     stored_parameter_classes = {
@@ -136,6 +141,7 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
         parameter_classes=stored_parameter_classes,
         class_downgrades=downgrades,
     )
+    unresolvable: UserError | None = None
     if current == str(row.get("class_fingerprint") or ""):
         classes, parameter_classes, changed = (
             stored_classes,
@@ -143,14 +149,26 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
             (),
         )
     else:
-        classes, parameter_classes, changed = _reresolved(
-            db,
-            query_sql=query_sql,
-            declared=declared,
-            stored_classes=stored_classes,
-            stored_parameter_classes=stored_parameter_classes,
-            downgrades=downgrades,
-        )
+        try:
+            classes, parameter_classes, changed = _reresolved(
+                db,
+                query_sql=query_sql,
+                declared=declared,
+                stored_classes=stored_classes,
+                stored_parameter_classes=stored_parameter_classes,
+                downgrades=downgrades,
+            )
+        except UserError as e:
+            # The report can no longer be classified — a table or column it
+            # reads is gone. Dropping it from the catalog would hide the user's
+            # work behind an upstream change they did not make, so it stays
+            # listed and wholly masked. Running it fails on DuckDB's own error.
+            unresolvable = e
+            classes = dict.fromkeys(stored_classes, FAIL_CLOSED_CLASS)
+            parameter_classes = {
+                parameter.name: FAIL_CLOSED_CLASS for parameter in declared
+            }
+            changed = tuple(sorted(classes))
 
     spec = ReportSpec(
         report_id=str(row["report_id"]),
@@ -174,6 +192,15 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
             column: str(entry.get("reason", "")) for column, entry in downgrades.items()
         },
     )
+    if unresolvable is not None:
+        return DynamicReport(
+            spec=spec,
+            degraded=True,
+            degraded_reason=(
+                f"{DEGRADED_UNRESOLVABLE_QUERY}: {unresolvable}; every column is "
+                "masked until the report's SQL is updated."
+            ),
+        )
     if not changed:
         return DynamicReport(spec=spec)
     return DynamicReport(
@@ -186,7 +213,22 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
     )
 
 
-def _declared_params(entries: Sequence[Mapping[str, Any]]) -> tuple[ParamSpec, ...]:
+def user_report_specs(
+    db: Database, *, include_archived: bool = False
+) -> tuple[ReportSpec, ...]:
+    """Every saved report as a ``ReportSpec``, in stable ``report_id`` order.
+
+    The catalog excludes archived reports by default (R5): archiving suppresses
+    catalog noise rather than revoking access, so an archived report stays
+    resolvable through the widened view and runnable by ``report_id``.
+    """
+    from moneybin.repositories.user_reports_repo import UserReportsRepo
+
+    rows = UserReportsRepo(db).list(include_archived=include_archived)
+    return tuple(spec_from_row(db, row).spec for row in rows)
+
+
+def declared_params(entries: Sequence[Mapping[str, Any]]) -> tuple[ParamSpec, ...]:
     """Rebuild ``ParamSpec``s from the stored ``params`` JSON."""
     return tuple(
         ParamSpec(
@@ -288,8 +330,10 @@ def _reresolved(
         )
     )
     if not changed_columns and not changed_parameters:
+        USER_REPORT_DRIFT_DETECTED_TOTAL.labels(resolution="equal").inc()
         return reapplied, dict(derived.parameter_classes), ()
 
+    USER_REPORT_DRIFT_DETECTED_TOTAL.labels(resolution="failed_closed").inc()
     logger.warning(
         "user report classification drifted; failing closed for "
         f"{len(changed_columns)} column(s) and {len(changed_parameters)} parameter(s)"

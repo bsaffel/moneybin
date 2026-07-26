@@ -1640,6 +1640,138 @@ class TestPrivacyConsent:
         run_cli("privacy", "revoke-all", "--yes", env=env).assert_success()
 
 
+class TestUserReports:
+    """`moneybin reports create/list/run/reclassify/set/delete` over a real DB.
+
+    The saved query reads ``app.user_reports`` itself. That is a real permitted
+    read (``app`` is inside the save allowlist), needs no SQLMesh build, and
+    guarantees a non-empty result — the report returns itself, which is the
+    ask→save→verify loop end to end in one subprocess chain.
+    """
+
+    def test_saved_report_lifecycle(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "userreports", _mutating_profile_template
+        )
+
+        created = run_cli(
+            "reports",
+            "create",
+            "my_reports",
+            "--sql",
+            "SELECT report_id, name FROM app.user_reports",
+            "--description",
+            "Every report I have saved.",
+            "--output",
+            "json",
+            env=env,
+        )
+        created.assert_success()
+        report_id = json.loads(created.stdout)["data"]["report_id"]
+        assert report_id.startswith("user:")
+
+        listed = run_cli(
+            "reports", "list", "--tier", "user", "--output", "json", env=env
+        )
+        listed.assert_success()
+        entries = json.loads(listed.stdout)["data"]
+        assert [entry["report_id"] for entry in entries] == [report_id]
+        assert entries[0]["tier"] == "user"
+
+        # The report returns its own row: derived classes let `name` through
+        # (USER_NOTE is MEDIUM, and every transform below CRITICAL is
+        # passthrough), so this also proves the class map is not over-masking.
+        ran = run_cli("reports", "run", report_id, "--output", "json", env=env)
+        ran.assert_success()
+        rows = json.loads(ran.stdout)["data"]
+        assert [row["name"] for row in rows] == ["my_reports"]
+
+        # A saved report resolves by name too, and binds `$name` by position-free
+        # keyword — R8.
+        parameterized = run_cli(
+            "reports",
+            "create",
+            "one_report",
+            "--sql",
+            "SELECT report_id FROM app.user_reports WHERE name = $wanted",
+            "--param",
+            "wanted",
+            "--output",
+            "json",
+            env=env,
+        )
+        parameterized.assert_success()
+        bound = run_cli(
+            "reports",
+            "run",
+            "one_report",
+            "--param",
+            "wanted=my_reports",
+            "--output",
+            "json",
+            env=env,
+        )
+        bound.assert_success()
+        assert [row["report_id"] for row in json.loads(bound.stdout)["data"]] == [
+            report_id
+        ]
+
+        downgraded = run_cli(
+            "reports",
+            "reclassify",
+            report_id,
+            "--column",
+            "name",
+            "--to",
+            "aggregate",
+            "--reason",
+            "A report name I wrote reveals nothing about my finances.",
+            "--yes",
+            "--output",
+            "json",
+            env=env,
+        )
+        downgraded.assert_success()
+        assert json.loads(downgraded.stdout)["data"]["from"] == "user_note"
+
+        # An equal-tier weakening is refused whatever the reason: report_id is
+        # RECORD_ID, so there is no lower tier to move it to.
+        refused = run_cli(
+            "reports",
+            "reclassify",
+            report_id,
+            "--column",
+            "report_id",
+            "--to",
+            "aggregate",
+            "--reason",
+            "Trying to weaken a class that is already LOW.",
+            "--yes",
+            env=env,
+        )
+        assert refused.exit_code == 1, refused.output
+
+        run_cli("reports", "set", report_id, "--archive", env=env).assert_success()
+        active = run_cli(
+            "reports", "list", "--tier", "user", "--output", "json", env=env
+        )
+        active.assert_success()
+        assert report_id not in {
+            entry["report_id"] for entry in json.loads(active.stdout)["data"]
+        }
+        archived = run_cli("reports", "list", "--archived", "--output", "json", env=env)
+        archived.assert_success()
+        assert report_id in {
+            entry["report_id"] for entry in json.loads(archived.stdout)["data"]
+        }
+
+        run_cli("reports", "delete", report_id, "--yes", env=env).assert_success()
+        gone = run_cli("reports", "run", report_id, env=env)
+        assert gone.exit_code == 1, gone.output
+
+
 class TestDemo:
     """`moneybin demo` — the evaluator preset (real full pipeline)."""
 

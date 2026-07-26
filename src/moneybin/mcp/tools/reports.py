@@ -15,6 +15,7 @@ from moneybin.mcp.privacy import Sensitivity, get_max_rows, tier_to_sensitivity
 from moneybin.privacy.payloads.reports import ReportsPayload
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.catalog import (
+    catalog_sensitivity,
     catalog_to_payload,
     get_report_catalog,
     result_to_payload,
@@ -32,20 +33,26 @@ def reports(
     limit: Annotated[int, Field(strict=True, ge=1)] | None = None,
 ) -> ResponseEnvelope[ReportsPayload]:
     """Browse the report catalog or execute one registered read-only report."""
-    catalog = get_report_catalog()
     if report_id is None:
         if parameters is not None or limit is not None:
             raise UserError(
                 "parameters and limit require report_id",
                 code=error_codes.REPORT_ID_REQUIRED,
             )
-        payload = catalog_to_payload(catalog)
+        # The catalog spans all three tiers, and the user tier lives in the
+        # database — so listing opens one now where it previously needed none.
+        with get_database(read_only=True) as db:
+            catalog = get_report_catalog(db)
+            payload = catalog_to_payload(catalog)
+            sensitivity = catalog_sensitivity(catalog)
         return build_envelope(
             data=payload,
-            sensitivity="low",
+            sensitivity=sensitivity,
             total_count=len(payload.reports),
             returned_count=len(payload.reports),
-            classes_returned=["aggregate"],
+            classes_returned=["aggregate"]
+            if sensitivity == "low"
+            else ["aggregate", "user_note"],
         )
 
     if limit is not None and limit < 1:
@@ -57,7 +64,7 @@ def reports(
     session_max = get_max_rows()
     max_rows = session_max if limit is None else min(limit, session_max)
     with get_database(read_only=True) as db:
-        result = catalog.execute(
+        result = get_report_catalog(db).execute(
             db,
             report_id=report_id,
             parameters=parameters or {},

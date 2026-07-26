@@ -8,13 +8,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 from uuid import uuid4
 
+import duckdb
+
+from moneybin.reports._framework.contract import USER_NAMESPACE
 from moneybin.repositories.base import BaseRepo, quote_ident
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import USER_REPORTS
 
 logger = logging.getLogger(__name__)
-
-_ID_NAMESPACE = "user"
 
 _FULL_ROW_COLUMNS: Final = (
     "report_id",
@@ -55,7 +56,7 @@ _SETTABLE_COLUMNS: Final = (
 )
 
 
-class _Unset:
+class Unset:
     """Sentinel distinguishing an omitted update field from an explicit ``None``.
 
     ``description`` is nullable, so ``None`` is a value a caller may legitimately
@@ -64,10 +65,11 @@ class _Unset:
     """
 
     def __repr__(self) -> str:
+        """Render as ``UNSET`` so a partial-update traceback reads clearly."""
         return "UNSET"
 
 
-UNSET: Final = _Unset()
+UNSET: Final = Unset()
 
 
 def mint_user_report_id() -> str:
@@ -78,7 +80,7 @@ def mint_user_report_id() -> str:
     starts with a digit for 10 of its 16 possible leading values — so a bare
     truncated uuid would fail to construct a spec about 62% of the time.
     """
-    return f"{_ID_NAMESPACE}:r{uuid4().hex[:12]}"
+    return f"{USER_NAMESPACE}:r{uuid4().hex[:12]}"
 
 
 def _encode(column: str, value: object) -> object:
@@ -115,6 +117,25 @@ class UserReportsRepo(BaseRepo):
             report_id,
             decode=_decode_row,
         )
+
+    def list(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
+        """Read saved reports in stable ``report_id`` order.
+
+        Archived rows are excluded by default, matching the catalog's default
+        view (R5). Ordering is by the immutable id, not by ``name``, so a rename
+        cannot reorder the catalog.
+        """
+        columns = ", ".join(quote_ident(column) for column in _FULL_ROW_COLUMNS)
+        where = "" if include_archived else "WHERE is_active "
+        try:
+            rows = self._db.execute(
+                f"SELECT {columns} FROM {USER_REPORTS.full_name} "  # noqa: S608  # TableRef + allowlisted columns
+                f"{where}ORDER BY report_id ASC"
+            ).fetchall()
+        except duckdb.CatalogException:
+            # A read-only first call deliberately does not initialize schemas.
+            return []
+        return [_decode_row(row) for row in rows]
 
     def find_by_name(self, name: str) -> dict[str, Any] | None:
         """Read one saved report by name — archived rows included.
@@ -179,15 +200,15 @@ class UserReportsRepo(BaseRepo):
         self,
         report_id: str,
         *,
-        name: str | _Unset = UNSET,
-        description: str | None | _Unset = UNSET,
-        query_sql: str | _Unset = UNSET,
-        params: Sequence[Mapping[str, Any]] | _Unset = UNSET,
-        classes: Mapping[str, str] | _Unset = UNSET,
-        semantics: Mapping[str, Any] | _Unset = UNSET,
-        class_downgrades: Mapping[str, Any] | _Unset = UNSET,
-        class_fingerprint: str | _Unset = UNSET,
-        is_active: bool | _Unset = UNSET,
+        name: str | Unset = UNSET,
+        description: str | None | Unset = UNSET,
+        query_sql: str | Unset = UNSET,
+        params: Sequence[Mapping[str, Any]] | Unset = UNSET,
+        classes: Mapping[str, str] | Unset = UNSET,
+        semantics: Mapping[str, Any] | Unset = UNSET,
+        class_downgrades: Mapping[str, Any] | Unset = UNSET,
+        class_fingerprint: str | Unset = UNSET,
+        is_active: bool | Unset = UNSET,
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
@@ -212,7 +233,7 @@ class UserReportsRepo(BaseRepo):
                 ("class_fingerprint", class_fingerprint),
                 ("is_active", is_active),
             )
-            if not isinstance(value, _Unset)
+            if not isinstance(value, Unset)
         }
         if not supplied:
             raise ValueError("set requires at least one field to update")

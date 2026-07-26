@@ -196,6 +196,7 @@ def test_catalog_entry_rejects_output_class_mismatch() -> None:
     with pytest.raises(ValidationError, match="columns and output_classes"):
         ReportCatalogEntry(
             report_id="core:spending",
+            tier="builtin",
             description="Monthly spending totals.",
             parameter_schema={},
             parameter_classes={},
@@ -218,6 +219,7 @@ def test_catalog_entry_rejects_duplicate_output_columns() -> None:
     with pytest.raises(ValidationError, match="duplicate output column"):
         ReportCatalogEntry(
             report_id="core:spending",
+            tier="builtin",
             description="Monthly spending totals.",
             parameter_schema={},
             parameter_classes={},

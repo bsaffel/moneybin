@@ -483,7 +483,8 @@ class ExportService:
         redaction_mode: RedactionMode = "redacted",
     ) -> PreparedExport:
         """Prepare exactly one catalog report under one output policy."""
-        catalog = self._report_catalog or get_report_catalog()
+        # `db` spans the user tier: a saved report is exportable by construction.
+        catalog = self._report_catalog or get_report_catalog(self._db)
         spec, execution = catalog.execute_raw(
             self._db,
             report_id=report_id,

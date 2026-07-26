@@ -660,3 +660,48 @@ SECURITY_LINK_REVIEW_PENDING = Gauge(
     "moneybin_security_link_review_pending",
     "Current count of pending security_link_decisions.",
 )
+
+# ── User-created reports ─────────────────────────────────────────────────────
+
+USER_REPORT_SAVES_TOTAL = Counter(
+    "moneybin_user_report_saves_total",
+    "Saves of a user-created report through the lifecycle service.",
+    # outcome: saved | rejected
+    ["outcome"],
+)
+
+USER_REPORT_RUNS_TOTAL = Counter(
+    "moneybin_user_report_runs_total",
+    "Report executions through the shared catalog, by registry tier. Labeled by "
+    "tier so the user tier can be compared against the built-ins it executes "
+    "beside — one path, three tiers, is the claim this measures.",
+    # tier: builtin | extension | user; outcome: ok | error
+    ["tier", "outcome"],
+)
+
+USER_REPORT_UNRESOLVED_COLUMNS_TOTAL = Counter(
+    "moneybin_user_report_unresolved_columns_total",
+    # Read with the drift counter: together they say whether the invisible
+    # classification is invisible in practice, or whether users are quietly
+    # accumulating masked columns they never asked for.
+    "Columns a saved report's derivation could not resolve, counted per save.",
+)
+
+USER_REPORT_DRIFT_DETECTED_TOTAL = Counter(
+    "moneybin_user_report_drift_detected_total",
+    "Saved reports whose stored class map failed its fingerprint check at run "
+    "time, by what re-derivation concluded.",
+    # resolution: equal (the key moved but every class held) | failed_closed
+    ["resolution"],
+)
+
+USER_REPORT_RECLASSIFY_TOTAL = Counter(
+    "moneybin_user_report_reclassify_total",
+    # Watch this one for abuse rather than health: it is the only path that
+    # durably lowers a masking floor, so a rising `confirmed` rate against a
+    # flat `declined` rate is the signal that the confirm has become a
+    # formality people click through.
+    "Classification-downgrade attempts on a saved report, by outcome.",
+    # outcome: confirmed | declined | refused_not_weaker | no_elicitation
+    ["outcome"],
+)

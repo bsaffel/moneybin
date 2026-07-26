@@ -46,6 +46,10 @@ class ReportCatalogEntry(BaseModel):
     """Complete static metadata for one registered report."""
 
     report_id: Annotated[str, DataClass.AGGREGATE]
+    tier: Annotated[Literal["builtin", "extension", "user"], DataClass.AGGREGATE]
+    """Which registry tier served this entry. A user-created report is a row in
+    one local database rather than a reviewed, installable artifact, so a caller
+    reading the catalog is owed that distinction without having to parse an ID."""
     description: Annotated[str, DataClass.AGGREGATE]
     parameter_schema: Annotated[dict[str, JsonValue], DataClass.AGGREGATE]
     parameter_classes: Annotated[dict[str, str], DataClass.AGGREGATE]

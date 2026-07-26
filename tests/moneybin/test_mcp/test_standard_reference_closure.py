@@ -281,7 +281,14 @@ def test_sync_review_prompt_uses_an_executable_reports_call() -> None:
 
 
 async def test_report_catalog_examples_use_executable_standard_calls() -> None:
-    response = await reports()
+    # The catalog spans all three tiers, so listing opens a read-only database
+    # for the user tier even when no saved report exists.
+    database_context = MagicMock()
+    database_context.__enter__.return_value = MagicMock(spec=Database)
+    with patch(
+        "moneybin.mcp.tools.reports.get_database", return_value=database_context
+    ):
+        response = await reports()
 
     unresolved: dict[str, list[str]] = {}
     for entry in response.data.reports:

@@ -124,9 +124,17 @@ async def test_reports_without_id_returns_catalog_with_runtime_classification() 
     def capture_event(event: dict[str, Any]) -> None:
         captured.append(event)
 
-    with patch(
-        "moneybin.mcp.decorator.write_privacy_event",
-        capture_event,
+    # The catalog spans all three tiers, so listing opens a read-only database
+    # for the user tier — it is no longer a pure-metadata call.
+    with (
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=_database_context(cast(Database, MagicMock(spec=Database))),
+        ),
+        patch(
+            "moneybin.mcp.decorator.write_privacy_event",
+            capture_event,
+        ),
     ):
         response = await reports()
 
@@ -307,7 +315,13 @@ async def test_generic_reports_fastmcp_schema_and_catalog_transport() -> None:
     def capture_event(event: dict[str, Any]) -> None:
         captured.append(event)
 
-    with patch("moneybin.mcp.decorator.write_privacy_event", capture_event):
+    with (
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=_database_context(cast(Database, MagicMock(spec=Database))),
+        ),
+        patch("moneybin.mcp.decorator.write_privacy_event", capture_event),
+    ):
         async with Client(mcp) as client:
             tools = await client.list_tools()
             result = await client.call_tool("reports", {})

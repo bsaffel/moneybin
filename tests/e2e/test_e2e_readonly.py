@@ -9,6 +9,7 @@ Covers three groups:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -354,6 +355,14 @@ class TestDBReadOnlyCommands:
         result = _runner.invoke(app, ["accounts", "balance", "reconcile", "--help"])
         assert result.exit_code == 0, result.output
         assert "--threshold" in result.output
+
+    def test_reports_list_spans_the_registry(self, e2e_profile: dict[str, str]) -> None:
+        """The catalog listing reaches all three tiers through one command."""
+        result = run_cli("reports", "list", "--output", "json", env=e2e_profile)
+        result.assert_success()
+        entries = json.loads(result.stdout)["data"]
+        assert "core:spending" in {entry["report_id"] for entry in entries}
+        assert {entry["tier"] for entry in entries} == {"builtin"}
 
     def test_reports_networth_help(self) -> None:
         result = _runner.invoke(app, ["reports", "networth", "--help"])

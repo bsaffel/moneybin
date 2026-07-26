@@ -1,5 +1,11 @@
 """Reports top-level command group — cross-domain read-only views.
 
+``list`` and ``run`` span all three registry tiers and are the CLI twins of the
+shipped ``reports`` MCP catalog/runner. ``create`` / ``set`` / ``delete`` /
+``reclassify`` are the lifecycle capability over saved reports and are CLI-only
+by design (R5 of ``docs/specs/reports-dynamic.md`` names no MCP identity for a
+lifecycle verb).
+
 The view-backed reports (cashflow, spending, recurring, merchants,
 large-transactions, balance-drift) are generated from ``@report`` runners in
 ``moneybin.reports.definitions`` and registered via ``register_reports_cli``.
@@ -15,12 +21,26 @@ from moneybin.reports._framework.registry import register_reports_cli
 from moneybin.reports.definitions import ALL_REPORTS
 
 from .networth import reports_networth, reports_networth_history
+from .user_reports import (
+    reports_create,
+    reports_delete,
+    reports_list,
+    reports_reclassify,
+    reports_run,
+    reports_set,
+)
 
 app = typer.Typer(
     help="Cross-domain analytical and aggregation views",
     no_args_is_help=True,
 )
 
+app.command("list")(reports_list)
+app.command("run")(reports_run)
+app.command("create")(reports_create)
+app.command("set")(reports_set)
+app.command("delete")(reports_delete)
+app.command("reclassify")(reports_reclassify)
 app.command("networth")(reports_networth)
 app.command("networth-history")(reports_networth_history)
 register_reports_cli(ALL_REPORTS, app)
