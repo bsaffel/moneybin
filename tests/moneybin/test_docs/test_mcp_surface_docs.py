@@ -39,7 +39,7 @@ CLIENT_GUIDE = ROOT / "docs/guides/mcp-clients.md"
 MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
 WHAT_AI_SEES_GUIDE = ROOT / "docs/guides/what-the-ai-sees.md"
 AI_CLIENT_SPEC = ROOT / "docs/specs/ai-client-compatibility.md"
-STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-47.json"
+STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard.json"
 FEATURES = ROOT / "docs/features.md"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 REPORT_RECIPE_SPEC = ROOT / "docs/specs/reports-recipe-library.md"
@@ -1410,9 +1410,9 @@ def test_client_compatibility_records_current_windsurf_headroom() -> None:
     )
 
     for current_fact in (
-        "47 MoneyBin tools",
+        "49 MoneyBin tools",
         "100-active-tool",
-        "53 tool slots",
+        "51 tool slots",
     ):
         assert current_fact in text
         assert current_fact in index_row
@@ -1631,7 +1631,7 @@ def test_changelog_records_prelaunch_surface_cutover() -> None:
 
     text = CHANGELOG.read_text()
 
-    assert "47-tool standard registry" in text
+    assert "49-tool standard registry" in text
     assert "pre-launch" in text
     assert "reports" in text
 
@@ -2848,7 +2848,7 @@ def test_final_review_architecture_and_current_prose_match_runtime() -> None:
     extensions = (ROOT / "docs/specs/extension-contracts.md").read_text()
 
     assert "observable outcomes" in architecture
-    assert "47-tool standard registry" in architecture
+    assert "49-tool standard registry" in architecture
     assert "domain metadata does not control disclosure" in architecture
     assert "refresh_run()" in recovery
     assert '`system_audit(view="history"' in account_identity

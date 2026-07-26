@@ -2,21 +2,30 @@
 
 import logging
 import sys
+from collections.abc import Mapping
 from typing import Annotated
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     output_option,
     quiet_option,
     render_or_json,
 )
+from moneybin.config import get_current_profile
+from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.profile_service import (
     ProfileExistsError,
     ProfileNotFoundError,
     ProfileService,
+)
+from moneybin.services.profile_settings_service import (
+    MANAGED_SETTING_KEYS,
+    ProfileSettingsService,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,6 +166,60 @@ def profile_delete(
         raise typer.Exit(1) from e
 
 
+def _active_profile_name() -> str | None:
+    """The active profile name, or None when none is resolvable."""
+    try:
+        return get_current_profile(auto_resolve=False)
+    except RuntimeError:
+        return None
+
+
+def _read_managed_settings(info: Mapping[str, object]) -> dict[str, object]:
+    """Managed settings for a profile, or ``{}`` when its database is unreachable.
+
+    Only the active profile's database is open to this process, and only once
+    it exists — `profile show other-profile` legitimately has nothing to read.
+    """
+    if not info["database_exists"] or info["name"] != _active_profile_name():
+        return {}
+    with get_database(read_only=True) as db:
+        settings = ProfileSettingsService(db).get_settings()
+    return {"home_currency": settings.home_currency}
+
+
+def _set_managed_setting(
+    svc: ProfileService,
+    target: str,
+    key: str,
+    value: str,
+    *,
+    explicit_profile: str | None,
+) -> None:
+    """Write one managed setting to the target profile's database.
+
+    Unlike ``config.yaml``, which is a plain file this process can write for any
+    profile, a managed setting lives in the target's encrypted database. Writing
+    the *active* profile's value when the user named another one would be a
+    silent wrong-target write, so that case errors instead.
+    """
+    info = svc.show(target)
+    if explicit_profile is not None and info["name"] != _active_profile_name():
+        raise UserError(
+            f"{key} is stored in profile {info['name']}'s database, which is not "
+            f"the active profile. Switch to it first: "
+            f"moneybin profile switch {info['name']}",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if not info["database_exists"]:
+        raise UserError(
+            f"{key} is stored in the profile's database, which does not exist "
+            f"yet. Create it first: moneybin db init",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    with get_database(read_only=False) as db:
+        ProfileSettingsService(db).set_setting(key, value, actor="cli")
+
+
 @app.command("show")
 def profile_show(
     name: Annotated[
@@ -169,14 +232,13 @@ def profile_show(
     """Show resolved settings for a profile."""
     svc = ProfileService()
     if name is None:
-        from moneybin.config import get_current_profile
-
         try:
             name = get_current_profile(auto_resolve=False)
         except RuntimeError:
             name = None
     try:
         info = svc.show(name)
+        info["settings"] = _read_managed_settings(info)
         if output == OutputFormat.JSON:
             render_or_json(
                 build_envelope(data=info, sensitivity="low"),
@@ -191,11 +253,16 @@ def profile_show(
         db_status = "exists" if info["database_exists"] else "not created"
         logger.info(f"  DB state: {db_status}")
         if info.get("config"):
-            logger.info("  Config:")
+            logger.info("  Config (config.yaml):")
             for section, values in info["config"].items():  # type: ignore[union-attr]  # narrowed by .get check
                 if isinstance(values, dict):
                     for k, v in values.items():
                         logger.info(f"    {section}.{k}: {v}")
+        settings: dict[str, object] = info["settings"]  # type: ignore[assignment]  # always set above
+        if settings:
+            logger.info("  Settings (database):")
+            for k, v in settings.items():
+                logger.info(f"    {k}: {v if v is not None else '(not set)'}")
     except ProfileNotFoundError as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e
@@ -210,14 +277,17 @@ def profile_set(
         typer.Option("--profile", "-p", help="Profile name (defaults to active)"),
     ] = None,
 ) -> None:
-    """Set a configuration value on a profile."""
+    """Set a configuration value on a profile.
+
+    Dotted ``section.field`` keys write the profile's ``config.yaml``. Undotted
+    managed keys (``home_currency``) write ``app.profile_settings`` in the
+    profile's database, where the SQLMesh report guards can read them.
+    """
     svc = ProfileService()
     target: str
     if name:
         target = name
     else:
-        from moneybin.config import get_current_profile
-
         try:
             target = get_current_profile(auto_resolve=False)
         except RuntimeError:
@@ -225,8 +295,11 @@ def profile_set(
             active = next((p["name"] for p in profiles if p["active"]), None)
             target = str(active) if active else "default"
     try:
-        svc.set(target, key, value)
+        if key in MANAGED_SETTING_KEYS:
+            _set_managed_setting(svc, target, key, value, explicit_profile=name)
+        else:
+            svc.set(target, key, value)
         logger.info(f"✅ Set {key}={value}")
-    except (ProfileNotFoundError, ValueError) as e:
+    except (ProfileNotFoundError, UserError, ValueError) as e:
         logger.error(f"❌ {e}")
         raise typer.Exit(1) from e

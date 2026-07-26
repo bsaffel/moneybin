@@ -76,7 +76,7 @@ Explicit connector calls are the exception to the local default.
 
 ## Bounded tool surface
 
-MoneyBin exposes one **47-tool standard registry**. Generic clients receive all
+MoneyBin exposes one **49-tool standard registry**. Generic clients receive all
 47 tools. A capable host may optionally defer schemas from that same registry
 to reduce prompt cost, without reconnect, packs, or profiles; tool names,
 approvals, allowlists, annotations, and audit identity do not change. Observed
@@ -164,7 +164,7 @@ moneybin mcp install --client windsurf -y
 - **Server lifecycle:** One server process per Windsurf instance.
 - **Confirmation UI:** Tool-call approval is shown in the Cascade chat panel. Like Cursor, Windsurf reads `readOnlyHint` but doesn't currently distinguish `destructiveHint` in its UI.
 
-> **MoneyBin’s 47-tool registry fits Windsurf’s limit.** Cascade holds a maximum
+> **MoneyBin’s 49-tool registry fits Windsurf’s limit.** Cascade holds a maximum
 > of **100 tools at any one time**, across *all* connected MCP servers. MoneyBin
 > uses 47 slots and leaves 53 slots for other servers.
 > Windsurf gives no warning when the combined total crosses the limit; disable

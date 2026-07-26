@@ -295,6 +295,15 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "app.profile_settings": [
+        Example(
+            question="Which currency does this profile treat as its home currency?",
+            sql="""
+                SELECT home_currency
+                FROM app.profile_settings
+            """,
+        ),
+    ],
     "app.balance_assertions": [
         Example(
             question="All user-entered balance assertions",

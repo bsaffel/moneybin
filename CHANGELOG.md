@@ -11,6 +11,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **A profile can now declare its home currency (M1K.1).** `moneybin profile set
+  home_currency EUR` records which currency the profile treats as home;
+  `moneybin profile show` lists it under `Settings (database)`, separate from the
+  `config.yaml` values. The setting lives in `app.profile_settings` rather than
+  `config.yaml` because the report views that read it are SQLMesh models, so every
+  write is audited and reversible through `system_audit_undo`. A profile that has
+  not chosen one reports null — MoneyBin does not assume USD, which would relabel a
+  EUR-only user's money. Setting it converts nothing: every transaction and balance
+  keeps its original currency. The 49-tool standard registry adds two tools: `profile`
+  reads the active profile's metadata and managed settings, and `profile_set`
+  writes the home currency. Two of the three remaining slots below the 50-tool hard
+  limit are now spent.
 - **Canonical bundle and registered-report export delivery (M1O).**
   `moneybin export bundle` and `moneybin export report` publish redacted CSV by
   default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named
@@ -717,7 +729,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   outright. At that point, MoneyBin's **then-105-tool registry exceeded
   Cascade's hard 100-active-tool ceiling** — Windsurf gives no signal when tools are
   dropped, so users had to disable some by hand. The later M3K.2 cut established
-  the current 47-tool standard registry. The Gemini CLI section explains why
+  a 47-tool standard registry. The Gemini CLI section explains why
   MoneyBin never sets `trust: true` (it bypasses *all* tool-call confirmations, and
   our surface includes write tools). (#315)
 - **Accepting a link merge now requires a human confirm on every surface.** The

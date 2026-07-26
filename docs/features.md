@@ -102,7 +102,7 @@ The six SQL-runner routes use declarative `@report` definitions; the two service
 
 ## MCP server
 
-- **Bounded tool registry** — One 47-tool standard registry spans 11 user-facing domain groups across 14 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots; 50 tools is the hard limit. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md).
+- **Bounded tool registry** — One 49-tool standard registry spans 12 user-facing domain groups across 15 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots; 50 tools is the hard limit. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md).
 - **Transport** — stdio today. Streamable HTTP transport ships with the web UI milestone (see [roadmap](roadmap.md)).
 - **Auth and session model** — Each MCP session inherits the profile unlocked by `moneybin db unlock`. `moneybin db lock` clears the stored key so no new session can open the profile; sessions already running keep their in-memory key until they exit (`moneybin db kill` is the confirmation-gated command that terminates them).
 - **Concurrency** — Reads coexist freely; writes are serialized per profile (single-writer rule). Two agents can read concurrently; only one can mutate at a time.
@@ -114,7 +114,7 @@ The six SQL-runner routes use declarative `@report` definitions; the two service
 - **Read-only SQL — privacy-safe on both surfaces** — `sql_query` (MCP) and `moneybin sql query` (CLI) run read-only `SELECT`/`WITH`/`DESCRIBE`/`SHOW`/`PRAGMA`/`EXPLAIN` against the `core` and `app` schemas, sharing one enforcement primitive: writes and file-access functions are blocked, and each output column is classified via sqlglot lineage so CRITICAL fields (account/routing numbers) are masked (`****<last4>`) — raw SQL is not a privacy bypass on either surface. App-state mutations (notes, tags, splits, rules) flow through dedicated tools, not raw SQL. (`moneybin db query`/`shell`/`ui` are raw, unmasked operator access.)
 - **MCP install across eight clients** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex (CLI / Desktop / IDE), and the ChatGPT desktop app (which hosts Codex and shares its config). `moneybin mcp install --client <name>` writes the client config. ChatGPT on the **web/mobile** cannot reach a local stdio server; remote MCP transport is planned on the [roadmap](roadmap.md). -> [MCP clients guide](guides/mcp-clients.md)
 - **First-run setup, in session** — Connect before creating a profile and MoneyBin sets itself up on the first tool call instead of failing. Elicitation-capable clients (e.g. Claude Desktop) are prompted for a profile name and the encrypted profile is created in place — no terminal step, no restart; tools-only clients get one clear message pointing at `moneybin profile create`. -> [MCP server guide](guides/mcp-server.md)
-- **Pre-v1 contract record** — Tool and envelope changes are recorded in the CHANGELOG. The current docs and checked-in surface snapshot define the 47-tool registry; no deprecated MCP aliases are advertised.
+- **Pre-v1 contract record** — Tool and envelope changes are recorded in the CHANGELOG. The current docs and checked-in surface snapshot define the 49-tool registry; no deprecated MCP aliases are advertised.
 
 ## CLI
 

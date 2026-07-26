@@ -216,6 +216,7 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.import_tools import register_import_tools
     from moneybin.mcp.tools.investments import register_investments_tools
     from moneybin.mcp.tools.privacy import register_privacy_tools
+    from moneybin.mcp.tools.profile import register_profile_tools
     from moneybin.mcp.tools.refresh import register_refresh_tools
     from moneybin.mcp.tools.reports import register_reports_tools
     from moneybin.mcp.tools.reviews import register_review_tools
@@ -244,6 +245,7 @@ def register_core_tools() -> None:
     # §17 "Dependency tracker".
 
     register_system_tools(mcp)
+    register_profile_tools(mcp)
     register_reports_tools(mcp)
     register_accounts_tools(mcp)
     register_investments_tools(mcp)

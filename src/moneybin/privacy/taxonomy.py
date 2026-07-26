@@ -156,6 +156,11 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "official_name": DataClass.INSTITUTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("app", "profile_settings"): {
+        "scope": DataClass.RECORD_ID,
+        "home_currency": DataClass.CURRENCY,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "ai_consent_grants"): {
         "grant_id": DataClass.RECORD_ID,
         "feature_category": DataClass.CATEGORY,

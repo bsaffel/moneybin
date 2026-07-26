@@ -92,7 +92,7 @@ the MCP tools and the CLI `--output json` surface alike:
 - **Routing numbers** → `*****` (fully masked).
 
 This is enforced by **field classification**, not convention. Every tool in
-MoneyBin's 47-tool standard registry must declare the privacy class of each field it
+MoneyBin's 49-tool standard registry must declare the privacy class of each field it
 returns, or it fails to register at startup; a field **typed as** an account or
 routing number is always masked. The two dynamic surfaces reach the same result
 two different ways: `sql_query` traces each output column back to its source

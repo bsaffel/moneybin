@@ -25,6 +25,8 @@ STANDARD_TOOL_NAMES = frozenset({
     "system_status",
     "system_audit",
     "system_audit_undo",
+    "profile",
+    "profile_set",
     "reports",
     "accounts",
     "accounts_set",
@@ -70,7 +72,7 @@ STANDARD_TOOL_NAMES = frozenset({
     "sql_query",
     "sql_schema",
 })
-STANDARD_TOOL_COUNT = 47
+STANDARD_TOOL_COUNT = 49
 VISIBLE_TOOL_COUNT = STANDARD_TOOL_COUNT
 HARD_TOOL_LIMIT = 50
 CARRYING_WEIGHT_REVIEW_AT = 40
