@@ -1,5 +1,5 @@
 {
-  "sha256": "04a3817f8d42adfe0b4dcbf950c16650740d3cd04cae20bea1f3e5bc889e53d7",
+  "sha256": "a2b1c508675ada14675410040ebd13f4c94d6a8db66ea71ea19623038fdcc42d",
   "tool_count": 47,
   "tools": [
     {
@@ -2951,7 +2951,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>), exactly like the typed tools \u2014 raw SQL is not a privacy bypass. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
+        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>), exactly like the typed tools \u2014 raw SQL is not a privacy bypass. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2972,12 +2972,12 @@
         },
         "name": "sql_query"
       },
-      "description_bytes": 510,
+      "description_bytes": 517,
       "input_schema_bytes": 150,
       "name": "sql_query",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 850
+      "total_bytes": 857
     },
     {
       "annotation_bytes": 89,
@@ -4929,5 +4929,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 51951
+  "total_bytes": 51958
 }

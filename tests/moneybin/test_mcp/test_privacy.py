@@ -212,12 +212,22 @@ class TestValidateReadOnlyQuery:
         assert validate_read_only_query("SHOW TABLES") is None
 
     @pytest.mark.unit
-    def test_pragma_allowed(self) -> None:
-        assert validate_read_only_query("PRAGMA database_list") is None
+    @pytest.mark.parametrize(
+        "sql", ["PRAGMA database_list", "EXPLAIN SELECT 1", "EXPLAIN ANALYZE SELECT 1"]
+    )
+    def test_ungateable_statement_refused(self, sql: str) -> None:
+        """PRAGMA and EXPLAIN are refused at the prefix gate, before execution.
 
-    @pytest.mark.unit
-    def test_explain_allowed(self) -> None:
-        assert validate_read_only_query("EXPLAIN SELECT 1") is None
+        Read-only is necessary but not sufficient here. `PRAGMA storage_info`
+        only reads, yet its per-segment `stats` are a cleartext prefix of the
+        stored values; `EXPLAIN ANALYZE` executes the query it is handed. What
+        they share is that neither exposes its target as a table the schema gate
+        can resolve, so both are refused for being ungateable rather than for
+        being writes.
+        """
+        error = validate_read_only_query(sql)
+        assert error is not None
+        assert "PRAGMA and EXPLAIN are not supported" in error
 
     @pytest.mark.unit
     def test_case_insensitive(self) -> None:

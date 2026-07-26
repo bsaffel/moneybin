@@ -1204,9 +1204,10 @@ def resolve_output_classes(
 def is_data_query(tree: exp.Expr) -> bool:
     """True for row-returning queries (SELECT / set operations).
 
-    False for DESCRIBE / SHOW / PRAGMA / EXPLAIN, whose output is schema or
-    plan text, not classified row data — callers route those past the lineage
-    gate and treat them as LOW.
+    False for DESCRIBE / SHOW, whose output is schema text, not classified row
+    data — callers route those past the lineage gate and treat them as LOW.
+    Also False for PRAGMA and EXPLAIN, which :func:`is_metadata_query` likewise
+    rejects, so they reach neither path and are refused.
 
     Must test ``exp.SetOperation``, not ``exp.Union``: on sqlglot 30.8.0
     ``exp.Except`` / ``exp.Intersect`` are siblings of ``exp.Union`` under
@@ -1219,15 +1220,8 @@ def is_data_query(tree: exp.Expr) -> bool:
     return isinstance(tree, (exp.Select, exp.SetOperation))
 
 
-# sqlglot has no EXPLAIN node for the DuckDB dialect — it falls back to the
-# generic exp.Command, which is ALSO what every statement it cannot parse
-# becomes. Matching the command word keeps unparsed syntax from riding in on
-# the same node type.
-_METADATA_COMMANDS = frozenset({"EXPLAIN"})
-
-
 def is_metadata_query(tree: exp.Expr) -> bool:
-    """True for DESCRIBE / SHOW / PRAGMA / EXPLAIN — and nothing else.
+    """True for DESCRIBE / SHOW — and nothing else.
 
     The complement of :func:`is_data_query` is NOT a safe test for "this is
     metadata". Callers run metadata statements unclassified at LOW, so reading
@@ -1235,13 +1229,30 @@ def is_metadata_query(tree: exp.Expr) -> bool:
     can produce a potential unredacted read — the door a top-level ``EXCEPT``
     and a ``;``-separated ``Block`` each walked through. This allowlist is the
     positive test callers need so an unrecognized tree fails closed.
+
+    The membership rule is one line: **a statement is admissible only if the
+    schema gate can resolve every table it names.** ``exp.Describe`` holds a
+    real ``exp.Table``; ``exp.Show`` names no table at all, so there is nothing
+    to resolve.
+
+    ``exp.Pragma`` and ``exp.Command`` (which is what a DuckDB ``EXPLAIN``
+    becomes — sqlglot has no EXPLAIN node — and also what every statement
+    sqlglot cannot parse becomes) are deliberately NOT admitted, because they
+    fail that rule in the most dangerous way: they reference tables while
+    hiding them. A pragma's target is a string literal inside an
+    ``exp.Anonymous`` call; an EXPLAIN's whole payload stays unparsed. Either
+    way ``find_all(exp.Table)`` returns nothing and the gate passes without
+    having examined anything.
+
+    Neither was theoretical. ``PRAGMA storage_info`` reports per-segment min/max
+    statistics — for a VARCHAR, a cleartext prefix of the stored values — and
+    returned a CRITICAL routing number's first eight digits unmasked at LOW,
+    against a schema ``SELECT`` refuses. ``EXPLAIN ANALYZE`` *executes* its
+    inner query, reaching ``raw``/``prep`` and returning their column names and
+    row counts. No allowlist of pragma or command names fixes either: the
+    defect is that the target is invisible, not that the verb is unrecognized.
     """
-    if isinstance(tree, (exp.Describe, exp.Show, exp.Pragma)):
-        return True
-    return (
-        isinstance(tree, exp.Command)
-        and str(tree.this).strip().upper() in _METADATA_COMMANDS
-    )
+    return isinstance(tree, (exp.Describe, exp.Show))
 
 
 def is_multi_statement(tree: exp.Expr) -> bool:
@@ -1273,15 +1284,27 @@ def tables_outside_schemas(
     caller can refuse the query before any masking decision. This is what makes
     the masking guarantee sound: every queryable column lives in a classified
     schema.
+
+    Identifiers are compared case-insensitively, because DuckDB resolves them
+    that way — case-preserving, but matched without regard to case, and quoting
+    does not change that. Callers must not rely on having normalized the tree
+    first: the data path happens to pass a qualified tree (``expand_star``
+    lowercases on the way through), but the metadata path passes the tree
+    exactly as parsed, so the caller's own casing survives to here. Comparing
+    that raw casing against a lowercase allowlist refused
+    ``DESCRIBE CORE.dim_accounts`` while ``SELECT ... FROM CORE.dim_accounts``
+    was allowed — the same table, admitted by one spelling and refused by
+    another. Normalizing in this one place keeps both callers honest.
     """
     known_by_name: dict[str, set[str]] = {}
     for schema, table, _col in snapshot.columns:
-        known_by_name.setdefault(table, set()).add(schema)
-    cte_names = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+        known_by_name.setdefault(table.lower(), set()).add(schema.lower())
+    allowed = frozenset(a.lower() for a in allowed)
+    cte_names = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
     bad: list[str] = []
     for tbl in tree.find_all(exp.Table):
-        schema = tbl.db
-        name = tbl.name
+        schema = tbl.db.lower()
+        name = tbl.name.lower()
         if not schema and name in cte_names:
             continue
         if schema:

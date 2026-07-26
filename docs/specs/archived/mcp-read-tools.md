@@ -113,5 +113,5 @@ Give AI assistants secure, read-only access to local financial data through MCP 
 ## Out of Scope
 
 - Write tools (see [MCP Write Tools](mcp-write-tools.md))
-- Tier 1 analytical tools (see [MCP Tier 1 Tools](../mcp-tier1-tools.md))
+- Tier 1 analytical tools (their spec was removed in #28 and never reinstated)
 - MCP elicitation and sampling features

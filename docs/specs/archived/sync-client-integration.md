@@ -11,7 +11,7 @@ Enable the moneybin Python client to authenticate with moneybin-server, sync ban
 ## Background
 - [moneybin plaid-integration spec](https://github.com/bsaffel/moneybin/blob/main/docs/specs/sync-plaid.md) -- Raw table schemas, staging views, core integration plan
 - [moneybin CLAUDE.md](https://github.com/bsaffel/moneybin/blob/main/CLAUDE.md) -- Python code standards, architecture layers, sign convention
-- [server-api-contract.md](../reference/server-api-contract.md) -- Full API surface; build against this
+- [server-api-contract.md](../../reference/server-api-contract.md) -- Full API surface; build against this
 - [ADR-002: Privacy Tiers](https://github.com/bsaffel/moneybin/blob/main/docs/decisions/002-privacy-tiers.md) -- Encrypted Sync tier
 - [ADR-007: JSON over Parquet](https://github.com/bsaffel/moneybin/blob/main/docs/decisions/007-json-over-parquet-for-sync.md) -- Why JSON instead of Parquet
 - Server API endpoints: `POST /sync/link-token`, `POST /sync/exchange-token`, `POST /sync/trigger`, `GET /sync/status`, `GET /sync/data`

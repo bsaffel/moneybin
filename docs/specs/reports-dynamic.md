@@ -101,7 +101,11 @@ SQLMesh view at build time, so it cannot express runtime creation.
 
 New protected `app.*` table, paired per convention across
 `src/moneybin/sql/schema/app_user_reports.sql` and
-`src/moneybin/sql/migrations/V045__create_app_user_reports.py`, registered as
+`src/moneybin/sql/migrations/V045__create_app_user_reports.py`. `V045` is what
+this shipped with, taken as the next free version **at implementation time**
+after checking unmerged branches as well as `main` — which held higher
+reservations than the tip. Follow that rule rather than this number for the next
+table; a version pinned in a draft has already collided twice. Registered as
 `USER_REPORTS = TableRef("app", "user_reports", audience="interface")`.
 
 This draft prescribed `V041`, which #349 took for `app.export_destinations`
@@ -335,9 +339,9 @@ Save pipeline:
    count is taken from the text DuckDB executes. A saved report inherits both
    properties by calling the gate; it adds no statement check of its own.
 2. `is_data_query` — reject anything that is not a row-returning SELECT.
-   `validate_read_only_query` also admits `DESCRIBE`, `SHOW`, `PRAGMA`, and
-   `EXPLAIN` (`privacy/sql_query.py`), but step 5 below raises
-   `SqlSchemaError("Query has no SELECT projection")` on all four. Without this
+   `validate_read_only_query` also admits `DESCRIBE` and `SHOW`
+   (`privacy/sql_query.py`), but step 5 below raises
+   `SqlSchemaError("Query has no SELECT projection")` on both. Without this
    gate, "valid read-only SQL always saves" is false for statements the sole
    documented gate accepts — they would fail midway through the pipeline. The
    primitive already exists (`privacy/sql_lineage.py`) and `sql_query` already
@@ -1138,11 +1142,13 @@ inflates the one number here that is supposed to mean something:
   admission test: the implementing PR must first try an existing projection,
   method, batch, target state, report entry, or workflow umbrella, then supply
   the seven-question record, serialized byte delta, and evaluation evidence for
-  every remaining identity. The registry stays at 47 until that evidence passes;
-  the fallback is an existing admitted operation or CLI-only operator control,
-  not a speculative alias or an override of ADR-016's hard maximum.
+  every remaining identity. The 47-tool standard registry does not grow until
+  that evidence passes; the fallback is an existing admitted operation or
+  CLI-only operator control, not a speculative alias or an override of
+  ADR-016's hard maximum.
 
-  **Answered — none. The registry stays at 47.** All seven verbs ship CLI-only.
+  **Answered — no MCP identity was admitted, and the 47-tool standard registry
+  did not grow.** All seven verbs ship CLI-only.
   No admission record was submitted, so none was needed: the shipped
   `reports(report_id=..., parameters=...)` catalog/runner remains the only MCP
   identity in this area, and it already spans every tier — a saved report is

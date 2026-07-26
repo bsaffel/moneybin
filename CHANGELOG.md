@@ -364,6 +364,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reach the model provider as-is, and there is no consent gate yet.
 
 ### Security
+- **Fixed a redaction bypass that returned a bank routing number in the clear
+  through `sql_query` / `moneybin sql query` via `PRAGMA storage_info`.**
+  DuckDB reports per-segment `stats` for each column, and for a text column
+  those statistics are a cleartext prefix of the stored value: the
+  `routing_number` segment returned the first eight of its nine digits. An ABA
+  routing number's ninth digit is a check digit determined by the first eight,
+  so the whole number was recoverable. The statement ran at `sensitivity: "low"`
+  with no masking, and it reached tables in `raw`, `prep`, and the SQLMesh
+  physical schemas that a `SELECT` refuses outright. `PRAGMA` and `EXPLAIN` are
+  no longer accepted by either surface — neither exposes the table it reads as
+  a parseable reference, so the schema restriction could not see them, and
+  `EXPLAIN ANALYZE` additionally executed the query it was given. Use
+  `DESCRIBE <table>` or `SHOW ALL TABLES` to inspect schema; `moneybin db query`
+  still runs query plans as raw operator access.
+- **Applied the queryable-schema restriction to catalog statements.**
+  `DESCRIBE raw.plaid_transactions` returned an internal table's full column
+  list while `SELECT ... FROM raw.plaid_transactions` was refused; both are now
+  held to `core`, `app`, and `reports`. `SHOW ALL TABLES` still lists the whole
+  catalog, including column names and types, because it names no table for the
+  restriction to resolve — internal table *shape* remains visible, their row
+  values do not.
 - **Fixed a redaction bypass that returned bank routing numbers in the clear
   through `sql_query` / `moneybin sql query` when a query carried two
   statements.** Each statement in `SELECT 1; SELECT routing_number FROM
@@ -373,10 +394,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   executing the string unclassified at LOW. DuckDB returns the last
   statement's rows, so the class map described the first statement while the
   caller received the second. Multi-statement input is now refused, and the
-  metadata path routes on a positive DESCRIBE/SHOW/PRAGMA/EXPLAIN allowlist
-  rather than on "not a data query", so an unrecognized statement kind fails
-  closed instead of executing unmasked — the same default-open fallback that
-  produced the `EXCEPT`/`INTERSECT` leak below. (#346)
+  metadata path routes on a positive allowlist of statement kinds rather than
+  on "not a data query", so an unrecognized statement kind fails closed instead
+  of executing unmasked — the same default-open fallback that produced the
+  `EXCEPT`/`INTERSECT` leak below. (#346)
 - **Closed a second route to the same leak, where a `--` comment hid the extra
   statement.** The gates read the query with its whitespace collapsed, which
   erased the newline that ends a `--` comment: in `SELECT 1 AS a; -- note`

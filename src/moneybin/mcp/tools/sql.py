@@ -31,9 +31,11 @@ from moneybin.services.schema_catalog import build_schema_doc
 def sql_query(query: str) -> ResponseEnvelope[Any]:
     """Execute a read-only SQL query against the core, app, and reports schemas.
 
-    Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries are allowed.
-    Writes and file-access functions are blocked. Data queries may reference
-    the ``core``, ``app``, and ``reports`` schemas; other schemas are refused.
+    Only SELECT, WITH, DESCRIBE, and SHOW queries are allowed. Writes,
+    file-access functions, PRAGMA, and EXPLAIN are blocked. The ``core``,
+    ``app``, and ``reports`` schemas may be referenced; other schemas are
+    refused — by DESCRIBE just as by SELECT, so a catalog statement cannot
+    inspect a table the data path won't read.
 
     Amounts use the accounting convention: negative = expense, positive = income.
     Currency is named in summary.display_currency.
@@ -155,7 +157,7 @@ def register_sql_tools(mcp: FastMCP) -> None:
         sql_query,
         "sql_query",
         "Execute a read-only SQL query against the database. "
-        "Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN. "
+        "Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). "
         "Each output column is classified via SQL lineage; CRITICAL columns "
         "(account/routing numbers) are ALWAYS masked (****<last4>), exactly like "
         "the typed tools — raw SQL is not a privacy bypass. "

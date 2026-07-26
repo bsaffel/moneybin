@@ -506,7 +506,12 @@ def test_tables_outside_schemas_flags_raw_and_reports(populated_db: Database) ->
 
 
 def test_is_data_query_separates_data_from_metadata() -> None:
-    """SELECT/UNION are data queries; DESCRIBE/SHOW/PRAGMA/EXPLAIN are not."""
+    """SELECT/UNION are data queries; DESCRIBE/SHOW/PRAGMA/EXPLAIN are not.
+
+    Answering False here is not the same as being supported: DESCRIBE and SHOW
+    go on to the metadata path, while PRAGMA and EXPLAIN answer False to
+    ``is_metadata_query`` too and are refused outright.
+    """
     assert is_data_query(parse_cached("SELECT 1"))
     assert is_data_query(parse_cached("SELECT a FROM t UNION ALL SELECT b FROM u"))
     assert not is_data_query(parse_cached("DESCRIBE core.fct_transactions"))
@@ -516,22 +521,50 @@ def test_is_data_query_separates_data_from_metadata() -> None:
 
 
 def test_is_metadata_query_is_an_allowlist_not_a_fallback() -> None:
-    """Only the four metadata statement kinds are metadata — nothing else.
+    """Only DESCRIBE and SHOW are metadata — nothing else.
 
     ``not is_data_query(...)`` is not a safe stand-in for "this is metadata":
     the metadata path executes its string unclassified at LOW, so every
     expression kind sqlglot invents that isn't a SELECT would land there and
     return unredacted rows. That default-open reading is what let a top-level
     ``EXCEPT`` (see ``is_data_query``) and a ``;``-separated ``Block`` through.
-    A tree that is neither data nor one of these four must answer False so
+    A tree that is neither data nor one of these two must answer False so
     callers fail closed.
     """
     assert is_metadata_query(parse_cached("DESCRIBE core.fct_transactions"))
     assert is_metadata_query(parse_cached("SHOW TABLES"))
-    assert is_metadata_query(parse_cached("PRAGMA database_list"))
-    assert is_metadata_query(parse_cached("EXPLAIN SELECT 1"))
     assert not is_metadata_query(parse_cached("SELECT 1"))
     assert not is_metadata_query(parse_cached("SELECT 1; SELECT 2"))
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "PRAGMA database_list",
+        "PRAGMA storage_info('core.dim_accounts')",
+        "PRAGMA table_info('core.dim_accounts')",
+        "EXPLAIN SELECT 1",
+        "EXPLAIN SELECT a FROM raw.t",
+        "EXPLAIN ANALYZE SELECT count(*) FROM raw.t",
+    ],
+)
+def test_ungateable_kinds_are_neither_data_nor_metadata(sql: str) -> None:
+    """PRAGMA and EXPLAIN answer False to BOTH tests — that is what fails closed.
+
+    ``execute_sql_query`` refuses anything that is neither, so both answers have
+    to stay False for the refusal to hold. Asserting only
+    ``not is_metadata_query`` would keep passing if one were later misclassified
+    as DATA — where it would reach the lineage path and be classified against a
+    projection it does not have.
+
+    Both kinds hide their target from the schema gate: a pragma's is a string
+    literal inside ``exp.Anonymous``, and an EXPLAIN's payload stays unparsed
+    inside ``exp.Command``. Neither exposes an ``exp.Table``, so neither can be
+    gated by name, and no allowlist of verbs would change that.
+    """
+    tree = parse_cached(sql)
+    assert not is_data_query(tree)
+    assert not is_metadata_query(tree)
 
 
 @pytest.mark.parametrize("op", ["EXCEPT", "INTERSECT"])
