@@ -368,11 +368,16 @@ def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None
             # `sqlmesh__core.…`, `seeds`, or `main` to be refused. Physical
             # table names are discoverable via SHOW ALL TABLES, so that gap was
             # reachable in practice.
+            #
+            # Name only SQL both surfaces can run. This primitive backs the MCP
+            # tool and `moneybin sql query` alike, and there is no CLI
+            # counterpart to `sql_schema` — pointing at it would hand a CLI
+            # caller a tool it cannot invoke.
             hint=(
                 "Those three carry per-column privacy classifications, which is "
                 "what makes masking sound; every other schema (raw, prep, meta, "
-                "seeds, sqlmesh__*, main) is internal and has none. Call "
-                "sql_schema for the queryable catalog."
+                "seeds, sqlmesh__*, main) is internal and has none. "
+                "SHOW ALL TABLES lists what exists."
             ),
             details={"disallowed": sorted(set(disallowed))},
         )
