@@ -17,6 +17,7 @@ from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportSemantics, Runner
 from moneybin.reports._framework.registry import spec_of
 from moneybin.reports.definitions import ALL_REPORTS
+from moneybin.reports.definitions._shared import CASHFLOW_GROUPINGS
 from moneybin.reports.definitions.balance_drift import balance_drift
 from moneybin.reports.definitions.cash_flow import cash_flow
 from moneybin.reports.definitions.large_transactions import large_transactions
@@ -149,7 +150,13 @@ def _install_cash_flow_view(db: Database) -> None:
         SELECT * FROM (VALUES
             ('2026-01', 'A1', 'Alpha', 'Food', 'USD', 100.0, -30.0, 70.0, 5),
             ('2026-01', 'A1', 'Alpha', 'Travel', 'USD', 0.0, -50.0, -50.0, 2),
-            ('2026-01', 'A2', 'Alpha', 'Food', 'USD', 50.0, -10.0, 40.0, 3)
+            ('2026-01', 'A2', 'Alpha', 'Food', 'USD', 50.0, -10.0, 40.0, 3),
+            -- A1/Food again in EUR: the only row that can tell a runner
+            -- grouping by currency_code from one that drops it. Every `by`
+            -- branch collapses this into the USD row above if the column
+            -- leaves the GROUP BY, and the account/category assertions below
+            -- cannot see that happen.
+            ('2026-01', 'A1', 'Alpha', 'Food', 'EUR', 20.0, -8.0, 12.0, 1)
         ) AS t(year_month, account_id, account_name, category, currency_code,
                inflow, outflow, net, txn_count)
     """)
@@ -181,6 +188,30 @@ def test_cashflow_default_groups_by_account_and_category(db: Database) -> None:
         ("A1", "Travel"),
         ("A2", "Food"),
     }
+
+
+@pytest.mark.parametrize("by", sorted(CASHFLOW_GROUPINGS))
+def test_cashflow_never_blends_currencies_whichever_by_is_chosen(
+    db: Database, by: str
+) -> None:
+    """`currency_code` is in the GROUP BY for every `by` value, not just the default.
+
+    The runner assembles `group_cols` per branch, so each one is a separate
+    chance to drop the column — and dropping it re-blends the very rows the
+    view segmented. Parametrized across all four branches because a fix applied
+    to one is not a fix applied to the others. Parametrized over
+    CASHFLOW_GROUPINGS itself so a new grouping is covered on the commit that
+    adds it, rather than whenever someone remembers this list exists.
+    """
+    _install_cash_flow_view(db)
+
+    rows = _rows(db, cash_flow, by=by, from_month="2026-01", to_month="2026-12")
+
+    assert {r["currency_code"] for r in rows} == {"USD", "EUR"}
+    eur = [r for r in rows if r["currency_code"] == "EUR"]
+    assert len(eur) == 1
+    # 12.0 is the EUR row alone; 82.0 would be it summed into A1/Food's USD net.
+    assert eur[0]["net"] == 12.0
 
 
 def test_cashflow_defaults_to_12_month_window() -> None:

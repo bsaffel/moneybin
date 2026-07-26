@@ -42,7 +42,7 @@ coverage catalog.
 
 As implemented in July 2026, the map contains:
 
-- 49 non-exempt capability rows covering all 49 standard MCP tools.
+- 48 non-exempt capability rows covering all 49 standard MCP tools.
 - 178 implemented Typer paths, including hidden compatibility aliases, with
   exact equality against the live command tree after explicit unimplemented
   stubs are removed.

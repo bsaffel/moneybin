@@ -151,6 +151,61 @@ class TestReportsNetworth:
         assert payload["data"] == snapshot.records
 
     @pytest.mark.unit
+    def test_text_render_shows_one_headline_per_currency(
+        self, runner: CliRunner
+    ) -> None:
+        """Two currencies print two positions and no combined total.
+
+        This is the user-facing half of Requirement 7, and text is the only
+        surface where it can go wrong quietly: JSON carries per_currency
+        whatever the renderer does, while the text path previously printed the
+        first row's subtotal under a single "Net worth" heading — a number
+        that looked like the whole position and was one currency's share of it.
+        """
+        snapshot = _result([
+            {
+                "balance_date": date(2026, 1, 31),
+                "currency_code": "USD",
+                "net_worth": Decimal("12500.00"),
+                "total_assets": Decimal("15000.00"),
+                "total_liabilities": Decimal("-2500.00"),
+                "account_count": 2,
+                "account_id": "****acct_a",
+                "account_name": "Checking",
+                "account_balance": Decimal("5000.00"),
+                "observation_source": "ofx",
+            },
+            {
+                "balance_date": date(2026, 1, 31),
+                "currency_code": "EUR",
+                "net_worth": Decimal("800.00"),
+                "total_assets": Decimal("800.00"),
+                "total_liabilities": Decimal("0.00"),
+                "account_count": 1,
+                "account_id": "****acct_b",
+                "account_name": "Euro Savings",
+                "account_balance": Decimal("800.00"),
+                "observation_source": "ofx",
+            },
+        ])
+        with (
+            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = snapshot
+            result = runner.invoke(app, ["reports", "networth"])
+
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout + result.stderr
+        assert "USD" in out and "EUR" in out
+        assert "12500.00" in out and "800.00" in out
+        # 13300.00 is the blend; its absence is the assertion that matters.
+        assert "13300" not in out
+        assert "does not convert between currencies" in out
+
+    @pytest.mark.unit
     def test_account_filter(self, runner: CliRunner) -> None:
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),

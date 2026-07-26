@@ -24,7 +24,7 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.profile_settings_service import ProfileSettingsService
 
 
-@mcp_tool(domain="system")
+@mcp_tool(domain="profile")
 def profile() -> ResponseEnvelope[ProfilePayload]:
     """Read the active profile's name and its managed settings.
 
@@ -44,7 +44,7 @@ def profile() -> ResponseEnvelope[ProfilePayload]:
     )
 
 
-@mcp_tool(domain="system", read_only=False, idempotent=True)
+@mcp_tool(domain="profile", read_only=False, idempotent=True)
 def profile_set(home_currency: str) -> ResponseEnvelope[ProfileSetPayload]:
     """Set the profile's home currency.
 
@@ -54,6 +54,11 @@ def profile_set(home_currency: str) -> ResponseEnvelope[ProfileSetPayload]:
     This does not convert any stored amount — every transaction and balance
     keeps its original currency. It records which currency this profile
     considers home.
+
+    Writes one row in ``app.profile_settings`` for the active profile.
+    Reversible via system_audit_undo(operation_id). The agent-visible copy of
+    that disclosure is in ``register_profile_tools`` below — this docstring is
+    not served.
     """
     with get_database(read_only=False) as db:
         service = ProfileSettingsService(db)
@@ -80,5 +85,6 @@ def register_profile_tools(mcp: FastMCP) -> None:
         profile_set,
         "profile_set",
         "Set the profile's home currency (ISO 4217). Records which currency is "
-        "home; converts nothing — amounts keep their original currency.",
+        "home; converts nothing — amounts keep their original currency. Writes "
+        "app.profile_settings. Reverse with system_audit_undo(operation_id).",
     )

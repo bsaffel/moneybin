@@ -1,5 +1,5 @@
 {
-  "sha256": "a489bf37bba187233edcdca46e579560371ee8f5d4990bceef7b7c24157fd837",
+  "sha256": "b4f5d08d6ead64b5d5fcead60a75a7714ede3bb69ac23ac300e6fc88e2390c13",
   "tool_count": 49,
   "tools": [
     {
@@ -2527,7 +2527,7 @@
         "meta": {
           "fastmcp": {
             "tags": [
-              "system"
+              "profile"
             ]
           }
         },
@@ -2536,9 +2536,9 @@
       "description_bytes": 163,
       "input_schema_bytes": 62,
       "name": "profile",
-      "other_bytes": 57,
+      "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 418
+      "total_bytes": 419
     },
     {
       "annotation_bytes": 90,
@@ -2549,7 +2549,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Set the profile's home currency (ISO 4217). Records which currency is home; converts nothing \u2014 amounts keep their original currency.",
+        "description": "Set the profile's home currency (ISO 4217). Records which currency is home; converts nothing \u2014 amounts keep their original currency. Writes app.profile_settings. Reverse with system_audit_undo(operation_id).",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2566,18 +2566,18 @@
         "meta": {
           "fastmcp": {
             "tags": [
-              "system"
+              "profile"
             ]
           }
         },
         "name": "profile_set"
       },
-      "description_bytes": 134,
+      "description_bytes": 209,
       "input_schema_bytes": 196,
       "name": "profile_set",
-      "other_bytes": 61,
+      "other_bytes": 62,
       "output_schema_bytes": 0,
-      "total_bytes": 531
+      "total_bytes": 607
     },
     {
       "annotation_bytes": 90,
@@ -4999,5 +4999,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 52909
+  "total_bytes": 52986
 }

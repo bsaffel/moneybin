@@ -37,9 +37,13 @@ Today amounts are *implicitly* USD, inconsistently:
   bug**, not a hypothetical — M1K.1's guard closes it.
 
 **Update, 2026-07-17:** the capture gaps and the `dim_accounts` naming described
-above are closed (Requirements 1–3, 8). The no-silent-blend guard (Requirement 5)
-that fully closes the live correctness bug is not yet built, so reports can still
-blend currencies until it ships.
+above are closed (Requirements 1–3, 8).
+
+**Update, 2026-07-26:** the no-silent-blend guard (Requirement 5) shipped, closing
+the live correctness bug: every `reports.*` model that sums money segments per
+`currency_code`, and the envelope no longer claims USD for rows that are not.
+The account grain stopped defaulting to `'USD'` in the same pass, which is what
+makes an unknown currency representable end-to-end (Requirement 3).
 
 The design move is the same one [`investments-data-model.md`](investments-data-model.md)
 makes: **lock the schema, stage the algorithm.** The investments spec (implemented,
@@ -105,7 +109,7 @@ both failure modes while preserving original-currency facts.
 
 | Phase | Scope | Depends on | Notes |
 |---|---|---|---|
-| **M1K.1** | Currency capture & integrity (no conversion) | nothing | Independent of investments; **may be pulled into the first public release** (see [`roadmap.md`](../roadmap.md) §"The first public release"). Closes the live silent-blend bug. Requirements 1, 2, 3, 8 (capture, schema, account-currency inheritance) implemented 2026-07-17; Requirements 4–7 (home currency, no-silent-blend guard, doctor check, report guard) remain open. |
+| **M1K.1** | Currency capture & integrity (no conversion) | nothing | Independent of investments; **may be pulled into the first public release** (see [`roadmap.md`](../roadmap.md) §"The first public release"). Closes the live silent-blend bug. Requirements 1, 2, 3, 8 (capture, schema, account-currency inheritance) implemented 2026-07-17; Requirements 4–7 (home currency, no-silent-blend guard, doctor check, report guard) implemented 2026-07-25, and Requirement 3's account-grain `'USD'` fallback removed 2026-07-26 — **M1K.1 closed**, except the first-run-wizard locale default explicitly descoped under Requirement 4. |
 | **M1K.2** | Display conversion (auditable rates) | M1K.1 + **investments (M1J)** | The unifying conversion layer over both cash and investment grains. Sequenced after investments so it converts *everything* in one coherent pass. |
 | **M1K.3** | Realized FX gain/loss | M1K.2 + investments cost-basis engine | Reuses the investments lot/cost-basis machinery; the genuinely investment-shaped part. |
 
@@ -232,8 +236,7 @@ Numbered, testable. Tagged by phase.
    surfaced by `system doctor` (Req 6) for the user to assign. `home_currency` itself is
    established by the first-run wizard (Req 4), not the migration. Versioned migration under
    `src/moneybin/sql/migrations/`.
-   **Implemented 2026-07-17** for the capture/inheritance columns above; the Requirements 5
-   and 6 behaviors referenced in this item (segmentation, doctor surfacing) are still open.
+   **Implemented 2026-07-17** for the capture/inheritance columns above.
    **Completed 2026-07-26:** segmentation and doctor surfacing shipped with Requirements
    5–7, and the account-grain `'USD'` fallback that made "still `NULL`" impossible is
    gone (see Requirement 3). `tests/scenarios/test_multi_currency_report_segmentation.py::test_a_transaction_with_no_captured_currency_stays_unknown`

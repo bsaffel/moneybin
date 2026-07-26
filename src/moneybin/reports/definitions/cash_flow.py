@@ -130,7 +130,7 @@ def cash_flow(
     if to_month:
         sql += " AND year_month <= substr(?, 1, 7)"
         params.append(to_month)
-    sql += f" GROUP BY {group_cols} ORDER BY year_month"  # noqa: S608  # group_cols allowlist
+    sql += f" GROUP BY {group_cols} ORDER BY year_month, currency_code"  # noqa: S608  # group_cols allowlist
 
     actions = [
         "Rerun reports(report_id='core:cashflow', "

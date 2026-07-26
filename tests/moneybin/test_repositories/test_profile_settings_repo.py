@@ -9,6 +9,8 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+from moneybin.services.mutation_context import operation
+from moneybin.services.undo_service import UndoService
 from moneybin.sql.migrations.V044__create_app_profile_settings import migrate
 from tests.moneybin.migration_helpers import run_migration
 
@@ -125,3 +127,26 @@ def test_the_table_admits_only_one_settings_row(
         "SELECT scope, home_currency FROM app.profile_settings"
     ).fetchall()
     assert remaining == [("profile", "EUR")]
+
+
+def test_setting_the_home_currency_is_undoable(
+    db: Database, repo: ProfileSettingsRepo
+) -> None:
+    """`system_audit_undo` reverses a home-currency change, including to unset.
+
+    The generic BaseRepo inverse is what makes this work, but it is not free
+    here: `app.profile_settings` is a singleton guarded by a CHECK on `scope`,
+    so undoing the *first* write has to remove the only row rather than restore
+    a previous one. Both directions are asserted because they take different
+    branches — UPDATE restores a before-image, INSERT deletes.
+    """
+    with operation() as first_write:
+        repo.set_home_currency("EUR", actor="cli")
+    with operation() as second_write:
+        repo.set_home_currency("GBP", actor="cli")
+
+    UndoService(db).undo(second_write, actor="cli")
+    assert repo.get_home_currency() == "EUR"
+
+    UndoService(db).undo(first_write, actor="cli")
+    assert repo.get_home_currency() is None
