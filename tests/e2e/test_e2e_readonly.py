@@ -103,6 +103,28 @@ class TestNoDBCommands:
         result = run_cli("mcp", "list-prompts")
         result.assert_success()
 
+    def test_mcp_config_path_resolves_an_ambient_profile(
+        self, e2e_env: dict[str, str]
+    ) -> None:
+        """A globally-named profile satisfies a profile-scoped client path.
+
+        ``mcp config path --client claude-code`` reads the active profile
+        through ``get_current_profile(auto_resolve=False)``. That opts out of
+        the lazy resolver to avoid the first-run wizard — not out of a profile
+        the user named explicitly. ``scripts/claude-mcp.sh`` (``make
+        claude-mcp``) shells out to exactly this command with no local
+        ``--profile``, so an ambient ``MONEYBIN_PROFILE`` has to satisfy it.
+
+        Only a subprocess catches this: the in-process suite pins an active
+        profile, so ``auto_resolve=False`` always finds one there.
+        """
+        result = run_cli(
+            "mcp", "config", "path", "--client", "claude-code", env=e2e_env
+        )
+
+        result.assert_success()
+        assert "e2e-test" in result.stdout
+
     def test_mcp_config_show(self, e2e_env: dict[str, str]) -> None:
         result = run_cli("mcp", "config", env=e2e_env)
         result.assert_success()

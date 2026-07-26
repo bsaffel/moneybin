@@ -45,6 +45,34 @@ def _isolated_moneybin_home(  # pyright: ignore[reportUnusedFunction]
     monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
 
 
+@pytest.fixture(autouse=True)
+def _restore_logging_handlers() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]
+    """Undo the file handlers profile resolution installs.
+
+    Resolving a profile calls ``setup_observability``, which attaches root
+    and ``sqlmesh`` FileHandlers under *this* test's temporary
+    MONEYBIN_HOME. pytest deletes that tree afterwards, so a handler left
+    behind kills the next test in the same xdist worker with
+    ``FileNotFoundError`` the moment anything logs — far from the test that
+    actually leaked it.
+    """
+    root = logging.getLogger()
+    sqlmesh_logger = logging.getLogger("sqlmesh")
+    root_handlers = list(root.handlers)
+    root_level = root.level
+    sqlmesh_handlers = list(sqlmesh_logger.handlers)
+    sqlmesh_propagates = sqlmesh_logger.propagate
+
+    yield
+
+    for handler in (*root.handlers, *sqlmesh_logger.handlers):
+        if handler not in root_handlers and handler not in sqlmesh_handlers:
+            handler.close()
+    root.handlers, root.level = root_handlers, root_level
+    sqlmesh_logger.handlers = sqlmesh_handlers
+    sqlmesh_logger.propagate = sqlmesh_propagates
+
+
 @contextmanager
 def _create_profile(name: str) -> Generator[str, None, None]:
     """Create a profile directory and clean up after."""
@@ -58,24 +86,6 @@ def _create_profile(name: str) -> Generator[str, None, None]:
 
 class TestCLIProfileHandling:
     """Test suite for CLI profile handling."""
-
-    @pytest.fixture(autouse=True)
-    def _unresolved_profile(self) -> Generator[None, None, None]:
-        """Start from the profile state a real CLI process has: none set.
-
-        The suite-wide fixture pins ``_current_profile`` to "test", which
-        satisfies the gate on ``resolve_profile`` and so suppresses profile
-        resolution altogether. Every assertion here is about resolution
-        happening, so it has to run against an unresolved process.
-        """
-        import moneybin.config as cfg
-
-        saved = cfg._current_profile  # pyright: ignore[reportPrivateUsage]
-        cfg._current_profile = None  # pyright: ignore[reportPrivateUsage]
-        cfg._current_settings = None  # pyright: ignore[reportPrivateUsage]
-        yield
-        cfg._current_profile = saved  # pyright: ignore[reportPrivateUsage]
-        cfg._current_settings = None  # pyright: ignore[reportPrivateUsage]
 
     def test_default_profile_from_config(self, mocker: MockerFixture) -> None:
         """Test that CLI uses saved default profile when no flag is provided."""
@@ -255,39 +265,22 @@ class TestExplicitProfileConfiguresLogging:
     def profile(self) -> Generator[str, None, None]:
         """A real profile plus the process state a fresh CLI start has.
 
-        The suite-wide autouse fixture pins ``_current_profile`` to "test";
-        a real process begins with none set, and that is precisely the
-        precondition under which the eager set races the lazy resolver.
+        Clears the ``sqlmesh`` logger so each assertion measures what *this*
+        invocation configured. Restoring it afterwards belongs to the
+        module-level ``_restore_logging_handlers`` fixture.
         """
-        import moneybin.config as cfg
-
         name = normalize_profile_name("logging-probe")
         profile_dir = get_base_dir() / "profiles" / name
         profile_dir.mkdir(parents=True, exist_ok=True)
         generate_profile_config(profile_dir, name)
 
-        root = logging.getLogger()
         sqlmesh_logger = logging.getLogger("sqlmesh")
-        saved = (
-            list(root.handlers),
-            root.level,
-            list(sqlmesh_logger.handlers),
-            sqlmesh_logger.propagate,
-        )
-        cfg._current_profile = None  # pyright: ignore[reportPrivateUsage]
-        cfg._current_settings = None  # pyright: ignore[reportPrivateUsage]
         for handler in sqlmesh_logger.handlers[:]:
             sqlmesh_logger.removeHandler(handler)
         sqlmesh_logger.propagate = True
 
         with temp_profile(name):
             yield name
-
-        for handler in (*root.handlers, *sqlmesh_logger.handlers):
-            if handler not in saved[0] and handler not in saved[2]:
-                handler.close()
-        root.handlers, root.level = saved[0], saved[1]
-        sqlmesh_logger.handlers, sqlmesh_logger.propagate = saved[2], saved[3]
 
     @staticmethod
     def _run(profile: str) -> None:
