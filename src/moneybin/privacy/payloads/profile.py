@@ -37,3 +37,7 @@ class ProfileSetPayload:
     """Effective profile settings after one ``profile_set`` mutation."""
 
     home_currency: Annotated[str | None, DataClass.CURRENCY]
+    # The tool's description promises reversal via system_audit_undo; without
+    # the id here the caller would have to search audit history and guess which
+    # operation was theirs.
+    operation_id: Annotated[str, DataClass.RECORD_ID]

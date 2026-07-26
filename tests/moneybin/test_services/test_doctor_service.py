@@ -2076,6 +2076,39 @@ def test_currency_integrity_fails_on_a_transaction_with_unknown_currency(
 
 
 @pytest.mark.unit
+def test_currency_integrity_fails_on_a_balance_with_unknown_currency(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Balances are a third grain with its own count, message, and metric label.
+
+    A balance is where net worth comes from, so an unknown-currency balance is
+    the one most likely to be read as a number in the reader's own currency.
+    Every other currency_integrity test seeds NULL into transactions or
+    accounts, which leaves this branch's SQL, its "balance observation(s)"
+    wording, and its balances metric label unexercised.
+    """
+    # create_core_tables() installs fct_balances as an always-empty placeholder
+    # view (`WHERE FALSE`), which is why nothing has reached this branch: there
+    # is no base table to UPDATE. Replacing the view is the only way to put a
+    # row in front of the doctor at unit level.
+    doctor_db.execute("""
+        CREATE OR REPLACE VIEW core.fct_balances AS
+        SELECT 'ACC1'::VARCHAR AS account_id,
+               CURRENT_DATE AS balance_date,
+               100.00::DECIMAL(18, 2) AS balance,
+               'ofx'::VARCHAR AS source_type,
+               'b.qfx'::VARCHAR AS source_ref,
+               CURRENT_TIMESTAMP AS updated_at,
+               NULL::VARCHAR AS currency_code
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "1 balance observation(s)" in (result.detail or "")
+
+
+@pytest.mark.unit
 def test_currency_integrity_fails_on_an_account_with_unknown_currency(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

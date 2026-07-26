@@ -28,13 +28,13 @@ mcp = FastMCP(
         """\
         MoneyBin is a local-first personal finance platform. All data lives in DuckDB on the user's machine.
 
-        Standard tools cover system, reports, accounts, investments, transactions, reviews, taxonomy, import, sync, gsheet, exports, privacy, refresh, and sql. Names use domain_<sub>_verb with the verb last.
+        Standard tools cover system, profile, reports, accounts, investments, transactions, reviews, taxonomy, import, sync, gsheet, exports, privacy, refresh, and sql. Names use domain_<sub>_verb with the verb last.
 
         Call system_status first to inspect available data, freshness, review queues, and whether derived core.* tables need refresh_run. Call reports() without a report_id to discover registered analytics, then pass a stable report_id and parameters to run one. sql_query is the privacy-safe read-only SQL escape hatch; use sql_schema for its curated schema.
 
         Every tool returns {summary, data, actions}. Prefer batch tools; list parameters are capped per call, and summary.has_more plus actions explain continuation.
 
-        Money amounts are JSON numbers in summary.display_currency. The accounting convention is negative = expense, positive = income; transfers are exempt.
+        Money amounts are JSON numbers. summary.display_currency names their currency when every row shares one; it is null when a result spans more than one currency or the currency is unknown, and each row's own currency_code is then the authority. MoneyBin does not convert between currencies, so never add amounts whose currency_code differs. profile() reports which currency the user treats as home. The accounting convention is negative = expense, positive = income; transfers are exempt.
 
         Privacy tiers are low, medium, high, and critical and are logged per call. Critical account and routing fields remain masked; all other fields — including amounts, descriptions, and dates — reach the model provider as-is. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred.
 

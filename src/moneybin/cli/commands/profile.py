@@ -15,7 +15,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
-from moneybin.config import get_current_profile
+from moneybin.config import get_current_profile, set_current_profile
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.protocol.envelope import build_envelope
@@ -167,22 +167,36 @@ def profile_delete(
         raise typer.Exit(1) from e
 
 
-def _active_profile_name() -> str | None:
-    """The active profile name, or None when none is resolvable."""
+def _active_profile_name(svc: ProfileService) -> str | None:
+    """The profile this process would act on, or None when there is none.
+
+    `main_callback` deliberately skips lazy profile resolution for the `profile`
+    group — `profile create` must run before any profile exists — so module
+    state is unset unless `--profile`/`MONEYBIN_PROFILE` was explicit. Falling
+    back to the persisted default is what keeps this answer the same one
+    `ProfileService` gives; comparing the two as if they were one source of
+    truth is how `profile show` silently dropped its settings section.
+    """
     try:
         return get_current_profile(auto_resolve=False)
     except RuntimeError:
-        return None
+        return next(
+            (str(entry["name"]) for entry in svc.list() if entry["active"]), None
+        )
 
 
-def _read_managed_settings(info: Mapping[str, object]) -> dict[str, object]:
+def _read_managed_settings(
+    svc: ProfileService, info: Mapping[str, object]
+) -> dict[str, object]:
     """Managed settings for a profile, or ``{}`` when its database is unreachable.
 
     Only the active profile's database is open to this process, and only once
     it exists — `profile show other-profile` legitimately has nothing to read.
     """
-    if not info["database_exists"] or info["name"] != _active_profile_name():
+    name = str(info["name"])
+    if not info["database_exists"] or name != _active_profile_name(svc):
         return {}
+    set_current_profile(name)
     with get_database(read_only=True) as db:
         settings = ProfileSettingsService(db).get_settings()
     return {"home_currency": settings.home_currency}
@@ -204,11 +218,12 @@ def _set_managed_setting(
     silent wrong-target write, so that case errors instead.
     """
     info = svc.show(target)
-    if explicit_profile is not None and info["name"] != _active_profile_name():
+    name = str(info["name"])
+    if explicit_profile is not None and name != _active_profile_name(svc):
         raise UserError(
-            f"{key} is stored in profile {info['name']}'s database, which is not "
+            f"{key} is stored in profile {name}'s database, which is not "
             f"the active profile. Switch to it first: "
-            f"moneybin profile switch {info['name']}",
+            f"moneybin profile switch {name}",
             code=error_codes.MUTATION_INVALID_INPUT,
         )
     if not info["database_exists"]:
@@ -217,6 +232,11 @@ def _set_managed_setting(
             f"yet. Create it first: moneybin db init",
             code=error_codes.MUTATION_INVALID_INPUT,
         )
+    # get_database() resolves its path through get_settings(), which reads the
+    # activated profile — not `target`. The profile group skips lazy resolution,
+    # so without this the ordinary `profile set home_currency EUR` opens nothing
+    # and raises an unclassified RuntimeError out of get_settings().
+    set_current_profile(name)
     with get_database(read_only=False) as db:
         ProfileSettingsService(db).set_setting(key, value, actor="cli")
 
@@ -244,7 +264,7 @@ def profile_show(
     # possible moment for one.
     with handle_cli_errors(cli_actor="profile_show"):
         info = svc.show(name)
-        info["settings"] = _read_managed_settings(info)
+        info["settings"] = _read_managed_settings(svc, info)
         if output == OutputFormat.JSON:
             render_or_json(
                 build_envelope(data=info, sensitivity="low"),

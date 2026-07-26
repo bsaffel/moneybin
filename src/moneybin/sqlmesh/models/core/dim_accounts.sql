@@ -16,22 +16,33 @@ WITH ofx_balance_currency AS (
      how `merged` resolves the other descriptive fields. Without this the account
      grain has no currency of its own, and the terminal COALESCE below would have
      nothing to fall back on but a literal — which is exactly what
-     multi-currency.md Requirement 3 forbids ("never a blind 'USD'"). */
+     multi-currency.md Requirement 3 forbids ("never a blind 'USD'").
+
+     Scoped by (source_account_key, source_origin), like every other join onto
+     these staging views: a source-native <ACCTID> is unique per institution,
+     not globally. On the key alone, two banks that both call an account "1001"
+     collapse into one lookup row and the most recent one's currency is handed
+     to both canonical accounts — mislabeling one institution's money as the
+     other's, inside the mechanism built to stop exactly that. */
   SELECT
     source_account_key,
+    source_origin,
     ARG_MAX(currency_code, extracted_at) FILTER(WHERE
       NOT currency_code IS NULL) AS source_currency
   FROM prep.stg_ofx__balances
   GROUP BY
-    source_account_key
+    source_account_key,
+    source_origin
 ), plaid_balance_currency AS (
   SELECT
     source_account_key,
+    source_origin,
     ARG_MAX(COALESCE(iso_currency_code, unofficial_currency_code), extracted_at) FILTER(WHERE
       NOT COALESCE(iso_currency_code, unofficial_currency_code) IS NULL) AS source_currency
   FROM prep.stg_plaid__balances
   GROUP BY
-    source_account_key
+    source_account_key,
+    source_origin
 ), ofx_accounts AS (
   /* OFX <ORG> is a routing code, not a name — Chase publishes "B1", Wells Fargo
      "WF" — so resolve a display name from the exact <FID> via seeds.institutions
@@ -60,7 +71,7 @@ WITH ofx_balance_currency AS (
   LEFT JOIN seeds.institutions AS i
     ON i.fid = a.institution_fid
   LEFT JOIN ofx_balance_currency AS c
-    ON c.source_account_key = a.source_account_key
+    ON c.source_account_key = a.source_account_key AND c.source_origin = a.source_origin
 ), tabular_accounts AS (
   SELECT
     account_id,
@@ -109,7 +120,7 @@ WITH ofx_balance_currency AS (
     c.source_currency
   FROM prep.stg_plaid__accounts AS a
   LEFT JOIN plaid_balance_currency AS c
-    ON c.source_account_key = a.source_account_key
+    ON c.source_account_key = a.source_account_key AND c.source_origin = a.source_origin
 ), all_accounts AS (
   SELECT
     *

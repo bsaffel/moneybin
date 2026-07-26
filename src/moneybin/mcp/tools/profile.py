@@ -17,10 +17,12 @@ from fastmcp import FastMCP
 
 from moneybin.config import get_current_profile
 from moneybin.database import get_database
+from moneybin.errors import RecoveryAction
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.profile import ProfilePayload, ProfileSetPayload
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.mutation_context import current_operation_id
 from moneybin.services.profile_settings_service import ProfileSettingsService
 
 
@@ -64,9 +66,22 @@ def profile_set(home_currency: str) -> ResponseEnvelope[ProfileSetPayload]:
         service = ProfileSettingsService(db)
         service.set_setting("home_currency", home_currency, actor="mcp.profile_set")
         settings = service.get_settings()
+    operation_id = current_operation_id()
     return build_envelope(
-        data=ProfileSetPayload(home_currency=settings.home_currency),
+        data=ProfileSetPayload(
+            home_currency=settings.home_currency,
+            operation_id=operation_id,
+        ),
         actions=["Use profile() to see the profile's current settings"],
+        recovery_actions=[
+            RecoveryAction(
+                tool="system_audit_undo",
+                arguments={"operation_id": operation_id},
+                rationale="Restore the previous home currency.",
+                confidence="certain",
+                idempotent=False,
+            ),
+        ],
     )
 
 

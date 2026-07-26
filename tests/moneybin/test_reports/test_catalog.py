@@ -444,6 +444,33 @@ def test_sql_report_dispatch_returns_catalog_result_with_defaults() -> None:
     )
 
 
+def test_display_currency_sees_every_row_not_just_the_returned_page() -> None:
+    """Truncation must not turn a mixed-currency result into a confident one.
+
+    The page returned here is entirely USD; the rows past `max_rows` are EUR.
+    Resolving over the truncated slice would advertise display_currency "USD"
+    for a result that is not USD — the Requirement 5 blend re-entering at the
+    pagination boundary, where it is hardest to notice.
+    """
+    execution = build_catalog_execution(
+        _sql_report(),
+        parameters={"count": 3},
+        records=[
+            {"value": 1, "currency_code": "USD"},
+            {"value": 2, "currency_code": "USD"},
+            {"value": 3, "currency_code": "EUR"},
+        ],
+        columns=["value", "currency_code"],
+        column_types=["BIGINT", "VARCHAR"],
+        max_rows=2,
+        sql=None,
+    )
+
+    assert execution.truncated
+    assert [row["currency_code"] for row in execution.records] == ["USD", "USD"]
+    assert execution.display_currency is None
+
+
 def test_service_report_dispatch_uses_same_result_contract() -> None:
     executor = MagicMock()
     service_report = _service_report(executor)

@@ -16,7 +16,9 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from moneybin import config
 from moneybin.cli.commands.profile import app
+from moneybin.cli.main import app as root_app
 from moneybin.database import Database
 from moneybin.services.profile_settings_service import ProfileSettingsService
 
@@ -126,3 +128,65 @@ def test_managed_key_on_a_non_active_profile_is_refused(
 
     assert result.exit_code == 1
     assert "moneybin profile switch other" in caplog.text
+
+
+@pytest.fixture()
+def _no_ambient_profile(  # pyright: ignore[reportUnusedFunction]  # pytest fixture referenced by usefixtures name
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[None, None, None]:
+    """No profile activated in module state, as on a fresh CLI process."""
+    monkeypatch.setattr(config, "_current_profile", None, raising=False)
+    monkeypatch.setattr(config, "_profile_resolver", None, raising=False)
+    yield
+
+
+@pytest.mark.usefixtures("_no_ambient_profile")
+def test_profile_set_managed_key_works_without_an_explicit_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: Database
+) -> None:
+    """`moneybin profile set home_currency EUR` works in the single-profile case.
+
+    Driven through the root app so `main_callback` runs, and deliberately
+    without patching `get_current_profile`: the `profile` group skips lazy
+    profile resolution, so module state stays unset while ProfileService
+    resolves the persisted default from disk. Every existing test in this file
+    patches over that gap, which is why the suite stayed green while the
+    documented invocation raised an unclassified RuntimeError out of
+    get_settings().
+    """
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    monkeypatch.delenv("MONEYBIN_PROFILE", raising=False)
+    profile_dir = tmp_path / "profiles" / "alice"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "config.yaml").write_text("logging:\n  level: INFO\n")
+    (profile_dir / "moneybin.duckdb").touch()
+
+    # The real get_database() calls get_settings(), which needs an activated
+    # profile; substituting it here would hide exactly the failure under test.
+    # So record what the ambient profile *is* at the moment the command opens
+    # the database — unset is what raises RuntimeError in production.
+    opened_under: list[str | None] = []
+
+    @contextmanager
+    def _fake_get_database(**_kwargs: object) -> Generator[Database, None, None]:
+        try:
+            opened_under.append(config.get_current_profile(auto_resolve=False))
+        except RuntimeError:
+            opened_under.append(None)
+        yield db
+
+    with (
+        patch(
+            "moneybin.services.profile_service.get_default_profile",
+            return_value="alice",
+        ),
+        patch("moneybin.cli.commands.profile.get_database", _fake_get_database),
+    ):
+        result = runner.invoke(root_app, ["profile", "set", "home_currency", "EUR"])
+
+    assert result.exit_code == 0, result.output
+    assert opened_under == ["alice"], (
+        "the command must activate the profile it resolved before opening its "
+        "database; None here is the unclassified RuntimeError users hit"
+    )
+    assert ProfileSettingsService(db).get_settings().home_currency == "EUR"

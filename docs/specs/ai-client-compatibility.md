@@ -109,7 +109,7 @@ works.
   concrete installation path and a client surface we will smoke-test each
   release. Gemini CLI remains T1 through its transition to Antigravity CLI.
 - **Windsurf → T2.** Its 100-active-tool global cap accommodates all 49
-MoneyBin tools and leaves 53 tool slots for other servers. Stdio
+MoneyBin tools and leaves 51 tool slots for other servers. Stdio
 configuration remains documented; the tier reflects product momentum and
 release-gating cost, not a current compatibility defect.
 - **Antigravity → T1.** It supports the transports MoneyBin needs and provides
@@ -146,7 +146,7 @@ Stale guidance found during the review; all are routine fixes:
    documented behavior — file with logs against claude-ai-mcp.
 5. **Keep Windsurf headroom current.** The full 49-tool standard registry is
    visible at connect. Cascade's hard 100-active-tool global ceiling therefore
-   leaves 53 tool slots for every other connected server. Derive the MoneyBin
+   leaves 51 tool slots for every other connected server. Derive the MoneyBin
    count from `STANDARD_TOOL_NAMES` and the rendered standard snapshot; do not
    preserve a second compatibility count in install code or prose.
 6. **`docs/features.md` and `docs/specs/user-facing-doc-polish.md` are CORRECT

@@ -60,7 +60,7 @@ context-budget and host-native-deferral evidence.
 ## Why now
 
 The operating registry contains 49 tools, stays below Windsurf's
-100-active-tool global cap, and leaves 53 tool slots for other connected
+100-active-tool global cap, and leaves 51 tool slots for other connected
 servers. Its rendered metadata, tool identities, and zero advertised output
 schemas are frozen in the standard snapshot below.
 

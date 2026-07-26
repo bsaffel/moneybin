@@ -232,6 +232,9 @@ def build_catalog_execution(
     # to the "USD" envelope default there would relabel a segmented result as
     # one currency. Reports with no currency_code column say nothing either way
     # and keep the default.
+    # Resolved over every fetched row, not the truncated page: a mixed-currency
+    # result whose first `max_rows` happen to share one currency would otherwise
+    # advertise it confidently while the other currency's rows sit past the cap.
     declares_currency = "currency_code" in columns
     return CatalogReportExecution(
         report_id=spec.report_id,
@@ -251,7 +254,7 @@ def build_catalog_execution(
         semantics=spec.semantics,
         provenance=spec.semantics.provenance,
         **(
-            {"display_currency": _resolve_display_currency(limited)}
+            {"display_currency": _resolve_display_currency(records)}
             if declares_currency
             else {}
         ),
