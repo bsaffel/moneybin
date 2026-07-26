@@ -1,5 +1,8 @@
 {
   "enabledPlugins": {
-    "mcp-apps@mcp-apps": false
+    "mcp-apps@mcp-apps": false,
+    "playwright@claude-plugins-official": false,
+    "frontend-design@claude-plugins-official": false,
+    "claude-md-management@claude-plugins-official": false
   }
 }

@@ -198,6 +198,26 @@ guard may have silently started catching them. Pick fixture values that fail
 exactly one condition: a *long* pattern with a huge blast radius tests breadth;
 a *short* pattern with a tiny blast radius tests specificity.
 
+## Guard Design — How Guards Have Failed Here Before
+
+The failure modes above are one family. [`.claude/references/guard-design.md`](../references/guard-design.md)
+collects the rest, each traced to a defect that shipped or nearly shipped. Read
+it when writing or changing a guard, an invariant, a gate, or a tripwire — in
+particular before you:
+
+- **reuse an existing check** at a new call site (it does not inherit correctness
+  from its name);
+- **guard a hand-maintained list** (set equality, not a count or a subset);
+- **assert that prose matches a runtime fact** (derive from the constant, never a
+  literal);
+- **widen a gate, a schema, or a model's inputs** (enumerate the exposed set;
+  every existing predicate just acquired new subjects);
+- **route on `not is_X()`** into a branch that executes (default-open);
+- **write a regression test for a bug you found by reading** (restore the bug and
+  confirm it fails — boundary fixtures usually can't tell the versions apart);
+- **conclude a restoration matrix is green** (a failed revert and a no-match
+  `pytest -k` both report CAUGHT).
+
 ## Scenario Expectations Must Be Independently Derived
 
 Scenario assertions, expectations, and tolerances must be derived **independently of the program's output**. A test that codifies "what the code currently produces" only proves the code is consistent with itself — it does not prove the code is correct.

@@ -7,6 +7,8 @@ paths: ["CHANGELOG.md", "README.md", "docs/roadmap.md", "docs/features.md", "doc
 
 ## When a Feature Ships
 
+An `implemented` spec stays where it is. `docs/specs/archived/` is only for specs that were superseded or abandoned — shipping is not a reason to archive one, and moving it there hides the design record for a feature that now exists.
+
 After marking a spec as `implemented` (in both the spec file and `INDEX.md`), update public-facing documentation in this order:
 
 ### 1. CHANGELOG.md (user-visible changes)
@@ -49,6 +51,8 @@ The README is a storefront — it points to `docs/roadmap.md` rather than carryi
 - The Why-MoneyBin bullets need a small adjustment because a previously-promised feature now exists.
 
 **Do not** re-add an in-README roadmap matrix. **Do not** re-add a detailed "What Works Today" feature table. Those live in `docs/`.
+
+Read the README before editing it, and check its length after: the storefront holds at roughly 220–260 lines. Growth past that means content that belongs in `docs/` is accumulating in the shopfront window.
 
 See `docs/specs/user-facing-doc-polish.md` for the README structure rationale.
 

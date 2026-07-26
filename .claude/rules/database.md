@@ -79,6 +79,32 @@ and prevents inconsistent overrides between surfaces.
 Precedent: `core.dim_accounts` joins `app.account_settings` (per
 `docs/specs/account-management.md`).
 
+## Touchpoints When Changing a Core Fact or an App Write
+
+[`.claude/references/data-layer-touchpoints.md`](../references/data-layer-touchpoints.md)
+records what breaks silently — wrong numbers, split entities, NULLed columns —
+none of it erroring at the point of the mistake. Read it before you:
+
+- **add a column that reaches `core.fct_transactions`** — the `matched` layer
+  drops anything not listed explicitly, and five test fixtures hardcode the column
+  list;
+- **union a new balance source into `core.fct_balances`** — balances must arrive
+  pre-signed (liabilities negative); there is no type-based normalization, and a
+  nullable column passed through plants a false $0 anchor;
+- **carry a provider-specific id through `int_transactions__merged`** — it does
+  *not* pair with `canonical_source_type`, and keying a binding on that column
+  silently splits one entity into two;
+- **reuse a guarded-UPSERT write helper** for a caller that updates existing rows
+  — `upsert_guarded` overwrites *every* column, so an omitted argument NULLs it.
+
+## sqlglot Behavior
+
+[`.claude/references/sqlglot-behavior.md`](../references/sqlglot-behavior.md): no
+tree walk yields source order (`find_all` is BFS; DFS visits `limit` before
+`where`), so anything positional must read tokenizer offsets — and importing
+SQLMesh flips `$name` from `Placeholder` to `Parameter(Var)` process-wide, which
+is why a sqlglot-walking test can pass alone and fail only in the full suite.
+
 ## SQLMesh Invocation
 
 **Always use `sqlmesh_context()`** from `database.py`, never subprocess or raw `sqlmesh.Context()`. Subprocess calls break profile isolation — child processes read `~/.moneybin/config.yaml` and connect to the wrong database. Since SQLMesh's DuckDB config doesn't support `ENCRYPTION_KEY`, `sqlmesh_context()` injects a pre-connected encrypted adapter into `BaseDuckDBConnectionConfig._data_file_to_adapter` keyed by db path — SQLMesh reuses it instead of opening its own unencrypted connection. See `sqlmesh_context()` in `database.py` and `migrate_sqlmesh_state()` in `database.py`.
