@@ -27,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   parameter change; `reports delete` is undoable through `system audit undo`;
   `reports reclassify` lowers one column's masking floor on an explicit human
   confirmation, and its audit row records whether that confirmation came from the
-  prompt or from `--yes`.
+  prompt or from `--yes`. (#367)
 - **Every report can show its work: `moneybin reports explain <handle>` (M2I).**
   Returns the query in two forms — the executed form with parameters rendered as
   literals, and the stored template — plus each output column's privacy class and
@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   execution, so it gets no redaction pass and must not publish a value the report's
   own rows would mask.
   All seven `reports` verbs are CLI-only; the MCP registry stays at 47 tools.
+  (#367)
 - **Canonical bundle and registered-report export delivery (M1O).**
   `moneybin export bundle` and `moneybin export report` publish redacted CSV by
   default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named
@@ -370,6 +371,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reach the model provider as-is, and there is no consent gate yet.
 
 ### Security
+- **Fixed an under-classification leak that returned a bank routing number in
+  the clear through `sql_query` / `moneybin sql query` via `INTERSECT`.** The
+  set-operation fix in #330 treated `INTERSECT` like `EXCEPT` — values from the
+  left branch only, since the right operand filters rather than contributes. That
+  holds for `EXCEPT` and not for `INTERSECT`: a row survives an `INTERSECT` only
+  when the value is present on both sides, so the value it returns is the right
+  operand's as much as the left's. `SELECT '021000021' AS v INTERSECT SELECT
+  routing_number FROM core.dim_accounts` classified the column from the left
+  branch alone (`TXN_TYPE`, LOW), returned the real `routing_number` unmasked,
+  and so confirmed a guessed value. Both operands are now classified, `EXCEPT`
+  still takes the left branch alone, and the asymmetry is pinned by one test per
+  operator. (#367)
 - **Fixed a redaction bypass that returned a bank routing number in the clear
   through `sql_query` / `moneybin sql query` via `PRAGMA storage_info`.**
   DuckDB reports per-segment `stats` for each column, and for a text column
