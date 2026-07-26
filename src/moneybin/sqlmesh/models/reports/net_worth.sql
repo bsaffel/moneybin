@@ -9,7 +9,7 @@ MODEL (
 
 SELECT
   d.balance_date, /* Calendar date */
-  d.currency_code, /* ISO 4217 currency this row's totals are denominated in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5) */
+  d.currency_code, /* ISO 4217 currency this row's totals are denominated in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5). Rows sharing NULL pool into one segment and are summed: unknown is one bucket, not one bucket per real currency, so two accounts in genuinely different currencies that both lack one are added together. That is why an unknown currency is a `system doctor` FAILURE rather than a warning — the remedy is `accounts set --currency`, not a total MoneyBin could compute. Splitting the bucket is impossible by construction: nothing distinguishes two unknowns. Every other money-summing reports.* model pools the same way. */
   SUM(d.balance) AS net_worth, /* Total balance across included accounts denominated in currency_code */
   COUNT(DISTINCT d.account_id) AS account_count, /* Number of accounts contributing on this date in this currency */
   SUM(CASE WHEN d.balance > 0 THEN d.balance ELSE 0 END) AS total_assets, /* Sum of positive balances */

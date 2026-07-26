@@ -193,6 +193,19 @@ Numbered, testable. Tagged by phase.
    scopes its median/MAD baselines and its top-100 rank per currency — a pooled
    baseline compares unlike units and scores a typical charge in the
    smaller-denominated currency as an anomaly.
+   **Known limit — unknown pools into one segment.** `GROUP BY currency_code`
+   puts every row whose currency is unknown into a single `NULL` segment and
+   sums it. Two accounts denominated in genuinely different currencies that
+   both lack one are therefore added together, producing a figure in no unit.
+   This is not fixable by grouping: nothing distinguishes two unknowns from
+   each other. It is why Requirement 6 makes an unknown currency a **failure**
+   rather than a warning — the remedy is `accounts set --currency`, not an
+   aggregate MoneyBin could compute. Withholding the segment's totals instead
+   was considered and rejected: the population this creates is tabular imports
+   whose file carried no currency column, who are almost always single-currency,
+   and blanking net worth and cash flow for all of them to guard a case their
+   own doctor output already fails on trades a certain harm for a rare one.
+
 6. **Doctor check.** `system doctor` reports when a profile holds more than one
    distinct currency across transactions/accounts/balances, **flags accounts/rows whose
    currency is unknown (`NULL`) so the user can assign one before it can blend**, and flags
