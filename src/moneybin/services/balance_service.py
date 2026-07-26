@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+import duckdb
+
 from moneybin.database import Database
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionListPayload,
@@ -83,6 +85,26 @@ def _assertion_row_from_db(row: tuple[object, ...]) -> BalanceAssertionRow:
         created_at=str(row[4]),
         currency_code=row[5],  # type: ignore[arg-type]
     )
+
+
+def _assertion_sql(tail: str, *, with_currency: bool) -> str:
+    """The assertion SELECT, with the ``dim_accounts`` currency join optional.
+
+    ``tail`` is literal WHERE/ORDER text carrying ``?`` placeholders; every
+    value stays parameterized at the call site.
+    """
+    join = (
+        f"LEFT JOIN {DIM_ACCOUNTS.full_name} d USING (account_id)"
+        if with_currency
+        else ""
+    )
+    return f"""
+        SELECT a.account_id, a.assertion_date, a.balance, a.notes, a.created_at,
+               {"d.currency_code" if with_currency else "NULL"}
+        FROM {BALANCE_ASSERTIONS.full_name} a
+        {join}
+        {tail}
+    """  # noqa: S608  # tail is literal SQL; values bound via the params list
 
 
 def _assertion_snapshot_from_db(
@@ -205,25 +227,41 @@ class BalanceService:
             )
             return True
 
+    def _fetch_assertions(
+        self, tail: str, params: list[object]
+    ) -> list[tuple[object, ...]]:
+        """Assertion rows for ``tail``, degrading to an unknown currency.
+
+        The currency is joined from ``core.dim_accounts``, which is a SQLMesh
+        output rather than a schema-init table: a profile that has never run
+        ``transform`` does not have it. Answering without the currency is the
+        right degradation — raising would turn every assertion read on a fresh
+        profile into an unclassified catalog error the CLI renders as a
+        traceback.
+        """
+        try:
+            return self._db.execute(
+                _assertion_sql(tail, with_currency=True), params
+            ).fetchall()
+        except duckdb.CatalogException:
+            return self._db.execute(
+                _assertion_sql(tail, with_currency=False), params
+            ).fetchall()
+
     def list_assertions(
         self, account_id: str | None = None
     ) -> BalanceAssertionListPayload:
         """List assertions; optionally filter to a single account."""
-        sql = f"""
-            SELECT a.account_id, a.assertion_date, a.balance, a.notes,
-                   a.created_at, d.currency_code
-            FROM {BALANCE_ASSERTIONS.full_name} a
-            LEFT JOIN {DIM_ACCOUNTS.full_name} d USING (account_id)
-        """
         params: list[object] = []
+        tail = ""
         if account_id is not None:
-            sql += " WHERE a.account_id = ?"
+            tail = "WHERE a.account_id = ?"
             params.append(account_id)
-        sql += " ORDER BY a.account_id, a.assertion_date DESC"
+        tail += " ORDER BY a.account_id, a.assertion_date DESC"
         return BalanceAssertionListPayload(
             assertions=[
                 _assertion_row_from_db(row)
-                for row in self._db.execute(sql, params).fetchall()
+                for row in self._fetch_assertions(tail, params)
             ]
         )
 
@@ -254,19 +292,11 @@ class BalanceService:
         self, account_id: str, assertion_date: date
     ) -> BalanceAssertionRow | None:
         """Return one exact assertion, or ``None`` when absent."""
-        row = self._db.execute(
-            f"""
-            SELECT a.account_id, a.assertion_date, a.balance, a.notes,
-                   a.created_at, d.currency_code
-            FROM {BALANCE_ASSERTIONS.full_name} a
-            LEFT JOIN {DIM_ACCOUNTS.full_name} d USING (account_id)
-            WHERE a.account_id = ? AND a.assertion_date = ?
-            """,
+        rows = self._fetch_assertions(
+            "WHERE a.account_id = ? AND a.assertion_date = ?",
             [account_id, assertion_date],
-        ).fetchone()
-        if row is None:
-            return None
-        return _assertion_row_from_db(row)
+        )
+        return _assertion_row_from_db(rows[0]) if rows else None
 
     def _find_assertion_snapshot(
         self, account_id: str, assertion_date: date

@@ -494,3 +494,46 @@ class TestAccountValidation:
         svc = BalanceService(db)
         # Must not raise (contract also locked by the e2e delete-noop test).
         svc.delete_assertion("ACCTO1_typo", date(2026, 1, 31), actor="cli")
+
+
+class TestAssertionReadsBeforeTransform:
+    """Assertion reads on a profile whose transform has never run.
+
+    ``core.dim_accounts`` is a SQLMesh output, not a schema-init table: it does
+    not exist until the first ``moneybin transform``. Reading assertions must
+    still answer — with an unknown currency — rather than raise a catalog error
+    the CLI renders as a traceback.
+    """
+
+    @pytest.fixture()
+    def pre_transform_db(self, db: Database) -> Database:
+        """``app.balance_assertions`` populated, ``core.dim_accounts`` absent."""
+        db.execute(
+            """
+            INSERT INTO app.balance_assertions
+                (account_id, assertion_date, balance, notes)
+            VALUES ('acct_a', DATE '2026-01-31', 1234.56, 'from statement')
+            """
+        )
+        return db
+
+    @pytest.mark.unit
+    def test_list_assertions_answers_without_dim_accounts(
+        self, pre_transform_db: Database
+    ) -> None:
+        listed = BalanceService(pre_transform_db).list_assertions()
+        assert [
+            (row.account_id, row.balance, row.currency_code)
+            for row in listed.assertions
+        ] == [("acct_a", Decimal("1234.56"), None)]
+
+    @pytest.mark.unit
+    def test_get_assertion_answers_without_dim_accounts(
+        self, pre_transform_db: Database
+    ) -> None:
+        """The single-row twin of the list read, reached by ``get_assertion``."""
+        row = BalanceService(pre_transform_db).get_assertion(
+            "acct_a", date(2026, 1, 31)
+        )
+        assert row is not None
+        assert (row.balance, row.currency_code) == (Decimal("1234.56"), None)

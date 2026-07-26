@@ -54,8 +54,11 @@ class BalanceAssertionRow:
     # app.balance_assertions stores no currency: an assertion is a statement
     # about one account, so the account's currency is the only answer. Joined
     # from dim_accounts rather than stored, so it cannot drift from it.
-    # Nullable because dim_accounts.currency_code is (system doctor's
-    # currency_integrity check surfaces those).
+    # Nullable for two reasons: dim_accounts.currency_code itself is (system
+    # doctor's currency_integrity check surfaces those), and dim_accounts is a
+    # transform output that a profile which has never run one does not have —
+    # an assertion recorded before the first import still reads back, currency
+    # unknown, rather than raising.
     currency_code: Annotated[str | None, DataClass.CURRENCY]
 
 
