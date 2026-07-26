@@ -324,15 +324,20 @@ class TransformService:
         (:data:`_RAW_LANDING_COLUMNS`) against one global apply stamp —
         SQLMesh's own ``finalized_ts``, read with a plain SELECT because a
         ``Context`` costs seconds. One stamp rather than a per-model
-        comparison is what makes this safe to generalize: a global stamp
-        advances on every apply regardless of which model changed, so sources
-        on independent provider cadences cannot pin ``pending`` true in a way
-        no ``refresh_run`` can clear.
+        comparison is what makes this safe to generalize: it advances however
+        the warehouse was rebuilt, so sources on independent provider cadences
+        cannot pin ``pending`` true in a way no ``refresh_run`` can clear.
 
-        Both sides are absolute instants — the landing stamps cast through the
-        session zone DuckDB wrote them in, the apply stamp from epoch
-        milliseconds — so the comparison does not depend on either side's
-        wall-clock frame.
+        Two known limits, both narrower than the fail-open they replaced:
+
+        * SQLMesh finalizes the environment on *every* promotion of ``prod``,
+          selective ones included, so ``transform seed`` and ``transform
+          restate --model`` advance the stamp without rebuilding the models
+          that consume a newly landed row.
+        * The landing stamps are naive and resolve through the *reading*
+          session's zone while the apply stamp is an absolute epoch, so the
+          comparison holds only while the profile is read in the zone that
+          wrote it.
 
         ``last_apply_at`` (``dim_accounts.updated_at``) and
         ``latest_import_at`` (``import_log.completed_at``) remain
