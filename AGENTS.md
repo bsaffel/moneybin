@@ -123,7 +123,7 @@ Feature specs live in `docs/specs/`. The **[Spec Index](docs/specs/INDEX.md)** i
 
 ## Plans vs Specs
 
-Specs (intent, durable) live in `docs/specs/` and are tracked. Implementation plans (e.g. from `superpowers:writing-plans`) are ephemeral — write them to `private/plans/` (gitignored; `../../private/plans/` from a worktree), never the repo. Before discarding one, lift durable design rationale into a spec or ADR.
+Specs (intent, durable) live in `docs/specs/` and are tracked. Implementation plans (e.g. from `superpowers:writing-plans`) are ephemeral — write them to `private/plans/` (gitignored), never the repo. From a worktree, use the **absolute** repo-root path — a native worktree sits at `.claude/worktrees/<name>`, three levels down, so a relative `../../private/` silently resolves to `.claude/private/`. Before discarding one, lift durable design rationale into a spec or ADR.
 
 ## Configuration
 
