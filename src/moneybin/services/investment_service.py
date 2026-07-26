@@ -1256,6 +1256,8 @@ class InvestmentService:
             actor=actor,
         )
 
+        from moneybin.loaders import import_log
+
         written: list[str] = []
         self._db.begin()
         try:
@@ -1275,8 +1277,6 @@ class InvestmentService:
             self._db.commit()
         except Exception:
             self._db.rollback()
-            from moneybin.loaders import import_log
-
             import_log.finalize_import(
                 self._db,
                 import_id,
@@ -1285,6 +1285,17 @@ class InvestmentService:
                 rows_imported=0,
             )
             raise
+
+        # Close the batch this path opened. Without it the row stays 'importing'
+        # forever, which find_existing_import cannot tell apart from a genuinely
+        # crashed write — the exact distinction that function exists to draw.
+        import_log.finalize_import(
+            self._db,
+            import_id,
+            status="complete",
+            rows_total=len(written),
+            rows_imported=len(written),
+        )
 
         for row in rows:
             INVESTMENT_EVENTS_RECORDED_TOTAL.labels(type=str(row["type"])).inc()
@@ -1320,6 +1331,8 @@ class InvestmentService:
             actor=actor,
         )
 
+        from moneybin.loaders import import_log
+
         written: list[str] = []
         self._db.begin()
         try:
@@ -1340,8 +1353,6 @@ class InvestmentService:
             self._db.commit()
         except Exception:
             self._db.rollback()
-            from moneybin.loaders import import_log
-
             import_log.finalize_import(
                 self._db,
                 import_id,
@@ -1350,6 +1361,15 @@ class InvestmentService:
                 rows_imported=0,
             )
             raise
+
+        # Close the batch this path opened — see :meth:`_write_rows`.
+        import_log.finalize_import(
+            self._db,
+            import_id,
+            status="complete",
+            rows_total=len(written),
+            rows_imported=len(written),
+        )
 
         for _account_id, rows in groups:
             for row in rows:

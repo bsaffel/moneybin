@@ -795,6 +795,90 @@ class TestRecordEventSigns:
 
 
 # ---------------------------------------------------------------------------
+# record_event / record_events — import-log finalization
+# ---------------------------------------------------------------------------
+
+
+def _manual_investment_import_rows(db: Database) -> list[Any]:
+    return db.conn.execute(
+        """
+        SELECT status, rows_total, rows_imported, completed_at
+          FROM raw.import_log
+         WHERE format_name = 'manual_investment_entry'
+        """  # noqa: S608  # test read, static SQL
+    ).fetchall()
+
+
+class TestManualInvestmentImportFinalization:
+    """The success path must close the batch it opened.
+
+    Both write paths allocate the batch as ``importing`` and call
+    ``finalize_import`` only from their ``except`` branch, so a *successful*
+    record leaves a permanently non-terminal batch — ``import_status`` reports
+    ``rows_imported: null`` and ``completed_at`` never gets a value.
+    """
+
+    def _svc(self, db: Database) -> InvestmentService:
+        _add_account(db)
+        _add_security(db, security_id="sec_1", name="Apple Inc.", ticker="AAPL")
+        return db_service(db)
+
+    def _buy(self, **overrides: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "account_ref": "acct_brokerage",
+            "security_ref": "AAPL",
+            "type_": "buy",
+            "subtype": None,
+            "trade_date": date(2024, 1, 15),
+            "quantity": Decimal("10"),
+            "price": Decimal("150.00"),
+            "amount": Decimal("-1500.00"),
+            "fees": None,
+            "acquired": None,
+            "basis": None,
+            "event_group_id": None,
+            "currency_code": "USD",
+            "description": "buy aapl",
+        }
+        base.update(overrides)
+        return base
+
+    def test_record_event_finalizes_the_batch_on_the_success_path(
+        self, db: Database
+    ) -> None:
+        svc = self._svc(db)
+        ids = svc.record_event(**self._buy(), actor="cli", created_by="cli")
+        assert len(ids) == 1
+
+        rows = _manual_investment_import_rows(db)
+        assert len(rows) == 1
+        status, rows_total, rows_imported, completed_at = rows[0]
+        assert status == "complete"
+        assert rows_total == 1
+        assert rows_imported == 1
+        assert completed_at is not None
+
+    def test_record_events_finalizes_the_batch_on_the_success_path(
+        self, db: Database
+    ) -> None:
+        svc = self._svc(db)
+        result = svc.record_events(
+            [self._buy(), self._buy(quantity=Decimal("5"), amount=Decimal("-750.00"))],
+            actor="cli",
+            created_by="cli",
+        )
+        assert len(result.investment_transaction_ids) == 2
+
+        rows = _manual_investment_import_rows(db)
+        assert len(rows) == 1
+        status, rows_total, rows_imported, completed_at = rows[0]
+        assert status == "complete"
+        assert rows_total == 2
+        assert rows_imported == 2
+        assert completed_at is not None
+
+
+# ---------------------------------------------------------------------------
 # record_event — reinvest pairing (Req 6)
 # ---------------------------------------------------------------------------
 
