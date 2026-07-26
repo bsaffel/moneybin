@@ -8,9 +8,11 @@ synthesized runner), and the classification-downgrade capability from
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
+from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.errors import UserError
@@ -24,42 +26,8 @@ from moneybin.services.user_reports_service import (
     UserReportsService,
     is_weaker_class,
 )
-from tests.moneybin.db_helpers import create_core_tables_raw
 
 _ACCOUNTS_SQL = "SELECT account_id, routing_number FROM core.dim_accounts"
-
-
-@pytest.fixture
-def saved_db(db: Database) -> Database:
-    """The shared schema (including ``app.user_reports``) plus classified core rows."""
-    create_core_tables_raw(db.conn)
-    db.execute(
-        """
-        INSERT INTO core.dim_accounts
-            (account_id, routing_number, institution_name, display_name)
-        VALUES ('acct_11112222', '021000021', 'Test Bank', 'Checking'),
-               ('acct_99998888', '026009593', 'Other Bank', 'Savings')
-        """
-    )
-    db.execute(
-        """
-        INSERT INTO core.fct_transactions (transaction_id, account_id, amount)
-        VALUES ('t1', 'acct_11112222', -30.00),
-               ('t2', 'acct_99998888', 100.00)
-        """
-    )
-    # A `reports.*` view no `@report` declares. `reports_class_map()` has never
-    # heard of it, so its columns are the honest unresolvable case — the same
-    # fail-closed answer a package-contributed view would get today.
-    db.execute(
-        """
-        CREATE OR REPLACE VIEW reports.test_summary AS
-        SELECT account_id, SUM(amount) AS amount, COUNT(*) AS txn_count
-        FROM core.fct_transactions
-        GROUP BY account_id
-        """
-    )
-    return db
 
 
 @pytest.fixture
@@ -395,6 +363,58 @@ def test_a_saved_report_masks_a_critical_column_like_a_builtin_does(
     }
 
 
+#: R7's benign shapes. Expected values are counted by hand from the two rows
+#: ``saved_db`` inserts, never read back from a run. Each isolates one mechanism
+#: — a fixture that could be masked by two of them would prove neither:
+#:
+#: 1-2. The result name differs from the projection name (sqlglot calls the
+#:      first projection ``*``; DuckDB calls the column ``count_star()``), so
+#:      these two exercise the name bridge and nothing else.
+#: 3.   Aliased, so the name bridge is trivially satisfied — what must hold is
+#:      that lineage reaches *through* a scalar subquery to classify it.
+#: 4.   Also aliased, and the count sits inside a derived table: the
+#:      counting-aggregate rule must still fire there. ``_within_subquery``'s
+#:      documented misfire suppressed exactly this, leaving nothing to classify.
+_BENIGN_SHAPES = [
+    ("SELECT COUNT(*) FROM core.fct_transactions", "count_star()", 2),
+    ("SELECT MIN(amount) FROM core.fct_transactions", "min(amount)", Decimal("-30.00")),
+    ("SELECT (SELECT COUNT(*) FROM core.dim_accounts) AS n", "n", 2),
+    (
+        "SELECT n FROM (SELECT COUNT(*) AS n FROM core.fct_transactions) sub",
+        "n",
+        2,
+    ),
+]
+
+
+@pytest.mark.parametrize(("query_sql", "column", "expected"), _BENIGN_SHAPES)
+def test_a_saved_report_returns_a_real_value_for_an_unaliased_aggregate(
+    service: UserReportsService,
+    saved_db: Database,
+    query_sql: str,
+    column: str,
+    expected: object,
+) -> None:
+    """R7's over-masking twins: none of these three may come back ``'*****'``.
+
+    Each shape reaches ``redact_records`` under a *result* column name that
+    differs from the one lineage classified, and ``classify_columns`` fails
+    closed on a name it cannot find — so a broken name bridge does not raise, it
+    silently masks a count. No privacy test in this repo fails on over-masking,
+    which is why these are written deliberately rather than left implied by the
+    masking tests above.
+    """
+    report_id = _create(service, query_sql=query_sql)
+
+    result = get_report_catalog(saved_db).execute(
+        saved_db, report_id=report_id, parameters={}, limit=10
+    )
+
+    assert [row[column] for row in result.records] == [expected]
+    # Nothing masked, so R3's inspection hint must stay off the response too.
+    assert result.actions == []
+
+
 # ---------------------------------------------------------------------------
 # The downgrade capability — D5 / R5's strictly-weaker rule
 # ---------------------------------------------------------------------------
@@ -573,6 +593,136 @@ def test_every_admitted_downgrade_drops_the_tier_and_never_masks_more_weakly() -
     for from_class, to_class in admitted:
         assert to_class.tier < from_class.tier
         assert mask_strength(to_class) <= mask_strength(from_class)
+
+
+# ---------------------------------------------------------------------------
+# Observability — the spec's counters, asserted by the label they emit
+# ---------------------------------------------------------------------------
+
+
+def _counter(name: str, **labels: str) -> float:
+    return REGISTRY.get_sample_value(f"moneybin_{name}", labels or None) or 0.0
+
+
+def test_a_save_counts_itself_and_its_unresolved_columns(
+    service: UserReportsService,
+) -> None:
+    """The two counters the spec calls load-bearing, on one save.
+
+    Together they answer whether invisible classification is invisible *in
+    practice* or whether users are quietly accumulating masked columns — so the
+    unresolved counter must move by the column count, not by one per save.
+    """
+    before_saves = _counter("user_report_saves_total", outcome="saved")
+    before_columns = _counter("user_report_unresolved_columns_total")
+
+    service.create(
+        name="opaque_pair",
+        query_sql="SELECT account_id, amount FROM reports.test_summary",
+        actor="cli",
+    )
+
+    assert _counter("user_report_saves_total", outcome="saved") == before_saves + 1
+    assert _counter("user_report_unresolved_columns_total") == before_columns + 2
+
+
+def test_a_rejected_save_counts_as_rejected(service: UserReportsService) -> None:
+    before = _counter("user_report_saves_total", outcome="rejected")
+
+    with pytest.raises(UserError):
+        service.create(
+            name="bad", query_sql="DELETE FROM core.dim_accounts", actor="cli"
+        )
+
+    assert _counter("user_report_saves_total", outcome="rejected") == before + 1
+
+
+def test_running_a_saved_report_counts_against_the_user_tier(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """The ``tier`` label is what separates user reports from shipped ones."""
+    report_id = _create(service)
+    before = _counter("user_report_runs_total", tier="user", outcome="ok")
+
+    get_report_catalog(saved_db).execute(
+        saved_db, report_id=report_id, parameters={}, limit=10
+    )
+
+    assert _counter("user_report_runs_total", tier="user", outcome="ok") == before + 1
+
+
+def test_an_unknown_column_is_counted_apart_from_a_refused_downgrade(
+    service: UserReportsService,
+) -> None:
+    """A typo and an illegitimate downgrade are different signals.
+
+    ``refused_not_weaker`` is the abuse signal — someone trying to publish a
+    value everyone agrees is sensitive. Counting a misspelled column under it
+    inflates exactly the number that is supposed to mean something, and the
+    comparison ``is_weaker_class`` would make cannot even be evaluated for a
+    column that does not exist.
+    """
+    report_id = _create(service)
+    before_unknown = _counter(
+        "user_report_reclassify_total", outcome="refused_unknown_column"
+    )
+    before_weaker = _counter(
+        "user_report_reclassify_total", outcome="refused_not_weaker"
+    )
+
+    with pytest.raises(UserError):
+        service.reclassify(
+            report_id,
+            column="nonexistent",
+            to_class=DataClass.AGGREGATE,
+            reason="No such column.",
+            confirmed=True,
+            actor="cli",
+        )
+
+    assert (
+        _counter("user_report_reclassify_total", outcome="refused_unknown_column")
+        == before_unknown + 1
+    )
+    assert (
+        _counter("user_report_reclassify_total", outcome="refused_not_weaker")
+        == before_weaker
+    )
+
+
+def test_a_surface_that_could_not_ask_is_counted_apart_from_a_decline(
+    service: UserReportsService,
+) -> None:
+    """``no_elicitation`` vs ``declined`` — the spec's reason for both.
+
+    Conflating them hides a surface refusing every downgrade for mechanical
+    reasons (no prompt available) behind what looks like users saying no. Both
+    still refuse; only the recorded reason differs.
+    """
+    report_id = _create(
+        service, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
+    )
+    before_declined = _counter("user_report_reclassify_total", outcome="declined")
+    before_silent = _counter("user_report_reclassify_total", outcome="no_elicitation")
+
+    for confirmed in (False, None):
+        with pytest.raises(UserError) as raised:
+            service.reclassify(
+                report_id,
+                column="spend",
+                to_class=DataClass.AGGREGATE,
+                reason="A single total reveals no transaction amount.",
+                confirmed=confirmed,
+                actor="cli",
+            )
+        assert raised.value.code == "report_class_confirm_required"
+
+    assert _counter("user_report_reclassify_total", outcome="declined") == (
+        before_declined + 1
+    )
+    assert _counter("user_report_reclassify_total", outcome="no_elicitation") == (
+        before_silent + 1
+    )
 
 
 # ---------------------------------------------------------------------------

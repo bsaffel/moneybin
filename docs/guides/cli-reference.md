@@ -409,6 +409,60 @@ Cross-domain analytical views. All commands support `--output json` and return t
 | `reports large-transactions` | Large transactions, optionally anomaly-filtered. | `--top`, `--anomaly {none,account,category}` |
 | `reports balance-drift` | Where computed balance diverges from asserted balance. | `--account`, `--status {drift,warning,clean,no-data,all}`, `--since` |
 
+### Any report, any tier
+
+These seven work on built-in, extension, and your own saved reports alike.
+`HANDLE` is a report ID or a name, resolved in that order — so a name contested
+across tiers still has an ID that resolves.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `reports list` | Every registered report and its tier. | `--archived`, `--tier {builtin,extension,user}` |
+| `reports run HANDLE` | Run one report by ID or name. | `--param key=value` (repeatable), `--limit` |
+| `reports explain HANDLE` | The report's query in both forms, each column's privacy class and where it came from, its lineage, freshness, and whether it can be materialized. Runs nothing. | `--param key=value` |
+
+### Your own reports
+
+`create` / `set` / `delete` / `reclassify` act only on saved reports — a built-in
+is a file in the repo. Privacy classes are derived from the SQL and stored; you
+never declare them.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `reports create NAME` | Save a read-only SELECT as a durable report. | `--sql` or `--sql-file` (exactly one), `--description`, `--param name[:type][=default]` |
+| `reports set HANDLE` | Rename, re-describe, re-query, archive, or restore. Changing SQL or parameters re-derives the privacy contract. | `--name`, `--description`, `--sql`/`--sql-file`, `--param`, `--archive`, `--restore` |
+| `reports delete HANDLE` | Delete permanently; `system audit undo` restores it. | `--yes` |
+| `reports reclassify HANDLE` | Lower one column's masking floor. Audited, and the only path that does so. | `--column`, `--to`, `--reason` (all required), `--yes` |
+
+```bash
+uv run moneybin reports create coffee \
+  --sql "SELECT merchant_name, SUM(amount) AS spend
+           FROM core.fct_transactions
+          WHERE category = \$category
+          GROUP BY merchant_name" \
+  --param category:str \
+  --description "Spend per merchant in one category"
+
+uv run moneybin reports run coffee --param category=Dining
+uv run moneybin reports explain coffee --param category=Dining
+```
+
+Parameter types are `str` (default), `int`, `float`, `bool`, `date`, and
+`decimal`; a parameter is required unless it declares a default. Queries may read
+`core.*`, `app.*`, and `reports.*`, and must be row-returning and read-only.
+
+Two behaviours worth knowing before they surprise you:
+
+- **`reports explain` withholds a sensitive parameter's value.** The executed SQL
+  form renders a literal only for parameters classed at the lowest tier;
+  everything above keeps its `$name`. Rendering is not execution, so it never
+  passes through the redaction the report's own rows do — printing the value
+  there would publish what every result row masks.
+- **`reclassify --yes` states a human decision.** Nothing at a terminal can tell
+  a person from an assistant, so the flag is taken at its word. An assistant
+  driving this command must not supply it unasked. With no prompt available and
+  no `--yes`, the command refuses rather than assuming either answer.
+
 **Related guides:** [`../features.md`](../features.md#reports).
 
 ## Budget

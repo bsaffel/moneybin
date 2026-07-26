@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import click
 import typer
 
 from moneybin.cli.output import (
@@ -26,6 +27,9 @@ from moneybin.cli.output import (
 from moneybin.cli.utils import handle_cli_errors, render_rich_table
 from moneybin.database import get_database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+
+if TYPE_CHECKING:
+    from moneybin.privacy.taxonomy import DataClass
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +398,28 @@ def reports_delete(
     )
 
 
+def _prompt_for_downgrade(
+    name: object, column: str, to_class: DataClass
+) -> bool | None:
+    """Ask the human, or report that this surface could not ask.
+
+    ``typer.confirm`` aborts on EOF, which is what a piped or non-TTY invocation
+    without ``--yes`` produces. Letting that abort escape spends the interaction
+    on the word "Aborted!": no code, no envelope, no statement of what was
+    refused or why. Returning ``None`` routes it through the same refusal every
+    other caller gets — and counts it as a surface that could not ask rather
+    than as a human who said no.
+    """
+    try:
+        return typer.confirm(
+            f"Permanently lower masking of {column!r} to {to_class.value} for "
+            f"{name}, on every future run?",
+            err=True,
+        )
+    except click.Abort:
+        return None
+
+
 def reports_reclassify(
     handle: str = typer.Argument(..., help="Report ID or name of a saved report."),
     column: str = typer.Option(..., "--column", help="Output column to downgrade."),
@@ -436,10 +462,8 @@ def reports_reclassify(
         with get_database(read_only=False) as db:
             service = UserReportsService(db)
             row = service.resolve(handle)
-            confirmed = yes or typer.confirm(
-                f"Permanently lower masking of {column!r} to {to_class.value} for "
-                f"{row['name']}, on every future run?",
-                err=True,
+            confirmed = (
+                True if yes else _prompt_for_downgrade(row["name"], column, to_class)
             )
             outcome = service.reclassify(
                 str(row["report_id"]),

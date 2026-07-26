@@ -1,10 +1,15 @@
 """Run a report: execute the runner's query, classify, redact, summarize.
 
-The generic execution path shared by the generated MCP tool and CLI command.
-It mirrors ``execute_sql_query`` — same ``redact_records`` /
-``derive_query_tier`` bottleneck — but the SQL comes from a report runner and
-the per-column classes come from the report's view (see ``classify``) rather
-than live lineage on a user query.
+The steps every tier's rows pass through — built-in, extension, and user-created
+alike (R7 of ``docs/specs/reports-dynamic.md``). It mirrors ``execute_sql_query``
+— same ``redact_records`` / ``derive_query_tier`` bottleneck — but the SQL comes
+from a report runner and the per-column classes come from the report's declared
+map (see ``classify``) rather than live lineage on a user query.
+
+Production reaches these steps through ``ReportCatalog.execute``, which owns
+reference resolution and parameter validation; the single ``reports`` MCP tool
+and every CLI command go that way. ``run_report`` composes the same steps for a
+caller that already holds a spec and wants neither — today only tests.
 """
 
 from __future__ import annotations

@@ -215,6 +215,26 @@ def test_create_reports_unresolved_columns_as_a_warning_not_a_failure() -> None:
     assert "mystery" in result.output
 
 
+def test_create_says_nothing_extra_when_every_column_resolved() -> None:
+    """R3's other half: silence everywhere the inference was not uncertain.
+
+    A confirm or note that fires on the clean path is the failure mode
+    ``design-principles.md`` names — it trains the reader to skip the one that
+    matters. Asserting on the marker rather than on exact prose keeps this from
+    breaking on a wording change while still failing on a spurious note.
+    """
+    service = _service(create=_save_outcome())
+
+    with _patch_database(), _patch_service(service):
+        result = runner.invoke(
+            app,
+            ["reports", "create", "my_accounts", "--sql", "SELECT 1 AS n"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "⚠️" not in result.output
+
+
 def test_create_rejects_an_unsupported_parameter_type() -> None:
     with _patch_database(), _patch_service(_service(create=_save_outcome())):
         result = runner.invoke(
@@ -390,6 +410,45 @@ def test_reclassify_passes_the_prompt_answer_through_to_the_service(
         )
 
     assert service.reclassify.call_args.kwargs["confirmed"] is confirmed
+
+
+def test_reclassify_reports_that_it_could_not_ask_rather_than_aborting() -> None:
+    """A piped invocation with no ``--yes`` has nobody to ask.
+
+    ``typer.confirm`` aborts on EOF, and an escaping abort spends the whole
+    interaction on the word "Aborted!" — no error code, no envelope, nothing
+    naming what was refused. ``None`` routes it through the service's ordinary
+    refusal instead, which is also what separates "could not ask" from "a human
+    said no" in the counter.
+    """
+    service = _service(
+        reclassify=ReclassifyOutcome(
+            report_id=_ROW["report_id"],
+            column="spend",
+            from_class=DataClass.TXN_AMOUNT,
+            to_class=DataClass.AGGREGATE,
+        )
+    )
+
+    with _patch_database(), _patch_service(service):
+        result = runner.invoke(
+            app,
+            [
+                "reports",
+                "reclassify",
+                "my_accounts",
+                "--column",
+                "spend",
+                "--to",
+                "aggregate",
+                "--reason",
+                "A single total reveals no transaction amount.",
+            ],
+            input="",
+        )
+
+    assert service.reclassify.call_args.kwargs["confirmed"] is None
+    assert "Aborted" not in result.output
 
 
 def test_reclassify_treats_yes_as_the_confirmation() -> None:

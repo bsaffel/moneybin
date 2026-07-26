@@ -11,6 +11,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Save your own reports (M2P.2).** `moneybin reports create <name> --sql "..."`
+  turns a query into a durable report that behaves like a shipped one: it appears
+  in `reports list`, runs through `reports run` or `moneybin export report`, and
+  is masked by the same rules. You never declare privacy classes — MoneyBin reads
+  them off the SQL at save time and stores them, so a routing number in your own
+  report is masked exactly as it is in a built-in. If an upstream column is later
+  reclassified as more sensitive, the saved report notices and masks that column
+  rather than serving the stale class. `reports set` re-derives on any SQL or
+  parameter change; `reports delete` is undoable through `system audit undo`;
+  `reports reclassify` lowers one column's masking floor on an explicit human
+  confirmation and records it.
+- **Every report can show its work: `moneybin reports explain <handle>` (M2I).**
+  Returns the query in two forms — the executed form with parameters rendered as
+  literals, and the stored template — plus each output column's privacy class and
+  which upstream column it descends from, the tables it reads, when its
+  classification was last derived, and whether it can be promoted to a
+  materialized view (with the reason when it cannot). Works for built-in,
+  extension, and saved reports alike, and runs nothing. A parameter classed above
+  the lowest tier keeps its placeholder in the executed form: rendering is not
+  execution, so it gets no redaction pass and must not publish a value the report's
+  own rows would mask.
+  All seven `reports` verbs are CLI-only; the MCP registry stays at 47 tools.
 - **Canonical bundle and registered-report export delivery (M1O).**
   `moneybin export bundle` and `moneybin export report` publish redacted CSV by
   default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named

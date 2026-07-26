@@ -71,7 +71,9 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 
 ## Reports
 
-Eight registered report routes back both the CLI and MCP surfaces. Six use SQL runners over curated `reports.*` views; the two net-worth routes are service-backed and share `reports.net_worth`. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
+Eight registered report routes back both the CLI and MCP surfaces, and you can
+save your own beside them (below). Six use SQL runners over curated `reports.*`
+views; the two net-worth routes are service-backed and share `reports.net_worth`. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
 
 The six SQL-runner routes use declarative `@report` definitions; the two service-backed net-worth routes keep their specialized execution path. The shared catalog derives parameters and masking without adding MCP tool slots. See [Extensibility](#extensibility).
 
@@ -82,6 +84,30 @@ The six SQL-runner routes use declarative `@report` definitions; the two service
 - **`reports.merchant_activity`** — Per-merchant spend rollup.
 - **`reports.large_transactions`** — Outlier filter for human review.
 - **`reports.balance_drift`** — Drift between asserted and computed balances.
+
+### Your own reports
+
+`moneybin reports create <name> --sql "SELECT ..."` saves a query as a durable
+report alongside the eight above. It appears in `reports list`, runs through
+`reports run`, and exports through `moneybin export report` — the same catalog,
+the same response envelope, the same masking. You never declare privacy classes:
+MoneyBin derives them from the SQL at save time and stores them, so a routing
+number in your own report is masked exactly as in a built-in one. If an upstream
+column is later reclassified as more sensitive, the saved report masks that
+column instead of serving the class it captured. `reports set` re-derives on any
+SQL or parameter change, `reports delete` is undoable via `system audit undo`,
+and `reports reclassify` lowers one column's masking floor on an explicit human
+confirmation — audited, and the only path that does so.
+
+Parameters are declared and bound by name: `--param month:str` at create,
+`--param month=2026-01` at run. Reads are limited to `core.*`, `app.*`, and
+`reports.*`, and only row-returning read-only SELECTs are accepted.
+
+- **`moneybin reports explain <handle>`** — Any report, any tier, states its
+  work: the query in both an executed and a stored-template form, each output
+  column's privacy class and the upstream column it descends from, the tables it
+  reads, when its classification was derived, and whether it can be promoted to a
+  materialized view. Runs nothing. -> [CLI reference](guides/cli-reference.md)
 
 ## Data export
 

@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
@@ -108,6 +109,16 @@ def repo(db: Database) -> UserReportsRepo:
     return UserReportsRepo(db)
 
 
+def _metric(action: str) -> float:
+    return (
+        REGISTRY.get_sample_value(
+            "moneybin_app_mutation_audit_emitted_total",
+            {"repository": "user_reports", "action": action},
+        )
+        or 0.0
+    )
+
+
 def _audit_rows_for(db: Database, report_id: str) -> list[tuple[Any, ...]]:
     return db.execute(
         """
@@ -142,6 +153,8 @@ def test_create_stores_the_report_and_audits_the_complete_row(
     db: Database, repo: UserReportsRepo
 ) -> None:
     """A save writes one row and pairs it with one complete audit image."""
+    before_metric = _metric("user_report.create")
+
     report_id = _create(repo)
 
     stored = repo.get(report_id)
@@ -161,6 +174,7 @@ def test_create_stores_the_report_and_audits_the_complete_row(
     assert before is None
     assert json.loads(after)["class_fingerprint"] == "fp-0001"
     assert actor == "cli"
+    assert _metric("user_report.create") == before_metric + 1
 
 
 def test_set_captures_every_column_of_the_pre_mutation_row(
@@ -168,9 +182,11 @@ def test_set_captures_every_column_of_the_pre_mutation_row(
 ) -> None:
     """``before_value`` is the full prior row, not a diff of what changed."""
     report_id = _create(repo)
+    before_metric = _metric("user_report.set")
 
     repo.set(report_id, description="Rewritten", actor="cli")
 
+    assert _metric("user_report.set") == before_metric + 1
     before = json.loads(_audit_rows_for(db, report_id)[-1][4])
     assert set(before) == {
         "report_id",
@@ -257,9 +273,11 @@ def test_delete_captures_the_row_it_removed(
 ) -> None:
     """A hard delete audits the complete row so the generic undo can restore it."""
     report_id = _create(repo)
+    before_metric = _metric("user_report.delete")
 
     repo.delete(report_id, actor="cli")
 
+    assert _metric("user_report.delete") == before_metric + 1
     assert repo.get(report_id) is None
     action, _, _, _, before, after, _ = _audit_rows_for(db, report_id)[-1]
     assert action == "user_report.delete"

@@ -1,9 +1,11 @@
 # Dynamic Reports — The Ask→Save→Verify Loop
 
 > Child spec of [`reports-overview.md`](reports-overview.md) (milestone **M2P.2**).
-> Status: draft
+> Status: implemented
 > Type: Feature
-> Last updated: 2026-07-19 — initial spec.
+> Last updated: 2026-07-26 — implemented. Seven drifts fixed against the code as
+> built; R2 step 6, R4's "no DB" claim, R6's `core:networth` provenance, and R7's
+> naming of the shared path were corrected from reproduction rather than review.
 > Companions: [`reports-foundation.md`](reports-foundation.md) (M2P.1, the
 > contract this builds on), [`app-integrity-invariant.md`](app-integrity-invariant.md)
 > (Invariant 10), [`queryable-internal-schemas.md`](queryable-internal-schemas.md)
@@ -870,10 +872,11 @@ two tiers cannot be made uniform here:
 The third kind is why R9's "provenance renders identically across tiers" is
 bounded rather than absolute, and the bound is worth stating plainly: a
 service-backed report cannot feed the brass SQL chip a query, because it has
-none. Report inspection returns its declared `semantics.provenance` — the
-`reports.*` view names the service reads (`("reports.net_worth",)` for
-`core:networth`) — and an explicit `sql_unavailable` reason naming the
-service-backed kind. A chip that renders "derived by `NetworthService` from
+none. Report inspection returns its declared `semantics.provenance` — every
+relation the service reads, which for `core:networth` is three
+(`reports.net_worth`, `core.fct_balances_daily`, `core.dim_accounts`) and for
+`core:networth_history` is one (`reports.net_worth`) — and an explicit
+`sql_unavailable` reason naming the service-backed kind. A chip that renders "derived by `NetworthService` from
 `reports.net_worth`" tells the truth; one that fabricates a plausible `SELECT`
 to fill the slot does not, and the whole point of the provenance chip is that
 it can be checked.
@@ -888,8 +891,17 @@ new tool.
 ### R7 — Parity is enforced by test, not by intention
 
 A test asserts that a user-created report and a built-in report execute through
-the same `run_report` call path and produce structurally identical envelopes. A
-change that forks the execution path fails CI rather than passing review.
+the same call path and produce structurally identical envelopes. A change that
+forks the execution path fails CI rather than passing review.
+
+The path is `ReportCatalog.execute` → `execute_catalog_report` →
+`classify_columns` → `redact_catalog_execution` → `redact_records`, and the test
+pins it by name as well as asserting the two tiers agree — two tiers that forked
+the same wrong way would otherwise satisfy an equality-only assertion. (An
+earlier draft of this requirement named `run_report`. That function is the same
+composition of the last four steps and remains the way a test executes one spec
+directly, but no production caller reaches it: every surface goes through the
+catalog, which owns reference resolution and parameter validation.)
 
 Per the fail-closed lesson from M2P.1, classification tests carry **benign**
 fixtures in the same PR as the guards: unaliased `COUNT(*)`, unaliased
@@ -1060,7 +1072,7 @@ remains the only MCP identity this draft assumes.
 | `moneybin_user_report_runs_total` | Counter | `tier`, `outcome` |
 | `moneybin_user_report_unresolved_columns_total` | Counter | — |
 | `moneybin_user_report_drift_detected_total` | Counter | `resolution` (`equal`, `failed_closed`) |
-| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed`, `declined`, `refused_not_weaker`, `no_elicitation`) |
+| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed`, `declined`, `refused_not_weaker`, `refused_unknown_column`, `no_elicitation`) |
 
 The unresolved-columns and drift counters carry the load: together they say
 whether the invisible classification is invisible in practice, or whether users
@@ -1073,6 +1085,20 @@ formality people click through — the failure mode `design-principles.md` warns
 about when a confirm is not targeted at genuine uncertainty. `no_elicitation`
 separates clients that cannot confirm from humans who said no; conflating them
 would hide a surface that is refusing every downgrade for mechanical reasons.
+
+Two label values were added by the implementing PR, both for the same reason —
+`refused_not_weaker` is the abuse signal, and anything else counted under it
+inflates the one number here that is supposed to mean something:
+
+- **`refused_unknown_column`** — the named column is not in the report's output.
+  The comparison `refused_not_weaker` describes cannot even be evaluated, so this
+  is a reference error, not an attempted weakening.
+- **`no_elicitation` is reachable on the CLI**, not only through a future MCP
+  identity. A piped or non-TTY invocation with no `--yes` has nobody to ask, and
+  the service is handed `confirmed=None` rather than `False` so the refusal is
+  recorded as mechanical. `--yes` states a human decision; an assistant driving
+  the command must not supply it unasked, which is exactly why the surface must
+  not quietly reinterpret "could not ask" as "said no".
 
 ## Open questions
 
@@ -1115,3 +1141,28 @@ would hide a surface that is refusing every downgrade for mechanical reasons.
   every remaining identity. The registry stays at 47 until that evidence passes;
   the fallback is an existing admitted operation or CLI-only operator control,
   not a speculative alias or an override of ADR-016's hard maximum.
+
+  **Answered — none. The registry stays at 47.** All seven verbs ship CLI-only.
+  No admission record was submitted, so none was needed: the shipped
+  `reports(report_id=..., parameters=...)` catalog/runner remains the only MCP
+  identity in this area, and it already spans every tier — a saved report is
+  listed, resolved, and executed through it by construction (R5), which is what
+  made execution parity exact rather than approximate.
+
+  Two capabilities are filed `admission-pending` in
+  [`moneybin-capabilities.md`](moneybin-capabilities.md) — saved-report lifecycle
+  and report verification. That category means the record is not yet written, not
+  that the capability was refused; it is deliberately not `operator-territory`,
+  because filing a registry-admission question under a permanent policy exception
+  would write a false reason into a CI-checked artifact.
+
+  One consequence worth stating plainly, because it looks like a gap: the
+  classification downgrade is the *only* verb whose CLI-only status is load-bearing
+  rather than pending. `design-principles.md` forbids agent self-accept of a
+  downgrade, and nothing at a terminal distinguishes a human from an agent — so
+  `--yes` is a claim the surface cannot verify. MCP elicitation would route the
+  confirmation to a human structurally, which is why admission would *improve*
+  that verb's trust story rather than weaken it. Until then the surface does what
+  it can: the constraint is in `--help`, `confirmed` is a required service
+  argument, and a surface with no way to ask records `no_elicitation` instead of
+  inventing an answer.

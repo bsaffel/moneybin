@@ -295,7 +295,7 @@ class UserReportsService:
         column: str,
         to_class: DataClass,
         reason: str,
-        confirmed: bool,
+        confirmed: bool | None,
         actor: str,
     ) -> ReclassifyOutcome:
         """Lower one column's masking floor, permanently, on human approval.
@@ -306,20 +306,33 @@ class UserReportsService:
         of a ``reason`` the caller supplies about its own request — which is why
         ``design-principles.md`` puts it outside agent self-accept entirely.
 
+        Three states, not two: ``True`` approves, ``False`` is a human declining,
+        and ``None`` is a surface that had no way to ask. All three are honoured
+        identically — only ``True`` proceeds — but the last two are counted
+        apart, because a surface refusing every downgrade for mechanical reasons
+        would otherwise read as users saying no.
+
         ``from`` is the class **derivation currently produces**, not the stored
         (possibly already-downgraded) one, so an approval is always recorded
         against the floor it actually waived.
         """
         row = self.resolve(handle)
         report_id = str(row["report_id"])
-        if not confirmed:
-            metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(outcome="declined").inc()
+        if confirmed is not True:
+            metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
+                outcome="declined" if confirmed is False else "no_elicitation"
+            ).inc()
             raise UserError(
                 "A classification downgrade needs explicit confirmation.",
                 code=error_codes.REPORT_CLASS_CONFIRM_REQUIRED,
                 hint=(
                     "It permanently lowers what is masked for this column on "
                     "every future run of this report."
+                )
+                if confirmed is False
+                else (
+                    "This surface had no way to ask. A human must confirm the "
+                    "downgrade; an assistant must not supply it on their behalf."
                 ),
             )
 
@@ -329,8 +342,13 @@ class UserReportsService:
         )
         from_class = derived.classes.get(column)
         if from_class is None:
+            # Not `refused_not_weaker`: that label is the abuse signal — someone
+            # trying to publish a value everyone agrees is sensitive — and the
+            # comparison it names cannot even be evaluated for a column that does
+            # not exist. Counting a typo under it inflates the one number here
+            # that is supposed to mean something.
             metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
-                outcome="refused_not_weaker"
+                outcome="refused_unknown_column"
             ).inc()
             raise UserError(
                 f"This report returns no column named {column!r}.",
