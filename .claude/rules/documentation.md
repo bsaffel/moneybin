@@ -21,13 +21,19 @@ implementation plans, agent scratch work, and uncommitted design exploration.
 Promote a private design into public docs only when it becomes a durable public
 contract or materially helps an external user or contributor make a decision.
 
-Never reference `private/` from anything that leaves the private tree — a public
-document, a checked-in file, a commit message, or PR text. Replace the reference
-with a public issue, roadmap item, or an honest statement that the work is
-planned; when the substance is what matters, restate it inline instead of
-pointing at the path. Treat any information already committed publicly as public
-history: moving it to `private/` prevents future exposure but does not erase it
-from Git history.
+Never point a reader at `private/` from anything outward-facing — public
+documentation, a commit message, or PR text. Replace the reference with a public
+issue, roadmap item, or an honest statement that the work is planned; when the
+substance is what matters, restate it inline instead of pointing at the path.
+
+**Exempt: internal agent configuration.** `AGENTS.md`, `CLAUDE.md`, and
+`.claude/**` may name `private/` paths, because their job is to route agents
+there — AGENTS.md's "Plans vs Specs" section is required to say plans belong in
+`private/plans/`. The ban is about not sending an *external* reader somewhere
+they cannot follow, not about avoiding the word.
+
+Treat any information already committed publicly as public history: moving it to
+`private/` prevents future exposure but does not erase it from Git history.
 
 ## External product references
 
