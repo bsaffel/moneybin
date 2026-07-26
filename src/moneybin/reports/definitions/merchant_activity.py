@@ -106,6 +106,10 @@ def merchant_activity(
     total_inflow is positive; avg_amount and median_amount are signed. Monetary
     values are denominated in each row's own currency_code.
 
+    Rows interleave the currencies, highest-ranked first within each, so a
+    truncated result still represents every currency. Compare monetary values
+    only between rows sharing a currency_code.
+
     Args:
         db: Open read-only database connection.
         top: Limit rows **within each currency** (>= 1). A spend-sorted ranking
@@ -138,6 +142,6 @@ def merchant_activity(
             FROM {REPORTS_MERCHANT_ACTIVITY.full_name}
         )
         WHERE rank_in_currency <= ?
-        ORDER BY currency_code, {MERCHANTS_SORTS[sort]}
+        ORDER BY rank_in_currency, currency_code
     """  # noqa: S608  # TableRef + MERCHANTS_SORTS allowlists
     return ReportQuery(sql, [top])

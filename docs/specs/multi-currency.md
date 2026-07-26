@@ -195,11 +195,21 @@ Numbered, testable. Tagged by phase.
    smaller-denominated currency as an anomaly.
    **Ranking and reachability, 2026-07-26.** Segmentation makes each figure
    correct; two follow-on defects left a correct figure unreadable or absent.
-   `reports.balance_drift` ordered globally by raw `drift_abs` and the framework
-   truncates with `records[:max_rows]`, so one high-denomination currency could
-   fill the cap and drop every other currency out of the response entirely —
-   missing, not merely ranked lower. Its rows now interleave per currency, the
-   same shape `top` uses. Separately, `core.fct_transaction_lines` — the
+   The framework truncates with `records[:max_rows]`, so the *first* sort key
+   decides what a capped response can contain: a report that emitted one
+   currency's rows before the next let a single currency fill the cap and drop
+   the others out of the response entirely — missing, not merely ranked lower.
+   Four of the six runners did this — `balance_drift` ordered globally by raw
+   `drift_abs`; `large_transactions`, `merchant_activity`, and
+   `recurring_subscriptions` ranked correctly per currency and then re-grouped
+   by `currency_code` at the top level, undoing it. All four now order by
+   rank-within-currency first, so any prefix represents every currency.
+   `cash_flow` and `spending_trend` lead with `year_month` and are unaffected:
+   truncating a time series drops tail months across all currencies alike.
+   `test_no_runner_leads_its_sort_with_currency_code` scans the runner sources
+   rather than waiting for someone to build a mixed-currency fixture per
+   report — the defect reached four runners because each was fixed where it was
+   found rather than swept for. Separately, `core.fct_transaction_lines` — the
    canonical split-expanded grain — projected every parent column except the
    denomination, so an agent on it could not tell a EUR line from a USD one; it
    now carries `currency_code`, as does `core.uncategorized_queue`, whose review
@@ -208,6 +218,28 @@ Numbered, testable. Tagged by phase.
    `test_every_money_aggregating_example_names_its_currency`, which derives its
    eligible set from `CLASSIFICATION` so a new money example on a
    currency-bearing table inherits the guard rather than escaping it.
+   **Which payloads owe a currency, 2026-07-26.** The MCP-side enumeration
+   (`test_money_tools_name_their_currency`) asked whether a payload carries a
+   money-classed field and no `DataClass.CURRENCY`, and six tools answered yes.
+   That question is wrong: `TXN_AMOUNT` marks a field *masking-sensitive*, not
+   *denominable*. Walking each payload to the exact leaf, only two were real.
+   `transactions` was — the flagship read returned bare amounts, so a
+   mixed-currency page (`display_currency` null by design) had no denomination
+   anywhere in the response; its rows now carry `currency_code` from
+   `core.fct_transactions` through both the MCP and CLI construction sites.
+   The other real one is `transactions_categorize_rules`: `min_amount`/
+   `max_amount` are genuine bounds, but `app.categorization_rules` has no
+   currency column, so a rule cannot say which currency it bounds — schema work,
+   deferred to M1K.2. The remaining four are classification artifacts with no
+   currency to state: `import_files` and `import_preview` expose
+   `as_printed`/`as_recorded`, a single magnitude printed and then negated as
+   `str` so the caller can confirm a sign convention; `investments_lots_select`
+   exposes `quantity`, a share count; `system_audit` exposes
+   `before_value`/`after_value`, polymorphic audit evidence whose audited column
+   differs per event. The guard now splits three ways instead of two, and each
+   not-denominable entry pins the money-classed `(field, type)` leaves its
+   reason rests on — a payload that grows a real `Decimal` amount fails rather
+   than inheriting an exemption written for a string sample.
    **Known limit — unknown pools into one segment.** `GROUP BY currency_code`
    puts every row whose currency is unknown into a single `NULL` segment and
    sums it. Two accounts denominated in genuinely different currencies that

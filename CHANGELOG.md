@@ -73,12 +73,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   canonical grain for per-line analysis could not tell a EUR line from a USD
   one. It now carries `currency_code`, and the curated `sql_schema` examples
   that sum money across `core.*` group by it rather than blending units.
-- **`reports balance-drift` interleaves the currencies it ranks (M1K.1).** Rows
-  were ordered by raw `drift_abs`, so with a row cap one high-denomination
-  currency could fill every slot and drop the others out of the response
-  entirely — absent, not merely ranked lower. Rows now interleave, worst drift
-  first within each currency. Compare `drift_abs` only between rows sharing a
-  `currency_code`. A single-currency profile sees the same order as before.
+- **Every ranked report interleaves its currencies (M1K.1).** `reports
+  balance-drift`, `large-transactions`, `merchants`, and `recurring` each sorted
+  one currency's rows ahead of the next, and the surface row cap keeps a prefix
+  — so one high-denomination currency could fill every slot and drop the others
+  out of the response entirely, absent rather than merely ranked lower. Rows now
+  interleave: rank 1 of every currency, then rank 2. Compare amounts only
+  between rows sharing a `currency_code`. A single-currency profile sees the
+  same order as before.
+- **`transactions` rows name their currency (M1K.1).** The `transactions` MCP
+  tool and `moneybin transactions list --output json` returned bare amounts.
+  A mixed-currency page reports `summary.display_currency: null` by design, so
+  the row was the only place that could name the unit and it did not — two
+  −30.00 rows in different currencies read as the same charge. Each row now
+  carries `currency_code` from `core.fct_transactions`.
 - **The uncategorized review queue names each row's currency (M1K.1).**
   `transactions categorize pending` and `transactions_categorize_pending` asked
   you to act on a bare amount. Each row now carries `currency_code`. Its

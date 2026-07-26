@@ -133,6 +133,10 @@ def large_transactions(
     Amounts use the accounting convention (negative = expense, positive =
     income) in each row's own currency_code; rows are segmented per currency, never blended.
 
+    Rows interleave the currencies, largest first within each, so a truncated
+    result still represents every currency. Compare amounts only between rows
+    sharing a currency_code.
+
     Args:
         db: Open read-only database connection.
         top: Top N by ABS(amount) **within each currency** (>= 1). Ranking
@@ -174,6 +178,6 @@ def large_transactions(
             WHERE {predicate}
         )
         WHERE rank_in_currency <= ?
-        ORDER BY currency_code, ABS(amount) DESC
+        ORDER BY rank_in_currency, currency_code
     """  # noqa: S608  # TableRef + LARGE_TXN_ANOMALIES allowlists
     return ReportQuery(sql, [top])

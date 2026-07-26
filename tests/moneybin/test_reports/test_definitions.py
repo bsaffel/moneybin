@@ -7,7 +7,9 @@ and the enum-allowlist ValueError branches the surfaces rely on.
 
 from __future__ import annotations
 
+import inspect
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -472,6 +474,115 @@ def test_recurring_groups_candidates_by_the_currency_they_are_billed_in(
 
     rows = _rows(db, recurring_subscriptions, min_confidence=0.5, status="active")
 
-    # Grouped by currency, cost-ordered within each — not one ¥14,400 row
-    # sitting above both dollar subscriptions on nominal magnitude.
+    # Cost-ordered within each currency — not one ¥14,400 row sitting above both
+    # dollar subscriptions on nominal magnitude. Interleaving by rank puts the
+    # two rank-1 rows first, so this order also holds under the fixed ordering.
     assert [row["merchant_id"] for row in rows] == ["m2", "m1", "m3"]
+
+
+# --------------------------------------------------------------------------
+# Interleaving: ranking within a currency is not enough on its own.
+#
+# `execute.py` truncates the finished row list with `records[:max_rows]`. A
+# runner that ranks per currency but then emits `ORDER BY currency_code, ...`
+# hands the cap one currency's rows in full before the next one starts, so the
+# lexicographically-later currency can be absent from the response entirely —
+# not mis-ranked, missing, with nothing in the payload saying so. Ordering on
+# `rank_in_currency` first interleaves the segments, so any prefix of the
+# result still represents every currency.
+#
+# Each fixture below is built so the two orderings genuinely differ: asserting
+# on the leading rows is what separates "grouped by currency" from
+# "interleaved by rank". A fixture where both produce the same sequence would
+# pass against the bug.
+# --------------------------------------------------------------------------
+
+
+def test_no_runner_leads_its_sort_with_currency_code() -> None:
+    """No report may hand the row cap one currency's rows before the next.
+
+    The three per-report tests below each need a mixed-currency fixture, so
+    they only cover the reports someone thought to write a fixture for. This
+    defect reached four of the six runners — `balance_drift` first, then
+    `large_transactions`, `merchant_activity`, and `recurring_subscriptions`
+    — because each was fixed where it was found rather than swept for. A
+    source scan fires on the fifth without anyone building a fixture for it.
+
+    Leading with `currency_code` is the whole tell: `records[:max_rows]` keeps
+    a prefix, so the first sort key decides what a truncated response can
+    contain. `cash_flow` and `spending_trend` lead with `year_month` and are
+    fine — truncation there drops tail *months* across all currencies alike,
+    which is a time series ending early rather than a currency going missing.
+    """
+    definitions = Path(inspect.getfile(large_transactions)).parent
+
+    offenders = [
+        f"{path.name}:{number}: {line.strip()}"
+        for path in sorted(definitions.glob("*.py"))
+        for number, line in enumerate(path.read_text().splitlines(), 1)
+        if "ORDER BY currency_code" in line
+    ]
+    assert not offenders, (
+        "sort leads with currency_code, so a truncated response can omit a "
+        "whole currency; rank within each currency and order by that rank "
+        "first:\n" + "\n".join(offenders)
+    )
+
+
+def test_large_transactions_interleaves_currencies_before_truncation(
+    db: Database,
+) -> None:
+    """A cap of two must not return two JPY rows and no USD row."""
+    _install_large_transactions_view(db, jpy_rows=30)
+
+    leading = [
+        row["currency_code"] for row in _rows(db, large_transactions, top=25)[:2]
+    ]
+
+    assert set(leading) == {"JPY", "USD"}, (
+        f"first two rows are {leading}; a cap here would hide a whole currency"
+    )
+
+
+def test_merchants_interleave_currencies_before_truncation(db: Database) -> None:
+    """A cap of two must not return two JPY merchants and no USD merchant."""
+    _install_merchant_activity_view(db, jpy_rows=30)
+
+    rows = _rows(db, merchant_activity, top=25, sort="spend")
+    leading = [row["currency_code"] for row in rows[:2]]
+
+    assert set(leading) == {"JPY", "USD"}, (
+        f"first two rows are {leading}; a cap here would hide a whole currency"
+    )
+
+
+def test_recurring_interleaves_currencies_before_truncation(db: Database) -> None:
+    """A cap of two must not return two JPY subscriptions and no USD one.
+
+    Two candidates per currency, so grouping and interleaving disagree:
+    grouped gives JPY, JPY, USD, USD; interleaved gives JPY, USD, JPY, USD.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.recurring_subscriptions AS
+        SELECT * FROM (VALUES
+            ('m1', 'Netflix', 'USD', 15.99, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 191.88, 0.95),
+            ('m2', 'Depato', 'JPY', 1200.0, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 14400.0, 0.95),
+            ('m3', 'Spotify', 'USD', 11.99, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 143.88, 0.95),
+            ('m4', 'Konbini', 'JPY', 1000.0, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 12000.0, 0.95)
+        ) AS t(merchant_id, merchant_normalized, currency_code, avg_amount,
+               cadence, interval_days_avg, interval_days_stddev,
+               occurrence_count, first_seen, last_seen, status,
+               annualized_cost, confidence)
+    """)
+
+    rows = _rows(db, recurring_subscriptions, min_confidence=0.5, status="active")
+    leading = [row["currency_code"] for row in rows[:2]]
+
+    assert set(leading) == {"JPY", "USD"}, (
+        f"first two rows are {leading}; a cap here would hide a whole currency"
+    )

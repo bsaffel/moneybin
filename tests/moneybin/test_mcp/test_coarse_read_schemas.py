@@ -923,6 +923,7 @@ async def test_investment_coarse_transport_variants(
             {
                 "aggregate",
                 "category",
+                "currency",
                 "description",
                 "record_id",
                 "txn_amount",

@@ -147,6 +147,10 @@ def recurring_subscriptions(
     Average and annualized costs are positive absolute outflows in each row's
     own currency_code.
 
+    Rows interleave the currencies, costliest first within each, so a truncated
+    result still represents every currency. Compare annualized_cost only
+    between rows sharing a currency_code.
+
     Args:
         db: Open read-only database connection.
         min_confidence: 0.0-1.0; filter to candidates >= threshold.
@@ -184,9 +188,18 @@ def recurring_subscriptions(
     if cadence:
         sql += " AND cadence = ?"
         params.append(cadence)
-    # currency_code leads the sort so candidates stay grouped by the unit they
-    # are billed in; ordering by cost alone would rank a ¥1,200 subscription
-    # above a $60 one on magnitude, and the surface row cap would then truncate
-    # whole currencies out of the tail.
-    sql += " ORDER BY currency_code, annualized_cost DESC NULLS LAST"
+    # Interleave the currencies: rank within each, then take rank 1 of every
+    # currency before rank 2 of any. Ordering by cost alone would rank a ¥1,200
+    # subscription above a $60 one on nominal magnitude, but leading with
+    # currency_code is no better — the surface row cap truncates with
+    # `records[:max_rows]`, so it would hand the cap every JPY candidate before
+    # the first USD one and drop whole currencies out of the response. Ties
+    # break on currency_code because two rank-1 rows have no cross-currency
+    # order. A single-currency profile is unaffected: its ranks already ascend
+    # in annualized_cost order.
+    sql += """
+        ORDER BY ROW_NUMBER() OVER (
+            PARTITION BY currency_code ORDER BY annualized_cost DESC NULLS LAST
+        ), currency_code
+    """
     return ReportQuery(sql, params)
