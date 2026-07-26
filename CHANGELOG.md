@@ -46,6 +46,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   denominated in instead of always reporting `USD`; when the rows span more than
   one — or the currency is unknown — it is null and each row's `currency_code`
   is the answer.
+- **`reports balance-drift` withholds a drift across two currencies (M1K.1).**
+  A balance observation states its own currency, and an account can carry a
+  different one after `accounts set --currency`. The report subtracted them and
+  labelled the result with the account's currency; it now reports the new
+  `currency-mismatch` status with no drift value, which is also selectable via
+  `--status`. Its `clean`/`warning` thresholds (1 and 10) are absolute amounts
+  in each row's own currency and are not converted.
 - **An account whose currency nobody stated is now unknown, not USD (M1K.1).**
   `core.dim_accounts` took `USD` whenever an account had no explicit currency
   setting, and every transaction and balance inherits its account's currency, so
