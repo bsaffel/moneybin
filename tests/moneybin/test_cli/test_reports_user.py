@@ -64,6 +64,31 @@ def _patch_database() -> Any:
     )
 
 
+def _patch_catalog_database() -> Any:
+    """Patch the connection ``open_report_catalog`` opens, in its own module.
+
+    ``reports list`` reaches the database through the catalog helper rather than
+    directly, and that helper *degrades* to the packaged tiers when no database
+    exists — so leaving it unpatched would let a list test pass through the
+    degradation branch and prove nothing about the flag it is checking.
+    """
+    return patch(
+        "moneybin.reports._framework.catalog.get_database",
+        return_value=_database(),
+    )
+
+
+def _catalog_entry(report_id: str, *, archived: bool = False) -> MagicMock:
+    """One listing row, shaped like ``ReportCatalogEntry`` for the text render."""
+    return MagicMock(
+        report_id=report_id,
+        tier="user" if report_id.startswith("user:") else "builtin",
+        archived=archived,
+        parameter_classes={},
+        description="A report.",
+    )
+
+
 def _save_outcome(**overrides: Any) -> SaveOutcome:
     fields: dict[str, Any] = {
         "report_id": _ROW["report_id"],
@@ -84,27 +109,81 @@ def test_list_rejects_an_unknown_tier() -> None:
     assert "builtin, extension, or user" in result.output
 
 
-def test_list_asks_the_catalog_for_archived_reports_when_widened() -> None:
-    catalog = MagicMock()
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["reports", "list"], False),
+        (["reports", "list", "--include-archived"], True),
+    ],
+    ids=["default", "widened"],
+)
+def test_list_asks_for_the_view_its_flag_names(argv: list[str], expected: bool) -> None:
+    """``--include-archived`` widens the listing, matching ``accounts list``.
+
+    Both call sites take the same value: a tier read off a different row set than
+    the payload holds would misreport the response's sensitivity. Which rows each
+    view actually contains is proved against a real database in
+    ``test_reports/test_user_reports.py``.
+    """
     with (
-        _patch_database(),
+        _patch_catalog_database(),
         patch(
             "moneybin.reports._framework.catalog.get_report_catalog",
-            return_value=catalog,
-        ) as get_catalog,
+            return_value=MagicMock(),
+        ),
         patch(
             "moneybin.reports._framework.catalog.catalog_to_payload",
             return_value=MagicMock(reports=[]),
-        ),
+        ) as to_payload,
         patch(
             "moneybin.reports._framework.catalog.catalog_sensitivity",
             return_value="low",
-        ),
+        ) as sensitivity,
     ):
-        result = runner.invoke(app, ["reports", "list", "--archived"])
+        result = runner.invoke(app, argv)
 
     assert result.exit_code == 0, result.output
-    assert get_catalog.call_args.kwargs == {"include_archived": True}
+    assert to_payload.call_args.kwargs == {"include_archived": expected}
+    # The reported tier must describe the same rows the payload holds.
+    assert sensitivity.call_args.kwargs == {"include_archived": expected}
+
+
+def test_list_marks_an_archived_row_it_was_asked_to_include() -> None:
+    """A widened listing that cannot say which rows it widened to include is a trap.
+
+    The caller sees a runnable report with nothing stating the user had put it
+    away. The rendered table must carry the distinction, not just the JSON.
+    """
+    entries = [
+        _catalog_entry("core:networth", archived=False),
+        _catalog_entry("user:put_away", archived=True),
+    ]
+    with (
+        _patch_catalog_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_to_payload",
+            return_value=MagicMock(reports=entries),
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_sensitivity",
+            return_value="medium",
+        ),
+    ):
+        result = runner.invoke(app, ["reports", "list", "--include-archived"])
+
+    assert result.exit_code == 0, result.output
+    archived_line = next(
+        line for line in result.output.splitlines() if "put_away" in line
+    )
+    assert "archived" in archived_line
+    active_line = next(
+        line for line in result.output.splitlines() if "networth" in line
+    )
+    assert "archived" not in active_line
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +489,7 @@ def test_reclassify_passes_the_prompt_answer_through_to_the_service(
         )
 
     assert service.reclassify.call_args.kwargs["confirmed"] is confirmed
+    assert service.reclassify.call_args.kwargs["confirmed_via"] == "prompt"
 
 
 def test_reclassify_reports_that_it_could_not_ask_rather_than_aborting() -> None:
@@ -448,10 +528,19 @@ def test_reclassify_reports_that_it_could_not_ask_rather_than_aborting() -> None
         )
 
     assert service.reclassify.call_args.kwargs["confirmed"] is None
+    # Still the prompt path: it was attempted and found nobody, which is not the
+    # same claim as "a flag stood in for the human."
+    assert service.reclassify.call_args.kwargs["confirmed_via"] == "prompt"
     assert "Aborted" not in result.output
 
 
 def test_reclassify_treats_yes_as_the_confirmation() -> None:
+    """``--yes`` confirms, and says so — the flag is never recorded as a prompt.
+
+    The audit row is the only place a reviewer can see whether a human approved
+    a permanent masking downgrade or an assistant supplied the flag on their
+    behalf, so the CLI has to name which one it did.
+    """
     service = _service(
         reclassify=ReclassifyOutcome(
             report_id=_ROW["report_id"],
@@ -480,6 +569,7 @@ def test_reclassify_treats_yes_as_the_confirmation() -> None:
 
     assert result.exit_code == 0, result.output
     assert service.reclassify.call_args.kwargs["confirmed"] is True
+    assert service.reclassify.call_args.kwargs["confirmed_via"] == "flag"
     assert "txn_amount" in result.output
 
 
@@ -608,21 +698,28 @@ def test_explain_json_carries_the_provenance_and_freshness() -> None:
     assert payload["withheld_parameters"] == ["rn"]
 
 
-def test_explain_resolves_an_archived_report() -> None:
-    """Archiving hides a report from the catalog; it must not hide the evidence."""
+def test_explain_resolves_its_handle_through_the_tier_spanning_catalog() -> None:
+    """Archiving hides a report from the catalog; it must not hide the evidence.
+
+    ``explain`` needs no archived flag: the catalog it resolves against always
+    spans archived rows, so the promise is a property of the resolver rather than
+    of each caller remembering to widen it. Archive-then-explain runs against a
+    real database in ``test_reports/test_explain.py``.
+    """
+    catalog = MagicMock()
     with (
         _patch_database(),
         patch(
             "moneybin.reports._framework.catalog.get_report_catalog",
-            return_value=MagicMock(),
-        ) as catalog,
+            return_value=catalog,
+        ),
         patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
         _patch_explain(_explanation()),
     ):
         result = runner.invoke(app, ["reports", "explain", "my_accounts"])
 
     assert result.exit_code == 0, result.output
-    assert catalog.call_args.kwargs["include_archived"] is True
+    assert catalog.resolve.call_args.args == ("my_accounts",)
 
 
 def test_explain_json_envelope_reports_a_saved_report_as_medium() -> None:
@@ -679,3 +776,167 @@ def test_declared_parameter_coerces_its_default_to_the_declared_type() -> None:
     declared = parse_parameter_declaration("as_of:date=2026-07-01")
 
     assert declared.default.isoformat() == "2026-07-01"
+
+
+# ---------------------------------------------------------------------------
+# What the privacy audit trail records, and when the writer lock is held
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("argv", "patches"),
+    [
+        (["reports", "create", "r", "--sql", "SELECT 1"], "create"),
+        (["reports", "set", "r", "--description", "d"], "update"),
+        (["reports", "delete", "r", "--yes"], "delete"),
+        (
+            [
+                "reports",
+                "reclassify",
+                "r",
+                "--column",
+                "spend",
+                "--to",
+                "aggregate",
+                "--reason",
+                "monthly total",
+                "--yes",
+            ],
+            "reclassify",
+        ),
+    ],
+    ids=["create", "set", "delete", "reclassify"],
+)
+def test_a_lifecycle_response_records_the_classes_it_returned(
+    argv: list[str], patches: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare-dict payload declares nothing, so the audit event recorded ``[]``.
+
+    Every one of these responses names a report by its minted id and by the
+    user-authored name the text render echoes. ``render_report_result`` in the
+    same feature passes its classes explicitly and says why; these four did not.
+    """
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+    outcomes: dict[str, Any] = {
+        "create": _save_outcome(),
+        "update": _save_outcome(),
+        "delete": MagicMock(),
+        "reclassify": ReclassifyOutcome(
+            report_id=_ROW["report_id"],
+            column="spend",
+            from_class=DataClass.TXN_AMOUNT,
+            to_class=DataClass.AGGREGATE,
+        ),
+    }
+    with _patch_database(), _patch_service(_service(**{patches: outcomes[patches]})):
+        result = runner.invoke(app, [*argv, "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["classes_returned"] == ["record_id", "user_note"]
+
+
+def test_the_catalog_listing_records_the_classes_it_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A listing that includes a saved report returns user-authored names."""
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+    with (
+        _patch_catalog_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_to_payload",
+            return_value=MagicMock(reports=[]),
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_sensitivity",
+            return_value="medium",
+        ),
+    ):
+        result = runner.invoke(app, ["reports", "list", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["classes_returned"] == ["aggregate", "user_note"]
+
+
+def test_the_explanation_records_the_classes_it_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``explain`` publishes a saved report's SQL verbatim — user-authored text."""
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(_explanation()),
+    ):
+        result = runner.invoke(
+            app, ["reports", "explain", "my_accounts", "--output", "json"]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert captured["classes_returned"] == ["aggregate", "user_note"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["reports", "delete", "r"],
+        [
+            "reports",
+            "reclassify",
+            "r",
+            "--column",
+            "spend",
+            "--to",
+            "aggregate",
+            "--reason",
+            "monthly total",
+        ],
+    ],
+    ids=["delete", "reclassify"],
+)
+def test_a_confirm_prompt_is_never_held_open_over_the_writer_lock(
+    argv: list[str],
+) -> None:
+    """A write connection holds the exclusive DuckDB writer lock for its lifetime.
+
+    Prompting inside one blocks every other writer — another CLI invocation, the
+    MCP server, a scheduled refresh — for an unbounded human wait. Every sibling
+    confirm in the codebase prompts *above* its write connection; these two did
+    not. Declining is what makes the assertion possible: no write happens, so the
+    only connection the command may have opened by prompt time is read-only.
+    """
+    opened: list[bool] = []
+    at_prompt: list[list[bool]] = []
+
+    def _record(*, read_only: bool, **_: Any) -> MagicMock:
+        opened.append(read_only)
+        return _database()
+
+    def _decline(*_args: Any, **_kwargs: Any) -> bool:
+        at_prompt.append(list(opened))
+        return False
+
+    with (
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_database",
+            side_effect=_record,
+        ),
+        patch("typer.confirm", side_effect=_decline),
+        _patch_service(_service()),
+    ):
+        runner.invoke(app, argv)
+
+    assert at_prompt, "the command never prompted"
+    assert all(read_only for read_only in at_prompt[0]), (
+        "a write connection was already open when the prompt appeared"
+    )

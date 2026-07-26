@@ -338,9 +338,8 @@ def export_report(
 ) -> None:
     """Export one catalog report and typed parameter binding."""
     from moneybin.cli.report_params import parse_report_parameters  # noqa: PLC0415
-    from moneybin.database import get_database  # noqa: PLC0415
     from moneybin.reports._framework.catalog import (  # noqa: PLC0415
-        get_report_catalog,
+        open_report_catalog,
     )
 
     with handle_cli_errors(
@@ -349,11 +348,11 @@ def export_report(
     ):
         # The catalog needs the database to span the user tier, so a saved report
         # is exportable by the same call a built-in is. The export itself opens
-        # its own connection; each is short-lived by design.
-        with get_database(read_only=True) as db:
-            parameters = parse_report_parameters(
-                get_report_catalog(db), report_id, parameter
-            )
+        # its own connection; each is short-lived by design. Binding a *built-in*
+        # needs no database at all, so a missing one must not turn a mistyped
+        # report id into advice to run `db init`.
+        with open_report_catalog() as (catalog, _):
+            parameters = parse_report_parameters(catalog, report_id, parameter)
     _run_export(
         subject_kind="report",
         report_id=report_id,

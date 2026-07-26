@@ -147,7 +147,12 @@ and confirmation contracts.
 
 - `reports(report_id=..., parameters=..., limit=...)` first returns the catalog without a
   report ID, then executes a selected report. New reports are catalog entries,
-  never new tool slots.
+  never new tool slots. The catalog listing carries **active** reports only, each
+  entry reporting `archived: false`; the CLI's `reports list --include-archived`
+  has no MCP counterpart yet, because the parameter would change the serialized
+  tool metadata that ADR-016's carrying-weight evidence pins. An archived report
+  still runs, exports, and explains by id, so nothing is unreachable — only
+  unlisted.
 - `accounts`, `investments`, `transactions`, `reviews`, `taxonomy`, `privacy`,
   and `gsheet` expose typed views or filters under one domain identity. Their
   paired `_set`, `_decide`, or domain verb tools retain material write and

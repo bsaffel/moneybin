@@ -133,6 +133,52 @@ def type_sentinel(annotation: Any) -> object:
     return _PARAM_TYPES[token_of(annotation)].sentinel
 
 
+def json_scalar(value: Any) -> Any:
+    """Render a declared default as a JSON scalar the ``params`` column can hold.
+
+    Two of the six declarable types coerce to Python objects ``json.dumps``
+    refuses outright, and a ``TypeError`` there reaches the user as a bare
+    traceback — ``classify_user_error`` does not classify it. Storing ISO text
+    keeps the column JSON while :func:`typed_value` keeps the declared type
+    authoritative on the way back.
+    """
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    return value
+
+
+def typed_value(value: Any, annotation: Any) -> Any:
+    """Read a JSON scalar back as a declared type JSON cannot represent.
+
+    ``date`` and ``decimal`` are declarable but have no JSON form, so both the
+    stored ``params`` column and an MCP ``parameters`` object carry text where the
+    report declared an object. Without this, those two types are CLI-only: the
+    CLI's own binder builds real objects from ``--param`` strings, while every
+    JSON caller is refused by the shared type check.
+
+    A value that is already the declared type, or cannot be read as one, is
+    returned untouched — so the caller's own type error is what the user sees
+    rather than one raised from here.
+    """
+    try:
+        if annotation is date and isinstance(value, str):
+            return date.fromisoformat(value)
+        if annotation is Decimal:
+            # `bool` subclasses `int`, and `Decimal(True)` is 1 — a boolean here
+            # is a type mistake, not a decimal, so leave it for the type check.
+            if isinstance(value, str) or type(value) is int:
+                return Decimal(value)
+            if type(value) is float:
+                # Through `str` so a JSON `0.1` becomes Decimal("0.1") rather
+                # than the binary expansion `Decimal(0.1)` would produce.
+                return Decimal(str(value))
+    except (ValueError, ArithmeticError):
+        return value
+    return value
+
+
 def token_of(annotation: Any) -> str:
     """Render a parameter's Python type as its stored ``annotation`` token."""
     token = _PARAM_TOKENS.get(annotation)
@@ -204,6 +250,7 @@ def class_fingerprint(
     classes: Mapping[str, DataClass],
     parameter_classes: Mapping[str, DataClass],
     class_downgrades: Mapping[str, Mapping[str, str]],
+    snapshot: SchemaSnapshot | None = None,
 ) -> str:
     """The drift key over everything the persisted class map depends on.
 
@@ -226,8 +273,11 @@ def class_fingerprint(
     Same function on both paths, called with derived values at save and stored
     values at run: one implementation means a stale key can only cost a
     re-resolution, never a false match.
+
+    ``snapshot`` lets a caller keying many reports at once read the live schema
+    once instead of per report — see :func:`user_report_specs`.
     """
-    tree, snapshot = _tree_and_snapshot(db, query_sql)
+    tree, snapshot = _tree_and_snapshot(db, query_sql, snapshot)
 
     involved = set(classes.values()) | set(parameter_classes.values())
     for entry in class_downgrades.values():
@@ -251,14 +301,16 @@ def class_fingerprint(
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def read_tables(db: Database, query_sql: str) -> tuple[str, ...]:
+def read_tables(
+    db: Database, query_sql: str, *, snapshot: SchemaSnapshot | None = None
+) -> tuple[str, ...]:
     """Sorted ``schema.table`` names ``query_sql`` reads.
 
     Feeds a dynamic report's ``semantics.provenance``, which is what the export
     receipt's ``lineage`` carries — the only place a query-time report's read set
     appears, since its manifest ``source`` is ``null``.
     """
-    tree, snapshot = _tree_and_snapshot(db, query_sql)
+    tree, snapshot = _tree_and_snapshot(db, query_sql, snapshot)
     return tuple(
         sorted({
             f"{schema}.{table}"
@@ -267,15 +319,24 @@ def read_tables(db: Database, query_sql: str) -> tuple[str, ...]:
     )
 
 
-def _tree_and_snapshot(db: Database, query_sql: str) -> tuple[exp.Expr, SchemaSnapshot]:
+def _tree_and_snapshot(
+    db: Database, query_sql: str, snapshot: SchemaSnapshot | None = None
+) -> tuple[exp.Expr, SchemaSnapshot]:
     """The **unqualified** tree plus the live snapshot, for every read-set term.
 
     Both the fingerprint and the provenance list are built from this pair, and
     both must use the *same* tree on the save and run paths: ``qualify`` can
     rewrite table references, so a qualified tree here would key one query two
     ways and leave every run on the mismatch branch.
+
+    A caller may supply the snapshot it already read. ``get_current_schema_snapshot``
+    memoises the costly ``MappingSchema`` build but still issues two catalog
+    queries per call, which is per *report* on a catalog build.
     """
-    return parse_cached(query_sql), get_current_schema_snapshot(db)
+    return (
+        parse_cached(query_sql),
+        get_current_schema_snapshot(db) if snapshot is None else snapshot,
+    )
 
 
 def _parsed(db: Database, query_sql: str) -> tuple[exp.Expr, SchemaSnapshot]:

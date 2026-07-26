@@ -18,10 +18,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   them off the SQL at save time and stores them, so a routing number in your own
   report is masked exactly as it is in a built-in. If an upstream column is later
   reclassified as more sensitive, the saved report notices and masks that column
-  rather than serving the stale class. `reports set` re-derives on any SQL or
+  rather than serving the stale class, and the response says so
+  (`summary.degraded`) rather than masking silently. `reports set --archive`
+  hides a report from `reports list` without retiring it — an archived report
+  still runs, exports, and explains by id or name, and
+  `reports list --include-archived` shows it marked as archived. `reports set`
+  re-derives on any SQL or
   parameter change; `reports delete` is undoable through `system audit undo`;
   `reports reclassify` lowers one column's masking floor on an explicit human
-  confirmation and records it.
+  confirmation, and its audit row records whether that confirmation came from the
+  prompt or from `--yes`.
 - **Every report can show its work: `moneybin reports explain <handle>` (M2I).**
   Returns the query in two forms — the executed form with parameters rendered as
   literals, and the stored template — plus each output column's privacy class and

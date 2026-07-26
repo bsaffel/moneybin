@@ -63,6 +63,11 @@ class ReportResult:
     actions: list[str] = field(default_factory=list)
     period: str | None = None
     display_currency: str = "USD"
+    #: R4's drift state, set by ``ReportCatalog.execute`` for a saved report whose
+    #: stored class map went stale. Never true for a packaged tier: a built-in is
+    #: a file in the repo and has no stored map to go stale.
+    degraded: bool = False
+    degraded_reason: str | None = None
 
     @property
     def classes_returned(self) -> list[str]:
@@ -86,6 +91,8 @@ class ReportResult:
             actions=self.actions or None,
             period=self.period,
             display_currency=self.display_currency,
+            degraded=self.degraded,
+            degraded_reason=self.degraded_reason,
         )
 
 

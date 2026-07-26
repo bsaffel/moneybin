@@ -7,15 +7,20 @@ import re
 import types
 import typing
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Any, Literal, cast, get_args, get_origin
+from typing import Any, Final, Literal, cast, get_args, get_origin
 
 from pydantic import JsonValue, TypeAdapter
 
 from moneybin import error_codes
-from moneybin.database import Database
+from moneybin.database import (
+    Database,
+    DatabaseNotInitializedError,
+    get_database,
+)
 from moneybin.errors import UserError
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.metrics.registry import USER_REPORT_RUNS_TOTAL
@@ -34,6 +39,7 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     ReportSpec,
 )
+from moneybin.reports._framework.derive import json_scalar, typed_value
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     CatalogReportResult,
@@ -80,10 +86,35 @@ class ServiceReportSpec:
 type RegisteredReport = ReportSpec | ServiceReportSpec
 
 
+@dataclass(frozen=True, slots=True)
+class ReportStatus:
+    """Stored-row state a ``ReportSpec`` cannot carry, keyed by ``report_id``.
+
+    Only the user tier has any: a built-in is a file in the repo, so it can be
+    neither archived nor stale. Keeping it beside the catalog rather than on the
+    spec is what lets one catalog both *resolve* an archived report and *hide* it
+    from a listing — and what carries R4's drift reason to the run envelope,
+    which is the boundary a caller actually reads.
+    """
+
+    archived: bool = False
+    degraded: bool = False
+    degraded_reason: str | None = None
+
+
+_NO_STATUS: Final = ReportStatus()
+
+
 class ReportCatalog:
     """Deterministic resolver and dispatcher for registered reports."""
 
-    def __init__(self, reports: Iterable[RegisteredReport]) -> None:
+    def __init__(
+        self,
+        reports: Iterable[RegisteredReport],
+        *,
+        status: Mapping[str, ReportStatus] | None = None,
+    ) -> None:
+        self._status: Mapping[str, ReportStatus] = MappingProxyType(dict(status or {}))
         ordered = tuple(sorted(reports, key=lambda report: report.report_id))
         duplicate_ids = sorted(
             report_id
@@ -100,9 +131,26 @@ class ReportCatalog:
                 f"({', '.join(report_ids)}); each stays runnable by report_id."
             )
 
-    def list(self) -> tuple[RegisteredReport, ...]:
-        """Return all reports ordered by stable full ID."""
-        return self._reports
+    def list(self, *, archived: bool | None = False) -> tuple[RegisteredReport, ...]:
+        """Reports ordered by stable full ID, filtered by archived state.
+
+        ``False`` (the default) is the active catalog, ``True`` the archived-only
+        view, ``None`` everything. Visibility is decided *here* rather than when
+        the catalog is built, because :meth:`resolve` must reach an archived
+        report even when a listing must not show it — R5 makes archiving suppress
+        catalog noise, not access.
+        """
+        if archived is None:
+            return self._reports
+        return tuple(
+            report
+            for report in self._reports
+            if self.status(report.report_id).archived is archived
+        )
+
+    def status(self, report_id: str) -> ReportStatus:
+        """Stored-row state for one report; all-default for the packaged tiers."""
+        return self._status.get(report_id, _NO_STATUS)
 
     def name_collisions(self) -> Mapping[str, tuple[str, ...]]:
         """Names claimed by more than one report, mapped to the claiming IDs.
@@ -157,7 +205,14 @@ class ReportCatalog:
             parameters=parameters,
             limit=limit,
         )
-        return redact_catalog_execution(spec, execution)
+        result = redact_catalog_execution(spec, execution)
+        status = self.status(spec.report_id)
+        if not status.degraded:
+            return result
+        # R4's drift reason belongs on the response, not only on the intermediate
+        # object the catalog built the spec from: masked rows with no stated cause
+        # are the failure the whole degraded flag exists to prevent.
+        return replace(result, degraded=True, degraded_reason=status.degraded_reason)
 
     def execute_raw(
         self,
@@ -285,11 +340,16 @@ def validate_report_parameters(
 
     validated: dict[str, JsonValue] = {}
     for parameter in declared:
-        value = (
+        raw = (
             supplied[parameter.name]
             if parameter.name in supplied
             else parameter.default
         )
+        # `date` and `decimal` are declarable but have no JSON form, so a JSON
+        # caller can only send text where the report declared an object. Coerce
+        # before the type check or those two types stay CLI-only — the CLI's own
+        # binder builds real objects from `--param` strings.
+        value = cast(JsonValue, typed_value(raw, parameter.annotation))
         if not _matches_annotation(value, parameter.annotation):
             raise UserError(
                 "Report parameter has an invalid type.",
@@ -351,17 +411,21 @@ def _annotation_name(annotation: object) -> str:
     return str(annotation).replace("typing.", "")
 
 
-def get_report_catalog(
-    db: Database | None = None, *, include_archived: bool = False
-) -> ReportCatalog:
+def get_report_catalog(db: Database | None = None) -> ReportCatalog:
     """Build the union of every registered report across R5's three tiers.
 
-    ``db`` adds the user tier — one ``ReportSpec`` per ``app.user_reports`` row.
-    Pass it on any path that resolves a **caller-supplied** report reference, so
-    a saved report is reachable by the same call a built-in is. Omitting it
-    yields the packaged tiers alone, which is what extension registration needs
-    (it runs before any database is open) and what a built-in's own generated
-    CLI command needs (it resolves one fixed ID it already holds).
+    ``db`` adds the user tier — one ``ReportSpec`` per ``app.user_reports`` row,
+    **archived rows included**. Pass it on any path that resolves a
+    **caller-supplied** report reference, so a saved report is reachable by the
+    same call a built-in is. Omitting it yields the packaged tiers alone, which is
+    what extension registration needs (it runs before any database is open) and
+    what a built-in's own generated CLI command needs (it resolves one fixed ID it
+    already holds).
+
+    Archived visibility is not a parameter here on purpose: an
+    ``include_archived`` flag on the *builder* meant every caller had to remember
+    to pass it to keep an archived report runnable, and three of four did not.
+    ``ReportCatalog.list`` owns visibility instead.
     """
     from moneybin.reports._framework.dynamic import user_report_specs
     from moneybin.reports._framework.registry import (
@@ -372,22 +436,85 @@ def get_report_catalog(
     from moneybin.reports.service_reports import SERVICE_REPORTS
 
     core = (spec_of(runner) for runner in ALL_REPORTS)
-    user = (
-        user_report_specs(db, include_archived=include_archived)
-        if db is not None
-        else ()
+    user = user_report_specs(db) if db is not None else ()
+    return ReportCatalog(
+        (
+            *core,
+            *SERVICE_REPORTS,
+            *extension_report_specs(),
+            *(report.spec for report in user),
+        ),
+        status={
+            report.spec.report_id: ReportStatus(
+                archived=report.archived,
+                degraded=report.degraded,
+                degraded_reason=report.degraded_reason,
+            )
+            for report in user
+        },
     )
-    return ReportCatalog((*core, *SERVICE_REPORTS, *extension_report_specs(), *user))
 
 
-def catalog_to_payload(catalog: ReportCatalog) -> ReportCatalogPayload:
-    """Expose the catalog's static metadata."""
+@contextmanager
+def open_report_catalog() -> Generator[tuple[ReportCatalog, Database | None]]:
+    """The full catalog over an open connection, or the packaged tiers alone.
+
+    Browsing the catalog and resolving a report id are repo-metadata questions
+    for two of the three tiers, and a profile with no database file has no saved
+    reports to add. Requiring one turned "here are the eight built-in reports"
+    into a database-not-initialized error for an agent orienting itself, and
+    turned a mistyped ``export report`` id into advice to run ``db init``.
+
+    ``DatabaseNotInitializedError`` is the only degradation admitted. A locked or
+    wrong-key database is a real failure the caller must see, not a catalog with
+    a silently missing tier.
+    """
+    # The open is guarded, the caller's body is not: wrapping the whole `with` in
+    # the `except` would swallow the same error raised inside the body and then
+    # yield a second time.
+    try:
+        opened = get_database(read_only=True)
+    except DatabaseNotInitializedError:
+        logger.info("no database yet; serving the packaged report tiers only")
+        yield get_report_catalog(), None
+        return
+    with opened as db:
+        yield get_report_catalog(db), db
+
+
+def catalog_to_payload(
+    catalog: ReportCatalog, *, include_archived: bool = False
+) -> ReportCatalogPayload:
+    """Expose the catalog's static metadata for one listing view.
+
+    ``include_archived`` widens the listing rather than replacing it, matching
+    ``accounts list --include-archived``: one answer to "show me the hidden ones"
+    across the CLI, not one per command group. Each entry carries its own
+    ``archived`` state, which is what makes widening safe — a caller reading a
+    combined listing can still tell the two apart.
+    """
     return ReportCatalogPayload(
-        reports=[_catalog_entry_to_payload(report) for report in catalog.list()]
+        reports=[
+            _catalog_entry_to_payload(
+                report, archived=catalog.status(report.report_id).archived
+            )
+            for report in catalog.list(archived=_listing_view(include_archived))
+        ]
     )
 
 
-def catalog_sensitivity(catalog: ReportCatalog) -> Literal["low", "medium"]:
+def _listing_view(include_archived: bool) -> bool | None:
+    """The three-state selector arm one listing flag selects.
+
+    ``None`` is every row, ``False`` the active ones. No listing surface asks for
+    the archived-only arm, so the flag maps onto two of the three.
+    """
+    return None if include_archived else False
+
+
+def catalog_sensitivity(
+    catalog: ReportCatalog, *, include_archived: bool = False
+) -> Literal["low", "medium"]:
     """The envelope sensitivity a listing of ``catalog`` actually carries.
 
     A built-in's name and description are authored in the repo and reviewed, so
@@ -397,10 +524,28 @@ def catalog_sensitivity(catalog: ReportCatalog) -> Literal["low", "medium"]:
     response. The annotations stay AGGREGATE deliberately (masking a user's own
     report name would make the catalog unusable); what has to be honest is the
     tier the envelope reports.
+
+    ``include_archived`` must name the same view the payload does: the two
+    describe one response, and a tier read off a different row set would
+    misreport it.
     """
-    if any(report_tier(report) == "user" for report in catalog.list()):
+    listed = catalog.list(archived=_listing_view(include_archived))
+    if any(report_tier(report) == "user" for report in listed):
         return "medium"
     return "low"
+
+
+def catalog_classes_returned(sensitivity: Literal["low", "medium"]) -> list[str]:
+    """The data classes a catalog listing's own fields carry, for the audit event.
+
+    Derived from the sensitivity rather than restated per surface, so the CLI and
+    MCP listings cannot disagree about what they returned.
+    """
+    return (
+        [DataClass.AGGREGATE.value]
+        if sensitivity == "low"
+        else [DataClass.AGGREGATE.value, DataClass.USER_NOTE.value]
+    )
 
 
 def result_to_payload(result: CatalogReportResult) -> ReportResultPayload:
@@ -427,11 +572,14 @@ def result_to_payload(result: CatalogReportResult) -> ReportResultPayload:
     )
 
 
-def _catalog_entry_to_payload(report: RegisteredReport) -> ReportCatalogEntry:
+def _catalog_entry_to_payload(
+    report: RegisteredReport, *, archived: bool = False
+) -> ReportCatalogEntry:
     return ReportCatalogEntry(
         report_id=report.report_id,
         tier=report_tier(report),
         description=report.description,
+        archived=archived,
         parameter_schema=_parameter_schema(report),
         parameter_classes={
             parameter.name: parameter.data_class.value
@@ -464,7 +612,9 @@ def _parameter_schema(report: RegisteredReport) -> dict[str, JsonValue]:
         if parameter.required:
             required.append(parameter.name)
         else:
-            property_schema["default"] = parameter.default
+            # The schema is published as JSON, and two declarable types have no
+            # JSON form — a `date` default here would break the whole listing.
+            property_schema["default"] = json_scalar(parameter.default)
         properties[parameter.name] = property_schema
 
     schema: dict[str, JsonValue] = {
@@ -504,4 +654,6 @@ def _thaw_parameter_metadata(value: object) -> JsonValue:
         return [
             _thaw_parameter_metadata(item) for item in cast(tuple[object, ...], value)
         ]
-    return cast(JsonValue, value)
+    # A `date`/`decimal` parameter reaches the runner as a real Python object, so
+    # the effective-parameter echo has to render it the way storage does.
+    return cast(JsonValue, json_scalar(value))

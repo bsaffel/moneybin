@@ -151,7 +151,12 @@ def render_rich_table(cols: list[str], rows: list[tuple[object, ...]]) -> None:
     from rich.console import Console  # noqa: PLC0415 — defer heavy import
     from rich.table import Table  # noqa: PLC0415 — defer heavy import
 
-    console = Console()
+    # markup=False because every cell here is data, and much of it is
+    # user-authored — a report description, a merchant name, a transaction
+    # description. Rich reads `[...]` as a style tag, so a default console drops
+    # "spend [excluding rent]" down to "spend " and lets stored text steer the
+    # terminal's styling. No caller passes style tags in a cell.
+    console = Console(markup=False)
     table = Table(*cols)
     for row in rows:
         table.add_row(*[str(v) if v is not None else "" for v in row])

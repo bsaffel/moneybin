@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, Literal
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -42,6 +42,15 @@ from moneybin.services.entity_reference import (
 )
 
 logger = logging.getLogger(__name__)
+
+ConfirmedVia = Literal["prompt", "flag"]
+"""How a caller obtained the confirmation for a classification downgrade.
+
+``prompt`` is a human answering the interactive confirm; ``flag`` is ``--yes``
+supplied in the invocation. Recorded on the audit row because the surface and
+actor are identical either way, so nothing else can tell an assistant supplying
+the flag from the human the flag is supposed to represent.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +305,7 @@ class UserReportsService:
         to_class: DataClass,
         reason: str,
         confirmed: bool | None,
+        confirmed_via: ConfirmedVia,
         actor: str,
     ) -> ReclassifyOutcome:
         """Lower one column's masking floor, permanently, on human approval.
@@ -311,6 +321,11 @@ class UserReportsService:
         identically — only ``True`` proceeds — but the last two are counted
         apart, because a surface refusing every downgrade for mechanical reasons
         would otherwise read as users saying no.
+
+        ``confirmed_via`` says *which path* supplied that answer, and is likewise
+        required — a default would record an assistant's ``--yes`` as a human at
+        a prompt, which is the one thing the audit row exists to distinguish.
+        ``actor`` cannot carry it: both paths are the same surface.
 
         ``from`` is the class **derivation currently produces**, not the stored
         (possibly already-downgraded) one, so an approval is always recorded
@@ -336,7 +351,15 @@ class UserReportsService:
                 ),
             )
 
-        declared = declared_params(row.get("params") or ())
+        # Defaults are stripped for derivation, the same way the run path strips
+        # them: `_refuse_sensitive_defaults` is a *write* gate on a default being
+        # stored, and this request stores no parameters at all. Leaving them on
+        # let an upstream reclassification of some unrelated filter's column
+        # refuse a downgrade whose caller never mentioned that parameter.
+        declared = tuple(
+            replace(parameter, default=None, required=True)
+            for parameter in declared_params(row.get("params") or ())
+        )
         derived = derive_classification(
             self._db, query_sql=str(row["query_sql"]), params=declared
         )
@@ -391,8 +414,11 @@ class UserReportsService:
                 class_downgrades=downgrades,
             ),
             actor=actor,
+            context={"confirmed_via": confirmed_via},
         )
-        metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(outcome="confirmed").inc()
+        metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
+            outcome=f"confirmed_{confirmed_via}"
+        ).inc()
         logger.warning(
             f"user_report.reclassify report_id={report_id} column={column} "
             f"from={from_class.value} to={to_class.value}"

@@ -210,6 +210,7 @@ class UserReportsRepo(BaseRepo):
         class_fingerprint: str | Unset = UNSET,
         is_active: bool | Unset = UNSET,
         actor: str,
+        context: dict[str, Any] | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent:
@@ -219,6 +220,11 @@ class UserReportsRepo(BaseRepo):
         deliberately leaves ``class_fingerprint`` alone: storing a current
         fingerprint beside a stale class map would put the next run on the
         no-re-resolution path and serve the stale, weaker class.
+
+        Every update is one ``user_report.set`` action; callers say *why* through
+        ``context`` (the reclassify path records which confirmation supplied the
+        approval) rather than by minting a second action name, so the audit
+        taxonomy stays ``<entity>.<verb>``.
         """
         supplied = {
             column: value
@@ -255,6 +261,7 @@ class UserReportsRepo(BaseRepo):
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
                 actor=actor,
+                context=context,
                 parent_audit_id=parent_audit_id,
             )
         logger.info(

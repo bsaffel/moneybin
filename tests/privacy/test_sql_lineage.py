@@ -25,9 +25,11 @@ from moneybin.privacy.sql_lineage import (
     is_metadata_query,
     is_multi_statement,
     parse_cached,
+    read_column_classes,
     reports_class_map,
     resolve_output_classes,
     resolve_placeholder_classes,
+    resolve_projection_sources,
     tables_outside_schemas,
 )
 from moneybin.privacy.taxonomy import DataClass, Tier
@@ -1117,3 +1119,110 @@ def test_parameter_class_resolves_under_both_dollar_name_parse_shapes(
     assert resolve_placeholder_classes(tree, snapshot) == {
         "acct": DataClass.ROUTING_NUMBER
     }
+
+
+# ---------------------------------------------------------------------------
+# Case-insensitive table scoping, row-count placeholders, UNION provenance
+# ---------------------------------------------------------------------------
+
+
+def test_read_column_classes_resolves_a_table_named_in_any_case(
+    populated_db: Database,
+) -> None:
+    """DuckDB matches identifiers without regard to case; the read set must too.
+
+    ``tables_outside_schemas`` already case-folds, so ``FROM CORE.DIM_ACCOUNTS``
+    passes every gate. If the read set does not fold too, the query resolves to
+    no columns at all — which silently empties the dynamic-report drift
+    fingerprint and its provenance list rather than raising anything.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    lower = read_column_classes(
+        parse_cached("SELECT account_id FROM core.dim_accounts"), snapshot
+    )
+    upper = read_column_classes(
+        parse_cached("SELECT account_id FROM CORE.DIM_ACCOUNTS"), snapshot
+    )
+
+    assert lower, "expected the lowercase spelling to resolve columns"
+    assert upper == lower
+
+
+def test_a_row_count_placeholder_classes_as_an_aggregate(
+    populated_db: Database,
+) -> None:
+    """``LIMIT $top`` binds a row count, which can echo no column's data.
+
+    Every built-in declares its own ``LIMIT ?`` parameter ``AGGREGATE``. Leaving
+    the saved-report path at ``UNRESOLVED`` would mean one report kind may carry
+    a page-size default and the other may not, for the same value.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT account_id FROM core.dim_accounts LIMIT $top")
+
+    assert resolve_placeholder_classes(tree, snapshot) == {"top": DataClass.AGGREGATE}
+
+
+def test_a_filter_placeholder_still_takes_its_column_class(
+    populated_db: Database,
+) -> None:
+    """The benign-input twin of the row-count case: a filter must not lower.
+
+    A rule stated as "a placeholder outside a comparison is safe" would also
+    admit ``WHERE routing_number = $acct``'s operand once someone widened it.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = expand_star(
+        parse_cached(
+            "SELECT account_id FROM core.dim_accounts "
+            "WHERE routing_number = $acct LIMIT $top"
+        ),
+        snapshot,
+    )
+
+    assert resolve_placeholder_classes(tree, snapshot) == {
+        "acct": DataClass.ROUTING_NUMBER,
+        "top": DataClass.AGGREGATE,
+    }
+
+
+def test_union_projection_sources_merge_by_position_not_by_alias(
+    populated_db: Database,
+) -> None:
+    """One output position fed by two branches has one entry, keyed like classes.
+
+    ``resolve_output_classes`` takes output names from the first branch and
+    combines each *position* across branches. Merging sources by alias instead
+    invents an output column per branch alias and reports the first branch's
+    table as the sole upstream of a column every branch feeds.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached(
+        "SELECT account_id AS a FROM core.dim_accounts "
+        "UNION ALL SELECT display_name AS b FROM core.dim_accounts"
+    )
+
+    sources = resolve_projection_sources(tree, snapshot)
+
+    assert set(sources) == set(resolve_output_classes(tree, snapshot))
+    assert sources["a"].passthrough is True
+    assert sources["a"].upstream is None
+
+
+def test_union_projection_sources_keep_an_agreed_upstream(
+    populated_db: Database,
+) -> None:
+    """The benign twin: branches that agree still name their shared upstream.
+
+    A positional merge that collapsed every set operation to ``upstream=None``
+    would pass the test above while telling the user nothing.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached(
+        "SELECT account_id AS a FROM core.dim_accounts "
+        "UNION ALL SELECT account_id AS b FROM core.dim_accounts"
+    )
+
+    sources = resolve_projection_sources(tree, snapshot)
+
+    assert sources["a"].upstream == "core.dim_accounts.account_id"

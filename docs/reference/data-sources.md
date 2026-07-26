@@ -257,7 +257,7 @@ Every read-only and write-shaped CLI command supports `--output json` and emits 
 }
 ```
 
-`status` flips to `"error"` and an `error` block is added on classified failure. `summary.degraded` + `summary.degraded_reason` appear when an MCP tool returns aggregates in place of row-level data without consent.
+`status` flips to `"error"` and an `error` block is added on classified failure. `summary.degraded` + `summary.degraded_reason` appear when the response is less than what was asked for — three cases today: an MCP tool returns aggregates in place of row-level data without consent, a `system status` section could not be read, or a report's stored column classification is stale. `degraded_reason` names which one.
 
 **`moneybin import files --output json` `data` shape** (`src/moneybin/cli/commands/import_cmd.py`):
 

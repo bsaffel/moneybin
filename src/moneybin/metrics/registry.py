@@ -698,10 +698,14 @@ USER_REPORT_DRIFT_DETECTED_TOTAL = Counter(
 USER_REPORT_RECLASSIFY_TOTAL = Counter(
     "moneybin_user_report_reclassify_total",
     # Watch this one for abuse rather than health: it is the only path that
-    # durably lowers a masking floor, so a rising `confirmed` rate against a
-    # flat `declined` rate is the signal that the confirm has become a
-    # formality people click through.
+    # durably lowers a masking floor, so a rising confirm rate against a flat
+    # `declined` rate is the signal that the confirm has become a formality
+    # people click through. The two confirm outcomes are separate because
+    # `--yes` never increments `declined` — collapsed into one `confirmed`
+    # label, an assistant supplying the flag unasked is indistinguishable from
+    # the human it stands in for, which is the case this counter is watched for.
     "Classification-downgrade attempts on a saved report, by outcome.",
-    # outcome: confirmed | declined | refused_not_weaker | no_elicitation
+    # outcome: confirmed_prompt | confirmed_flag | declined | no_elicitation
+    #          | refused_not_weaker | refused_unknown_column
     ["outcome"],
 )

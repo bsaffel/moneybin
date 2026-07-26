@@ -122,12 +122,13 @@ def explain_report(
 ) -> ReportExplanation:
     """Explain the report ``handle`` names — a ``report_id`` or an exact name.
 
-    Archived reports are included: archiving suppresses catalog noise rather
-    than revoking access (R5), so a report a user hid must still be
+    Archived reports resolve like any other: archiving suppresses catalog noise
+    rather than revoking access (R5), so a report a user hid must still be
     inspectable — otherwise archiving would quietly delete the evidence trail.
     """
-    catalog = get_report_catalog(db, include_archived=True)
-    return explain_spec(db, catalog.resolve(handle), parameters=parameters)
+    return explain_spec(
+        db, get_report_catalog(db).resolve(handle), parameters=parameters
+    )
 
 
 def explain_spec(

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, Literal
 
 import click
 import typer
@@ -26,10 +26,8 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors, render_rich_table
 from moneybin.database import get_database
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-
-if TYPE_CHECKING:
-    from moneybin.privacy.taxonomy import DataClass
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +45,16 @@ _PARAM_DECLARE_HELP = (
     "A parameter is required unless it declares a default."
 )
 
+# Every lifecycle response names one report by its minted id and its user-authored
+# name. Declared once because the four of them return the same two things.
+_LIFECYCLE_CLASSES = [DataClass.RECORD_ID.value, DataClass.USER_NOTE.value]
+
 
 def reports_list(
-    archived: bool = typer.Option(
+    include_archived: bool = typer.Option(
         False,
-        "--archived",
-        help="Show archived reports instead of the active catalog.",
+        "--include-archived",
+        help="Include archived saved reports, marked as archived in the listing.",
     ),
     tier: str | None = typer.Option(
         None,
@@ -64,9 +66,10 @@ def reports_list(
 ) -> None:
     """List every registered report — built-in, extension, and saved."""
     from moneybin.reports._framework.catalog import (
+        catalog_classes_returned,
         catalog_sensitivity,
         catalog_to_payload,
-        get_report_catalog,
+        open_report_catalog,
     )
 
     if tier is not None and tier not in ("builtin", "extension", "user"):
@@ -75,21 +78,17 @@ def reports_list(
         )
 
     with handle_cli_errors(cli_actor="reports_list"):
-        with get_database(read_only=True) as db:
-            catalog = get_report_catalog(db, include_archived=archived)
-            payload = catalog_to_payload(catalog)
-            sensitivity = catalog_sensitivity(catalog)
+        # Widen-and-mark, the same shape as `accounts list --include-archived`:
+        # one answer to "show me the hidden ones" across the CLI rather than one
+        # per command group. The catalog always spans archived rows so they stay
+        # runnable; this decides only what a *listing* shows.
+        with open_report_catalog() as (catalog, _):
+            payload = catalog_to_payload(catalog, include_archived=include_archived)
+            sensitivity = catalog_sensitivity(
+                catalog, include_archived=include_archived
+            )
 
-    entries = [
-        entry
-        for entry in payload.reports
-        # `--archived` is an archived-only view rather than a widened one: the
-        # catalog entry carries no archived flag, so a combined listing could not
-        # say which rows were archived without adding one to a payload every
-        # tier shares.
-        if (tier is None or entry.tier == tier)
-        and (entry.tier == "user" or not archived)
-    ]
+    entries = [entry for entry in payload.reports if tier is None or entry.tier == tier]
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
         if not entries:
@@ -101,7 +100,9 @@ def reports_list(
             [
                 (
                     entry.report_id,
-                    entry.tier,
+                    # The tier column, not a fifth column: archived is a state of
+                    # the user tier, and only a widened listing ever shows one.
+                    f"{entry.tier} [archived]" if entry.archived else entry.tier,
                     ", ".join(sorted(entry.parameter_classes)) or "-",
                     entry.description,
                 )
@@ -114,10 +115,14 @@ def reports_list(
             data=[entry.model_dump(mode="json") for entry in entries],
             sensitivity=sensitivity,
             total_count=len(entries),
+            classes_returned=catalog_classes_returned(sensitivity),
         ),
         output,
         render_fn=_render_text,
         cli_actor="reports_list",
+        # A bare-list payload carries no annotations, so the audit event would
+        # record no classes at all for a response holding user-authored names.
+        classes_returned=catalog_classes_returned(sensitivity),
     )
 
 
@@ -171,7 +176,7 @@ def reports_explain(
             # Resolved here and handed to `explain_spec` rather than calling
             # `explain_report`, which would build the catalog a second time —
             # one build derives a spec per saved row.
-            catalog = get_report_catalog(db, include_archived=True)
+            catalog = get_report_catalog(db)
             report = catalog.resolve(handle)
             parameters = coerce_report_parameters(report, param)
             explanation = explain_spec(db, report, parameters=parameters)
@@ -251,11 +256,22 @@ def reports_explain(
                 "graduation_blockers": list(explanation.graduation_blockers),
             },
             sensitivity=explanation.sensitivity,
+            classes_returned=_explanation_classes(explanation.sensitivity),
         ),
         output,
         render_fn=_render_text,
         cli_actor="reports_explain",
+        # The name, description, and verbatim SQL of a *saved* report are
+        # user-authored text; a bare-dict payload declares nothing on its own.
+        classes_returned=_explanation_classes(explanation.sensitivity),
     )
+
+
+def _explanation_classes(sensitivity: Literal["low", "medium"]) -> list[str]:
+    """The classes an explanation's own prose carries, by the tier it reports."""
+    from moneybin.reports._framework.catalog import catalog_classes_returned
+
+    return catalog_classes_returned(sensitivity)
 
 
 def reports_create(
@@ -373,16 +389,23 @@ def reports_delete(
     from moneybin.services.user_reports_service import UserReportsService
 
     with handle_cli_errors(cli_actor="reports_delete"):
+        # Resolve on a read-only connection and prompt with it closed. A write
+        # connection holds the exclusive DuckDB writer lock for its whole
+        # lifetime, so confirming inside one blocks every other writer for an
+        # unbounded human wait — every sibling confirm in the CLI prompts first.
+        with get_database(read_only=True) as db:
+            row = UserReportsService(db).resolve(handle)
+        report_id = str(row["report_id"])
+        if not yes and not typer.confirm(
+            f"Delete saved report {row['name']} ({report_id})?", err=True
+        ):
+            typer.echo("Delete cancelled.", err=True)
+            raise typer.Exit(1)
         with get_database(read_only=False) as db:
-            service = UserReportsService(db)
-            row = service.resolve(handle)
-            report_id = str(row["report_id"])
-            if not yes and not typer.confirm(
-                f"Delete saved report {row['name']} ({report_id})?", err=True
-            ):
-                typer.echo("Delete cancelled.", err=True)
-                raise typer.Exit(1)
-            service.delete(report_id, actor="cli")
+            # By `report_id`, and the service re-resolves it: the row may have
+            # been deleted while the prompt was open, and a stale name must not
+            # be what decides which report goes.
+            UserReportsService(db).delete(report_id, actor="cli")
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
         typer.echo(f"✅ Deleted {row['name']} ({report_id})")
@@ -390,11 +413,15 @@ def reports_delete(
     render_or_json(
         build_envelope(
             data={"report_id": report_id, "state": "absent"},
-            sensitivity="low",
+            sensitivity="medium",
+            classes_returned=_LIFECYCLE_CLASSES,
         ),
         output,
         render_fn=_render_text,
         cli_actor="reports_delete",
+        # `report_id` is an opaque minted id; the report's name reaches the text
+        # render, and a bare-dict payload declares neither on its own.
+        classes_returned=_LIFECYCLE_CLASSES,
     )
 
 
@@ -446,7 +473,6 @@ def reports_reclassify(
     downgrade must drop the sensitivity tier: a same-tier weakening (whole
     masking to partial) is refused whatever the reason.
     """
-    from moneybin.privacy.taxonomy import DataClass
     from moneybin.services.user_reports_service import UserReportsService
 
     try:
@@ -459,18 +485,24 @@ def reports_reclassify(
         ) from e
 
     with handle_cli_errors(cli_actor="reports_reclassify"):
+        # Same ordering as `delete`, for the same reason: the writer lock must not
+        # be held across an interactive prompt.
+        with get_database(read_only=True) as db:
+            row = UserReportsService(db).resolve(handle)
+        confirmed = (
+            True if yes else _prompt_for_downgrade(row["name"], column, to_class)
+        )
         with get_database(read_only=False) as db:
-            service = UserReportsService(db)
-            row = service.resolve(handle)
-            confirmed = (
-                True if yes else _prompt_for_downgrade(row["name"], column, to_class)
-            )
-            outcome = service.reclassify(
+            outcome = UserReportsService(db).reclassify(
                 str(row["report_id"]),
                 column=column,
                 to_class=to_class,
                 reason=reason,
                 confirmed=confirmed,
+                # `actor="cli"` is the same either way, so the audit row would
+                # otherwise be identical whether Brandon answered the prompt or
+                # an assistant passed `--yes` on his behalf.
+                confirmed_via="flag" if yes else "prompt",
                 actor="cli",
             )
 
@@ -488,11 +520,13 @@ def reports_reclassify(
                 "from": outcome.from_class.value,
                 "to": outcome.to_class.value,
             },
-            sensitivity="low",
+            sensitivity="medium",
+            classes_returned=_LIFECYCLE_CLASSES,
         ),
         output,
         render_fn=_render_text,
         cli_actor="reports_reclassify",
+        classes_returned=_LIFECYCLE_CLASSES,
     )
 
 
@@ -544,8 +578,10 @@ def _render_save(
             # `name` is user-authored text, classed USER_NOTE — the same tier the
             # stored column carries, not the AGGREGATE a built-in's name is.
             sensitivity="medium",
+            classes_returned=_LIFECYCLE_CLASSES,
         ),
         output,
         render_fn=_render_text,
         cli_actor=cli_actor,
+        classes_returned=_LIFECYCLE_CLASSES,
     )

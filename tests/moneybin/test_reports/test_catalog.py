@@ -9,14 +9,18 @@ from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
 from pydantic import JsonValue
 from pytest_mock import MockerFixture
 
-from moneybin.database import Database
+from moneybin.database import (
+    Database,
+    DatabaseKeyError,
+    DatabaseNotInitializedError,
+)
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.networth import (
     NetWorthAccountRow,
@@ -31,6 +35,7 @@ from moneybin.reports._framework.catalog import (
     ReportCatalog,
     ServiceReportSpec,
     get_report_catalog,
+    open_report_catalog,
 )
 from moneybin.reports._framework.contract import (
     Binding,
@@ -969,3 +974,42 @@ def test_duplicate_extension_report_id_is_rejected(
 
     with pytest.raises(ValueError, match="duplicate extension report_id"):
         register_extension_report(_sql_report(report_id="retirement:summary"))
+
+
+# ---------------------------------------------------------------------------
+# Browsing without a database
+# ---------------------------------------------------------------------------
+
+
+def test_the_catalog_serves_the_packaged_tiers_when_no_database_exists() -> None:
+    """Browsing must not require ``db init``: two of three tiers are repo files.
+
+    An agent calling ``reports()`` with no arguments to orient itself used to
+    receive the built-in catalog with no database touched. Adding the user tier
+    turned that into a database-not-initialized error on a fresh profile, and
+    turned a mistyped ``export report`` id into advice to run ``db unlock``.
+    """
+    with patch(
+        "moneybin.reports._framework.catalog.get_database",
+        side_effect=DatabaseNotInitializedError("no database yet"),
+    ):
+        with open_report_catalog() as (catalog, db):
+            report_ids = {report.report_id for report in catalog.list()}
+
+    assert db is None
+    assert "core:networth" in report_ids
+
+
+def test_a_locked_database_is_still_an_error_when_browsing() -> None:
+    """The benign twin: only "never initialized" degrades.
+
+    A locked or wrong-key database is a real failure with a real fix. Swallowing
+    it would hand back a catalog silently missing the user's own reports.
+    """
+    with patch(
+        "moneybin.reports._framework.catalog.get_database",
+        side_effect=DatabaseKeyError("wrong key"),
+    ):
+        with pytest.raises(DatabaseKeyError):
+            with open_report_catalog():
+                pass  # pragma: no cover — the open raises before the body runs

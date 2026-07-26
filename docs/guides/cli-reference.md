@@ -417,7 +417,7 @@ across tiers still has an ID that resolves.
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `reports list` | Every registered report and its tier. | `--archived`, `--tier {builtin,extension,user}` |
+| `reports list` | Every registered report and its tier. `--include-archived` adds the saved reports you have archived, marked `[archived]` in the tier column. | `--include-archived`, `--tier {builtin,extension,user}` |
 | `reports run HANDLE` | Run one report by ID or name. | `--param key=value` (repeatable), `--limit` |
 | `reports explain HANDLE` | The report's query in both forms, each column's privacy class and where it came from, its lineage, freshness, and whether it can be materialized. Runs nothing. | `--param key=value` |
 
@@ -458,10 +458,20 @@ Two behaviours worth knowing before they surprise you:
   everything above keeps its `$name`. Rendering is not execution, so it never
   passes through the redaction the report's own rows do — printing the value
   there would publish what every result row masks.
-- **`reclassify --yes` states a human decision.** Nothing at a terminal can tell
-  a person from an assistant, so the flag is taken at its word. An assistant
-  driving this command must not supply it unasked. With no prompt available and
-  no `--yes`, the command refuses rather than assuming either answer.
+- **`reclassify --yes` states a human decision, and the audit row says it was a
+  flag.** Nothing at a terminal can tell a person from an assistant, so the flag
+  is taken at its word — but never recorded as a prompt. `system audit list
+  --action user_report.set` shows `confirmed_via` as `prompt` or `flag`, so a
+  downgrade an assistant confirmed on your behalf is distinguishable after the
+  fact from one you approved. An assistant driving this command must not supply
+  the flag unasked. With no prompt available and no `--yes`, the command refuses
+  rather than assuming either answer.
+- **Archiving hides a report; it does not retire it.** An archived report stays
+  runnable, exportable, and explainable by ID or name — `--archive` suppresses
+  catalog noise, and only the listing honours it. To retire one for good, delete
+  it (`system audit undo` still brings it back). `reports list
+  --include-archived` shows the hidden ones alongside the active catalog, so
+  nothing is reachable-but-invisible.
 
 **Related guides:** [`../features.md`](../features.md#reports).
 

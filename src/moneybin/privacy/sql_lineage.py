@@ -39,6 +39,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -492,16 +493,31 @@ def _tables_in_scope(tree: exp.Expr, snapshot: SchemaSnapshot) -> set[tuple[str,
     over-redacts a query that never touched the real table. That is the safe
     direction, and it is the same trade ``collect_input_columns`` already makes
     by not passing ``shadowed`` — see its docstring.
+
+    Identifiers are matched case-insensitively and returned in the *snapshot's*
+    casing, for the reason ``tables_outside_schemas`` case-folds: DuckDB resolves
+    identifiers without regard to case, and callers pass the tree exactly as the
+    user wrote it. Comparing raw casing against the snapshot returned an empty
+    set for ``FROM CORE.DIM_ACCOUNTS`` — a table every gate had already admitted
+    — which floors a table-scoped bound at AGGREGATE and empties the
+    dynamic-report drift key. Returning the snapshot's own casing is what lets
+    the result be looked up in ``snapshot.columns`` by the callers here.
     """
-    known_by_name: dict[str, set[str]] = {}
+    canonical: dict[tuple[str, str], tuple[str, str]] = {}
+    by_name: dict[str, set[tuple[str, str]]] = {}
     for schema, table, _col in snapshot.columns:
-        known_by_name.setdefault(table, set()).add(schema)
+        canonical[(schema.lower(), table.lower())] = (schema, table)
+        by_name.setdefault(table.lower(), set()).add((schema, table))
     found: set[tuple[str, str]] = set()
     for tbl in tree.find_all(exp.Table):
+        name = tbl.name.lower()
         if tbl.db:
-            found.add((tbl.db, tbl.name))
+            # An unknown qualified table keeps its written form: it contributes
+            # no columns either way, and inventing a canonical name for a table
+            # the snapshot has never seen would claim knowledge we lack.
+            found.add(canonical.get((tbl.db.lower(), name), (tbl.db, tbl.name)))
         else:
-            found |= {(s, tbl.name) for s in known_by_name.get(tbl.name, set())}
+            found |= by_name.get(name, set())
     return found
 
 
@@ -1377,6 +1393,20 @@ def _compared_column(placeholder: exp.Expr) -> exp.Column | None:
     return None
 
 
+def _is_row_count_position(placeholder: exp.Expr) -> bool:
+    """Whether ``placeholder`` binds a row count rather than a value.
+
+    ``LIMIT $top`` / ``OFFSET $skip`` bound how many rows come back; neither can
+    carry a column's data, so classifying them ``UNRESOLVED`` over-classifies the
+    one parameter shape every built-in already declares ``AGGREGATE``
+    (``large_transactions``, ``merchant_activity``). This is a *positional*
+    exemption, not "a placeholder outside a comparison is safe": anywhere a bound
+    value could echo a column — inside a function argument, one side of an
+    arithmetic expression compared against a column — still fails closed.
+    """
+    return isinstance(placeholder.parent, (exp.Limit, exp.Offset))
+
+
 def resolve_placeholder_classes(
     tree: exp.Expr, snapshot: SchemaSnapshot
 ) -> dict[str, DataClass]:
@@ -1390,6 +1420,9 @@ def resolve_placeholder_classes(
 
     Consumers render a LOW-classed binding as a literal, so under-classifying
     here prints a value in the clear beside the rows it selected.
+
+    One position is exempt rather than fail-closed — see
+    :func:`_is_row_count_position`.
     """
     alias_map = _build_alias_map(tree)
     shadowed = _scope_source_names(tree)
@@ -1404,11 +1437,14 @@ def resolve_placeholder_classes(
             if column is None
             else _column_key(column, alias_map, snapshot, shadowed)
         )
-        resolved = (
-            FAIL_CLOSED_CLASS
-            if key is None
-            else (_class_of_key(key) or FAIL_CLOSED_CLASS)
-        )
+        if key is None and _is_row_count_position(placeholder):
+            resolved = DataClass.AGGREGATE
+        else:
+            resolved = (
+                FAIL_CLOSED_CLASS
+                if key is None
+                else (_class_of_key(key) or FAIL_CLOSED_CLASS)
+            )
         prior = found.get(name)
         found[name] = (
             resolved if prior is None or prior is resolved else FAIL_CLOSED_CLASS
@@ -1438,8 +1474,15 @@ def resolve_projection_sources(
     """Map each output column name to the upstream column it passes through.
 
     The provenance half of :func:`resolve_output_classes`, which answers the
-    same question about *class*. Keyed identically — by projection
-    alias-or-name, insertion-ordered — so a caller can join the two.
+    same question about *class*. Keyed identically — output names from the first
+    branch, insertion-ordered, unnamed projections suffixed by position — so a
+    caller can join the two.
+
+    Branches are merged **by position**, exactly as classes are, because that is
+    what SQL does: output column *i* receives rows from branch *i* of every
+    branch. Merging by alias instead invents one output column per branch alias
+    and hands the first branch's table back as the sole upstream of a column
+    every branch feeds.
 
     A ``UNION`` whose branches disagree on a column's source names no single
     upstream for it, the same collapse :func:`_combined_class` performs on
@@ -1457,36 +1500,52 @@ def resolve_projection_sources(
     alias_map = _build_alias_map(qualified)
     shadowed = _scope_source_names(qualified)
 
-    branches = _union_select_branches(qualified)
+    branches = _union_select_branches(qualified) or [qualified]
+    per_branch = [
+        [
+            _projection_source(projection, alias_map, snapshot, shadowed)
+            for projection in select.expressions
+        ]
+        for select in branches
+    ]
     sources: dict[str, ProjectionSource] = {}
-    for select in branches or [qualified]:
-        for projection in select.expressions:
-            name = projection.alias_or_name
-            if not name:
-                continue
-            inner = projection.unalias()
-            passthrough = isinstance(inner, exp.Column)
-            key = (
-                _column_key(inner, alias_map, snapshot, shadowed)
-                if isinstance(inner, exp.Column)
-                else None
-            )
-            resolved = ProjectionSource(
-                passthrough=passthrough,
-                upstream=None if key is None else ".".join(key),
-            )
-            prior = sources.get(name)
-            sources[name] = (
-                resolved
-                if prior is None
-                else ProjectionSource(
-                    passthrough=prior.passthrough and resolved.passthrough,
-                    upstream=(
-                        prior.upstream if prior.upstream == resolved.upstream else None
-                    ),
-                )
-            )
+    for position, projection in enumerate(branches[0].expressions):
+        # Same key scheme as `resolve_output_classes`: an unaliased expression
+        # yields "" from `alias_or_name`, and a positional suffix keeps two of
+        # them distinct so the second cannot overwrite the first.
+        name = projection.alias_or_name or f"?_{position}"
+        candidates = [
+            branch[position] for branch in per_branch if position < len(branch)
+        ]
+        sources[name] = _combined_source(candidates)
     return sources
+
+
+def _projection_source(
+    projection: exp.Expr,
+    alias_map: dict[str, tuple[str, str]],
+    snapshot: SchemaSnapshot,
+    shadowed: frozenset[str],
+) -> ProjectionSource:
+    """Read one projection's passthrough-and-upstream facts."""
+    inner = projection.unalias()
+    if not isinstance(inner, exp.Column):
+        return ProjectionSource(passthrough=False, upstream=None)
+    key = _column_key(inner, alias_map, snapshot, shadowed)
+    return ProjectionSource(
+        passthrough=True, upstream=None if key is None else ".".join(key)
+    )
+
+
+def _combined_source(candidates: Sequence[ProjectionSource]) -> ProjectionSource:
+    """Collapse one output position's sources across every branch feeding it."""
+    if not candidates:  # pragma: no cover — branches[0] always supplies one
+        return ProjectionSource(passthrough=False, upstream=None)
+    upstreams = {candidate.upstream for candidate in candidates}
+    return ProjectionSource(
+        passthrough=all(candidate.passthrough for candidate in candidates),
+        upstream=next(iter(upstreams)) if len(upstreams) == 1 else None,
+    )
 
 
 def read_column_classes(

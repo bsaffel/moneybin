@@ -158,6 +158,17 @@ is given). None of this asks the user for classification: the classes are still
 derived, and declaring `year: int` is inherent to writing `= $year`, not extra
 privacy work R2 pushed onto them.
 
+**Two of the six declarable types have no JSON form, and `params` is a JSON
+column.** `date` and `decimal` coerce to Python objects `json.dumps` refuses, so
+a `default` of either is stored as its ISO / decimal text and read back through
+the declared `annotation` — the declared type stays authoritative, and nothing
+hands DuckDB a `VARCHAR` where the report said `DATE`. The same asymmetry runs
+the other way at *bind* time: an MCP `parameters` object can only carry text, so
+the shared parameter validator coerces a JSON scalar to the declared type before
+type-checking it. Without both halves those two types are CLI-only — the CLI's
+own binder builds real objects from `--param` strings, which is exactly why a
+parity test exercising only `str` proves nothing here.
+
 ##### A stored `default` above LOW tier is refused; the parameter is required instead
 
 `default` is the one `ParamSpec` field that leaves the machine without a row
@@ -181,6 +192,29 @@ it there. This is the same fail-closed shape as the rest of R2: the safe state
 is enforced at the boundary where the value is declared, not audited downstream.
 The rule lives in the binder that already derives the class, so it cannot be
 skipped by a path that forgot to mask.
+
+**It is a write gate, so every read path derives with defaults stripped.** A
+default legal when it was stored can become illegal later — an upstream
+reclassification moves the class of the column its filter compares against. The
+run path already strips them (a read must not refuse over a value nobody is
+supplying; `_classed_params` drops the stale default and makes the parameter
+required instead), and the classification-downgrade path must too: it stores no
+parameters at all, so re-deriving with them attached let an unrelated filter's
+reclassification refuse a downgrade whose caller never mentioned that parameter.
+The one path that must **not** strip them is `set`: it re-stores the parameter
+list, so refusing a newly-illegal default there is the gate doing its job.
+
+**A row-count parameter is `AGGREGATE`, not `UNRESOLVED`.** `LIMIT $top` /
+`OFFSET $skip` bind how many rows come back and can echo no column's data, so
+classifying them fail-closed would mean a saved report may not carry a page-size
+default while every built-in declares exactly that value `AGGREGATE`
+(`large_transactions`, `merchant_activity`) — two report kinds disagreeing about
+one value. The exemption is **positional**: anywhere a bound value could carry a
+column's data — a function argument, one side of an arithmetic expression
+compared against a column — still fails closed. A threshold compared against an
+amount (`WHERE amount > $min`) therefore still takes that column's class and
+still may not carry a default; whether that is too strict is a separate
+question this spec does not answer by widening the rule.
 
 #### `report_id` is namespaced, and the namespace is not decoration
 
@@ -461,8 +495,8 @@ downgrade capability.
 `sql_query` permits reading `reports.*` and permits `SELECT *`; the M2P.3
 graduation path permits neither, because `report_class_derivation` hard-rejects
 both (`assert_acyclic` on any `reports.*` read, `assert_no_star` on a star in
-any `SELECT`, including a CTE — both in `privacy/report_materialization.py`). A report doing either saves and runs correctly
-but can never be materialized.
+any `SELECT`, including a CTE — both in `privacy/report_materialization.py`). A
+report doing either saves and runs correctly but can never be materialized.
 
 This spec keeps the wider save-time allowlist — composing on top of a built-in
 report is real value, and the umbrella's graduation promise is explicitly
@@ -615,11 +649,22 @@ precisely the stale-authority hole R4 closes for the data surface.
 
 The fingerprint is a cache key, not authority: re-resolution is what decides the
 run, so a stale fingerprint costs work, never correctness. That matters because
-the read path has no writable connection — both adapters call `run_report`
-inside `get_database(read_only=True)` (`mcp/tools/reports.py:58`,
-`_framework/cli_register.py:82`), and R1 routes every
-`app.user_reports` mutation through the audited repo, which would emit an audit
-row per *read*. So a run never persists a refreshed fingerprint.
+the read path has no writable connection — both adapters reach
+`ReportCatalog.execute` inside `get_database(read_only=True)`
+(`mcp/tools/reports.py`, `cli/commands/reports/user_reports.py`), and R1 routes
+every `app.user_reports` mutation through the audited repo, which would emit an
+audit row per *read*. So a run never persists a refreshed fingerprint.
+
+**The schema snapshot is read once per catalog build, not once per report.** Its
+expensive `MappingSchema` build is memoised, but each call still issues two
+catalog queries, and both the fingerprint and the provenance list need one — so a
+per-row read is four queries per saved report on every call, including a call
+that only wants a built-in. `user_report_specs` reads it once and threads it
+through. What remains O(saved reports) is the per-row sqlglot walk, plus a full
+re-derivation for each row whose fingerprint moved. Making the user tier resolve
+lazily is future work, and it needs one thing first: `resolve` reads every
+candidate to detect a name collision between a saved report and a built-in, so a
+cheaper collision source has to exist before rows can be skipped.
 
 **Only a write that re-runs the derivation pipeline may store a fingerprint**,
 and it stores the map and the fingerprint together. A metadata-only write — a
@@ -643,6 +688,21 @@ Because `degraded` is documented on the envelope as a no-consent signal, its
 docstring widens to cover stale classification, and `degraded_reason` must name
 which of the two applies. Two meanings on one flag with no way to tell them
 apart is not acceptable; two meanings with a mandatory discriminator is.
+
+**Degraded is a property of the response, not of an intermediate object.**
+`spec_from_row` returns a `DynamicReport` carrying the flag and the reason;
+`ReportCatalog` keys them by `report_id` and `execute` puts them on the
+`CatalogReportResult`, so `to_envelope()` and the MCP tool both emit
+`summary.degraded`. Asserting the `DynamicReport` field alone is not enough — that
+is exactly what let the flag be dropped on the way to the envelope while every
+drift test stayed green.
+
+**A row whose stored *tokens* no longer decode degrades the same way.** A
+released rename of a `DataClass`, or a retired parameter type, makes
+`DataClass(value)` and `annotation_of(token)` raise on a row that was written
+from an allowlist. That must degrade the one row (`unreadable_row`), never escape
+`user_report_specs` — an exception there takes down the catalog for all three
+tiers, so a built-in becomes unreachable because of a saved report.
 
 ### R5 — One access path, three tiers behind it
 
@@ -691,10 +751,36 @@ explicit drop list and no shipped MCP tool carries the suffix. The CLI keeps
 capability through the same service without requiring name equality, which is
 the capability symmetry `.claude/rules/surface-design.md` asks for.
 
-The catalog excludes archived reports by default. The CLI's `--archived` view
-widens it; any equivalent MCP projection must be justified as an extension of
-the existing `reports` input schema in the implementing PR rather than assumed
-here. Each entry carries a `tier` field.
+**Visibility is the listing's decision, never the catalog's.** The catalog is
+always built over every stored row, archived included, and `ReportCatalog.list`
+filters: active by default, archived-only, or everything — the third arm serves
+both the collision check and a widened listing. `resolve` — and therefore every run, export, and
+explanation — spans both, which is what makes "archived reports stay runnable" a
+property of the resolver instead of a thing each caller must remember. It was
+built the other way first, with an `include_archived` flag on the *builder*, and
+three of its four call sites omitted it: `reports run`, the `reports` MCP tool,
+and `export report` could not reach an archived report at all.
+
+**The CLI listing widens and marks, rather than switching views.** `reports list
+--include-archived` adds the archived rows to the active catalog, and each entry
+carries `archived` beside its `tier`. The alternative — an archived-**only** view,
+which this spec specified first — avoids adding a field to an entry all three
+tiers share, and was wrong for one reason: MoneyBin already answers "show me the
+hidden ones" with `accounts list --include-archived`, so a second,
+differently-shaped answer for reports is the two-patterns rot
+`.claude/rules/design-principles.md` names. The field is the price of one
+pattern, and it earns itself — a combined listing that cannot mark an archived
+row hands the caller a runnable report with no sign the user had put it away.
+
+**MCP lists active reports only, for now.** The matching `include_archived`
+parameter is deferred, not rejected: it would change the `reports` tool's
+serialized input schema, and that byte count is pinned by ADR-016's
+carrying-weight evidence and a dated comparison record. That is a cost to spend
+deliberately with fresh evidence, not as a side effect of a listing tweak. The
+asymmetry is bounded — an archived report still runs, exports, and explains by id
+through MCP, and `archived` is already on the entry when a widened listing
+arrives. If it does, it should be named for what a report *is* (archived, not
+closed), unlike `accounts`' older `include_closed`.
 
 **Names are unique across the whole registry, not just against built-ins.**
 `reports` resolves one `report_id` across three tiers, so two reports sharing a
@@ -846,7 +932,12 @@ For any tier, report inspection returns:
 
 - the SQL in both forms defined by [R9](#r9--provenance-renders-identically-across-tiers);
 - the resolved class map, per column, with provenance — which upstream column it
-  descends from, or that it is computed or unresolved;
+  descends from, or that it is computed or unresolved. Provenance is keyed
+  **identically to the class map**: output names from the first branch, merged by
+  *position* across a set operation's branches, because that is what SQL does —
+  output column *i* receives rows from branch *i* of every branch. Merging by
+  alias instead invents one output column per branch alias and reports the first
+  branch's table as the sole upstream of a column every branch feeds;
 - the upstream tables lineage resolved;
 - freshness: `class_fingerprint`, whether drift was detected, `updated_at`;
 - graduation eligibility, with the disqualifying reason when it is unavailable
@@ -1076,23 +1167,30 @@ remains the only MCP identity this draft assumes.
 | `moneybin_user_report_runs_total` | Counter | `tier`, `outcome` |
 | `moneybin_user_report_unresolved_columns_total` | Counter | — |
 | `moneybin_user_report_drift_detected_total` | Counter | `resolution` (`equal`, `failed_closed`) |
-| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed`, `declined`, `refused_not_weaker`, `refused_unknown_column`, `no_elicitation`) |
+| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed_prompt`, `confirmed_flag`, `declined`, `refused_not_weaker`, `refused_unknown_column`, `no_elicitation`) |
 
 The unresolved-columns and drift counters carry the load: together they say
 whether the invisible classification is invisible in practice, or whether users
 are quietly accumulating masked columns.
 
 The reclassify counter is the one to watch for abuse rather than health. It is
-the only path that durably lowers a masking floor, so a rising `confirmed` rate
+the only path that durably lowers a masking floor, so a rising confirm rate
 against a flat `declined` rate is the signal that the confirm has become a
 formality people click through — the failure mode `design-principles.md` warns
 about when a confirm is not targeted at genuine uncertainty. `no_elicitation`
 separates clients that cannot confirm from humans who said no; conflating them
 would hide a surface that is refusing every downgrade for mechanical reasons.
 
-Two label values were added by the implementing PR, both for the same reason —
-`refused_not_weaker` is the abuse signal, and anything else counted under it
-inflates the one number here that is supposed to mean something:
+The two confirm outcomes are separate for the same reason one level up. `--yes`
+never increments `declined`, so a single `confirmed` label makes an assistant
+supplying the flag unasked look exactly like the rising-confirm-flat-decline
+pattern above — indistinguishable from the human it stands in for, in the one
+counter that exists to catch that. `confirmed_flag` rising on its own is the
+signal; `confirmed_prompt` against `declined` remains the click-through signal.
+
+Two more label values were added by the implementing PR, both for the same
+reason — `refused_not_weaker` is the abuse signal, and anything else counted
+under it inflates the one number here that is supposed to mean something:
 
 - **`refused_unknown_column`** — the named column is not in the report's output.
   The comparison `refused_not_weaker` describes cannot even be evaluated, so this
@@ -1172,3 +1270,12 @@ inflates the one number here that is supposed to mean something:
   it can: the constraint is in `--help`, `confirmed` is a required service
   argument, and a surface with no way to ask records `no_elicitation` instead of
   inventing an answer.
+
+  It also records *which* path answered. `confirmed_via` (`prompt` or `flag`) is
+  a second required service argument, written to the downgrade's `app.audit_log`
+  row under `context_json` and split across the counter's two confirm outcomes.
+  The surface cannot verify the `--yes` claim, but it can refuse to launder it:
+  `actor` is `cli` either way, so without this the audit row for an assistant
+  self-accepting a permanent masking downgrade is byte-identical to the row for a
+  human approving one. A rule that cannot be audited after the fact is not
+  enforced, only asserted.

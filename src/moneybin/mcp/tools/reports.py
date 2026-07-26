@@ -15,9 +15,11 @@ from moneybin.mcp.privacy import Sensitivity, get_max_rows, tier_to_sensitivity
 from moneybin.privacy.payloads.reports import ReportsPayload
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.catalog import (
+    catalog_classes_returned,
     catalog_sensitivity,
     catalog_to_payload,
     get_report_catalog,
+    open_report_catalog,
     result_to_payload,
 )
 
@@ -39,10 +41,17 @@ def reports(
                 "parameters and limit require report_id",
                 code=error_codes.REPORT_ID_REQUIRED,
             )
-        # The catalog spans all three tiers, and the user tier lives in the
-        # database — so listing opens one now where it previously needed none.
-        with get_database(read_only=True) as db:
-            catalog = get_report_catalog(db)
+        # The catalog spans all three tiers and the user tier lives in the
+        # database, so listing opens one where it previously needed none — but it
+        # degrades to the packaged tiers on a profile that has none rather than
+        # turning "what reports exist?" into a db-init error.
+        #
+        # Active reports only. An `include_archived` parameter would mirror the
+        # CLI flag, but it changes the serialized tool metadata that ADR-016's
+        # carrying-weight evidence and a dated comparison record pin — a cost to
+        # spend deliberately, not as a side effect of a listing tweak. An
+        # archived report still runs, exports, and explains by id here.
+        with open_report_catalog() as (catalog, _):
             payload = catalog_to_payload(catalog)
             sensitivity = catalog_sensitivity(catalog)
         return build_envelope(
@@ -50,9 +59,7 @@ def reports(
             sensitivity=sensitivity,
             total_count=len(payload.reports),
             returned_count=len(payload.reports),
-            classes_returned=["aggregate"]
-            if sensitivity == "low"
-            else ["aggregate", "user_note"],
+            classes_returned=catalog_classes_returned(sensitivity),
         )
 
     if limit is not None and limit < 1:
@@ -80,6 +87,8 @@ def reports(
         actions=result.actions or None,
         period=result.period,
         display_currency=result.display_currency,
+        degraded=result.degraded,
+        degraded_reason=result.degraded_reason,
     )
 
 

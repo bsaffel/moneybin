@@ -6,7 +6,10 @@ row → ``ReportSpec`` constructor from ``docs/specs/reports-dynamic.md``.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -23,6 +26,8 @@ from moneybin.reports._framework.derive import (
 )
 from moneybin.reports._framework.dynamic import (
     DEGRADED_STALE_CLASSIFICATION,
+    DEGRADED_UNREADABLE_ROW,
+    declared_params,
     spec_from_row,
     stored_params,
     unknown_semantics,
@@ -271,14 +276,40 @@ def test_derivation_classes_a_parameter_from_the_column_it_filters(
 def test_derivation_leaves_a_parameter_compared_against_nothing_unresolved(
     dynamic_db: Database,
 ) -> None:
-    """A bare ``LIMIT $n`` compares against nothing, so it fails closed."""
+    """A value in a position this module has not reasoned about fails closed.
+
+    ``$prefix`` is a function argument, not the operand of a comparison, so
+    nothing here can say which column it describes — and it plainly *could*
+    carry one's data. The row-count exemption below is the only position exempt.
+    """
+    derived = derive_classification(
+        dynamic_db,
+        query_sql=(
+            "SELECT account_id FROM core.dim_accounts "
+            "WHERE starts_with(routing_number, $prefix)"
+        ),
+        params=(_param("prefix", str),),
+    )
+
+    assert dict(derived.parameter_classes) == {"prefix": DataClass.UNRESOLVED}
+
+
+def test_derivation_classes_a_row_count_parameter_as_an_aggregate(
+    dynamic_db: Database,
+) -> None:
+    """``LIMIT $n`` bounds rows returned, so it may carry a default.
+
+    The class governs two things — whether a default may be stored, and whether
+    the value renders as a literal — and a page size is safe for both. Every
+    built-in already declares its own ``LIMIT ?`` parameter ``AGGREGATE``.
+    """
     derived = derive_classification(
         dynamic_db,
         query_sql="SELECT account_id FROM core.dim_accounts LIMIT $n",
-        params=(_param("n", int),),
+        params=(_param("n", int, default=50, required=False),),
     )
 
-    assert dict(derived.parameter_classes) == {"n": DataClass.UNRESOLVED}
+    assert dict(derived.parameter_classes) == {"n": DataClass.AGGREGATE}
 
 
 def test_derivation_leaves_a_parameter_compared_against_an_expression_unresolved(
@@ -835,3 +866,154 @@ def test_unknown_semantics_states_every_field_it_cannot_derive() -> None:
     assert semantics.kind == "unknown"
     assert semantics.provenance == ("core.dim_accounts",)
     assert semantics.exclusions == ()
+
+
+# ---------------------------------------------------------------------------
+# What the row hands to the runner, and what an undecodable row costs
+# ---------------------------------------------------------------------------
+
+
+def test_the_runner_binds_the_same_parameter_class_the_spec_publishes(
+    dynamic_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two readers of one fact must not disagree on the drift path.
+
+    ``spec.params`` carries the re-resolved class and governs redaction; the
+    binding the runner returns carries the class the provenance renderer reads to
+    decide whether a filter value may be printed as a literal. A runner closed
+    over the *stored* parameters keeps the pre-drift class, so ``explain`` prints
+    the value in the clear inside the same response that calls the parameter
+    unresolved and masks every row.
+    """
+    row = _saved(
+        dynamic_db,
+        query_sql=(
+            "SELECT account_id FROM core.dim_accounts WHERE routing_number = $acct"
+        ),
+        params=[{"name": "acct", "annotation": "str"}],
+    )
+    assert row["params"] == [
+        {"name": "acct", "annotation": "str", "data_class": "routing_number"}
+    ]
+
+    # Move the filtered column's class so re-resolution fails the parameter
+    # closed — the stored `routing_number` is now stale.
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "dim_accounts")] = {
+        **CLASSIFICATION[("core", "dim_accounts")],
+        "routing_number": DataClass.TXN_AMOUNT,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    dynamic = spec_from_row(dynamic_db, row)
+    published = {
+        parameter.name: parameter.data_class for parameter in dynamic.spec.params
+    }
+    query = dynamic.spec.runner(dynamic_db, acct="021000021")
+    # R8 binds by name, so the runner always returns a mapping.
+    assert isinstance(query.params, Mapping)
+
+    assert published == {"acct": DataClass.UNRESOLVED}
+    assert query.params["acct"].data_class is published["acct"]
+
+
+def test_the_runner_binds_the_stored_class_when_nothing_drifted(
+    dynamic_db: Database,
+) -> None:
+    """The benign twin: the binding still carries the real class on a match.
+
+    Binding ``FAIL_CLOSED_CLASS`` unconditionally would satisfy the drift test
+    above while withholding every filter value from every explanation.
+    """
+    row = _saved(
+        dynamic_db,
+        query_sql=(
+            "SELECT account_id FROM core.dim_accounts WHERE routing_number = $acct"
+        ),
+        params=[{"name": "acct", "annotation": "str"}],
+    )
+
+    dynamic = spec_from_row(dynamic_db, row)
+    query = dynamic.spec.runner(dynamic_db, acct="021000021")
+    assert isinstance(query.params, Mapping)
+
+    assert query.params["acct"].data_class is DataClass.ROUTING_NUMBER
+
+
+@pytest.mark.parametrize(
+    ("overrides", "detail"),
+    [
+        ({"params": [{"name": "x", "annotation": "complex"}]}, "annotation token"),
+        ({"classes": {"account_id": "not_a_data_class"}}, "class value"),
+    ],
+    ids=["unknown-annotation-token", "unknown-class-value"],
+)
+def test_a_row_whose_stored_tokens_no_longer_decode_stays_listed_and_masked(
+    dynamic_db: Database, overrides: dict[str, Any], detail: str
+) -> None:
+    """One bad row must not take down every tier's catalog.
+
+    Stored tokens are written from an allowlist, so this becomes reachable the
+    moment a release renames a ``DataClass`` or drops a parameter type — and then
+    it is every saved row at once. The adjacent unresolvable-query branch already
+    decided the answer for a row that cannot be classified: it stays listed and
+    wholly masked. Raising out of ``spec_from_row`` instead makes a *built-in*
+    unreachable, which is the one thing archiving and drift both refuse to do.
+    """
+    dynamic = spec_from_row(dynamic_db, _row(**overrides))
+
+    assert set(dynamic.spec.classes.values()) <= {DataClass.UNRESOLVED}
+    assert dynamic.degraded
+    assert dynamic.degraded_reason is not None
+    assert dynamic.degraded_reason.startswith(DEGRADED_UNREADABLE_ROW)
+
+
+def test_spec_from_row_reports_whether_the_stored_row_is_archived(
+    dynamic_db: Database,
+) -> None:
+    """Archived is a fact about the row, so it travels with the spec built from it.
+
+    Without it the catalog cannot both *resolve* an archived report (R5 promises
+    it stays runnable) and *hide* it from a listing — the two needs read the same
+    ``is_active`` column, and only one of them can win a repo-level filter.
+    """
+    assert spec_from_row(dynamic_db, _row(is_active=True)).archived is False
+    assert spec_from_row(dynamic_db, _row(is_active=False)).archived is True
+
+
+def test_a_date_or_decimal_default_is_stored_as_a_json_scalar() -> None:
+    """``params`` is a JSON column, and two declarable types are not JSON-native.
+
+    ``json.dumps`` raises ``TypeError`` on a ``date`` or ``Decimal``, and
+    ``classify_user_error`` does not classify it — so the save reaches the user as
+    a bare traceback with no code and no envelope.
+    """
+    declared = (
+        _param("since", date, default=date(2026, 1, 1), required=False),
+        _param("floor", Decimal, default=Decimal("10.50"), required=False),
+    )
+    entries = stored_params(
+        declared, {"since": DataClass.AGGREGATE, "floor": DataClass.AGGREGATE}
+    )
+
+    assert json.loads(json.dumps(entries)) == entries
+    assert [entry["default"] for entry in entries] == ["2026-01-01", "10.50"]
+
+
+def test_a_stored_json_default_is_read_back_as_its_declared_type() -> None:
+    """The other half of the round trip: the runner must bind a real date.
+
+    Storing an ISO string and handing that string back would bind a VARCHAR where
+    the report declared a DATE, leaving DuckDB's implicit cast to decide what the
+    filter means.
+    """
+    declared = declared_params([
+        {"name": "since", "annotation": "date", "default": "2026-01-01"},
+        {"name": "floor", "annotation": "decimal", "default": "10.50"},
+    ])
+
+    assert [parameter.default for parameter in declared] == [
+        date(2026, 1, 1),
+        Decimal("10.50"),
+    ]
+    assert [parameter.required for parameter in declared] == [False, False]

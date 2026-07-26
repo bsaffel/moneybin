@@ -8,21 +8,31 @@ synthesized runner), and the classification-downgrade capability from
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
 import pytest
 from prometheus_client import REGISTRY
+from pydantic import JsonValue
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.privacy import sql_lineage
 from moneybin.privacy.redaction import mask_strength
-from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.catalog import get_report_catalog, report_tier
+from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
+from moneybin.reports._framework.catalog import (
+    catalog_to_payload,
+    get_report_catalog,
+    report_tier,
+)
 from moneybin.reports._framework.contract import ParamSpec, ReportSpec
 from moneybin.reports._framework.dynamic import spec_from_row, user_report_specs
 from moneybin.repositories.user_reports_repo import UserReportsRepo
+from moneybin.services.audit_service import AuditService
 from moneybin.services.user_reports_service import (
+    ConfirmedVia,
     UserReportsService,
     is_weaker_class,
 )
@@ -245,13 +255,12 @@ def test_catalog_hides_an_archived_report_but_can_be_asked_for_it(
     report_id = _create(service)
     service.update(report_id, is_active=False, actor="cli")
 
-    default_ids = {r.report_id for r in get_report_catalog(saved_db).list()}
-    widened_ids = {
-        r.report_id for r in get_report_catalog(saved_db, include_archived=True).list()
-    }
+    catalog = get_report_catalog(saved_db)
+    default_ids = {report.report_id for report in catalog.list()}
+    every_id = {report.report_id for report in catalog.list(archived=None)}
 
     assert report_id not in default_ids
-    assert report_id in widened_ids
+    assert report_id in every_id
 
 
 def test_catalog_entries_carry_their_tier(
@@ -317,7 +326,9 @@ def test_a_saved_report_whose_table_vanished_stays_listed_and_masks_wholly(
 
     assert report.degraded is True
     assert set(report.spec.classes.values()) == {DataClass.UNRESOLVED}
-    assert report_id in {spec.report_id for spec in user_report_specs(saved_db)}
+    assert report_id in {
+        report.spec.report_id for report in user_report_specs(saved_db)
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +444,7 @@ def test_reclassify_lowers_the_stored_class_and_records_the_approval(
         to_class=DataClass.AGGREGATE,
         reason="A single total reveals no transaction amount.",
         confirmed=True,
+        confirmed_via="prompt",
         actor="cli",
     )
 
@@ -444,6 +456,41 @@ def test_reclassify_lowers_the_stored_class_and_records_the_approval(
         "to": DataClass.AGGREGATE.value,
         "reason": "A single total reveals no transaction amount.",
     }
+
+
+@pytest.mark.parametrize("confirmed_via", ["prompt", "flag"])
+def test_reclassify_records_which_path_supplied_the_confirmation(
+    service: UserReportsService, saved_db: Database, confirmed_via: ConfirmedVia
+) -> None:
+    """``actor="cli"`` is the same on both paths, so it cannot answer this.
+
+    A human answering the prompt and an assistant passing ``--yes`` produce
+    byte-identical audit rows today. That is the one distinction this row has to
+    carry: ``design-principles.md`` puts a durable masking downgrade outside
+    agent self-accept entirely, and an audit that cannot tell the two apart
+    cannot show the rule was kept. Both values are asserted because a
+    provenance field that only ever records one of them is not provenance.
+    """
+    report_id = _create(
+        service, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
+    )
+
+    service.reclassify(
+        report_id,
+        column="spend",
+        to_class=DataClass.AGGREGATE,
+        reason="A single total reveals no transaction amount.",
+        confirmed=True,
+        confirmed_via=confirmed_via,
+        actor="cli",
+    )
+
+    events = AuditService(saved_db).list_events(
+        target_id=report_id, action_pattern="user_report.set"
+    )
+    assert [event.context_json for event in events] == [
+        {"confirmed_via": confirmed_via}
+    ]
 
 
 def test_reclassify_leaves_the_report_on_the_fingerprint_match_path(
@@ -468,6 +515,7 @@ def test_reclassify_leaves_the_report_on_the_fingerprint_match_path(
         to_class=DataClass.AGGREGATE,
         reason="A single total reveals no transaction amount.",
         confirmed=True,
+        confirmed_via="prompt",
         actor="cli",
     )
     row = UserReportsRepo(saved_db).get(report_id)
@@ -502,6 +550,7 @@ def test_reclassify_refuses_an_equal_tier_weakening(
             to_class=DataClass.ACCOUNT_IDENTIFIER,
             reason="Only the last four are needed.",
             confirmed=True,
+            confirmed_via="prompt",
             actor="cli",
         )
 
@@ -525,6 +574,7 @@ def test_reclassify_refuses_a_class_that_raises_the_tier(
             to_class=DataClass.BALANCE,
             reason="Wrong direction.",
             confirmed=True,
+            confirmed_via="prompt",
             actor="cli",
         )
 
@@ -546,6 +596,7 @@ def test_reclassify_refuses_an_unconfirmed_downgrade(
             to_class=DataClass.AGGREGATE,
             reason="A single total reveals no transaction amount.",
             confirmed=False,
+            confirmed_via="prompt",
             actor="cli",
         )
 
@@ -567,6 +618,7 @@ def test_reclassify_refuses_a_column_the_report_does_not_return(
             to_class=DataClass.AGGREGATE,
             reason="No such column.",
             confirmed=True,
+            confirmed_via="prompt",
             actor="cli",
         )
 
@@ -677,6 +729,7 @@ def test_an_unknown_column_is_counted_apart_from_a_refused_downgrade(
             to_class=DataClass.AGGREGATE,
             reason="No such column.",
             confirmed=True,
+            confirmed_via="prompt",
             actor="cli",
         )
 
@@ -713,6 +766,7 @@ def test_a_surface_that_could_not_ask_is_counted_apart_from_a_decline(
                 to_class=DataClass.AGGREGATE,
                 reason="A single total reveals no transaction amount.",
                 confirmed=confirmed,
+                confirmed_via="prompt",
                 actor="cli",
             )
         assert raised.value.code == "report_class_confirm_required"
@@ -722,6 +776,40 @@ def test_a_surface_that_could_not_ask_is_counted_apart_from_a_decline(
     )
     assert _counter("user_report_reclassify_total", outcome="no_elicitation") == (
         before_silent + 1
+    )
+
+
+def test_a_flag_confirmation_is_counted_apart_from_a_prompted_one(
+    service: UserReportsService,
+) -> None:
+    """Without the split, this counter is blind to the case it watches for.
+
+    Its stated read is that a rising confirm rate against a flat ``declined``
+    rate means the confirm has become a formality people click through. ``--yes``
+    never touches ``declined`` — so an assistant supplying it unasked produces
+    exactly that pattern and is indistinguishable from a human clicking through.
+    """
+    report_id = _create(
+        service, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
+    )
+    before_prompt = _counter("user_report_reclassify_total", outcome="confirmed_prompt")
+    before_flag = _counter("user_report_reclassify_total", outcome="confirmed_flag")
+
+    service.reclassify(
+        report_id,
+        column="spend",
+        to_class=DataClass.AGGREGATE,
+        reason="A single total reveals no transaction amount.",
+        confirmed=True,
+        confirmed_via="flag",
+        actor="cli",
+    )
+
+    assert _counter("user_report_reclassify_total", outcome="confirmed_flag") == (
+        before_flag + 1
+    )
+    assert _counter("user_report_reclassify_total", outcome="confirmed_prompt") == (
+        before_prompt
     )
 
 
@@ -799,6 +887,7 @@ def test_update_clears_class_downgrades_when_the_sql_changes(
         to_class=DataClass.AGGREGATE,
         reason="A single total reveals no transaction amount.",
         confirmed=True,
+        confirmed_via="prompt",
         actor="cli",
     )
 
@@ -860,3 +949,339 @@ def test_delete_removes_the_row(
     service.delete(report_id, actor="cli")
 
     assert UserReportsRepo(saved_db).get(report_id) is None
+
+
+# ---------------------------------------------------------------------------
+# What a caller of the catalog actually receives
+# ---------------------------------------------------------------------------
+
+
+def test_an_archived_report_still_runs_by_report_id(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """R5: archiving hides a report from the catalog; it does not revoke access.
+
+    The `app.user_reports` DDL comment, the spec, and ``user_report_specs``' own
+    docstring all promise this. Nothing archived a report and then ran it, so
+    three of the four catalog call sites omitted ``include_archived`` and an
+    archived report was unreachable by any surface but ``explain``.
+    """
+    report_id = _create(service)
+    service.update(report_id, is_active=False, actor="cli")
+
+    result = get_report_catalog(saved_db).execute(
+        saved_db, report_id=report_id, parameters={}, limit=10
+    )
+
+    assert result.report_id == report_id
+    assert len(result.records) == 2
+
+
+def test_the_default_listing_hides_an_archived_report(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """The benign twin: resolvable must not mean listed.
+
+    Building the catalog over every row and then listing every row would satisfy
+    the test above while making archiving do nothing at all.
+    """
+    report_id = _create(service)
+    service.update(report_id, is_active=False, actor="cli")
+    catalog = get_report_catalog(saved_db)
+
+    assert report_id not in {report.report_id for report in catalog.list()}
+    assert report_id in {report.report_id for report in catalog.list(archived=True)}
+
+
+def test_the_archived_only_selector_excludes_active_reports(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """``list(archived=True)`` is the archived-only arm of the three-state selector.
+
+    The *listing surfaces* widen instead (``include_archived``), but the selector
+    underneath must still be able to name one view exactly, or a caller wanting
+    only the archived rows would have to filter them itself.
+    """
+    archived_id = _create(service)
+    service.update(archived_id, is_active=False, actor="cli")
+    active_id = _create(service, name="still_active")
+
+    listed = {
+        report.report_id for report in get_report_catalog(saved_db).list(archived=True)
+    }
+
+    assert listed == {archived_id}
+    assert active_id not in listed
+
+
+def test_a_widened_listing_says_which_entries_are_archived(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """Including a hidden row obliges the payload to mark it, per ``accounts list``.
+
+    A combined listing that cannot distinguish an archived report from an active
+    one is worse than the archived-only view it replaces: the caller sees a
+    report it can run, with nothing saying the user had hidden it. The flag and
+    the field ship together or neither ships.
+    """
+    archived_id = _create(service)
+    service.update(archived_id, is_active=False, actor="cli")
+    active_id = _create(service, name="still_active")
+
+    payload = catalog_to_payload(get_report_catalog(saved_db), include_archived=True)
+    archived_by_id = {entry.report_id: entry.archived for entry in payload.reports}
+
+    assert archived_by_id[archived_id] is True
+    assert archived_by_id[active_id] is False
+
+
+def test_the_default_listing_omits_archived_rows_and_marks_none(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """The benign twin: widening is opt-in, and the field is not merely constant.
+
+    A payload hard-coding ``archived=False`` would satisfy the test above for the
+    active row and pass here too, so this asserts the archived row is *absent*
+    rather than present-and-false.
+    """
+    archived_id = _create(service)
+    service.update(archived_id, is_active=False, actor="cli")
+    _create(service, name="still_active")
+
+    payload = catalog_to_payload(get_report_catalog(saved_db))
+
+    assert archived_id not in {entry.report_id for entry in payload.reports}
+    assert all(entry.archived is False for entry in payload.reports)
+
+
+def test_the_run_envelope_reports_that_a_report_degraded(
+    service: UserReportsService, saved_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R4 requires the *response* to say it degraded, not an intermediate object.
+
+    ``DynamicReport.degraded`` was asserted by every drift test and read by
+    nobody: the catalog dropped it on the way to the envelope, so a caller
+    receiving masked rows had no machine-readable reason for them.
+    """
+    report_id = _create(service)
+
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "dim_accounts")] = {
+        **CLASSIFICATION[("core", "dim_accounts")],
+        "account_id": DataClass.ROUTING_NUMBER,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    result = get_report_catalog(saved_db).execute(
+        saved_db, report_id=report_id, parameters={}, limit=10
+    )
+    summary = result.to_envelope().to_dict()["summary"]
+
+    assert summary["degraded"] is True
+    assert "account_id" in summary["degraded_reason"]
+
+
+def test_an_undegraded_run_leaves_the_envelope_undegraded(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """The benign twin: a stamped-degraded envelope would be worthless."""
+    report_id = _create(service)
+
+    result = get_report_catalog(saved_db).execute(
+        saved_db, report_id=report_id, parameters={}, limit=10
+    )
+
+    assert "degraded" not in result.to_envelope().to_dict()["summary"]
+
+
+def test_a_builtin_run_carries_no_degraded_flag(saved_db: Database) -> None:
+    """A tier with no stored row has no drift state to report."""
+    result = get_report_catalog(saved_db).execute(
+        saved_db, report_id="core:networth", parameters={}, limit=10
+    )
+
+    assert "degraded" not in result.to_envelope().to_dict()["summary"]
+
+
+@pytest.mark.parametrize(
+    ("token", "supplied", "expected"),
+    [
+        ("date", "2026-01-01", date(2026, 1, 1)),
+        ("decimal", "10.50", Decimal("10.50")),
+        ("decimal", 10, Decimal(10)),
+    ],
+    ids=["date-from-iso-string", "decimal-from-string", "decimal-from-int"],
+)
+def test_a_json_caller_can_bind_a_type_json_cannot_represent(
+    service: UserReportsService,
+    saved_db: Database,
+    token: str,
+    supplied: JsonValue,
+    expected: object,
+) -> None:
+    """Two of the six declarable types were reachable only from the CLI.
+
+    The CLI's binder coerces ``--param since=2026-01-01`` into a real ``date``
+    before validation; an MCP ``parameters`` object carries JSON, which the
+    shared type check refused outright. The parity test exercised only ``str``,
+    which is why nothing caught it.
+    """
+    column = {"date": "transaction_date", "decimal": "amount"}[token]
+    report_id = _create(
+        service,
+        query_sql=(
+            f"SELECT transaction_id FROM core.fct_transactions WHERE {column} > $bound"  # noqa: S608  # parametrized column name from this test's own table, not user input
+        ),
+        params=[_param("bound", {"date": date, "decimal": Decimal}[token])],
+    )
+
+    spec, validated = get_report_catalog(saved_db).resolve_request(
+        report_id=report_id, parameters={"bound": supplied}, limit=1
+    )
+
+    assert spec.report_id == report_id
+    assert validated == {"bound": expected}
+
+
+def test_a_value_that_is_not_the_declared_type_is_still_refused(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """The benign twin: coercion must not become "accept anything".
+
+    Returning the value untouched when it cannot be read as the declared type is
+    what keeps the existing type error — with the parameter name and the expected
+    type — as what the caller sees.
+    """
+    report_id = _create(
+        service,
+        query_sql=(
+            "SELECT transaction_id FROM core.fct_transactions "
+            "WHERE transaction_date > $bound"
+        ),
+        params=[_param("bound", date)],
+    )
+
+    with pytest.raises(UserError) as caught:
+        get_report_catalog(saved_db).resolve_request(
+            report_id=report_id, parameters={"bound": "not-a-date"}, limit=1
+        )
+
+    assert caught.value.code == error_codes.REPORT_PARAMETER_INVALID_TYPE
+
+
+def test_a_date_default_survives_the_save_and_reaches_the_catalog(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """``params`` is a JSON column; a ``date`` default crashed ``json.dumps``.
+
+    The published schema carries the default verbatim, so the round trip has to
+    end in something JSON can hold *and* something the runner can bind.
+    """
+    report_id = _create(
+        service,
+        query_sql="SELECT account_id FROM core.dim_accounts LIMIT $top",
+        params=[_param("top", int, default=25, required=False)],
+    )
+
+    spec = get_report_catalog(saved_db).resolve(report_id)
+    assert isinstance(spec, ReportSpec)
+
+    assert [(p.name, p.default, p.required) for p in spec.params] == [
+        ("top", 25, False)
+    ]
+
+
+def test_reclassify_ignores_a_stored_default_it_is_not_touching(
+    service: UserReportsService, saved_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default gate is a *write* gate, and reclassify stores no parameters.
+
+    ``_refuse_sensitive_defaults`` exists so an above-LOW default cannot be
+    written — the catalog publishes defaults unmasked. Re-deriving with the stored
+    defaults still attached let an upstream reclassification of an unrelated
+    filter's column refuse a downgrade whose caller never mentioned that
+    parameter, with an error about a default they did not supply.
+    """
+    report_id = _create(
+        service,
+        query_sql=(
+            "SELECT account_id, SUM(amount) AS spend FROM core.fct_transactions "
+            "WHERE account_id = $acct GROUP BY account_id"
+        ),
+        params=[_param("acct", str, default="acct_11112222", required=False)],
+    )
+
+    # `account_id` is RECORD_ID (LOW), so the default was legal at save time.
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "fct_transactions")] = {
+        **CLASSIFICATION[("core", "fct_transactions")],
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    outcome = service.reclassify(
+        report_id,
+        column="spend",
+        to_class=DataClass.AGGREGATE,
+        reason="a monthly total reveals no single amount",
+        confirmed=True,
+        confirmed_via="prompt",
+        actor="cli",
+    )
+
+    assert outcome.column == "spend"
+    assert outcome.to_class is DataClass.AGGREGATE
+
+
+def test_saving_an_above_low_default_is_still_refused(
+    service: UserReportsService,
+) -> None:
+    """The benign twin: stripping defaults must not disarm the write gate.
+
+    Stripping them in ``derive_classification`` itself — rather than in the one
+    caller that stores no parameters — would let a routing number pasted as a
+    filter's default be returned in the clear by a bare catalog listing.
+    """
+    with pytest.raises(UserError) as caught:
+        _create(
+            service,
+            query_sql=(
+                "SELECT account_id FROM core.dim_accounts WHERE routing_number = $acct"
+            ),
+            params=[_param("acct", str, default="021000021", required=False)],
+        )
+
+    assert caught.value.code == error_codes.REPORT_PARAMETER_DEFAULT_NOT_ALLOWED
+
+
+def test_building_the_catalog_reads_the_live_schema_once(
+    service: UserReportsService, saved_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Schema reads must not scale with the number of saved reports.
+
+    ``get_current_schema_snapshot`` memoises its expensive ``MappingSchema`` build
+    but still issues two catalog queries per call, and every saved row needed two
+    of them — one for its fingerprint, one for its provenance — on every catalog
+    build, including a build serving a request for a built-in.
+    """
+    for index in range(3):
+        _create(service, name=f"saved_{index}")
+
+    calls: list[int] = []
+    real = sql_lineage.get_current_schema_snapshot
+
+    def _counted(db: Database) -> Any:
+        calls.append(1)
+        return real(db)
+
+    monkeypatch.setattr(
+        "moneybin.reports._framework.dynamic.get_current_schema_snapshot", _counted
+    )
+    monkeypatch.setattr(
+        "moneybin.reports._framework.derive.get_current_schema_snapshot", _counted
+    )
+
+    catalog = get_report_catalog(saved_db)
+
+    assert len({report.report_id for report in catalog.list()}) > 3
+    assert sum(calls) == 1

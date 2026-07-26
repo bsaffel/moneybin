@@ -372,7 +372,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   # `reports(report_id=..., parameters=...)` tool remains the only MCP
 |   |   # identity. HANDLE is a report_id or a name, resolved in that order.
 |   +-- list                       -- Every registered report, any tier
-|   |     [--archived]               Archived reports instead of the active catalog
+|   |     [--include-archived]       Adds archived saved reports, marked archived
 |   |     [--tier builtin|extension|user]
 |   |     [--output json] [--quiet]
 |   +-- run <handle>               -- Run one report by ID or name
@@ -411,6 +411,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     # the reason. `--yes` states a human decision — an assistant driving
 |   |     # this command must not supply it unasked. With no prompt available and
 |   |     # no `--yes`, the command refuses and records that it could not ask.
+|   |     # The audit row's `confirmed_via` names the path that confirmed
+|   |     # (`prompt` or `flag`); `actor` is `cli` on both, so nothing else can
+|   |     # tell an assistant's `--yes` from a human at the prompt.
 |   +-- networth                   -- Cross-domain net worth aggregation (accounts + assets) [--as-of DATE]
 |   +-- networth-history           -- Net worth time series [--from DATE] [--to DATE]
 |   +-- cashflow                   -- Inflow / outflow over a window [--from-month YYYY-MM] [--to-month YYYY-MM] [--by]
@@ -573,7 +576,7 @@ Naming follows [`extension-contracts.md`](extension-contracts.md) §"Naming and 
 ```
 Entity groups:  accounts (+ balance), transactions (+ matches, categorize, notes, tags, splits), assets
 Reference data: categories, merchants (taxonomies that transactions reference)
-Reports:        reports — per-report commands (networth, networth-history, spending, cashflow, recurring, merchants, uncategorized, large-transactions, balance-drift; budget read command de-registered pending the reports.budget view) plus seven tier-spanning verbs (list, run, explain, create, set, delete, reclassify)
+Reports:        reports — per-report commands (networth, networth-history, spending, cashflow, recurring, merchants, uncategorized, large-transactions, balance-drift; budget read command de-registered pending the reports.budget view) plus seven verbs: list, run, explain span all three tiers; create, set, delete, reclassify own the user tier
 System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync

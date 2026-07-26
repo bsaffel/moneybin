@@ -1770,6 +1770,29 @@ class TestUserReports:
         downgraded.assert_success()
         assert json.loads(downgraded.stdout)["data"]["from"] == "user_note"
 
+        # The audit row has to say a flag supplied that confirmation, not a human.
+        # `actor` is "cli" either way, so this field is the only thing standing
+        # between an assistant self-accepting a permanent masking downgrade and a
+        # human approving one — and it has to survive the JSON round-trip through
+        # `context_json` and the privacy payload to be worth anything.
+        trail = run_cli(
+            "system",
+            "audit",
+            "list",
+            "--target-id",
+            report_id,
+            "--action",
+            "user_report.set",
+            "--output",
+            "json",
+            env=env,
+        )
+        trail.assert_success()
+        events = json.loads(trail.stdout)["data"]
+        assert [event["context_json"] for event in events] == [
+            {"confirmed_via": "flag"}
+        ]
+
         # An equal-tier weakening is refused whatever the reason: report_id is
         # RECORD_ID, so there is no lower tier to move it to.
         refused = run_cli(
@@ -1795,10 +1818,29 @@ class TestUserReports:
         assert report_id not in {
             entry["report_id"] for entry in json.loads(active.stdout)["data"]
         }
-        archived = run_cli("reports", "list", "--archived", "--output", "json", env=env)
+        archived = run_cli(
+            "reports", "list", "--include-archived", "--output", "json", env=env
+        )
         archived.assert_success()
-        assert report_id in {
-            entry["report_id"] for entry in json.loads(archived.stdout)["data"]
+        widened = {
+            entry["report_id"]: entry["archived"]
+            for entry in json.loads(archived.stdout)["data"]
+        }
+        assert widened[report_id] is True
+        # A widened listing must still be the whole catalog, not a swapped view.
+        assert any(rid.startswith("core:") for rid in widened)
+
+        # Archiving hides a report; it must not retire it. The unit tests assert
+        # this on the catalog, which is one layer in from the thing a user does —
+        # and an unrunnable archived report is exactly what shipped before.
+        still_runs = run_cli("reports", "run", report_id, "--output", "json", env=env)
+        still_runs.assert_success()
+        # The saved query selects from `app.user_reports`, so by now it returns
+        # this report and the parameterized one saved above — compared as a set
+        # because the query declares no ORDER BY.
+        assert {row["name"] for row in json.loads(still_runs.stdout)["data"]} == {
+            "my_reports",
+            "one_report",
         }
 
         run_cli("reports", "delete", report_id, "--yes", env=env).assert_success()

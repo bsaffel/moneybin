@@ -51,6 +51,14 @@ class ReportCatalogEntry(BaseModel):
     one local database rather than a reviewed, installable artifact, so a caller
     reading the catalog is owed that distinction without having to parse an ID."""
     description: Annotated[str, DataClass.AGGREGATE]
+    archived: Annotated[bool, DataClass.AGGREGATE] = False
+    """Whether the user has hidden this report from the default listing.
+
+    Always ``False`` for the builtin and extension tiers, which have no archived
+    state. It rides on the shared entry rather than on a user-tier-only payload
+    because a widened listing must be able to mark the rows it widened to
+    include — a caller cannot otherwise tell a report it may run from one the
+    user had put away."""
     parameter_schema: Annotated[dict[str, JsonValue], DataClass.AGGREGATE]
     parameter_classes: Annotated[dict[str, str], DataClass.AGGREGATE]
     examples: Annotated[list[str], DataClass.AGGREGATE]

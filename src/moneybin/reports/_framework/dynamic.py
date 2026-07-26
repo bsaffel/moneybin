@@ -22,7 +22,11 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import USER_REPORT_DRIFT_DETECTED_TOTAL
-from moneybin.privacy.sql_lineage import FAIL_CLOSED_CLASS
+from moneybin.privacy.sql_lineage import (
+    FAIL_CLOSED_CLASS,
+    SchemaSnapshot,
+    get_current_schema_snapshot,
+)
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.contract import (
     Binding,
@@ -37,8 +41,10 @@ from moneybin.reports._framework.derive import (
     annotation_of,
     class_fingerprint,
     derive_classification,
+    json_scalar,
     read_tables,
     token_of,
+    typed_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,12 +58,23 @@ DEGRADED_STALE_CLASSIFICATION: Final = "stale_classification"
 #: classified at all — an upstream table or column it reads is gone.
 DEGRADED_UNRESOLVABLE_QUERY: Final = "unresolvable_query"
 
+#: Leading token on ``degraded_reason`` when a stored token no longer decodes —
+#: a renamed ``DataClass`` or a retired parameter type.
+DEGRADED_UNREADABLE_ROW: Final = "unreadable_row"
+
 
 @dataclass(frozen=True, slots=True)
 class DynamicReport:
-    """A spec built from a stored row, plus whether its classes went stale."""
+    """A spec built from a stored row, plus the row state the spec cannot carry.
+
+    ``archived`` and the two ``degraded`` fields are facts about the *row*, not
+    about the report's contract, which is why they live here and not on
+    ``ReportSpec`` — a spec that could claim to be archived would be a spec whose
+    provenance its own field contradicts.
+    """
 
     spec: ReportSpec
+    archived: bool = False
     degraded: bool = False
     degraded_reason: str | None = None
 
@@ -106,7 +123,7 @@ def stored_params(
             "annotation": token_of(parameter.annotation),
         }
         if not parameter.required:
-            entry["default"] = parameter.default
+            entry["default"] = json_scalar(parameter.default)
         if parameter.help:
             entry["help"] = parameter.help
         data_class = parameter_classes.get(parameter.name, FAIL_CLOSED_CLASS)
@@ -116,10 +133,13 @@ def stored_params(
     return entries
 
 
-def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
+def spec_from_row(
+    db: Database, row: Mapping[str, Any], *, snapshot: SchemaSnapshot | None = None
+) -> DynamicReport:
     """Build one report from a stored ``app.user_reports`` row.
 
     ``row``'s JSON columns arrive decoded, as ``UserReportsRepo`` returns them.
+    ``snapshot`` lets a caller building many specs read the live schema once.
 
     Reads never persist a refreshed fingerprint: both adapters run reports inside
     ``get_database(read_only=True)``, and every ``app.user_reports`` mutation
@@ -127,9 +147,17 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
     read. A stale fingerprint therefore costs a re-resolution and nothing else.
     """
     query_sql = str(row["query_sql"])
-    declared = declared_params(row.get("params") or ())
     stored: Mapping[str, str] = row.get("classes") or {}
-    stored_classes = {name: DataClass(value) for name, value in stored.items()}
+    try:
+        declared = declared_params(row.get("params") or ())
+        stored_classes = {name: DataClass(value) for name, value in stored.items()}
+    except (UserError, ValueError) as e:
+        # The two decode steps that read stored *tokens*. Both are written from
+        # allowlists, so this becomes reachable the moment a release renames a
+        # `DataClass` or retires a parameter type — and then it is every saved row
+        # at once. Letting it escape takes down the whole catalog, built-ins
+        # included, which is worse than any answer this row can give.
+        return _unreadable_row(row, e)
     stored_parameter_classes = {
         parameter.name: parameter.data_class for parameter in declared
     }
@@ -141,6 +169,7 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
         classes=stored_classes,
         parameter_classes=stored_parameter_classes,
         class_downgrades=downgrades,
+        snapshot=snapshot,
     )
     unresolvable: UserError | None = None
     if current == str(row.get("class_fingerprint") or ""):
@@ -171,6 +200,12 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
             }
             changed = tuple(sorted(classes))
 
+    # One list, bound twice: `spec.params` publishes each parameter's governing
+    # class and `runner` binds it. Closing the runner over `declared` instead
+    # would hand the provenance renderer the stale pre-drift class, so `explain`
+    # would print a filter value as a literal inside the same response that calls
+    # the parameter unresolved and masks every row.
+    classed = _classed_params(declared, parameter_classes)
     spec = ReportSpec(
         report_id=str(row["report_id"]),
         name=str(row["name"]),
@@ -178,7 +213,7 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
         # No `reports.*` view backs a query-time report, so it can never be
         # `kind FULL` or join scheduled refresh. Promotion is M2P.3.
         view=None,
-        runner=_synthesized_runner(query_sql, declared),
+        runner=_synthesized_runner(query_sql, classed),
         classes=classes,
         columns=tuple(
             # `__post_init__` compares columns against classes on name and class
@@ -187,15 +222,19 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
             OutputColumn(name=name, description=name, data_class=data_class)
             for name, data_class in classes.items()
         ),
-        semantics=unknown_semantics(provenance=read_tables(db, query_sql)),
-        params=_classed_params(declared, parameter_classes),
+        semantics=unknown_semantics(
+            provenance=read_tables(db, query_sql, snapshot=snapshot)
+        ),
+        params=classed,
         class_downgrades={
             column: str(entry.get("reason", "")) for column, entry in downgrades.items()
         },
     )
+    archived = not row.get("is_active", True)
     if unresolvable is not None:
         return DynamicReport(
             spec=spec,
+            archived=archived,
             degraded=True,
             degraded_reason=(
                 f"{DEGRADED_UNRESOLVABLE_QUERY}: {unresolvable}; every column is "
@@ -203,9 +242,10 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
             ),
         )
     if not changed:
-        return DynamicReport(spec=spec)
+        return DynamicReport(spec=spec, archived=archived)
     return DynamicReport(
         spec=spec,
+        archived=archived,
         degraded=True,
         degraded_reason=(
             f"{DEGRADED_STALE_CLASSIFICATION}: upstream classification changed for "
@@ -214,40 +254,88 @@ def spec_from_row(db: Database, row: Mapping[str, Any]) -> DynamicReport:
     )
 
 
-def user_report_specs(
-    db: Database, *, include_archived: bool = False
-) -> tuple[ReportSpec, ...]:
-    """Every saved report as a ``ReportSpec``, in stable ``report_id`` order.
+def _unreadable_row(row: Mapping[str, Any], error: Exception) -> DynamicReport:
+    """A row whose stored tokens no longer decode: listed, wholly masked, unrunnable.
 
-    The catalog excludes archived reports by default (R5): archiving suppresses
-    catalog noise rather than revoking access, so an archived report stays
-    resolvable through the widened view and runnable by ``report_id``.
+    Same answer the unresolvable-query branch gives, for the same reason —
+    dropping the row would hide the user's work behind a release they did not
+    choose. Every column masks, and no parameter is declared, so a run fails on
+    DuckDB's own unbound-parameter error rather than executing with values whose
+    declared types this build cannot read.
+    """
+    classes: dict[str, DataClass] = dict.fromkeys(
+        row.get("classes") or {}, FAIL_CLOSED_CLASS
+    )
+    return DynamicReport(
+        spec=ReportSpec(
+            report_id=str(row["report_id"]),
+            name=str(row["name"]),
+            description=str(row.get("description") or ""),
+            view=None,
+            runner=_synthesized_runner(str(row["query_sql"]), ()),
+            classes=classes,
+            columns=tuple(
+                OutputColumn(name=name, description=name, data_class=data_class)
+                for name, data_class in classes.items()
+            ),
+            # Provenance is derived from the SQL, but this row already proved it
+            # cannot be read as this build understands it; claiming a read set
+            # would be the same guess in a different field.
+            semantics=unknown_semantics(),
+            params=(),
+        ),
+        archived=not row.get("is_active", True),
+        degraded=True,
+        degraded_reason=(
+            f"{DEGRADED_UNREADABLE_ROW}: {error}; the stored report cannot be read "
+            "by this version of MoneyBin, so every column is masked. Save it again "
+            "to rebuild its contract."
+        ),
+    )
+
+
+def user_report_specs(db: Database) -> tuple[DynamicReport, ...]:
+    """Every saved report, archived included, in stable ``report_id`` order.
+
+    Archived rows are *always* built (R5): archiving suppresses catalog noise
+    rather than revoking access, so an archived report must stay resolvable and
+    runnable by ``report_id``. Filtering here instead — which is what an
+    ``include_archived`` flag on this function invited — meant every caller that
+    forgot to pass it made archived reports unreachable, and three of four did.
+    Visibility is the *listing's* decision; see ``ReportCatalog.list``.
+
+    The live schema is read once here rather than once per row: the snapshot's
+    expensive build is memoised, but its two catalog queries are not.
     """
     from moneybin.repositories.user_reports_repo import UserReportsRepo
 
-    rows = UserReportsRepo(db).list(include_archived=include_archived)
-    return tuple(spec_from_row(db, row).spec for row in rows)
+    snapshot = get_current_schema_snapshot(db)
+    rows = UserReportsRepo(db).list(include_archived=True)
+    return tuple(spec_from_row(db, row, snapshot=snapshot) for row in rows)
 
 
 def declared_params(entries: Sequence[Mapping[str, Any]]) -> tuple[ParamSpec, ...]:
     """Rebuild ``ParamSpec``s from the stored ``params`` JSON."""
-    return tuple(
-        ParamSpec(
-            name=str(entry["name"]),
-            annotation=annotation_of(str(entry.get("annotation", "str"))),
-            default=entry.get("default"),
-            # `required` is true exactly when no default was declared, which is
-            # also what distinguishes an omitted default from a stored null.
-            required="default" not in entry,
-            help=str(entry.get("help", "")),
-            data_class=(
-                DataClass(entry["data_class"])
-                if entry.get("data_class")
-                else FAIL_CLOSED_CLASS
-            ),
+    params: list[ParamSpec] = []
+    for entry in entries:
+        annotation = annotation_of(str(entry.get("annotation", "str")))
+        params.append(
+            ParamSpec(
+                name=str(entry["name"]),
+                annotation=annotation,
+                default=typed_value(entry.get("default"), annotation),
+                # `required` is true exactly when no default was declared, which
+                # is also what distinguishes an omitted default from a stored null.
+                required="default" not in entry,
+                help=str(entry.get("help", "")),
+                data_class=(
+                    DataClass(entry["data_class"])
+                    if entry.get("data_class")
+                    else FAIL_CLOSED_CLASS
+                ),
+            )
         )
-        for entry in entries
-    )
+    return tuple(params)
 
 
 def _classed_params(
