@@ -488,13 +488,13 @@ async def test_accounts_coarse_transport_variants(
             "accounts_balances",
             {},
             "high",
-            {"balance", "record_id", "txn_date", "txn_type"},
+            {"balance", "currency", "record_id", "txn_date", "txn_type"},
         ),
         (
             "accounts_balances",
             {"view": "history", "reference": "CHECKING"},
             "high",
-            {"balance", "record_id", "txn_date", "txn_type"},
+            {"balance", "currency", "record_id", "txn_date", "txn_type"},
         ),
         (
             "accounts_balances",
@@ -512,7 +512,7 @@ async def test_accounts_coarse_transport_variants(
             "accounts_balances",
             {"view": "reconcile", "threshold": 0},
             "high",
-            {"balance", "record_id", "txn_date", "txn_type"},
+            {"balance", "currency", "record_id", "txn_date", "txn_type"},
         ),
     ],
 )

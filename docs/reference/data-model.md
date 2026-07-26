@@ -259,7 +259,7 @@ Only transactions denominated in the **currency being carried** adjust the balan
 | `balance` | DECIMAL(18,2) | End-of-day balance. |
 | `is_observed` | BOOLEAN | TRUE if an authoritative observation exists for this date. |
 | `observation_source` | VARCHAR | Winning observation's source (`ofx`, `tabular`, `assertion`, `plaid`); NULL when interpolated. |
-| `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days and the first observation. |
+| `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days, on the first observation, and whenever the observed currency differs from the one carried into that day — the prior balance is then in another unit, so no comparison is defined until conversion arrives (M1K.2). |
 | `currency_code` | VARCHAR | ISO 4217; carried forward from the winning observation (or its interpolated predecessor) on each day. |
 
 Logical grain key: `(account_id, balance_date)`.

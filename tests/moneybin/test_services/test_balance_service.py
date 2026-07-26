@@ -16,7 +16,10 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationListPayload,
 )
 from moneybin.services.balance_service import BalanceAssertionSnapshot, BalanceService
-from tests.moneybin.db_helpers import create_core_tables
+from tests.moneybin.db_helpers import (
+    CORE_FCT_BALANCES_DAILY_DDL,
+    create_core_tables,
+)
 
 
 @pytest.fixture()
@@ -37,30 +40,22 @@ def _seed_fct_balances_daily(
     db: Database,
     rows: list[dict[str, Any]],
 ) -> None:
-    """Manually CREATE TABLE + INSERT rows into core.fct_balances_daily.
+    """CREATE TABLE + INSERT rows into core.fct_balances_daily.
 
-    Bypasses SQLMesh for unit-test speed. The schema below MUST match the
-    `columns=` dict in @model() at `src/moneybin/sqlmesh/models/core/fct_balances_daily.py`
-    (lines 43-50). When that model adds a column, this CREATE must follow.
+    Bypasses SQLMesh for unit-test speed. Reuses the shared DDL in
+    ``db_helpers`` rather than restating it: that copy is the one
+    ``test_db_helpers_parity`` checks against ``EXPECTED_CORE_COLUMNS``, so a
+    local restatement would silently drift the moment the model gains a column
+    (as it did when ``currency_code`` landed).
     """
-    db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS core.fct_balances_daily (
-            account_id VARCHAR,
-            balance_date DATE,
-            balance DECIMAL(18, 2),
-            is_observed BOOLEAN,
-            observation_source VARCHAR,
-            reconciliation_delta DECIMAL(18, 2)
-        )
-        """
-    )
+    db.execute(CORE_FCT_BALANCES_DAILY_DDL)
     for r in rows:
         db.execute(
             """
             INSERT INTO core.fct_balances_daily
-            (account_id, balance_date, balance, is_observed, observation_source, reconciliation_delta)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (account_id, balance_date, balance, is_observed, observation_source,
+             reconciliation_delta, currency_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 r["account_id"],
@@ -69,6 +64,7 @@ def _seed_fct_balances_daily(
                 r["is_observed"],
                 r.get("observation_source"),
                 r.get("reconciliation_delta"),
+                r.get("currency_code"),
             ],
         )
 

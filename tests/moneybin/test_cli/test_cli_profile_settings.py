@@ -107,6 +107,27 @@ def test_show_reports_the_home_currency_from_the_database(
     assert "Config (config.yaml):" in caplog.text
 
 
+def test_show_survives_a_database_that_predates_the_settings_table(
+    profile_home: Path, db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`profile show` on a pre-V044 database prints settings, not a traceback.
+
+    `profile show` reads through `get_database(read_only=True)`, and read-only
+    opens skip both `init_schemas` and the migration runner — so an existing
+    user who upgrades and runs this before any write command meets a database
+    with no `app.profile_settings`. The unset home currency is the correct
+    answer there; a raw catalog error is not.
+    """
+    db.execute("DROP TABLE app.profile_settings")
+
+    with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
+        result = runner.invoke(app, ["show"])
+
+    assert result.exit_code == 0
+    assert result.exception is None
+    assert "home_currency: (not set)" in caplog.text
+
+
 def test_managed_key_on_a_non_active_profile_is_refused(
     profile_home: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

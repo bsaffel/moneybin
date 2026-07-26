@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
+from moneybin.reports._framework.registry import spec_of
+from moneybin.reports.definitions import ALL_REPORTS
 from moneybin.services.schema_catalog import (
     CONVENTIONS,
     EXAMPLES,
@@ -31,6 +33,35 @@ def test_example_dataclass_shape() -> None:
     ex = Example(question="q?", sql="SELECT 1")
     assert ex.question == "q?"
     assert ex.sql == "SELECT 1"
+
+
+def test_every_currency_segmented_report_example_names_its_currency() -> None:
+    """An example on a per-currency report must project its currency column.
+
+    These examples are what an agent copies. A report whose rows are segmented
+    per currency (`ReportSemantics.currency`) but whose example ranks or
+    aggregates without naming that column hands back an apparently-global
+    answer that is really per-currency-but-unlabelled — the presentation half
+    of the no-blend invariant (multi-currency.md Requirement 5).
+
+    Derived from each report's own declared semantics rather than a list kept
+    here, so a new currency-segmented report inherits the guard instead of
+    silently escaping it.
+    """
+    segmented = {
+        spec.view.full_name: spec.semantics.currency
+        for spec in map(spec_of, ALL_REPORTS)
+        if spec.semantics.currency
+    }
+    assert segmented, "expected at least one currency-segmented report"
+
+    offenders = [
+        f"{view} example {ex.question!r} never names {column}"
+        for view, column in segmented.items()
+        for ex in EXAMPLES.get(view, ())
+        if column not in ex.sql
+    ]
+    assert not offenders, "\n".join(offenders)
 
 
 def test_examples_only_reference_interface_tables() -> None:

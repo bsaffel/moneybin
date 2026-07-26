@@ -216,10 +216,18 @@ Numbered, testable. Tagged by phase.
    carry therefore applies only the transactions denominated in the currency it
    is carrying. The excluded movement is not dropped silently — it lands in the
    next observation's `reconciliation_delta` and reads as drift, and the
-   Requirement 6 warn names the behaviour. **Guard placement rule:** a
-   currency guard on a derived value must sit where the arithmetic happens.
-   A guard downstream of the blend can only compare labels, and both labels
-   survive a blend intact.
+   Requirement 6 warn names the behaviour. The same reasoning governs the
+   *carry itself*: `core.fct_balances.currency_code` resolves per row, so a
+   corrected re-import can move an account from USD to EUR between two
+   consecutive observations. `reconciliation_delta` subtracts the prior carry
+   from the new observation, so across that boundary it would difference two
+   units and label the result with the newer one — invisible to the same
+   `currency_mismatch` check, which would again see two agreeing codes. The
+   delta is therefore `NULL` whenever the observed currency differs from the
+   carried one, and `balance_drift` already renders a null delta as `no-data`.
+   **Guard placement rule:** a currency guard on a derived value must sit where
+   the arithmetic happens. A guard downstream of the blend can only compare
+   labels, and both labels survive a blend intact.
 
 6. **Doctor check.** `system doctor` reports when a profile holds more than one
    distinct currency across transactions/accounts/balances, **flags accounts/rows whose

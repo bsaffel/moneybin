@@ -29,6 +29,10 @@ class BalanceObservationRow:
     is_observed: Annotated[bool, DataClass.TXN_TYPE]
     observation_source: Annotated[str | None, DataClass.TXN_TYPE]
     reconciliation_delta: Annotated[Decimal | None, DataClass.BALANCE]
+    # Per-row, and nullable: one account's observations can change currency, so
+    # summary.display_currency may be null for a response these rows still
+    # describe exactly (multi-currency.md Requirement 5).
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
 
 
 @dataclass(frozen=True, slots=True)

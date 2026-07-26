@@ -37,6 +37,29 @@ async def test_profile_reports_no_home_currency_before_one_is_chosen(
     assert env.data.home_currency is None
 
 
+async def test_profile_answers_on_a_database_that_predates_the_settings_table(
+    mcp_db: object,
+) -> None:
+    """The read tool degrades to "unset" on a pre-V044 database, not an error.
+
+    `profile` opens read-only, and read-only opens skip `init_schemas` and the
+    migration runner alike — so an agent's first call against an upgrading
+    user's database finds no `app.profile_settings`. The CLI twin
+    (`moneybin profile show`) is covered in test_cli_profile_settings.py; both
+    inherit the guard from `ProfileSettingsRepo`, and this asserts the agent
+    surface independently so the guard cannot regress to CLI-only.
+    """
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute("DROP TABLE app.profile_settings")
+
+    env = await profile()
+
+    assert env.error is None
+    assert env.data.home_currency is None
+
+
 async def test_profile_set_then_profile_round_trips_the_home_currency(
     mcp_db: object,
 ) -> None:

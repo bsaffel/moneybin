@@ -233,11 +233,20 @@ def execute(
                 obs_source: str = str(observed_lookup.loc[d, "source_type"])  # type: ignore[reportUnknownMemberType]
                 obs_currency = _to_currency(observed_lookup.loc[d, "currency_code"])  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
                 delta: Decimal | None
-                if carry is not None:
-                    delta = obs_balance - (carry + txn_adj)
-                else:
+                if carry is None:
                     # First observation: no prior carry, so delta is undefined.
                     delta = None
+                elif obs_currency != carry_currency:
+                    # The carry is denominated in the previous observation's
+                    # currency. Subtracting it from an observation in a different
+                    # one yields a number in no unit at all — and the row is
+                    # labelled with the *new* currency, so balance_drift's
+                    # currency_mismatch guard (account vs row) sees two agreeing
+                    # codes and passes it. Undefined until conversion (M1K.2);
+                    # balance_drift already renders a NULL delta as `no-data`.
+                    delta = None
+                else:
+                    delta = obs_balance - (carry + txn_adj)
                 rows.append({
                     "account_id": account_id,
                     "balance_date": d,

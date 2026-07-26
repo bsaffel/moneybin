@@ -11,7 +11,7 @@ See ``mcp-architecture.md`` section 4 for design rationale.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal
 from enum import StrEnum
@@ -55,6 +55,26 @@ class DetailLevel(StrEnum):
     SUMMARY = "summary"
     STANDARD = "standard"
     FULL = "full"
+
+
+def resolve_display_currency(codes: Iterable[str | None]) -> str | None:
+    """The one currency every row is denominated in, else ``None``.
+
+    Rows are segmented per currency (multi-currency.md Requirement 5), so the
+    envelope may only name a display currency when they agree on exactly one
+    known one. An unknown (NULL) currency is its own segment and never resolves
+    to whichever currency the other rows happen to carry — that would be the
+    Requirement 5 blend, relabelled. No rows at all names nothing.
+
+    Lives here rather than beside any one caller because ``display_currency`` is
+    an envelope field: reports and the balance reads must answer it the same
+    way, or the same data reads as two different currencies across surfaces.
+    """
+    seen = set(codes)
+    if len(seen) != 1:
+        return None
+    only = next(iter(seen))
+    return str(only) if only else None
 
 
 @dataclass(frozen=True, slots=True)

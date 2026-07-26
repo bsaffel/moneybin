@@ -25,7 +25,10 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationListPayload,
 )
 from moneybin.protocol.envelope import build_envelope
-from moneybin.services.balance_service import BalanceService
+from moneybin.services.balance_service import (
+    BalanceService,
+    balances_display_currency,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +63,14 @@ def accounts_balance_show(
     def _render_text(_: object) -> None:
         for obs in result.observations:
             typer.echo(
-                f"  {obs.account_id}  {obs.balance_date}  {obs.balance}"
+                f"  {obs.account_id}  {obs.balance_date}"
+                f"  {obs.balance} {obs.currency_code or '?'}"
                 f"  observed={obs.is_observed}  source={obs.observation_source}"
                 f"  delta={obs.reconciliation_delta}"
             )
 
     render_or_json(
-        build_envelope(data=result),
+        build_envelope(data=result, display_currency=balances_display_currency(result)),
         output,
         render_fn=_render_text,
         cli_actor="accounts_balance_show",
@@ -94,13 +98,13 @@ def accounts_balance_history(
     def _render_text(_: object) -> None:
         for obs in result.observations:
             typer.echo(
-                f"  {obs.balance_date}  {obs.balance}"
+                f"  {obs.balance_date}  {obs.balance} {obs.currency_code or '?'}"
                 f"  observed={obs.is_observed}  source={obs.observation_source}"
                 f"  delta={obs.reconciliation_delta}"
             )
 
     render_or_json(
-        build_envelope(data=result),
+        build_envelope(data=result, display_currency=balances_display_currency(result)),
         output,
         render_fn=_render_text,
         cli_actor="accounts_balance_history",
@@ -197,13 +201,16 @@ def accounts_balance_reconcile(
             )
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=result),
+            build_envelope(
+                data=result, display_currency=balances_display_currency(result)
+            ),
             output,
             cli_actor="accounts_balance_reconcile",
         )
         return
     for obs in result.observations:
         typer.echo(
-            f"  {obs.account_id}  {obs.balance_date}  {obs.balance}"
+            f"  {obs.account_id}  {obs.balance_date}"
+            f"  {obs.balance} {obs.currency_code or '?'}"
             f"  source={obs.observation_source}  delta={obs.reconciliation_delta}"
         )

@@ -81,6 +81,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   without a currency column now reports unknown, and `moneybin system doctor`
   names the accounts to fix with `accounts set --currency`. Unknown amounts join
   no cross-currency total until you set one.
+- **Balance reads name their own currency (M1K.1).** `accounts balance show`,
+  `history`, and `reconcile` — and the `accounts_balances` MCP views behind them —
+  returned every amount labelled `USD`, because the response envelope defaults to
+  it and nothing overrode the default. Each observation now carries its own
+  `currency_code`, and `summary.display_currency` names the one currency a
+  response shares or is null when its rows span several, matching how registered
+  reports already answer. The text output prints the currency beside the amount
+  (`?` when unknown).
+- **`moneybin profile show` no longer crashes on a database from before this
+  release (M1K.1).** Reading the profile's settings opens the database read-only,
+  and read-only opens skip schema initialization and migrations — so the first
+  command run after upgrading met a missing `app.profile_settings` and printed a
+  DuckDB traceback instead of the profile. An absent table now reads as "no home
+  currency chosen", the same answer a fresh profile gives. The `profile` MCP tool
+  took the identical path and is fixed with it.
 - **Canonical bundle and registered-report export delivery (M1O).**
   `moneybin export bundle` and `moneybin export report` publish redacted CSV by
   default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named

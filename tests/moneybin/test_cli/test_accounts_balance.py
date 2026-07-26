@@ -57,6 +57,7 @@ class TestAccountsBalanceShow:
             is_observed=True,
             observation_source="ofx",
             reconciliation_delta=None,
+            currency_code="USD",
         )
         mock_payload = BalanceObservationListPayload(observations=[obs_row])
         with (
@@ -94,6 +95,7 @@ class TestAccountsBalanceHistory:
             is_observed=True,
             observation_source="ofx",
             reconciliation_delta=None,
+            currency_code="USD",
         )
         mock_payload = BalanceObservationListPayload(observations=[obs_row])
         with (
@@ -273,6 +275,7 @@ class TestAccountsBalanceReconcile:
             is_observed=True,
             observation_source="ofx",
             reconciliation_delta=Decimal("5.00"),
+            currency_code="USD",
         )
         mock_payload = BalanceObservationListPayload(observations=[obs_row])
         with (

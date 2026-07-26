@@ -42,6 +42,23 @@ def test_home_currency_is_unset_on_a_fresh_profile(repo: ProfileSettingsRepo) ->
     assert repo.get_home_currency() is None
 
 
+def test_home_currency_reads_as_unset_before_the_table_exists(
+    db: Database, repo: ProfileSettingsRepo
+) -> None:
+    """A database that predates V044 reads as "no home currency", not a crash.
+
+    Read-only opens deliberately skip `init_schemas` and the migration runner
+    (`Database.__init__` returns at the read-only branch), so the first command
+    an upgrading user runs — `moneybin profile show`, `profile` over MCP — hits
+    this table before any write-mode open has created it. A raw
+    `CatalogException` there is unclassified by `classify_user_error`, so the
+    CLI re-raises it as a traceback. "Never chosen" is the honest answer.
+    """
+    db.execute("DROP TABLE app.profile_settings")
+
+    assert repo.get_home_currency() is None
+
+
 def test_set_home_currency_persists_and_emits_one_audit_row(
     db: Database, repo: ProfileSettingsRepo
 ) -> None:

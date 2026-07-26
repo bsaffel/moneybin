@@ -73,7 +73,13 @@ def _insert_ofx_account(db: Database, *, account_id: str) -> None:
 
 
 def _insert_ofx_balance(
-    db: Database, *, account_id: str, on_date: str, balance: str, source_file: str
+    db: Database,
+    *,
+    account_id: str,
+    on_date: str,
+    balance: str,
+    source_file: str,
+    currency_code: str = "USD",
 ) -> None:
     db.execute(
         """
@@ -81,9 +87,9 @@ def _insert_ofx_balance(
             (account_id, statement_end_date, ledger_balance, ledger_balance_date,
              source_file, extracted_at, source_type, source_origin, currency_code)
         VALUES (?, ?::TIMESTAMP, ?::DECIMAL(18, 2), ?::TIMESTAMP, ?,
-                CURRENT_TIMESTAMP, 'ofx', 'test_bank', 'USD')
+                CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [account_id, on_date, balance, on_date, source_file],
+        [account_id, on_date, balance, on_date, source_file, currency_code],
     )
 
 
@@ -202,6 +208,53 @@ def test_unconverted_foreign_activity_surfaces_as_reconciliation_drift(
     # 873.00 observed - 900.00 carried = the 27.00 of EUR spending MoneyBin
     # cannot express in USD. Blending the raw 25.00 in would report -2.00.
     assert row[0] == Decimal("-27.00")
+
+
+@pytest.mark.slow
+def test_a_currency_change_between_observations_yields_no_reconciliation_delta(
+    db: Database,
+) -> None:
+    """When the observed currency changes, the prior carry is not comparable.
+
+    `core.fct_balances` resolves currency per row, so a corrected re-import can
+    legitimately move an account from USD to EUR between two observations.
+    Subtracting the USD carry from the EUR observation would produce a number in
+    no unit at all — and it would be labelled with the *new* currency, so
+    `reports.balance_drift`'s currency_mismatch guard (which compares the row
+    against the account) cannot see it: both sides read EUR and agree. NULL is
+    the honest answer, and balance_drift already renders it as `no-data`.
+    """
+    _insert_ofx_account(db, account_id="bal_switch")
+    _insert_ofx_balance(
+        db,
+        account_id="bal_switch",
+        on_date="2026-07-01",
+        balance="1000.00",
+        source_file="ofx_switch_usd",
+        currency_code="USD",
+    )
+    _insert_ofx_balance(
+        db,
+        account_id="bal_switch",
+        on_date="2026-07-03",
+        balance="900.00",
+        source_file="ofx_switch_eur",
+        currency_code="EUR",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        """
+        SELECT reconciliation_delta, currency_code FROM core.fct_balances_daily
+        WHERE account_id = 'bal_switch' AND balance_date = '2026-07-03'::DATE
+        """
+    ).fetchone()
+    assert row is not None
+    # Blending would report 900 - 1000 = -100.00, a EUR-labelled USD difference.
+    assert row[0] is None
+    assert row[1] == "EUR", "the later observation's own currency must win"
 
 
 @pytest.mark.slow

@@ -1299,3 +1299,64 @@ class TestAccountsSetExtended:
         )
         parsed = result.to_dict()
         assert parsed["data"]["default_cost_basis_method"] is None
+
+
+class TestBalanceCurrency:
+    """`core.fct_balances_daily` carries a per-row currency; the surface must too."""
+
+    @staticmethod
+    def _seed_eur_balance() -> None:
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_balances_daily (
+                    account_id, balance_date, balance, is_observed,
+                    observation_source, reconciliation_delta, currency_code
+                ) VALUES
+                    ('ACC001', '2025-06-30', 5000.00, TRUE, 'ofx', NULL, 'EUR')
+                """
+            )
+
+    @pytest.mark.unit
+    async def test_a_eur_balance_is_not_reported_as_usd(self, mcp_db: Path) -> None:
+        """A EUR-only response names EUR, not the envelope's USD default.
+
+        `build_envelope` defaults `display_currency` to "USD", so a balance read
+        that never passes one relabels every foreign account's money as dollars
+        — the failure multi-currency.md exists to prevent, on the surface an
+        agent trusts most.
+        """
+        self._seed_eur_balance()
+
+        response = await accounts_balances_coarse(view="latest")
+
+        assert response.summary.display_currency == "EUR"
+        assert [row.currency_code for row in response.data.observations] == ["EUR"]
+
+    @pytest.mark.unit
+    async def test_mixed_currencies_refuse_to_name_one(self, mcp_db: Path) -> None:
+        """Rows spanning two currencies leave display_currency null.
+
+        Server instructions tell the agent a null display_currency means "read
+        each row's own currency_code". Naming either currency here would
+        mislabel the other account's balance.
+        """
+        self._seed_eur_balance()
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_balances_daily (
+                    account_id, balance_date, balance, is_observed,
+                    observation_source, reconciliation_delta, currency_code
+                ) VALUES
+                    ('ACC002', '2025-06-30', 15000.00, TRUE, 'ofx', NULL, 'USD')
+                """
+            )
+
+        response = await accounts_balances_coarse(view="latest")
+
+        assert response.summary.display_currency is None
+        assert {row.currency_code for row in response.data.observations} == {
+            "EUR",
+            "USD",
+        }

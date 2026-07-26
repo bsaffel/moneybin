@@ -326,7 +326,7 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="All balance observations for one account",
             sql="""
-                SELECT balance_date, balance, source_type, source_ref
+                SELECT balance_date, currency_code, balance, source_type, source_ref
                 FROM core.fct_balances
                 WHERE account_id = 'YOUR_ACCOUNT_ID'
                 ORDER BY balance_date DESC
@@ -337,7 +337,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Current balance for every account (latest date per account)",
             sql="""
-                SELECT account_id, balance_date, balance, is_observed, observation_source
+                SELECT account_id, balance_date, currency_code, balance,
+                       is_observed, observation_source
                 FROM core.fct_balances_daily
                 WHERE balance_date = (
                     SELECT MAX(balance_date) FROM core.fct_balances_daily AS b2
@@ -349,7 +350,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Daily balance history for one account",
             sql="""
-                SELECT balance_date, balance, is_observed, reconciliation_delta
+                SELECT balance_date, currency_code, balance, is_observed,
+                       reconciliation_delta
                 FROM core.fct_balances_daily
                 WHERE account_id = 'YOUR_ACCOUNT_ID'
                 ORDER BY balance_date DESC
@@ -452,32 +454,35 @@ EXAMPLES: dict[str, list[Example]] = {
     ],
     "reports.large_transactions": [
         Example(
-            question="Top 100 transactions by absolute amount",
+            question="Top 100 transactions by absolute amount, per currency",
             sql="""
-                SELECT account_name, txn_date, amount, merchant_normalized, category
+                SELECT account_name, txn_date, currency_code, amount,
+                       merchant_normalized, category
                 FROM reports.large_transactions
                 WHERE is_top_100
-                ORDER BY ABS(amount) DESC
+                ORDER BY currency_code, ABS(amount) DESC
             """,
         ),
         Example(
-            question="Account-level outliers (modified z-score > 2.5)",
+            question="Account-level outliers (modified z-score > 2.5), per currency",
             sql="""
-                SELECT account_name, txn_date, amount, amount_zscore_account
+                SELECT account_name, txn_date, currency_code, amount,
+                       amount_zscore_account
                 FROM reports.large_transactions
                 WHERE amount_zscore_account > 2.5
-                ORDER BY amount_zscore_account DESC
+                ORDER BY currency_code, amount_zscore_account DESC
             """,
         ),
     ],
     "reports.balance_drift": [
         Example(
-            question="Reconciliation drift sorted by absolute delta",
+            question="Reconciliation drift sorted by absolute delta, per currency",
             sql="""
-                SELECT account_name, assertion_date, asserted_balance, computed_balance, drift, status
+                SELECT account_name, assertion_date, currency_code,
+                       asserted_balance, computed_balance, drift, status
                 FROM reports.balance_drift
                 WHERE status IN ('drift', 'warning')
-                ORDER BY drift_abs DESC
+                ORDER BY currency_code, drift_abs DESC
             """,
         ),
     ],

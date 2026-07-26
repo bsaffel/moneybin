@@ -21,7 +21,11 @@ from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.redaction import redact_records
 from moneybin.privacy.sql_lineage import derive_query_tier
 from moneybin.privacy.taxonomy import DataClass, Tier
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import (
+    ResponseEnvelope,
+    build_envelope,
+    resolve_display_currency,
+)
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import ParamSpec, ReportSemantics, ReportSpec
 
@@ -111,19 +115,12 @@ class CatalogReportExecution:
 
 
 def _resolve_display_currency(records: list[dict[str, Any]]) -> str | None:
-    """The one currency every row is denominated in, else None.
+    """The one currency every report row is denominated in, else None.
 
-    Report rows are segmented per ``currency_code`` (multi-currency.md
-    Requirement 5), so the envelope may only name a display currency when the
-    rows agree on exactly one known one. An unknown (NULL) currency is its own
-    segment and never resolves to whichever currency the other rows happen to
-    carry — that would be the Requirement 5 blend, relabelled.
+    Thin projection over the shared envelope rule so reports and the balance
+    reads answer ``display_currency`` identically.
     """
-    seen = {record.get("currency_code") for record in records}
-    if len(seen) != 1:
-        return None
-    only = next(iter(seen))
-    return str(only) if only else None
+    return resolve_display_currency(record.get("currency_code") for record in records)
 
 
 class _CatalogSpec(Protocol):

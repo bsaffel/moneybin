@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import duckdb
+
 from moneybin.repositories.base import BaseRepo
 from moneybin.services._validators import validate_currency_code
 from moneybin.services.audit_service import AuditEvent
@@ -42,8 +44,17 @@ class ProfileSettingsRepo(BaseRepo):
 
         ``None`` is a real answer, not a missing one: callers must not
         substitute ``'USD'``, which would relabel a foreign-currency profile.
+
+        A database that predates V044 has no table to read (``CatalogException``
+        guard, matching the link-decisions repos). Read-only opens skip both
+        ``init_schemas`` and the migration runner, so ``moneybin profile show``
+        and the ``profile`` MCP tool reach this on an upgrading user's first
+        command — before any write-mode open has created the table.
         """
-        row = self._fetch_row()
+        try:
+            row = self._fetch_row()
+        except duckdb.CatalogException:
+            return None
         if row is None:
             return None
         value = row["home_currency"]

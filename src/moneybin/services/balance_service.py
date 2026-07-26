@@ -20,6 +20,7 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationListPayload,
     BalanceObservationRow,
 )
+from moneybin.protocol.envelope import resolve_display_currency
 from moneybin.services.account_service import assert_account_exists
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import BALANCE_ASSERTIONS, FCT_BALANCES_DAILY
@@ -39,11 +40,23 @@ class BalanceAssertionSnapshot:
     updated_at: str
 
 
+def balances_display_currency(payload: BalanceObservationListPayload) -> str | None:
+    """The single currency these observations share, else ``None``.
+
+    Balance rows carry their own currency and one account's can change between
+    observations, so the envelope may not fall back to ``build_envelope``'s
+    "USD" default — that would label a EUR account's money in dollars
+    (multi-currency.md Requirement 5). Shared by the MCP tools and the CLI
+    commands so both answer ``display_currency`` identically.
+    """
+    return resolve_display_currency(row.currency_code for row in payload.observations)
+
+
 def _observation_row_from_db(row: tuple[object, ...]) -> BalanceObservationRow:
     """Construct a BalanceObservationRow from a SELECT result tuple.
 
     Columns: account_id, balance_date, balance, is_observed, observation_source,
-    reconciliation_delta.
+    reconciliation_delta, currency_code.
     """
     return BalanceObservationRow(
         account_id=row[0],  # type: ignore[arg-type]
@@ -52,6 +65,7 @@ def _observation_row_from_db(row: tuple[object, ...]) -> BalanceObservationRow:
         is_observed=row[3],  # type: ignore[arg-type]
         observation_source=row[4],  # type: ignore[arg-type]
         reconciliation_delta=row[5],  # type: ignore[arg-type]
+        currency_code=row[6],  # type: ignore[arg-type]
     )
 
 
@@ -288,6 +302,7 @@ class BalanceService:
                 SELECT
                     account_id, balance_date, balance,
                     is_observed, observation_source, reconciliation_delta,
+                    currency_code,
                     ROW_NUMBER() OVER (
                         PARTITION BY account_id ORDER BY balance_date DESC
                     ) AS _rn
@@ -295,7 +310,8 @@ class BalanceService:
                 {where_sql}
             )
             SELECT account_id, balance_date, balance,
-                   is_observed, observation_source, reconciliation_delta
+                   is_observed, observation_source, reconciliation_delta,
+                   currency_code
             FROM ranked WHERE _rn = 1
             ORDER BY account_id
         """  # noqa: S608  # placeholders parameterized via params list above
@@ -315,7 +331,8 @@ class BalanceService:
         """Per-account balance time series."""
         sql = f"""
             SELECT account_id, balance_date, balance,
-                   is_observed, observation_source, reconciliation_delta
+                   is_observed, observation_source, reconciliation_delta,
+                   currency_code
             FROM {FCT_BALANCES_DAILY.full_name}
             WHERE account_id = ?
         """
@@ -348,7 +365,8 @@ class BalanceService:
             params.extend(account_ids)
         sql = f"""
             SELECT account_id, balance_date, balance,
-                   is_observed, observation_source, reconciliation_delta
+                   is_observed, observation_source, reconciliation_delta,
+                   currency_code
             FROM {FCT_BALANCES_DAILY.full_name}
             WHERE reconciliation_delta IS NOT NULL
               AND ABS(reconciliation_delta) > ? {where}
