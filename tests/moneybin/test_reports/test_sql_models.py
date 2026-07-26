@@ -67,7 +67,8 @@ def _install_balance_drift_sources(
             balance_date DATE,
             balance DECIMAL(18, 2),
             is_observed BOOLEAN,
-            reconciliation_delta DECIMAL(18, 2)
+            reconciliation_delta DECIMAL(18, 2),
+            currency_code VARCHAR
         )
     """)
     model_db.execute(
@@ -95,7 +96,7 @@ def test_balance_drift_uses_independent_transaction_derived_position(
     # records reconciliation_delta = $1,200 - $1,000 = $200.
     model_db.execute(
         """
-        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?)
+        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?, ?)
         """,
         [
             "checking",
@@ -103,6 +104,7 @@ def test_balance_drift_uses_independent_transaction_derived_position(
             Decimal("1200.00"),
             True,
             Decimal("200.00"),
+            "USD",
         ],
     )
 
@@ -137,9 +139,9 @@ def test_balance_drift_without_reconciliation_adjustment_uses_daily_balance(
     )
     model_db.execute(
         """
-        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?)
+        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ["checking", "2026-04-01", Decimal("1200.00"), False, None],
+        ["checking", "2026-04-01", Decimal("1200.00"), False, None, "USD"],
     )
 
     _install_report(model_db, "balance_drift")
@@ -167,9 +169,9 @@ def test_balance_drift_first_observation_has_no_independent_position(
     )
     model_db.execute(
         """
-        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?)
+        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ["checking", "2026-04-01", Decimal("1200.00"), True, None],
+        ["checking", "2026-04-01", Decimal("1200.00"), True, None, "USD"],
     )
 
     _install_report(model_db, "balance_drift")
@@ -693,6 +695,42 @@ def test_recurring_subscriptions_does_not_interleave_two_currency_streams(
     assert rows == [("EUR", "monthly", 4), ("USD", "monthly", 4)]
 
 
+def test_balance_drift_withholds_a_drift_across_two_currencies(
+    model_db: Database,
+) -> None:
+    """A balance stating its own currency is never subtracted from another one.
+
+    Reachable through an ordinary sequence this milestone itself creates: an
+    OFX or Plaid observation states its currency (fct_balances prefers the
+    observation's own over the account's), `system doctor` flags the account as
+    unknown-currency, and the user runs the fix it recommends —
+    `accounts set --currency` — choosing a different code. The account override
+    and the historical observation then disagree, and subtracting them produces
+    a number in no unit at all, labelled with the newer one.
+    """
+    _install_balance_drift_sources(model_db, currency="USD")
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES ('checking', '2024-01-02', 105.00)
+        """
+    )
+    model_db.execute(
+        """
+        INSERT INTO core.fct_balances_daily VALUES
+            ('checking', '2024-01-02', 100.00, FALSE, NULL, 'EUR')
+        """
+    )
+
+    _install_report(model_db, "balance_drift")
+
+    row = model_db.execute(
+        "SELECT computed_balance, drift, status FROM reports.balance_drift"
+    ).fetchone()
+    # 5.00 here would be 105 USD minus 100 EUR reported as USD.
+    assert row == (None, None, "currency-mismatch")
+
+
 def test_balance_drift_reports_the_currency_the_position_is_denominated_in(
     model_db: Database,
 ) -> None:
@@ -707,7 +745,7 @@ def test_balance_drift_reports_the_currency_the_position_is_denominated_in(
     model_db.execute(
         """
         INSERT INTO core.fct_balances_daily VALUES
-            ('checking', '2024-01-02', 100.00, FALSE, NULL)
+            ('checking', '2024-01-02', 100.00, FALSE, NULL, 'EUR')
         """
     )
 

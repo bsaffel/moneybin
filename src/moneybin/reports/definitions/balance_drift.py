@@ -110,7 +110,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         "(drift / asserted_balance); a percentage reveals no absolute "
         "balance figure",
         "status": "coarse 4-way bucket on |drift| (<$1 / <$10 / >=$10 / "
-        "no-data), never the drift or balance values themselves",
+        "no-data, currency-mismatch), never the drift or balance values themselves",
     },
 )
 def balance_drift(
@@ -129,7 +129,7 @@ def balance_drift(
         db: Open read-only database connection.
         account: Filter to an account; accepts account_id or case-insensitive
             display_name. Ambiguous display_name matches raise; None for all.
-        status: drift | warning | clean | no-data | all.
+        status: drift | warning | clean | no-data | currency-mismatch | all.
         since: ISO date; only assertions on or after.
 
     Examples:

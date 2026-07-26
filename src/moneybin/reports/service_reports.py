@@ -262,17 +262,30 @@ def _execute_networth(
             "observation_source": account.observation_source if account else None,
         }
 
-    rows = [_row(account.currency_code, account) for account in snapshot.per_account]
+    # One row per currency leads, then the remaining account rows. Ordering
+    # matters because build_catalog_execution truncates to max_rows: with all
+    # of a currency's rows adjacent, a profile holding two dollar accounts and
+    # one euro account pushes euro third, and any smaller limit returns a page
+    # that reads as single-currency. Leading with a representative of each
+    # makes every currency survive any limit at least as large as the currency
+    # count — blend by omission is the same defect as blend by summation.
+    first_of_currency: list[dict[str, Any]] = []
+    remaining: list[dict[str, Any]] = []
+    covered: set[str | None] = set()
+    for account in snapshot.per_account:
+        target = remaining if account.currency_code in covered else first_of_currency
+        covered.add(account.currency_code)
+        target.append(_row(account.currency_code, account))
     # An account_ids filter narrows the breakdown but not the position: without
     # this, filtering to a USD account would make the profile's EUR total vanish
     # from a report that shows it when unfiltered. Every currency the profile
     # holds gets at least one row, breakdown or not.
-    covered = {account.currency_code for account in snapshot.per_account}
-    rows.extend(
+    first_of_currency.extend(
         _row(segment.currency_code, None)
         for segment in snapshot.per_currency
         if segment.currency_code not in covered
     )
+    rows = first_of_currency + remaining
     if not rows:
         rows = [_row(None, None)]
 

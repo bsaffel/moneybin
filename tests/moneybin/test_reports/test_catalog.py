@@ -1152,6 +1152,72 @@ def test_report_envelope_names_no_currency_when_its_rows_disagree(
     assert result.to_envelope().to_dict()["summary"]["display_currency"] is None, case
 
 
+def test_networth_keeps_every_currency_within_the_returned_page(
+    mocker: MockerFixture,
+) -> None:
+    """Truncation must not be able to drop a whole currency.
+
+    Rows are one per account, so a profile with two dollar accounts and one
+    euro account pushes the euro row third. Any limit below that returns a
+    response that looks single-currency — blend by omission, the same failure
+    the segmentation prevents inside a row. Ordering one representative per
+    currency first makes the guarantee "every currency survives any limit at
+    least as large as the currency count."
+    """
+    segment = partial(
+        NetWorthCurrencySegment,
+        total_assets=Decimal("1000.00"),
+        total_liabilities=Decimal("0.00"),
+        account_count=1,
+    )
+    account = partial(
+        NetWorthAccountRow,
+        balance=Decimal("1000.00"),
+        observation_source="asserted",
+    )
+    mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.current",
+        return_value=NetWorthSnapshotPayload(
+            balance_date=date(2026, 7, 1),
+            currency_code=None,
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            account_count=3,
+            per_currency=[
+                segment(currency_code="USD", net_worth=Decimal("2000.00")),
+                segment(currency_code="EUR", net_worth=Decimal("1000.00")),
+            ],
+            per_account=[
+                account(
+                    account_id="acct_usd00001",
+                    display_name="Checking",
+                    currency_code="USD",
+                ),
+                account(
+                    account_id="acct_usd00002",
+                    display_name="Savings",
+                    currency_code="USD",
+                ),
+                account(
+                    account_id="acct_eur00001",
+                    display_name="Euro",
+                    currency_code="EUR",
+                ),
+            ],
+        ),
+    )
+
+    result = ReportCatalog((NETWORTH_REPORT,)).execute(
+        cast(Database, MagicMock(spec=Database)),
+        report_id="core:networth",
+        parameters={},
+        limit=2,
+    )
+
+    assert {row["currency_code"] for row in result.records} == {"USD", "EUR"}
+
+
 def test_networth_keeps_every_currency_when_the_breakdown_is_filtered(
     mocker: MockerFixture,
 ) -> None:
