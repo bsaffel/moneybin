@@ -426,6 +426,49 @@ class TestMultiCurrency:
         ]
 
     @pytest.mark.unit
+    def test_current_segments_a_third_currency_rather_than_pairing_two(
+        self, db: Database
+    ) -> None:
+        """Three currencies, so "mixed" cannot be read as "the other one".
+
+        Every other case here has exactly two segments, which an implementation
+        that pairs — takes the first and "the rest", or compares head to tail —
+        satisfies without ever segmenting. The third currency is what separates
+        segmenting from pairing, and it must reach `per_currency` intact rather
+        than being folded into a neighbour or dropped past a two-way branch.
+        """
+        _seed_reports_net_worth(
+            db,
+            [
+                {
+                    "balance_date": date(2026, 1, 31),
+                    "currency_code": code,
+                    "net_worth": amount,
+                    "account_count": 1,
+                    "total_assets": amount,
+                    "total_liabilities": Decimal("0.00"),
+                }
+                for code, amount in (
+                    ("USD", Decimal("100.00")),
+                    ("EUR", Decimal("200.00")),
+                    ("GBP", Decimal("300.00")),
+                )
+            ],
+        )
+        _seed_dim_accounts(db, [])
+        _seed_fct_balances_daily(db, [])
+        result = NetworthService(db).current()
+
+        assert result.currency_code is None
+        assert result.net_worth is None
+        # 600.00 is the blend; its absence is the assertion that matters.
+        assert [(s.currency_code, s.net_worth) for s in result.per_currency] == [
+            ("EUR", Decimal("200.00")),
+            ("GBP", Decimal("300.00")),
+            ("USD", Decimal("100.00")),
+        ]
+
+    @pytest.mark.unit
     def test_current_resolves_the_latest_date_across_every_currency(
         self, db: Database
     ) -> None:

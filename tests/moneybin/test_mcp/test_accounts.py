@@ -209,6 +209,53 @@ class TestStandardCoarseAccountReads:
         assert response.data.account.account_id == "ACC001"
 
     @pytest.mark.unit
+    async def test_account_detail_carries_the_account_currency_to_the_summary(
+        self, mcp_db: Path
+    ) -> None:
+        """One account, so `display_currency` is knowable — and must be its own.
+
+        The detail view re-wraps `accounts_get`'s envelope in a coarse one and
+        forwards `display_currency` by hand. A dropped forward is invisible from
+        the payload, which keeps its correct `currency_code`; only the summary
+        shows it, and an agent that trusts `summary.display_currency` over the
+        row would read a EUR account as unknown.
+        """
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                UPDATE core.dim_accounts
+                SET display_name = ?, currency_code = ?
+                WHERE account_id = ?
+                """,
+                ["Checking", "EUR", "ACC001"],
+            )
+
+        response = await accounts_coarse(view="detail", reference="Checking")
+
+        assert response.data.account.currency_code == "EUR"
+        assert response.summary.display_currency == "EUR"
+
+    @pytest.mark.unit
+    async def test_account_detail_leaves_an_unknown_currency_unknown(
+        self, mcp_db: Path
+    ) -> None:
+        """A NULL account currency reaches the summary as null, never "USD"."""
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                UPDATE core.dim_accounts
+                SET display_name = ?, currency_code = NULL
+                WHERE account_id = ?
+                """,
+                ["Checking", "ACC001"],
+            )
+
+        response = await accounts_coarse(view="detail", reference="Checking")
+
+        assert response.data.account.currency_code is None
+        assert response.summary.display_currency is None
+
+    @pytest.mark.unit
     async def test_account_detail_refuses_ambiguous_reference(
         self, mcp_db: Path
     ) -> None:

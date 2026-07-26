@@ -77,6 +77,58 @@ class TestAccountsBalanceShow:
         assert "observations" in payload["data"]
         assert len(payload["data"]["observations"]) == 1
 
+    @pytest.mark.unit
+    def test_show_text_prints_the_currency_beside_each_balance(
+        self, runner: CliRunner
+    ) -> None:
+        """Text mode is the only surface where a lost currency is silent.
+
+        Every other test here passes `--output json`, where the currency rides
+        along in the payload whatever the renderer does. A bare number in text
+        mode reads as the reader's own currency — the same failure shape as the
+        net-worth breakdown printing a null as "None".
+        """
+        rows = [
+            BalanceObservationRow(
+                account_id="acct_a",
+                balance_date=date(2026, 1, 31),
+                balance=Decimal("1234.56"),
+                is_observed=True,
+                observation_source="ofx",
+                reconciliation_delta=None,
+                currency_code="EUR",
+            ),
+            BalanceObservationRow(
+                account_id="acct_b",
+                balance_date=date(2026, 1, 31),
+                balance=Decimal("99.00"),
+                is_observed=True,
+                observation_source="ofx",
+                reconciliation_delta=None,
+                currency_code=None,
+            ),
+        ]
+        with (
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.balance.BalanceService"
+            ) as mock_service_class,
+        ):
+            mock_service_class.return_value.current_balances.return_value = (
+                BalanceObservationListPayload(observations=rows)
+            )
+            result = runner.invoke(app, ["accounts", "balance", "show"])
+
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout + result.stderr
+        known = next(line for line in out.splitlines() if "1234.56" in line)
+        unknown = next(line for line in out.splitlines() if "99.00" in line)
+        # The amount and its currency are asserted as one substring: a separate
+        # `"EUR" in line` passes on a currency printed anywhere on the row,
+        # including a column that is not the balance's.
+        assert "1234.56 EUR" in known
+        assert "99.00 ?" in unknown
+
 
 class TestAccountsBalanceHistory:
     """Tests for `accounts balance history`."""

@@ -751,8 +751,9 @@ def test_run_all_returns_expected_invariants(
     # source overlap, unresolved securities, conflicting security refs,
     # unreported holdings, phantom holdings) + sqlmesh_model_presence
     # (registered-but-unbuilt models) + currency_integrity (M1K.1 Req 6:
-    # unknown-currency rows, then merely-mixed currency).
-    assert len(report.invariants) == 48
+    # unknown-currency rows, then merely-mixed currency) + profile_settings
+    # audit coverage (M1K.1 Req 4).
+    assert len(report.invariants) == 49
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -2056,6 +2057,35 @@ def test_currency_integrity_warns_when_a_profile_holds_two_currencies(
     detail = result.detail or ""
     assert "EUR" in detail
     assert "USD" in detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_counts_and_names_a_third_currency(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three currencies, drawn from two different tables.
+
+    The two-currency case is satisfied by a check that only asks "is there more
+    than one?" — a hardcoded count, or a list that dedups to a pair, reads the
+    same. Sourcing the third from `dim_accounts` rather than a third transaction
+    also proves the UNION reaches every table it claims to, not just the one the
+    other tests mutate.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+    doctor_db.execute("""
+        UPDATE core.dim_accounts SET currency_code = 'GBP'
+        WHERE account_id = 'ACC1'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    detail = result.detail or ""
+    assert "3 currencies" in detail
+    assert "EUR, GBP, USD" in detail
 
 
 @pytest.mark.unit

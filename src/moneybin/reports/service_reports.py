@@ -240,7 +240,7 @@ def _execute_networth(
     # A single-currency profile sees exactly the figures it always did.
     segments = {segment.currency_code: segment for segment in snapshot.per_currency}
 
-    def _headline(currency_code: str | None) -> dict[str, JsonValue | object]:
+    def _headline(currency_code: str | None) -> dict[str, object]:
         segment = segments.get(currency_code)
         return {
             "balance_date": snapshot.balance_date,

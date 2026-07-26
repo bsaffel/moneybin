@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import typing
 from collections.abc import Mapping
@@ -44,6 +45,7 @@ from moneybin.reports._framework.contract import (
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     CatalogReportResult,
+    ReportResult,
     build_catalog_execution,
     build_catalog_result,
 )
@@ -492,6 +494,48 @@ def test_display_currency_describes_the_returned_page_when_truncated() -> None:
 
     assert execution.truncated
     assert execution.display_currency == "USD"
+
+
+def test_report_without_a_currency_column_states_no_currency() -> None:
+    """A report that never mentions currency has not been told one.
+
+    ``build_catalog_execution`` only resolves a currency when the result
+    declares a ``currency_code`` column; everything else falls through to the
+    dataclass default. Every report that counts, ranks, or ratios — no currency
+    column anywhere — therefore shipped a confident label its rows never
+    supported.
+    """
+    execution = build_catalog_execution(
+        _sql_report(),
+        parameters={"count": 1},
+        records=[{"value": 1}],
+        columns=["value"],
+        column_types=["BIGINT"],
+        max_rows=None,
+        sql=None,
+    )
+
+    assert "currency_code" not in execution.columns
+    assert execution.display_currency is None
+
+
+@pytest.mark.parametrize("cls", [ReportResult, CatalogReportExecution])
+def test_report_result_currency_default_is_not_a_currency_literal(
+    cls: type,
+) -> None:
+    """Pin both defaults: no future edit may restore a hardcoded currency.
+
+    The behavioural test above passes just as well if someone re-adds ``"USD"``
+    and updates that one assertion, and it only reaches one of the two classes.
+    ``build_envelope`` carries the same pin
+    (``test_build_envelope_default_is_not_a_currency_literal``) — these are the
+    remaining places one default speaks for every caller at once.
+    """
+    default = next(
+        f for f in dataclasses.fields(cls) if f.name == "display_currency"
+    ).default
+
+    assert default is None
 
 
 def test_service_report_dispatch_uses_same_result_contract() -> None:

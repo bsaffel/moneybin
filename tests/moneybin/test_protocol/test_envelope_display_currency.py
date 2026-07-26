@@ -44,6 +44,22 @@ def test_build_envelope_keeps_an_explicit_currency() -> None:
     assert envelope.summary.display_currency == "EUR"
 
 
+def test_to_dict_emits_display_currency_even_when_unknown() -> None:
+    """A null on the wire is the answer; a missing key is not.
+
+    ``None`` means "these rows are not one known currency" — a claim an agent
+    has to be able to read. Dropping the key the way the neighbouring ``period``
+    is dropped would turn that claim into silence, and silence reads as "the
+    tool never considered it": exactly the distinction the ``Unset`` sentinel
+    exists to preserve. ``SummaryMeta.to_dict``'s own docstring described this
+    field as omitted-when-None, so the invitation to "fix" it was in the code.
+    """
+    summary = build_envelope(data={"amount": Decimal("1.00")}).to_dict()["summary"]
+
+    assert "display_currency" in summary
+    assert summary["display_currency"] is None
+
+
 def test_resolve_display_currency_is_the_one_rule() -> None:
     """The helper callers use to answer the question agrees with the default.
 

@@ -123,7 +123,12 @@ class SummaryMeta:
     degraded_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dict, omitting None fields and False degraded."""
+        """Convert to dict, omitting a null ``period`` and a false ``degraded``.
+
+        ``display_currency`` is emitted unconditionally, null included: null is
+        the answer "not one known currency", and a consumer that finds no key
+        cannot tell that answer from a tool that never set one.
+        """
         d: dict[str, Any] = {
             "total_count": self.total_count,
             "returned_count": self.returned_count,

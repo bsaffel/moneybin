@@ -56,14 +56,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   account's `reconciliation_delta` and as drift in `reports balance-drift`, and
   the `system doctor` multi-currency warning names the behaviour. **A
   single-currency profile is unaffected.**
-  `top` on `reports merchants` and `reports large-transactions` now means "top N
-  **within each currency**" — ranking across currencies compares unlike units, so
-  one high-denomination currency could otherwise take every slot and hide the
-  rest entirely. A single-currency profile gets the same N rows as before.
-  `summary.display_currency` now names the currency a report's rows are actually
-  denominated in instead of always reporting `USD`; when the rows span more than
-  one — or the currency is unknown — it is null and each row's `currency_code`
-  is the answer.
+- **`top` now means "top N within each currency" (M1K.1).** On `reports
+  merchants` and `reports large-transactions`, ranking across currencies compares
+  unlike units, so one high-denomination currency could otherwise take every slot
+  and hide the rest entirely. A single-currency profile gets the same N rows as
+  before.
+- **A report's `summary.display_currency` names the currency its rows are in
+  (M1K.1).** It reported `USD` unconditionally. It now names the one currency the
+  rows agree on, and is null when they span more than one, when the currency is
+  unknown, or when the report has no currency column at all — a report that
+  counts or ranks states no denomination rather than borrowing one. Read each
+  row's `currency_code` whenever it is null.
 - **`reports balance-drift` withholds a drift across two currencies (M1K.1).**
   A balance observation states its own currency, and an account can carry a
   different one after `accounts set --currency`. The report subtracted them and

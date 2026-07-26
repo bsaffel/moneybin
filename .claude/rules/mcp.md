@@ -75,7 +75,7 @@ Every tool returns this shape:
 
 ```json
 {
-  "summary": {"total_count": 247, "returned_count": 50, "has_more": true, "sensitivity": "medium", "display_currency": "USD"},
+  "summary": {"total_count": 247, "returned_count": 50, "has_more": true, "sensitivity": "medium", "display_currency": "EUR"},
   "data": [ ... ],
   "actions": ["Use reports(report_id=\"core:spending\") for the breakdown"]
 }
@@ -85,7 +85,10 @@ Every tool returns this shape:
 - **`data`** — structured objects, never pre-formatted strings.
 - **`actions`** — contextual next-step hints for composability.
 
-Currency lives in `summary.display_currency`, not per-row. Per-row `currency` only when returning mixed unconverted currencies.
+Currency lives in `summary.display_currency`, not per-row. It is `null` — never a
+guessed default — when the rows span more than one currency or none is known, and
+the key is always emitted, so `null` is an answer rather than an omission. Rows
+carry their own `currency_code` when the response is mixed.
 
 Every public tool MUST return canonical JSON text and equivalent
 `structuredContent`. Do not advertise `outputSchema` by default. A schema is an

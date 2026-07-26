@@ -43,6 +43,7 @@ from moneybin.tables import (
     PDF_FORMATS,
     PLAID_INVESTMENT_TRANSACTIONS,
     PLAID_SECURITIES,
+    PROFILE_SETTINGS,
     PROPOSED_RULES,
     SECURITIES,
     SECURITY_LINKS,
@@ -318,15 +319,21 @@ class DoctorService:
     def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
         """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).
 
-        Covers every table wrapped in a repo so far (``user_categories``,
-        ``category_overrides``, ``gsheet_connections``, ``user_merchants``,
-        ``categorization_rules``, ``proposed_rules``, ``transaction_categories``,
-        ``account_settings``, ``balance_assertions``, ``budgets``, plus the edge
-        writers ``tabular_formats``, ``match_decisions``, ``imports``, the
+        Covers ``user_categories``, ``category_overrides``, ``gsheet_connections``,
+        ``user_merchants``, ``categorization_rules``, ``proposed_rules``,
+        ``transaction_categories``, ``account_settings``, ``balance_assertions``,
+        ``budgets``, ``profile_settings``, plus the edge writers
+        ``tabular_formats``, ``match_decisions``, ``imports``, the
         account-identity tables ``account_links``, ``account_link_decisions``,
         ``transaction_id_aliases``, and the investments tables ``securities``,
         ``lot_selections``); later repository PRs append one coverage call per
         newly-wrapped table plus that table's FK/orphan specifics.
+
+        This is **not** yet every repo-wrapped table: twelve tables have a repo
+        but no coverage call here. That gap is pinned by equality in
+        ``test_every_repo_table_has_audit_coverage_or_a_named_exemption``, so it
+        can shrink but never grow silently — a new repo without a coverage call
+        fails that test. Closing the twelve is tracked in ``private/followups.md``.
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
@@ -412,6 +419,9 @@ class DoctorService:
                 updated_col="created_at",
                 full=full,
             ),
+            # Singleton table: `scope` is a constant PK, so coverage checks the
+            # one row's watermark against its audit trail.
+            self._run_app_audit_coverage(PROFILE_SETTINGS, "scope", full=full),
             self._run_pdf_formats_recipe_validity(),
             self._run_pdf_formats_bounds(),
             self._run_pdf_formats_fingerprint_shape(),

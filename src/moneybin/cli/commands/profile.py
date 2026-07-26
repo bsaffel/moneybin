@@ -293,7 +293,12 @@ def profile_show(
 
 @app.command("set")
 def profile_set(
-    key: Annotated[str, typer.Argument(help="Config key (e.g., logging.level)")],
+    key: Annotated[
+        str,
+        typer.Argument(
+            help="Config key (e.g., logging.level) or managed key (home_currency)"
+        ),
+    ],
     value: Annotated[str, typer.Argument(help="Value to set")],
     name: Annotated[
         str | None,

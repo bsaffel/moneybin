@@ -10,6 +10,9 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
+from moneybin.cli.commands.reports.networth import (
+    _UNKNOWN_CURRENCY,  # pyright: ignore[reportPrivateUsage]
+)
 from moneybin.cli.main import app
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.execute import ReportResult
@@ -206,6 +209,34 @@ class TestReportsNetworth:
         assert "does not convert between currencies" in out
 
     @pytest.mark.unit
+    def test_breakdown_renders_unknown_currency_without_the_word_none(
+        self, runner: CliRunner
+    ) -> None:
+        """A null currency must not reach the user as the string "None".
+
+        The headline block guards this already, so the assertion is scoped to
+        the per-account line: a whole-output check would pass on the headline's
+        label alone and prove nothing about the breakdown.
+        """
+        snapshot = _snapshot_result(currency_code=None, account_name="Checking")
+        with (
+            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = snapshot
+            result = runner.invoke(app, ["reports", "networth"])
+
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout + result.stderr
+        breakdown = next(
+            line for line in out.splitlines() if line.lstrip().startswith("Checking")
+        )
+        assert "None" not in breakdown
+        assert _UNKNOWN_CURRENCY in breakdown
+
+    @pytest.mark.unit
     def test_account_filter(self, runner: CliRunner) -> None:
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),
@@ -280,6 +311,49 @@ class TestReportsNetworthHistory:
         payload = json.loads(result.stdout)
         assert payload["status"] == "ok"
         assert len(payload["data"]) == 2
+
+    @pytest.mark.unit
+    def test_series_labels_unknown_currency_like_the_snapshot(
+        self, runner: CliRunner
+    ) -> None:
+        """History and snapshot must name an unknown currency the same way.
+
+        Two spellings for one state is what let the breakdown's raw ``!s`` sit
+        beside two correct guards without looking wrong.
+        """
+        mock_rows: list[dict[str, object]] = [
+            {
+                "period": "2026-01-01",
+                "currency_code": None,
+                "net_worth": Decimal("1000.00"),
+                "change_abs": None,
+                "change_pct": None,
+            }
+        ]
+        with (
+            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = _result(mock_rows)
+            result = runner.invoke(
+                app,
+                [
+                    "reports",
+                    "networth-history",
+                    "--from",
+                    "2026-01-01",
+                    "--to",
+                    "2026-02-01",
+                ],
+            )
+
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout + result.stderr
+        series = next(line for line in out.splitlines() if "1000.00" in line)
+        assert "None" not in series
+        assert _UNKNOWN_CURRENCY in series
 
     @pytest.mark.unit
     def test_default_interval_monthly(self, runner: CliRunner) -> None:

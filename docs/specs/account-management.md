@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
     last_four            VARCHAR,                                  -- Last 4 digits of account number (mirrors Plaid mask); validated ^[0-9]{4}$
     account_subtype      VARCHAR,                                  -- Plaid-style subtype (checking, savings, credit card, mortgage, ...); open vocabulary, soft-validated against canonical Plaid list
     holder_category      VARCHAR,                                  -- 'personal' / 'business' / 'joint'; open vocabulary, soft-validated
-    currency_code        VARCHAR,                                  -- ISO-4217 (USD, EUR, ...); NULL inherits core.dim_accounts.currency_code's own fallback (see below)
+    currency_code        VARCHAR,                                  -- ISO-4217 (USD, EUR, ...); NULL falls back to the currency the account's source reported, and stays NULL when no source reported one (see core.dim_accounts below)
     credit_limit         DECIMAL(18, 2),                           -- User-asserted credit limit on credit cards / lines (drives utilization metrics)
     archived             BOOLEAN NOT NULL DEFAULT FALSE,           -- Hides account from default list and from agg_net_worth
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE,            -- Whether this account contributes to agg_net_worth (independent toggle, but archive cascades to FALSE)
@@ -109,7 +109,7 @@ New columns (added to the final SELECT):
 | `last_four` | `s.last_four` | Pass-through |
 | `account_subtype` | `s.account_subtype` | Pass-through |
 | `holder_category` | `s.holder_category` | Pass-through |
-| `currency_code` | `COALESCE(s.currency_code, 'USD')` | USD is the last-resort fallback when no account-level currency was ever set; `multi-currency.md` M1K.1 Part A (2026-07-17) added the no-guess capture/inheritance layers upstream of this default — the true no-silent-blend guard that removes this fallback is Part B |
+| `currency_code` | `COALESCE(s.currency_code, w.source_currency)` | User override, else the currency the account's own source reported (OFX `CURDEF`, Plaid `iso_currency_code`, tabular `currency`). NULL means genuinely unknown and stays that way: every monetary grain COALESCEs onto this column, so a literal default here would relabel the whole ledger (`multi-currency.md` Requirements 3 and 8). `moneybin system doctor`'s `currency_integrity` check surfaces the NULLs to resolve with `accounts set --currency` |
 | `credit_limit` | `s.credit_limit` | Pass-through |
 | `archived` | `COALESCE(s.archived, FALSE)` | Default FALSE for accounts with no settings row |
 | `include_in_net_worth` | `COALESCE(s.include_in_net_worth, TRUE)` | Default TRUE |

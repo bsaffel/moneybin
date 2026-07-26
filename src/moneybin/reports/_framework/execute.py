@@ -56,7 +56,10 @@ class ReportResult:
     truncated: bool
     actions: list[str] = field(default_factory=list)
     period: str | None = None
-    display_currency: str | None = "USD"
+    # Unknown, never a currency: a result built without one has not been told a
+    # denomination, and a literal here would speak for every report that never
+    # mentions currency at all (multi-currency.md Requirement 5).
+    display_currency: str | None = None
 
     @property
     def classes_returned(self) -> list[str]:
@@ -111,7 +114,8 @@ class CatalogReportExecution:
     period: str | None
     semantics: ReportSemantics
     provenance: tuple[str, ...]
-    display_currency: str | None = "USD"
+    # Same contract as ReportResult.display_currency — see the note there.
+    display_currency: str | None = None
 
 
 def _resolve_display_currency(records: list[dict[str, Any]]) -> str | None:
@@ -225,10 +229,10 @@ def build_catalog_execution(
     # stable while both kinds use its fail-closed undeclared-column behavior.
     col_classes = classify_columns(cast(ReportSpec, spec), columns)
     # A report whose rows carry currency_code is authoritative about its own
-    # denomination, including when the answer is "no single one" — falling back
-    # to the "USD" envelope default there would relabel a segmented result as
-    # one currency. Reports with no currency_code column say nothing either way
-    # and keep the default.
+    # denomination, including when the answer is "no single one" — defaulting to
+    # a currency there would relabel a segmented result as one currency. Reports
+    # with no currency_code column say nothing either way and keep the unknown
+    # default.
     # Resolved over every fetched row, not the truncated page: a mixed-currency
     # result whose first `max_rows` happen to share one currency would otherwise
     # advertise it confidently while the other currency's rows sit past the cap.

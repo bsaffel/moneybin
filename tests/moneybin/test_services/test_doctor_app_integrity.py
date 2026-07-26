@@ -1091,3 +1091,45 @@ def test_pdf_formats_fingerprint_shape_passes_for_repo_saved_row(
     _save_pdf_format(PdfFormatsRepo(db), name="good_fp")
     result = DoctorService(db)._run_pdf_formats_fingerprint_shape()
     assert result.status == "pass"
+
+
+# Twelve repo-wrapped tables predate this guard and have no audit-coverage check
+# (verified byte-identical on origin/main). The guard pins the gap by EQUALITY so
+# the set can only shrink: a newly repo-ified table that forgets its coverage
+# call fails here rather than joining the list silently. Removing an entry is the
+# fix; adding one needs a reason. Tracked in private/followups.md.
+_AUDIT_COVERAGE_GAPS = frozenset({
+    "ai_consent_grants",
+    "categorization_decisions",
+    "category_source_map",
+    "export_destinations",
+    "manual_investment_transactions",
+    "merchant_link_decisions",
+    "merchant_links",
+    "security_link_decisions",
+    "security_links",
+    "transaction_notes",
+    "transaction_splits",
+    "transaction_tags",
+})
+
+
+def test_every_repo_table_has_audit_coverage_or_a_named_exemption(
+    db: Database,
+) -> None:
+    """Enumerate the live repo registry, not the coverage list's own membership.
+
+    ``app.profile_settings`` reached review with a repo, a migration, and an MCP
+    tool but no coverage call, because the only assertions were ``"...x" in
+    names`` — a shape that fires when someone adds a table and never when someone
+    forgets one.
+    """
+    from moneybin.repositories import concrete_repo_classes
+
+    covered = {
+        r.name.removeprefix("app_audit_coverage_")
+        for r in DoctorService(db)._run_app_integrity(full=False)
+        if r.name.startswith("app_audit_coverage_")
+    }
+    uncovered = {c.table_ref.name for c in concrete_repo_classes()} - covered
+    assert uncovered == _AUDIT_COVERAGE_GAPS

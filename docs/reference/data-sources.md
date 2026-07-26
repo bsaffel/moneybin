@@ -257,7 +257,7 @@ Every read-only and write-shaped CLI command supports `--output json` and emits 
 }
 ```
 
-`status` flips to `"error"` and an `error` block is added on classified failure. `summary.degraded` + `summary.degraded_reason` appear when an MCP tool returns aggregates in place of row-level data without consent.
+`status` flips to `"error"` and an `error` block is added on classified failure. `summary.degraded` + `summary.degraded_reason` appear when an MCP tool returns aggregates in place of row-level data without consent. `summary.display_currency` is always emitted and is `null` when the rows span more than one currency or none is known — read each row's `currency_code` in that case.
 
 **`moneybin import files --output json` `data` shape** (`src/moneybin/cli/commands/import_cmd.py`):
 
@@ -364,7 +364,7 @@ Per-source error surfaces. CLI exits 1 with the exception class name visible in 
 | `payment_channel` | no | `in_store` / `online` / `other`. |
 | `transaction_type` | no | Free-text type code. |
 | `check_number` | no | Free text. |
-| `currency_code` | no | Defaults to `USD`. |
+| `currency_code` | no | Written only when `--currency` is passed. Omitted, the row inherits `core.dim_accounts.currency_code` in `core.fct_transactions`; no literal default is applied. |
 
 **Resulting raw row** (`raw.manual_transactions`):
 
@@ -376,7 +376,7 @@ import_id             = <new raw.import_log row>
 account_id            = <resolved from dim_accounts>
 transaction_date, amount, description, merchant_name, memo,
 payment_channel, transaction_type, check_number,
-currency_code         = <as supplied>
+currency_code         = <as supplied, else NULL>
 category, subcategory = NULL  -- categories always live in app.transaction_categories
 created_by            = 'cli' | 'mcp'
 ```

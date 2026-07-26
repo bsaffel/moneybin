@@ -19,6 +19,18 @@ from moneybin.reports._framework.cli_register import (
     _CLI_MAX_ROWS,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701 — shared report cap
 )
 
+_UNKNOWN_CURRENCY = "unknown"
+
+
+def _currency_label(value: object) -> str:
+    """Render a currency code, naming the unknown case instead of showing it raw.
+
+    Every currency-bearing column routes through here: an unguarded `!s` prints
+    a NULL as the literal "None", which reads as a denomination to an agent
+    parsing the text surface.
+    """
+    return str(value) if value else _UNKNOWN_CURRENCY
+
 
 def reports_networth(
     as_of: str | None = typer.Option(
@@ -64,8 +76,7 @@ def reports_networth(
         typer.echo(f"Net worth as of {balance_date}")
         for currency, rows in by_currency.items():
             headline = rows[0]
-            label = currency if currency is not None else "unknown currency"
-            typer.echo(f"  {label}: {headline['net_worth']}")
+            typer.echo(f"  {_currency_label(currency)}: {headline['net_worth']}")
             typer.echo(f"    Assets:      {headline['total_assets']}")
             typer.echo(f"    Liabilities: {headline['total_liabilities']}")
             typer.echo(f"    Accounts:    {headline['account_count']}")
@@ -80,7 +91,8 @@ def reports_networth(
             for row in accounts:
                 typer.echo(
                     f"  {row['account_name']!s:<40} {row['account_balance']!s:>14} "
-                    f"{row['currency_code']!s:<5} ({row['observation_source']})"
+                    f"{_currency_label(row['currency_code']):<7} "
+                    f"({row['observation_source']})"
                 )
 
     render_or_json(
@@ -123,15 +135,15 @@ def reports_networth_history(
         # Each currency is its own series, so a period appears once per
         # currency; without the column two rows for the same month read as one
         # position swinging wildly.
-        typer.echo("period       cur    net_worth     change_abs    change_pct")
+        typer.echo("period       cur     net_worth     change_abs    change_pct")
         for point in result.records:
             change_abs = point["change_abs"] if point["change_abs"] is not None else "-"
             change_pct = (
                 f"{point['change_pct']:.2%}" if point["change_pct"] is not None else "-"
             )
-            currency = point["currency_code"] if point["currency_code"] else "?"
+            currency = _currency_label(point["currency_code"])
             typer.echo(
-                f"{point['period']!s:<12} {currency!s:<6} {point['net_worth']!s:>12} "
+                f"{point['period']!s:<12} {currency:<7} {point['net_worth']!s:>12} "
                 f"{change_abs!s:>13} "
                 f"{change_pct:>10}"
             )
