@@ -707,5 +707,6 @@ USER_REPORT_RECLASSIFY_TOTAL = Counter(
     "Classification-downgrade attempts on a saved report, by outcome.",
     # outcome: confirmed_prompt | confirmed_flag | declined | no_elicitation
     #          | refused_not_weaker | refused_unknown_column
+    #          | refused_revision_moved
     ["outcome"],
 )

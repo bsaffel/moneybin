@@ -40,6 +40,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own rows would mask.
   All seven `reports` verbs are CLI-only; the MCP registry stays at 47 tools.
   (#367)
+- **Report listings now show the handle you type.** The report catalog entry
+  carries `name` beside `report_id`, and `reports list` leads with it. Those two
+  differ for every tier: a built-in's id is namespaced (`core:networth`) and a
+  saved report's is minted (`user:r` plus twelve hex characters), while the CLI
+  command, `reports run`, `reports explain`, and `export report` all accept the
+  name. Publishing only the id left the one string those commands take
+  undiscoverable once the create response scrolled away. Applies to the MCP
+  `reports` catalog too. (#367)
 - **Canonical bundle and registered-report export delivery (M1O).**
   `moneybin export bundle` and `moneybin export report` publish redacted CSV by
   default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named

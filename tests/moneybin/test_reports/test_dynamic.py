@@ -301,6 +301,54 @@ def test_derivation_classes_a_parameter_from_the_column_it_filters(
     assert dict(derived.parameter_classes) == {"acct": DataClass.ROUTING_NUMBER}
 
 
+def test_derivation_refuses_two_declarations_of_one_parameter_name(
+    dynamic_db: Database,
+) -> None:
+    """One name, two contracts — the published schema cannot express both.
+
+    Every map keyed by parameter name collapses the pair (``parameter_classes``
+    here, ``bindings`` on the DESCRIBE), but ``params`` stores both entries, and
+    ``_parameter_schema`` reads that list: it appends ``n`` to ``required`` from
+    the first entry, then *overwrites* ``properties["n"]`` from the second. The
+    catalog then publishes ``n`` as required **and** carrying a default, under
+    ``additionalProperties: false`` — a caller trusting the default is rejected
+    for omitting it.
+
+    ``LIMIT $n`` is the fixture because it classes AGGREGATE, so the default is
+    one ``_refuse_sensitive_defaults`` permits; the name is referenced, so
+    ``_refuse_unused_parameters`` passes; and the bindings collapse, so DESCRIBE
+    succeeds. No other guard can claim this refusal.
+    """
+    with pytest.raises(UserError) as raised:
+        derive_classification(
+            dynamic_db,
+            query_sql="SELECT account_id FROM core.dim_accounts LIMIT $n",
+            params=(_param("n", int), _param("n", int, default=50, required=False)),
+        )
+
+    assert raised.value.code == error_codes.REPORT_PARAMETER_DUPLICATE
+    assert "declared more than once" in str(raised.value)
+
+
+def test_derivation_accepts_two_parameters_with_distinct_names(
+    dynamic_db: Database,
+) -> None:
+    """The benign twin: a guard on *repeated* names must not refuse two names."""
+    derived = derive_classification(
+        dynamic_db,
+        query_sql=(
+            "SELECT account_id FROM core.dim_accounts "
+            "WHERE routing_number = $acct LIMIT $n"
+        ),
+        params=(_param("acct", str), _param("n", int, default=50, required=False)),
+    )
+
+    assert dict(derived.parameter_classes) == {
+        "acct": DataClass.ROUTING_NUMBER,
+        "n": DataClass.AGGREGATE,
+    }
+
+
 def test_derivation_leaves_a_parameter_compared_against_nothing_unresolved(
     dynamic_db: Database,
 ) -> None:

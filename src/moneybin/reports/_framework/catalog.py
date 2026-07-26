@@ -577,6 +577,7 @@ def _catalog_entry_to_payload(
 ) -> ReportCatalogEntry:
     return ReportCatalogEntry(
         report_id=report.report_id,
+        name=report.name,
         tier=report_tier(report),
         description=report.description,
         archived=archived,

@@ -203,8 +203,10 @@ def derive_classification(
     Raises:
         UserError: if the query is not a row-returning read-only SELECT over
             ``SAVE_SCHEMAS``, produces duplicate result column names, cannot be
-            described, or declares a default on an above-LOW parameter.
+            described, declares one parameter name twice, or declares a default
+            on an above-LOW parameter.
     """
+    _refuse_duplicate_parameters(params)
     tree, snapshot = _parsed(db, query_sql)
     qualified = _qualified_or_refuse(tree, snapshot)
 
@@ -422,6 +424,32 @@ def _refuse_sensitive_defaults(
                 code=error_codes.REPORT_PARAMETER_DEFAULT_NOT_ALLOWED,
                 hint="Declare it required — the report catalog publishes defaults unmasked.",
             )
+
+
+def _refuse_duplicate_parameters(params: Sequence[ParamSpec]) -> None:
+    """Refuse one parameter name declared twice — step 0.
+
+    Every name-keyed map collapses the pair, so the *derived* half of the
+    contract looks consistent. ``params`` does not: it stores both entries, and
+    ``_parameter_schema`` walks that list — appending the name to ``required``
+    from a required entry and then overwriting ``properties[name]`` from a later
+    defaulted one. The catalog publishes a parameter that is required and also
+    carries a default, under ``additionalProperties: false``, so a caller
+    trusting the published default is rejected for omitting it. Two declarations
+    cannot both be honoured; neither is guessed at.
+
+    Ahead of :func:`_parsed` because a declaration list contradicting itself is
+    answerable without the query, the schema snapshot, or a DuckDB round trip.
+    """
+    names = [parameter.name for parameter in params]
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        raise UserError(
+            "Parameter(s) declared more than once: "
+            f"{', '.join(f'${name}' for name in repeated)}.",
+            code=error_codes.REPORT_PARAMETER_DUPLICATE,
+            hint="Declare each parameter once; one name carries one type and default.",
+        )
 
 
 def _refuse_unused_parameters(

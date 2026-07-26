@@ -306,6 +306,7 @@ class UserReportsService:
         reason: str,
         confirmed: bool | None,
         confirmed_via: ConfirmedVia,
+        expected_fingerprint: str,
         actor: str,
     ) -> ReclassifyOutcome:
         """Lower one column's masking floor, permanently, on human approval.
@@ -326,6 +327,19 @@ class UserReportsService:
         required — a default would record an assistant's ``--yes`` as a human at
         a prompt, which is the one thing the audit row exists to distinguish.
         ``actor`` cannot carry it: both paths are the same surface.
+
+        ``expected_fingerprint`` is the ``class_fingerprint`` the caller read
+        *before* it asked, and is required for the same reason the other two are:
+        an approval is about a specific revision, and a caller cannot opt out of
+        saying which. The confirmation is a human decision, so the window between
+        reading the row and writing it is seconds to minutes wide — a
+        ``reports set --sql`` landing inside it changes what the approved column
+        *is*, and the strictly-weaker rule below cannot notice, because it only
+        asks that the tier drop. Mismatch refuses; the cost is a re-run against
+        the current SQL, versus a permanently lowered floor on SQL nobody read.
+        The same guard as ``import_confirm``'s digest re-check, for the same
+        reason. ``delete`` needs no equivalent: it is bound to an identity that
+        a concurrent edit does not move.
 
         ``from`` is the class **derivation currently produces**, not the stored
         (possibly already-downgraded) one, so an approval is always recorded
@@ -349,6 +363,18 @@ class UserReportsService:
                     "This surface had no way to ask. A human must confirm the "
                     "downgrade; an assistant must not supply it on their behalf."
                 ),
+            )
+
+        if str(row["class_fingerprint"]) != expected_fingerprint:
+            metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
+                outcome="refused_revision_moved"
+            ).inc()
+            raise UserError(
+                "This report changed while the confirmation was open, so the "
+                "approval no longer applies to it — nothing was reclassified. "
+                "Re-run to see the current classification.",
+                code=error_codes.REPORT_CHANGED_DURING_CONFIRMATION,
+                details={"report_id": report_id, "column": column},
             )
 
         # Defaults are stripped for derivation, the same way the run path strips

@@ -98,9 +98,13 @@ def reports_list(
                 logger.info("No reports match.")
             return
         render_rich_table(
-            ["report_id", "tier", "parameters", "description"],
+            # `name` leads: it is the handle `run`, `explain`, and `export` take,
+            # and the only one a user typed. `report_id` stays because it is what
+            # survives a rename and what breaks a cross-tier name collision.
+            ["name", "report_id", "tier", "parameters", "description"],
             [
                 (
+                    entry.name,
                     entry.report_id,
                     # The tier column, not a fifth column: archived is a state of
                     # the user tier, and only a widened listing ever shows one.
@@ -533,6 +537,10 @@ def reports_reclassify(
                 # otherwise be identical whether Brandon answered the prompt or
                 # an assistant passed `--yes` on his behalf.
                 confirmed_via="flag" if yes else "prompt",
+                # The revision read *above*, before the prompt — the whole point
+                # is that the write connection re-resolves, so re-reading it here
+                # would pin the row to itself and guard nothing.
+                expected_fingerprint=str(row["class_fingerprint"]),
                 actor="cli",
             )
 

@@ -830,6 +830,21 @@ default-accept. The generic MCP consent ladder does not cover this — it gates
 what leaves the machine on one request, not a durable change to what is masked
 on all future ones.
 
+**The approval is bound to the revision it was shown for.** `import_confirm`'s
+precedent has a second half: it re-reads the file digest before loading, because
+the confirmation window is a human decision and therefore seconds-to-minutes
+wide. The same window exists here — the writer lock must not be held across an
+interactive prompt, so the CLI resolves the row read-only, prompts, and
+re-resolves to write. A `reports set --sql` landing inside that window changes
+what the approved column *is*, and the strictly-weaker rule below cannot notice,
+because it only asks that the tier drop: CRITICAL → LOW qualifies, so an approval
+given for `SUM(amount) AS spend` would durably unmask a `spend` that has become a
+routing number. Every caller therefore passes the `class_fingerprint` it read
+before asking, and a mismatch refuses with
+`report_changed_during_confirmation` — counted as `refused_revision_moved`.
+`delete` needs no equivalent: it is bound to an identity a concurrent edit does
+not move.
+
 **A downgrade must lower the tier, and an equal-tier weakening is refused
 outright.** The runtime capability applies the rule `.claude/rules/reports.md`
 already states for materialized reports — not a second rule beside it:
@@ -1167,7 +1182,7 @@ remains the only MCP identity this draft assumes.
 | `moneybin_user_report_runs_total` | Counter | `tier`, `outcome` |
 | `moneybin_user_report_unresolved_columns_total` | Counter | — |
 | `moneybin_user_report_drift_detected_total` | Counter | `resolution` (`equal`, `failed_closed`) |
-| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed_prompt`, `confirmed_flag`, `declined`, `refused_not_weaker`, `refused_unknown_column`, `no_elicitation`) |
+| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed_prompt`, `confirmed_flag`, `declined`, `refused_not_weaker`, `refused_unknown_column`, `refused_revision_moved`, `no_elicitation`) |
 
 The unresolved-columns and drift counters carry the load: together they say
 whether the invisible classification is invisible in practice, or whether users

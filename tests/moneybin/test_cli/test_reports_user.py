@@ -25,7 +25,13 @@ from moneybin.services.user_reports_service import ReclassifyOutcome, SaveOutcom
 
 runner = CliRunner()
 
-_ROW: dict[str, Any] = {"report_id": "user:rab12cd34ef56", "name": "my_accounts"}
+_ROW: dict[str, Any] = {
+    "report_id": "user:rab12cd34ef56",
+    "name": "my_accounts",
+    # `reclassify` reads this before it prompts and hands it back to the service,
+    # so the approval cannot land on a revision the user never saw.
+    "class_fingerprint": "fp-at-prompt-time",
+}
 
 
 def _database() -> MagicMock:
@@ -78,15 +84,22 @@ def _patch_catalog_database() -> Any:
     )
 
 
-def _catalog_entry(report_id: str, *, archived: bool = False) -> MagicMock:
+def _catalog_entry(
+    report_id: str, *, name: str = "a_report", archived: bool = False
+) -> MagicMock:
     """One listing row, shaped like ``ReportCatalogEntry`` for the text render."""
-    return MagicMock(
+    entry = MagicMock(
         report_id=report_id,
         tier="user" if report_id.startswith("user:") else "builtin",
         archived=archived,
         parameter_classes={},
         description="A report.",
     )
+    # `name` is reserved by the MagicMock constructor — passing it above would
+    # name the mock and leave `entry.name` a child mock, so the render would
+    # print a repr and the assertion would pass on nothing.
+    entry.name = name
+    return entry
 
 
 def _save_outcome(**overrides: Any) -> SaveOutcome:
@@ -184,6 +197,36 @@ def test_list_marks_an_archived_row_it_was_asked_to_include() -> None:
         line for line in result.output.splitlines() if "networth" in line
     )
     assert "archived" not in active_line
+
+
+def test_list_renders_the_handle_and_not_only_the_opaque_id() -> None:
+    """A saved report's id is minted; its name is the string its owner typed.
+
+    ``resolve()`` takes either, but only one is memorable — and for the user tier
+    the id is ``user:r`` plus twelve hex characters. A listing showing that alone
+    is a dead end: the report is runnable and its handle is unknowable.
+    """
+    entries = [_catalog_entry("user:rab12cd34ef56", name="monthly_spend")]
+    with (
+        _patch_catalog_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_to_payload",
+            return_value=MagicMock(reports=entries),
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_sensitivity",
+            return_value="medium",
+        ),
+    ):
+        result = runner.invoke(app, ["reports", "list"])
+
+    assert result.exit_code == 0, result.output
+    # Not a substring of the id, so the assertion cannot pass on the id alone.
+    assert "monthly_spend" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +587,13 @@ def test_reclassify_passes_the_prompt_answer_through_to_the_service(
 
     assert service.reclassify.call_args.kwargs["confirmed"] is confirmed
     assert service.reclassify.call_args.kwargs["confirmed_via"] == "prompt"
+    # The revision the prompt described. Read from the row resolved *before* the
+    # prompt: the write connection re-resolves, so a fingerprint fetched after
+    # the answer would pin the row to itself and guard nothing.
+    assert (
+        service.reclassify.call_args.kwargs["expected_fingerprint"]
+        == _ROW["class_fingerprint"]
+    )
 
 
 def test_reclassify_reports_that_it_could_not_ask_rather_than_aborting() -> None:

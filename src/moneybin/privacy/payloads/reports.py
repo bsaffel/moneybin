@@ -46,6 +46,16 @@ class ReportCatalogEntry(BaseModel):
     """Complete static metadata for one registered report."""
 
     report_id: Annotated[str, DataClass.AGGREGATE]
+    name: Annotated[str, DataClass.AGGREGATE]
+    """The handle every operation accepts, and the one a human can retype.
+
+    ``report_id`` is namespaced and, for the user tier, minted — ``user:r`` plus
+    twelve hex characters nobody chose. ``name`` is what the CLI command is
+    called and what ``resolve()`` matches, so a listing without it publishes an
+    identity its reader cannot act on from memory. ``AGGREGATE`` like
+    ``description``, for the reason ``catalog_sensitivity`` gives: a user's own
+    report name masked to ``'*****'`` would make the catalog unusable, so the
+    envelope's *tier* carries the honesty instead of the annotation."""
     tier: Annotated[Literal["builtin", "extension", "user"], DataClass.AGGREGATE]
     """Which registry tier served this entry. A user-created report is a row in
     one local database rather than a reviewed, installable artifact, so a caller

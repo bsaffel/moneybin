@@ -431,9 +431,60 @@ def test_a_saved_report_returns_a_real_value_for_an_unaliased_aggregate(
 # ---------------------------------------------------------------------------
 
 
+def test_reclassify_refuses_an_approval_whose_revision_moved(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """The approval names a column of the query the human read, not the row's future.
+
+    ``reports reclassify`` resolves the row read-only, prompts, then re-resolves in
+    a write connection — the writer lock must not be held across an interactive
+    prompt. That window is seconds-to-minutes wide, and a concurrent
+    ``reports set --sql`` inside it changes what the approved column *is*. The
+    strictly-weaker rule cannot catch it: it only asks that the tier drop, and
+    CRITICAL → LOW drops one, so an approval given for ``SUM(amount) AS spend``
+    would durably unmask a ``spend`` that has become a routing number.
+
+    Same guard, same reasoning, as ``import_confirm``'s digest re-check — there an
+    approval could transfer to a statement nobody reviewed. Refusing costs a
+    re-run; not refusing costs a permanently lowered floor on unread SQL.
+    """
+    report_id = _create(
+        service, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
+    )
+    shown = service.resolve(report_id)["class_fingerprint"]
+
+    # The concurrent writer, landing while the prompt is open.
+    service.update(
+        report_id,
+        query_sql="SELECT routing_number AS spend FROM core.dim_accounts",
+        actor="cli",
+    )
+
+    with pytest.raises(UserError) as raised:
+        service.reclassify(
+            report_id,
+            column="spend",
+            to_class=DataClass.AGGREGATE,
+            reason="A single total reveals no transaction amount.",
+            confirmed=True,
+            confirmed_via="prompt",
+            expected_fingerprint=shown,
+            actor="cli",
+        )
+
+    assert raised.value.code == error_codes.REPORT_CHANGED_DURING_CONFIRMATION
+    row = UserReportsRepo(saved_db).get(report_id)
+    assert row is not None
+    # The floor is what matters: refusing loudly but writing anyway would be worse
+    # than not guarding at all.
+    assert row["class_downgrades"] == {}
+    assert row["classes"]["spend"] == DataClass.ROUTING_NUMBER.value
+
+
 def test_reclassify_lowers_the_stored_class_and_records_the_approval(
     service: UserReportsService, saved_db: Database
 ) -> None:
+    """Also the benign twin of the revision guard: an unmoved row still downgrades."""
     report_id = _create(
         service, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
     )
@@ -445,6 +496,7 @@ def test_reclassify_lowers_the_stored_class_and_records_the_approval(
         reason="A single total reveals no transaction amount.",
         confirmed=True,
         confirmed_via="prompt",
+        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
         actor="cli",
     )
 
@@ -482,6 +534,7 @@ def test_reclassify_records_which_path_supplied_the_confirmation(
         reason="A single total reveals no transaction amount.",
         confirmed=True,
         confirmed_via=confirmed_via,
+        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
         actor="cli",
     )
 
@@ -516,6 +569,7 @@ def test_reclassify_leaves_the_report_on_the_fingerprint_match_path(
         reason="A single total reveals no transaction amount.",
         confirmed=True,
         confirmed_via="prompt",
+        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
         actor="cli",
     )
     row = UserReportsRepo(saved_db).get(report_id)
@@ -551,6 +605,7 @@ def test_reclassify_refuses_an_equal_tier_weakening(
             reason="Only the last four are needed.",
             confirmed=True,
             confirmed_via="prompt",
+            expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
             actor="cli",
         )
 
@@ -575,6 +630,7 @@ def test_reclassify_refuses_a_class_that_raises_the_tier(
             reason="Wrong direction.",
             confirmed=True,
             confirmed_via="prompt",
+            expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
             actor="cli",
         )
 
@@ -597,6 +653,7 @@ def test_reclassify_refuses_an_unconfirmed_downgrade(
             reason="A single total reveals no transaction amount.",
             confirmed=False,
             confirmed_via="prompt",
+            expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
             actor="cli",
         )
 
@@ -619,6 +676,7 @@ def test_reclassify_refuses_a_column_the_report_does_not_return(
             reason="No such column.",
             confirmed=True,
             confirmed_via="prompt",
+            expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
             actor="cli",
         )
 
@@ -730,6 +788,7 @@ def test_an_unknown_column_is_counted_apart_from_a_refused_downgrade(
             reason="No such column.",
             confirmed=True,
             confirmed_via="prompt",
+            expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
             actor="cli",
         )
 
@@ -767,6 +826,7 @@ def test_a_surface_that_could_not_ask_is_counted_apart_from_a_decline(
                 reason="A single total reveals no transaction amount.",
                 confirmed=confirmed,
                 confirmed_via="prompt",
+                expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
                 actor="cli",
             )
         assert raised.value.code == "report_class_confirm_required"
@@ -802,6 +862,7 @@ def test_a_flag_confirmation_is_counted_apart_from_a_prompted_one(
         reason="A single total reveals no transaction amount.",
         confirmed=True,
         confirmed_via="flag",
+        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
         actor="cli",
     )
 
@@ -888,6 +949,7 @@ def test_update_clears_class_downgrades_when_the_sql_changes(
         reason="A single total reveals no transaction amount.",
         confirmed=True,
         confirmed_via="prompt",
+        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
         actor="cli",
     )
 
@@ -1052,6 +1114,29 @@ def test_the_default_listing_omits_archived_rows_and_marks_none(
 
     assert archived_id not in {entry.report_id for entry in payload.reports}
     assert all(entry.archived is False for entry in payload.reports)
+
+
+def test_the_listing_carries_the_name_every_operation_resolves(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """``report_id`` is not the handle — ``name`` is, and for every tier.
+
+    ``reports-dynamic.md`` makes ``name`` "the handle every operation in R5
+    takes", and ``resolve()`` accepts it. But the id diverges from it everywhere:
+    a built-in registers ``report_id="core:networth", name="networth"``, and a
+    saved report's id is an opaque ``user:r…`` its owner never chose and cannot
+    retype. Publishing only the id leaves the one string the surface accepts
+    undiscoverable the moment the create response scrolls away.
+    """
+    report_id = _create(service, name="monthly_spend")
+
+    payload = catalog_to_payload(get_report_catalog(saved_db), include_archived=True)
+    names_by_id = {entry.report_id: entry.name for entry in payload.reports}
+
+    assert names_by_id[report_id] == "monthly_spend"
+    # A built-in too, so the field cannot be satisfied by echoing `report_id`:
+    # every entry's name is the bare handle, never the namespaced identifier.
+    assert names_by_id["core:networth"] == "networth"
 
 
 def test_the_run_envelope_reports_that_a_report_degraded(
@@ -1226,6 +1311,7 @@ def test_reclassify_ignores_a_stored_default_it_is_not_touching(
         reason="a monthly total reveals no single amount",
         confirmed=True,
         confirmed_via="prompt",
+        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
         actor="cli",
     )
 

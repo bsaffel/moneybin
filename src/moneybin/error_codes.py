@@ -271,6 +271,7 @@ PRIVACY_PAGINATION_NOT_ALLOWED = "privacy_pagination_not_allowed"
 # Report — registered report catalog and execution
 # ---------------------------------------------------------------------------
 
+REPORT_CHANGED_DURING_CONFIRMATION = "report_changed_during_confirmation"
 REPORT_CLASS_CONFIRM_REQUIRED = "report_class_confirm_required"
 REPORT_CLASS_NOT_WEAKER = "report_class_not_weaker"
 REPORT_COLUMN_UNKNOWN = "report_column_unknown"
@@ -282,6 +283,7 @@ REPORT_NAME_ARCHIVED = "report_name_archived"
 REPORT_NAME_INVALID = "report_name_invalid"
 REPORT_NAME_TAKEN = "report_name_taken"
 REPORT_PARAMETER_DEFAULT_NOT_ALLOWED = "report_parameter_default_not_allowed"
+REPORT_PARAMETER_DUPLICATE = "report_parameter_duplicate"
 REPORT_PARAMETER_INVALID_RANGE = "report_parameter_invalid_range"
 REPORT_PARAMETER_INVALID_TYPE = "report_parameter_invalid_type"
 REPORT_PARAMETER_INVALID_VALUE = "report_parameter_invalid_value"
