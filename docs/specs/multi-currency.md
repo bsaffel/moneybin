@@ -193,6 +193,21 @@ Numbered, testable. Tagged by phase.
    scopes its median/MAD baselines and its top-100 rank per currency — a pooled
    baseline compares unlike units and scores a typical charge in the
    smaller-denominated currency as an anomaly.
+   **Ranking and reachability, 2026-07-26.** Segmentation makes each figure
+   correct; two follow-on defects left a correct figure unreadable or absent.
+   `reports.balance_drift` ordered globally by raw `drift_abs` and the framework
+   truncates with `records[:max_rows]`, so one high-denomination currency could
+   fill the cap and drop every other currency out of the response entirely —
+   missing, not merely ranked lower. Its rows now interleave per currency, the
+   same shape `top` uses. Separately, `core.fct_transaction_lines` — the
+   canonical split-expanded grain — projected every parent column except the
+   denomination, so an agent on it could not tell a EUR line from a USD one; it
+   now carries `currency_code`, as does `core.uncategorized_queue`, whose review
+   surface asks a user to act on the amount it shows. The curated `sql_schema`
+   examples that sum money across `core.*` group by currency, held by
+   `test_every_money_aggregating_example_names_its_currency`, which derives its
+   eligible set from `CLASSIFICATION` so a new money example on a
+   currency-bearing table inherits the guard rather than escaping it.
    **Known limit — unknown pools into one segment.** `GROUP BY currency_code`
    puts every row whose currency is unknown into a single `NULL` segment and
    sums it. Two accounts denominated in genuinely different currencies that

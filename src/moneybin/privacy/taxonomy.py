@@ -801,6 +801,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     },
     ("core", "fct_transaction_lines"): {
         "account_id": DataClass.RECORD_ID,
+        "currency_code": DataClass.CURRENCY,
         "description": DataClass.DESCRIPTION,
         "is_pending": DataClass.TXN_TYPE,
         "is_transfer": DataClass.TXN_TYPE,
@@ -884,6 +885,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_name": DataClass.USER_NOTE,
         "txn_date": DataClass.TXN_DATE,
         "amount": DataClass.TXN_AMOUNT,
+        "currency_code": DataClass.CURRENCY,
         "description": DataClass.DESCRIPTION,
         "merchant_id": DataClass.RECORD_ID,
         "merchant_normalized": DataClass.MERCHANT_NAME,

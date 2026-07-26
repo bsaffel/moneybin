@@ -3490,6 +3490,38 @@ def _install_matched_stub(db: Database) -> None:
     """)
 
 
+def test_pending_queue_names_each_row_currency(db: Database) -> None:
+    """A curator deciding on an amount can see what unit it is in.
+
+    The review queue is a decision surface: it shows money and asks the user to
+    act on it. Without this column a EUR charge and a USD charge are two bare
+    numbers, and `--min-amount` silently means "100 of whatever each row
+    happens to be" (`multi-currency.md` Requirement 5).
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_eu', 'Euro Card', false), ('acct_us', 'Checking', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "currency_code, is_transfer) VALUES "
+        "('t_eur', 'acct_eu', DATE '2026-04-01', -50.00, 'Paris cafe', "
+        "'EUR', false), "
+        "('t_usd', 'acct_us', DATE '2026-04-01', -50.00, 'Local cafe', "
+        "'USD', false)"
+    )
+    _install_uncategorized_queue_view(db)
+    _install_matched_stub(db)
+
+    rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
+
+    assert rows is not None
+    by_id = {r["transaction_id"]: r["currency_code"] for r in rows}
+    # Same nominal amount, different denominations — the whole point.
+    assert by_id == {"t_eur": "EUR", "t_usd": "USD"}
+
+
 def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
     db: Database,
 ) -> None:

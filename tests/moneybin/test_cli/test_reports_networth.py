@@ -10,10 +10,8 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.reports.networth import (
-    _UNKNOWN_CURRENCY,  # pyright: ignore[reportPrivateUsage]
-)
 from moneybin.cli.main import app
+from moneybin.cli.output import UNKNOWN_CURRENCY
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.execute import ReportResult
 
@@ -234,7 +232,7 @@ class TestReportsNetworth:
             line for line in out.splitlines() if line.lstrip().startswith("Checking")
         )
         assert "None" not in breakdown
-        assert _UNKNOWN_CURRENCY in breakdown
+        assert UNKNOWN_CURRENCY in breakdown
 
     @pytest.mark.unit
     def test_account_filter(self, runner: CliRunner) -> None:
@@ -353,7 +351,7 @@ class TestReportsNetworthHistory:
         out = result.stdout + result.stderr
         series = next(line for line in out.splitlines() if "1000.00" in line)
         assert "None" not in series
-        assert _UNKNOWN_CURRENCY in series
+        assert UNKNOWN_CURRENCY in series
 
     @pytest.mark.unit
     def test_default_interval_monthly(self, runner: CliRunner) -> None:

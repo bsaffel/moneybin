@@ -224,6 +224,7 @@ Split-expanded grain. One row per unsplit transaction; N rows per split transact
 | `line_category`, `line_subcategory` | VARCHAR | Per-line; falls through to parent for unsplit. |
 | `line_note` | VARCHAR | NULL on unsplit rows; per-split note when present. |
 | `line_kind` | VARCHAR | `'whole'` \| `'split'`. |
+| `currency_code` | VARCHAR | ISO 4217, inherited from the parent fact row — every line of a transaction shares its denomination. `GROUP BY` it whenever you sum `line_amount`; NULL means the currency is genuinely unknown. |
 | `account_id`, `transaction_date`, `merchant_name`, `description`, `is_pending`, `is_transfer`, `transfer_pair_id`, `source_type`, `source_count`, `transaction_year`, `transaction_month`, `transaction_year_month`, `transaction_year_quarter` | various | Carried from the parent fact row. |
 
 Logical grain key: `(transaction_id, line_id)`.
@@ -275,11 +276,12 @@ Uncategorized transactions ranked by curator-impact. Grain: one row per uncatego
 | `account_name` | VARCHAR | Resolved display name; NULL only if `dim_accounts.display_name` itself is NULL (uncommon). |
 | `txn_date` | DATE | Transaction date. |
 | `amount` | DECIMAL(18,2) | Signed (source sign preserved). |
+| `currency_code` | VARCHAR | ISO 4217 the amount is denominated in; NULL when unknown. |
 | `description` | VARCHAR | Source description. |
 | `merchant_id` | VARCHAR | FK → `core.dim_merchants.merchant_id`. NULL when no canonical merchant was resolved. |
 | `merchant_normalized` | VARCHAR | Resolved merchant; NULL when no `dim_merchants` match and no source merchant value. |
 | `age_days` | INTEGER | `CURRENT_DATE − txn_date`. |
-| `priority_score` | DECIMAL(18,2) | `ABS(amount) × age_days` — default sort key. |
+| `priority_score` | DECIMAL(18,2) | `ABS(amount) × age_days` — default sort key. Compares nominal magnitudes, so it only ranks meaningfully within one `currency_code`. |
 | `source_type` | VARCHAR | Provenance source. |
 | `source_id` | VARCHAR | **NULL placeholder today.** Reserved column pending `source_id` surfacing on `fct_transactions`. Don't filter or join on it. |
 
@@ -681,7 +683,7 @@ What not to do, and why.
 - **Don't `SUM(amount) FROM core.fct_transactions` without filtering `is_transfer = FALSE`.** Transfers appear as a debit on one account and credit on another. They cancel in aggregate over the whole table, but they double-count within any account-level slice.
 - **Don't aggregate both `core.fct_transactions.amount` and `core.fct_transaction_lines.line_amount` in the same query.** Pick one grain. The lines view sums to the same totals as the fact (whole = parent.amount, split lines sum to parent.amount); joining both yields 2×.
 - **Don't read from `prep.*`.** It's internal staging — column shapes can change without notice and no catalog comments are emitted. Use `core.*`.
-- **Don't `SUM(amount)` across mixed currencies.** The `reports.*` views already group by `currency_code`, but a query of your own over `core.fct_transactions` or `core.fct_balances` does not — nothing converts, so adding dollars to euros yields a number in no currency. Group by `currency_code`, or filter to one.
+- **Don't `SUM(amount)` across mixed currencies.** The `reports.*` views already group by `currency_code`, but a query of your own over `core.fct_transactions`, `core.fct_transaction_lines`, or `core.fct_balances` does not — nothing converts, so adding dollars to euros yields a number in no currency. Group by `currency_code`, or filter to one.
 - **Don't drop `currency_code` when you re-aggregate a `reports.*` view.** Every money-summing view is one row per grain **per currency**; a `GROUP BY` that omits it silently re-blends the currencies the view separated.
 - **Don't filter on `core.uncategorized_queue.source_id`.** It's a NULL placeholder today.
 - **Don't mix sign conventions.** If you join `cash_flow.outflow` (negative) and `spending_trend.total_spend` (positive) in the same expression, the math is wrong. Pick one view per question.

@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.output import UNKNOWN_CURRENCY
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionListPayload,
     BalanceAssertionPayload,
@@ -127,7 +128,7 @@ class TestAccountsBalanceShow:
         # `"EUR" in line` passes on a currency printed anywhere on the row,
         # including a column that is not the balance's.
         assert "1234.56 EUR" in known
-        assert "99.00 ?" in unknown
+        assert f"99.00 {UNKNOWN_CURRENCY}" in unknown
 
 
 class TestAccountsBalanceHistory:

@@ -15,7 +15,11 @@ import pytest
 from fastmcp import Client
 from fastmcp.tools import FunctionTool
 
-from moneybin.mcp.surface import STANDARD_TOOL_COUNT, STANDARD_TOOL_NAMES
+from moneybin.mcp.surface import (
+    STANDARD_TOOL_COUNT,
+    STANDARD_TOOL_NAMES,
+    WINDSURF_ACTIVE_TOOL_CAP,
+)
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.tables import INTERFACE_TABLES
 
@@ -1417,9 +1421,11 @@ def test_client_compatibility_records_current_windsurf_headroom() -> None:
     )
 
     for current_fact in (
-        "49 MoneyBin tools",
-        "100-active-tool",
-        "51 tool slots",
+        f"{STANDARD_TOOL_COUNT} MoneyBin tools",
+        f"{WINDSURF_ACTIVE_TOOL_CAP}-active-tool",
+        # Windsurf's cap minus our registry: an arithmetic consequence of
+        # the count, so it must not be a literal either.
+        f"{WINDSURF_ACTIVE_TOOL_CAP - STANDARD_TOOL_COUNT} tool slots",
     ):
         assert current_fact in text
         assert current_fact in index_row
@@ -1651,7 +1657,7 @@ def test_changelog_records_prelaunch_surface_cutover() -> None:
 
     text = CHANGELOG.read_text()
 
-    assert "49-tool standard registry" in text
+    assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in text
     assert "pre-launch" in text
     assert "reports" in text
 
@@ -2868,7 +2874,7 @@ def test_final_review_architecture_and_current_prose_match_runtime() -> None:
     extensions = (ROOT / "docs/specs/extension-contracts.md").read_text()
 
     assert "observable outcomes" in architecture
-    assert "49-tool standard registry" in architecture
+    assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in architecture
     assert "domain metadata does not control disclosure" in architecture
     assert "refresh_run()" in recovery
     assert '`system_audit(view="history"' in account_identity

@@ -29,6 +29,9 @@ _STATES_ITS_CURRENCY = {
     "accounts_balances",
     "accounts_set",
     "investments",
+    # Moved out of the silent set in M1K.1: the categorization queue asks the
+    # caller to act on an amount, so PendingTxnRow now carries currency_code.
+    "reviews",
 }
 
 # Money-bearing tools with no currency field anywhere in the payload. These
@@ -39,7 +42,6 @@ _NO_CURRENCY_TO_STATE = {
     "import_files",
     "import_preview",
     "investments_lots_select",
-    "reviews",
     "system_audit",
     "transactions",
     "transactions_categorize_rules",

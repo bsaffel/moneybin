@@ -125,6 +125,10 @@ def balance_drift(
     Balances are positions in the account's own currency_code. Drift is asserted balance
     minus the independent transaction-derived position for assertion_date.
 
+    Rows interleave the currencies, worst drift first within each, so a
+    truncated result still represents every currency. Compare drift_abs only
+    between rows sharing a currency_code.
+
     Args:
         db: Open read-only database connection.
         account: Filter to an account; accepts account_id or case-insensitive
@@ -161,7 +165,18 @@ def balance_drift(
     if since:
         sql += " AND assertion_date >= ?"
         params.append(since)
-    sql += " ORDER BY drift_abs DESC"
+    # Interleave the currencies rather than ranking their magnitudes together.
+    # The framework truncates with `records[:max_rows]`, so a global
+    # `ORDER BY drift_abs DESC` lets one high-denomination currency fill the cap
+    # and drop the others out of the response entirely. Ties break on
+    # currency_code because "which drift is larger" has no answer across
+    # currencies without conversion. A single-currency profile is unaffected:
+    # its ROW_NUMBER already ascends in drift_abs order.
+    sql += """
+        ORDER BY ROW_NUMBER() OVER (
+            PARTITION BY currency_code ORDER BY drift_abs DESC
+        ), currency_code
+    """
 
     actions = [
         "Rerun reports(report_id='core:balance_drift', "

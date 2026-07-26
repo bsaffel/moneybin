@@ -67,6 +67,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unknown, or when the report has no currency column at all — a report that
   counts or ranks states no denomination rather than borrowing one. Read each
   row's `currency_code` whenever it is null.
+- **`core.fct_transaction_lines` carries the transaction's currency (M1K.1).**
+  The split-expanded grain — one row per unsplit transaction, N per split —
+  projected every column of its parent fact except the denomination, so the
+  canonical grain for per-line analysis could not tell a EUR line from a USD
+  one. It now carries `currency_code`, and the curated `sql_schema` examples
+  that sum money across `core.*` group by it rather than blending units.
+- **`reports balance-drift` interleaves the currencies it ranks (M1K.1).** Rows
+  were ordered by raw `drift_abs`, so with a row cap one high-denomination
+  currency could fill every slot and drop the others out of the response
+  entirely — absent, not merely ranked lower. Rows now interleave, worst drift
+  first within each currency. Compare `drift_abs` only between rows sharing a
+  `currency_code`. A single-currency profile sees the same order as before.
+- **The uncategorized review queue names each row's currency (M1K.1).**
+  `transactions categorize pending` and `transactions_categorize_pending` asked
+  you to act on a bare amount. Each row now carries `currency_code`. Its
+  `impact` sort and `--min-amount` filter still compare nominal magnitudes, so
+  they are only meaningful within one currency.
 - **`reports balance-drift` withholds a drift across two currencies (M1K.1).**
   A balance observation states its own currency, and an account can carry a
   different one after `accounts set --currency`. The report subtracted them and
@@ -91,7 +108,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `currency_code`, and `summary.display_currency` names the one currency a
   response shares or is null when its rows span several, matching how registered
   reports already answer. The text output prints the currency beside the amount
-  (`?` when unknown).
+  (`n/a` when unknown).
 - **No response invents a currency it was not told (M1K.1).** The response
   envelope defaulted `summary.display_currency` to `"USD"`, so every one of the
   251 places that builds one claimed dollars for free — and nine of the eleven
@@ -115,7 +132,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   currency, so nothing on the response said what unit it was. An assertion is a
   statement about one account, so each row now carries that account's
   `currency_code`, joined at read time rather than stored so it cannot drift from
-  the account. The CLI prints it beside the amount (`?` when unknown).
+  the account. The CLI prints it beside the amount (`n/a` when unknown).
 - **`system doctor`'s `currency_integrity` labels which ids it is naming
   (M1K.1).** Its `affected_ids` mixed bare account and transaction ids in one
   list with nothing to tell them apart, though each needs a different fix. They

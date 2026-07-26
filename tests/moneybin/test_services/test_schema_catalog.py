@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
+from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.registry import spec_of
 from moneybin.reports.definitions import ALL_REPORTS
 from moneybin.services.schema_catalog import (
@@ -60,6 +61,38 @@ def test_every_currency_segmented_report_example_names_its_currency() -> None:
         for view, column in segmented.items()
         for ex in EXAMPLES.get(view, ())
         if column not in ex.sql
+    ]
+    assert not offenders, "\n".join(offenders)
+
+
+def test_every_money_aggregating_example_names_its_currency() -> None:
+    """An example that sums money must name the currency it summed.
+
+    The sibling guard above derives from `ReportSemantics.currency`, so it only
+    reaches `reports.*` views. A `core.*` table has no report semantics and
+    escaped it entirely — which is how seven curated examples came to blend
+    denominations while every `reports.*` example was correct.
+
+    Derived from `CLASSIFICATION` on both sides: a table is eligible when it
+    declares a `CURRENCY` column, so a table that genuinely has no currency
+    (`core.dim_categories`) never trips, and a new money example on a
+    currency-bearing table inherits the guard rather than escaping it.
+
+    Restricted to SUM/AVG because those combine rows into one figure. COUNT is
+    currency-agnostic, and MIN/MAX here fall on dates.
+    """
+    currency_tables = {
+        f"{schema}.{table}"
+        for (schema, table), columns in CLASSIFICATION.items()
+        if DataClass.CURRENCY in columns.values()
+    }
+    assert currency_tables, "expected at least one currency-bearing table"
+
+    offenders = [
+        f"{view} example {ex.question!r} aggregates money without currency_code"
+        for view in currency_tables
+        for ex in EXAMPLES.get(view, ())
+        if ("SUM(" in ex.sql or "AVG(" in ex.sql) and "currency_code" not in ex.sql
     ]
     assert not offenders, "\n".join(offenders)
 

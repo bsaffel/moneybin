@@ -284,6 +284,54 @@ def _install_balance_drift(db: Database) -> None:
     """)
 
 
+def _install_mixed_currency_drift(db: Database) -> None:
+    """A JPY account whose nominal drift dwarfs a USD account's.
+
+    ¥120,000 of drift is roughly $800 — the same order of magnitude — but
+    ranked on raw `drift_abs` the JPY rows occupy every leading slot.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.balance_drift AS
+        SELECT * FROM (VALUES
+            ('J1', 'Tokyo', 'JPY', DATE '2026-04-01', 900000.00, 1020000.00,
+             120000.00, 120000.00, 13.3, 5, 'drift'),
+            ('J2', 'Osaka', 'JPY', DATE '2026-04-01', 800000.00, 910000.00,
+             110000.00, 110000.00, 13.8, 5, 'drift'),
+            ('J3', 'Kyoto', 'JPY', DATE '2026-04-01', 700000.00, 800000.00,
+             100000.00, 100000.00, 14.3, 5, 'drift'),
+            ('U1', 'Checking', 'USD', DATE '2026-04-01', 1000.00, 1800.00,
+             800.00, 800.00, 80.0, 5, 'drift'),
+            ('U2', 'Savings', 'USD', DATE '2026-04-01', 500.00, 1200.00,
+             700.00, 700.00, 140.0, 5, 'drift')
+        ) AS t(account_id, account_name, currency_code, assertion_date,
+               asserted_balance, computed_balance, drift, drift_abs, drift_pct,
+               days_since_assertion, status)
+    """)
+
+
+def test_balance_drift_ranks_within_currency_not_across(db: Database) -> None:
+    """The row cap must not be able to starve a currency.
+
+    `execute.py` truncates with `records[:max_rows]`, so a global
+    `ORDER BY drift_abs DESC` lets one high-denomination currency fill the cap
+    and drop every other currency out of the response entirely — not merely
+    mis-ranked, absent, with nothing in the payload saying so. This is the same
+    reason `top` became per-currency (`multi-currency.md` Requirement 5).
+
+    Asserted on the leading three rows because three is where the starvation
+    shows: JPY has exactly three rows, so a global ordering returns JPY, JPY,
+    JPY and no USD at all.
+    """
+    _install_mixed_currency_drift(db)
+
+    leading = [r["currency_code"] for r in _rows(db, balance_drift)[:3]]
+
+    assert set(leading) == {"JPY", "USD"}, (
+        f"first three rows are {leading}; a cap here would hide a whole currency"
+    )
+
+
 def test_balance_drift_resolves_account_id(db: Database) -> None:
     _install_balance_drift(db)
     rows = _rows(db, balance_drift, account="A1")

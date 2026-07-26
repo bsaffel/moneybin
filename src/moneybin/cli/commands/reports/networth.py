@@ -9,6 +9,7 @@ from pydantic import JsonValue
 
 from moneybin.cli.output import (
     OutputFormat,
+    currency_label,
     output_option,
     quiet_option,
     render_or_json,
@@ -18,18 +19,6 @@ from moneybin.database import get_database
 from moneybin.reports._framework.cli_register import (
     _CLI_MAX_ROWS,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701 — shared report cap
 )
-
-_UNKNOWN_CURRENCY = "unknown"
-
-
-def _currency_label(value: object) -> str:
-    """Render a currency code, naming the unknown case instead of showing it raw.
-
-    Every currency-bearing column routes through here: an unguarded `!s` prints
-    a NULL as the literal "None", which reads as a denomination to an agent
-    parsing the text surface.
-    """
-    return str(value) if value else _UNKNOWN_CURRENCY
 
 
 def reports_networth(
@@ -76,7 +65,7 @@ def reports_networth(
         typer.echo(f"Net worth as of {balance_date}")
         for currency, rows in by_currency.items():
             headline = rows[0]
-            typer.echo(f"  {_currency_label(currency)}: {headline['net_worth']}")
+            typer.echo(f"  {currency_label(currency)}: {headline['net_worth']}")
             typer.echo(f"    Assets:      {headline['total_assets']}")
             typer.echo(f"    Liabilities: {headline['total_liabilities']}")
             typer.echo(f"    Accounts:    {headline['account_count']}")
@@ -91,7 +80,7 @@ def reports_networth(
             for row in accounts:
                 typer.echo(
                     f"  {row['account_name']!s:<40} {row['account_balance']!s:>14} "
-                    f"{_currency_label(row['currency_code']):<7} "
+                    f"{currency_label(row['currency_code']):<3} "
                     f"({row['observation_source']})"
                 )
 
@@ -141,7 +130,7 @@ def reports_networth_history(
             change_pct = (
                 f"{point['change_pct']:.2%}" if point["change_pct"] is not None else "-"
             )
-            currency = _currency_label(point["currency_code"])
+            currency = currency_label(point["currency_code"])
             typer.echo(
                 f"{point['period']!s:<12} {currency:<7} {point['net_worth']!s:>12} "
                 f"{change_abs!s:>13} "

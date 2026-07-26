@@ -14,6 +14,7 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    currency_label,
     output_option,
     quiet_option,
     render_or_json,
@@ -64,7 +65,7 @@ def accounts_balance_show(
         for obs in result.observations:
             typer.echo(
                 f"  {obs.account_id}  {obs.balance_date}"
-                f"  {obs.balance} {obs.currency_code or '?'}"
+                f"  {obs.balance} {currency_label(obs.currency_code)}"
                 f"  observed={obs.is_observed}  source={obs.observation_source}"
                 f"  delta={obs.reconciliation_delta}"
             )
@@ -98,7 +99,7 @@ def accounts_balance_history(
     def _render_text(_: object) -> None:
         for obs in result.observations:
             typer.echo(
-                f"  {obs.balance_date}  {obs.balance} {obs.currency_code or '?'}"
+                f"  {obs.balance_date}  {obs.balance} {currency_label(obs.currency_code)}"
                 f"  observed={obs.is_observed}  source={obs.observation_source}"
                 f"  delta={obs.reconciliation_delta}"
             )
@@ -134,7 +135,7 @@ def accounts_balance_assert(
             )
     typer.echo(
         f"✅ Asserted balance for {account_id} on {parsed_date}: "
-        f"{result.assertion.balance} {result.assertion.currency_code or '?'}",
+        f"{result.assertion.balance} {currency_label(result.assertion.currency_code)}",
         err=True,
     )
 
@@ -161,7 +162,7 @@ def accounts_balance_list(
     for assertion in result.assertions:
         typer.echo(
             f"  {assertion.account_id}  {assertion.assertion_date}  "
-            f"{assertion.balance} {assertion.currency_code or '?'}  "
+            f"{assertion.balance} {currency_label(assertion.currency_code)}  "
             f"notes={assertion.notes}"
         )
 
@@ -214,6 +215,6 @@ def accounts_balance_reconcile(
     for obs in result.observations:
         typer.echo(
             f"  {obs.account_id}  {obs.balance_date}"
-            f"  {obs.balance} {obs.currency_code or '?'}"
+            f"  {obs.balance} {currency_label(obs.currency_code)}"
             f"  source={obs.observation_source}  delta={obs.reconciliation_delta}"
         )

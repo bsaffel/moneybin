@@ -43,12 +43,12 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Total spending by category last month",
             sql="""
-                SELECT category, SUM(amount_absolute) AS total
+                SELECT category, currency_code, SUM(amount_absolute) AS total
                 FROM core.fct_transactions
                 WHERE transaction_direction = 'expense'
                   AND transaction_year_month = STRFTIME(CURRENT_DATE - INTERVAL 1 MONTH, '%Y-%m')
-                GROUP BY category
-                ORDER BY total DESC
+                GROUP BY category, currency_code
+                ORDER BY currency_code, total DESC
             """,
         ),
         Example(
@@ -65,12 +65,13 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Monthly spending trend (last 12 months)",
             sql="""
-                SELECT transaction_year_month, SUM(amount_absolute) AS total_spent
+                SELECT transaction_year_month, currency_code,
+                       SUM(amount_absolute) AS total_spent
                 FROM core.fct_transactions
                 WHERE transaction_direction = 'expense'
                   AND transaction_date >= CURRENT_DATE - INTERVAL 12 MONTH
-                GROUP BY transaction_year_month
-                ORDER BY transaction_year_month
+                GROUP BY transaction_year_month, currency_code
+                ORDER BY currency_code, transaction_year_month
             """,
         ),
         Example(
@@ -122,11 +123,11 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Spending by category at the line grain "
             "(splits expand to N rows; unsplit transactions count once as 'whole')",
             sql="""
-                SELECT line_category, SUM(ABS(line_amount)) AS total
+                SELECT line_category, currency_code, SUM(ABS(line_amount)) AS total
                 FROM core.fct_transaction_lines
                 WHERE line_amount < 0
-                GROUP BY line_category
-                ORDER BY total DESC
+                GROUP BY line_category, currency_code
+                ORDER BY currency_code, total DESC
             """,
         ),
     ],
@@ -142,12 +143,12 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Join accounts to transactions to label by institution",
             sql="""
-                SELECT a.institution_name, COUNT(*) AS txn_count,
+                SELECT a.institution_name, t.currency_code, COUNT(*) AS txn_count,
                        SUM(t.amount_absolute) AS total_volume
                 FROM core.fct_transactions t
                 JOIN core.dim_accounts a USING (account_id)
-                GROUP BY a.institution_name
-                ORDER BY total_volume DESC
+                GROUP BY a.institution_name, t.currency_code
+                ORDER BY t.currency_code, total_volume DESC
             """,
         ),
     ],
@@ -362,7 +363,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Highest-impact uncategorized transactions",
             sql="""
-                SELECT account_name, txn_date, amount, description, age_days, priority_score
+                SELECT account_name, txn_date, amount, currency_code, description,
+                       age_days, priority_score
                 FROM core.uncategorized_queue
                 ORDER BY priority_score DESC
                 LIMIT 25
@@ -519,11 +521,11 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Dividend and interest income received, by security",
             sql="""
-                SELECT security_id, SUM(amount) AS total_income
+                SELECT security_id, currency_code, SUM(amount) AS total_income
                 FROM core.fct_investment_transactions
                 WHERE type IN ('dividend', 'interest')
-                GROUP BY security_id
-                ORDER BY total_income DESC
+                GROUP BY security_id, currency_code
+                ORDER BY currency_code, total_income DESC
             """,
         ),
     ],
@@ -544,9 +546,11 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Total remaining cost basis across all open lots in an account "
             "(substitute YOUR_ACCOUNT_ID)",
             sql="""
-                SELECT SUM(cost_basis_remaining) AS total_basis
+                SELECT currency_code, SUM(cost_basis_remaining) AS total_basis
                 FROM core.fct_investment_lots
                 WHERE account_id = 'YOUR_ACCOUNT_ID' AND is_open
+                GROUP BY currency_code
+                ORDER BY currency_code
             """,
         ),
     ],
@@ -554,10 +558,11 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Realized gains/losses by term (short vs. long) for the current year",
             sql="""
-                SELECT term, SUM(gain_loss) AS total_gain_loss
+                SELECT term, currency_code, SUM(gain_loss) AS total_gain_loss
                 FROM core.fct_realized_gains
                 WHERE YEAR(disposal_date) = YEAR(CURRENT_DATE)
-                GROUP BY term
+                GROUP BY term, currency_code
+                ORDER BY currency_code, term
             """,
         ),
         Example(

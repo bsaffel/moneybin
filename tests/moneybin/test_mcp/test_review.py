@@ -688,6 +688,9 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
             [
                 "aggregate",
                 "category",
+                # M1K.1: PendingTxnRow carries the currency its txn_amount is
+                # denominated in, so the queue no longer shows a bare number.
+                "currency",
                 "description",
                 "record_id",
                 "timestamp_observability",
@@ -832,6 +835,7 @@ def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
                 CAST(NULL AS VARCHAR) AS account_name,
                 transaction_date AS txn_date,
                 amount,
+                currency_code,
                 description,
                 CAST(NULL AS VARCHAR) AS merchant_id,
                 CAST(NULL AS VARCHAR) AS merchant_normalized,
