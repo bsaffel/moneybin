@@ -11,9 +11,9 @@ implemented
 Import bank transaction data from CSV files into MoneyBin, supporting common bank formats with a fallback generic parser for unknown formats.
 
 ## Background
-- [ADR-001: Medallion Data Layers](../decisions/001-medallion-data-layers.md)
-- [OFX Import](archived/ofx-import.md) -- Pattern to follow
-- [Data Sources](../reference/data-sources.md) -- Priority 3 source
+- [ADR-001: Medallion Data Layers](../../decisions/001-medallion-data-layers.md)
+- [OFX Import](ofx-import.md) -- Pattern to follow
+- [Data Sources](../../reference/data-sources.md) -- Priority 3 source
 
 ## Requirements
 

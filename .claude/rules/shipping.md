@@ -63,17 +63,31 @@ For shipped features that warrant a user-facing how-to, add a guide in `docs/gui
 
 The goal is that someone reading the docs gets an accurate picture of what MoneyBin can do *today*, without digging through specs.
 
+### 6. Milestone address reconciliation
+
+`docs/roadmap.md` is the canonical list of milestone addresses. Any other copy of that list — a planning tracker, a working note — is a **mirror**, and mirrors drift silently because no other step in this checklist touches them.
+
+Enumerate the roadmap's addresses and diff them against any mirror you keep:
+
+```bash
+grep -oE 'M[0-3][A-Z](\.[0-9]+)?' docs/roadmap.md | sort -u
+```
+
+Reconcile in the roadmap's favor: an address the roadmap is missing is the roadmap's bug (fix it here); an address only the mirror has is the mirror's. Do **not** re-mint a retired address — check that the letter is genuinely free before assigning it, not merely absent from one of the two lists.
+
 ## When a New Spec Is Written
 
 - Give the spec an **address** — the next free increment letter under its milestone (e.g. `M2F`), per `.claude/references/design-principles-depth.md` → "Milestone addressing." Don't invent a new numbering scheme.
 - Add a 📐 entry in the matching milestone row of `docs/roadmap.md`.
 - Add the spec to `docs/specs/INDEX.md` with status `draft` or `ready`.
+- Run the address diff (step 6 above). A newly minted address is exactly the kind that reaches a mirror late or never.
 
 ## When a Feature Is Planned (No Spec Yet)
 
 - Attach it to a milestone/increment per the address scheme (`.claude/references/design-principles-depth.md` → "Milestone addressing") — append the next free increment letter; don't fork a parallel sequence.
 - Add a 🗓️ entry under that milestone in `docs/roadmap.md` (or the Post-launch section if genuinely beyond M3).
 - No `INDEX.md` entry until a spec exists.
+- Run the address diff (step 6 above).
 
 ## When a Milestone Closes
 
@@ -87,6 +101,15 @@ When all sub-milestones in a tier close (e.g., M2A + M2B + M2C + M2D + M2E all s
 ## Test Layer Check
 
 Before marking a spec as `implemented`, verify the feature has tests at every applicable layer (see testing.md "Test Coverage by Layer"). Unit tests alone are not sufficient for features that add CLI commands or cross subsystem boundaries.
+
+## Deferral Check
+
+Before marking a spec as `implemented`, file every item its "Out of scope" / "Deferred" / "resolve in M__" text hands to a future milestone. Trackers hold work; specs hold design, and nothing crosses that boundary — a spec marked `implemented` reads as closed, and no planning sweep re-reads spec bodies. An unfiled handoff goes invisible the moment the status flips. File it while you still know why it was deferred.
+
+Two traps when checking whether a handoff is already tracked:
+
+- **Grep the work, not the address.** Search the function, table, column, or a distinctive phrase. The milestone address itself is usually mentioned somewhere already, so grepping it returns a hit and the check passes while the item stays unfiled.
+- **Re-read conditional deferrals.** Text like "for v1 this doesn't matter", "when X ships", or "if any merchant exceeds N" states a condition that expires silently. The spec keeps reading as though it still holds.
 
 ## Pre-Push Review Pass
 

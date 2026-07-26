@@ -83,6 +83,13 @@ CURRENT_REGISTRY_TOOL_COUNT_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(r"\b(?P<count>\d+)\s+MoneyBin\s+tools?\b", re.IGNORECASE),
+    # Count-after-noun phrasing ("registry of 47 intent-shaped tools"). The
+    # patterns above only match count-before-noun, so docs written this way
+    # extracted nothing and passed the currency check vacuously.
+    re.compile(
+        r"\bregistr(?:y|ies)\s+of\s+(?P<count>\d+)(?:\s+[a-z-]+){0,3}\s+tools?\b",
+        re.IGNORECASE,
+    ),
 )
 INLINE_CODE_SPAN_PATTERN = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 MCP_RESOURCE_URI_PATTERN = re.compile(
@@ -2878,7 +2885,7 @@ def test_final_review_host_and_report_wording_is_current() -> None:
         "and observed host-native-deferral evidence exist."
     ) in server_guide
     assert "The current registry advertises zero output schemas" in client_guide
-    assert "registry of 45 intent-shaped tools" in roadmap
+    assert f"registry of {STANDARD_TOOL_COUNT} intent-shaped tools" in roadmap
 
 
 def test_final_review_refresh_and_report_counts_match_runtime() -> None:
