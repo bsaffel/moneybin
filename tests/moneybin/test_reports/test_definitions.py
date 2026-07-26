@@ -34,7 +34,9 @@ _CORE_REPORT_IDS = {
     "balance_drift": "core:balance_drift",
 }
 _FLOW_REPORTS = frozenset(_CORE_REPORT_IDS) - {"balance_drift"}
-_NO_FX_V1 = "no FX conversion in v1; assumes single-currency inputs"
+_NO_FX_V1 = (
+    "no FX conversion in v1; rows are segmented per currency_code, never blended"
+)
 _EXPECTED_DESCRIPTIONS = {
     "spending": (
         "Spending amounts are positive absolute outflows; comparison deltas "
@@ -142,10 +144,11 @@ def _install_cash_flow_view(db: Database) -> None:
     db.execute("""
         CREATE OR REPLACE VIEW reports.cash_flow AS
         SELECT * FROM (VALUES
-            ('2026-01', 'A1', 'Alpha', 'Food', 100.0, -30.0, 70.0, 5),
-            ('2026-01', 'A1', 'Alpha', 'Travel', 0.0, -50.0, -50.0, 2),
-            ('2026-01', 'A2', 'Alpha', 'Food', 50.0, -10.0, 40.0, 3)
-        ) AS t(year_month, account_id, account_name, category, inflow, outflow, net, txn_count)
+            ('2026-01', 'A1', 'Alpha', 'Food', 'USD', 100.0, -30.0, 70.0, 5),
+            ('2026-01', 'A1', 'Alpha', 'Travel', 'USD', 0.0, -50.0, -50.0, 2),
+            ('2026-01', 'A2', 'Alpha', 'Food', 'USD', 50.0, -10.0, 40.0, 3)
+        ) AS t(year_month, account_id, account_name, category, currency_code,
+               inflow, outflow, net, txn_count)
     """)
 
 
@@ -237,12 +240,12 @@ def _install_balance_drift(db: Database) -> None:
     db.execute("""
         CREATE OR REPLACE VIEW reports.balance_drift AS
         SELECT * FROM (VALUES
-            ('A1', 'Alpha', DATE '2026-04-01', 1000.00, 1010.00, 10.00, 10.00,
-             1.0, 5, 'drift'),
-            ('A2', 'Beta', DATE '2026-04-01', 500.00, 500.00, 0.00, 0.00,
+            ('A1', 'Alpha', 'USD', DATE '2026-04-01', 1000.00, 1010.00, 10.00,
+             10.00, 1.0, 5, 'drift'),
+            ('A2', 'Beta', 'USD', DATE '2026-04-01', 500.00, 500.00, 0.00, 0.00,
              0.0, 5, 'clean')
-        ) AS t(account_id, account_name, assertion_date, asserted_balance,
-               computed_balance, drift, drift_abs, drift_pct,
+        ) AS t(account_id, account_name, currency_code, assertion_date,
+               asserted_balance, computed_balance, drift, drift_abs, drift_pct,
                days_since_assertion, status)
     """)
 
@@ -272,11 +275,12 @@ def _install_recurring(db: Database) -> None:
     db.execute("""
         CREATE OR REPLACE VIEW reports.recurring_subscriptions AS
         SELECT * FROM (VALUES
-            ('m1', 'Netflix', -15.99, 'monthly', 30.0, 1.5, 12,
+            ('m1', 'Netflix', 'USD', -15.99, 'monthly', 30.0, 1.5, 12,
              DATE '2025-01-01', DATE '2025-12-01', 'active', -191.88, 0.95)
-        ) AS t(merchant_id, merchant_normalized, avg_amount, cadence,
-               interval_days_avg, interval_days_stddev, occurrence_count,
-               first_seen, last_seen, status, annualized_cost, confidence)
+        ) AS t(merchant_id, merchant_normalized, currency_code, avg_amount,
+               cadence, interval_days_avg, interval_days_stddev,
+               occurrence_count, first_seen, last_seen, status,
+               annualized_cost, confidence)
     """)
 
 

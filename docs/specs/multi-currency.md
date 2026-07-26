@@ -158,19 +158,62 @@ Numbered, testable. Tagged by phase.
    **`app.*` state (DB-resident)**, not YAML config — the no-blend guard and report views
    are SQLMesh models that must read it to segment home vs. foreign — so it is written
    through a `*Repo` (Invariant 10), not the generic YAML `profile set`.
+   **Implemented 2026-07-25** as `app.profile_settings` (singleton row, V044) behind
+   `ProfileSettingsRepo`. `moneybin profile set home_currency EUR` dispatches the
+   managed key to the repo while dotted `section.field` keys still write `config.yaml`;
+   `profile show` splits `Config (config.yaml)` from `Settings (database)`. MCP gained
+   `profile` and `profile_set`. Unset reports null — never an implied USD. The
+   first-run-wizard locale default is **not** built: the setting is mutable and
+   segmentation does not depend on it, so nothing reads it yet.
 5. **No-silent-blend invariant.** An aggregation across rows of differing
    `currency_code` MUST NOT emit a single combined figure unless an explicit
    conversion with recorded rate provenance is applied. Absent conversion (all of
    M1K.1), results are **segmented per currency** (a sub-total per currency), never
    blended.
+   **Implemented 2026-07-25.** Every `reports.*` model that sums money projects and
+   groups by `currency_code`; `reports.balance_drift` projects it without regrouping
+   (asserted and computed balances are the same account's, so the comparison is
+   single-currency by construction). Two consumers re-aggregate the segmented views
+   and had to segment too: the `core:cashflow` runner (`currency_code` is in
+   `select_cols`/`group_cols` unconditionally, for every `by` value) and
+   `NetworthService` (see Requirement 7). `reports.large_transactions` additionally
+   scopes its median/MAD baselines and its top-100 rank per currency — a pooled
+   baseline compares unlike units and scores a typical charge in the
+   smaller-denominated currency as an anomaly.
 6. **Doctor check.** `system doctor` reports when a profile holds more than one
    distinct currency across transactions/accounts/balances, **flags accounts/rows whose
    currency is unknown (`NULL`) so the user can assign one before it can blend**, and flags
    any report path that would violate Requirement 5.
+   **Implemented 2026-07-25** as the `currency_integrity` invariant: **fail** on any
+   unknown-currency account/transaction/balance (with the `accounts set --currency`
+   fix in the detail and the affected ids attached), **warn** on two or more known
+   currencies with nothing unknown, **pass** otherwise. It publishes
+   `moneybin_profile_currencies` and `moneybin_unknown_currency_rows{grain}`.
+   The third clause — "any report path that would violate Requirement 5" — is a
+   **build-time** guard rather than a runtime one, because the set of report paths is
+   code, not data: `test_every_money_bearing_report_projects_the_currency_it_is_denominated_in`
+   enumerates the live report catalog and fails CI for any registered report that
+   declares a `TXN_AMOUNT`/`BALANCE` column without a `currency_code` one. A runtime
+   check could only re-assert what CI already proved, and would go stale against a
+   report added later.
 7. **Report guard.** Report views that sum money detect mixed currency and either
    segment (default) or return an explicit "cross-currency total unavailable until
    conversion ships" signal — never a silent blend. Single-currency profiles (the
    common case, including USD-only users) see **zero behavior change**.
+   **Implemented 2026-07-25.** Segmentation is the default everywhere. The one place
+   that takes the explicit-signal branch is `core:networth`'s scalar headline, which
+   has no room for a sub-total per currency: `NetWorthSnapshotPayload` nulls
+   `net_worth`/`total_assets`/`total_liabilities`/`currency_code` when more than one
+   currency contributes and carries each currency's totals in `per_currency`; its
+   report records attach each account row to its own currency's totals.
+   `NetworthService.history` partitions both its bucketing and its period-over-period
+   `LAG` by `currency_code`, so a change is never the difference between two
+   currencies' positions. Zero-behavior-change is held by fixtures, not assertion: the
+   pre-existing single-currency report and net-worth tests assert the same figures
+   unchanged, and `tests/scenarios/test_multi_currency_report_segmentation.py` proves
+   the mixed case is what discriminates a segmented model from a blending one
+   (restoring the blend in `reports.cash_flow` fails it; a single-currency fixture
+   cannot).
 8. **Migration is additive.** New currency columns are nullable additions to raw tables;
    core is rebuilt from raw (no in-place core patch). The migration does **not** depend on
    `home_currency` (also introduced in M1K.1): a row with no captured currency inherits its

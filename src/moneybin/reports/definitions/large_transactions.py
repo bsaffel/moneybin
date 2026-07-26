@@ -30,6 +30,7 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         "merchant_id": DataClass.RECORD_ID,
         "merchant_normalized": DataClass.MERCHANT_NAME,
         "category": DataClass.CATEGORY,
+        "currency_code": DataClass.CURRENCY,
         "amount_zscore_account": DataClass.AGGREGATE,
         "amount_zscore_category": DataClass.AGGREGATE,
         "is_top_100": DataClass.AGGREGATE,
@@ -59,18 +60,23 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         ),
         OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
         OutputColumn(
+            "currency_code",
+            "ISO 4217 currency this row is denominated in; null means unknown.",
+            DataClass.CURRENCY,
+        ),
+        OutputColumn(
             "amount_zscore_account",
-            "Modified absolute-amount z-score against the account baseline.",
+            "Modified absolute-amount z-score against the same-currency account baseline.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "amount_zscore_category",
-            "Modified absolute-amount z-score against the category baseline.",
+            "Modified absolute-amount z-score against the same-currency category baseline.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "is_top_100",
-            "Whether the transaction is among the top 100 by absolute amount.",
+            "Whether the transaction is among its currency's top 100 by absolute amount.",
             DataClass.AGGREGATE,
         ),
     ),
@@ -80,7 +86,7 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         sign="negative expense; positive income; ranking uses absolute amount",
         kind="flow",
         valuation_basis="transaction amount ranked by absolute magnitude",
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis="inclusive full observed transaction period",
         denominator=(
             "account or category median absolute deviation scaled by 1.4826 "
@@ -144,6 +150,7 @@ def large_transactions(
     sql = f"""
         SELECT transaction_id, account_id, account_name, txn_date, amount,
                description, merchant_id, merchant_normalized, category,
+               currency_code,
                amount_zscore_account, amount_zscore_category, is_top_100
         FROM {REPORTS_LARGE_TRANSACTIONS.full_name}
     """  # noqa: S608  # TableRef interpolation

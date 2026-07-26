@@ -23,6 +23,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reads the active profile's metadata and managed settings, and `profile_set`
   writes the home currency. Two of the three remaining slots below the 50-tool hard
   limit are now spent.
+- **Reports sub-total each currency instead of blending them (M1K.1).** Every
+  report that sums money — net worth, cash flow, spending trend, merchant
+  activity, large transactions, recurring subscriptions — now carries a
+  `currency_code` column and groups by it, so a profile holding dollars and
+  euros gets one sub-total per currency rather than one meaningless number.
+  Anomaly z-scores and the top-100 flag in `reports large-transactions` compare
+  each charge against transactions in its own currency. `reports networth`
+  withholds its headline total when more than one currency contributes and
+  reports each currency's position instead; conversion to a single display
+  currency arrives in M1K.2. **A single-currency profile sees the same figures
+  it always did**, plus the currency they are denominated in. `moneybin system
+  doctor` gained a `currency_integrity` check: it fails on any account or
+  transaction whose currency is unknown (those amounts join no total until you
+  run `accounts set --currency`) and warns when a profile holds more than one
+  currency, so segmented totals are explained rather than surprising.
 - **Canonical bundle and registered-report export delivery (M1O).**
   `moneybin export bundle` and `moneybin export report` publish redacted CSV by
   default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named

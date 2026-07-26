@@ -28,16 +28,29 @@ from moneybin.services.networth_service import NetworthService
 
 _SNAPSHOT_COLUMNS = (
     OutputColumn("balance_date", "Resolved snapshot date.", DataClass.TXN_DATE),
-    OutputColumn("net_worth", "Sum of all included balances.", DataClass.BALANCE),
-    OutputColumn("total_assets", "Sum of positive balances.", DataClass.BALANCE),
+    OutputColumn(
+        "currency_code",
+        "ISO 4217 currency this row's totals are denominated in; null means unknown.",
+        DataClass.CURRENCY,
+    ),
+    OutputColumn(
+        "net_worth",
+        "Sum of included balances denominated in currency_code.",
+        DataClass.BALANCE,
+    ),
+    OutputColumn(
+        "total_assets",
+        "Sum of positive balances in currency_code.",
+        DataClass.BALANCE,
+    ),
     OutputColumn(
         "total_liabilities",
-        "Sum of negative balances, retained as negative.",
+        "Sum of negative balances in currency_code, retained as negative.",
         DataClass.BALANCE,
     ),
     OutputColumn(
         "account_count",
-        "Count of accounts contributing to the headline totals.",
+        "Count of accounts contributing to this currency's totals.",
         DataClass.AGGREGATE,
     ),
     OutputColumn(
@@ -70,7 +83,7 @@ _SNAPSHOT_SEMANTICS = ReportSemantics(
         "resolved transaction-adjusted daily positions on or before the "
         "resolved balance_date"
     ),
-    fx_basis="no FX conversion in v1; assumes single-currency inputs",
+    fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
     time_basis=(
         "point-in-time position at the latest available balance_date on or before "
         "the requested as_of date; latest available when omitted; balance_date "
@@ -91,8 +104,13 @@ _HISTORY_COLUMNS = (
         "period", "Start date of the selected period bucket.", DataClass.TXN_DATE
     ),
     OutputColumn(
+        "currency_code",
+        "ISO 4217 currency this series is denominated in; null means unknown.",
+        DataClass.CURRENCY,
+    ),
+    OutputColumn(
         "net_worth",
-        "Resolved transaction-adjusted period-end position.",
+        "Resolved transaction-adjusted period-end position in currency_code.",
         DataClass.BALANCE,
     ),
     OutputColumn(
@@ -118,7 +136,7 @@ _HISTORY_SEMANTICS = ReportSemantics(
     valuation_basis=(
         "last resolved transaction-adjusted daily position in each selected period"
     ),
-    fx_basis="no FX conversion in v1; assumes single-currency inputs",
+    fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
     time_basis=(
         "inclusive from_date/to_date window bucketed daily, weekly, or monthly; "
         "period labels are bucket start dates"
@@ -215,16 +233,26 @@ def _execute_networth(
         else None,
     )
 
-    common = {
-        "balance_date": snapshot.balance_date,
-        "net_worth": snapshot.net_worth,
-        "total_assets": snapshot.total_assets,
-        "total_liabilities": snapshot.total_liabilities,
-        "account_count": snapshot.account_count,
-    }
+    # Each account row carries the totals for its own currency, never a
+    # cross-currency sum: a mixed-currency profile gets one headline per
+    # currency instead of one blended figure (multi-currency.md Requirement 5).
+    # A single-currency profile sees exactly the figures it always did.
+    segments = {segment.currency_code: segment for segment in snapshot.per_currency}
+
+    def _headline(currency_code: str | None) -> dict[str, JsonValue | object]:
+        segment = segments.get(currency_code)
+        return {
+            "balance_date": snapshot.balance_date,
+            "currency_code": currency_code,
+            "net_worth": segment.net_worth if segment else None,
+            "total_assets": segment.total_assets if segment else None,
+            "total_liabilities": segment.total_liabilities if segment else None,
+            "account_count": segment.account_count if segment else 0,
+        }
+
     rows = [
         {
-            **common,
+            **_headline(account.currency_code),
             "account_id": account.account_id,
             "account_name": account.display_name,
             "account_balance": account.balance,
@@ -233,9 +261,20 @@ def _execute_networth(
         for account in snapshot.per_account
     ]
     if not rows:
+        # No account breakdown (empty profile, or filtered out): still report one
+        # row per currency so the totals are never lost behind the filter.
         rows = [
             {
-                **common,
+                **_headline(segment.currency_code),
+                "account_id": None,
+                "account_name": None,
+                "account_balance": None,
+                "observation_source": None,
+            }
+            for segment in snapshot.per_currency
+        ] or [
+            {
+                **_headline(None),
                 "account_id": None,
                 "account_name": None,
                 "account_balance": None,
@@ -250,6 +289,7 @@ def _execute_networth(
         columns=[column.name for column in _SNAPSHOT_COLUMNS],
         column_types=[
             "DATE",
+            "VARCHAR",
             "DECIMAL(18,2)",
             "DECIMAL(18,2)",
             "DECIMAL(18,2)",
@@ -290,6 +330,7 @@ def _execute_networth_history(
     rows = [
         {
             "period": point.period,
+            "currency_code": point.currency_code,
             "net_worth": point.net_worth,
             "change_abs": point.change_abs,
             "change_pct": point.change_pct,
@@ -297,6 +338,7 @@ def _execute_networth_history(
         for point in payload.points
     ]
     column_types = [
+        "VARCHAR",
         "VARCHAR",
         _decimal_column_type(rows, "net_worth", fallback="DECIMAL(38,2)"),
         _decimal_column_type(rows, "change_abs", fallback="DECIMAL(38,2)"),

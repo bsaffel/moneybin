@@ -45,7 +45,11 @@ If you sum `outflow` from `cash_flow` and `total_spend` from `spending_trend` in
 
 ### Currency handling
 
-`core.fct_transactions.currency_code` and `core.dim_accounts.currency_code` are ISO 4217 strings. `fct_transactions.currency_code` resolves to the transaction's own captured currency (from OFX `CURDEF` or Plaid), else its account's `currency_code`, else `NULL`; `dim_accounts.currency_code` itself falls back to `'USD'` only when no account-level currency was ever captured or set. The `reports.*` views aggregate without filtering or converting by currency — **they assume single-currency**. Multi-currency users get mixed-currency sums and should treat the numbers as approximations until FX-conversion ships ([`docs/roadmap.md`](../roadmap.md)). The MCP/CLI envelope's `summary.display_currency` is presentation-only; rows are not FX-converted.
+`core.fct_transactions.currency_code` and `core.dim_accounts.currency_code` are ISO 4217 strings. `fct_transactions.currency_code` resolves to the transaction's own captured currency (from OFX `CURDEF` or Plaid), else its account's `currency_code`, else `NULL`; `dim_accounts.currency_code` itself falls back to `'USD'` only when no account-level currency was ever captured or set.
+
+Every `reports.*` view that sums money carries a `currency_code` column and groups by it, so a mixed-currency profile gets one sub-total per currency rather than one combined number. A `NULL` currency is its own segment — never resolved to the home currency, because that guess is one nothing downstream could flag. `reports.net_worth` is one row per `(balance_date, currency_code)`; a consumer that re-aggregates it must keep `currency_code` in its own `GROUP BY` or it re-blends what the view separated. `reports.balance_drift` projects `currency_code` without grouping by it — asserted and computed balances belong to the same account, so the comparison is single-currency by construction.
+
+MoneyBin does not convert between currencies. `moneybin profile set home_currency <ISO 4217>` records which currency a profile treats as home, but nothing converts to it yet ([`docs/roadmap.md`](../roadmap.md) → M1K.2). The MCP/CLI envelope's `summary.display_currency` is presentation-only; rows are not FX-converted.
 
 ### Pending and posted
 
@@ -675,7 +679,8 @@ What not to do, and why.
 - **Don't `SUM(amount) FROM core.fct_transactions` without filtering `is_transfer = FALSE`.** Transfers appear as a debit on one account and credit on another. They cancel in aggregate over the whole table, but they double-count within any account-level slice.
 - **Don't aggregate both `core.fct_transactions.amount` and `core.fct_transaction_lines.line_amount` in the same query.** Pick one grain. The lines view sums to the same totals as the fact (whole = parent.amount, split lines sum to parent.amount); joining both yields 2×.
 - **Don't read from `prep.*`.** It's internal staging — column shapes can change without notice and no catalog comments are emitted. Use `core.*`.
-- **Don't `SUM(amount)` across mixed currencies.** `reports.*` and any cross-account aggregate over `fct_transactions` add `amount` without FX conversion. For single-currency users this is correct; for multi-currency users it's wrong. Filter by `currency_code` until multi-currency support ships.
+- **Don't `SUM(amount)` across mixed currencies.** The `reports.*` views already group by `currency_code`, but a query of your own over `core.fct_transactions` or `core.fct_balances` does not — nothing converts, so adding dollars to euros yields a number in no currency. Group by `currency_code`, or filter to one.
+- **Don't drop `currency_code` when you re-aggregate a `reports.*` view.** Every money-summing view is one row per grain **per currency**; a `GROUP BY` that omits it silently re-blends the currencies the view separated.
 - **Don't filter on `core.uncategorized_queue.source_id`.** It's a NULL placeholder today.
 - **Don't mix sign conventions.** If you join `cash_flow.outflow` (negative) and `spending_trend.total_spend` (positive) in the same expression, the math is wrong. Pick one view per question.
 - **Don't query `app.transaction_notes` / `app.transaction_tags` / `app.transaction_splits` directly when you need them per-transaction.** They're already aggregated as nested `LIST(STRUCT(...))` columns on `core.fct_transactions`. Direct queries miss the resolved shape and bypass the audit-emitting service layer for writes.

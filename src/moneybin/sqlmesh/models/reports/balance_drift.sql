@@ -10,6 +10,7 @@ WITH positions AS (
   SELECT
     ba.account_id,
     a.display_name AS account_name,
+    a.currency_code,
     ba.assertion_date,
     ba.balance AS asserted_balance,
     CASE
@@ -30,6 +31,7 @@ WITH positions AS (
   SELECT
     account_id,
     account_name,
+    currency_code,
     assertion_date,
     asserted_balance,
     computed_balance,
@@ -39,6 +41,7 @@ WITH positions AS (
 SELECT
   account_id, /* Joinable to core.dim_accounts */
   account_name, /* Account display name */
+  currency_code, /* ISO 4217 currency the account is denominated in; both balances and the drift between them share it, so this row never blends currencies (multi-currency.md Requirement 5) */
   assertion_date, /* User-asserted balance date */
   asserted_balance, /* User-entered balance for this date */
   computed_balance, /* Interpolated daily balance or observed balance minus its adjustment; NULL for a missing row or first observation */

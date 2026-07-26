@@ -24,6 +24,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         # dim_accounts.display_name (user-authored) → USER_NOTE; not the bank's
         # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
+        "currency_code": DataClass.CURRENCY,
         "assertion_date": DataClass.TXN_DATE,
         "asserted_balance": DataClass.BALANCE,
         "computed_balance": DataClass.BALANCE,
@@ -45,6 +46,11 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
     columns=(
         OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
+        OutputColumn(
+            "currency_code",
+            "ISO 4217 currency this row is denominated in; null means unknown.",
+            DataClass.CURRENCY,
+        ),
         OutputColumn(
             "assertion_date", "User-asserted balance date.", DataClass.TXN_DATE
         ),
@@ -85,7 +91,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
             "transaction-derived position reconstructed from daily balance minus "
             "reconciliation_delta"
         ),
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis=(
             "asserted and transaction-derived positions compared as of "
             "assertion_date; freshness measured from assertion_date through "
@@ -137,7 +143,7 @@ def balance_drift(
         # lexicographically and silently mis-filters.
         validate_date(since, "since")
     sql = f"""
-        SELECT account_id, account_name, assertion_date, asserted_balance,
+        SELECT account_id, account_name, currency_code, assertion_date, asserted_balance,
                computed_balance, drift, drift_abs, drift_pct,
                days_since_assertion, status
         FROM {REPORTS_BALANCE_DRIFT.full_name}

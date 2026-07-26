@@ -24,6 +24,7 @@ from moneybin.tables import REPORTS_NET_WORTH
 DERIVED_REPORT_CLASSES: dict[tuple[str, str], dict[str, DataClass]] = {
     (REPORTS_NET_WORTH.schema, REPORTS_NET_WORTH.name): {
         "balance_date": DataClass.TXN_DATE,
+        "currency_code": DataClass.CURRENCY,
         "net_worth": DataClass.BALANCE,
         "account_count": DataClass.AGGREGATE,
         "total_assets": DataClass.BALANCE,

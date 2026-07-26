@@ -162,6 +162,7 @@ REPORTS_NET_WORTH_DDL = """\
 CREATE VIEW IF NOT EXISTS reports.net_worth AS
 SELECT
     CURRENT_DATE AS balance_date,
+    CAST(NULL AS VARCHAR) AS currency_code,
     0.00::DECIMAL(18, 2) AS net_worth,
     0 AS account_count,
     0.00::DECIMAL(18, 2) AS total_assets,

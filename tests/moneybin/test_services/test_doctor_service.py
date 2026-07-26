@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import SQLMESH_ROOT, Database
+from moneybin.metrics.registry import PROFILE_CURRENCIES, UNKNOWN_CURRENCY_ROWS
 from moneybin.services.doctor_service import (
     DoctorReport,
     DoctorService,
@@ -749,8 +750,9 @@ def test_run_all_returns_expected_invariants(
     # rejects, opening-lot review, unmodeled legs, holdings divergence,
     # source overlap, unresolved securities, conflicting security refs,
     # unreported holdings, phantom holdings) + sqlmesh_model_presence
-    # (registered-but-unbuilt models).
-    assert len(report.invariants) == 47
+    # (registered-but-unbuilt models) + currency_integrity (M1K.1 Req 6:
+    # unknown-currency rows, then merely-mixed currency).
+    assert len(report.invariants) == 48
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -758,6 +760,7 @@ def test_run_all_returns_expected_invariants(
     assert "sqlmesh_model_presence" in names
     assert "dedup_reconciliation" in names
     assert "categorization_coverage" in names
+    assert "currency_integrity" in names
     assert "app_audit_coverage_user_categories" in names
     assert "app_audit_coverage_category_overrides" in names
     assert "app_audit_coverage_gsheet_connections" in names
@@ -2010,3 +2013,124 @@ def test_model_presence_passes_when_every_registered_model_exists(
     assert result.status == "pass"
     assert result.affected_ids == []
     assert result.detail is None
+
+
+def _currency_result(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> InvariantResult:
+    """Run the doctor and return the currency_integrity invariant."""
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    report = DoctorService(doctor_db).run_all()
+    return next(r for r in report.invariants if r.name == "currency_integrity")
+
+
+@pytest.mark.unit
+def test_currency_integrity_passes_on_a_single_currency_profile(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The common case stays silent — the fixture is USD throughout."""
+    result = _currency_result(doctor_db, monkeypatch)
+    assert result.status == "pass"
+    assert result.detail is None
+
+
+@pytest.mark.unit
+def test_currency_integrity_warns_when_a_profile_holds_two_currencies(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mixed currency is legal but withholds every cross-currency total."""
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    detail = result.detail or ""
+    assert "EUR" in detail
+    assert "USD" in detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_fails_on_a_transaction_with_unknown_currency(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A NULL currency is an amount whose unit nobody knows — segment and flag."""
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = NULL
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "unknown" in (result.detail or "").lower()
+    assert result.affected_ids == ["T2"]
+
+
+@pytest.mark.unit
+def test_currency_integrity_fails_on_an_account_with_unknown_currency(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accounts are flagged too — that is where the user assigns the fix."""
+    doctor_db.execute("""
+        UPDATE core.dim_accounts SET currency_code = NULL
+        WHERE account_id = 'ACC1'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "ACC1" in result.affected_ids
+
+
+@pytest.mark.unit
+def test_currency_integrity_reports_unknown_currency_over_mere_mixing(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile that is both mixed and incomplete surfaces the fixable half."""
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T1'
+    """)  # noqa: S608 — test input, not user data
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = NULL
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "unknown" in (result.detail or "").lower()
+
+
+@pytest.mark.unit
+def test_currency_integrity_records_what_it_observed(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check publishes the two numbers a operator would page on."""
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T1'
+    """)  # noqa: S608 — test input, not user data
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = NULL
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    _currency_result(doctor_db, monkeypatch)
+
+    # EUR from T1 plus USD from the account row = 2 known currencies; T2 is the
+    # one unknown-currency row.
+    assert PROFILE_CURRENCIES._value.get() == 2  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert (
+        UNKNOWN_CURRENCY_ROWS.labels(grain="transactions")._value.get() == 1  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    )
+    assert UNKNOWN_CURRENCY_ROWS.labels(grain="accounts")._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals

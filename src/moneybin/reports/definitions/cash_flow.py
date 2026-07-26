@@ -25,6 +25,7 @@ from moneybin.tables import REPORTS_CASH_FLOW
         # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
         "category": DataClass.CATEGORY,
+        "currency_code": DataClass.CURRENCY,
         "inflow": DataClass.TXN_AMOUNT,
         "outflow": DataClass.TXN_AMOUNT,
         "net": DataClass.TXN_AMOUNT,
@@ -40,6 +41,11 @@ from moneybin.tables import REPORTS_CASH_FLOW
         OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
         OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
+        OutputColumn(
+            "currency_code",
+            "ISO 4217 currency these sums are denominated in; null means unknown.",
+            DataClass.CURRENCY,
+        ),
         OutputColumn("inflow", "Sum of positive amounts.", DataClass.TXN_AMOUNT),
         OutputColumn(
             "outflow", "Sum of negative amounts, kept negative.", DataClass.TXN_AMOUNT
@@ -55,7 +61,7 @@ from moneybin.tables import REPORTS_CASH_FLOW
         sign="negative expense; positive income",
         kind="flow",
         valuation_basis="transaction amount",
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis="inclusive calendar-month period",
         denominator=None,
         comparison_window=None,
@@ -95,8 +101,11 @@ def cash_flow(
         report_id="core:cashflow",
     )
 
-    select_cols = "year_month"
-    group_cols = "year_month"
+    # currency_code groups unconditionally, for every `by` value. Dropping it
+    # from one grouping would re-blend the currencies the view just separated
+    # (multi-currency.md Requirement 5).
+    select_cols = "year_month, currency_code"
+    group_cols = "year_month, currency_code"
     if by in ("account", "account-and-category"):
         # account_id keeps rows distinct when two accounts share a display_name.
         select_cols += ", account_id, account_name"

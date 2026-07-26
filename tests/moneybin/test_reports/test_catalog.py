@@ -20,6 +20,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.networth import (
     NetWorthAccountRow,
+    NetWorthCurrencySegment,
     NetWorthHistoryPayload,
     NetWorthHistoryPoint,
     NetWorthSnapshotPayload,
@@ -191,12 +192,34 @@ def test_registered_account_id_metadata_uses_opaque_record_id_class() -> None:
     assert problems == []
 
 
+def test_every_money_bearing_report_projects_the_currency_it_is_denominated_in() -> (
+    None
+):
+    """No registered report emits an amount without naming its currency.
+
+    multi-currency.md Requirements 5 and 6 — the report path that "would
+    violate Requirement 5" is one that sums money and cannot tell two
+    currencies apart. Enumerating the live catalog (rather than a hand-kept
+    list) is what makes a future report unable to ship unsegmented.
+    """
+    monetary = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
+    unsegmented = [
+        report.report_id
+        for report in get_report_catalog().list()
+        if monetary.intersection(report.classes.values())
+        and report.classes.get("currency_code") is not DataClass.CURRENCY
+    ]
+
+    assert unsegmented == []
+
+
 def test_service_report_privacy_maps_match_independent_contract() -> None:
     """Every service-backed report has an explicit, independently reviewed map."""
     expected = {
         "core:networth": {
             "columns": {
                 "balance_date": DataClass.TXN_DATE,
+                "currency_code": DataClass.CURRENCY,
                 "net_worth": DataClass.BALANCE,
                 "total_assets": DataClass.BALANCE,
                 "total_liabilities": DataClass.BALANCE,
@@ -214,6 +237,7 @@ def test_service_report_privacy_maps_match_independent_contract() -> None:
         "core:networth_history": {
             "columns": {
                 "period": DataClass.TXN_DATE,
+                "currency_code": DataClass.CURRENCY,
                 "net_worth": DataClass.BALANCE,
                 "change_abs": DataClass.BALANCE,
                 "change_pct": DataClass.AGGREGATE,
@@ -612,22 +636,34 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
         "moneybin.reports.service_reports.NetworthService.current",
         return_value=NetWorthSnapshotPayload(
             balance_date=date(2026, 7, 1),
+            currency_code="USD",
             net_worth=Decimal("1234.56000000"),
             total_assets=Decimal("1500.12000000"),
             total_liabilities=Decimal("-265.56000000"),
             account_count=2,
+            per_currency=[
+                NetWorthCurrencySegment(
+                    currency_code="USD",
+                    net_worth=Decimal("1234.56000000"),
+                    total_assets=Decimal("1500.12000000"),
+                    total_liabilities=Decimal("-265.56000000"),
+                    account_count=2,
+                ),
+            ],
             per_account=[
                 NetWorthAccountRow(
                     account_id="acct_11112222",
                     display_name="Checking",
                     balance=Decimal("500.12000000"),
                     observation_source="asserted",
+                    currency_code="USD",
                 ),
                 NetWorthAccountRow(
                     account_id="acct_99998888",
                     display_name="Brokerage",
                     balance=Decimal("1000.00000000"),
                     observation_source="derived",
+                    currency_code="USD",
                 ),
             ],
         ),
@@ -652,12 +688,13 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
         "resolved balance_date"
     )
     assert result.semantics.fx_basis == (
-        "no FX conversion in v1; assumes single-currency inputs"
+        "no FX conversion in v1; rows are segmented per currency_code, never blended"
     )
     assert result.parameters == {"as_of": "2026-07-02", "account_ids": None}
     assert result.records == [
         {
             "balance_date": date(2026, 7, 1),
+            "currency_code": "USD",
             "net_worth": Decimal("1234.56000000"),
             "total_assets": Decimal("1500.12000000"),
             "total_liabilities": Decimal("-265.56000000"),
@@ -684,10 +721,12 @@ def test_networth_account_id_parameter_metadata_preserves_opaque_ids(
         "moneybin.reports.service_reports.NetworthService.current",
         return_value=NetWorthSnapshotPayload(
             balance_date=None,
+            currency_code=None,
             net_worth=None,
             total_assets=None,
             total_liabilities=None,
             account_count=0,
+            per_currency=[],
             per_account=[],
         ),
     )
@@ -716,10 +755,12 @@ def test_networth_service_report_preserves_explicit_no_data(
         "moneybin.reports.service_reports.NetworthService.current",
         return_value=NetWorthSnapshotPayload(
             balance_date=None,
+            currency_code=None,
             net_worth=None,
             total_assets=None,
             total_liabilities=None,
             account_count=0,
+            per_currency=[],
             per_account=[],
         ),
     )
@@ -751,12 +792,14 @@ def test_networth_history_service_report_preserves_numeric_fidelity(
             points=[
                 NetWorthHistoryPoint(
                     period="2026-06-01",
+                    currency_code="USD",
                     net_worth=Decimal("1000.12345678"),
                     change_abs=None,
                     change_pct=None,
                 ),
                 NetWorthHistoryPoint(
                     period="2026-07-01",
+                    currency_code="USD",
                     net_worth=Decimal("1100.87654321"),
                     change_abs=Decimal("100.75308643"),
                     change_pct=Decimal("0.10074065"),
@@ -787,11 +830,12 @@ def test_networth_history_service_report_preserves_numeric_fidelity(
     )
     columns = {column.name: column for column in NETWORTH_HISTORY_REPORT.columns}
     assert columns["net_worth"].description == (
-        "Resolved transaction-adjusted period-end position."
+        "Resolved transaction-adjusted period-end position in currency_code."
     )
     assert result.records == [
         {
             "period": "2026-06-01",
+            "currency_code": "USD",
             "net_worth": Decimal("1000.12345678"),
             "change_abs": None,
             "change_pct": None,

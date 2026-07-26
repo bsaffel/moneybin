@@ -21,6 +21,7 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
     classes={
         "merchant_id": DataClass.RECORD_ID,
         "merchant_normalized": DataClass.MERCHANT_NAME,
+        "currency_code": DataClass.CURRENCY,
         "avg_amount": DataClass.TXN_AMOUNT,
         "cadence": DataClass.TXN_TYPE,
         "interval_days_avg": DataClass.AGGREGATE,
@@ -45,6 +46,11 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
             "merchant_normalized",
             "Canonical merchant label or uncategorized bucket.",
             DataClass.MERCHANT_NAME,
+        ),
+        OutputColumn(
+            "currency_code",
+            "ISO 4217 currency this row is denominated in; null means unknown.",
+            DataClass.CURRENCY,
         ),
         OutputColumn(
             "avg_amount", "Mean absolute recurring charge.", DataClass.TXN_AMOUNT
@@ -87,7 +93,7 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
         sign="cost amounts are positive absolute outflows",
         kind="flow",
         valuation_basis="mean observed transaction amount annualized by inferred cadence",
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis="inclusive rolling 18-month period ending on current date",
         denominator=(
             "six occurrences and fourteen days of interval variation scale confidence"
@@ -164,7 +170,7 @@ def recurring_subscriptions(
         )
 
     sql = f"""
-        SELECT merchant_id, merchant_normalized, cadence, avg_amount,
+        SELECT merchant_id, merchant_normalized, currency_code, cadence, avg_amount,
                interval_days_avg, interval_days_stddev,
                occurrence_count, first_seen, last_seen, status,
                annualized_cost, confidence

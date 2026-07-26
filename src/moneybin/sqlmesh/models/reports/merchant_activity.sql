@@ -19,7 +19,8 @@ WITH normalized AS (
     t.amount,
     t.category,
     t.transaction_date,
-    t.account_id
+    t.account_id,
+    t.currency_code
   FROM core.fct_transactions AS t
   INNER JOIN core.dim_accounts AS a
     ON t.account_id = a.account_id
@@ -29,6 +30,7 @@ WITH normalized AS (
 SELECT
   merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL for the '(uncategorized)' bucket aggregating transactions without a canonical merchant */
   merchant_normalized, /* Display label: dim_merchants.canonical_name for resolved merchants; '(uncategorized)' when merchant_id IS NULL */
+  currency_code, /* ISO 4217 currency this row's totals are denominated in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5) */
   SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS total_spend, /* Lifetime absolute outflow */
   SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS total_inflow, /* Lifetime sum of positive amounts */
   SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) AS total_outflow, /* Lifetime sum of negative amounts (kept negative) */
@@ -45,4 +47,5 @@ SELECT
 FROM normalized
 GROUP BY
   merchant_id,
-  merchant_normalized
+  merchant_normalized,
+  currency_code

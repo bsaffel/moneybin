@@ -10,6 +10,7 @@ SELECT
   t.account_id, /* Owning account (joinable to core.dim_accounts) */
   a.display_name AS account_name, /* Account display name (resolved from app.account_settings if overridden) */
   t.category, /* Spending category text from core.fct_transactions; NULL for uncategorized */
+  t.currency_code, /* ISO 4217 currency this cell's sums are denominated in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5) */
   SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS inflow, /* Sum of positive amounts in this cell */
   SUM(CASE WHEN t.amount < 0 THEN t.amount ELSE 0 END) AS outflow, /* Sum of negative amounts in this cell (kept negative) */
   SUM(t.amount) AS net, /* inflow + outflow */
@@ -23,4 +24,5 @@ GROUP BY
   DATE_TRUNC('MONTH', t.transaction_date),
   t.account_id,
   a.display_name,
-  t.category
+  t.category,
+  t.currency_code

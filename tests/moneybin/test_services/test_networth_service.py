@@ -28,6 +28,7 @@ def _seed_reports_net_worth(db: Database, rows: list[dict[str, object]]) -> None
         """
         CREATE TABLE IF NOT EXISTS reports.net_worth (
             balance_date DATE,
+            currency_code VARCHAR,
             net_worth DECIMAL(18, 2),
             account_count INTEGER,
             total_assets DECIMAL(18, 2),
@@ -39,11 +40,13 @@ def _seed_reports_net_worth(db: Database, rows: list[dict[str, object]]) -> None
         db.execute(
             """
             INSERT INTO reports.net_worth
-            (balance_date, net_worth, account_count, total_assets, total_liabilities)
-            VALUES (?, ?, ?, ?, ?)
+            (balance_date, currency_code, net_worth, account_count,
+             total_assets, total_liabilities)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             [
                 r["balance_date"],
+                r.get("currency_code", "USD"),
                 r["net_worth"],
                 r["account_count"],
                 r["total_assets"],
@@ -89,7 +92,8 @@ def _seed_fct_balances_daily(db: Database, rows: list[dict[str, object]]) -> Non
             balance DECIMAL(18, 2),
             is_observed BOOLEAN,
             observation_source VARCHAR,
-            reconciliation_delta DECIMAL(18, 2)
+            reconciliation_delta DECIMAL(18, 2),
+            currency_code VARCHAR
         )
         """
     )
@@ -97,8 +101,9 @@ def _seed_fct_balances_daily(db: Database, rows: list[dict[str, object]]) -> Non
         db.execute(
             """
             INSERT INTO core.fct_balances_daily
-            (account_id, balance_date, balance, is_observed, observation_source, reconciliation_delta)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (account_id, balance_date, balance, is_observed, observation_source,
+             reconciliation_delta, currency_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 r["account_id"],
@@ -107,6 +112,7 @@ def _seed_fct_balances_daily(db: Database, rows: list[dict[str, object]]) -> Non
                 r["is_observed"],
                 r["observation_source"] if "observation_source" in r else None,
                 r["reconciliation_delta"] if "reconciliation_delta" in r else None,
+                r.get("currency_code", "USD"),
             ],
         )
 
@@ -346,3 +352,165 @@ class TestHistory:
         assert len(result.points) == 1
         assert result.points[0].change_abs is None
         assert result.points[0].change_pct is None
+
+
+class TestMultiCurrency:
+    """multi-currency.md Requirements 5 and 7 — segment, never silently blend.
+
+    ``reports.net_worth`` emits one row per (balance_date, currency_code), so a
+    service that keeps its single-row assumption would return one currency's
+    total labelled as the whole position.
+    """
+
+    @pytest.mark.unit
+    def test_current_names_the_currency_of_a_single_currency_position(
+        self, db: Database
+    ) -> None:
+        _seed_reports_net_worth(
+            db,
+            [
+                {
+                    "balance_date": date(2026, 1, 31),
+                    "currency_code": "EUR",
+                    "net_worth": Decimal("1000.00"),
+                    "account_count": 1,
+                    "total_assets": Decimal("1000.00"),
+                    "total_liabilities": Decimal("0.00"),
+                },
+            ],
+        )
+        _seed_dim_accounts(db, [])
+        _seed_fct_balances_daily(db, [])
+        result = NetworthService(db).current()
+        assert result.currency_code == "EUR"
+        assert result.net_worth == Decimal("1000.00")
+        assert [s.currency_code for s in result.per_currency] == ["EUR"]
+
+    @pytest.mark.unit
+    def test_current_withholds_the_headline_total_when_currencies_are_mixed(
+        self, db: Database
+    ) -> None:
+        """A blended headline would read 300; one segment's would read 100."""
+        _seed_reports_net_worth(
+            db,
+            [
+                {
+                    "balance_date": date(2026, 1, 31),
+                    "currency_code": "USD",
+                    "net_worth": Decimal("100.00"),
+                    "account_count": 1,
+                    "total_assets": Decimal("100.00"),
+                    "total_liabilities": Decimal("0.00"),
+                },
+                {
+                    "balance_date": date(2026, 1, 31),
+                    "currency_code": "EUR",
+                    "net_worth": Decimal("200.00"),
+                    "account_count": 1,
+                    "total_assets": Decimal("200.00"),
+                    "total_liabilities": Decimal("0.00"),
+                },
+            ],
+        )
+        _seed_dim_accounts(db, [])
+        _seed_fct_balances_daily(db, [])
+        result = NetworthService(db).current()
+        assert result.balance_date == date(2026, 1, 31)
+        assert result.currency_code is None
+        assert result.net_worth is None
+        assert result.total_assets is None
+        assert result.total_liabilities is None
+        assert [(s.currency_code, s.net_worth) for s in result.per_currency] == [
+            ("EUR", Decimal("200.00")),
+            ("USD", Decimal("100.00")),
+        ]
+
+    @pytest.mark.unit
+    def test_current_resolves_the_latest_date_across_every_currency(
+        self, db: Database
+    ) -> None:
+        """A currency that stopped reporting must not pin the snapshot date."""
+        _seed_reports_net_worth(
+            db,
+            [
+                {
+                    "balance_date": date(2026, 1, 31),
+                    "currency_code": "EUR",
+                    "net_worth": Decimal("200.00"),
+                    "account_count": 1,
+                    "total_assets": Decimal("200.00"),
+                    "total_liabilities": Decimal("0.00"),
+                },
+                {
+                    "balance_date": date(2026, 2, 28),
+                    "currency_code": "USD",
+                    "net_worth": Decimal("100.00"),
+                    "account_count": 1,
+                    "total_assets": Decimal("100.00"),
+                    "total_liabilities": Decimal("0.00"),
+                },
+            ],
+        )
+        _seed_dim_accounts(db, [])
+        _seed_fct_balances_daily(db, [])
+        result = NetworthService(db).current()
+        assert result.balance_date == date(2026, 2, 28)
+        assert [s.currency_code for s in result.per_currency] == ["USD"]
+        assert result.currency_code == "USD"
+        assert result.net_worth == Decimal("100.00")
+
+    @pytest.mark.unit
+    def test_history_tracks_each_currency_as_its_own_series(self, db: Database) -> None:
+        """Period change is computed within a currency, never across two."""
+        _seed_reports_net_worth(
+            db,
+            [
+                {
+                    "balance_date": date(2026, 1, 31),
+                    "currency_code": "USD",
+                    "net_worth": Decimal("1000.00"),
+                    "account_count": 1,
+                    "total_assets": Decimal("1000.00"),
+                    "total_liabilities": Decimal("0.00"),
+                },
+                {
+                    "balance_date": date(2026, 1, 31),
+                    "currency_code": "EUR",
+                    "net_worth": Decimal("500.00"),
+                    "account_count": 1,
+                    "total_assets": Decimal("500.00"),
+                    "total_liabilities": Decimal("0.00"),
+                },
+                {
+                    "balance_date": date(2026, 2, 28),
+                    "currency_code": "USD",
+                    "net_worth": Decimal("1200.00"),
+                    "account_count": 1,
+                    "total_assets": Decimal("1200.00"),
+                    "total_liabilities": Decimal("0.00"),
+                },
+                {
+                    "balance_date": date(2026, 2, 28),
+                    "currency_code": "EUR",
+                    "net_worth": Decimal("400.00"),
+                    "account_count": 1,
+                    "total_assets": Decimal("400.00"),
+                    "total_liabilities": Decimal("0.00"),
+                },
+            ],
+        )
+        points = (
+            NetworthService(db)
+            .history(date(2026, 1, 1), date(2026, 3, 1), interval="monthly")
+            .points
+        )
+        assert len(points) == 4
+        february = {
+            (p.currency_code, p.change_abs)
+            for p in points
+            if p.period and p.period.startswith("2026-02")
+        }
+        assert february == {
+            ("USD", Decimal("200.00")),
+            ("EUR", Decimal("-100.00")),
+        }

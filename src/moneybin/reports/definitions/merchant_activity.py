@@ -21,6 +21,7 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
     classes={
         "merchant_id": DataClass.RECORD_ID,
         "merchant_normalized": DataClass.MERCHANT_NAME,
+        "currency_code": DataClass.CURRENCY,
         "total_spend": DataClass.TXN_AMOUNT,
         "total_inflow": DataClass.TXN_AMOUNT,
         "total_outflow": DataClass.TXN_AMOUNT,
@@ -45,6 +46,11 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
             "merchant_normalized",
             "Canonical merchant label or uncategorized bucket.",
             DataClass.MERCHANT_NAME,
+        ),
+        OutputColumn(
+            "currency_code",
+            "ISO 4217 currency this row is denominated in; null means unknown.",
+            DataClass.CURRENCY,
         ),
         OutputColumn("total_spend", "Lifetime absolute outflow.", DataClass.TXN_AMOUNT),
         OutputColumn(
@@ -77,7 +83,7 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
         ),
         kind="flow",
         valuation_basis="transaction amount",
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis=(
             "inclusive full observed transaction period from first_seen through "
             "last_seen"
@@ -114,7 +120,7 @@ def merchant_activity(
     if top < 1:
         raise ValueError(f"top must be >= 1, got {top!r}")
     sql = f"""
-        SELECT merchant_id, merchant_normalized, total_spend, total_inflow,
+        SELECT merchant_id, merchant_normalized, currency_code, total_spend, total_inflow,
                total_outflow, txn_count, avg_amount, median_amount,
                first_seen, last_seen, active_months, top_category,
                account_count

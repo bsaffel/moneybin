@@ -21,6 +21,7 @@ from moneybin.tables import REPORTS_SPENDING_TREND
     classes={
         "year_month": DataClass.TXN_DATE,
         "category": DataClass.CATEGORY,
+        "currency_code": DataClass.CURRENCY,
         "total_spend": DataClass.TXN_AMOUNT,
         "txn_count": DataClass.AGGREGATE,
         "prev_month_spend": DataClass.TXN_AMOUNT,
@@ -40,6 +41,11 @@ from moneybin.tables import REPORTS_SPENDING_TREND
     columns=(
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
         OutputColumn("category", "Spending category.", DataClass.CATEGORY),
+        OutputColumn(
+            "currency_code",
+            "ISO 4217 currency this row is denominated in; null means unknown.",
+            DataClass.CURRENCY,
+        ),
         OutputColumn(
             "total_spend",
             "Absolute outflow in the month and category.",
@@ -88,7 +94,7 @@ from moneybin.tables import REPORTS_SPENDING_TREND
         sign="spend is positive absolute outflow; deltas are current minus comparison",
         kind="flow",
         valuation_basis="transaction amount",
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis=(
             "inclusive eligible-data calendar-month period with zero-filled missing "
             "category-months"
@@ -154,7 +160,7 @@ def spending_trend(
     )
 
     sql = f"""
-        SELECT year_month, category, total_spend, txn_count,
+        SELECT year_month, category, currency_code, total_spend, txn_count,
                prev_month_spend, mom_delta, mom_pct,
                prev_year_spend, yoy_delta, yoy_pct,
                trailing_3mo_avg
