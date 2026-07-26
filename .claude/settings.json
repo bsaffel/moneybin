@@ -1,5 +1,17 @@
 {
   "enabledPlugins": {
     "mcp-apps@mcp-apps": false
+  },
+  "hooks": {
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/create_worktree.py\""
+          }
+        ]
+      }
+    ]
   }
 }
