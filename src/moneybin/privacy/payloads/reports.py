@@ -10,15 +10,24 @@ from moneybin.privacy.taxonomy import DataClass
 
 
 class ReportSemanticsPayload(BaseModel):
-    """Financial interpretation metadata repeated by catalog and result."""
+    """Financial interpretation metadata repeated by catalog and result.
 
-    unit: Annotated[str, DataClass.AGGREGATE]
+    Mirrors ``ReportSemantics`` field-for-field, including its
+    ``"unknown"`` / ``None`` arms for user-created reports. Keep the two in
+    lockstep: this is a Pydantic model, so ``test_annotated_registry_sync``
+    (which gates on ``is_dataclass``) does not cover it — the only guard against
+    divergence is ``_semantics_to_payload`` failing to type-check.
+    """
+
+    unit: Annotated[str | None, DataClass.AGGREGATE]
     currency: Annotated[str | None, DataClass.AGGREGATE]
-    sign: Annotated[str, DataClass.AGGREGATE]
-    kind: Annotated[Literal["position", "flow", "ratio", "count"], DataClass.AGGREGATE]
+    sign: Annotated[str | None, DataClass.AGGREGATE]
+    kind: Annotated[
+        Literal["position", "flow", "ratio", "count", "unknown"], DataClass.AGGREGATE
+    ]
     valuation_basis: Annotated[str | None, DataClass.AGGREGATE]
     fx_basis: Annotated[str | None, DataClass.AGGREGATE]
-    time_basis: Annotated[str, DataClass.AGGREGATE]
+    time_basis: Annotated[str | None, DataClass.AGGREGATE]
     denominator: Annotated[str | None, DataClass.AGGREGATE]
     comparison_window: Annotated[str | None, DataClass.AGGREGATE]
     exclusions: Annotated[tuple[str, ...], DataClass.AGGREGATE]

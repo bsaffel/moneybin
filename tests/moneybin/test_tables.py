@@ -51,6 +51,7 @@ from moneybin.tables import (
     TRANSACTION_NOTES,
     TRANSACTION_SPLITS,
     TRANSACTION_TAGS,
+    USER_REPORTS,
     TableRef,
 )
 
@@ -90,6 +91,7 @@ EXPECTED_INTERFACE = {
     FCT_REALIZED_GAINS.full_name,
     DIM_HOLDINGS.full_name,
     FCT_SECURITY_PRICES.full_name,
+    USER_REPORTS.full_name,
 }
 
 

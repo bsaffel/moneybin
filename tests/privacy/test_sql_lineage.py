@@ -948,6 +948,59 @@ def test_reports_class_map_is_keyed_by_reports_schema() -> None:
     assert all(schema == "reports" for (schema, _table) in m)
 
 
+def test_reports_class_map_skips_a_spec_with_no_graph_backed_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dynamic report has no ``reports.*`` view, so it has nothing to key on.
+
+    The map keys on ``(spec.view.schema, spec.view.name)``; without the skip a
+    synthesized spec raises ``AttributeError`` on ``None.schema`` and takes down
+    classification for every report, not just the dynamic one.
+    """
+    from moneybin.reports._framework.contract import (
+        OutputColumn,
+        ReportQuery,
+        ReportSemantics,
+        ReportSpec,
+    )
+
+    def _runner(db: object) -> ReportQuery:
+        return ReportQuery(sql="SELECT 1 AS n")
+
+    _runner._report_spec = ReportSpec(  # type: ignore[attr-defined]
+        report_id="user:r0123456789ab",
+        name="saved_report",
+        description="A saved report",
+        view=None,
+        runner=_runner,
+        classes={"n": DataClass.AGGREGATE},
+        columns=(
+            OutputColumn(name="n", description="n", data_class=DataClass.AGGREGATE),
+        ),
+        semantics=ReportSemantics(
+            unit=None,
+            currency=None,
+            sign=None,
+            kind="unknown",
+            valuation_basis=None,
+            fx_basis=None,
+            time_basis=None,
+            denominator=None,
+            comparison_window=None,
+            exclusions=(),
+            provenance=(),
+        ),
+    )
+    from moneybin.reports import definitions
+
+    monkeypatch.setattr(definitions, "ALL_REPORTS", (*definitions.ALL_REPORTS, _runner))
+
+    m = reports_class_map()
+
+    assert all(schema == "reports" for (schema, _table) in m)
+    assert (None, "saved_report") not in m
+
+
 # A prior version of this module asserted every report's account_id column
 # must declare ACCOUNT_IDENTIFIER (CRITICAL). That premise is wrong:
 # account_id is a deliberately opaque minted surrogate classified RECORD_ID

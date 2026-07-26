@@ -51,6 +51,7 @@ from moneybin.tables import (
     TRANSACTION_TAGS,
     USER_CATEGORIES,
     USER_MERCHANTS,
+    USER_REPORTS,
     TableRef,
 )
 
@@ -408,6 +409,7 @@ class DoctorService:
                 updated_col="created_at",
                 full=full,
             ),
+            self._run_app_audit_coverage(USER_REPORTS, "report_id", full=full),
             self._run_pdf_formats_recipe_validity(),
             self._run_pdf_formats_bounds(),
             self._run_pdf_formats_fingerprint_shape(),

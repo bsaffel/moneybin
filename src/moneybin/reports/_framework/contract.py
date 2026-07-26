@@ -69,15 +69,24 @@ class OutputColumn:
 
 @dataclass(frozen=True, slots=True)
 class ReportSemantics:
-    """Financial interpretation metadata for a report's metrics."""
+    """Financial interpretation metadata for a report's metrics.
 
-    unit: str
+    ``kind`` admits ``"unknown"`` and ``unit`` / ``sign`` / ``time_basis`` admit
+    ``None`` so a user-created report can state that its financial
+    interpretation is unknown. MoneyBin cannot derive these from an arbitrary
+    ``SELECT``, and defaulting them would publish a claim about the user's query
+    that nobody made — an agent reading ``sign: "natural"`` on a report whose
+    author flipped the sign gets a confidently wrong answer, which is worse than
+    getting none. Decorated reports still supply all three.
+    """
+
+    unit: str | None
     currency: str | None
-    sign: str
-    kind: Literal["position", "flow", "ratio", "count"]
+    sign: str | None
+    kind: Literal["position", "flow", "ratio", "count", "unknown"]
     valuation_basis: str | None
     fx_basis: str | None
-    time_basis: str
+    time_basis: str | None
     denominator: str | None
     comparison_window: str | None
     exclusions: tuple[str, ...]
@@ -101,7 +110,10 @@ class ReportSpec:
     report_id: str
     name: str
     description: str
-    view: TableRef
+    view: TableRef | None
+    """The ``reports.*`` view backing this report, or ``None`` when it is not
+    graph-backed. A user-created report is evaluated at query time and has no
+    SQLMesh view, so it cannot be ``kind FULL`` or join scheduled refresh."""
     runner: Runner
     classes: Mapping[str, DataClass]
     columns: tuple[OutputColumn, ...]

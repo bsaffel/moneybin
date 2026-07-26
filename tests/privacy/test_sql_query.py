@@ -645,7 +645,10 @@ def test_generated_classes_are_current() -> None:
     )
 
     derived = derive_report_classes()
-    runner_keys = {(spec_of(r).view.schema, spec_of(r).view.name) for r in ALL_REPORTS}
+    runner_views = [spec_of(r).view for r in ALL_REPORTS]
+    runner_keys = {
+        (view.schema, view.name) for view in runner_views if view is not None
+    }
     expected = {key: cols for key, cols in derived.items() if key not in runner_keys}
     assert DERIVED_REPORT_CLASSES == expected, (
         "Regenerate with: make generate-report-classes"

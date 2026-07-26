@@ -252,6 +252,18 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "app.user_reports": [
+        Example(
+            question="Saved reports and when each was last updated",
+            sql="""
+                SELECT report_id, name, description, updated_at
+                FROM app.user_reports
+                WHERE is_active
+                ORDER BY updated_at DESC, report_id
+                LIMIT 50
+            """,
+        ),
+    ],
     "core.dim_merchants": [
         Example(
             question="Merchants with their canonical names",

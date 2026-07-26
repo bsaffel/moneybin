@@ -1344,6 +1344,11 @@ def reports_class_map() -> dict[tuple[str, str], dict[str, DataClass]]:
     out: dict[tuple[str, str], dict[str, DataClass]] = {}
     for runner in ALL_REPORTS:
         spec = spec_of(runner)
+        # A dynamic report is not graph-backed, so it has no (schema, table) to
+        # key on. Its classes live in app.user_reports and reach redaction
+        # through its synthesized spec, never through this view-keyed map.
+        if spec.view is None:
+            continue
         out[(spec.view.schema, spec.view.name)] = dict(spec.classes)
     for key, cols in DERIVED_REPORT_CLASSES.items():
         out[key] = dict(cols)

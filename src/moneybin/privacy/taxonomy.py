@@ -286,6 +286,24 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "spreadsheet_id": DataClass.RECORD_ID,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("app", "user_reports"): {
+        "class_downgrades": DataClass.DESCRIPTION,
+        "class_fingerprint": DataClass.RECORD_ID,
+        "classes": DataClass.DESCRIPTION,
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "description": DataClass.USER_NOTE,
+        "is_active": DataClass.TXN_TYPE,
+        "name": DataClass.USER_NOTE,
+        "params": DataClass.DESCRIPTION,
+        # MEDIUM is a deliberate accepted risk: a user must be able to read
+        # their own SQL back to edit it, and pattern-matching string literals
+        # to classify them would corrupt legitimate queries. R8/R9 exist so the
+        # natural way to write a filter is a parameter, not an inline literal.
+        "query_sql": DataClass.USER_NOTE,
+        "report_id": DataClass.RECORD_ID,
+        "semantics": DataClass.DESCRIPTION,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "imports"): {
         "import_id": DataClass.RECORD_ID,
         "labels": DataClass.USER_NOTE,

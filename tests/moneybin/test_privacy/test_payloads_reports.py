@@ -55,6 +55,21 @@ _SEMANTICS = ReportSemantics(
     exclusions=("transfers",),
     provenance=("reports.spending",),
 )
+#: What a user-created report stores: MoneyBin cannot derive financial
+#: interpretation from an arbitrary SELECT, so it says so rather than guessing.
+_UNKNOWN_SEMANTICS = ReportSemantics(
+    unit=None,
+    currency=None,
+    sign=None,
+    kind="unknown",
+    valuation_basis=None,
+    fx_basis=None,
+    time_basis=None,
+    denominator=None,
+    comparison_window=None,
+    exclusions=(),
+    provenance=(),
+)
 _COLUMNS = (
     OutputColumn("date", "Calendar date.", DataClass.TXN_DATE),
     OutputColumn("amount", "Signed money amount.", DataClass.TXN_AMOUNT),
@@ -238,6 +253,29 @@ def test_result_repeats_semantics_provenance_and_runtime_classification() -> Non
     assert payload.sensitivity == "high"
     assert payload.count == 1
     assert payload.truncated is False
+
+
+def test_a_user_report_projects_explicitly_unknown_semantics() -> None:
+    """The payload must be able to say "unknown" rather than omit the field.
+
+    An agent reading ``sign: "natural"`` on a report whose author flipped the
+    sign gets a confidently wrong answer — worse than getting none. Defaulting
+    these fields would publish a claim about the user's query nobody made.
+    """
+    result = replace(
+        _CATALOG_RESULT,
+        report_id="user:r0123456789ab",
+        semantics=_UNKNOWN_SEMANTICS,
+        provenance=(),
+    )
+
+    payload = result_to_payload(result)
+
+    assert payload.semantics.kind == "unknown"
+    assert payload.semantics.unit is None
+    assert payload.semantics.sign is None
+    assert payload.semantics.time_basis is None
+    assert payload.semantics.provenance == ()
 
 
 def test_result_parameters_thaw_only_safe_frozen_json_shapes() -> None:

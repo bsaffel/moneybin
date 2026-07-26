@@ -194,4 +194,8 @@ def test_networth_history_preserves_flags_and_executes_through_catalog() -> None
 
 def test_every_report_targets_a_reports_view() -> None:
     for runner in ALL_REPORTS:
-        assert spec_of(runner).view.schema == "reports"
+        view = spec_of(runner).view
+        # A decorated report is graph-backed by definition; only a dynamic
+        # report's view is None, and those never enter ALL_REPORTS.
+        assert view is not None
+        assert view.schema == "reports"

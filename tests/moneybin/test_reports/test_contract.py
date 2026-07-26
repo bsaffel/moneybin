@@ -290,6 +290,7 @@ def test_build_spec_rejects_non_reports_view() -> None:
 def test_build_spec_accepts_custom_table_ref() -> None:
     view = TableRef("reports", "sample")
     spec = _build_spec(view=view, domain="merchants")
+    assert spec.view is not None
     assert spec.view.full_name == "reports.sample"
     assert spec.domain == "merchants"
 

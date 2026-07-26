@@ -81,6 +81,8 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         assert semantics.fx_basis
         assert semantics.time_basis
         assert semantics.exclusions
+        # Decorated reports are graph-backed; only a dynamic report has no view.
+        assert spec.view is not None
         assert semantics.provenance == (spec.view.full_name,)
 
         monetary_classes = {DataClass.TXN_AMOUNT, DataClass.BALANCE}

@@ -750,7 +750,7 @@ def test_run_all_returns_expected_invariants(
     # source overlap, unresolved securities, conflicting security refs,
     # unreported holdings, phantom holdings) + sqlmesh_model_presence
     # (registered-but-unbuilt models).
-    assert len(report.invariants) == 47
+    assert len(report.invariants) == 48
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -770,6 +770,7 @@ def test_run_all_returns_expected_invariants(
     assert "app_audit_coverage_import_previews" in names
     assert "app_audit_coverage_securities" in names
     assert "app_audit_coverage_lot_selections" in names
+    assert "app_audit_coverage_user_reports" in names
     assert "app_user_categories_uniqueness" in names
     assert "app_account_settings_account_fk" in names
     assert "app_balance_assertions_account_fk" in names

@@ -169,12 +169,20 @@ the #330 transitional bridge (derivation subsumes it); moves
 
 ### B — Dynamic reports: the ask→save→verify loop (M2P.2)
 
-The headline capability. `app.user_reports`; create/run/list/edit/delete across
-MCP **and** CLI with the same envelope and privacy path as built-ins; classes
-resolved by construction via `resolve_output_classes`; and the verification
-surface — "show me the SQL", lineage to source rows, freshness. Roadmap item
-**M2I** ("Show me the SQL" report lineage) lands here. Specified in
+The headline capability. `app.user_reports`; classes resolved by construction via
+`resolve_output_classes`; and the verification surface — "show me the SQL",
+lineage to source rows, freshness. Roadmap item **M2I** ("Show me the SQL"
+report lineage) lands here. Specified in
 [`reports-dynamic.md`](reports-dynamic.md).
+
+**Reading and running** a saved report adds no MCP tool: the shipped
+`reports(report_id=…, parameters=…)` catalog/runner resolves all three tiers, so
+a user report reaches the same envelope and privacy path as a built-in through
+the same identity. **The lifecycle verbs — save, update, rename, archive,
+delete, inspect, reclassify — are CLI-only**, because ADR-016's bounded registry
+admits no new MCP identity without a passed admission record. This section
+originally promised the lifecycle "across MCP **and** CLI"; #344's bounded
+registry and `reports-dynamic.md` R5 superseded that, and R5 is authoritative.
 
 ### C — Materialization & distribution (M2P.3)
 

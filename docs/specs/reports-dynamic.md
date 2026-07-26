@@ -87,9 +87,14 @@ SQLMesh view at build time, so it cannot express runtime creation.
 
 New protected `app.*` table, paired per convention across
 `src/moneybin/sql/schema/app_user_reports.sql` and
-`src/moneybin/sql/migrations/V041__create_app_user_reports.py` (`V039` and
-`V040` are taken on `main`), registered as
+`src/moneybin/sql/migrations/V045__create_app_user_reports.py`, registered as
 `USER_REPORTS = TableRef("app", "user_reports", audience="interface")`.
+
+This draft prescribed `V041`, which #349 took for `app.export_destinations`
+three days after the draft merged; `V042`–`V044` are claimed by branches in
+flight. Migration discovery globs and sorts by version and rejects only
+*duplicate* versions (`migrations.py`), so the gap is safe and `V045` is the
+number that lands.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -226,8 +231,8 @@ contradicts R2's rule that saving requires a name and a query and nothing else.
 #### These columns must be classified
 
 `app` is inside `_ALLOWED_QUERY_SCHEMAS`, so `sql_query` — and a dynamic report
-— can `SELECT query_sql FROM app.user_reports`. V039 therefore lands with
-`CLASSIFICATION` entries or it fails
+— can `SELECT query_sql FROM app.user_reports`. `V045` therefore lands with
+`CLASSIFICATION` entries for **all twelve** columns or it fails
 `tests/privacy/test_classification_completeness.py` on the first run. A spec
 whose thesis is that classification is never skipped cannot skip its own table.
 
@@ -241,7 +246,7 @@ references:
 | `description` | `USER_NOTE` | `categorization_rules.name` |
 | `name` | `USER_NOTE` | `categorization_rules.name` — user-authored, despite also being the handle |
 | `report_id` | `RECORD_ID` | `gsheet_connections.alias` — minted opaque handle |
-| `classes`, `class_downgrades`, `params` | `DESCRIPTION` | `gsheet_connections.column_mapping` — structural JSON map |
+| `classes`, `class_downgrades`, `params`, `semantics` | `DESCRIPTION` | `gsheet_connections.column_mapping` — structural JSON map |
 | `class_fingerprint` | `RECORD_ID` | `checksum` / `content_hash` (`taxonomy.py`) — the existing class for a hash |
 | `is_active` | `TXN_TYPE` | `categorization_rules.is_active` |
 | `created_at`, `updated_at` | `TIMESTAMP_OBSERVABILITY` | Universal across `app` tables |
@@ -1051,14 +1056,33 @@ would hide a surface that is refusing every downgrade for mechanical reasons.
   leaving `ReportSemantics` closed and letting the catalog payload represent an
   absent-semantics report — keeps the built-in contract frozen at the cost of
   two shapes for one concept, which is the two-patterns rot `design-principles.md`
-  names as the largest source of decay. Decide with the implementing PR, which
-  is where the consumer list can actually be enumerated.
+  names as the largest source of decay.
+
+  **Answered — `ReportSemantics` widens.** The implementing PR enumerated the
+  consumers, and the widening is far cheaper than this draft assumed: 16
+  construction sites (8 in `src`, 8 in tests) and 49 total touch points, of
+  which **adding a `Literal` member or making a field optional breaks zero** —
+  a frozen dataclass only breaks its constructors when a *field* is added. No
+  exhaustiveness logic exists to widen against: zero `assert_never`, zero
+  `match`/`case` on `kind`, zero `kind`-keyed dicts, zero `Literal`-typed
+  parameters. The change is seven edits — `kind` gains `"unknown"` and
+  `unit` / `sign` / `time_basis` admit `None`, on `ReportSemantics` and on its
+  one mirrored type — and every consequence is a pyright-strict compile error
+  rather than a silent behaviour change.
+
+  One guard gap to know about, because it is the only thing keeping the pair in
+  sync: the mirror `ReportSemanticsPayload`
+  (`src/moneybin/privacy/payloads/reports.py`) is a Pydantic `BaseModel`, and
+  `tests/moneybin/test_privacy/test_annotated_registry_sync.py` gates on
+  `is_dataclass` — so no drift test covers it. The copy site
+  (`_semantics_to_payload`) type-erroring under pyright is the whole safety net
+  for a future field addition.
 - **Which MCP identities, if any, pass bounded-registry admission?** Lifecycle,
   inspection, and classification downgrade are distinct capability boundaries,
   not reserved tool names. Fitting `surface-design.md`'s shapes is not the
   admission test: the implementing PR must first try an existing projection,
   method, batch, target state, report entry, or workflow umbrella, then supply
   the seven-question record, serialized byte delta, and evaluation evidence for
-  every remaining identity. The registry stays at 45 until that evidence passes;
+  every remaining identity. The registry stays at 47 until that evidence passes;
   the fallback is an existing admitted operation or CLI-only operator control,
   not a speculative alias or an override of ADR-016's hard maximum.

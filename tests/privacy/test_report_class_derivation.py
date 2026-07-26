@@ -251,6 +251,10 @@ def _all_class_downgrades() -> dict[tuple[str, str], dict[str, str]]:
     out: dict[tuple[str, str], dict[str, str]] = {}
     for runner in ALL_REPORTS:
         spec = spec_of(runner)
+        # Mirrors reports_class_map's skip: a view-less dynamic report has no
+        # (schema, table) to key on and derives its classes at save instead.
+        if spec.view is None:
+            continue
         out[(spec.view.schema, spec.view.name)] = dict(spec.class_downgrades)
     return out
 
