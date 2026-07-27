@@ -272,6 +272,14 @@ def _ambiguous_aliases(tree: exp.Expr) -> frozenset[str]:
     branch; callers that genuinely need one map for the whole tree consult this
     set instead and fail closed on the names it holds, rather than resolving a
     column against a table it never came from.
+
+    Pass the tree ``_build_alias_map`` gets. Both read ``Table.db``, so both see
+    only tables that carry a schema — written qualified, or qualified by
+    :func:`_qualified`. A tree where *no* table does leaves both empty, which is
+    safe because nothing resolves for a collision to matter to; a tree where only
+    some do would hide a collision here that ``_build_alias_map`` still answers
+    for. Note this is the opposite precondition to
+    :func:`read_column_classes`, which requires the unqualified tree.
     """
     bound: dict[str, set[tuple[str, str]]] = {}
     for tbl in tree.find_all(exp.Table):
@@ -1522,8 +1530,10 @@ def resolve_projection_sources(
         qualified = _qualified(tree, snapshot)
     except SqlSchemaError:
         # A report over a view that has not been built yet cannot be qualified.
-        # Its projections are still readable as passthrough-or-computed, which
-        # is strictly more than nothing and never claims an upstream.
+        # Its projections are still readable as passthrough-or-computed, which is
+        # strictly more than nothing. Only a table written schema-qualified still
+        # resolves an upstream here; the rest carry no schema for the alias map to
+        # key on, so they name none.
         qualified = tree
     alias_map = _build_alias_map(qualified)
     # Merging is positional across branches, so one tree-wide map is what this
