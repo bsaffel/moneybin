@@ -1110,6 +1110,8 @@ class TransactionService:
             actor=actor,
         )
 
+        from moneybin.loaders import import_log
+
         results: list[ManualEntryRawResult] = []
         self._db.begin()
         try:
@@ -1181,8 +1183,6 @@ class TransactionService:
             # blocks re-imports and shows up in `moneybin import history`.
             # Mirror the OFX path: mark the batch as failed before re-raising.
             self._db.rollback()
-            from moneybin.loaders import import_log
-
             import_log.finalize_import(
                 self._db,
                 import_id,
@@ -1191,6 +1191,20 @@ class TransactionService:
                 rows_imported=0,
             )
             raise
+
+        # Close the batch this path opened. Without it the row stays 'importing'
+        # forever with a NULL completed_at and NULL row counts, which
+        # `moneybin import history` / `import_status` cannot tell apart from a
+        # genuinely crashed write.
+        # Finalized here, before categorization: the raw rows are committed and
+        # a later categorization failure explicitly leaves them in place.
+        import_log.finalize_import(
+            self._db,
+            import_id,
+            status="complete",
+            rows_total=len(results),
+            rows_imported=len(results),
+        )
 
         # Attach user-supplied categories in one atomic txn AFTER the raw-write
         # commits. All-or-nothing: a failure on entry N rolls back entries

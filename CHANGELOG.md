@@ -119,6 +119,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **"Transforms up to date" now accounts for everything you can add, not just
+  accounts.** The staleness flag on `system_status` and `moneybin transform
+  status` watched three account tables out of the seventeen a refresh reads, so
+  a manually recorded transaction, a manually recorded investment trade, a
+  synced holding, and a fetched security price all landed while MoneyBin
+  reported nothing to refresh — the reports you then ran were built without
+  them. All seventeen are watched, compared against SQLMesh's own record of
+  when it last finished, and a raw table wired into a model but left out of
+  that set now fails the build rather than going unwatched. Manual entries also
+  close their import batch on success; a batch left open reads as a crashed
+  write in `import history` and `import status`, with no completion time and no
+  row counts.
 - **`--profile` now logs like any other run.** Naming a profile explicitly —
   `moneybin -p work sync pull`, or `MONEYBIN_PROFILE=work` — wrote no log files
   at all: no `cli_*.log`, no `sqlmesh_*.log`. With no log file to hold them,

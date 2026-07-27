@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -22,6 +23,101 @@ from moneybin.sqlmesh_registry import model_presence
 from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
+
+# Every raw table a SQLMesh model reads, mapped to the column recording when
+# its rows landed in *this* database. Deliberately landing time, not
+# ``extracted_at``: OFX stamps ``extracted_at`` when parsing begins and Plaid
+# carries the provider's own sync time, both of which can predate an apply
+# that ran while the rows were still in flight — those rows would then read as
+# already-transformed forever. Landing time is written inside the write
+# transaction, which the single-writer lock orders strictly against an apply.
+#
+# `test_pending_scan_set_covers_every_raw_table_the_transforms_read` asserts
+# this key set equals `raw_tables_read_by_models()`, so a new raw table wired
+# into a model fails loudly here rather than going silently unwatched.
+_RAW_LANDING_COLUMNS: dict[str, str] = {
+    "ofx_accounts": "loaded_at",
+    "ofx_balances": "loaded_at",
+    "ofx_institutions": "loaded_at",
+    "ofx_transactions": "loaded_at",
+    "plaid_accounts": "loaded_at",
+    "plaid_balances": "loaded_at",
+    "plaid_investment_holding_lots": "loaded_at",
+    "plaid_investment_holdings": "loaded_at",
+    "plaid_investment_holdings_snapshots": "loaded_at",
+    "plaid_investment_transactions": "loaded_at",
+    "plaid_securities": "loaded_at",
+    "plaid_transactions": "loaded_at",
+    "security_prices": "loaded_at",
+    "tabular_accounts": "loaded_at",
+    "tabular_transactions": "loaded_at",
+    # The two manual-entry tables record their insert as `created_at` and have
+    # no `loaded_at` — same instant, different name.
+    "manual_investment_transactions": "created_at",
+    "manual_transactions": "created_at",
+}
+
+# Those of the above whose rows name the import batch that wrote them, so a
+# reverted or failed batch can be filtered back out. Sync and price-feed
+# tables open no `import_log` batch at all and are unconditionally counted.
+_RAW_IMPORT_SCOPED: frozenset[str] = frozenset({
+    "manual_investment_transactions",
+    "manual_transactions",
+    "ofx_accounts",
+    "ofx_balances",
+    "ofx_institutions",
+    "ofx_transactions",
+    "tabular_accounts",
+    "tabular_transactions",
+})
+
+
+def _build_raw_landing_scan(
+    tables: Collection[str], *, filter_bad_imports: bool = True
+) -> str:
+    """Compose the MAX-over-landing-times query from the declarations above.
+
+    The full-set form is emitted once at import so the hot path runs a fixed
+    string; ``_max_raw_landed_at`` rebuilds a narrowed one only when a table
+    is missing. Each arm projects the table's landing column and its import
+    batch (NULL where the table has none) so one status filter covers every
+    source.
+    """
+    arms: list[str] = []
+    for table in sorted(tables):
+        column = _RAW_LANDING_COLUMNS[table]
+        batch = (
+            "import_id" if table in _RAW_IMPORT_SCOPED else "NULL::VARCHAR AS import_id"
+        )
+        arms.append(f'SELECT "{column}" AS landed_at, {batch} FROM raw."{table}"')
+    union = "\n    UNION ALL\n    ".join(arms)
+    # The ::TIMESTAMPTZ cast resolves each naive landing stamp in the *reading*
+    # session's zone, which is the writing zone only while the profile stays on
+    # one machine. Carry the database across zones and these stamps skew against
+    # SQLMesh's absolute `finalized_ts` by the offset delta, which can strand
+    # `pending` true or briefly mask real staleness until the next apply
+    # re-anchors it. A naive value cannot yield its instant at read time, so the
+    # fix is storing the landing columns as TIMESTAMPTZ, not a different cast.
+    if not filter_bad_imports:
+        return f"""
+            SELECT MAX(landed_at)::TIMESTAMPTZ FROM (
+            {union}
+            ) AS candidates
+        """  # noqa: S608  # identifiers come from the module constants above
+    return f"""
+        WITH bad_imports AS (
+            SELECT import_id FROM raw.import_log
+            WHERE status IN ('reverted', 'failed')
+        ), candidates AS (
+            {union}
+        )
+        SELECT MAX(landed_at)::TIMESTAMPTZ FROM candidates
+        WHERE import_id IS NULL
+           OR import_id NOT IN (SELECT import_id FROM bad_imports)
+    """  # noqa: S608  # identifiers come from the module constants above
+
+
+_RAW_LANDING_SCAN = _build_raw_landing_scan(_RAW_LANDING_COLUMNS)
 
 
 @dataclass(frozen=True)
@@ -222,23 +318,26 @@ class TransformService:
         * a registered SQLMesh model has no relation in the catalog — it was
           never built, which no timestamp comparison can detect because an
           unbuilt model has no timestamp; or
-        * a raw account row exists whose ``extracted_at`` is newer than
-          ``core.dim_accounts.extracted_at``.
+        * a raw row landed after the last SQLMesh apply finished.
 
-        The second check reads ``core.dim_accounts`` alone because it is the
-        only core model that projects a bare ``extracted_at`` — everything else
-        renames it (``source_extracted_at`` on ``fct_transactions``,
-        ``extracted_at AS updated_at`` on ``fct_security_prices``) or drops it.
-        Generalizing the comparison across models is therefore not possible
-        today, and would need care if it became so: models fed by independent
-        provider cadences could pin ``pending`` true permanently, which no
-        ``refresh_run`` could clear. The missing-model check above is the part
-        that does generalize. Both sides compare the same propagated data value
-        (Python-set when the loader parses the file, carried unchanged through
-        SQLMesh) — so the check stays immune to the DuckDB
-        ``CURRENT_TIMESTAMP`` transaction-start race that affects clock-derived
-        columns when autocommit writes and a longer SQLMesh apply transaction
-        interleave.
+        The second check scans every raw table a model reads
+        (:data:`_RAW_LANDING_COLUMNS`) against one global apply stamp —
+        SQLMesh's own ``finalized_ts``, read with a plain SELECT because a
+        ``Context`` costs seconds. One stamp rather than a per-model
+        comparison is what makes this safe to generalize: it advances however
+        the warehouse was rebuilt, so sources on independent provider cadences
+        cannot pin ``pending`` true in a way no ``refresh_run`` can clear.
+
+        Two known limits, both narrower than the fail-open they replaced:
+
+        * SQLMesh finalizes the environment on *every* promotion of ``prod``,
+          selective ones included, so ``transform seed`` and ``transform
+          restate --model`` advance the stamp without rebuilding the models
+          that consume a newly landed row.
+        * The landing stamps are naive and resolve through the *reading*
+          session's zone while the apply stamp is an absolute epoch, so the
+          comparison holds only while the profile is read in the zone that
+          wrote it.
 
         ``last_apply_at`` (``dim_accounts.updated_at``) and
         ``latest_import_at`` (``import_log.completed_at``) remain
@@ -250,15 +349,15 @@ class TransformService:
         # looks like between `db init` and its first refresh. Reporting that as
         # pending would make the flag permanently true on a healthy first run.
         missing_models = () if presence.never_built else presence.missing
-        pending_extracted = self._max_unapplied_raw_extracted_at()
-        core_extracted = self._max_dim_accounts_extracted_at()
+        landed_at = self._max_raw_landed_at()
+        applied_at = self._last_apply_finalized_at()
 
-        if pending_extracted is None:
+        if landed_at is None:
             raw_ahead = False
-        elif core_extracted is None:
+        elif applied_at is None:
             raw_ahead = True
         else:
-            raw_ahead = pending_extracted > core_extracted
+            raw_ahead = landed_at > applied_at
 
         return TransformFreshness(
             pending=bool(missing_models) or raw_ahead,
@@ -399,19 +498,18 @@ class TransformService:
         return AuditResult(passed=passed, failed=failed, audits=audits)
 
     def _max_completed_import_at(self) -> datetime | None:
-        # Status filter is deliberately broader than
-        # SystemService._last_import_at (which restricts to status='complete').
-        # Here we want any non-aborted import to count as pending data the
-        # transforms haven't seen yet — including 'partial' (some rows landed
-        # but the batch errored) and 'importing' (an in-flight write that
-        # already produced rows). The system_status user-facing
-        # "last_import_at" should only show fully-complete imports; the
-        # transforms-pending freshness signal should fire as soon as any
-        # non-reverted raw row exists newer than the latest dim refresh.
+        # 'complete' and 'partial' are exactly the statuses that set
+        # completed_at, so the filter now matches the aggregate. The previous
+        # `NOT IN ('reverted', 'failed')` also admitted in-flight 'importing'
+        # batches to make them count as unseen data — but their completed_at
+        # is NULL until finalize, so MAX skipped every one of them, and this
+        # field drives no freshness decision anyway (see `freshness`).
+        # Deliberately broader than SystemService._last_import_at, which shows
+        # only fully-complete imports: a 'partial' batch did land rows.
         try:
             row = self._db.execute(
                 f"SELECT MAX(completed_at)::TIMESTAMP FROM {IMPORT_LOG.full_name} "
-                f"WHERE status NOT IN ('reverted', 'failed')"  # noqa: S608  # TableRef constant
+                f"WHERE status IN ('complete', 'partial')"  # noqa: S608  # TableRef constant
             ).fetchone()
         except duckdb.CatalogException:
             # CatalogException when raw.import_log not yet created (pre-first-import)
@@ -428,43 +526,68 @@ class TransformService:
             return None
         return row[0] if row and row[0] is not None else None
 
-    def _max_dim_accounts_extracted_at(self) -> datetime | None:
-        try:
-            row = self._db.execute(
-                f"SELECT MAX(extracted_at) FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef constant
-            ).fetchone()
-        except duckdb.CatalogException:
-            return None
-        return row[0] if row and row[0] is not None else None
+    def _max_raw_landed_at(self) -> datetime | None:
+        """Latest landing time across every raw table the transforms read.
 
-    def _max_unapplied_raw_extracted_at(self) -> datetime | None:
-        """MAX(extracted_at) across raw account staging, excluding bad imports.
-
-        Mirrors :meth:`_max_completed_import_at`'s status filter so a
-        partially-loaded failed batch (rows landed before the ingest
-        errored) doesn't permanently trigger pending=True. ``raw.plaid_accounts``
-        has no ``import_id`` column (Plaid sync doesn't use ``import_log``),
-        so its rows always pass the filter.
+        Excludes rows belonging to a reverted or failed import batch — a
+        revert deletes its raw rows, but a failed ingest can leave rows
+        behind, and those must not pin ``pending`` true forever. Tables that
+        open no ``import_log`` batch (sync, price feeds) always pass.
         """
         try:
-            row = self._db.execute(
-                """
-                WITH bad_imports AS (
-                    SELECT import_id FROM raw.import_log
-                    WHERE status IN ('reverted', 'failed')
-                ), candidates AS (
-                    SELECT extracted_at, import_id FROM raw.ofx_accounts
-                    UNION ALL
-                    SELECT extracted_at, import_id FROM raw.tabular_accounts
-                    UNION ALL
-                    SELECT extracted_at, NULL::VARCHAR AS import_id
-                    FROM raw.plaid_accounts
-                )
-                SELECT MAX(extracted_at) FROM candidates
-                WHERE import_id IS NULL
-                   OR import_id NOT IN (SELECT import_id FROM bad_imports)
-                """
-            ).fetchone()
+            row = self._db.execute(_RAW_LANDING_SCAN).fetchone()
         except duckdb.CatalogException:
+            # One absent table must not blind the scan to the other sixteen.
+            # Read-only opens never run `init_schemas`, so a raw table added
+            # by a newer release is genuinely missing until the next write —
+            # and returning None there reports "nothing pending" for every
+            # source, the exact fail-open this scan exists to close.
+            present, has_import_log = self._present_raw_landing_tables()
+            if not present:
+                return None
+            row = self._db.execute(
+                _build_raw_landing_scan(present, filter_bad_imports=has_import_log)
+            ).fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def _present_raw_landing_tables(self) -> tuple[frozenset[str], bool]:
+        """Declared landing tables this catalog actually has, plus import_log."""
+        rows = self._db.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_catalog = current_database() AND table_schema = 'raw'"
+        ).fetchall()
+        names = {str(row[0]) for row in rows}
+        return frozenset(names & set(_RAW_LANDING_COLUMNS)), "import_log" in names
+
+    def _last_apply_finalized_at(self) -> datetime | None:
+        """When SQLMesh last finished promoting the ``prod`` environment.
+
+        Reads the state table SQLMesh keeps inside the MoneyBin database
+        with a plain SELECT rather than a ``Context``, for the same reason
+        ``freshness()`` avoids one. The existence probe is scoped to the
+        current catalog because an in-process ``memory.sqlmesh._environments``
+        can otherwise satisfy it while the SELECT reads the persistent table —
+        the catalog split ``_pin_cursor_to_moneybin`` exists to prevent.
+
+        SQLMesh owns this table's layout and migrates it across versions, so a
+        read failure is a real possibility on an un-migrated state schema. It
+        degrades to ``None`` rather than propagating: ``freshness()`` has no
+        catch of its own and is on the ``system_status`` path, and ``None``
+        means "no apply we can see", which reports pending rather than clean.
+        """
+        try:
+            exists = self._db.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_catalog = current_database() "
+                "AND table_schema = 'sqlmesh' AND table_name = '_environments'"
+            ).fetchone()
+            if not exists:
+                return None
+            row = self._db.execute(
+                "SELECT to_timestamp(MAX(finalized_ts) / 1000.0) "
+                "FROM sqlmesh._environments WHERE name = 'prod'"
+            ).fetchone()
+        except duckdb.Error:
+            logger.debug("SQLMesh apply-stamp read failed", exc_info=True)
             return None
         return row[0] if row and row[0] is not None else None
