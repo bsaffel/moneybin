@@ -39,6 +39,7 @@ from moneybin.repositories.user_reports_repo import UNSET, Unset, UserReportsRep
 from moneybin.services._validators import (
     DESCRIPTION_MAX_LEN,
     IDENTIFIER_MAX_LEN,
+    NOTE_MAX_LEN,
     REPORT_QUERY_MAX_LEN,
 )
 from moneybin.services.audit_service import AuditEvent
@@ -407,6 +408,22 @@ class UserReportsService:
                     "reveals less than its derived class."
                 ),
             )
+        try:
+            # Beside the blank check, and before the gate, for the same reason:
+            # a malformed request, not an unauthorized one. Bounded because it is
+            # a stored text field like `description` and `query` — and unlike
+            # them it is copied into the before/after row images every later
+            # mutation audits, so an unbounded blob is duplicated across the
+            # audit history rather than stored once. `_require_bounded` owns the
+            # condition and the message; only the counter is added here, because
+            # this gate labels every arm and an unlabeled one stops its total
+            # equalling attempts.
+            _require_bounded(reason, field="reason", limit=NOTE_MAX_LEN)
+        except UserError:
+            metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
+                outcome="refused_reason_too_long"
+            ).inc()
+            raise
         if confirmed is not True:
             metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
                 outcome="declined" if confirmed is False else "no_elicitation"

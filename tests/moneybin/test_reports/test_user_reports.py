@@ -34,6 +34,7 @@ from moneybin.repositories.user_reports_repo import UserReportsRepo
 from moneybin.services._validators import (
     DESCRIPTION_MAX_LEN,
     IDENTIFIER_MAX_LEN,
+    NOTE_MAX_LEN,
     REPORT_QUERY_MAX_LEN,
 )
 from moneybin.services.audit_service import AuditService
@@ -861,6 +862,80 @@ def test_reclassify_refuses_a_blank_reason(
     row = UserReportsRepo(saved_db).get(report_id)
     assert row is not None
     assert row["class_downgrades"] == {}
+
+
+def test_reclassify_refuses_a_reason_longer_than_the_stored_bound(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """``reason`` is bounded like every other stored report text field.
+
+    It is the one stored string this path adds, and it is copied again into the
+    before/after row images every later mutation audits — so an unbounded blob
+    is duplicated across the audit history rather than stored once. Refused
+    before the confirmation gate, for the same reason a blank one is: a caller
+    that prompts first would spend a human decision on a downgrade that cannot
+    be stored.
+    """
+    report_id = _create(
+        service, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
+    )
+    before = _counter("user_report_reclassify_total", outcome="refused_reason_too_long")
+
+    with pytest.raises(UserError) as raised:
+        service.reclassify(
+            report_id,
+            column="spend",
+            to_class=DataClass.AGGREGATE,
+            reason="x" * (NOTE_MAX_LEN + 1),
+            confirmed=True,
+            confirmed_via="prompt",
+            expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+            expected_from_class=DataClass.TXN_AMOUNT,
+            actor="cli",
+        )
+
+    assert raised.value.code == error_codes.REPORT_FIELD_TOO_LONG
+    # The length is reported; the value never is.
+    assert raised.value.details == {
+        "field": "reason",
+        "limit": NOTE_MAX_LEN,
+        "length": NOTE_MAX_LEN + 1,
+    }
+    row = UserReportsRepo(saved_db).get(report_id)
+    assert row is not None
+    assert row["class_downgrades"] == {}
+    assert _counter(
+        "user_report_reclassify_total", outcome="refused_reason_too_long"
+    ) == (before + 1)
+
+
+def test_reclassify_accepts_a_reason_exactly_at_the_bound(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """The benign twin: the limit is inclusive, so a fail-closed bound is not one-off.
+
+    Without this, tightening the comparison to ``>=`` would refuse a legitimate
+    reason and no test would notice.
+    """
+    report_id = _create(
+        service, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
+    )
+
+    service.reclassify(
+        report_id,
+        column="spend",
+        to_class=DataClass.AGGREGATE,
+        reason="x" * NOTE_MAX_LEN,
+        confirmed=True,
+        confirmed_via="prompt",
+        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+        expected_from_class=DataClass.TXN_AMOUNT,
+        actor="cli",
+    )
+
+    row = UserReportsRepo(saved_db).get(report_id)
+    assert row is not None
+    assert "spend" in row["class_downgrades"]
 
 
 def test_every_admitted_downgrade_drops_the_tier_and_never_masks_more_weakly() -> None:

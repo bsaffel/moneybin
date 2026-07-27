@@ -14,6 +14,7 @@ MERCHANT_NAME_MAX_LEN = 200
 MERCHANT_PATTERN_MAX_LEN = 500
 DESCRIPTION_MAX_LEN = 2000
 NOTE_MAX_LEN = 2000
+"""Also bounds a report's stored reclassify ``reason`` — an audit annotation."""
 SLUG_MAX_LEN = 100
 #: A saved report's stored SELECT. Generous next to the others because a real
 #: analytical query with CTEs legitimately runs to a few thousand characters —
