@@ -251,6 +251,7 @@ def _pending_categorization_rows(
                 if row.get("amount") is not None
                 else None
             ),
+            currency_code=cast(str | None, row.get("currency_code")),
             description=cast(str | None, row.get("description")),
             memo=cast(str | None, row.get("memo")),
             account_id=cast(str | None, row.get("account_id")),

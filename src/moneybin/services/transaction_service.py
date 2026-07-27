@@ -139,6 +139,9 @@ class Transaction:
     source_type: str
     category: str | None
     subcategory: str | None
+    # Null only for rows the source never denominated; a mixed-currency result
+    # reports display_currency=None, so this is the only per-row answer.
+    currency_code: str | None = None
     notes: list[dict[str, Any]] | None = None
     tags: list[str] | None = None
     splits: list[dict[str, Any]] | None = None
@@ -155,6 +158,8 @@ class Transaction:
         }
         if self.memo is not None:
             d["memo"] = self.memo
+        if self.currency_code is not None:
+            d["currency_code"] = self.currency_code
         if self.category is not None:
             d["category"] = self.category
         if self.subcategory is not None:
@@ -1034,7 +1039,7 @@ class TransactionService:
             SELECT
                 transaction_id, account_id, transaction_date, amount,
                 description, memo, source_type, category, subcategory,
-                notes, tags, splits
+                currency_code, notes, tags, splits
             FROM {FCT_TRANSACTIONS.full_name}
             {where}
             ORDER BY transaction_date DESC, transaction_id
@@ -1054,9 +1059,10 @@ class TransactionService:
                     source_type=str(row[6]),
                     category=str(row[7]) if row[7] else None,
                     subcategory=str(row[8]) if row[8] else None,
-                    notes=[dict(n) for n in row[9]] if row[9] else None,
-                    tags=list(row[10]) if row[10] else None,
-                    splits=[dict(s) for s in row[11]] if row[11] else None,
+                    currency_code=str(row[9]) if row[9] else None,
+                    notes=[dict(n) for n in row[10]] if row[10] else None,
+                    tags=list(row[11]) if row[11] else None,
+                    splits=[dict(s) for s in row[12]] if row[12] else None,
                 )
                 for row in rows
             ],
@@ -1109,6 +1115,8 @@ class TransactionService:
             format_name=_MANUAL_FORMAT_NAME,
             actor=actor,
         )
+
+        from moneybin.loaders import import_log
 
         results: list[ManualEntryRawResult] = []
         self._db.begin()
@@ -1181,8 +1189,6 @@ class TransactionService:
             # blocks re-imports and shows up in `moneybin import history`.
             # Mirror the OFX path: mark the batch as failed before re-raising.
             self._db.rollback()
-            from moneybin.loaders import import_log
-
             import_log.finalize_import(
                 self._db,
                 import_id,
@@ -1191,6 +1197,20 @@ class TransactionService:
                 rows_imported=0,
             )
             raise
+
+        # Close the batch this path opened. Without it the row stays 'importing'
+        # forever with a NULL completed_at and NULL row counts, which
+        # `moneybin import history` / `import_status` cannot tell apart from a
+        # genuinely crashed write.
+        # Finalized here, before categorization: the raw rows are committed and
+        # a later categorization failure explicitly leaves them in place.
+        import_log.finalize_import(
+            self._db,
+            import_id,
+            status="complete",
+            rows_total=len(results),
+            rows_imported=len(results),
+        )
 
         # Attach user-supplied categories in one atomic txn AFTER the raw-write
         # commits. All-or-nothing: a failure on entry N rolls back entries

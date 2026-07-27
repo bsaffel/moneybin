@@ -6,9 +6,37 @@ need to INSERT test data directly require concrete tables, so we define
 minimal CREATE TABLE statements here.
 """
 
+from datetime import UTC, datetime
+
 import duckdb
 
 from moneybin.database import Database
+
+
+def record_sqlmesh_apply(db: Database, when: datetime) -> None:
+    """Stamp a finished SQLMesh apply at ``when``, read as UTC.
+
+    ``TransformService.freshness()`` decides ``pending`` by comparing raw
+    landing times against this stamp, so any fixture that means "the
+    warehouse has been refreshed" must write it — seeding ``core.dim_accounts``
+    no longer says that. Mirrors what a real plan finalize persists: one
+    ``prod`` row in the state schema SQLMesh keeps inside the MoneyBin
+    database, with ``finalized_ts`` in epoch milliseconds.
+
+    Callers pass a naive ``when`` and get UTC. Pin the session zone to UTC
+    too if the fixture's raw landing literals are naive, so both sides
+    describe the same instants on any machine.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS sqlmesh")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS sqlmesh._environments "
+        "(name VARCHAR, finalized_ts BIGINT)"
+    )
+    db.execute(
+        "INSERT INTO sqlmesh._environments (name, finalized_ts) VALUES ('prod', ?)",
+        [int(when.replace(tzinfo=UTC).timestamp() * 1000)],
+    )
+
 
 # ---------------------------------------------------------------------------
 # Core table DDL — keep in sync with the SQLMesh model output columns.
@@ -31,7 +59,7 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     last_four VARCHAR,
     account_subtype VARCHAR,
     holder_category VARCHAR,
-    currency_code VARCHAR DEFAULT 'USD',
+    currency_code VARCHAR,
     credit_limit DECIMAL(18, 2),
     archived BOOLEAN DEFAULT FALSE,
     include_in_net_worth BOOLEAN DEFAULT TRUE
@@ -115,6 +143,7 @@ SELECT
     s.note AS line_note,
     CASE WHEN s.split_id IS NULL THEN 'whole' ELSE 'split' END AS line_kind,
     t.account_id,
+    t.currency_code,
     t.transaction_date,
     t.merchant_name,
     t.description,
@@ -162,6 +191,7 @@ REPORTS_NET_WORTH_DDL = """\
 CREATE VIEW IF NOT EXISTS reports.net_worth AS
 SELECT
     CURRENT_DATE AS balance_date,
+    CAST(NULL AS VARCHAR) AS currency_code,
     0.00::DECIMAL(18, 2) AS net_worth,
     0 AS account_count,
     0.00::DECIMAL(18, 2) AS total_assets,
@@ -364,6 +394,7 @@ SELECT CAST(NULL AS VARCHAR) AS transaction_id,
        CAST(NULL AS VARCHAR) AS account_name,
        CAST(NULL AS DATE) AS txn_date,
        CAST(NULL AS DECIMAL(18, 2)) AS amount,
+       CAST(NULL AS VARCHAR) AS currency_code,
        CAST(NULL AS VARCHAR) AS description,
        CAST(NULL AS VARCHAR) AS merchant_id,
        CAST(NULL AS VARCHAR) AS merchant_normalized,

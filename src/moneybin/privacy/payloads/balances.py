@@ -29,6 +29,10 @@ class BalanceObservationRow:
     is_observed: Annotated[bool, DataClass.TXN_TYPE]
     observation_source: Annotated[str | None, DataClass.TXN_TYPE]
     reconciliation_delta: Annotated[Decimal | None, DataClass.BALANCE]
+    # Per-row, and nullable: one account's observations can change currency, so
+    # summary.display_currency may be null for a response these rows still
+    # describe exactly (multi-currency.md Requirement 5).
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +51,15 @@ class BalanceAssertionRow:
     balance: Annotated[Decimal, DataClass.BALANCE]
     notes: Annotated[str | None, DataClass.USER_NOTE]
     created_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    # app.balance_assertions stores no currency: an assertion is a statement
+    # about one account, so the account's currency is the only answer. Joined
+    # from dim_accounts rather than stored, so it cannot drift from it.
+    # Nullable for two reasons: dim_accounts.currency_code itself is (system
+    # doctor's currency_integrity check surfaces those), and dim_accounts is a
+    # transform output that a profile which has never run one does not have —
+    # an assertion recorded before the first import still reads back, currency
+    # unknown, rather than raising.
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
 
 
 @dataclass(frozen=True, slots=True)

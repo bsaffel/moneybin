@@ -228,7 +228,7 @@ the same identity. **The other verbs are CLI-only** — `create`, `set` (which
 carries rename and `--archive`), `delete`, `explain`, and `reclassify`, alongside
 the tier-spanning `list` and `run` — because ADR-016's bounded registry admits no
 new MCP identity without a passed admission record. Seven verbs, zero new MCP
-tools; the registry stays at 47. This section
+tools; the registry count is unchanged by this milestone. This section
 originally promised the lifecycle "across MCP **and** CLI"; #344's bounded
 registry and `reports-dynamic.md` R5 superseded that, and R5 is authoritative.
 

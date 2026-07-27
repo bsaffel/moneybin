@@ -46,7 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the lowest tier keeps its placeholder in the executed form: rendering is not
   execution, so it gets no redaction pass and must not publish a value the report's
   own rows would mask.
-  All seven `reports` verbs are CLI-only; the MCP registry stays at 47 tools.
+  All seven `reports` verbs are CLI-only; the MCP registry gains no tools.
   (#367)
 - **Report listings now show the handle you type.** The report catalog entry
   carries `name` beside `report_id`, and `reports list` leads with it. Those two
@@ -56,6 +56,177 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   name. Publishing only the id left the one string those commands take
   undiscoverable once the create response scrolled away. Applies to the MCP
   `reports` catalog too. (#367)
+- **A profile can now declare its home currency (M1K.1).** `moneybin profile set
+  home_currency EUR` records which currency the profile treats as home;
+  `moneybin profile show` lists it under `Settings (database)`, separate from the
+  `config.yaml` values. The setting lives in `app.profile_settings` rather than
+  `config.yaml` because the report views that read it are SQLMesh models, so every
+  write is audited and reversible through `system_audit_undo`. A profile that has
+  not chosen one reports null — MoneyBin does not assume USD, which would relabel a
+  EUR-only user's money. Setting it converts nothing: every transaction and balance
+  keeps its original currency. The 49-tool standard registry adds two tools: `profile`
+  reads the active profile's metadata and managed settings, and `profile_set`
+  writes the home currency. Two of the three remaining slots below the 50-tool hard
+  limit are now spent.
+- **Reports sub-total each currency instead of blending them (M1K.1).** Every
+  report that sums money — net worth, cash flow, spending trend, merchant
+  activity, large transactions, recurring subscriptions — now carries a
+  `currency_code` column and groups by it, so a profile holding dollars and
+  euros gets one sub-total per currency rather than one meaningless number.
+  Anomaly z-scores and the top-100 flag in `reports large-transactions` compare
+  each charge against transactions in its own currency. `reports networth`
+  withholds its headline total when more than one currency contributes and
+  reports each currency's position instead; conversion to a single display
+  currency arrives in M1K.2. **A single-currency profile sees the same figures
+  it always did**, plus the currency they are denominated in. `moneybin system
+  doctor` gained a `currency_integrity` check: it fails on any account or
+  transaction whose currency is unknown (those amounts join no total until you
+  run `accounts set --currency`, then `moneybin transform`) and warns when a
+  profile holds more than one currency, so segmented totals are explained
+  rather than surprising.
+- **`accounts` and `accounts_get` report an unknown currency as null, not the
+  string `"None"` (M1K.1).** Both read paths coerced the column with `str()`,
+  which renders SQL NULL as a four-character string. That was unreachable while
+  `dim_accounts` defaulted to `'USD'`; removing the default made it routine, and
+  an agent reading `"currency_code": "None"` could take it for a denomination.
+  `AccountSummary.currency_code` and `AccountDetail.currency_code` are now
+  nullable, matching every other currency-bearing payload.
+- **Daily balances no longer add foreign-currency transactions to an account's
+  running balance (M1K.1).** `core.fct_balances_daily` carries a balance forward
+  adjusted by the transactions in between. Because a transaction resolves its own
+  currency, a USD account can hold a EUR charge — and adding the two produced a
+  number in no unit that nothing downstream could flag, since the row still
+  reported USD. The carry now applies only transactions denominated in the
+  currency being carried. The excluded movement is not lost: it appears in that
+  account's `reconciliation_delta` and as drift in `reports balance-drift`, and
+  the `system doctor` multi-currency warning names the behaviour. **A
+  single-currency profile is unaffected.**
+- **`top` now means "top N within each currency" (M1K.1).** On `reports
+  merchants` and `reports large-transactions`, ranking across currencies compares
+  unlike units, so one high-denomination currency could otherwise take every slot
+  and hide the rest entirely. A single-currency profile gets the same N rows as
+  before.
+- **A report's `summary.display_currency` names the currency its rows are in
+  (M1K.1).** It reported `USD` unconditionally. It now names the one currency the
+  rows agree on, and is null when they span more than one, when the currency is
+  unknown, or when the report has no currency column at all — a report that
+  counts or ranks states no denomination rather than borrowing one. Read each
+  row's `currency_code` whenever it is null.
+- **`core.fct_transaction_lines` carries the transaction's currency (M1K.1).**
+  The split-expanded grain — one row per unsplit transaction, N per split —
+  projected every column of its parent fact except the denomination, so the
+  canonical grain for per-line analysis could not tell a EUR line from a USD
+  one. It now carries `currency_code`, and the curated `sql_schema` examples
+  that sum money across `core.*` group by it rather than blending units.
+- **Every ranked report interleaves its currencies (M1K.1).** `reports
+  balance-drift`, `large-transactions`, `merchants`, and `recurring` each sorted
+  one currency's rows ahead of the next, and the surface row cap keeps a prefix
+  — so one high-denomination currency could fill every slot and drop the others
+  out of the response entirely, absent rather than merely ranked lower. Rows now
+  interleave: rank 1 of every currency, then rank 2. Compare amounts only
+  between rows sharing a `currency_code`. A single-currency profile sees the
+  same order as before.
+- **The curated `sql_schema` examples interleave their currencies too
+  (M1K.1).** Fourteen examples led their sort with `currency_code`, and both
+  the `sql_query` row cap and any `LIMIT` an agent adds keep a prefix — so an
+  agent copying "Top merchants by lifetime spend" got one currency's rows and
+  none of the others. Twelve now rank within each currency first, or lead with
+  the month or term the query is really grouped by. The other two return
+  exactly one row per currency, where ordering is not the lever.
+- **Grouped reports and the categorization queue interleave their currencies
+  too (M1K.1).** The two entries above fixed this defect where it was found —
+  four ranked reports, then fourteen curated SQL examples — and it kept
+  resurfacing in siblings nobody had swept for. Enumerating every
+  truncation-reachable sort found four more. `reports cashflow` and `reports
+  spending` sorted each month currency-major, so a capped month reported one
+  currency's categories and dropped the rest. `reports networth-history` walked
+  one currency's entire series before starting the next, so a currency opened
+  partway through the window disappeared from a capped response rather than
+  showing a shorter series. `transactions categorize pending --sort impact`
+  ranked `ABS(amount) * age_days` across denominations, letting the
+  highest-denomination currency fill the whole queue — the one case with no
+  `currency_code` in its sort at all. All four now rank within each currency and
+  sort on that rank. A single source guard replaces the old literal scan and
+  covers both report channels, the SQL runners and the service-backed reports,
+  so the next sibling fails a test rather than a review round.
+- **`sql_query` names the currency its rows agree on (M1K.1).** The envelope
+  derived `summary.display_currency` from dataclass and Pydantic rows only, and
+  `sql_query` returns plain dicts — so every ad-hoc query reported an unknown
+  currency, including `SELECT amount, currency_code ...` where every row agreed.
+  Mapping rows now derive like typed ones. A query whose rows disagree, or that
+  omits the column, still reports null.
+- **`transactions` rows name their currency (M1K.1).** The `transactions` MCP
+  tool and `moneybin transactions list --output json` returned bare amounts.
+  A mixed-currency page reports `summary.display_currency: null` by design, so
+  the row was the only place that could name the unit and it did not — two
+  −30.00 rows in different currencies read as the same charge. Each row now
+  carries `currency_code` from `core.fct_transactions`.
+- **The uncategorized review queue names each row's currency (M1K.1).**
+  `transactions categorize pending` and `transactions_categorize_pending` asked
+  you to act on a bare amount. Each row now carries `currency_code`. Its
+  `impact` sort and `--min-amount` filter still compare nominal magnitudes, so
+  they are only meaningful within one currency.
+- **`reports balance-drift` withholds a drift across two currencies (M1K.1).**
+  A balance observation states its own currency, and an account can carry a
+  different one after `accounts set --currency`. The report subtracted them and
+  labelled the result with the account's currency; it now reports the new
+  `currency-mismatch` status with no drift value, which is also selectable via
+  `--status`. Its `clean`/`warning` thresholds (1 and 10) are absolute amounts
+  in each row's own currency and are not converted.
+- **An account whose currency nobody stated is now unknown, not USD (M1K.1).**
+  `core.dim_accounts` took `USD` whenever an account had no explicit currency
+  setting, and every transaction and balance inherits its account's currency, so
+  one guess relabelled the whole ledger. An account now takes the currency its
+  own source reported — OFX `CURDEF`, Plaid `iso_currency_code`, the tabular
+  `currency` column — and stays unknown when no source stated one. Imports from
+  OFX and Plaid are unaffected: those formats always carry a currency. A CSV
+  without a currency column now reports unknown, and `moneybin system doctor`
+  names the accounts to fix with `accounts set --currency`. Unknown amounts join
+  no cross-currency total until you set one.
+- **Balance reads name their own currency (M1K.1).** `accounts balance show`,
+  `history`, and `reconcile` — and the `accounts_balances` MCP views behind them —
+  returned every amount labelled `USD`, because the response envelope defaults to
+  it and nothing overrode the default. Each observation now carries its own
+  `currency_code`, and `summary.display_currency` names the one currency a
+  response shares or is null when its rows span several, matching how registered
+  reports already answer. The text output prints the currency beside the amount
+  (`n/a` when unknown).
+- **No response invents a currency it was not told (M1K.1).** The response
+  envelope defaulted `summary.display_currency` to `"USD"`, so every one of the
+  251 places that builds one claimed dollars for free — and nine of the eleven
+  tools that return money never overrode it. `accounts`, `accounts_set` and the
+  five `investments` reads all echoed a EUR account's credit limit, holdings and
+  cost basis labelled USD, while their own descriptions told the agent to read
+  `summary.display_currency`. The envelope now reads the currency off the payload
+  it was handed: a response whose rows carry `currency_code` reports the one they
+  agree on, and reports null when they disagree or none is known. Naming a
+  currency explicitly still overrides it, so a report that resolved the currency
+  across every matching row keeps that answer rather than the returned page's.
+  **A single-currency profile sees the same value it always did.** Responses that
+  carry no money — and the ones whose money has no currency recorded anywhere
+  (`transactions`, `reviews`, `import_files`, `import_preview`, `system_audit`,
+  `investments_lots_select`, `transactions_categorize_rules`) — now report null
+  instead of an unfounded `USD`; threading a currency through those payloads is
+  tracked separately.
+- **Balance assertions state the currency they are in (M1K.1).**
+  `accounts balance assert` / `assertion-list` and the `accounts_balances`
+  assertions view returned a bare number: `app.balance_assertions` stores no
+  currency, so nothing on the response said what unit it was. An assertion is a
+  statement about one account, so each row now carries that account's
+  `currency_code`, joined at read time rather than stored so it cannot drift from
+  the account. The CLI prints it beside the amount (`n/a` when unknown).
+- **`system doctor`'s `currency_integrity` labels which ids it is naming
+  (M1K.1).** Its `affected_ids` mixed bare account and transaction ids in one
+  list with nothing to tell them apart, though each needs a different fix. They
+  are now prefixed `account:` / `transaction:`, matching the convention the
+  `orphan_app_state` check already uses.
+- **`moneybin profile show` no longer crashes on a database from before this
+  release (M1K.1).** Reading the profile's settings opens the database read-only,
+  and read-only opens skip schema initialization and migrations — so the first
+  command run after upgrading met a missing `app.profile_settings` and printed a
+  DuckDB traceback instead of the profile. An absent table now reads as "no home
+  currency chosen", the same answer a fresh profile gives. The `profile` MCP tool
+  took the identical path and is fixed with it.
 - **Canonical bundle and registered-report export delivery (M1O).**
   `moneybin export bundle` and `moneybin export report` publish redacted CSV by
   default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named
@@ -164,6 +335,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **"Transforms up to date" now accounts for everything you can add, not just
+  accounts.** The staleness flag on `system_status` and `moneybin transform
+  status` watched three account tables out of the seventeen a refresh reads, so
+  a manually recorded transaction, a manually recorded investment trade, a
+  synced holding, and a fetched security price all landed while MoneyBin
+  reported nothing to refresh — the reports you then ran were built without
+  them. All seventeen are watched, compared against SQLMesh's own record of
+  when it last finished, and a raw table wired into a model but left out of
+  that set now fails the build rather than going unwatched. Manual entries also
+  close their import batch on success; a batch left open reads as a crashed
+  write in `import history` and `import status`, with no completion time and no
+  row counts.
+- **`--profile` now logs like any other run.** Naming a profile explicitly —
+  `moneybin -p work sync pull`, or `MONEYBIN_PROFILE=work` — wrote no log files
+  at all: no `cli_*.log`, no `sqlmesh_*.log`. With no log file to hold them,
+  the console filter stood down by design rather than destroy records, so
+  `sync pull` printed several thousand `Executing SQL: …` and
+  `Evaluating snapshot …` lines, including every `CREATE OR REPLACE VIEW` and
+  `COMMENT ON COLUMN` body, ahead of the four lines that mattered. Explicitly
+  naming a profile now resolves it exactly as switching to it does: log files
+  written, profile directory checked, and SQLMesh's output in
+  `sqlmesh_YYYY-MM-DD.log` where it belongs. Warnings and errors still reach
+  the console.
 - **An assistant and a person now get the same truthful, structured answer
   from MoneyBin.** `system_status` and `reviews` degrade section by section
   and queue by queue instead of failing whole, so one broken check no longer
@@ -795,7 +989,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   outright. At that point, MoneyBin's **then-105-tool registry exceeded
   Cascade's hard 100-active-tool ceiling** — Windsurf gives no signal when tools are
   dropped, so users had to disable some by hand. The later M3K.2 cut established
-  the current 47-tool standard registry. The Gemini CLI section explains why
+  a 47-tool standard registry. The Gemini CLI section explains why
   MoneyBin never sets `trust: true` (it bypasses *all* tool-call confirmations, and
   our surface includes write tools). (#315)
 - **Accepting a link merge now requires a human confirm on every surface.** The

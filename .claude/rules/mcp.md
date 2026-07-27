@@ -75,7 +75,7 @@ Every tool returns this shape:
 
 ```json
 {
-  "summary": {"total_count": 247, "returned_count": 50, "has_more": true, "sensitivity": "medium", "display_currency": "USD"},
+  "summary": {"total_count": 247, "returned_count": 50, "has_more": true, "sensitivity": "medium", "display_currency": "EUR"},
   "data": [ ... ],
   "actions": ["Use reports(report_id=\"core:spending\") for the breakdown"]
 }
@@ -85,7 +85,10 @@ Every tool returns this shape:
 - **`data`** — structured objects, never pre-formatted strings.
 - **`actions`** — contextual next-step hints for composability.
 
-Currency lives in `summary.display_currency`, not per-row. Per-row `currency` only when returning mixed unconverted currencies.
+Currency lives in `summary.display_currency`, not per-row. It is `null` — never a
+guessed default — when the rows span more than one currency or none is known, and
+the key is always emitted, so `null` is an answer rather than an omission. Rows
+carry their own `currency_code` when the response is mixed.
 
 Every public tool MUST return canonical JSON text and equivalent
 `structuredContent`. Do not advertise `outputSchema` by default. A schema is an
@@ -152,9 +155,9 @@ still sit behind an MCP umbrella. Two acceptable justifications:
 2. **Hands-on operator territory.** Bootstrapping, recovery, and developer-tooling operations that require physical operator presence. The MCP server cannot even start when the database is locked, so exposing lifecycle tools to MCP would be meaningless. Covers:
    - **Database lifecycle:** `db_init`, `db_lock`, `db_ps`, `db_kill`, `db_shell`, `db_ui`, `db_migrate_apply`, `db_migrate_status`, `db_backup`, `db_restore`, `db_info`, `db_query` (raw SQL access; agent path is `sql_query`). Note: `db_query`, `db_shell`, and `db_ui` emit an operator-bypass banner (stderr) and include it in their `--help` text warning that no privacy middleware applies — account numbers and other CRITICAL-tier fields are NOT masked. The MCP `sql_query` tool is the privacy-safe agent path for ad-hoc SQL.
    - **Server lifecycle:** `mcp_serve`, `mcp_install`, `mcp_config_path`, `mcp_list_tools`, `mcp_list_prompts` (operator introspection of the local MCP surface).
-   - **Profile + identity:** `profile_*`.
+   - **Profile + identity:** profile *lifecycle* — `profile create`, `profile switch`, `profile delete`, `profile list`, `profile show`. These select or create the profile a session runs against, so they must run before an MCP session can exist. Managed *settings* on the already-active profile are not lifecycle and are exposed: `profile` and `profile_set` read and write `app.profile_settings`, which the SQLMesh report guards read (`docs/specs/multi-currency.md` Requirement 4).
    - **Developer tooling:** `logs`, `stats`, `synthetic_generate`, `synthetic_reset`, `transform_seed`, `transform_restate`.
-   - **Bootstrapping:** `demo` — CLI-only for the same reason as `profile_*` (it creates and activates a profile, so it must run *before* an MCP session can exist), but its audience is the external evaluator, not the developer.
+   - **Bootstrapping:** `demo` — CLI-only for the same reason as profile lifecycle (it creates and activates a profile, so it must run *before* an MCP session can exist), but its audience is the external evaluator, not the developer.
 
 What is NOT a valid CLI-only justification:
 - "Long-running" — MCP supports progress notifications.
@@ -250,7 +253,7 @@ superseded. Advertise zero deprecated aliases. A hidden compatibility alias
 must name its removal release. A report registers behind the single read-only
 `reports` catalog/runner and never adds an MCP tool.
 
-**Current registry.** The 47-tool standard registry is operating. Generic
+**Current registry.** The 49-tool standard registry is operating. Generic
 clients receive every tool; capable hosts may optionally defer schemas from
 that same registry without reconnect, packs, or profiles. Reports never
 consume tool slots. The deterministic comparison passed, but promotion remains

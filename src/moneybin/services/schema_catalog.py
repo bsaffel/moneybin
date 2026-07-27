@@ -43,12 +43,14 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Total spending by category last month",
             sql="""
-                SELECT category, SUM(amount_absolute) AS total
+                SELECT category, currency_code, SUM(amount_absolute) AS total
                 FROM core.fct_transactions
                 WHERE transaction_direction = 'expense'
                   AND transaction_year_month = STRFTIME(CURRENT_DATE - INTERVAL 1 MONTH, '%Y-%m')
-                GROUP BY category
-                ORDER BY total DESC
+                GROUP BY category, currency_code
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total DESC
+                ), currency_code
             """,
         ),
         Example(
@@ -65,12 +67,13 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Monthly spending trend (last 12 months)",
             sql="""
-                SELECT transaction_year_month, SUM(amount_absolute) AS total_spent
+                SELECT transaction_year_month, currency_code,
+                       SUM(amount_absolute) AS total_spent
                 FROM core.fct_transactions
                 WHERE transaction_direction = 'expense'
                   AND transaction_date >= CURRENT_DATE - INTERVAL 12 MONTH
-                GROUP BY transaction_year_month
-                ORDER BY transaction_year_month
+                GROUP BY transaction_year_month, currency_code
+                ORDER BY transaction_year_month, currency_code
             """,
         ),
         Example(
@@ -122,11 +125,13 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Spending by category at the line grain "
             "(splits expand to N rows; unsplit transactions count once as 'whole')",
             sql="""
-                SELECT line_category, SUM(ABS(line_amount)) AS total
+                SELECT line_category, currency_code, SUM(ABS(line_amount)) AS total
                 FROM core.fct_transaction_lines
                 WHERE line_amount < 0
-                GROUP BY line_category
-                ORDER BY total DESC
+                GROUP BY line_category, currency_code
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total DESC
+                ), currency_code
             """,
         ),
     ],
@@ -142,12 +147,12 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Join accounts to transactions to label by institution",
             sql="""
-                SELECT a.institution_name, COUNT(*) AS txn_count,
+                SELECT a.institution_name, t.currency_code, COUNT(*) AS txn_count,
                        SUM(t.amount_absolute) AS total_volume
                 FROM core.fct_transactions t
                 JOIN core.dim_accounts a USING (account_id)
-                GROUP BY a.institution_name
-                ORDER BY total_volume DESC
+                GROUP BY a.institution_name, t.currency_code
+                ORDER BY t.currency_code, total_volume DESC
             """,
         ),
     ],
@@ -307,6 +312,15 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "app.profile_settings": [
+        Example(
+            question="Which currency does this profile treat as its home currency?",
+            sql="""
+                SELECT home_currency
+                FROM app.profile_settings
+            """,
+        ),
+    ],
     "app.balance_assertions": [
         Example(
             question="All user-entered balance assertions",
@@ -329,7 +343,7 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="All balance observations for one account",
             sql="""
-                SELECT balance_date, balance, source_type, source_ref
+                SELECT balance_date, currency_code, balance, source_type, source_ref
                 FROM core.fct_balances
                 WHERE account_id = 'YOUR_ACCOUNT_ID'
                 ORDER BY balance_date DESC
@@ -340,7 +354,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Current balance for every account (latest date per account)",
             sql="""
-                SELECT account_id, balance_date, balance, is_observed, observation_source
+                SELECT account_id, balance_date, currency_code, balance,
+                       is_observed, observation_source
                 FROM core.fct_balances_daily
                 WHERE balance_date = (
                     SELECT MAX(balance_date) FROM core.fct_balances_daily AS b2
@@ -352,7 +367,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Daily balance history for one account",
             sql="""
-                SELECT balance_date, balance, is_observed, reconciliation_delta
+                SELECT balance_date, currency_code, balance, is_observed,
+                       reconciliation_delta
                 FROM core.fct_balances_daily
                 WHERE account_id = 'YOUR_ACCOUNT_ID'
                 ORDER BY balance_date DESC
@@ -363,7 +379,8 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Highest-impact uncategorized transactions",
             sql="""
-                SELECT account_name, txn_date, amount, description, age_days, priority_score
+                SELECT account_name, txn_date, amount, currency_code, description,
+                       age_days, priority_score
                 FROM core.uncategorized_queue
                 ORDER BY priority_score DESC
                 LIMIT 25
@@ -372,45 +389,49 @@ EXAMPLES: dict[str, list[Example]] = {
     ],
     "reports.net_worth": [
         Example(
-            question="Net worth today",
+            question="Net worth today, one row per currency",
             sql="""
-                SELECT balance_date, net_worth, account_count, total_assets, total_liabilities
+                SELECT balance_date, currency_code, net_worth, account_count,
+                       total_assets, total_liabilities
                 FROM reports.net_worth
-                ORDER BY balance_date DESC
-                LIMIT 1
+                WHERE balance_date = (SELECT MAX(balance_date) FROM reports.net_worth)
+                ORDER BY currency_code
             """,
         ),
         Example(
-            question="Net worth trend over the last 12 months (monthly)",
+            question="Net worth trend over the last 12 months (monthly, per currency)",
             sql="""
                 SELECT
                     STRFTIME(balance_date, '%Y-%m') AS month,
-                    MAX(net_worth) AS end_of_month_net_worth
+                    currency_code,
+                    LAST(net_worth ORDER BY balance_date) AS end_of_month_net_worth
                 FROM reports.net_worth
                 WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH
-                GROUP BY month
-                ORDER BY month
+                GROUP BY month, currency_code
+                ORDER BY month, currency_code
             """,
         ),
     ],
     "reports.cash_flow": [
         Example(
-            question="Monthly net cash flow across all accounts",
+            question="Monthly net cash flow across all accounts, per currency",
             sql="""
-                SELECT year_month, SUM(net) AS total_net
+                SELECT year_month, currency_code, SUM(net) AS total_net
                 FROM reports.cash_flow
-                GROUP BY year_month
-                ORDER BY year_month
+                GROUP BY year_month, currency_code
+                ORDER BY year_month, currency_code
             """,
         ),
         Example(
-            question="Top outflow categories over the last 12 months",
+            question="Top outflow categories over the last 12 months, per currency",
             sql="""
-                SELECT category, SUM(outflow) AS total_outflow
+                SELECT category, currency_code, SUM(outflow) AS total_outflow
                 FROM reports.cash_flow
                 WHERE year_month >= strftime(current_date - INTERVAL 12 MONTH, '%Y-%m')
-                GROUP BY category
-                ORDER BY total_outflow ASC
+                GROUP BY category, currency_code
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total_outflow ASC
+                ), currency_code
             """,
         ),
     ],
@@ -418,10 +439,12 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Latest month's spending with MoM/YoY deltas",
             sql="""
-                SELECT year_month, category, total_spend, mom_pct, yoy_pct
+                SELECT year_month, category, currency_code, total_spend, mom_pct, yoy_pct
                 FROM reports.spending_trend
                 WHERE year_month = (SELECT MAX(year_month) FROM reports.spending_trend)
-                ORDER BY total_spend DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total_spend DESC
+                ), currency_code
             """,
         ),
     ],
@@ -429,10 +452,13 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Active high-confidence subscriptions ordered by annualized cost",
             sql="""
-                SELECT merchant_normalized, cadence, avg_amount, annualized_cost, confidence
+                SELECT merchant_normalized, currency_code, cadence, avg_amount,
+                       annualized_cost, confidence
                 FROM reports.recurring_subscriptions
                 WHERE status = 'active' AND confidence >= 0.7
-                ORDER BY annualized_cost DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY annualized_cost DESC
+                ), currency_code
             """,
         ),
     ],
@@ -440,41 +466,54 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Top merchants by lifetime spend",
             sql="""
-                SELECT merchant_normalized, total_spend, txn_count, top_category
+                SELECT merchant_normalized, currency_code, total_spend, txn_count,
+                       top_category,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY currency_code ORDER BY total_spend DESC
+                       ) AS rank_in_currency
                 FROM reports.merchant_activity
-                ORDER BY total_spend DESC
-                LIMIT 25
+                QUALIFY rank_in_currency <= 25
+                ORDER BY rank_in_currency, currency_code
             """,
         ),
     ],
     "reports.large_transactions": [
         Example(
-            question="Top 100 transactions by absolute amount",
+            question="Top 100 transactions by absolute amount, per currency",
             sql="""
-                SELECT account_name, txn_date, amount, merchant_normalized, category
+                SELECT account_name, txn_date, currency_code, amount,
+                       merchant_normalized, category
                 FROM reports.large_transactions
                 WHERE is_top_100
-                ORDER BY ABS(amount) DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY ABS(amount) DESC
+                ), currency_code
             """,
         ),
         Example(
-            question="Account-level outliers (modified z-score > 2.5)",
+            question="Account-level outliers (modified z-score > 2.5), per currency",
             sql="""
-                SELECT account_name, txn_date, amount, amount_zscore_account
+                SELECT account_name, txn_date, currency_code, amount,
+                       amount_zscore_account
                 FROM reports.large_transactions
                 WHERE amount_zscore_account > 2.5
-                ORDER BY amount_zscore_account DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY amount_zscore_account DESC
+                ), currency_code
             """,
         ),
     ],
     "reports.balance_drift": [
         Example(
-            question="Reconciliation drift sorted by absolute delta",
+            question="Reconciliation drift sorted by absolute delta, per currency",
             sql="""
-                SELECT account_name, assertion_date, asserted_balance, computed_balance, drift, status
+                SELECT account_name, assertion_date, currency_code,
+                       asserted_balance, computed_balance, drift, status
                 FROM reports.balance_drift
                 WHERE status IN ('drift', 'warning')
-                ORDER BY drift_abs DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY drift_abs DESC
+                ), currency_code
             """,
         ),
     ],
@@ -511,11 +550,13 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Dividend and interest income received, by security",
             sql="""
-                SELECT security_id, SUM(amount) AS total_income
+                SELECT security_id, currency_code, SUM(amount) AS total_income
                 FROM core.fct_investment_transactions
                 WHERE type IN ('dividend', 'interest')
-                GROUP BY security_id
-                ORDER BY total_income DESC
+                GROUP BY security_id, currency_code
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total_income DESC
+                ), currency_code
             """,
         ),
     ],
@@ -536,9 +577,11 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Total remaining cost basis across all open lots in an account "
             "(substitute YOUR_ACCOUNT_ID)",
             sql="""
-                SELECT SUM(cost_basis_remaining) AS total_basis
+                SELECT currency_code, SUM(cost_basis_remaining) AS total_basis
                 FROM core.fct_investment_lots
                 WHERE account_id = 'YOUR_ACCOUNT_ID' AND is_open
+                GROUP BY currency_code
+                ORDER BY currency_code
             """,
         ),
     ],
@@ -546,10 +589,11 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Realized gains/losses by term (short vs. long) for the current year",
             sql="""
-                SELECT term, SUM(gain_loss) AS total_gain_loss
+                SELECT term, currency_code, SUM(gain_loss) AS total_gain_loss
                 FROM core.fct_realized_gains
                 WHERE YEAR(disposal_date) = YEAR(CURRENT_DATE)
-                GROUP BY term
+                GROUP BY term, currency_code
+                ORDER BY term, currency_code
             """,
         ),
         Example(

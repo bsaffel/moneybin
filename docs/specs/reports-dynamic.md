@@ -720,7 +720,7 @@ not sit a second dispatcher beside it.
 | Inspect | Unadmitted capability; MCP identity remains unnamed | `moneybin reports explain` |
 | Downgrade a class | Unadmitted capability; MCP identity remains unnamed | `moneybin reports reclassify` |
 
-**The MCP registry remains the operating 47-tool contract.** This draft does
+**The MCP registry remains the operating 49-tool contract.** This draft does
 not reserve three identities or count them against the hard maximum of 50. The
 implementing PR must first try an existing projection, method, batch, target
 state, report entry, or workflow umbrella, then complete the seven-question
@@ -1279,13 +1279,13 @@ under it inflates the one number here that is supposed to mean something:
   admission test: the implementing PR must first try an existing projection,
   method, batch, target state, report entry, or workflow umbrella, then supply
   the seven-question record, serialized byte delta, and evaluation evidence for
-  every remaining identity. The 47-tool standard registry does not grow until
+  every remaining identity. The 49-tool standard registry does not grow until
   that evidence passes; the fallback is an existing admitted operation or
   CLI-only operator control, not a speculative alias or an override of
   ADR-016's hard maximum.
 
-  **Answered — no MCP identity was admitted, and the 47-tool standard registry
-  did not grow.** All seven verbs ship CLI-only.
+  **Answered — no MCP identity was admitted, and the standard registry did not
+  grow.** All seven verbs ship CLI-only.
   No admission record was submitted, so none was needed: the shipped
   `reports(report_id=..., parameters=...)` catalog/runner remains the only MCP
   identity in this area, and it already spans every tier — a saved report is

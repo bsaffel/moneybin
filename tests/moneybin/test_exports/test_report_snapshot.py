@@ -467,6 +467,7 @@ def test_networth_history_export_retains_native_values_with_truthful_types(
             points=[
                 NetWorthHistoryPoint(
                     period="2026-07-01",
+                    currency_code="USD",
                     net_worth=Decimal("1000.12345678"),
                     change_abs=Decimal("100.75308643"),
                     change_pct=Decimal("0.100740651234567890"),
@@ -496,6 +497,7 @@ def test_networth_history_export_retains_native_values_with_truthful_types(
     table = snapshot.tables[0]
     assert [(column.name, column.duckdb_type) for column in table.columns] == [
         ("period", "VARCHAR"),
+        ("currency_code", "VARCHAR"),
         ("net_worth", "DECIMAL(12,8)"),
         ("change_abs", "DECIMAL(11,8)"),
         ("change_pct", "DECIMAL(18,18)"),
@@ -503,6 +505,7 @@ def test_networth_history_export_retains_native_values_with_truthful_types(
     assert table.rows == (
         (
             "2026-07-01",
+            "USD",
             Decimal("1000.12345678"),
             Decimal("100.75308643"),
             Decimal("0.100740651234567890"),
@@ -510,6 +513,7 @@ def test_networth_history_export_retains_native_values_with_truthful_types(
     )
     manifest_columns = snapshot.manifest["tables"][0]["columns"]  # type: ignore[index]
     assert [column["duckdb_type"] for column in manifest_columns] == [  # type: ignore[index]
+        "VARCHAR",
         "VARCHAR",
         "DECIMAL(12,8)",
         "DECIMAL(11,8)",

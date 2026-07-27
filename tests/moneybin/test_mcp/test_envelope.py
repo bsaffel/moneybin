@@ -51,7 +51,9 @@ class TestSummaryMeta:
         meta = SummaryMeta(total_count=10, returned_count=10)
         assert meta.has_more is False
         assert meta.sensitivity == "low"
-        assert meta.display_currency == "USD"
+        # A summary nobody told a currency does not have one. The former "USD"
+        # default is what labelled every non-USD profile's money in dollars.
+        assert meta.display_currency is None
         assert meta.degraded is False
         assert meta.degraded_reason is None
         assert meta.period is None

@@ -528,6 +528,7 @@ def _seed_nonzero_networth(path: Path) -> None:
             CREATE OR REPLACE VIEW reports.net_worth AS
             SELECT
                 d.balance_date,
+                d.currency_code,
                 SUM(d.balance) AS net_worth,
                 COUNT(DISTINCT d.account_id) AS account_count,
                 SUM(CASE WHEN d.balance > 0 THEN d.balance ELSE 0 END) AS total_assets,
@@ -535,7 +536,7 @@ def _seed_nonzero_networth(path: Path) -> None:
             FROM core.fct_balances_daily AS d
             INNER JOIN core.dim_accounts AS a ON d.account_id = a.account_id
             WHERE a.include_in_net_worth AND NOT a.archived
-            GROUP BY d.balance_date
+            GROUP BY d.balance_date, d.currency_code
             """
         )
 

@@ -39,6 +39,7 @@ class TestCategorizePendingGet:
                     'Test Bank Checking' AS account_name,
                     DATE '2026-04-01' AS txn_date,
                     CAST(-25.00 AS DECIMAL(18,2)) AS amount,
+                    'USD' AS currency_code,
                     'COFFEE SHOP' AS description,
                     CAST(NULL AS VARCHAR) AS merchant_id,
                     'Coffee Shop' AS merchant_normalized,
@@ -49,12 +50,12 @@ class TestCategorizePendingGet:
                 UNION ALL SELECT
                     'T2', 'ACC001', 'Test Bank Checking',
                     DATE '2026-04-10', CAST(-500.00 AS DECIMAL(18,2)),
-                    'BIG EXPENSE', NULL, 'Big Expense',
+                    'USD', 'BIG EXPENSE', NULL, 'Big Expense',
                     CAST(30 AS INTEGER), 15000.0, 'ofx', NULL
                 UNION ALL SELECT
                     'T3', 'ACC002', 'Other Bank Savings',
                     DATE '2026-04-15', CAST(-5.00 AS DECIMAL(18,2)),
-                    'TINY', NULL, 'Tiny',
+                    'USD', 'TINY', NULL, 'Tiny',
                     CAST(25 AS INTEGER), 125.0, 'ofx', NULL
             """)  # noqa: S608  # test input, not executing dynamic SQL
 
@@ -122,6 +123,7 @@ class TestCategorizePendingGet:
                     'Alpha' AS account_name,
                     DATE '2026-04-20' AS txn_date,
                     CAST(-10.00 AS DECIMAL(18,2)) AS amount,
+                    'USD' AS currency_code,
                     'ALPHA TXN' AS description,
                     CAST(NULL AS VARCHAR) AS merchant_id,
                     'Alpha Txn' AS merchant_normalized,

@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 
 import pytest
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.system import system_status
+from tests.moneybin.db_helpers import record_sqlmesh_apply
 
 
 def _seed_pending_import(import_id: str = "IMP_PENDING_001") -> None:
-    """Insert raw account row + import_log strictly newer than template's dim.
+    """Insert a raw account row + import_log landing after any apply.
 
-    freshness() compares MAX(raw.X_accounts.extracted_at) to
-    MAX(core.dim_accounts.extracted_at); a bare import_log row no longer
-    triggers pending. Seed a raw.ofx_accounts row with a future
-    extracted_at so the new signal fires.
+    freshness() compares the newest raw landing time against SQLMesh's own
+    apply stamp; a bare import_log row does not trigger pending. Seed a
+    raw.ofx_accounts row with a far-future ``loaded_at`` so the signal fires.
     """
     with get_database(read_only=False) as db:
         db.execute(
@@ -34,11 +35,23 @@ def _seed_pending_import(import_id: str = "IMP_PENDING_001") -> None:
         db.execute(
             """
             INSERT INTO raw.ofx_accounts
-            (account_id, source_file, extracted_at, import_id)
-            VALUES (?, 'inline', TIMESTAMP '2099-01-01 00:00:00', ?)
+            (account_id, source_file, extracted_at, loaded_at, import_id)
+            VALUES (?, 'inline', TIMESTAMP '2099-01-01 00:00:00',
+                    TIMESTAMP '2099-01-01 00:00:00', ?)
             """,
             [f"ACC_{import_id}", import_id],
         )
+
+
+def _seed_apply_after_everything() -> None:
+    """Stamp a SQLMesh apply far enough ahead to cover the template's raw rows.
+
+    The shared MCP template DB carries raw rows whose landing times are its
+    own build time, and no SQLMesh state at all — which is genuinely pending.
+    A test asserting the settled state has to say an apply happened.
+    """
+    with get_database(read_only=False) as db:
+        record_sqlmesh_apply(db, datetime(2098, 1, 1))
 
 
 @pytest.mark.unit
@@ -69,8 +82,9 @@ async def test_pending_state_adds_action_hint(
 async def test_not_pending_omits_action_hint(
     mcp_db: object, declare_only_models: Callable[..., None]
 ) -> None:
-    """No pending imports → no refresh_run hint."""
+    """Nothing landed since the last apply → no refresh_run hint."""
     declare_only_models("core.dim_accounts")
+    _seed_apply_after_everything()
     env = system_status()
     parsed = env.to_dict()
     assert parsed["data"]["transforms"]["pending"] is False

@@ -442,7 +442,7 @@ class AccountService:
                 account_type=row[3],
                 account_subtype=row[4],
                 holder_category=row[5],
-                currency_code=str(row[6]),
+                currency_code=row[6],
                 archived=bool(row[7]),
                 include_in_net_worth=bool(row[8]),
                 last_four=row[9],
@@ -496,7 +496,7 @@ class AccountService:
             account_type=r["account_type"],  # type: ignore[arg-type]
             account_subtype=r["account_subtype"],  # type: ignore[arg-type]
             holder_category=r["holder_category"],  # type: ignore[arg-type]
-            currency_code=str(r["currency_code"]),
+            currency_code=r["currency_code"],  # type: ignore[arg-type]
             last_four=r["last_four"],  # type: ignore[arg-type]
             routing_number=r["routing_number"],  # type: ignore[arg-type]
             credit_limit=r["credit_limit"],  # type: ignore[arg-type]

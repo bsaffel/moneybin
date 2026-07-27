@@ -1,6 +1,6 @@
 # MoneyBin MCP
 
-> **Status:** in-progress — the 47-tool registry operates today; promotion is
+> **Status:** in-progress — the 49-tool registry operates today; promotion is
 > pending observed context-budget and host-native-deferral evidence.
 >
 > Companions: [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md)
@@ -11,7 +11,7 @@
 ## Purpose
 
 This is the concrete current MCP contract. Generic clients receive the complete
-47-tool standard registry. Capable hosts may optionally defer schemas from that
+49-tool standard registry. Capable hosts may optionally defer schemas from that
 same registry without reconnect, packs, or profiles; names, annotations,
 approvals, allowlists, and audit identity do not change. The previous per-tool
 catalog is archived at
@@ -21,13 +21,14 @@ registry.
 
 ## Standard registry
 
-The 11 user-facing domains below group 14 literal tool-name prefixes. A prefix
+The 13 user-facing domains below group 17 literal tool-name prefixes. A prefix
 is the portion before the first underscore: `identity_*` belongs to Reviews,
 `gsheet_*` belongs to Sync, and `refresh_*` plus `sql_*` belong to Platform.
 
 | Domain | Tools |
 |---|---|
 | System | `system_status`, `system_audit`, `system_audit_undo` |
+| Profile | `profile`, `profile_set` |
 | Reports | `reports` |
 | Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert` |
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` |
@@ -42,7 +43,7 @@ is the portion before the first underscore: `identity_*` belongs to Reviews,
 
 ## Contract matrix
 
-The rendered **standard-47 snapshot** from `tools/list` is the canonical exact
+The rendered **standard snapshot** from `tools/list` is the canonical exact
 input schema for every row below. This matrix is the stable selection guide: it
 names each tool, its primary selector or discriminator, its intent, and its
 safety family without duplicating FastMCP's drifting JSON schema.
@@ -52,6 +53,8 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `system_status` | `detail`, `sections` | Orientation and pending-work inventory | Read / dynamic / maximum medium / status-derived |
 | `system_audit` | `audit_id`, `cursor`, `limit`, `operation_id`, `view` | Audited mutation history | Read / dynamic / maximum high / audit-derived |
 | `system_audit_undo` | `operation_id` | Reverse one undoable operation | Audited recovery / maximum low |
+| `profile` |  | Active profile metadata and managed settings | Read / maximum low |
+| `profile_set` | `home_currency` | Set the profile's home currency | Audited write / maximum low |
 | `reports` | `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / maximum critical / report-derived |
 | `accounts` | `cursor`, `include_closed`, `limit`, `query`, `reference`, `view` | Account collection | Read / dynamic / maximum critical / view-derived |
 | `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / maximum critical |
@@ -175,7 +178,7 @@ and confirmation contracts.
 
 ### Export delivery
 
-The 47-tool standard registry contains exactly two export-specific tools and
+The 49-tool standard registry contains exactly two export-specific tools and
 stays below the 50-tool hard limit:
 
 - `export_run` publishes either the closed 13-table canonical bundle or one
@@ -228,7 +231,7 @@ secret material and hands-on operator territory; see
 `register_core_tools()` must exactly equal `STANDARD_TOOL_NAMES`; no hidden
 FastMCP aliases are allowed. Tests inventory the actual `tools/list` response,
 render coarse schemas, enforce description and metadata budgets, prove parity,
-and compare the deterministic 47-tool capture against the frozen baseline.
+and compare the deterministic 49-tool capture against the frozen baseline.
 
 The deterministic comparison passed, but `promotion_ready: false`: the context
 budget and host-native deferral are not observed. The governing spec and

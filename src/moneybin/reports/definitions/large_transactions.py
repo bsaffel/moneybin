@@ -31,6 +31,7 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         "merchant_id": DataClass.RECORD_ID,
         "merchant_normalized": DataClass.MERCHANT_NAME,
         "category": DataClass.CATEGORY,
+        "currency_code": DataClass.CURRENCY,
         "amount_zscore_account": DataClass.AGGREGATE,
         "amount_zscore_category": DataClass.AGGREGATE,
         "is_top_100": DataClass.AGGREGATE,
@@ -60,28 +61,33 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         ),
         OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
         OutputColumn(
+            "currency_code",
+            "ISO 4217 currency this row is denominated in; null means unknown.",
+            DataClass.CURRENCY,
+        ),
+        OutputColumn(
             "amount_zscore_account",
-            "Modified absolute-amount z-score against the account baseline.",
+            "Modified absolute-amount z-score against the same-currency account baseline.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "amount_zscore_category",
-            "Modified absolute-amount z-score against the category baseline.",
+            "Modified absolute-amount z-score against the same-currency category baseline.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "is_top_100",
-            "Whether the transaction is among the top 100 by absolute amount.",
+            "Whether the transaction is among its currency's top 100 by absolute amount.",
             DataClass.AGGREGATE,
         ),
     ),
     semantics=ReportSemantics(
         unit="currency",
-        currency="summary.display_currency",
+        currency="currency_code",
         sign="negative expense; positive income; ranking uses absolute amount",
         kind="flow",
         valuation_basis="transaction amount ranked by absolute magnitude",
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis="inclusive full observed transaction period",
         denominator=(
             "account or category median absolute deviation scaled by 1.4826 "
@@ -126,12 +132,20 @@ def large_transactions(
     """Top transactions by absolute amount with per-account/category z-scores.
 
     Amounts use the accounting convention (negative = expense, positive =
-    income) in the currency named by summary.display_currency.
+    income) in each row's own currency_code; rows are segmented per currency, never blended.
+
+    Rows interleave the currencies, largest first within each, so a truncated
+    result still represents every currency. Compare amounts only between rows
+    sharing a currency_code.
 
     Args:
         db: Open read-only database connection.
-        top: Top N by ABS(amount) (>= 1). On MCP the result is additionally
-            capped at the session max_rows; the CLI is uncapped.
+        top: Top N by ABS(amount) **within each currency** (>= 1). Ranking
+            across currencies would compare unlike units, so one
+            high-denomination currency could crowd every other currency out of
+            the result entirely. A single-currency profile gets the same N rows
+            it always did. On MCP the result is additionally capped at the
+            session max_rows; the CLI is uncapped.
         anomaly: account | category | none — filter to z>2.5 in the named scope.
 
     Examples:
@@ -139,18 +153,33 @@ def large_transactions(
     """
     if anomaly not in LARGE_TXN_ANOMALIES:
         raise ValueError(f"Unknown anomaly: {anomaly}")
-    # top < 1 would emit LIMIT 0/-1 (DuckDB treats -1 as no limit → full scan).
+    # top < 1 would rank nothing into the result and read as "no large
+    # transactions" rather than as the bad argument it is.
     if top < 1:
         raise ValueError(f"top must be >= 1, got {top!r}")
+    predicate = "1=1"
+    if anomaly == "account":
+        predicate = "amount_zscore_account > 2.5"
+    elif anomaly == "category":
+        predicate = "amount_zscore_category > 2.5"
     sql = f"""
         SELECT transaction_id, account_id, account_name, txn_date, amount,
                description, merchant_id, merchant_normalized, category,
+               currency_code,
                amount_zscore_account, amount_zscore_category, is_top_100
-        FROM {REPORTS_LARGE_TRANSACTIONS.full_name}
-    """  # noqa: S608  # TableRef interpolation
-    if anomaly == "account":
-        sql += " WHERE amount_zscore_account > 2.5"
-    elif anomaly == "category":
-        sql += " WHERE amount_zscore_category > 2.5"
-    sql += " ORDER BY ABS(amount) DESC LIMIT ?"
+        FROM (
+            SELECT transaction_id, account_id, account_name, txn_date, amount,
+                   description, merchant_id, merchant_normalized, category,
+                   currency_code,
+                   amount_zscore_account, amount_zscore_category, is_top_100,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY currency_code ORDER BY ABS(amount) DESC
+                   ) AS rank_in_currency
+            FROM {REPORTS_LARGE_TRANSACTIONS.full_name}
+            WHERE {predicate}
+        )
+        WHERE rank_in_currency <= ?
+        ORDER BY rank_in_currency, currency_code
+    """  # noqa: S608  # TableRef + LARGE_TXN_ANOMALIES allowlists
+    # The binding declares the class of the value it carries (R9).
     return ReportQuery(sql, [Binding(top, DataClass.AGGREGATE)])

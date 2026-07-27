@@ -3,7 +3,7 @@
 > **Status:** implemented
 
 This spec defines parity between MoneyBin's two active user surfaces. Parity
-means that the CLI and the 47-tool standard registry can produce the same
+means that the CLI and the 49-tool standard registry can produce the same
 durable user outcome. It does not require similar command or tool names.
 Generic clients receive the full registry; a capable host may optionally defer
 schemas from that same registry. Observed host-native deferral evidence remains
@@ -22,7 +22,7 @@ Every map row contains:
 | Field | Meaning |
 |---|---|
 | `capability_id` | Stable domain-oriented identifier; unique across the map |
-| `mcp_tools` | Exact names in the standard 47-tool MCP registry |
+| `mcp_tools` | Exact names in the standard 49-tool MCP registry |
 | `cli_commands` | Exact space-delimited executable Typer paths |
 | `service_methods` | Importable callables that own the behavior |
 | `observable_outcomes` | Stable rows, states, counts, audit operations, or results used to judge equivalence |
@@ -42,9 +42,9 @@ coverage catalog.
 
 As implemented in July 2026, the map contains:
 
-- 48 non-exempt capability rows covering all 47 standard MCP tools. The counts
-  differ by one because `reports` serves two capabilities — the catalog read and
-  report execution — under one tool identity.
+- 49 non-exempt capability rows covering all 49 standard MCP tools. `reports`
+  serves two capabilities — the catalog read and report execution — under one
+  tool identity.
 - 185 implemented Typer paths, including hidden compatibility aliases, with
   exact equality against the live command tree after explicit unimplemented
   stubs are removed.

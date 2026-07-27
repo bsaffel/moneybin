@@ -1067,8 +1067,6 @@
       "profile list",
       "profile switch",
       "profile delete",
-      "profile show",
-      "profile set",
       "demo"
     ],
     "service_methods": [
@@ -1083,6 +1081,27 @@
       "category": "operator-territory",
       "reason": "Profile and server bootstrapping must precede the MCP session they would otherwise need to invoke."
     }
+  },
+  {
+    "capability_id": "profile.settings",
+    "mcp_tools": [
+      "profile",
+      "profile_set"
+    ],
+    "cli_commands": [
+      "profile show",
+      "profile set"
+    ],
+    "service_methods": [
+      "moneybin.services.profile_service.ProfileService.show",
+      "moneybin.services.profile_service.ProfileService.set",
+      "moneybin.services.profile_settings_service.ProfileSettingsService.get_settings",
+      "moneybin.services.profile_settings_service.ProfileSettingsService.set_setting"
+    ],
+    "observable_outcomes": [
+      "the active profile's metadata and managed settings, including its home currency, are readable and mutable from either surface"
+    ],
+    "exemption": null
   },
   {
     "capability_id": "operator.pipeline-debug",

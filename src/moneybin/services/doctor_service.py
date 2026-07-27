@@ -14,6 +14,7 @@ from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
+from moneybin.metrics.registry import PROFILE_CURRENCIES, UNKNOWN_CURRENCY_ROWS
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
@@ -27,6 +28,7 @@ from moneybin.tables import (
     CATEGORY_OVERRIDES,
     DIM_ACCOUNTS,
     DIM_HOLDINGS,
+    FCT_BALANCES,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
@@ -41,6 +43,7 @@ from moneybin.tables import (
     PDF_FORMATS,
     PLAID_INVESTMENT_TRANSACTIONS,
     PLAID_SECURITIES,
+    PROFILE_SETTINGS,
     PROPOSED_RULES,
     SECURITIES,
     SECURITY_LINKS,
@@ -204,6 +207,7 @@ class DoctorService:
         sqlmesh_results = self._run_sqlmesh_audits(verbose)
         dedup_reconciliation = self._run_dedup_reconciliation()
         categorization = self._run_categorization_coverage()
+        currency_integrity = self._run_currency_integrity()
         app_integrity = self._run_app_integrity(full=full)
         orphan_app_state = self._run_orphan_app_state()
         investment_checks = [
@@ -222,6 +226,7 @@ class DoctorService:
             self._run_sqlmesh_model_presence(),
             dedup_reconciliation,
             categorization,
+            currency_integrity,
             *app_integrity,
             orphan_app_state,
             *investment_checks,
@@ -315,15 +320,21 @@ class DoctorService:
     def _run_app_integrity(self, *, full: bool) -> list[InvariantResult]:
         """Per-table integrity checks for protected ``app.*`` tables (Invariant 10).
 
-        Covers every table wrapped in a repo so far (``user_categories``,
-        ``category_overrides``, ``gsheet_connections``, ``user_merchants``,
-        ``categorization_rules``, ``proposed_rules``, ``transaction_categories``,
-        ``account_settings``, ``balance_assertions``, ``budgets``, plus the edge
-        writers ``tabular_formats``, ``match_decisions``, ``imports``, the
+        Covers ``user_categories``, ``category_overrides``, ``gsheet_connections``,
+        ``user_merchants``, ``categorization_rules``, ``proposed_rules``,
+        ``transaction_categories``, ``account_settings``, ``balance_assertions``,
+        ``budgets``, ``profile_settings``, plus the edge writers
+        ``tabular_formats``, ``match_decisions``, ``imports``, the
         account-identity tables ``account_links``, ``account_link_decisions``,
         ``transaction_id_aliases``, and the investments tables ``securities``,
         ``lot_selections``); later repository PRs append one coverage call per
         newly-wrapped table plus that table's FK/orphan specifics.
+
+        This is **not** yet every repo-wrapped table: twelve tables have a repo
+        but no coverage call here. That gap is pinned by equality in
+        ``test_every_repo_table_has_audit_coverage_or_a_named_exemption``, so it
+        can shrink but never grow silently — a new repo without a coverage call
+        fails that test. Closing the twelve is planned, not scheduled here.
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
@@ -410,6 +421,9 @@ class DoctorService:
                 full=full,
             ),
             self._run_app_audit_coverage(USER_REPORTS, "report_id", full=full),
+            # Singleton table: `scope` is a constant PK, so coverage checks the
+            # one row's watermark against its audit trail.
+            self._run_app_audit_coverage(PROFILE_SETTINGS, "scope", full=full),
             self._run_pdf_formats_recipe_validity(),
             self._run_pdf_formats_bounds(),
             self._run_pdf_formats_fingerprint_shape(),
@@ -1814,6 +1828,159 @@ class DoctorService:
         """Execute a single-row query and return column 0 as an int (0 if no row)."""
         row = self._db.execute(sql).fetchone()
         return int(row[0]) if row else 0
+
+    def _run_currency_integrity(self) -> InvariantResult:
+        """Report unknown-currency rows, then merely-mixed currency.
+
+        multi-currency.md Requirement 6. Reports segment per ``currency_code``
+        rather than blending (Requirement 5), so neither condition corrupts a
+        figure — but both change what the user can be shown, and only one of
+        them is fixable:
+
+        - **fail** — a row or account whose currency is ``NULL``. Its amount has
+          no unit, so it can never join a total. The user assigns one with
+          ``accounts set --currency``.
+        - **warn** — two or more known currencies and nothing unknown. Legal,
+          but every cross-currency total is withheld until conversion ships
+          (M1K.2), which is worth saying out loud rather than leaving the user
+          to wonder why net worth reads as segments.
+        """
+        name = "currency_integrity"
+        # (table, id column) — the grains that carry a monetary amount. Balances
+        # is a view over the others and has no stable row id, so it contributes
+        # to the counts without naming ids.
+        try:
+            unknown_transactions = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"""
+                    SELECT transaction_id
+                    FROM {FCT_TRANSACTIONS.full_name}
+                    WHERE currency_code IS NULL
+                    ORDER BY transaction_id
+                    LIMIT 100
+                    """  # noqa: S608 — TableRef constant, not user input
+                ).fetchall()
+            ]
+            unknown_accounts = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"""
+                    SELECT account_id
+                    FROM {DIM_ACCOUNTS.full_name}
+                    WHERE currency_code IS NULL
+                    ORDER BY account_id
+                    LIMIT 100
+                    """  # noqa: S608 — TableRef constant, not user input
+                ).fetchall()
+            ]
+            currencies = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"""
+                    SELECT DISTINCT currency_code FROM (
+                        SELECT currency_code FROM {FCT_TRANSACTIONS.full_name}
+                        UNION ALL
+                        SELECT currency_code FROM {DIM_ACCOUNTS.full_name}
+                        UNION ALL
+                        SELECT currency_code FROM {FCT_BALANCES.full_name}
+                    )
+                    WHERE currency_code IS NOT NULL
+                    ORDER BY currency_code
+                    """  # noqa: S608 — TableRef constants, not user input
+                ).fetchall()
+            ]
+            unknown_balances = self._scalar_int(
+                f"""
+                SELECT COUNT(*) FROM {FCT_BALANCES.full_name}
+                WHERE currency_code IS NULL
+                """  # noqa: S608 — TableRef constant, not user input
+            )
+            # Counted separately from the id lists above, which are capped at
+            # 100 so the envelope stays bounded. Deriving the count from
+            # len(ids) would saturate at 100 and hide the real backlog — the
+            # user would fix rows and see the same number every run.
+            unknown_transaction_count = self._scalar_int(
+                f"""
+                SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}
+                WHERE currency_code IS NULL
+                """  # noqa: S608 — TableRef constant, not user input
+            )
+            unknown_account_count = self._scalar_int(
+                f"""
+                SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}
+                WHERE currency_code IS NULL
+                """  # noqa: S608 — TableRef constant, not user input
+            )
+        except Exception as e:  # noqa: BLE001 — degrade gracefully; surface cause at DEBUG
+            logger.debug(f"currency_integrity skipped: {e}", exc_info=True)
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail="core layer not available; run transform first",
+                affected_ids=[],
+            )
+
+        PROFILE_CURRENCIES.set(len(currencies))
+        UNKNOWN_CURRENCY_ROWS.labels(grain="accounts").set(unknown_account_count)
+        UNKNOWN_CURRENCY_ROWS.labels(grain="transactions").set(
+            unknown_transaction_count
+        )
+        UNKNOWN_CURRENCY_ROWS.labels(grain="balances").set(unknown_balances)
+
+        unknown_total = (
+            unknown_transaction_count + unknown_account_count + unknown_balances
+        )
+        if unknown_total:
+            parts: list[str] = []
+            if unknown_account_count:
+                parts.append(f"{unknown_account_count} account(s)")
+            if unknown_transaction_count:
+                parts.append(f"{unknown_transaction_count} transaction(s)")
+            if unknown_balances:
+                parts.append(f"{unknown_balances} balance observation(s)")
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{', '.join(parts)} have an unknown currency. Their amounts "
+                    "are segmented out of every total until you assign one — "
+                    "run `moneybin accounts set <account> --currency <ISO 4217>`, "
+                    "then `moneybin transform`: the setting is app state, and "
+                    "core.* only picks it up on the next transform, so this check "
+                    "keeps failing until you re-run one. "
+                    "MoneyBin never guesses a currency, because a wrong guess "
+                    "would silently blend into a figure nothing could flag."
+                ),
+                # Prefixed by grain, matching orphan_app_state's note:/tag:
+                # convention: the two id kinds need different fixes, and a
+                # recipe reading a bare mixed list cannot tell which is which
+                # without re-querying.
+                affected_ids=[
+                    *(f"account:{account_id}" for account_id in unknown_accounts),
+                    *(
+                        f"transaction:{transaction_id}"
+                        for transaction_id in unknown_transactions
+                    ),
+                ],
+            )
+        if len(currencies) > 1:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"This profile holds {len(currencies)} currencies "
+                    f"({', '.join(currencies)}). Reports sub-total each currency "
+                    "separately and withhold any combined figure. A transaction "
+                    "denominated differently from its account is also left out of "
+                    "that account's carried daily balance — it cannot be added "
+                    "without a rate — and shows up as the account's "
+                    "reconciliation drift in `moneybin reports balance_drift`. "
+                    "Conversion to a single display currency is not built yet."
+                ),
+                affected_ids=[],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_categorization_coverage(self) -> InvariantResult:
         """Warn (not fail) when <50% of non-transfer transactions are categorized."""

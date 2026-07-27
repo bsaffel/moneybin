@@ -45,7 +45,11 @@ If you sum `outflow` from `cash_flow` and `total_spend` from `spending_trend` in
 
 ### Currency handling
 
-`core.fct_transactions.currency_code` and `core.dim_accounts.currency_code` are ISO 4217 strings. `fct_transactions.currency_code` resolves to the transaction's own captured currency (from OFX `CURDEF` or Plaid), else its account's `currency_code`, else `NULL`; `dim_accounts.currency_code` itself falls back to `'USD'` only when no account-level currency was ever captured or set. The `reports.*` views aggregate without filtering or converting by currency — **they assume single-currency**. Multi-currency users get mixed-currency sums and should treat the numbers as approximations until FX-conversion ships ([`docs/roadmap.md`](../roadmap.md)). The MCP/CLI envelope's `summary.display_currency` is presentation-only; rows are not FX-converted.
+`core.fct_transactions.currency_code` and `core.dim_accounts.currency_code` are ISO 4217 strings. `fct_transactions.currency_code` resolves to the transaction's own captured currency (from OFX `CURDEF` or Plaid), else its account's `currency_code`, else `NULL`; `dim_accounts.currency_code` resolves to the user's `accounts set --currency` override, else the currency the account's own source reported (OFX `CURDEF`, Plaid `iso_currency_code`, the tabular `currency` column), else `NULL`. There is no `'USD'` fallback: an account nobody stated a currency for is unknown, and `moneybin system doctor` reports it rather than guessing.
+
+Every `reports.*` view that sums money carries a `currency_code` column and groups by it, so a mixed-currency profile gets one sub-total per currency rather than one combined number. A `NULL` currency is its own segment — never resolved to the home currency, because that guess is one nothing downstream could flag. All unknown-currency rows share that one segment and are summed together, since nothing distinguishes two unknowns; `moneybin system doctor` fails on any of them, and `accounts set --currency` is the fix. `reports.net_worth` is one row per `(balance_date, currency_code)`; a consumer that re-aggregates it must keep `currency_code` in its own `GROUP BY` or it re-blends what the view separated. `reports.balance_drift` projects `currency_code` without grouping by it — asserted and computed balances belong to the same account, so the comparison is single-currency by construction.
+
+MoneyBin does not convert between currencies. `moneybin profile set home_currency <ISO 4217>` records which currency a profile treats as home, but nothing converts to it yet ([`docs/roadmap.md`](../roadmap.md) → M1K.2). The MCP/CLI envelope's `summary.display_currency` is presentation-only; rows are not FX-converted.
 
 ### Pending and posted
 
@@ -137,7 +141,7 @@ Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Jo
 | `last_four` | VARCHAR | User-set or Plaid mask. |
 | `account_subtype` | VARCHAR | Plaid-style subtype (`checking`, `savings`, `credit card`, `mortgage`, ...). User override, else the provider's own subtype, else derived from the source spelling by `seeds.account_type_map`. |
 | `holder_category` | VARCHAR | `personal` / `business` / `joint`. |
-| `currency_code` | VARCHAR | ISO-4217; defaults to `'USD'`. |
+| `currency_code` | VARCHAR | ISO-4217. User override, else the currency the account's own source reported; `NULL` when nobody stated one — there is no `'USD'` default. See "Currency handling" above. |
 | `credit_limit` | DECIMAL(18,2) | User-asserted; drives utilization metrics. |
 | `archived` | BOOLEAN | Hides from default lists and `reports.net_worth`. |
 | `include_in_net_worth` | BOOLEAN | Independent toggle; archiving forces FALSE. |
@@ -220,6 +224,7 @@ Split-expanded grain. One row per unsplit transaction; N rows per split transact
 | `line_category`, `line_subcategory` | VARCHAR | Per-line; falls through to parent for unsplit. |
 | `line_note` | VARCHAR | NULL on unsplit rows; per-split note when present. |
 | `line_kind` | VARCHAR | `'whole'` \| `'split'`. |
+| `currency_code` | VARCHAR | ISO 4217, inherited from the parent fact row — every line of a transaction shares its denomination. `GROUP BY` it whenever you sum `line_amount`; NULL means the currency is genuinely unknown. |
 | `account_id`, `transaction_date`, `merchant_name`, `description`, `is_pending`, `is_transfer`, `transfer_pair_id`, `source_type`, `source_count`, `transaction_year`, `transaction_month`, `transaction_year_month`, `transaction_year_quarter` | various | Carried from the parent fact row. |
 
 Logical grain key: `(transaction_id, line_id)`.
@@ -246,6 +251,8 @@ Per-account daily balance spine. Grain: one row per `(account_id, balance_date)`
 
 Observed days use the most authoritative source (per-day precedence: `user assertion > {ofx, plaid} > tabular`; `ofx` and `plaid` tie and are broken by freshest `updated_at`, then `source_type` ascending). Gaps are filled by carrying the last balance forward, adjusted by intervening transactions from `core.fct_transactions`.
 
+Only transactions denominated in the **currency being carried** adjust the balance. A transaction in any other currency needs an exchange rate to become an amount of this balance, and MoneyBin has none until M1K.2, so it is left out rather than added as though the units matched. The excluded movement is not lost: it appears in the next observation's `reconciliation_delta`, and therefore as drift in `reports.balance_drift`. `moneybin system doctor` warns whenever a profile holds more than one currency and names this consequence.
+
 | Column | Type | Description |
 |---|---|---|
 | `account_id` | VARCHAR | FK → `core.dim_accounts.account_id`. |
@@ -253,7 +260,7 @@ Observed days use the most authoritative source (per-day precedence: `user asser
 | `balance` | DECIMAL(18,2) | End-of-day balance. |
 | `is_observed` | BOOLEAN | TRUE if an authoritative observation exists for this date. |
 | `observation_source` | VARCHAR | Winning observation's source (`ofx`, `tabular`, `assertion`, `plaid`); NULL when interpolated. |
-| `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days and the first observation. |
+| `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days, on the first observation, and whenever the observed currency differs from the one carried into that day — the prior balance is then in another unit, so no comparison is defined until conversion arrives (M1K.2). |
 | `currency_code` | VARCHAR | ISO 4217; carried forward from the winning observation (or its interpolated predecessor) on each day. |
 
 Logical grain key: `(account_id, balance_date)`.
@@ -269,11 +276,12 @@ Uncategorized transactions ranked by curator-impact. Grain: one row per uncatego
 | `account_name` | VARCHAR | Resolved display name; NULL only if `dim_accounts.display_name` itself is NULL (uncommon). |
 | `txn_date` | DATE | Transaction date. |
 | `amount` | DECIMAL(18,2) | Signed (source sign preserved). |
+| `currency_code` | VARCHAR | ISO 4217 the amount is denominated in; NULL when unknown. |
 | `description` | VARCHAR | Source description. |
 | `merchant_id` | VARCHAR | FK → `core.dim_merchants.merchant_id`. NULL when no canonical merchant was resolved. |
 | `merchant_normalized` | VARCHAR | Resolved merchant; NULL when no `dim_merchants` match and no source merchant value. |
 | `age_days` | INTEGER | `CURRENT_DATE − txn_date`. |
-| `priority_score` | DECIMAL(18,2) | `ABS(amount) × age_days` — default sort key. |
+| `priority_score` | DECIMAL(18,2) | `ABS(amount) × age_days` — default sort key. Compares nominal magnitudes, so it only ranks meaningfully within one `currency_code`. |
 | `source_type` | VARCHAR | Provenance source. |
 | `source_id` | VARCHAR | **NULL placeholder today.** Reserved column pending `source_id` surfacing on `fct_transactions`. Don't filter or join on it. |
 
@@ -675,7 +683,8 @@ What not to do, and why.
 - **Don't `SUM(amount) FROM core.fct_transactions` without filtering `is_transfer = FALSE`.** Transfers appear as a debit on one account and credit on another. They cancel in aggregate over the whole table, but they double-count within any account-level slice.
 - **Don't aggregate both `core.fct_transactions.amount` and `core.fct_transaction_lines.line_amount` in the same query.** Pick one grain. The lines view sums to the same totals as the fact (whole = parent.amount, split lines sum to parent.amount); joining both yields 2×.
 - **Don't read from `prep.*`.** It's internal staging — column shapes can change without notice and no catalog comments are emitted. Use `core.*`.
-- **Don't `SUM(amount)` across mixed currencies.** `reports.*` and any cross-account aggregate over `fct_transactions` add `amount` without FX conversion. For single-currency users this is correct; for multi-currency users it's wrong. Filter by `currency_code` until multi-currency support ships.
+- **Don't `SUM(amount)` across mixed currencies.** The `reports.*` views already group by `currency_code`, but a query of your own over `core.fct_transactions`, `core.fct_transaction_lines`, or `core.fct_balances` does not — nothing converts, so adding dollars to euros yields a number in no currency. Group by `currency_code`, or filter to one.
+- **Don't drop `currency_code` when you re-aggregate a `reports.*` view.** Every money-summing view is one row per grain **per currency**; a `GROUP BY` that omits it silently re-blends the currencies the view separated.
 - **Don't filter on `core.uncategorized_queue.source_id`.** It's a NULL placeholder today.
 - **Don't mix sign conventions.** If you join `cash_flow.outflow` (negative) and `spending_trend.total_spend` (positive) in the same expression, the math is wrong. Pick one view per question.
 - **Don't query `app.transaction_notes` / `app.transaction_tags` / `app.transaction_splits` directly when you need them per-transaction.** They're already aggregated as nested `LIST(STRUCT(...))` columns on `core.fct_transactions`. Direct queries miss the resolved shape and bypass the audit-emitting service layer for writes.

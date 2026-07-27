@@ -209,6 +209,53 @@ class TestStandardCoarseAccountReads:
         assert response.data.account.account_id == "ACC001"
 
     @pytest.mark.unit
+    async def test_account_detail_carries_the_account_currency_to_the_summary(
+        self, mcp_db: Path
+    ) -> None:
+        """One account, so `display_currency` is knowable — and must be its own.
+
+        The detail view re-wraps `accounts_get`'s envelope in a coarse one and
+        forwards `display_currency` by hand. A dropped forward is invisible from
+        the payload, which keeps its correct `currency_code`; only the summary
+        shows it, and an agent that trusts `summary.display_currency` over the
+        row would read a EUR account as unknown.
+        """
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                UPDATE core.dim_accounts
+                SET display_name = ?, currency_code = ?
+                WHERE account_id = ?
+                """,
+                ["Checking", "EUR", "ACC001"],
+            )
+
+        response = await accounts_coarse(view="detail", reference="Checking")
+
+        assert response.data.account.currency_code == "EUR"
+        assert response.summary.display_currency == "EUR"
+
+    @pytest.mark.unit
+    async def test_account_detail_leaves_an_unknown_currency_unknown(
+        self, mcp_db: Path
+    ) -> None:
+        """A NULL account currency reaches the summary as null, never "USD"."""
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                UPDATE core.dim_accounts
+                SET display_name = ?, currency_code = NULL
+                WHERE account_id = ?
+                """,
+                ["Checking", "ACC001"],
+            )
+
+        response = await accounts_coarse(view="detail", reference="Checking")
+
+        assert response.data.account.currency_code is None
+        assert response.summary.display_currency is None
+
+    @pytest.mark.unit
     async def test_account_detail_refuses_ambiguous_reference(
         self, mcp_db: Path
     ) -> None:
@@ -1299,3 +1346,146 @@ class TestAccountsSetExtended:
         )
         parsed = result.to_dict()
         assert parsed["data"]["default_cost_basis_method"] is None
+
+
+class TestBalanceCurrency:
+    """`core.fct_balances_daily` carries a per-row currency; the surface must too."""
+
+    @staticmethod
+    def _seed_eur_balance() -> None:
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_balances_daily (
+                    account_id, balance_date, balance, is_observed,
+                    observation_source, reconciliation_delta, currency_code
+                ) VALUES
+                    ('ACC001', '2025-06-30', 5000.00, TRUE, 'ofx', NULL, 'EUR')
+                """
+            )
+
+    @pytest.mark.unit
+    async def test_a_eur_balance_is_not_reported_as_usd(self, mcp_db: Path) -> None:
+        """A EUR-only response names EUR, not the envelope's USD default.
+
+        `build_envelope` defaults `display_currency` to "USD", so a balance read
+        that never passes one relabels every foreign account's money as dollars
+        — the failure multi-currency.md exists to prevent, on the surface an
+        agent trusts most.
+        """
+        self._seed_eur_balance()
+
+        response = await accounts_balances_coarse(view="latest")
+
+        assert response.summary.display_currency == "EUR"
+        assert [row.currency_code for row in response.data.observations] == ["EUR"]
+
+    @pytest.mark.unit
+    async def test_mixed_currencies_refuse_to_name_one(self, mcp_db: Path) -> None:
+        """Rows spanning two currencies leave display_currency null.
+
+        Server instructions tell the agent a null display_currency means "read
+        each row's own currency_code". Naming either currency here would
+        mislabel the other account's balance.
+        """
+        self._seed_eur_balance()
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_balances_daily (
+                    account_id, balance_date, balance, is_observed,
+                    observation_source, reconciliation_delta, currency_code
+                ) VALUES
+                    ('ACC002', '2025-06-30', 15000.00, TRUE, 'ofx', NULL, 'USD')
+                """
+            )
+
+        response = await accounts_balances_coarse(view="latest")
+
+        assert response.summary.display_currency is None
+        assert {row.currency_code for row in response.data.observations} == {
+            "EUR",
+            "USD",
+        }
+
+    @staticmethod
+    def _set_account_currency(account_id: str, currency: str) -> None:
+        with get_database(read_only=False) as db:
+            db.execute(
+                "UPDATE core.dim_accounts SET currency_code = ? WHERE account_id = ?",
+                [currency, account_id],
+            )
+
+    @pytest.mark.unit
+    async def test_an_assertion_carries_the_account_currency(
+        self, mcp_db: Path
+    ) -> None:
+        """A balance assertion is money, so it must say what unit it is in.
+
+        `app.balance_assertions` stores no currency of its own — the assertion
+        is about an account, so the account's currency is the answer. Without
+        it the assertions view returned a bare number that an agent could only
+        read as the envelope's default.
+        """
+        self._set_account_currency("ACC001", "EUR")
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO app.balance_assertions
+                    (account_id, assertion_date, balance, notes, created_at)
+                VALUES ('ACC001', '2025-06-30', 5000.00, NULL, CURRENT_TIMESTAMP)
+                """
+            )
+
+        response = await accounts_balances_coarse(view="assertions")
+
+        assert [row.currency_code for row in response.data.assertions] == ["EUR"]
+        assert response.summary.display_currency == "EUR"
+
+    @pytest.mark.unit
+    async def test_assertions_across_currencies_name_none(self, mcp_db: Path) -> None:
+        """Two accounts in different currencies leave display_currency null."""
+        self._set_account_currency("ACC001", "EUR")
+        self._set_account_currency("ACC002", "JPY")
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO app.balance_assertions
+                    (account_id, assertion_date, balance, notes, created_at)
+                VALUES
+                    ('ACC001', '2025-06-30', 5000.00, NULL, CURRENT_TIMESTAMP),
+                    ('ACC002', '2025-06-30', 900000.00, NULL, CURRENT_TIMESTAMP)
+                """
+            )
+
+        response = await accounts_balances_coarse(view="assertions")
+
+        assert response.summary.display_currency is None
+        assert {row.currency_code for row in response.data.assertions} == {
+            "EUR",
+            "JPY",
+        }
+
+    @pytest.mark.unit
+    async def test_an_account_with_no_currency_asserts_unknown(
+        self, mcp_db: Path
+    ) -> None:
+        """A NULL account currency stays NULL — it never becomes USD.
+
+        `dim_accounts.currency_code` is genuinely nullable since this milestone
+        removed its blind 'USD' default, and `system doctor`'s currency_integrity
+        check exists to surface exactly these. Filling one in here would hide it.
+        """
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO app.balance_assertions
+                    (account_id, assertion_date, balance, notes, created_at)
+                VALUES ('ACC001', '2025-06-30', 5000.00, NULL, CURRENT_TIMESTAMP)
+                """
+            )
+
+        response = await accounts_balances_coarse(view="assertions")
+
+        assert [row.currency_code for row in response.data.assertions] == [None]
+        assert response.summary.display_currency is None

@@ -274,7 +274,7 @@ mode, checksums where applicable, and recovery actions on failure.
 ### R8 — MCP surface and parity
 
 MCP and CLI expose the same observable outcomes over the same services. The
-operating 47-tool standard registry uses exactly two export-specific tools and
+operating 49-tool standard registry uses exactly two export-specific tools and
 an existing status read:
 
 - `export_run` runs a bundle or report export after the caller supplies its
@@ -289,7 +289,7 @@ The split is deliberate. Reading destination status, configuring a destination,
 and writing exported data have different read/write, confirmation, and recovery
 contracts. A broad `export(operation=...)` tool would collapse those boundaries
 into a large union and violate the surface-design contract. The registry remains
-at 47 tools under the 50-tool hard limit; reports extend the catalog behind the
+at 49 tools under the 50-tool hard limit; reports extend the catalog behind the
 existing `reports` tool and consume no additional slots.
 
 The CLI applies the R3 safe default rules. MCP requires an explicit mode or the
@@ -402,7 +402,7 @@ general plugin system.
    serialization, cancellable staging promotion, and preservation of the last
    successful snapshot on failure.
 7. **Surfaces:** exercise CLI and MCP capability parity, actual rendered MCP
-   schemas, confirmations, error envelopes, the 47-tool current registry, and
+   schemas, confirmations, error envelopes, the 49-tool current registry, and
    the 50-tool hard limit.
 
 ## Dependencies

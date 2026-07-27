@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Generator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService, TransformStatus
+from tests.moneybin.db_helpers import record_sqlmesh_apply
 
 # raw.import_log columns required by NOT NULL constraints. The table is
 # auto-created by Database() schema init; tests only need to provide
@@ -22,18 +24,27 @@ _INSERT_IMPORT = (
     "VALUES (?, '/tmp/f.csv', 'csv', 'test', '[]'::JSON, ?, ?)"
 )
 
-# raw.ofx_accounts NOT NULL columns. Tests only care about account_id,
-# extracted_at, and import_id; the rest are stubs.
+# raw.ofx_accounts NOT NULL columns. `loaded_at` is what freshness reads;
+# `extracted_at` is supplied only because it is part of the primary key.
 _INSERT_RAW_ACCOUNT = (
     "INSERT INTO raw.ofx_accounts "
-    "(account_id, source_file, extracted_at, import_id) "
-    "VALUES (?, '/tmp/f.ofx', ?, ?)"
+    "(account_id, source_file, extracted_at, loaded_at, import_id) "
+    "VALUES (?, '/tmp/f.ofx', ?, ?, ?)"
+)
+
+# raw.security_prices NOT NULL columns — a price feed row, which opens no
+# import_log batch at all.
+_INSERT_RAW_PRICE = (
+    "INSERT INTO raw.security_prices "
+    "(provider_security_key, price_date, quote_currency, source_type, "
+    "source_origin, close, price_basis, loaded_at) "
+    "VALUES ('AAPL', DATE '2026-05-13', 'USD', 'stooq', '', 190.00, 'raw', ?)"
 )
 
 
 def _ts(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
-    # Naive timestamp; mirrors raw.*_accounts.extracted_at and
-    # raw.import_log.completed_at (both TIMESTAMP).
+    # Naive timestamp; mirrors the raw landing columns and
+    # raw.import_log.completed_at (all TIMESTAMP).
     return datetime(year, month, day, hour, minute)
 
 
@@ -41,12 +52,15 @@ def _ts(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> date
 def freshness_db(db: Database) -> Database:
     """Empty DB with core.dim_accounts shimmed in (raw.* are auto-created).
 
-    The shimmed dim has both ``extracted_at`` (the propagated raw value
-    that drives the pending comparison) and ``updated_at`` (the SQLMesh
-    CURRENT_TIMESTAMP retained for the informational ``last_apply_at``
-    field). The session TZ is pinned to UTC so naive vs. tz-aware
-    inserts round-trip predictably through the ``updated_at::TIMESTAMP``
-    cast in :meth:`TransformService._max_dim_accounts_updated_at`.
+    The shimmed dim carries ``updated_at`` for the informational
+    ``last_apply_at`` field; ``extracted_at`` is retained because
+    ``dim_accounts`` really has it, not because freshness reads it. The
+    session TZ is pinned to UTC so the naive literals these tests write
+    into raw landing columns describe the same instants as
+    :func:`record_sqlmesh_apply`'s epoch stamp on any machine, and so naive vs.
+    tz-aware inserts round-trip predictably through the
+    ``updated_at::TIMESTAMP`` cast in
+    :meth:`TransformService._max_dim_accounts_updated_at`.
     """
     db.execute("SET TimeZone = 'UTC'")
     db.execute(
@@ -57,7 +71,7 @@ def freshness_db(db: Database) -> Database:
     return db
 
 
-def test_freshness_pending_when_raw_newer_than_dim(
+def test_freshness_pending_when_raw_landed_after_the_last_apply(
     freshness_db: Database, declare_only_models: Callable[..., None]
 ) -> None:
     declare_only_models("core.dim_accounts")
@@ -65,7 +79,11 @@ def test_freshness_pending_when_raw_newer_than_dim(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
         [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
     )
-    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), "i1"])
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 10, 12, 0))
+    freshness_db.execute(
+        _INSERT_RAW_ACCOUNT,
+        ["a", _ts(2026, 5, 13, 18, 0), _ts(2026, 5, 13, 18, 24), "i1"],
+    )
     freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
     f = TransformService(freshness_db).freshness()
     assert f.pending is True
@@ -73,27 +91,33 @@ def test_freshness_pending_when_raw_newer_than_dim(
     assert f.latest_import_at == _ts(2026, 5, 13, 18, 24)
 
 
-def test_freshness_not_pending_when_dim_caught_up(
+def test_freshness_not_pending_when_the_apply_followed_every_raw_row(
     freshness_db: Database, declare_only_models: Callable[..., None]
 ) -> None:
     declare_only_models("core.dim_accounts")
-    extracted = _ts(2026, 5, 13, 18, 24)
+    landed = _ts(2026, 5, 13, 18, 24)
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
-        [extracted, _ts(2026, 5, 13, 19, 0)],
+        [landed, _ts(2026, 5, 13, 19, 0)],
     )
-    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", extracted, "i1"])
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 13, 19, 0))
+    freshness_db.execute(
+        _INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 0), landed, "i1"]
+    )
     freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 30)])
     f = TransformService(freshness_db).freshness()
     assert f.pending is False
 
 
-def test_freshness_pending_when_dim_table_missing(
+def test_freshness_pending_when_no_apply_has_ever_run(
     db: Database, declare_only_models: Callable[..., None]
 ) -> None:
-    """Pre-first-transform: dim_accounts doesn't exist; pending if any raw rows."""
+    """Pre-first-transform: no SQLMesh state at all; pending if any raw rows."""
     declare_only_models("core.dim_accounts")
-    db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), None])
+    db.execute(
+        _INSERT_RAW_ACCOUNT,
+        ["a", _ts(2026, 5, 13, 18, 0), _ts(2026, 5, 13, 18, 24), None],
+    )
     f = TransformService(db).freshness()
     assert f.pending is True
     assert f.last_apply_at is None
@@ -148,14 +172,17 @@ def test_freshness_filters_reverted_and_failed_imports(
 ) -> None:
     """Raw rows tied to reverted/failed imports must not count toward staleness."""
     declare_only_models("core.dim_accounts")
-    freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
-        [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
-    )
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 10, 12, 0))
     # Reverted revert deletes raw rows in production; failed imports may leave
     # partial raw rows. Both should be filtered by import_log status.
-    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), "i1"])
-    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["b", _ts(2026, 5, 13, 18, 30), "i2"])
+    freshness_db.execute(
+        _INSERT_RAW_ACCOUNT,
+        ["a", _ts(2026, 5, 13, 18, 0), _ts(2026, 5, 13, 18, 24), "i1"],
+    )
+    freshness_db.execute(
+        _INSERT_RAW_ACCOUNT,
+        ["b", _ts(2026, 5, 13, 18, 0), _ts(2026, 5, 13, 18, 30), "i2"],
+    )
     freshness_db.execute(_INSERT_IMPORT, ["i1", "reverted", _ts(2026, 5, 13, 18, 24)])
     freshness_db.execute(_INSERT_IMPORT, ["i2", "failed", _ts(2026, 5, 13, 18, 30)])
     f = TransformService(freshness_db).freshness()
@@ -168,15 +195,101 @@ def test_freshness_counts_partial_imports(
 ) -> None:
     """Partial imports landed some rows; they count toward staleness."""
     declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 10, 12, 0))
     freshness_db.execute(
-        "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
-        [_ts(2026, 5, 10, 12, 0), _ts(2026, 5, 10, 12, 0)],
+        _INSERT_RAW_ACCOUNT,
+        ["a", _ts(2026, 5, 13, 18, 0), _ts(2026, 5, 13, 18, 24), "i1"],
     )
-    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 24), "i1"])
     freshness_db.execute(_INSERT_IMPORT, ["i1", "partial", _ts(2026, 5, 13, 18, 24)])
     f = TransformService(freshness_db).freshness()
     assert f.pending is True
     assert f.latest_import_at == _ts(2026, 5, 13, 18, 24)
+
+
+def test_latest_import_at_ignores_an_in_flight_batch(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """An unfinished import has no completion time and must not be reported.
+
+    Pins the behavior against the reading the old filter documented — that
+    an in-flight batch should count. It never could: `completed_at` is NULL
+    until finalize, so MAX skipped it while the filter claimed otherwise.
+    """
+    declare_only_models("core.dim_accounts")
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
+    freshness_db.execute(_INSERT_IMPORT, ["i2", "importing", None])
+    f = TransformService(freshness_db).freshness()
+    assert f.latest_import_at == _ts(2026, 5, 13, 18, 24)
+
+
+def test_freshness_pending_when_a_price_row_lands_after_the_last_apply(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """A price feed writes no import_log batch — it must still count.
+
+    ``raw.security_prices`` feeds ``core.fct_security_prices`` and arrives
+    with no ``import_id`` at all, so a scan set built around the import
+    ledger would miss every price observation MoneyBin fetches.
+    """
+    declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 10, 12, 0))
+    freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
+    assert TransformService(freshness_db).freshness().pending is True
+
+
+def test_freshness_still_sees_landings_when_a_declared_raw_table_is_absent(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """A missing raw table must not blind the scan to the other sixteen.
+
+    Read-only opens never run ``init_schemas``, so a raw table a newer release
+    added is genuinely absent until the next write. The whole-union scan raises
+    ``CatalogException`` there, and treating that as "no raw data" reports
+    "transforms up to date" for every source — the exact fail-open this scan
+    exists to close.
+    """
+    declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 10, 12, 0))
+    freshness_db.execute("DROP TABLE raw.security_prices")
+    freshness_db.execute(
+        _INSERT_RAW_ACCOUNT,
+        ["a", _ts(2026, 5, 13, 18, 0), _ts(2026, 5, 13, 18, 24), "i1"],
+    )
+    freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 24)])
+
+    assert TransformService(freshness_db).freshness().pending is True
+
+
+def test_freshness_scans_landings_when_import_log_itself_is_absent(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """The bad-import filter is dropped, not the whole scan, without import_log."""
+    declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 10, 12, 0))
+    freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
+    freshness_db.execute("DROP TABLE raw.import_log")
+
+    assert TransformService(freshness_db).freshness().pending is True
+
+
+def test_freshness_reports_pending_when_the_sqlmesh_state_is_unreadable(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """A SQLMesh state table this release cannot read must not crash status.
+
+    SQLMesh owns ``sqlmesh._environments`` and migrates its layout across
+    versions. A read failure degrades to "no apply we can see" — pending — so
+    ``system_status`` keeps answering instead of raising a raw DuckDB error.
+    """
+    declare_only_models("core.dim_accounts")
+    freshness_db.execute("CREATE SCHEMA IF NOT EXISTS sqlmesh")
+    # No `finalized_ts` column: what an un-migrated / future state schema
+    # looks like to this release's SELECT.
+    freshness_db.execute("CREATE TABLE sqlmesh._environments (name VARCHAR)")
+    freshness_db.execute("INSERT INTO sqlmesh._environments VALUES ('prod')")
+    freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
+
+    assert TransformService(freshness_db).freshness().pending is True
 
 
 def test_apply_returns_apply_result_shape(
@@ -589,12 +702,15 @@ def test_freshness_pending_and_named_when_a_registered_model_was_never_built(
     """
     # `core.dim_accounts` below is a registered model no `db init` creates, so
     # its presence is what marks this warehouse built rather than brand new.
-    extracted = _ts(2026, 5, 13, 18, 24)
+    landed = _ts(2026, 5, 13, 18, 24)
     freshness_db.execute(
         "INSERT INTO core.dim_accounts VALUES ('a', ?, ?)",
-        [extracted, _ts(2026, 5, 13, 19, 0)],
+        [landed, _ts(2026, 5, 13, 19, 0)],
     )
-    freshness_db.execute(_INSERT_RAW_ACCOUNT, ["a", extracted, "i1"])
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 13, 19, 0))
+    freshness_db.execute(
+        _INSERT_RAW_ACCOUNT, ["a", _ts(2026, 5, 13, 18, 0), landed, "i1"]
+    )
     freshness_db.execute(_INSERT_IMPORT, ["i1", "complete", _ts(2026, 5, 13, 18, 30)])
 
     f = TransformService(freshness_db).freshness()
@@ -602,6 +718,147 @@ def test_freshness_pending_and_named_when_a_registered_model_was_never_built(
     assert f.pending is True
     assert "core.fct_transactions" in f.missing_models
     assert "core.dim_accounts" not in f.missing_models
+
+
+def _manual_entry_db(
+    db: Database, declare_only_models: Callable[..., None]
+) -> Database:
+    """A UTC-pinned DB with real core tables and one applied SQLMesh plan."""
+    from tests.moneybin.db_helpers import create_core_tables
+
+    db.execute("SET TimeZone = 'UTC'")
+    create_core_tables(db)
+    declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(db, _ts(2020, 1, 1))
+    return db
+
+
+def test_freshness_pending_after_a_manual_transaction_is_recorded(
+    db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """The 2026-07-26 finding: manual entry wrote rows no freshness check read.
+
+    Drives the real write path rather than inserting into
+    ``raw.manual_transactions`` directly — a hand-rolled row would still
+    pass if the service left the landing column unset.
+    """
+    from moneybin.services.transaction_service import TransactionService
+
+    manual_db = _manual_entry_db(db, declare_only_models)
+    manual_db.execute(
+        "INSERT INTO core.dim_accounts (account_id, account_type, source_type) "
+        "VALUES ('A1', 'checking', 'manual')"
+    )
+
+    TransactionService(manual_db).create_manual_batch(
+        [
+            {
+                "account_id": "A1",
+                "amount": Decimal("-12.34"),
+                "transaction_date": "2026-04-15",
+                "description": "Coffee Shop",
+            }
+        ],
+        actor="cli",
+    )
+
+    assert TransformService(manual_db).freshness().pending is True
+
+
+def test_freshness_pending_after_a_manual_investment_event_is_recorded(
+    db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """Same finding, the ``investments_record`` half of it."""
+    from moneybin.repositories.securities_repo import SecuritiesRepo
+    from moneybin.services.investment_service import InvestmentService
+
+    manual_db = _manual_entry_db(db, declare_only_models)
+    manual_db.execute(
+        "INSERT INTO core.dim_accounts "
+        "(account_id, account_type, institution_name, source_type) "
+        "VALUES ('acct_brokerage', 'investment', 'Fidelity', 'manual')"
+    )
+    SecuritiesRepo(manual_db).upsert(
+        security_id=None,
+        name="Apple Inc.",
+        ticker="AAPL",
+        security_type="equity",
+        actor="cli",
+    )
+
+    InvestmentService(manual_db).record_event(
+        account_ref="acct_brokerage",
+        security_ref="AAPL",
+        type_="buy",
+        subtype=None,
+        trade_date=date(2024, 1, 15),
+        quantity=Decimal("10"),
+        price=Decimal("150.00"),
+        amount=Decimal("-1500.00"),
+        fees=None,
+        acquired=None,
+        basis=None,
+        event_group_id=None,
+        currency_code="USD",
+        description="buy aapl",
+        actor="cli",
+        created_by="cli",
+    )
+
+    assert TransformService(manual_db).freshness().pending is True
+
+
+def test_pending_scan_set_covers_every_raw_table_the_transforms_read(
+    db: Database,
+) -> None:
+    """The scan set must equal the raw tables SQLMesh models actually read.
+
+    Set equality both ways, not a count and not a subset. A raw table wired
+    into a model but absent here is data whose arrival ``pending`` cannot
+    see — the exact defect this scan set was widened to fix — and one listed
+    here that no model reads is a table whose arrivals no refresh can clear.
+    """
+    from moneybin.services.transform_service import (
+        _RAW_LANDING_COLUMNS,  # pyright: ignore[reportPrivateUsage]  # the guarded list
+    )
+    from moneybin.sqlmesh_registry import raw_tables_read_by_models
+
+    assert set(_RAW_LANDING_COLUMNS) == set(raw_tables_read_by_models())
+
+
+def test_every_declared_landing_and_import_column_exists(db: Database) -> None:
+    """A declaration that no longer matches the schema must fail, not go quiet.
+
+    Both halves are silent when stale: a renamed landing column makes the
+    scan raise (caught and reported as "no raw data"), and an ``import_id``
+    that appears on a table declared without one leaves reverted rows
+    counting toward staleness forever.
+    """
+    from moneybin.services.transform_service import (
+        _RAW_IMPORT_SCOPED,  # pyright: ignore[reportPrivateUsage]  # the guarded list
+        _RAW_LANDING_COLUMNS,  # pyright: ignore[reportPrivateUsage]  # the guarded list
+    )
+
+    rows = db.execute(
+        "SELECT table_name, column_name FROM duckdb_columns() WHERE schema_name = 'raw'"
+    ).fetchall()
+    columns: dict[str, set[str]] = {}
+    for table, column in rows:
+        columns.setdefault(str(table), set()).add(str(column))
+
+    declared_landing = {
+        table: {column} for table, column in _RAW_LANDING_COLUMNS.items()
+    }
+    actual_landing = {
+        table: columns.get(table, set()) & {column}
+        for table, column in _RAW_LANDING_COLUMNS.items()
+    }
+    assert actual_landing == declared_landing
+
+    actual_import_scoped = {
+        table for table in _RAW_LANDING_COLUMNS if "import_id" in columns.get(table, ())
+    }
+    assert actual_import_scoped == _RAW_IMPORT_SCOPED
 
 
 @pytest.mark.fresh_db

@@ -41,6 +41,11 @@ _PY_MODEL_NAME = re.compile(
     r"@model\(\s*[\"']([a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*)[\"']",
     re.IGNORECASE,
 )
+# Any `raw.<table>` reference anywhere in a model file. Deliberately not
+# anchored to FROM/JOIN: a prose mention that isn't really read only ever
+# *adds* a table, which fails the scan-set guard loudly and visibly. Missing
+# a real reference is the silent direction, so the pattern errs wide.
+_RAW_TABLE_REF = re.compile(r"\braw\.([a-z_][a-z0-9_]*)", re.IGNORECASE)
 
 
 @lru_cache(maxsize=1)
@@ -69,6 +74,26 @@ def registered_model_names() -> frozenset[str]:
             f"{len(unparsed)} SQLMesh model file(s) have an unreadable name "
             f"header and are excluded from the registered set: "
             f"{', '.join(sorted(unparsed))}"
+        )
+    return frozenset(names)
+
+
+@lru_cache(maxsize=1)
+def raw_tables_read_by_models() -> frozenset[str]:
+    """Bare ``raw`` table names any SQLMesh model reads.
+
+    This is the definition of "raw data a refresh would consume", and so of
+    which arrivals make the warehouse stale. Read from the project files for
+    the same reason as :func:`registered_model_names` — the caller is
+    ``system_status``, and a ``Context`` costs seconds.
+    """
+    names: set[str] = set()
+    for path in (
+        *sorted(_MODELS_DIR.rglob("*.sql")),
+        *sorted(_MODELS_DIR.rglob("*.py")),
+    ):
+        names.update(
+            m.group(1).lower() for m in _RAW_TABLE_REF.finditer(path.read_text())
         )
     return frozenset(names)
 

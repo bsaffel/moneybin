@@ -437,7 +437,11 @@ async def test_generic_reports_fastmcp_result_transport_and_dynamic_audit() -> N
     assert structured["summary"]["returned_count"] == 1
     assert structured["summary"]["has_more"] is True
     assert structured["summary"]["period"] == "2026-07-01 to 2026-07-02"
-    assert structured["summary"]["display_currency"] == "USD"
+    # This report's columns are period_date / amount / account_id — it never
+    # states a currency, so the wire must not either. The assertion read "USD"
+    # while the dataclass default supplied one for free, which is what shipped a
+    # confident denomination to agents for every currency-less report.
+    assert structured["summary"]["display_currency"] is None
     assert structured["data"]["truncated"] is True
     assert len(captured) == 1
     assert captured[0]["sensitivity"] == "critical"

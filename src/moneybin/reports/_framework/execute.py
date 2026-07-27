@@ -26,7 +26,11 @@ from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
 from moneybin.privacy.sql_lineage import derive_query_tier
 from moneybin.privacy.taxonomy import DataClass, Tier
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import (
+    ResponseEnvelope,
+    build_envelope,
+    resolve_display_currency,
+)
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import (
     ParamSpec,
@@ -62,7 +66,10 @@ class ReportResult:
     truncated: bool
     actions: list[str] = field(default_factory=list)
     period: str | None = None
-    display_currency: str = "USD"
+    # Unknown, never a currency: a result built without one has not been told a
+    # denomination, and a literal here would speak for every report that never
+    # mentions currency at all (multi-currency.md Requirement 5).
+    display_currency: str | None = None
     #: R4's drift state, set by ``ReportCatalog.execute`` for a saved report whose
     #: stored class map went stale. Never true for a packaged tier: a built-in is
     #: a file in the repo and has no stored map to go stale.
@@ -124,6 +131,17 @@ class CatalogReportExecution:
     period: str | None
     semantics: ReportSemantics
     provenance: tuple[str, ...]
+    # Same contract as ReportResult.display_currency — see the note there.
+    display_currency: str | None = None
+
+
+def _resolve_display_currency(records: list[dict[str, Any]]) -> str | None:
+    """The one currency every report row is denominated in, else None.
+
+    Thin projection over the shared envelope rule so reports and the balance
+    reads answer ``display_currency`` identically.
+    """
+    return resolve_display_currency(record.get("currency_code") for record in records)
 
 
 class _CatalogSpec(Protocol):
@@ -227,6 +245,23 @@ def build_catalog_execution(
     # of ReportSpec. The cast keeps classify_columns' existing public signature
     # stable while both kinds use its fail-closed undeclared-column behavior.
     col_classes = classify_columns(cast(ReportSpec, spec), columns)
+    # A report whose rows carry currency_code is authoritative about its own
+    # denomination, including when the answer is "no single one" — defaulting to
+    # a currency there would relabel a segmented result as one currency. Reports
+    # with no currency_code column say nothing either way and keep the unknown
+    # default.
+    # Resolved over every fetched row, not the truncated page: a mixed-currency
+    # result whose first `max_rows` happen to share one currency would otherwise
+    # advertise it confidently while the other currency's rows sit past the cap.
+    #
+    # The claim is scoped to the rows in THIS response, which is what the
+    # envelope field means and what `has_more` already qualifies. `records` is
+    # what the cursor fetched — max_rows + 1, one more than is returned — so
+    # agreement across it is always true of the returned rows, never a guess
+    # about rows past the fetch boundary. Withholding it whenever a result
+    # truncates would cost every large single-currency report a correct label
+    # and buy no safety, since the narrower claim was never wrong.
+    declares_currency = "currency_code" in columns
     return CatalogReportExecution(
         report_id=spec.report_id,
         parameters=MappingProxyType(dict(parameters)),
@@ -244,6 +279,11 @@ def build_catalog_execution(
         period=period,
         semantics=spec.semantics,
         provenance=spec.semantics.provenance,
+        **(
+            {"display_currency": _resolve_display_currency(records)}
+            if declares_currency
+            else {}
+        ),
     )
 
 
@@ -307,6 +347,7 @@ def redact_catalog_execution(
         truncated=execution.truncated,
         actions=actions,
         period=execution.period,
+        display_currency=execution.display_currency,
     )
 
 

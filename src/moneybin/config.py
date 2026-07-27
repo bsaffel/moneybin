@@ -964,24 +964,56 @@ _current_profile: str | None = None
 # Without this, ``moneybin logs`` (a docker-style usage error) would fire
 # the first-run wizard before Click ever surfaces the missing-arg error.
 _profile_resolver: Callable[[], None] | None = None
+_profile_resolution_pending: bool = False
 
 
 def register_profile_resolver(fn: Callable[[], None] | None) -> None:
     """Register a callback that resolves and sets the current profile.
 
     The callback is invoked from ``get_settings()`` / ``get_current_profile()``
-    when no profile is set yet. It must call ``set_current_profile(name)`` as
-    a side effect (and may also do CLI-level setup like observability).
-    Pass ``None`` to clear the registration (used by tests).
+    when no profile is set yet, or when the name that is set was only a hint
+    (see ``mark_profile_resolution_pending``). It must call
+    ``set_current_profile(name)`` as a side effect (and may also do CLI-level
+    setup like observability). Pass ``None`` to clear the registration (used
+    by tests); either way the pending flag resets with the registration.
     """
-    global _profile_resolver
+    global _profile_resolver, _profile_resolution_pending
     _profile_resolver = fn
+    _profile_resolution_pending = False
+
+
+def mark_profile_resolution_pending() -> None:
+    """Declare the active profile name a hint that still owes full resolution.
+
+    A name and a *resolved* profile are different things. The CLI sets the
+    name eagerly from ``--profile`` / ``MONEYBIN_PROFILE`` so that readers
+    which deliberately skip the resolver — ``get_current_profile(
+    auto_resolve=False)``, which opts out of the first-run wizard, not out of
+    an explicitly-named profile — still see it. But resolution also checks the
+    profile directory and re-initializes observability against that profile's
+    log files, and neither had happened yet.
+
+    Conflating the two meant the eager set satisfied the resolver's gate, so
+    an explicit profile ran with no CLI log, no sqlmesh log, and every
+    suppressed ``sqlmesh.*`` INFO record on stderr — the console denylist
+    stands down when no log file exists to hold what it drops. Only the CLI
+    knows its set was provisional, so only the CLI raises this flag.
+    """
+    global _profile_resolution_pending
+    _profile_resolution_pending = True
 
 
 def _maybe_resolve_profile() -> None:
-    """Invoke the registered resolver if no profile is set."""
-    if _current_profile is None and _profile_resolver is not None:
-        _profile_resolver()
+    """Invoke the resolver when no profile is set, or one is set only as a hint."""
+    global _profile_resolution_pending
+    if _profile_resolver is None:
+        return
+    if _current_profile is not None and not _profile_resolution_pending:
+        return
+    # Cleared before the call so the resolver's own get_settings() — reached
+    # through observability setup — does not recurse back into here.
+    _profile_resolution_pending = False
+    _profile_resolver()
 
 
 def get_settings() -> MoneyBinSettings:

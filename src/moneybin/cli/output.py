@@ -52,6 +52,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+UNKNOWN_CURRENCY = "n/a"
+"""Printed in the currency slot when the ledger does not know the currency.
+
+One token everywhere, because the two slots are read together: `reports
+networth` uses the currency as a heading (`n/a: 1234.56`) and `accounts
+balance` puts it after the amount (`1234.56 n/a`). `?` is cryptic as a
+heading and `unknown` reads as though the *amount* were unknown, so each
+position had grown its own spelling.
+"""
+
+
+def currency_label(value: object) -> str:
+    """Render a currency code, naming the unknown case instead of showing it raw.
+
+    An unguarded `!s` prints a NULL as the literal "None", which an agent
+    parsing the text surface can take for a denomination.
+    """
+    return str(value) if value else UNKNOWN_CURRENCY
+
 
 class OutputFormat(StrEnum):
     """CLI output format for read-only commands."""

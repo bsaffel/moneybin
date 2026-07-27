@@ -15,7 +15,11 @@ import pytest
 from fastmcp import Client
 from fastmcp.tools import FunctionTool
 
-from moneybin.mcp.surface import STANDARD_TOOL_COUNT, STANDARD_TOOL_NAMES
+from moneybin.mcp.surface import (
+    STANDARD_TOOL_COUNT,
+    STANDARD_TOOL_NAMES,
+    WINDSURF_ACTIVE_TOOL_CAP,
+)
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.tables import INTERFACE_TABLES
 
@@ -39,7 +43,7 @@ CLIENT_GUIDE = ROOT / "docs/guides/mcp-clients.md"
 MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
 WHAT_AI_SEES_GUIDE = ROOT / "docs/guides/what-the-ai-sees.md"
 AI_CLIENT_SPEC = ROOT / "docs/specs/ai-client-compatibility.md"
-STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-47.json"
+STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard.json"
 FEATURES = ROOT / "docs/features.md"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 REPORT_RECIPE_SPEC = ROOT / "docs/specs/reports-recipe-library.md"
@@ -1417,9 +1421,11 @@ def test_client_compatibility_records_current_windsurf_headroom() -> None:
     )
 
     for current_fact in (
-        "47 MoneyBin tools",
-        "100-active-tool",
-        "53 tool slots",
+        f"{STANDARD_TOOL_COUNT} MoneyBin tools",
+        f"{WINDSURF_ACTIVE_TOOL_CAP}-active-tool",
+        # Windsurf's cap minus our registry: an arithmetic consequence of
+        # the count, so it must not be a literal either.
+        f"{WINDSURF_ACTIVE_TOOL_CAP - STANDARD_TOOL_COUNT} tool slots",
     ):
         assert current_fact in text
         assert current_fact in index_row
@@ -1651,7 +1657,7 @@ def test_changelog_records_prelaunch_surface_cutover() -> None:
 
     text = CHANGELOG.read_text()
 
-    assert "47-tool standard registry" in text
+    assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in text
     assert "pre-launch" in text
     assert "reports" in text
 
@@ -2868,7 +2874,7 @@ def test_final_review_architecture_and_current_prose_match_runtime() -> None:
     extensions = (ROOT / "docs/specs/extension-contracts.md").read_text()
 
     assert "observable outcomes" in architecture
-    assert "47-tool standard registry" in architecture
+    assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in architecture
     assert "domain metadata does not control disclosure" in architecture
     assert "refresh_run()" in recovery
     assert '`system_audit(view="history"' in account_identity

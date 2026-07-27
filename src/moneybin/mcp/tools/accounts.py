@@ -81,7 +81,12 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationListPayload,
 )
 from moneybin.privacy.redaction import redact_typed
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import (
+    UNSET,
+    ResponseEnvelope,
+    Unset,
+    build_envelope,
+)
 from moneybin.protocol.pagination import (
     KeysetPosition,
     compare_keyset,
@@ -93,7 +98,11 @@ from moneybin.services.account_links_service import (
     AccountLinksService,
 )
 from moneybin.services.account_service import CLEAR, AccountService
-from moneybin.services.balance_service import BalanceAssertionSnapshot, BalanceService
+from moneybin.services.balance_service import (
+    BalanceAssertionSnapshot,
+    BalanceService,
+    balances_display_currency,
+)
 from moneybin.services.entity_reference import (
     AmbiguousEntity,
     EntityCandidate,
@@ -152,7 +161,9 @@ def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
         raise UserError(
             f"Account not found: {account_id}", code=error_codes.INFRA_NOT_FOUND
         )
-    return build_envelope(data=record)
+    # credit_limit is money, so the envelope must not keep build_envelope's "USD"
+    # default for an account denominated in anything else — or in nothing yet.
+    return build_envelope(data=record, display_currency=record.currency_code)
 
 
 def accounts_summary() -> ResponseEnvelope[AccountSummaryStats]:
@@ -300,7 +311,9 @@ def accounts_balances(
         result = BalanceService(db).current_balances(
             account_ids=account_ids, as_of_date=parsed_date
         )
-    return build_envelope(data=result)
+    return build_envelope(
+        data=result, display_currency=balances_display_currency(result)
+    )
 
 
 def accounts_balance_history(
@@ -319,7 +332,9 @@ def accounts_balance_history(
         result = BalanceService(db).history(
             account_id, from_date=parsed_from, to_date=parsed_to
         )
-    return build_envelope(data=result)
+    return build_envelope(
+        data=result, display_currency=balances_display_currency(result)
+    )
 
 
 def accounts_balance_reconcile(
@@ -336,7 +351,9 @@ def accounts_balance_reconcile(
         result = BalanceService(db).reconcile(
             account_ids=account_ids, threshold=parsed_threshold
         )
-    return build_envelope(data=result)
+    return build_envelope(
+        data=result, display_currency=balances_display_currency(result)
+    )
 
 
 def accounts_balance_assertions(
@@ -797,7 +814,7 @@ def _coarse_envelope[T](
     returned_count: int,
     next_cursor: str | None = None,
     period: str | None = None,
-    display_currency: str = "USD",
+    display_currency: str | None | Unset = UNSET,
     actions: list[str] | None = None,
     has_more: bool | None = None,
 ) -> ResponseEnvelope[T]:
