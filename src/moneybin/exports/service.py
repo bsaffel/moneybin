@@ -598,7 +598,13 @@ class ExportService:
             # Drift, unlike freshness, is already in hand: the catalog carries
             # R4's verdict for every user-tier row it built.
             degraded=status.degraded,
-            degraded_reason=status.degraded_reason,
+            # The drift sentence names the columns that moved, and those are the
+            # author's own — the same text the header rename and the withheld SQL
+            # keep out of a redacted artifact. The code says a stale class map
+            # from an unreadable row without repeating any of them.
+            degraded_reason=(
+                status.degraded_code if withhold_names else status.degraded_reason
+            ),
         )
         tables = (table,)
         snapshot = PreparedExport(

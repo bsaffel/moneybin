@@ -21,7 +21,7 @@ from moneybin.privacy.payloads.networth import (
     NetWorthHistoryPayload,
     NetWorthHistoryPoint,
 )
-from moneybin.privacy.taxonomy import DataClass
+from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
     ReportStatus,
@@ -34,6 +34,7 @@ from moneybin.reports._framework.contract import (
     ReportQuery,
     ReportSpec,
 )
+from moneybin.reports._framework.dynamic import DEGRADED_STALE_CLASSIFICATION
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     build_catalog_execution,
@@ -578,6 +579,70 @@ def test_a_redacted_builtin_report_export_keeps_its_declared_column_names(
         "account_number",
         "amount",
     ]
+
+
+def test_a_redacted_user_report_export_withholds_a_drifted_column_alias(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The drift sentence names the same columns the header rename withholds.
+
+    ``spec_from_row`` writes every moved column into ``degraded_reason`` so a
+    reader learns which ones went stale — the author's own labels, which is the
+    right answer on their own terminal. Copied verbatim into a redacted artifact
+    it republishes exactly the text the rename, the class-map key, and the
+    withheld SQL all withhold, one field over.
+
+    A redacted receipt publishes the reason *code* instead: still enough to tell
+    a stale class map from an unreadable row months later, without the names.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id) VALUES (?)", ["acct_11112222"]
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="drifting_alias",
+            query_sql='SELECT account_id AS "021000021" FROM core.dim_accounts',
+            actor="cli",
+        )
+        .report_id
+    )
+    # The saved map says RECORD_ID; this is the upward move R4 serves fail-closed.
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "dim_accounts")] = {
+        **CLASSIFICATION[("core", "dim_accounts")],
+        "account_id": DataClass.ROUTING_NUMBER,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    redacted = ExportService(db).prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+    )
+
+    assert redacted.provenance is not None
+    assert redacted.provenance.receipt["degraded"] is True
+    assert (
+        redacted.provenance.receipt["degraded_reason"] == DEGRADED_STALE_CLASSIFICATION
+    )
+    assert "021000021" not in json.dumps(redacted.manifest)
+
+    unredacted = ExportService(db).prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    # Same rule as the header: an unredacted export publishes the value itself,
+    # so naming the column that carries it costs nothing.
+    assert unredacted.provenance is not None
+    reason = unredacted.provenance.receipt["degraded_reason"]
+    assert isinstance(reason, str)
+    assert reason.startswith(DEGRADED_STALE_CLASSIFICATION)
+    assert "021000021" in reason
 
 
 def test_prepare_report_exports_every_row_without_the_mcp_response_cap(

@@ -51,7 +51,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   go with it wherever their values are masked, since a name beside a `*****` is
   what would survive: such a column or parameter is published as
   `redacted_column_1` / `redacted_parameter_1`, and every unmasked one keeps the
-  name you gave it. And when an
+  name you gave it — including in the drift note, which reports its reason code
+  rather than naming the columns that moved. And when an
   upstream rename invalidates a stored query, `reports run` and `export report`
   report `report_query_execution_failed` and name the likely cause instead of
   surfacing a DuckDB binder error, which quotes the statement it failed to bind.

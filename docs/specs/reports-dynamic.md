@@ -563,8 +563,9 @@ consequently blind to every input above — it must not be used as the drift key
 
 Instead, `class_fingerprint` is a hash over three things: the sorted
 `(schema, table, column, DataClass)` tuples for **the tables this query reads**;
-the `(DataClass, tier, mask_strength)` triples for **every class in the map and
-in the report's `class_downgrades`**; and a **`DERIVATION_VERSION`** constant
+the `(DataClass, tier, mask_strength)` triples for **every class in play — the
+map, the report's `class_downgrades`, and the read set above**; and a
+**`DERIVATION_VERSION`** constant
 bumped whenever **any function the persisted map depends on** changes how it
 classifies — `resolve_output_classes` *and* the `classes_by_result_column`
 bridging step 6 calls load-bearing. The scope is the pipeline, not one function:
@@ -590,6 +591,16 @@ fingerprint, forces the `Mismatch` branch, and re-checks the downgrade against
 current policy. Without them the fingerprint guards the classification of a
 `DataClass` but not what that `DataClass` means, which is the half a downgrade
 actually turns on.
+
+The read set is in that triple scope for the same reason one step earlier. A
+derived column takes the strongest class among its inputs, so an input that
+lost that contest still decides the answer the moment its own tier or transform
+rises: an expression deriving as `TXN_AMOUNT` from an amount and a description
+must re-derive when `DESCRIPTION` is made CRITICAL. That release moves no
+`(schema, table, column, DataClass)` tuple — the column's class *name* is
+unchanged — and `DESCRIPTION` appears in no stored map, so scoping the triples
+to stored classes alone would leave the fingerprint matching and the expression
+serving under the weaker stored floor.
 
 The version term is not ceremony. The tuples describe derivation's *inputs*; a
 change to the classifier itself moves no tuple, so a fix that raises a computed

@@ -305,8 +305,8 @@ def class_fingerprint(
     ``reports_class_map()`` is built in-process, and ``core``/``reports`` are
     SQLMesh-built, so none of them bumps a migration. The key covers three
     things instead — the classes of every column the query reads, the
-    ``(class, tier, mask strength)`` policy triple for every class in play, and
-    ``DERIVATION_VERSION``.
+    ``(class, tier, mask strength)`` policy triple for every class in play (the
+    read set as well as the stored map), and ``DERIVATION_VERSION``.
 
     The policy triples are what a downgrade actually turns on. An approval is
     not an assertion about a ``DataClass`` *name*; it is an assertion about the
@@ -324,10 +324,17 @@ def class_fingerprint(
     once instead of per report — see :func:`user_report_specs`.
     """
     tree, snapshot = _tree_and_snapshot(db, query_sql, snapshot)
+    read_columns = read_column_classes(tree, snapshot)
 
     involved = set(classes.values()) | set(parameter_classes.values())
     for entry in class_downgrades.values():
         involved.update(downgrade_pair(entry))
+    # The read set too, not only what the row stores. A derived column takes the
+    # strongest class among its inputs, so an input that lost that contest still
+    # decides the answer the moment its own tier or transform is raised — and
+    # that move leaves both the stored names and `read_columns`' class names
+    # untouched, which is the same blind spot the triples exist to close.
+    involved.update(DataClass(class_name) for *_, class_name in read_columns)
     policy = sorted(
         (data_class.value, int(data_class.tier), int(mask_strength(data_class)))
         for data_class in involved
@@ -343,7 +350,7 @@ def class_fingerprint(
             # stale LOW map for a CRITICAL value. `UserReportsService.update`
             # re-derives on any SQL change, but the repo's own `set` does not.
             "query": hashlib.sha256(query_sql.encode()).hexdigest(),
-            "read_columns": read_column_classes(tree, snapshot),
+            "read_columns": read_columns,
             "policy": policy,
         },
         sort_keys=True,

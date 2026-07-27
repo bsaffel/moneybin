@@ -144,6 +144,16 @@ repo-authored and describes the column or filter rather than a value, so it
 survives unchanged; an unredacted artifact keeps the author's own names, because
 it publishes the values beside them.
 
+The receipt's `degraded_reason` is the third field carrying that text. A drifted
+saved report names the columns whose class moved (`stale_classification:
+upstream classification changed for 021000021; …`), and the two other drift
+branches embed the derivation or decode error, which quotes the query back. A
+redacted export of a user-tier report therefore publishes the reason *code*
+alone — `stale_classification`, `unresolvable_query`, or `unreadable_row` — which
+still distinguishes a stale class map from an unreadable row for a reader months
+later. `degraded` is unchanged in both modes, and an unredacted artifact keeps
+the full sentence.
+
 MCP callers supply `redaction_mode="redacted"` or
 `redaction_mode="unredacted"`. An explicit `redaction_mode` does not prompt.
 Omission elicits the choice when the client supports elicitation; otherwise the

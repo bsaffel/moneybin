@@ -100,6 +100,9 @@ class ReportStatus:
     archived: bool = False
     degraded: bool = False
     degraded_reason: str | None = None
+    #: ``degraded_reason`` without the user's own column names in it — see
+    #: :class:`~moneybin.reports._framework.dynamic.DynamicReport`.
+    degraded_code: str | None = None
 
 
 _NO_STATUS: Final = ReportStatus()
@@ -453,6 +456,7 @@ def get_report_catalog(db: Database | None = None) -> ReportCatalog:
                 archived=report.archived,
                 degraded=report.degraded,
                 degraded_reason=report.degraded_reason,
+                degraded_code=report.degraded_code,
             )
             for report in user
         },

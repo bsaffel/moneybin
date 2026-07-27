@@ -79,6 +79,11 @@ class DynamicReport:
     archived: bool = False
     degraded: bool = False
     degraded_reason: str | None = None
+    #: The reason without the names — the leading token of ``degraded_reason``,
+    #: carried as its own field rather than parsed back out of the sentence.
+    #: A redacted export publishes this, since the sentence names the author's
+    #: own columns and a stored exception message can quote their SQL back.
+    degraded_code: str | None = None
 
 
 def unknown_semantics(*, provenance: tuple[str, ...] = ()) -> ReportSemantics:
@@ -245,6 +250,7 @@ def spec_from_row(
                 f"{DEGRADED_UNRESOLVABLE_QUERY}: {unresolvable}; every column is "
                 "masked until the report's SQL is updated."
             ),
+            degraded_code=DEGRADED_UNRESOLVABLE_QUERY,
         )
     if not changed:
         return DynamicReport(spec=spec, archived=archived)
@@ -256,6 +262,7 @@ def spec_from_row(
             f"{DEGRADED_STALE_CLASSIFICATION}: upstream classification changed for "
             f"{', '.join(changed)}; serving them masked until the report is saved again."
         ),
+        degraded_code=DEGRADED_STALE_CLASSIFICATION,
     )
 
 
@@ -296,6 +303,7 @@ def _unreadable_row(row: Mapping[str, Any], error: Exception) -> DynamicReport:
             "by this version of MoneyBin, so every column is masked. Save it again "
             "to rebuild its contract."
         ),
+        degraded_code=DEGRADED_UNREADABLE_ROW,
     )
 
 

@@ -18,7 +18,7 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.privacy.redaction import MaskStrength
+from moneybin.privacy.redaction import MaskStrength, mask_strength
 from moneybin.privacy.sql_lineage import FAIL_CLOSED_CLASS, SqlSchemaError
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.contract import ParamSpec
@@ -30,6 +30,7 @@ from moneybin.reports._framework.derive import (
 from moneybin.reports._framework.dynamic import (
     DEGRADED_STALE_CLASSIFICATION,
     DEGRADED_UNREADABLE_ROW,
+    DEGRADED_UNRESOLVABLE_QUERY,
     declared_params,
     spec_from_row,
     stored_params,
@@ -640,6 +641,33 @@ def test_fingerprint_moves_when_a_class_mask_policy_changes(
     assert _fingerprint(dynamic_db, sql) != before
 
 
+def test_fingerprint_moves_when_an_unselected_input_class_changes_policy(
+    dynamic_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The policy triples must cover what the query *reads*, not what it stores.
+
+    A derived output takes the strongest class among its inputs, so an input
+    that lost that contest still decides the answer the moment its own tier or
+    transform is raised. ``INSTITUTION`` is a column of ``core.dim_accounts``
+    and nothing this query stores — not an output class, not a parameter, not a
+    downgrade — so only the read set can carry it into the key.
+    """
+    sql = "SELECT account_id FROM core.dim_accounts"
+    before = _fingerprint(dynamic_db, sql)
+
+    def _institution_now_masks_wholly(data_class: DataClass) -> MaskStrength:
+        if data_class is DataClass.INSTITUTION:
+            return MaskStrength.WHOLE
+        return mask_strength(data_class)
+
+    monkeypatch.setattr(
+        "moneybin.reports._framework.derive.mask_strength",
+        _institution_now_masks_wholly,
+    )
+
+    assert _fingerprint(dynamic_db, sql) != before
+
+
 def test_fingerprint_moves_when_the_query_text_changes(dynamic_db: Database) -> None:
     """Two projections over one table share every other term in the key.
 
@@ -844,6 +872,7 @@ def test_spec_from_row_fails_closed_when_a_column_is_reclassified_upward(
     assert dynamic.degraded_reason is not None
     assert dynamic.degraded_reason.startswith(DEGRADED_STALE_CLASSIFICATION)
     assert "account_id" in dynamic.degraded_reason
+    assert dynamic.degraded_code == DEGRADED_STALE_CLASSIFICATION
 
     masked = run_report(dynamic.spec, dynamic_db, max_rows=10)
     assert {record["account_id"] for record in masked.records} == {"*****"}
@@ -927,6 +956,9 @@ def test_spec_from_row_masks_a_row_whose_downgrade_entry_is_half_written(
 
     assert dynamic.degraded
     assert DEGRADED_UNREADABLE_ROW in (dynamic.degraded_reason or "")
+    # The reason embeds the raw exception, which quotes the stored row back; the
+    # code is what a redacted export publishes in its place.
+    assert dynamic.degraded_code == DEGRADED_UNREADABLE_ROW
     assert dict(dynamic.spec.classes) == {"account_id": FAIL_CLOSED_CLASS}
 
 
@@ -1240,6 +1272,30 @@ def test_a_row_whose_stored_text_no_longer_decodes_stays_listed_and_masked(
     assert dynamic.degraded
     assert dynamic.degraded_reason is not None
     assert dynamic.degraded_reason.startswith(DEGRADED_UNREADABLE_ROW)
+
+
+def test_a_row_whose_query_can_no_longer_be_classified_stays_listed_and_masked(
+    dynamic_db: Database,
+) -> None:
+    """The third degraded branch: the SQL parses, but the table it reads is gone.
+
+    Retiring a ``core`` table is a release doing it, not the author, so the row
+    keeps its place in the catalog and every column masks. Its reason embeds the
+    derivation error, which quotes the query back — hence the code, on the same
+    terms as the two branches beside it. A retired *column* is not this branch:
+    lineage fails that one closed to ``UNRESOLVED`` and it degrades as stale, so
+    the table has to actually leave the catalog to reach this one.
+    """
+    row = _saved(dynamic_db)
+    dynamic_db.execute("DROP TABLE core.dim_accounts")
+
+    dynamic = spec_from_row(dynamic_db, row)
+
+    assert dynamic.degraded
+    assert dynamic.degraded_reason is not None
+    assert dynamic.degraded_reason.startswith(DEGRADED_UNRESOLVABLE_QUERY)
+    assert dynamic.degraded_code == DEGRADED_UNRESOLVABLE_QUERY
+    assert set(dynamic.spec.classes.values()) == {FAIL_CLOSED_CLASS}
 
 
 def test_spec_from_row_reports_whether_the_stored_row_is_archived(
