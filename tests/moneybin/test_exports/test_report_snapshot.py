@@ -352,6 +352,7 @@ def test_a_redacted_report_export_withholds_the_saved_query(db: Database) -> Non
         report_parameters={},
     )
     assert redacted.redaction_mode == "redacted"
+    assert redacted.provenance is not None
     assert redacted.provenance.receipt["sql"] is None
     # The artifact, not just the in-memory receipt: the manifest is what ships.
     manifest_sql = redacted.manifest["provenance"]["receipt"]["sql"]  # type: ignore[index]
@@ -364,6 +365,7 @@ def test_a_redacted_report_export_withholds_the_saved_query(db: Database) -> Non
         report_parameters={},
         redaction_mode="unredacted",
     )
+    assert unredacted.provenance is not None
     assert "acct_11112222" in str(unredacted.provenance.receipt["sql"])
 
 
