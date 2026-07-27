@@ -256,7 +256,9 @@ INVESTMENT_ACCOUNT_NOT_ALLOWED = "investment_account_not_allowed"
 INVESTMENT_CURSOR_INVALID = "investment_cursor_invalid"
 INVESTMENT_DATE_RANGE_INVALID = "investment_date_range_invalid"
 INVESTMENT_DATES_NOT_ALLOWED = "investment_dates_not_allowed"
+INVESTMENT_METHOD_NOT_SPECIFIC = "investment_method_not_specific"
 INVESTMENT_OPEN_ONLY_NOT_ALLOWED = "investment_open_only_not_allowed"
+INVESTMENT_SECURITY_NOT_BOUND = "investment_security_not_bound"
 
 
 # ---------------------------------------------------------------------------

@@ -290,6 +290,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **Picking tax lots no longer reports success on a write nothing will read.**
+  `moneybin investments lots select` and `investments_lots_select` accepted a
+  lot selection for any security, but the cost-basis engine reads
+  `app.lot_selections` only under specific identification — so a selection made
+  against a FIFO, HIFO, or average-cost position was saved, echoed back, and
+  then discarded at the next refresh, leaving realized gains unchanged with no
+  indication why. Both surfaces now refuse a non-empty selection unless the
+  security resolves to `specific`, naming the election that would fix it
+  (`investments securities set --method specific`). Clearing a selection still
+  works under any method, so overrides made while a security was `specific`
+  stay removable. The security → account-default → FIFO election chain moved
+  into one shared resolver, so the method a selection is checked against is the
+  method the disposal replays under.
 - **"Transforms up to date" now accounts for everything you can add, not just
   accounts.** The staleness flag on `system_status` and `moneybin transform
   status` watched three account tables out of the seventeen a refresh reads, so

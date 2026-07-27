@@ -186,13 +186,15 @@ class TestInvestmentsPipeline:
         result.assert_success()
         security_id = json.loads(result.stdout)["data"]["security_id"]
 
+        # Precondition for the lots-select step below — any other method makes
+        # the command refuse the selection.
         run_cli(
             "investments",
             "securities",
             "set",
             security_id,
             "--method",
-            "fifo",
+            "specific",
             env=env,
         ).assert_success()
 

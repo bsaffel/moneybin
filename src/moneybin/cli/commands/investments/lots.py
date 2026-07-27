@@ -107,6 +107,11 @@ def investments_lots_select(
     any prior selection for this disposal — an omitted lot is dropped, not
     left in place. ``--clear`` submits the empty set, reverting to FIFO.
     Identical semantics to the ``investments_lots_select`` MCP tool.
+
+    Requires the security to resolve to ``specific`` cost basis — only specific
+    identification consumes lot selections. Elect it first with
+    ``moneybin investments securities set --method specific``; ``--clear``
+    needs no election.
     """
     if clear and lot:
         typer.echo("error: --clear and --lot are mutually exclusive", err=True)

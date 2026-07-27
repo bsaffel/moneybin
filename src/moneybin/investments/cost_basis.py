@@ -73,6 +73,43 @@ _SAME_DAY_TYPE_ORDER: dict[str, int] = {
 }
 _DEFAULT_SAME_DAY_ORDER = 1
 
+DEFAULT_COST_BASIS_METHOD = "fifo"
+AVERAGE_ELIGIBLE_SECURITY_TYPES = frozenset({"mutual_fund", "etf"})
+
+
+def resolve_cost_basis_method(
+    *,
+    security_method: str | None,
+    account_default: str | None,
+    security_type: str | None,
+) -> str:
+    """Resolve the elected method: per-security -> per-account -> global default.
+
+    The single definition of the election chain — the SQLMesh loader and the
+    lot-selection write path both resolve through here, so the two can never
+    disagree about which method a disposal will actually replay under.
+
+    An account-level ``'average'`` default does NOT apply to a non-fund security
+    the account happens to hold. Req 12 validates 'average' to mutual_fund/etf at
+    election time (``upsert_security`` / ``AccountService.settings_update``), but
+    that per-field check can't see the OTHER side of this fallback: an account
+    holding a mix of funds and stocks with no per-security override. Falling
+    through to the global default for the ineligible security matches the stated
+    restriction instead of leaking 'average' onto a type it was never valid for.
+    An *explicitly elected* per-security 'average' is returned unchecked — that
+    election was validated when it was written.
+    """
+    if security_method is not None:
+        return security_method
+    if account_default is None:
+        return DEFAULT_COST_BASIS_METHOD
+    if (
+        account_default == "average"
+        and security_type not in AVERAGE_ELIGIBLE_SECURITY_TYPES
+    ):
+        return DEFAULT_COST_BASIS_METHOD
+    return account_default
+
 
 @dataclass(frozen=True)
 class LedgerEvent:

@@ -21,8 +21,10 @@ from typing import Any, NamedTuple
 import pytest
 from prometheus_client import REGISTRY
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.services.investment_service import (
     _PIPELINE_EMITTED_SUBTYPES,  # pyright: ignore[reportPrivateUsage]  # tested directly
@@ -64,15 +66,45 @@ def _add_security(db: Database, **kwargs: Any) -> str:
     return event.target_id
 
 
-def _seed_disposal_and_lots(db: Database) -> None:
+def _set_account_default_method(db: Database, method: str) -> None:
+    """Elect ``method`` as the account-level cost-basis default via the real repo."""
+    AccountSettingsRepo(db).set(
+        account_id="acct_brokerage",
+        display_name=None,
+        official_name=None,
+        last_four=None,
+        account_subtype=None,
+        holder_category=None,
+        currency_code=None,
+        credit_limit=None,
+        archived=False,
+        include_in_net_worth=True,
+        default_cost_basis_method=method,
+        actor="cli",
+    )
+
+
+def _seed_disposal_and_lots(
+    db: Database, *, cost_basis_method: str | None = "specific"
+) -> None:
     """Materialize + seed the two derived core tables select_lots validates against.
 
     These are SQLMesh-managed in production; ``create_core_dim_stub_views``
     builds them with the real column shapes for unit tests. ``sell_1`` trades
     on 2024-06-15; both lots are acquired well before that so date-validity
     tests can add a lot acquired *after* it without disturbing these dates.
+
+    ``sec_1`` elects ``specific`` by default: ``select_lots`` refuses a selection
+    under any other resolved method. Override to exercise that refusal.
     """
     create_core_dim_stub_views(db)
+    _add_security(
+        db,
+        security_id="sec_1",
+        name="Apple Inc.",
+        ticker="AAPL",
+        cost_basis_method=cost_basis_method,
+    )
     db.conn.execute(
         """
         INSERT INTO core.fct_investment_transactions
@@ -1091,6 +1123,13 @@ class TestSplitAndTransfer:
 # ---------------------------------------------------------------------------
 
 
+def _selected_lots(db: Database) -> list[Any]:
+    return db.conn.execute(
+        "SELECT lot_id, quantity FROM app.lot_selections "
+        "WHERE investment_transaction_id = 'sell_1' ORDER BY lot_id"  # noqa: S608  # test read, static SQL
+    ).fetchall()
+
+
 class TestSelectLots:
     """Tests for select_lots validation + declarative delegation (Req 13)."""
 
@@ -1099,11 +1138,7 @@ class TestSelectLots:
         db_service(db).select_lots(
             "sell_1", [("lot_a", Decimal("6")), ("lot_b", Decimal("4"))], actor="cli"
         )
-        rows = db.conn.execute(
-            "SELECT lot_id, quantity FROM app.lot_selections "
-            "WHERE investment_transaction_id = 'sell_1' ORDER BY lot_id"
-        ).fetchall()
-        assert rows == [
+        assert _selected_lots(db) == [
             ("lot_a", Decimal("6.0000000000")),
             ("lot_b", Decimal("4.0000000000")),
         ]
@@ -1112,12 +1147,9 @@ class TestSelectLots:
         _seed_disposal_and_lots(db)
         svc = db_service(db)
         svc.select_lots("sell_1", [("lot_a", Decimal("5"))], actor="cli")
+        assert _selected_lots(db) != []
         svc.select_lots("sell_1", [], actor="cli")
-        rows = db.conn.execute(
-            "SELECT 1 FROM app.lot_selections "
-            "WHERE investment_transaction_id = 'sell_1'"
-        ).fetchall()
-        assert rows == []
+        assert _selected_lots(db) == []
 
     def test_unknown_disposal_raises(self, db: Database) -> None:
         _seed_disposal_and_lots(db)
@@ -1209,11 +1241,7 @@ class TestSelectLots:
         db_service(db).select_lots(
             "sell_1", [("lot_sameday", Decimal("5"))], actor="cli"
         )
-        rows = db.conn.execute(
-            "SELECT lot_id FROM app.lot_selections "
-            "WHERE investment_transaction_id = 'sell_1'"
-        ).fetchall()
-        assert rows == [("lot_sameday",)]
+        assert _selected_lots(db) == [("lot_sameday", Decimal("5.0000000000"))]
 
     def test_lot_already_closed_by_earlier_disposal_rejected(
         self, db: Database
@@ -1319,6 +1347,115 @@ class TestSelectLots:
             db_service(db).select_lots("sell_1", [("lot_a", Decimal("3"))], actor="cli")
         # The 2 units still available are a valid selection.
         db_service(db).select_lots("sell_1", [("lot_a", Decimal("2"))], actor="cli")
+
+    def test_refuses_selection_when_the_resolved_method_ignores_it(
+        self, db: Database
+    ) -> None:
+        # With nothing elected the disposal replays under FIFO, which never
+        # reads app.lot_selections. Persisting the rows and reporting success
+        # would leave a write that is silently discarded at the next refresh.
+        _seed_disposal_and_lots(db, cost_basis_method=None)
+        with pytest.raises(UserError) as exc:
+            db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+        assert exc.value.code == error_codes.INVESTMENT_METHOD_NOT_SPECIFIC
+        assert _selected_lots(db) == []
+
+    def test_refusal_hands_back_the_election_that_would_fix_it(
+        self, db: Database
+    ) -> None:
+        _seed_disposal_and_lots(db, cost_basis_method=None)
+        with pytest.raises(UserError) as exc:
+            db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+        actions = exc.value.recovery_actions or []
+        assert [(a.tool, a.arguments) for a in actions] == [
+            (
+                "investments_securities_set",
+                {"security_id": "sec_1", "cost_basis_method": "specific"},
+            )
+        ]
+
+    def test_refusal_omits_the_action_when_the_security_row_is_gone(
+        self, db: Database
+    ) -> None:
+        # An accepted security-link merge deletes the losing security while the
+        # materialized ledger still points at it until the next refresh. An
+        # investments_securities_set action on that id would raise
+        # mutation_not_found, so a confidence='certain' action must not be
+        # handed back — the hint still names the fix.
+        _seed_disposal_and_lots(db, cost_basis_method=None)
+        db.conn.execute("DELETE FROM app.securities WHERE security_id = 'sec_1'")
+        with pytest.raises(UserError) as exc:
+            db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+        assert exc.value.code == error_codes.INVESTMENT_METHOD_NOT_SPECIFIC
+        assert exc.value.recovery_actions is None
+        assert "specific" in (exc.value.hint or "")
+
+    def test_security_specific_beats_an_account_default_of_fifo(
+        self, db: Database
+    ) -> None:
+        _seed_disposal_and_lots(db, cost_basis_method="specific")
+        _set_account_default_method(db, "fifo")
+        db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+        assert _selected_lots(db) == [("lot_a", Decimal("6.0000000000"))]
+
+    def test_account_default_of_specific_permits_the_selection(
+        self, db: Database
+    ) -> None:
+        _seed_disposal_and_lots(db, cost_basis_method=None)
+        _set_account_default_method(db, "specific")
+        db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+        assert _selected_lots(db) == [("lot_a", Decimal("6.0000000000"))]
+
+    def test_security_fifo_beats_an_account_default_of_specific(
+        self, db: Database
+    ) -> None:
+        _seed_disposal_and_lots(db, cost_basis_method="fifo")
+        _set_account_default_method(db, "specific")
+        with pytest.raises(UserError) as exc:
+            db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+        assert exc.value.code == error_codes.INVESTMENT_METHOD_NOT_SPECIFIC
+
+    def test_disposal_with_no_bound_security_names_the_real_cause(
+        self, db: Database
+    ) -> None:
+        # A synced sell whose security link is still pending carries a NULL
+        # security_id. The engine skips such events entirely, so the disposal
+        # never replays under any method — reporting an elected method (and
+        # telling the user to change it) would send them somewhere that cannot
+        # help. Setting the account default to 'specific' must not talk them
+        # past this guard into a second, unrelated failure.
+        _seed_disposal_and_lots(db, cost_basis_method=None)
+        _set_account_default_method(db, "specific")
+        db.conn.execute(
+            "UPDATE core.fct_investment_transactions SET security_id = NULL "
+            "WHERE investment_transaction_id = 'sell_1'"  # noqa: S608  # test fixture update, static SQL
+        )
+        with pytest.raises(UserError) as exc:
+            db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+        assert exc.value.code == error_codes.INVESTMENT_SECURITY_NOT_BOUND
+        combined = f"{exc.value} {exc.value.hint or ''}".lower()
+        assert "security" in combined
+        assert "cost basis" not in combined  # never blames the elected method
+        assert _selected_lots(db) == []
+
+    def test_clearing_stays_allowed_after_the_method_moves_off_specific(
+        self, db: Database
+    ) -> None:
+        # Clearing under a non-specific method is NOT inert — it deletes. Gating
+        # it too would strand rows written while the security was 'specific',
+        # removable only by first flipping the election back.
+        _seed_disposal_and_lots(db, cost_basis_method="specific")
+        svc = db_service(db)
+        svc.select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+        _add_security(
+            db,
+            security_id="sec_1",
+            name="Apple Inc.",
+            ticker="AAPL",
+            cost_basis_method="fifo",
+        )
+        svc.select_lots("sell_1", [], actor="cli")
+        assert _selected_lots(db) == []
 
     def test_unknown_disposal_hints_at_refresh(self, db: Database) -> None:
         # A just-recorded sell lives in raw until `refresh run` materializes core;

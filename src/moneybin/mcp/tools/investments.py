@@ -514,6 +514,14 @@ def investments_lots_select(
     is dropped, not left in place. Pass `selections=[]` to clear all
     overrides and revert the disposal to FIFO.
 
+    Precondition: the security must resolve to `specific` cost basis (its own
+    election, else the account default, else FIFO). Only specific
+    identification consumes lot selections, so a non-empty selection under any
+    other method raises investment_method_not_specific rather than persisting a
+    write that the next refresh would discard — elect it with
+    `investments_securities_set(cost_basis_method="specific")` first. Clearing
+    is always allowed.
+
     Args:
         disposal_txn_id: investment_transaction_id of the disposal (must be
             a "sell"; other event types raise mutation_invalid_input).
@@ -1338,6 +1346,7 @@ def register_investments_tools(mcp: FastMCP) -> None:
         mcp,
         investments_lots_select,
         "investments_lots_select",
-        "Select specific acquisition lots for one disposal. Writes "
+        "Select specific acquisition lots for one disposal. Requires the "
+        "security to resolve to 'specific' cost basis. Writes "
         "app.lot_selections; replace the selection to revert.",
     )

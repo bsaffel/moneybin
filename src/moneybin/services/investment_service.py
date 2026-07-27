@@ -53,7 +53,11 @@ from typing import Any
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
+from moneybin.investments.cost_basis import (
+    AVERAGE_ELIGIBLE_SECURITY_TYPES,
+    resolve_cost_basis_method,
+)
 from moneybin.metrics.registry import (
     INVESTMENT_EVENTS_RECORDED_TOTAL,
     SECURITY_RESOLUTION_OUTCOMES_TOTAL,
@@ -63,6 +67,7 @@ from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.services.account_service import COST_BASIS_METHODS
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
+    ACCOUNT_SETTINGS,
     DIM_HOLDINGS,
     DIM_SECURITIES,
     FCT_INVESTMENT_LOTS,
@@ -674,10 +679,10 @@ class InvestmentService:
                 code=error_codes.MUTATION_INVALID_INPUT,
                 hint=f"Valid methods: {valid}.",
             )
-        if cost_basis_method == "average" and security_type not in {
-            "mutual_fund",
-            "etf",
-        }:
+        if (
+            cost_basis_method == "average"
+            and security_type not in AVERAGE_ELIGIBLE_SECURITY_TYPES
+        ):
             raise UserError(
                 "Cost-basis method 'average' is valid only for mutual_fund or "
                 f"etf securities, not {security_type!r}.",
@@ -1395,8 +1400,9 @@ class InvestmentService:
     ) -> None:
         """Set the full specific-identification selection for a disposal.
 
-        Validates that the disposal exists and is a ``sell``, that each selected
-        lot exists, and that the selected quantities sum to no more than the
+        Validates that the disposal exists and is a ``sell``, that the security
+        actually replays under specific identification, that each selected lot
+        exists, and that the selected quantities sum to no more than the
         disposal's magnitude — raising a :class:`UserError` naming the problem —
         then delegates to :meth:`LotSelectionsRepo.set_for_disposal` (the
         declarative set; ``selections=[]`` clears all overrides → FIFO).
@@ -1428,6 +1434,9 @@ class InvestmentService:
             )
 
         if selections:
+            self._require_specific_identification(
+                disposal_txn_id, disposal_account_id, disposal_security_id
+            )
             self._validate_selection_lots(
                 selections,
                 disposal_account_id,
@@ -1452,6 +1461,93 @@ class InvestmentService:
         logger.info(
             f"lot_selections.set disposal={disposal_txn_id} "
             f"count={len(selections)} actor={actor}"
+        )
+
+    def _require_specific_identification(
+        self, disposal_txn_id: str, account_id: str, security_id: str | None
+    ) -> None:
+        """Raise unless the disposal replays under specific identification.
+
+        The cost-basis engine reads ``app.lot_selections`` only under
+        ``'specific'`` (``cost_basis.py::_consumption_plan``); every other method
+        derives its own draw order. Writing a selection the resolved method will
+        discard would persist rows, report success, and then silently do nothing
+        at the next refresh — the only symptom being gains that still show FIFO.
+
+        Resolved live from ``app.*``, never from ``core.fct_realized_gains
+        .cost_basis_method``: that column reflects the last refresh, so a user who
+        elected 'specific' and has not refreshed yet would be wrongly refused.
+        Clearing (``selections=[]``) is exempt — it deletes rather than writes, so
+        gating it would strand selections made while the election was 'specific'.
+        """
+        if security_id is None:
+            # The engine skips security-NULL events outright, so this disposal
+            # replays under no method at all. Resolving one anyway would name an
+            # election the disposal never reaches, and following that advice
+            # (setting the ACCOUNT default to 'specific') would talk the user
+            # past this guard into an unrelated lot-validation failure.
+            # Reachable: a synced sell whose security link is still pending.
+            raise UserError(
+                f"Disposal {disposal_txn_id!r} has no security bound to it, so it "
+                "never reaches the lot-consumption engine and cannot carry a lot "
+                "selection.",
+                code=error_codes.INVESTMENT_SECURITY_NOT_BOUND,
+                hint=(
+                    "💡 Bind the security first — review the pending link with "
+                    "'moneybin investments securities links pending' "
+                    "(MCP: reviews(kind='security_links')), accept it, then run "
+                    "'moneybin refresh' (MCP: refresh_run) so the ledger carries "
+                    "the binding, and retry the selection."
+                ),
+            )
+        security = self._fetch_security(security_id)
+        settings = self._db.execute(
+            f"SELECT default_cost_basis_method "  # noqa: S608  # TableRef constant
+            f"FROM {ACCOUNT_SETTINGS.full_name} WHERE account_id = ?",
+            [account_id],
+        ).fetchone()
+        method = resolve_cost_basis_method(
+            security_method=security.cost_basis_method if security else None,
+            account_default=settings[0] if settings is not None else None,
+            security_type=security.security_type if security else None,
+        )
+        if method == "specific":
+            return
+        raise UserError(
+            f"This disposal replays under {method!r} cost basis, which ignores "
+            "lot selections; only 'specific' identification consumes them.",
+            code=error_codes.INVESTMENT_METHOD_NOT_SPECIFIC,
+            hint=(
+                "💡 Elect specific identification first — "
+                "'moneybin investments securities set --method specific' "
+                "(MCP: investments_securities_set) — then retry the selection."
+            ),
+            # No action when app.securities has no row for this id: the ledger is
+            # materialized, so a merge that deleted the losing security leaves
+            # core.fct_investment_transactions pointing at it until the next
+            # refresh. investments_securities_set on that id raises
+            # mutation_not_found, and a confidence='certain' action that 404s is
+            # worse than none — the hint still names the fix.
+            recovery_actions=(
+                [
+                    RecoveryAction(
+                        tool="investments_securities_set",
+                        arguments={
+                            "security_id": security_id,
+                            "cost_basis_method": "specific",
+                        },
+                        rationale=(
+                            "Lot selections are consumed only under specific "
+                            "identification; electing it on this security makes "
+                            "the selection take effect."
+                        ),
+                        confidence="certain",
+                        idempotent=True,
+                    )
+                ]
+                if security is not None
+                else None
+            ),
         )
 
     def _validate_selection_lots(
