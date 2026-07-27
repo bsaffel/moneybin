@@ -275,21 +275,144 @@ def test_freshness_scans_landings_when_import_log_itself_is_absent(
 def test_freshness_reports_pending_when_the_sqlmesh_state_is_unreadable(
     freshness_db: Database, declare_only_models: Callable[..., None]
 ) -> None:
-    """A SQLMesh state table this release cannot read must not crash status.
+    """A freshness view this release cannot read must not crash status.
 
-    SQLMesh owns ``sqlmesh._environments`` and migrates its layout across
-    versions. A read failure degrades to "no apply we can see" — pending — so
-    ``system_status`` keeps answering instead of raising a raw DuckDB error.
+    ``meta.model_freshness`` wraps SQLMesh state that SQLMesh migrates across
+    versions. A read failure degrades to "no execution we can see" — pending —
+    so ``system_status`` keeps answering instead of raising a raw DuckDB error.
     """
     declare_only_models("core.dim_accounts")
-    freshness_db.execute("CREATE SCHEMA IF NOT EXISTS sqlmesh")
-    # No `finalized_ts` column: what an un-migrated / future state schema
-    # looks like to this release's SELECT.
-    freshness_db.execute("CREATE TABLE sqlmesh._environments (name VARCHAR)")
-    freshness_db.execute("INSERT INTO sqlmesh._environments VALUES ('prod')")
+    freshness_db.execute("CREATE SCHEMA IF NOT EXISTS meta")
+    # No `last_executed_at` column: what an un-migrated / future view looks
+    # like to this release's SELECT.
+    freshness_db.execute("CREATE TABLE meta.model_freshness (model_name VARCHAR)")
+    freshness_db.execute(
+        "INSERT INTO meta.model_freshness VALUES ('core.dim_accounts')"
+    )
     freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
 
     assert TransformService(freshness_db).freshness().pending is True
+
+
+def test_freshness_pending_when_a_model_has_never_been_executed(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """One never-backfilled model holds the whole warehouse pending.
+
+    The apply stamp is the *oldest* model execution, so a model SQLMesh
+    registered but never built has no age to compare against. Treating that as
+    "fresh enough" would let a half-built warehouse answer `pending=False`;
+    the read fails closed instead.
+    """
+    declare_only_models("core.dim_accounts", "core.fct_transactions")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 13, 19, 0))
+    # Declared *and* present in the catalog: the scan reads only models the
+    # project still declares, and a declared model absent from the catalog
+    # would make this pending through `missing_models` instead — passing the
+    # assertion below without ever exercising the never-executed stamp.
+    freshness_db.execute("CREATE TABLE core.fct_transactions (transaction_id VARCHAR)")
+    freshness_db.execute(
+        "INSERT INTO meta.model_freshness "
+        "VALUES ('core.fct_transactions', NULL, NULL, NULL, 'FULL')"
+    )
+    # Landed *before* the apply, so only the never-executed model can make
+    # this pending.
+    freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
+
+    result = TransformService(freshness_db).freshness()
+    assert result.missing_models == ()
+    assert result.pending is True
+
+
+def test_freshness_ignores_models_sqlmesh_never_executes(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """EXTERNAL and EMBEDDED models must not trip the never-executed check.
+
+    SQLMesh calls EXTERNAL and EMBEDDED alike *symbolic*: kinds it never
+    executes, so their ``last_executed_at`` is permanently NULL. Every table
+    ``external_models.yaml`` declares is EXTERNAL, the ``raw.*`` sources among
+    them, so counting symbolic models would make the check above fire on every
+    read and pin ``pending`` true for the life of the profile. MoneyBin defines
+    no EMBEDDED model today; it is excluded because the rule is "symbolic", not
+    because of which kinds happen to be in the project right now.
+    """
+    declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 13, 19, 0))
+    freshness_db.execute(
+        "INSERT INTO meta.model_freshness VALUES "
+        "('raw.ofx_accounts', NULL, NULL, NULL, 'EXTERNAL'), "
+        "('core.some_ephemeral_cte', NULL, NULL, NULL, 'EMBEDDED')"
+    )
+    freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
+
+    assert TransformService(freshness_db).freshness().pending is False
+
+
+def test_freshness_ignores_models_a_refresh_never_rebuilds(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """A VIEW's or SEED's frozen stamp must not hold the minimum down.
+
+    Only the first apply executes every model. Afterwards ``apply()`` restates
+    the FULL models and SQLMesh re-runs nothing else — a VIEW's interval is
+    already complete, so its ``last_executed_at`` stays at the first build
+    forever. Counted in the minimum, the stamp below (pre-dating the price row)
+    would make ``pending`` true with no refresh able to clear it, even though a
+    view is recomputed at query time and a seed reads no ``raw.*`` table.
+    """
+    declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 13, 19, 0))
+    freshness_db.execute(
+        "INSERT INTO meta.model_freshness VALUES "
+        "('prep.stg_ofx__accounts', NULL, NULL, ?, 'VIEW'), "
+        "('seeds.categories', NULL, NULL, ?, 'SEED')",
+        [_ts(2026, 1, 1), _ts(2026, 1, 1)],
+    )
+    freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
+
+    assert TransformService(freshness_db).freshness().pending is False
+
+
+def test_freshness_ignores_models_the_project_no_longer_declares(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """A retained snapshot for a deleted model must not hold the minimum down.
+
+    Renaming or removing a model leaves its ``_snapshots`` and ``_intervals``
+    rows in SQLMesh state until the janitor's TTL expires them, so the view
+    keeps returning a row for a model the project no longer declares — and
+    which no apply can rebuild, because ``apply()`` only runs what the project
+    still defines. Counted in the minimum, its frozen stamp pins ``pending``
+    true from the next raw landing onward with no refresh able to clear it:
+    the same fail-closed as the VIEW/SEED case above, reached by deleting a
+    model rather than by its kind.
+    """
+    declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 13, 19, 0))
+    freshness_db.execute(
+        "INSERT INTO meta.model_freshness VALUES "
+        "('core.fct_renamed_away', NULL, NULL, ?, 'FULL')",
+        [_ts(2026, 1, 1)],
+    )
+    freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
+
+    assert TransformService(freshness_db).freshness().pending is False
+
+
+def test_unrebuilt_model_kinds_cover_every_symbolic_kind() -> None:
+    """The refresh-scoped exclusion must never be narrower than the symbolic one.
+
+    Set containment, not equality: symbolic kinds never execute at all, so a
+    kind that drops out of the wider list re-acquires a permanently NULL
+    ``last_executed_at`` and pins ``pending`` true for the life of the profile.
+    """
+    from moneybin.services.transform_service import (
+        _SYMBOLIC_MODEL_KINDS,  # pyright: ignore[reportPrivateUsage]  # the guarded list
+        _UNREBUILT_MODEL_KINDS,  # pyright: ignore[reportPrivateUsage]  # the guarded list
+    )
+
+    assert _SYMBOLIC_MODEL_KINDS <= _UNREBUILT_MODEL_KINDS
 
 
 def test_apply_returns_apply_result_shape(
@@ -824,6 +947,27 @@ def test_pending_scan_set_covers_every_raw_table_the_transforms_read(
     from moneybin.sqlmesh_registry import raw_tables_read_by_models
 
     assert set(_RAW_LANDING_COLUMNS) == set(raw_tables_read_by_models())
+
+
+def test_symbolic_model_kinds_match_sqlmesh() -> None:
+    """The excluded-kind list must equal the set SQLMesh calls symbolic.
+
+    Set equality, not a subset. A symbolic kind SQLMesh adds that this list
+    misses arrives with a permanently NULL ``last_executed_at``, trips the
+    never-backfilled check, and pins ``pending`` true for the life of the
+    profile — no error, and no refresh can clear it. One listed here that
+    SQLMesh *does* execute drops a real model out of the freshness minimum,
+    which is the fail-open this scan was rewritten to close.
+    """
+    from sqlmesh.core.model.kind import ModelKindName
+
+    from moneybin.services.transform_service import (
+        _SYMBOLIC_MODEL_KINDS,  # pyright: ignore[reportPrivateUsage]  # the guarded list
+    )
+
+    assert _SYMBOLIC_MODEL_KINDS == {
+        kind.value for kind in ModelKindName if kind.is_symbolic
+    }
 
 
 def test_every_declared_landing_and_import_column_exists(db: Database) -> None:

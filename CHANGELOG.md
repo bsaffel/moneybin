@@ -297,8 +297,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   synced holding, and a fetched security price all landed while MoneyBin
   reported nothing to refresh — the reports you then ran were built without
   them. All seventeen are watched, compared against SQLMesh's own record of
-  when it last finished, and a raw table wired into a model but left out of
-  that set now fails the build rather than going unwatched. Manual entries also
+  when it last rebuilt each model, and a raw table wired into a model but left
+  out of that set now fails the build rather than going unwatched. Rebuilding
+  one model on its own — `moneybin transform restate --model` — no longer
+  clears the flag for the models it didn't touch. Manual entries also
   close their import batch on success; a batch left open reads as a crashed
   write in `import history` and `import status`, with no completion time and no
   row counts.
