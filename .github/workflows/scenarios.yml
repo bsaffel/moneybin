@@ -21,12 +21,19 @@ jobs:
     name: Run Scenarios (shard ${{ matrix.group }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # 2-way pytest-split shard (count-based; ~70 scenarios -> 35/35) so the
-    # scenario suite drops from ~5 min to ~3 min. Mirrors the ci.yml shards.
+    # 4-way pytest-split shard, matching ci.yml's unit and integration
+    # matrices; `--splits` reads strategy.job-total, so it tracks this array.
+    # Balancing is by recorded time from `.test_durations`, not test count, so
+    # the shards hold uneven counts by design. Four rather than two because
+    # runner speed varies about 1.8x on identical work — shard 1 ran the same
+    # 36 items in 320s and then 574s — and a 2-way split left only ~1.9x
+    # headroom under timeout-minutes, thin enough that one slow runner
+    # cancelled a shard mid-suite. Keep nominal per-shard runtime well under
+    # half the ceiling.
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2]
+        group: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
 
