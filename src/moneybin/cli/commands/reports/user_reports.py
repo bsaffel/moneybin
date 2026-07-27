@@ -578,6 +578,15 @@ def reports_reclassify(
             if yes
             else _prompt_for_downgrade(row["name"], column, from_class, to_class)
         )
+        # Deliberately *not* short-circuited on `confirmed is False`, unlike
+        # `delete`'s exit-0 decline: the service is what distinguishes a human
+        # declining (`declined`) from a surface that could not ask
+        # (`no_elicitation`), and it can only count them if it sees the answer.
+        # Exiting 0 here would skip that increment, leaving the one metric that
+        # separates "users refuse downgrades" from "our prompt never reached a
+        # human" permanently reading zero. A refused downgrade is a recorded
+        # privacy gate rather than a cancelled mutation, so it keeps the error
+        # envelope and exit 1 that every other refusal on this path returns.
         with get_database(read_only=False) as db:
             outcome = UserReportsService(db).reclassify(
                 str(row["report_id"]),

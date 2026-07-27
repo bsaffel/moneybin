@@ -16,8 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from moneybin import error_codes
 from moneybin.cli.commands.reports import user_reports
 from moneybin.cli.main import app
+from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.execute import ReportResult
 from moneybin.reports._framework.explain import ColumnProvenance, ReportExplanation
@@ -880,6 +882,52 @@ def test_reclassify_reports_that_it_could_not_ask_rather_than_aborting() -> None
     # same claim as "a flag stood in for the human."
     assert service.reclassify.call_args.kwargs["confirmed_via"] == "prompt"
     assert "Aborted" not in result.output
+
+
+def test_reclassify_routes_a_decline_through_the_service_not_an_early_exit() -> None:
+    """The decline reaches the service, unlike ``delete``'s exit-0 cancel.
+
+    Pinned as intent because the divergence looks like an oversight: every
+    sibling destructive confirm short-circuits on decline and exits 0. This one
+    must not, because the service owns the ``declined`` vs ``no_elicitation``
+    split, and it can only count them if it is handed the answer. A short-circuit
+    here would leave the one counter that distinguishes "users refuse downgrades"
+    from "our prompt never reached a human" reading zero forever, so the refusal
+    keeps the structured envelope and exit 1 that the unaskable case returns.
+    """
+    service = _service(
+        reclassify=ReclassifyOutcome(
+            report_id=_ROW["report_id"],
+            column="spend",
+            from_class=DataClass.TXN_AMOUNT,
+            to_class=DataClass.AGGREGATE,
+        )
+    )
+    service.reclassify.side_effect = UserError(
+        "A classification downgrade needs explicit confirmation.",
+        code=error_codes.REPORT_CLASS_CONFIRM_REQUIRED,
+    )
+
+    with _patch_database(), _patch_service(service):
+        result = runner.invoke(
+            app,
+            [
+                "reports",
+                "reclassify",
+                "my_accounts",
+                "--column",
+                "spend",
+                "--to",
+                "aggregate",
+                "--reason",
+                "A single total reveals no transaction amount.",
+            ],
+            input="n\n",
+        )
+
+    assert service.reclassify.call_count == 1
+    assert service.reclassify.call_args.kwargs["confirmed"] is False
+    assert result.exit_code == 1
 
 
 def test_reclassify_treats_yes_as_the_confirmation() -> None:
