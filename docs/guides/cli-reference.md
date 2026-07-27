@@ -430,7 +430,7 @@ never declare them.
 | Command | Purpose | Key flags |
 |---|---|---|
 | `reports create NAME` | Save a read-only SELECT as a durable report. | `--sql` or `--sql-file` (exactly one), `--description`, `--param name[:type][=default]` |
-| `reports set HANDLE` | Rename, re-describe, re-query, archive, or restore. Changing SQL or parameters re-derives the privacy contract. | `--name`, `--description`, `--sql`/`--sql-file`, `--param`, `--archive`, `--restore` |
+| `reports set HANDLE` | Rename, re-describe, re-query, archive, or restore. Changing SQL or parameters re-derives the privacy contract. `--clear-params` is the only way to drop every declaration. | `--name`, `--description`, `--sql`/`--sql-file`, `--param`, `--clear-params`, `--archive`, `--restore` |
 | `reports delete HANDLE` | Delete permanently; `system audit undo` restores it. | `--yes` |
 | `reports reclassify HANDLE` | Lower one column's masking floor. Audited, and the only path that does so. | `--column`, `--to`, `--reason` (all required), `--yes` |
 
