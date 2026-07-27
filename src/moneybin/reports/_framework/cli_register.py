@@ -89,10 +89,17 @@ def render_report_result(
         # callers, so without this the text path renders a capped table that
         # reads as the whole answer — worse here than a masked cell, because
         # nothing about the rows themselves looks unusual.
+        #
+        # The count of what was *not* shown is deliberately absent. A truncated
+        # execution fetches `limit + 1` rows and reports that as `total_count`,
+        # so it is a lower bound — "1,000,000 of 1,000,001" would read as one
+        # row missing when millions are, which is a more confident lie than
+        # saying nothing. `mcp.md` calls this a lower-bound total for the same
+        # reason; counting the rest means running the query again without a cap.
         if result.truncated:
             typer.echo(
-                f"⚠️  Showing {len(result.records):,} of {result.total_count:,} rows; "
-                "raise --limit or narrow the report to see the rest."
+                f"⚠️  Showing the first {len(result.records):,} rows; more exist. "
+                "Raise --limit or narrow the report to see the rest."
             )
 
     render_or_json(

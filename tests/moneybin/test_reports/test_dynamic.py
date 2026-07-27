@@ -962,6 +962,31 @@ def test_spec_from_row_masks_a_row_whose_downgrade_entry_is_half_written(
     assert dict(dynamic.spec.classes) == {"account_id": FAIL_CLOSED_CLASS}
 
 
+def test_spec_from_row_degrades_when_a_stored_projection_disappears(
+    dynamic_db: Database,
+) -> None:
+    """Drift is a difference between two maps, and one direction went unread.
+
+    The comparison walked the freshly derived map and looked each name up in the
+    stored one, so a column present in the stored map and absent from the new one
+    was never visited: ``changed_columns`` came back empty and the report served
+    as healthy while its output contract had silently narrowed. A saved
+    ``SELECT *`` reaches this the moment an upstream column is retired.
+
+    Nothing can be masked for a column that no longer exists — the point is that
+    the response says the contract moved rather than quietly returning less.
+    """
+    row = _saved(dynamic_db, query_sql="SELECT * FROM core.dim_accounts")
+    assert "institution_name" in row["classes"]
+    dynamic_db.execute("ALTER TABLE core.dim_accounts DROP COLUMN institution_name")
+
+    dynamic = spec_from_row(dynamic_db, row)
+
+    assert "institution_name" not in dynamic.spec.classes
+    assert dynamic.degraded
+    assert "institution_name" in (dynamic.degraded_reason or "")
+
+
 def test_spec_from_row_drops_a_downgrade_the_current_policy_would_refuse(
     dynamic_db: Database,
 ) -> None:

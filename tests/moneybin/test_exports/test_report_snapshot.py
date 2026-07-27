@@ -384,10 +384,11 @@ def test_a_redacted_user_report_export_withholds_a_sensitive_column_alias(
     beside a cell masked to ``*****`` — in the same artifact that already
     withholds the SQL for exactly this threat.
 
-    Only the masked column is renamed, and only for the user tier: ``my_account``
-    keeps its name because its values are published anyway, and a built-in's
-    ``routing_number`` header is repo-authored — it names the column's meaning
-    rather than a value, and blanking it would cost readability for no gain.
+    Every authored name goes, not only the masked column's — ``my_account`` is
+    the author's text too, and its sensitivity is not decided by the column it
+    happens to label. Only for the user tier: a built-in's ``routing_number``
+    header is repo-authored, names the column's meaning rather than a value, and
+    blanking it would cost readability for no gain.
     """
     create_core_tables_raw(db.conn)
     db.execute(
@@ -417,7 +418,7 @@ def test_a_redacted_user_report_export_withholds_a_sensitive_column_alias(
     table = redacted.tables[0]
     assert [column.name for column in table.columns] == [
         "redacted_column_1",
-        "my_account",
+        "redacted_column_2",
     ]
     assert table.rows == (("*****", "acct_11112222"),)
     assert "021000021" not in json.dumps(redacted.manifest)
@@ -425,7 +426,7 @@ def test_a_redacted_user_report_export_withholds_a_sensitive_column_alias(
     assert redacted.provenance is not None
     assert set(redacted.provenance.receipt["output_classes"]) == {  # type: ignore[arg-type]
         "redacted_column_1",
-        "my_account",
+        "redacted_column_2",
     }
 
     unredacted = service.prepare_report(
@@ -451,8 +452,8 @@ def test_a_redacted_user_report_export_withholds_a_sensitive_parameter_name(
     The receipt keys both ``parameters`` and ``parameter_classes`` by declared
     name and the subject repeats them, so
     ``WHERE routing_number = $acct_021000021`` publishes the literal three more
-    times beside a value masked to ``*****``. ``only_account`` keeps its name in
-    the same artifact: its value is published, so its name discloses nothing.
+    times beside a value masked to ``*****``. ``only_account`` goes with it: a
+    declared name is authored text whatever its value's class turns out to be.
 
     The ``builtin``-tier half of this is
     ``test_prepare_report_applies_redaction_after_raw_execution``, which pins that
@@ -503,29 +504,94 @@ def test_a_redacted_user_report_export_withholds_a_sensitive_parameter_name(
         },
     )
 
-    expected = {"redacted_parameter_1": "*****", "only_account": "acct_11112222"}
+    expected = {
+        "redacted_parameter_1": "*****",
+        "redacted_parameter_2": "acct_11112222",
+    }
     assert redacted.subject.as_manifest()["parameters"] == expected
     assert redacted.provenance is not None
     assert redacted.provenance.receipt["parameters"] == expected
     assert redacted.provenance.receipt["parameter_classes"] == {
         "redacted_parameter_1": DataClass.ROUTING_NUMBER.value,
-        "only_account": DataClass.RECORD_ID.value,
+        "redacted_parameter_2": DataClass.RECORD_ID.value,
     }
     assert "021000021" not in json.dumps(redacted.manifest)
+
+
+def test_a_redacted_user_report_export_withholds_a_name_beside_a_published_value(
+    db: Database,
+) -> None:
+    """A name can carry the literal on its own, with no masked value to key on.
+
+    ``SELECT 1 AS "021000021"`` puts a routing number in the header while the
+    value beside it is a benign ``1``, so the earlier value-keyed rule — withhold
+    a name exactly where its own value is masked — published it. The premise was
+    wrong: a user-authored name is arbitrary text, and its sensitivity is not a
+    function of the column it labels.
+
+    So a redacted user-tier export withholds *every* authored name. MoneyBin
+    cannot classify arbitrary text — the same reason ``catalog.py`` withholds a
+    report's name wholesale from its collision warning rather than judging it —
+    and a redacted artifact outlives the session, so the fail-closed answer is
+    the only sound one.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id) VALUES (?)", ["acct_11112222"]
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="benign_value_sensitive_name",
+            query_sql=(
+                'SELECT 1 AS "021000021", account_id AS my_account '
+                "FROM core.dim_accounts"
+            ),
+            actor="cli",
+        )
+        .report_id
+    )
+    service = ExportService(db)
+
+    redacted = service.prepare_report(
+        profile="test", report_id=report_id, report_parameters={}
+    )
+
+    table = redacted.tables[0]
+    assert [column.name for column in table.columns] == [
+        "redacted_column_1",
+        "redacted_column_2",
+    ]
+    # The values are untouched: withholding the name is not masking the column.
+    assert table.rows == ((1, "acct_11112222"),)
+    assert "021000021" not in json.dumps(redacted.manifest)
+    assert "021000021" not in json.dumps(redacted.data_dictionary)
+
+    unredacted = service.prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    assert [column.name for column in unredacted.tables[0].columns] == [
+        "021000021",
+        "my_account",
+    ]
 
 
 def test_a_redacted_user_report_export_keeps_its_column_names_distinct(
     db: Database,
 ) -> None:
-    """Renaming a column must never merge it into another one.
+    """An alias shaped like the scheme earns no exemption from it.
 
-    An artifact's column names are its dict keys downstream — ``redact_records``
-    zips them against each row — so two columns sharing a name silently collapse
-    into one, publishing the surviving column's value under both headers. That is
-    reachable here because the alias a placeholder replaces is user-authored: a
-    visible column aliased ``redacted_column_1`` collides with the placeholder
-    minted for a masked first column. Renaming everything positionally is the
-    resolution, since distinct positions cannot collide.
+    Column names are dict keys downstream — ``redact_records`` zips them against
+    each row — so two columns sharing one silently collapse into a single entry,
+    publishing one column's value under both headers. Renaming every name
+    positionally makes that unreachable by construction, and this is the fixture
+    that would notice a "keep this one, it looks fine" branch coming back: the
+    second column is authored as ``redacted_column_1``, so any rule that
+    preserved a name it recognized would mint exactly the collision above.
     """
     create_core_tables_raw(db.conn)
     db.execute(

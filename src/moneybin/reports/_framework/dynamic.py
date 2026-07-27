@@ -431,9 +431,18 @@ def _reresolved(
 
     changed_columns = tuple(
         sorted(
-            name
-            for name, data_class in reapplied.items()
-            if stored_classes.get(name) is not data_class
+            {
+                name
+                for name, data_class in reapplied.items()
+                if stored_classes.get(name) is not data_class
+            }
+            # Both directions. Walking the derived map alone never visits a name
+            # the stored map has and this one does not, so a saved `SELECT *`
+            # whose upstream column was retired compared equal and served as
+            # healthy with a narrower contract than the one it stored. Nothing
+            # can be masked for a column that no longer exists; saying the
+            # contract moved is the whole of the answer here.
+            | (set(stored_classes) - set(reapplied))
         )
     )
     changed_parameters = tuple(

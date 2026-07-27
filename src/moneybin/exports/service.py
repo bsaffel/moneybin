@@ -37,8 +37,6 @@ from moneybin.exports.snapshot import (
     prepared_table_checksum,
 )
 from moneybin.metrics.registry import EXPORT_DURATION_SECONDS, EXPORT_RUNS_TOTAL
-from moneybin.privacy.redaction import MaskStrength, mask_strength
-from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
     get_report_catalog,
@@ -61,9 +59,9 @@ if TYPE_CHECKING:
     from moneybin.services.audit_service import AuditEvent
 
 
-#: Stems of the positional names a redacted export publishes in place of a masked
+#: Stems of the positional names a redacted export publishes in place of a
 #: user-authored column alias or parameter name. Positional rather than
-#: class-derived so two masked members cannot collide on one name.
+#: class-derived so no two can collide on one name.
 _REDACTED_COLUMN_NAME: Final = "redacted_column"
 _REDACTED_PARAMETER_NAME: Final = "redacted_parameter"
 
@@ -504,13 +502,10 @@ class ExportService:
             limit=None,
         )
         # Only a saved report's names are the author's own text, and only a
-        # redacted artifact hides the values that make one a disclosure.
+        # redacted artifact has to withhold them.
         withhold_names = redaction_mode == "redacted" and report_tier(spec) == "user"
         published = _published_names(
-            execution.columns,
-            execution.output_classes,
-            stem=_REDACTED_COLUMN_NAME,
-            withhold=withhold_names,
+            execution.columns, stem=_REDACTED_COLUMN_NAME, withhold=withhold_names
         )
         columns = tuple(
             PreparedColumn(
@@ -547,7 +542,6 @@ class ExportService:
         }
         published_parameters = _published_names(
             tuple(parameter_classes_by_name),
-            parameter_classes_by_name,
             stem=_REDACTED_PARAMETER_NAME,
             withhold=withhold_names,
         )
@@ -629,11 +623,7 @@ class ExportService:
 
 
 def _published_names(
-    names: Sequence[str],
-    classes: Mapping[str, DataClass],
-    *,
-    stem: str,
-    withhold: bool,
+    names: Sequence[str], *, stem: str, withhold: bool
 ) -> dict[str, str]:
     """Map each user-authored name to the one a redacted artifact may publish.
 
@@ -641,38 +631,28 @@ def _published_names(
     ``routing_number AS "021000021"`` puts a critical literal in the artifact
     header, the data-dictionary entry, and the receipt's class-map key, and
     ``WHERE routing_number = $acct_021000021`` puts one in the receipt's parameter
-    keys and the subject. Redaction transforms *values*, so all of them would
-    survive beside a masked one — the same disclosure the withheld receipt SQL
-    exists to prevent.
+    keys and the subject. Redaction transforms *values*, so every one of them
+    survives — the same disclosure the withheld receipt SQL exists to prevent.
 
-    A name is a disclosure exactly when its own value is hidden: published
-    alongside its value it discloses nothing further, and masked it is what
-    survives. So only the masked members are renamed, and ``withhold`` is false
-    for anything but a redacted user-tier export — a ``builtin`` or ``extension``
-    name is repo-authored and describes the column or filter rather than a value.
+    **Every** authored name is withheld, not only those whose own value is
+    masked. Keying on the value was the obvious rule and it leaks:
+    ``SELECT 1 AS "021000021"`` carries the literal beside a published ``1``, so
+    the name's sensitivity is plainly not a function of the column it labels. A
+    name is arbitrary user text, MoneyBin cannot classify arbitrary text — the
+    reason ``catalog.py`` withholds a report's name wholesale from its collision
+    warning rather than judging it — and a redacted artifact outlives the session
+    that produced it.
 
-    Renaming is positional, so the names stay distinct. If a passthrough member
-    already carries a placeholder's shape, every member is renamed instead: these
-    names are dict keys downstream — in ``redact_records``, the receipt, and the
-    subject — so two sharing one would collapse into a single entry.
+    ``withhold`` is false for anything but a redacted user-tier export: a
+    ``builtin`` or ``extension`` name is repo-authored and describes the column or
+    filter rather than a value, and an unredacted artifact publishes the values
+    anyway. Renaming is positional, so the result is unique by construction —
+    these names are dict keys downstream, in ``redact_records``, the receipt, and
+    the subject, and two sharing one would collapse into a single entry.
     """
     if not withhold:
         return {name: name for name in names}
-
-    placeholders = {
-        name: f"{stem}_{position}" for position, name in enumerate(names, start=1)
-    }
-    published = {
-        name: (
-            placeholders[name]
-            if mask_strength(classes[name]) is not MaskStrength.PASSTHROUGH
-            else name
-        )
-        for name in names
-    }
-    if len(set(published.values())) != len(names):
-        return placeholders
-    return published
+    return {name: f"{stem}_{position}" for position, name in enumerate(names, start=1)}
 
 
 def _report_spec_source(spec: ReportSpec) -> TableRef | None:

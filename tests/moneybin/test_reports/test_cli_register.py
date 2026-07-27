@@ -198,6 +198,12 @@ def test_the_text_path_says_when_rows_were_cut() -> None:
     ``truncated`` reaches JSON and MCP callers through the envelope, and the
     text path renders no envelope metadata — so a capped run printed a table
     that reads as the whole result. Same reason the drift note above exists.
+
+    The note states what was shown and that more exists, never a total: a
+    truncated execution sets ``total_count`` to the ``limit + 1`` it probed, so
+    printing it would report one row missing where millions are. The fixture
+    carries a ``total_count`` that is *not* the probe value precisely so a
+    regression that starts printing it again is visible here.
     """
     app = _multi_command_app()
     cut = replace(_result(), truncated=True, total_count=4200)
@@ -209,8 +215,12 @@ def test_the_text_path_says_when_rows_were_cut() -> None:
         result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
 
     assert result.exit_code == 0, result.output
-    assert "1 of 4,200" in result.output
+    assert "first 1 rows" in result.output
+    assert "more exist" in result.output
     assert "--limit" in result.output
+    # The probe total never reaches the user as a count of what was cut.
+    assert "4,200" not in result.output
+    assert "4200" not in result.output
 
 
 def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:

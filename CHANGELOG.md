@@ -49,12 +49,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to echo. A `redacted` export withholds it — the receipt carries `sql: null`
   while keeping `lineage`, `parameter_classes`, and `output_classes`, so what the
   export read stays auditable without republishing a literal your rows would have
-  masked; the unredacted artifact still carries the statement. The names you wrote
-  go with it wherever their values are masked, since a name beside a `*****` is
-  what would survive: such a column or parameter is published as
-  `redacted_column_1` / `redacted_parameter_1`, and every unmasked one keeps the
-  name you gave it — including in the drift note, which reports its reason code
-  rather than naming the columns that moved. And when an
+  masked; the unredacted artifact still carries the statement. Every name you
+  wrote goes with it — columns and parameters alike are published as
+  `redacted_column_1` / `redacted_parameter_1`, and the drift note reports its
+  reason code rather than naming the columns that moved. A name is your own text
+  and can carry a literal on its own (`SELECT 1 AS "021000021"`), so a redacted
+  artifact withholds all of them rather than guessing which are safe; the class
+  of each column and the query's lineage stay in the receipt. And when an
   upstream rename invalidates a stored query, `reports run` and `export report`
   report `report_query_execution_failed` and name the likely cause instead of
   surfacing a DuckDB binder error, which quotes the statement it failed to bind.

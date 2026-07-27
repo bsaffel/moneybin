@@ -136,13 +136,23 @@ The same authored-text problem reaches the *names*. `SELECT routing_number AS
 the receipt's `output_classes` key; `WHERE routing_number = $acct_021000021` puts
 one in the receipt's `parameters` and `parameter_classes` keys and in the
 subject. Redaction reaches values, not keys. A redacted export of a **user-tier**
-report therefore publishes `redacted_column_<position>` or
-`redacted_parameter_<position>` in place of any column or parameter whose own
-value it masked, and leaves every other name alone: a name is a disclosure only
-when the value beside it is hidden. A `builtin` or `extension` name is
-repo-authored and describes the column or filter rather than a value, so it
-survives unchanged; an unredacted artifact keeps the author's own names, because
-it publishes the values beside them.
+report therefore publishes `redacted_column_<position>` and
+`redacted_parameter_<position>` in place of **every** authored column and
+parameter name.
+
+Every one, not only the names beside a masked value. Keying on the value is the
+rule this started with, and it leaks: `SELECT 1 AS "021000021"` carries the
+literal beside a published `1`, so a name's sensitivity is plainly not a
+function of the column it labels. A name is arbitrary user text, and MoneyBin
+cannot classify arbitrary text — the same reason the catalog's collision warning
+withholds a report's name wholesale rather than judging it. The cost is a
+readability one, paid by the artifact that has to be safe to share: positional
+headers, with each column's class and the query's lineage still in the receipt
+and data dictionary.
+
+A `builtin` or `extension` name is repo-authored and describes the column or
+filter rather than a value, so it survives unchanged; an unredacted artifact
+keeps the author's own names, because it publishes the values beside them.
 
 The receipt's `degraded_reason` is the third field carrying that text. A drifted
 saved report names the columns whose class moved (`stale_classification:
