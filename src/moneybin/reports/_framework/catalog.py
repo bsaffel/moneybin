@@ -125,9 +125,13 @@ class ReportCatalog:
             raise ValueError(f"duplicate report_id: {', '.join(duplicate_ids)}")
         self._reports = ordered
         self._name_collisions = _name_collisions(ordered)
-        for name, report_ids in self._name_collisions.items():
+        for report_ids in self._name_collisions.values():
+            # The name itself is withheld: a saved report is named by its user,
+            # and `amazon-spend` is both a plausible name and a merchant name
+            # `.claude/rules/security.md` forbids in a log file. The IDs are
+            # identifiers, and they are what an operator acts on anyway.
             logger.warning(
-                f"report name {name!r} is claimed by {len(report_ids)} reports "
+                f"one report name is claimed by {len(report_ids)} reports "
                 f"({', '.join(report_ids)}); each stays runnable by report_id."
             )
 
@@ -513,9 +517,9 @@ def _listing_view(include_archived: bool) -> bool | None:
 
 
 def catalog_sensitivity(
-    catalog: ReportCatalog, *, include_archived: bool = False
+    entries: Sequence[ReportCatalogEntry],
 ) -> Literal["low", "medium"]:
-    """The envelope sensitivity a listing of ``catalog`` actually carries.
+    """The envelope sensitivity a listing of ``entries`` actually carries.
 
     A built-in's name and description are authored in the repo and reviewed, so
     the entry fields are annotated ``AGGREGATE``. A **user** report's name and
@@ -525,12 +529,14 @@ def catalog_sensitivity(
     report name would make the catalog unusable); what has to be honest is the
     tier the envelope reports.
 
-    ``include_archived`` must name the same view the payload does: the two
-    describe one response, and a tier read off a different row set would
-    misreport it.
+    Takes the rows being returned, not the catalog they came from. Reading the
+    catalog left every caller-side narrowing to disagree with the envelope:
+    ``reports list --tier builtin`` reported MEDIUM and ``user_note`` over rows
+    that held neither, because the filter runs after the listing. Passing the
+    response's own rows makes the pair structurally impossible to desync — the
+    ``include_archived`` view no longer has to be repeated here either.
     """
-    listed = catalog.list(archived=_listing_view(include_archived))
-    if any(report_tier(report) == "user" for report in listed):
+    if any(entry.tier == "user" for entry in entries):
         return "medium"
     return "low"
 

@@ -27,6 +27,7 @@ from moneybin.reports._framework.contract import USER_REPORT_NAME, ParamSpec
 from moneybin.reports._framework.derive import (
     class_fingerprint,
     derive_classification,
+    with_downgrades,
 )
 from moneybin.reports._framework.dynamic import (
     declared_params,
@@ -259,7 +260,7 @@ class UserReportsService:
         downgrades: Mapping[str, Mapping[str, str]] = (
             {} if cleared else (row.get("class_downgrades") or {})
         )
-        classes = _with_downgrades(dict(derived.classes), downgrades)
+        classes = with_downgrades(dict(derived.classes), downgrades)
 
         self._repo.set(
             report_id,
@@ -424,7 +425,7 @@ class UserReportsService:
             **(row.get("class_downgrades") or {}),
             column: {"from": from_class.value, "to": to_class.value, "reason": reason},
         }
-        classes = _with_downgrades(dict(derived.classes), downgrades)
+        classes = with_downgrades(dict(derived.classes), downgrades)
         self._repo.set(
             report_id,
             classes={
@@ -525,22 +526,6 @@ def _stored_semantics() -> dict[str, Any]:
         "exclusions": list(semantics.exclusions),
         "provenance": [],
     }
-
-
-def _with_downgrades(
-    classes: dict[str, DataClass], downgrades: Mapping[str, Mapping[str, str]]
-) -> dict[str, DataClass]:
-    """Apply approved downgrades over a freshly derived class map.
-
-    Applied only where the derived class still equals the one the downgrade was
-    approved against — the same rule the run path uses. Reapplying by column
-    name alone would let an approval collected against a weak class silently
-    suppress a stronger one.
-    """
-    for column, entry in downgrades.items():
-        if column in classes and classes[column].value == entry.get("from"):
-            classes[column] = DataClass(entry["to"])
-    return classes
 
 
 def _count_save(unresolved_columns: Sequence[str]) -> None:

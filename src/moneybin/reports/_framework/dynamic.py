@@ -46,6 +46,7 @@ from moneybin.reports._framework.derive import (
     read_tables,
     token_of,
     typed_value,
+    with_downgrades,
 )
 
 logger = logging.getLogger(__name__)
@@ -411,11 +412,7 @@ def _reresolved(
         ),
     )
 
-    reapplied = dict(derived.classes)
-    for column, entry in downgrades.items():
-        approved_from = entry.get("from")
-        if column in reapplied and reapplied[column].value == approved_from:
-            reapplied[column] = DataClass(entry["to"])
+    reapplied = with_downgrades(dict(derived.classes), downgrades)
 
     changed_columns = tuple(
         sorted(

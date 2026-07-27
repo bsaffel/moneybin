@@ -37,7 +37,6 @@ DO carry both ``name`` (real table) and ``db`` (schema) after qualify.
 from __future__ import annotations
 
 import functools
-import hashlib
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -51,6 +50,7 @@ from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, build_scope
 
 from moneybin.database import Database
+from moneybin.log_sanitizer import sql_digest
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
 
 logger = logging.getLogger(__name__)
@@ -426,9 +426,7 @@ FAIL_CLOSED_CLASS = DataClass.UNRESOLVED
 
 def _coverage_gap_class(key: tuple[str, str, str], sql_for_log: str) -> DataClass:
     schema, table, column = key
-    sql_hash = (
-        hashlib.sha256(sql_for_log.encode()).hexdigest()[:12] if sql_for_log else "n/a"
-    )
+    sql_hash = sql_digest(sql_for_log) if sql_for_log else "n/a"
     # schema/table/column are identifiers, not data — safe to log (No PII in logs).
     logger.warning(
         f"sql_lineage: undeclared deployed column {schema}.{table}.{column}; "
@@ -635,9 +633,7 @@ def _conservative_floor(
     # Never log the raw SQL — it can carry literal PII (e.g. a description or
     # account-number filter). A short hash gives forensic correlation without
     # leaking content (No PII in logs).
-    sql_hash = (
-        hashlib.sha256(sql_for_log.encode()).hexdigest()[:12] if sql_for_log else "n/a"
-    )
+    sql_hash = sql_digest(sql_for_log) if sql_for_log else "n/a"
     logger.warning(
         f"sql_lineage: unresolved projection; conservative fallback (sql sha256={sql_hash})"
     )

@@ -99,6 +99,9 @@ def _catalog_entry(
     # name the mock and leave `entry.name` a child mock, so the render would
     # print a repr and the assertion would pass on nothing.
     entry.name = name
+    # The JSON path serializes each entry; a mock's `model_dump` would hand
+    # `json.dumps` an unserializable child mock.
+    entry.model_dump.return_value = {"report_id": report_id, "name": name}
     return entry
 
 
@@ -133,8 +136,9 @@ def test_list_rejects_an_unknown_tier() -> None:
 def test_list_asks_for_the_view_its_flag_names(argv: list[str], expected: bool) -> None:
     """``--include-archived`` widens the listing, matching ``accounts list``.
 
-    Both call sites take the same value: a tier read off a different row set than
-    the payload holds would misreport the response's sensitivity. Which rows each
+    Only the payload takes the view now — the envelope's sensitivity is read off
+    the rows the payload produced, so the two cannot name different row sets. See
+    ``test_list_reports_the_sensitivity_of_the_rows_it_returned``. Which rows each
     view actually contains is proved against a real database in
     ``test_reports/test_user_reports.py``.
     """
@@ -148,17 +152,56 @@ def test_list_asks_for_the_view_its_flag_names(argv: list[str], expected: bool) 
             "moneybin.reports._framework.catalog.catalog_to_payload",
             return_value=MagicMock(reports=[]),
         ) as to_payload,
-        patch(
-            "moneybin.reports._framework.catalog.catalog_sensitivity",
-            return_value="low",
-        ) as sensitivity,
     ):
         result = runner.invoke(app, argv)
 
     assert result.exit_code == 0, result.output
     assert to_payload.call_args.kwargs == {"include_archived": expected}
-    # The reported tier must describe the same rows the payload holds.
-    assert sensitivity.call_args.kwargs == {"include_archived": expected}
+
+
+def test_list_reports_the_sensitivity_of_the_rows_it_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--tier builtin`` returns reviewed metadata only, so the envelope is LOW.
+
+    The tier was read off the whole catalog before ``--tier`` narrowed it, so a
+    listing carrying nothing but repo-authored built-in names reported MEDIUM and
+    ``user_note`` — an envelope describing rows the response did not contain. It
+    is not a leak; it is the audit record naming a class that was never returned,
+    which is the signal a reviewer would use to find one.
+
+    The mock catalog is populated on purpose: a regression that reads the catalog
+    again then fails on the wrong *tier* rather than on iterating a bare mock.
+    """
+    captured: dict[str, object] = {}
+    monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+    catalog = MagicMock()
+    catalog.list.return_value = [
+        MagicMock(report_id="core:networth"),
+        MagicMock(report_id="user:rab12cd34ef56"),
+    ]
+    entries = [
+        _catalog_entry("core:networth"),
+        _catalog_entry("user:rab12cd34ef56", name="monthly_spend"),
+    ]
+    with (
+        _patch_catalog_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=catalog,
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_to_payload",
+            return_value=MagicMock(reports=entries),
+        ),
+    ):
+        result = runner.invoke(
+            app, ["reports", "list", "--tier", "builtin", "--output", "json"]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["summary"]["sensitivity"] == "low"
+    assert captured["classes_returned"] == ["aggregate"]
 
 
 def test_list_marks_an_archived_row_it_was_asked_to_include() -> None:

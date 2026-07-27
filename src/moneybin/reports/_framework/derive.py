@@ -30,6 +30,7 @@ from sqlglot import exp
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.log_sanitizer import sql_digest
 from moneybin.privacy.redaction import mask_strength
 from moneybin.privacy.sql_lineage import (
     FAIL_CLOSED_CLASS,
@@ -208,7 +209,7 @@ def derive_classification(
     """
     _refuse_duplicate_parameters(params)
     tree, snapshot = _parsed(db, query_sql)
-    qualified = _qualified_or_refuse(tree, snapshot)
+    qualified = _qualified_or_refuse(tree, snapshot, query_sql)
 
     output_classes = resolve_output_classes(
         qualified, snapshot, query_sql, strict=False
@@ -243,6 +244,49 @@ def derive_classification(
             if data_class is FAIL_CLOSED_CLASS
         ),
     )
+
+
+def downgrade_pair(entry: Mapping[str, str]) -> tuple[DataClass, DataClass]:
+    """The two classes one stored downgrade entry approves — both required.
+
+    Validated together and unconditionally. :func:`class_fingerprint` used to
+    read each side only ``if entry.get(side)``, so a half-written entry keyed a
+    fingerprint without complaint and then reached ``DataClass("")`` inside
+    :func:`with_downgrades`. On the read path that ``ValueError`` lands outside
+    every handler, so one corrupt row failed the whole catalog — built-ins
+    included — instead of degrading itself.
+
+    Neither side names a column, and the message names neither: a saved report's
+    column is a user-authored alias, and this text reaches a log.
+    """
+    try:
+        return DataClass(entry["from"]), DataClass(entry["to"])
+    except (KeyError, ValueError) as e:
+        raise UserError(
+            "A stored classification downgrade does not name two valid classes.",
+            code=error_codes.REPORT_DOWNGRADE_UNREADABLE,
+            hint="Save the report again to rebuild its classification contract.",
+        ) from e
+
+
+def with_downgrades(
+    classes: dict[str, DataClass], downgrades: Mapping[str, Mapping[str, str]]
+) -> dict[str, DataClass]:
+    """Apply approved downgrades over a freshly derived class map.
+
+    Applied only where the derived class still equals the one the downgrade was
+    approved against. Reapplying by column name alone would let an approval
+    collected against a weak class silently suppress a stronger one.
+
+    One implementation for all three callers — the save path, the edit path, and
+    the run path's re-resolution. They held two copies of this loop, and the
+    validation gap above lived in both.
+    """
+    for column, entry in downgrades.items():
+        approved_from, approved_to = downgrade_pair(entry)
+        if classes.get(column) is approved_from:
+            classes[column] = approved_to
+    return classes
 
 
 def class_fingerprint(
@@ -283,9 +327,7 @@ def class_fingerprint(
 
     involved = set(classes.values()) | set(parameter_classes.values())
     for entry in class_downgrades.values():
-        involved.update(
-            DataClass(entry[side]) for side in ("from", "to") if entry.get(side)
-        )
+        involved.update(downgrade_pair(entry))
     policy = sorted(
         (data_class.value, int(data_class.tier), int(mask_strength(data_class)))
         for data_class in involved
@@ -376,12 +418,24 @@ def _parsed(db: Database, query_sql: str) -> tuple[exp.Expr, SchemaSnapshot]:
     return tree, get_current_schema_snapshot(db)
 
 
-def _qualified_or_refuse(tree: exp.Expr, snapshot: SchemaSnapshot) -> exp.Expr:
-    """Expand stars, then refuse any table outside the classified schemas."""
+def _qualified_or_refuse(
+    tree: exp.Expr, snapshot: SchemaSnapshot, query_sql: str
+) -> exp.Expr:
+    """Expand stars, then refuse any table outside the classified schemas.
+
+    ``query_sql`` is carried for the log digest alone — the *original* text, not
+    ``tree.sql()``, so every record about one save names the same statement.
+    """
     try:
         qualified = expand_star(tree, snapshot)
     except SqlSchemaError as e:
-        logger.warning(f"user report save: unknown table/column: {e}")
+        # Type and digest only: the statement being saved is user-authored text
+        # that may hold an inline merchant name, and sqlglot quotes what it
+        # failed on. `sql_digest` carries the full reasoning.
+        logger.warning(
+            f"user report save: unknown table/column: {type(e).__name__} "
+            f"(sql sha256={sql_digest(query_sql)})"
+        )
         raise UserError(
             "Unknown table or column.", code=error_codes.SQL_UNKNOWN_TABLE
         ) from e
@@ -516,7 +570,12 @@ def _describe_result_columns(
         cursor = db.execute(f"DESCRIBE {query_sql}", bindings)  # noqa: S608
         rows = cursor.fetchall()
     except duckdb.Error as e:
-        logger.warning(f"user report save: could not describe result columns: {e}")
+        # DuckDB's binder error echoes the statement it bound, so only its type
+        # and the digest may be logged — see `sql_digest`.
+        logger.warning(
+            f"user report save: could not describe result columns: "
+            f"{type(e).__name__} (sql sha256={sql_digest(query_sql)})"
+        )
         declared = ", ".join(
             f"${parameter.name}: {token_of(parameter.annotation)}"
             for parameter in params

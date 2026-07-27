@@ -22,7 +22,11 @@ from moneybin.privacy.payloads.networth import (
     NetWorthHistoryPoint,
 )
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.catalog import ReportCatalog, ServiceReportSpec
+from moneybin.reports._framework.catalog import (
+    ReportCatalog,
+    ReportStatus,
+    ServiceReportSpec,
+)
 from moneybin.reports._framework.contract import (
     Binding,
     OutputColumn,
@@ -175,6 +179,10 @@ def test_prepare_report_executes_once_and_preserves_the_report_receipt(
         },
         "freshness": None,
         "graduation_eligibility": None,
+        # A report the catalog holds no drift verdict for — every packaged report,
+        # and a saved one whose stored class map still matches its SQL.
+        "degraded": False,
+        "degraded_reason": None,
         "semantics": {
             "unit": "count",
             "currency": None,
@@ -227,6 +235,50 @@ def test_a_report_with_no_graph_backed_view_records_a_null_manifest_source(
     assert snapshot.data_dictionary["tables"][0]["source"] is None  # type: ignore[index]
     receipt = snapshot.manifest["provenance"]["receipt"]  # type: ignore[index]
     assert receipt["lineage"] == ["reports.test_summary"]  # type: ignore[index]
+    json.dumps(snapshot.manifest)
+
+
+def test_prepare_report_carries_a_degraded_reports_drift_into_the_receipt(
+    db: Database,
+) -> None:
+    """A drifting saved report still exports, and the artifact says it drifted.
+
+    R4 serves a stale class map fail-closed: every column whose upstream class
+    moved is masked to ``UNRESOLVED``. The rows written to the file are therefore
+    not the rows the report's own ``output_classes`` describe, and an artifact
+    outlives the session that produced it — a reader months later has no other
+    way to learn that the columns were masked by drift rather than empty at
+    source.
+
+    It does not *refuse*: masking more than declared is not an availability
+    failure, and refusing would turn one upstream reclassification into an export
+    outage for every saved report that reads the affected column.
+    """
+    reason = "stale_classification: upstream classification changed for amount"
+    saved = replace(_spec(), report_id="user:rab12cd34ef56", name="my_export")
+    service = _service(
+        db,
+        catalog=ReportCatalog(
+            (saved,),
+            status={
+                saved.report_id: ReportStatus(degraded=True, degraded_reason=reason)
+            },
+        ),
+    )
+
+    snapshot = service.prepare_report(
+        profile="test",
+        report_id=saved.report_id,
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    assert snapshot.provenance is not None
+    assert snapshot.provenance.receipt["degraded"] is True
+    assert snapshot.provenance.receipt["degraded_reason"] == reason
+    # The artifact, not just the in-memory receipt: the manifest is what ships.
+    manifest_receipt = snapshot.manifest["provenance"]["receipt"]  # type: ignore[index]
+    assert manifest_receipt["degraded_reason"] == reason  # type: ignore[index]
     json.dumps(snapshot.manifest)
 
 

@@ -1488,3 +1488,100 @@ def test_unresolvable_column_reference_classifies_by_scope_inputs(
     # would classify `x` directly, and the test would keep passing while
     # silently no longer exercising the branch it exists to guard.
     assert "unresolved projection; conservative fallback" in caplog.text
+
+
+# One free-text merchant name, chosen because no `SanitizedLogFormatter` pattern
+# can recognise it: the formatter masks SSNs, runs of 8+ digits, and dollar
+# amounts. A leak of this string reaches the log file intact.
+_MERCHANT = "ACME PLUMBING"
+
+
+def _assert_log_names_the_failure_without_quoting_it(
+    caplog: pytest.LogCaptureFixture, cause: BaseException, prefix: str
+) -> None:
+    """The log named which failure happened, by type and query digest only.
+
+    Asserts all three properties one of these records must hold: the site fired
+    (its own prefix), it says what went wrong (the exception's type name) and
+    which statement (a digest), and it quotes neither the exception's message
+    nor the literal that message carries.
+    """
+    assert prefix in caplog.text
+    assert type(cause).__name__ in caplog.text
+    assert "sql sha256=" in caplog.text
+    assert str(cause) not in caplog.text
+    assert _MERCHANT not in caplog.text
+
+
+def test_unknown_table_log_names_the_error_type_not_the_query(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The unknown-table log must not carry the lineage message verbatim.
+
+    The client envelope already withholds it (see
+    ``test_unknown_table_error_omits_raw_detail``), but the log record is the
+    other boundary, and it is the durable one: a ``LINE 1: SELECT ...`` echo of
+    the failing statement writes any inline literal to a file
+    ``.claude/rules/security.md`` forbids it in.
+
+    An unknown *table*, not an unknown column: a column DuckDB cannot bind is
+    not a lineage failure at all — it reaches the execution handler below, so a
+    column fixture would leave this site untested and that one asserted twice.
+    """
+    with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
+        with pytest.raises(UserError) as ei:
+            execute_sql_query(
+                populated_db,
+                f"SELECT x FROM core.no_such_table WHERE note = '{_MERCHANT}'",  # noqa: S608  # `_MERCHANT` is a test constant; the query is meant to fail
+                max_rows=10,
+            )
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    cause = ei.value.__cause__
+    assert cause is not None
+    _assert_log_names_the_failure_without_quoting_it(
+        caplog, cause, "sql_query unknown table/column"
+    )
+
+
+def test_execution_error_log_names_the_error_type_not_the_query(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A DuckDB failure at fetch time quotes the value it could not convert.
+
+    Distinct site from the unknown-column one above, and reached by a distinct
+    fixture: this statement resolves against the schema and fails only when
+    DuckDB evaluates the cast, so the lineage handler cannot claim it.
+    """
+    with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
+        with pytest.raises(UserError) as ei:
+            execute_sql_query(
+                populated_db,
+                f"SELECT CAST('{_MERCHANT}' AS INTEGER) AS n",
+                max_rows=10,
+            )
+    assert ei.value.code == error_codes.SQL_QUERY_ERROR
+    cause = ei.value.__cause__
+    assert cause is not None
+    _assert_log_names_the_failure_without_quoting_it(
+        caplog, cause, "sql_query execution error"
+    )
+
+
+def test_metadata_error_log_names_the_error_type_not_the_query(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The DESCRIBE/SHOW branch has its own handler, so it needs its own guard."""
+    with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
+        with pytest.raises(UserError) as ei:
+            execute_sql_query(
+                populated_db,
+                "DESCRIBE SELECT nope FROM core.dim_accounts "  # noqa: S608  # `_MERCHANT` is a test constant; the query is meant to fail
+                f"WHERE display_name = '{_MERCHANT}'",
+                max_rows=10,
+            )
+    assert ei.value.code == error_codes.SQL_QUERY_ERROR
+    cause = ei.value.__cause__
+    assert cause is not None
+    _assert_log_names_the_failure_without_quoting_it(
+        caplog, cause, "sql_query metadata error"
+    )

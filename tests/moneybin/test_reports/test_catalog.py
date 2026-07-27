@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import typing
 from collections.abc import Mapping
 from dataclasses import replace
@@ -38,6 +39,7 @@ from moneybin.reports._framework.catalog import (
     open_report_catalog,
 )
 from moneybin.reports._framework.contract import (
+    USER_NAMESPACE,
     Binding,
     OutputColumn,
     ParamSpec,
@@ -263,6 +265,27 @@ def test_exact_namespaced_id_wins_over_matching_short_name() -> None:
     catalog = ReportCatalog((alias_collision, exact))
 
     assert catalog.resolve("core:summary") is exact
+
+
+def test_the_collision_warning_names_the_reports_and_not_the_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A colliding report name may be a merchant name, so it cannot be logged.
+
+    A saved report is named by its user, and ``amazon-spend`` is both a
+    plausible name and a merchant name ``.claude/rules/security.md`` forbids in
+    a log file — ``SanitizedLogFormatter`` masks digit runs and dollar amounts,
+    never free text. The report IDs carry everything an operator can act on.
+    """
+    with caplog.at_level(logging.WARNING, logger="moneybin.reports._framework.catalog"):
+        ReportCatalog((
+            _sql_report(report_id="core:summary", name="amazon-spend"),
+            _sql_report(report_id="user:rab12cd34ef56", name="amazon-spend"),
+        ))
+
+    assert "amazon-spend" not in caplog.text
+    assert "core:summary" in caplog.text
+    assert "user:rab12cd34ef56" in caplog.text
 
 
 def test_ambiguous_short_id_lists_sorted_namespaced_candidates() -> None:
@@ -974,6 +997,45 @@ def test_duplicate_extension_report_id_is_rejected(
 
     with pytest.raises(ValueError, match="duplicate extension report_id"):
         register_extension_report(_sql_report(report_id="retirement:summary"))
+
+
+def test_an_extension_may_not_claim_the_user_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``user:`` means "derived at save time from a row", and code cannot be that.
+
+    ``report_tier`` reads the namespace, so an extension shipping ``user:x``
+    would be presented on every surface as the caller's own saved report: listed
+    under ``--tier user``, explained at MEDIUM as user-authored text, and — the
+    part that matters — believed to carry a class map *derived* from its SQL. Its
+    ``classes={...}`` is declared by the package author instead, which is exactly
+    the "user-supplied class in the map" that `.claude/rules/reports.md` forbids.
+    """
+    monkeypatch.setattr(registry, "_extension_reports", {})
+
+    with pytest.raises(ValueError, match=f"{USER_NAMESPACE}:"):
+        register_extension_report(
+            _sql_report(report_id=f"{USER_NAMESPACE}:retirement", name="retirement")
+        )
+
+    assert extension_report_specs() == ()
+
+
+def test_an_extension_namespace_that_merely_begins_with_user_registers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reserved thing is the namespace, not the four characters.
+
+    ``user_notes`` is a package name a real extension could pick, and a check
+    written as "starts with ``user``" would lock it out. The refusal above must
+    fail closed on the namespace and stay open here.
+    """
+    monkeypatch.setattr(registry, "_extension_reports", {})
+    report = _sql_report(report_id="user_notes:summary", name="user_notes_summary")
+
+    register_extension_report(report)
+
+    assert extension_report_specs() == (report,)
 
 
 # ---------------------------------------------------------------------------

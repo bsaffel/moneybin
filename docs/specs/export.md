@@ -86,11 +86,18 @@ format-neutral prepared snapshot. The snapshot contains:
 - a generated data dictionary.
 
 For a report, the snapshot additionally carries its provenance receipt: report
-identifier, resolved parameters, SQL, lineage, output classes, freshness, and
-graduation eligibility. This is the same information exposed by the report
-verification surface, rendered as artifact metadata rather than a new query
-path. Durable report artifacts are complete-or-fail: interactive MCP response
-row caps do not truncate the prepared snapshot.
+identifier, resolved parameters, SQL, lineage, output classes, freshness,
+graduation eligibility, and classification-drift state. This is the same
+information exposed by the report verification surface, rendered as artifact
+metadata rather than a new query path. Durable report artifacts are
+complete-or-fail: interactive MCP response row caps do not truncate the prepared
+snapshot.
+
+A saved report whose stored class map has drifted from its SQL still exports —
+masking more than declared is not an availability failure — and the receipt
+records `degraded` plus R4's `degraded_reason`. Without them the artifact's
+masked columns would be indistinguishable from columns that were empty at
+source, months after the session that produced the file.
 
 The report framework exposes the executed records and class map internally
 before its terminal response renderer masks them. `ExportService` uses that

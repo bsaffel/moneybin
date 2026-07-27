@@ -12,6 +12,7 @@ from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework import registry
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.reports._framework.contract import (
+    USER_NAMESPACE,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -69,6 +70,27 @@ def retirement_runner(db: Database) -> ReportQuery:
 RETIREMENT_RUNNER = retirement_runner
 
 
+@report(
+    report_id=f"{USER_NAMESPACE}:forecast",
+    name="reserved_forecast",
+    view=_VIEW,
+    classes=_CLASSES,
+    parameter_classes={},
+    columns=_COLUMNS,
+    semantics=_SEMANTICS,
+)
+def reserved_namespace_runner(db: Database) -> ReportQuery:
+    """Claim the namespace the user tier owns.
+
+    Args:
+        db: Open read-only database connection.
+    """
+    return ReportQuery("SELECT 1 AS projected_balance")
+
+
+RESERVED_NAMESPACE_RUNNER = reserved_namespace_runner
+
+
 @pytest.fixture(autouse=True)
 def _isolated_extension_reports(  # pyright: ignore[reportUnusedFunction]
     monkeypatch: pytest.MonkeyPatch,
@@ -124,6 +146,23 @@ def test_extension_batch_duplicate_is_rejected_before_any_mutation() -> None:
 
     with pytest.raises(ValueError, match="duplicate extension report_id"):
         register_extension_reports([RETIREMENT_RUNNER, RETIREMENT_RUNNER], app)
+
+    assert registered_report_command_names(app) == set()
+    with pytest.raises(UserError, match="Report not found"):
+        get_report_catalog().resolve("retirement:forecast")
+
+
+def test_extension_batch_claiming_the_user_namespace_registers_nothing() -> None:
+    """The reserved-namespace refusal covers the batch, not one spec at a time.
+
+    Left to the per-spec call, it would fire after the valid sibling had already
+    joined the process catalog — reachable through ``reports(report_id=...)``
+    with no CLI command beside it, which is neither state the batch promises.
+    """
+    app = typer.Typer()
+
+    with pytest.raises(ValueError, match=f"{USER_NAMESPACE}:"):
+        register_extension_reports([RETIREMENT_RUNNER, RESERVED_NAMESPACE_RUNNER], app)
 
     assert registered_report_command_names(app) == set()
     with pytest.raises(UserError, match="Report not found"):

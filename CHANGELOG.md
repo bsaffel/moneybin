@@ -19,7 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   report is masked exactly as it is in a built-in. If an upstream column is later
   reclassified as more sensitive, the saved report notices and masks that column
   rather than serving the stale class, and the response says so
-  (`summary.degraded`) rather than masking silently. `reports set --archive`
+  (`summary.degraded`) rather than masking silently. An exported artifact records
+  the same verdict in its provenance receipt, so a file opened months later still
+  distinguishes columns masked by drift from columns that were empty at source.
+  `reports set --archive`
   hides a report from `reports list` without retiring it — an archived report
   still runs, exports, and explains by id or name, and
   `reports list --include-archived` shows it marked as archived. `reports set`

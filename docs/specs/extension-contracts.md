@@ -385,6 +385,12 @@ such as `accounts` keep their domain tool. For example, cash flow runs through
 Report IDs are public contracts and must not collide. Registration may expose a
 short alias only when it resolves to exactly one stable ID.
 
+The `user:` namespace is reserved and `register_extension_reports` refuses it.
+`report_tier` reads the namespace to identify the one tier whose class map is
+*derived* from stored SQL rather than declared by an author, so an extension
+holding a `user:` ID would present its own declared `classes={...}` as a derived
+masking floor.
+
 ### Report semantic metadata
 
 Every `ReportSpec` declares enough meaning for an agent to interpret results

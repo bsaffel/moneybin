@@ -521,6 +521,7 @@ class ExportService:
             rows=rows,
             checksum_sha256=prepared_table_checksum(columns, rows),
         )
+        status = catalog.status(execution.report_id)
         parameters = spec.params if isinstance(spec, ReportSpec) else spec.parameters
         parameter_classes = {
             parameter.name: parameter.data_class.value for parameter in parameters
@@ -543,11 +544,16 @@ class ExportService:
                 name: data_class.value
                 for name, data_class in execution.output_classes.items()
             },
-            # The current ReportSpec exposes neither field. Keep that absence
-            # explicit instead of inferring verification state from provenance.
+            # The current ReportSpec exposes neither field, and both want the
+            # stored row rather than the catalog. Keep that absence explicit
+            # instead of inferring verification state from provenance.
             freshness=None,
             graduation_eligibility=None,
             semantics=cast(dict[str, object], asdict(execution.semantics)),
+            # Drift, unlike freshness, is already in hand: the catalog carries
+            # R4's verdict for every user-tier row it built.
+            degraded=status.degraded,
+            degraded_reason=status.degraded_reason,
         )
         tables = (table,)
         snapshot = PreparedExport(

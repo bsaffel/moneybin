@@ -86,11 +86,11 @@ def reports_list(
         # runnable; this decides only what a *listing* shows.
         with open_report_catalog() as (catalog, _):
             payload = catalog_to_payload(catalog, include_archived=include_archived)
-            sensitivity = catalog_sensitivity(
-                catalog, include_archived=include_archived
-            )
 
     entries = [entry for entry in payload.reports if tier is None or entry.tier == tier]
+    # After `--tier`, not before: the envelope has to describe the rows it
+    # carries, and `--tier builtin` drops every user-authored name.
+    sensitivity = catalog_sensitivity(entries)
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
         if not entries:

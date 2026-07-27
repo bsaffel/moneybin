@@ -53,7 +53,7 @@ def reports(
         # archived report still runs, exports, and explains by id here.
         with open_report_catalog() as (catalog, _):
             payload = catalog_to_payload(catalog)
-            sensitivity = catalog_sensitivity(catalog)
+            sensitivity = catalog_sensitivity(payload.reports)
         return build_envelope(
             data=payload,
             sensitivity=sensitivity,

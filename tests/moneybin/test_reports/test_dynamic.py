@@ -7,6 +7,7 @@ row → ``ReportSpec`` constructor from ``docs/specs/reports-dynamic.md``.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
@@ -18,6 +19,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.redaction import MaskStrength
+from moneybin.privacy.sql_lineage import FAIL_CLOSED_CLASS, SqlSchemaError
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.contract import ParamSpec
 from moneybin.reports._framework.derive import (
@@ -347,6 +349,94 @@ def test_derivation_accepts_two_parameters_with_distinct_names(
         "acct": DataClass.ROUTING_NUMBER,
         "n": DataClass.AGGREGATE,
     }
+
+
+# A free-text merchant name no `SanitizedLogFormatter` pattern can recognise —
+# it masks SSNs, runs of 8+ digits, and dollar amounts. A saved query may hold
+# one as an inline literal, and DuckDB and sqlglot both quote the statement they
+# failed on.
+_MERCHANT = "ACME PLUMBING"
+
+
+def _assert_log_names_the_failure_without_quoting_it(
+    caplog: pytest.LogCaptureFixture, cause: BaseException, prefix: str
+) -> None:
+    """The log named which save step failed, by type and query digest only."""
+    assert prefix in caplog.text
+    assert type(cause).__name__ in caplog.text
+    assert "sql sha256=" in caplog.text
+    assert str(cause) not in caplog.text
+    assert _MERCHANT not in caplog.text
+
+
+def test_a_failed_qualification_logs_no_query_text(
+    dynamic_db: Database,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The qualify step's own handler must not log the query either.
+
+    The user-facing error is already generic. The log record is the other, more
+    durable boundary: the statement being saved is user-authored text that may
+    carry an inline merchant name or description, and
+    ``.claude/rules/security.md`` forbids either in a log file.
+
+    ``expand_star`` is forced to raise rather than provoked into it, because on
+    this path nothing provokes it: ``expand_star`` qualifies with
+    ``validate_qualify_columns=False``, so an unknown table, an unknown column,
+    and an ambiguous one all survive it and are rejected by DuckDB at DESCRIBE
+    (the next test's site). sqlglot still owns the arm — a future release that
+    validates more eagerly would route real saves through it — and the arm's
+    message is what this asserts.
+    """
+    from moneybin.reports._framework import derive as derive_module
+
+    def _raise(*_: object, **__: object) -> None:
+        raise SqlSchemaError(f"cannot resolve: SELECT x WHERE note = '{_MERCHANT}'")
+
+    monkeypatch.setattr(derive_module, "expand_star", _raise)
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.reports._framework.derive"):
+        with pytest.raises(UserError) as raised:
+            derive_classification(
+                dynamic_db,
+                query_sql="SELECT account_id FROM core.dim_accounts",
+                params=(),
+            )
+    assert raised.value.code == error_codes.SQL_UNKNOWN_TABLE
+    cause = raised.value.__cause__
+    assert cause is not None
+    _assert_log_names_the_failure_without_quoting_it(
+        caplog, cause, "user report save: unknown table/column"
+    )
+
+
+def test_a_failed_describe_logs_no_query_text(
+    dynamic_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The DESCRIBE step has its own handler, and DuckDB echoes the statement.
+
+    Reached by a parameter whose declared type does not fit the position it is
+    used in — the one failure that survives qualification and lineage and shows
+    up only when DuckDB binds the sentinel.
+    """
+    with caplog.at_level(logging.WARNING, logger="moneybin.reports._framework.derive"):
+        with pytest.raises(UserError) as raised:
+            derive_classification(
+                dynamic_db,
+                query_sql=(
+                    "SELECT account_id FROM core.dim_accounts "  # noqa: S608  # `_MERCHANT` is a test constant; the query is meant to fail
+                    f"WHERE display_name = '{_MERCHANT}' "
+                    "AND date_part($n, CURRENT_DATE) = 1"
+                ),
+                params=(_param("n", int),),
+            )
+    assert raised.value.code == error_codes.REPORT_QUERY_UNRESOLVABLE
+    cause = raised.value.__cause__
+    assert cause is not None
+    _assert_log_names_the_failure_without_quoting_it(
+        caplog, cause, "user report save: could not describe result columns"
+    )
 
 
 def test_derivation_leaves_a_parameter_compared_against_nothing_unresolved(
@@ -764,6 +854,34 @@ def test_spec_from_row_reapplies_a_downgrade_whose_premise_still_holds(
 
     assert dynamic.spec.classes["spend"] is DataClass.AGGREGATE
     assert not dynamic.degraded
+
+
+def test_spec_from_row_masks_a_row_whose_downgrade_entry_is_half_written(
+    dynamic_db: Database,
+) -> None:
+    """A downgrade entry missing a side degrades its own row, not the catalog.
+
+    ``class_fingerprint`` validated each side only ``if entry.get(side)``, so an
+    entry whose ``to`` is empty keyed a fingerprint without complaint and then
+    reached ``DataClass("")`` in the reapplication loop. That ``ValueError`` is
+    raised outside every handler on this path — the inner one catches
+    ``UserError`` alone — so one corrupt row failed ``user_report_specs`` for
+    every tier at once, built-ins included. The row is what is broken, so the
+    row is what degrades.
+
+    The stale fingerprint is load-bearing: an entry naming a class the stored map
+    already holds moves no policy triple, so without it the key still matches and
+    the reapplication loop never runs.
+    """
+    row = _saved(dynamic_db)
+    row["class_downgrades"] = {"account_id": {"from": "record_id", "to": ""}}
+    row["class_fingerprint"] = "stale-forces-the-mismatch-branch"
+
+    dynamic = spec_from_row(dynamic_db, row)
+
+    assert dynamic.degraded
+    assert DEGRADED_UNREADABLE_ROW in (dynamic.degraded_reason or "")
+    assert dict(dynamic.spec.classes) == {"account_id": FAIL_CLOSED_CLASS}
 
 
 def test_spec_from_row_drops_a_downgrade_whose_derived_class_moved(
