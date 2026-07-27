@@ -61,7 +61,13 @@ WITH snapshots AS (
      one row per execution. Unlike `_snapshots.updated_ts` it does not move for
      metadata-only touches, so it is the surface that distinguishes "this model
      was rebuilt" from "the environment was promoted". Dev and removed rows are
-     excluded so only prod execution counts.
+     excluded so only prod execution counts, and so are pending-restatement
+     rows: those mark an interval as *owed*, written when a restatement is
+     requested and carrying `created_ts = now` like every other row, with the
+     real interval landing only once the backfill succeeds. SQLMesh's own
+     max-interval read path excludes them for the same reason. Counted here, a
+     restatement that fails mid-backfill would stamp the model as freshly
+     rebuilt over the data the failure left stale.
 
      Keyed by version as well as name, because an interval belongs to a
      (name, version) pair — `_intervals.version` is written as
@@ -77,7 +83,7 @@ WITH snapshots AS (
     MAX(created_ts) AS last_executed_ms
   FROM sqlmesh._intervals
   WHERE
-    NOT is_dev AND NOT is_removed
+    NOT is_dev AND NOT is_removed AND NOT is_pending_restatement
   GROUP BY
     model_name,
     version

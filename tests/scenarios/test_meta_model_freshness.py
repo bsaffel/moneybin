@@ -127,3 +127,75 @@ def test_a_version_that_never_backfilled_reports_no_execution() -> None:
         f"last_executed_at={executed[0]} — an execution borrowed from an older "
         "version, reporting never-built content as freshly built"
     )
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_a_requested_restatement_does_not_count_as_an_execution() -> None:
+    """A pending-restatement row records a request, not a completed rebuild.
+
+    SQLMesh stamps every ``_intervals`` row with ``created_ts = now`` — see
+    ``_interval_to_df`` — including the rows it writes for *requested*
+    restatements. Those carry no data: they mark an interval as owed, and the
+    real row lands only once the backfill succeeds. SQLMesh's own
+    max-interval read path excludes them for exactly this reason
+    (``is_pending_restatement.not_()``). Counted as executions here, a
+    restatement that is requested after a raw landing and then fails during
+    backfill leaves a stamp newer than the landing, so ``freshness()`` reports
+    ``pending=False`` over data the failure left stale — the fail-open this
+    column exists to close.
+    """
+    scenario = load_shipped_scenario("idempotency-rerun")
+    assert scenario is not None
+
+    strip_catalog = "REGEXP_REPLACE(REPLACE(name, '\"', ''), '^[^.]+\\.', '')"
+
+    with scenario_env(scenario) as (db, _tmp, env):
+        run_step("generate", scenario.setup, db, env=env)
+        run_step("transform", scenario.setup, db, env=env)
+
+        built = db.execute(
+            """
+            SELECT model_name, last_executed_at FROM meta.model_freshness
+            WHERE model_name LIKE 'core.%' AND last_executed_at IS NOT NULL
+            ORDER BY model_name LIMIT 1
+            """
+        ).fetchone()
+        assert built is not None, "no built core model to perturb"
+        model_name, before = str(built[0]), built[1]
+
+        # Stand in for `transform restate --model <name>` whose backfill then
+        # failed. Cloning the model's own newest prod interval keeps name and
+        # version truthful — so this fixture can only be caught by the
+        # pending-restatement filter, never by the (name, version) join — and
+        # mirrors how SQLMesh writes the row: identifier and dev_version NULL,
+        # a fresh created_ts, nothing else changed.
+        db.execute(
+            f"""
+            INSERT INTO sqlmesh._intervals
+            SELECT * REPLACE (
+                'probe_pending_restatement' AS id,
+                (SELECT MAX(created_ts) + 86400000 FROM sqlmesh._intervals)
+                    AS created_ts,
+                CAST(NULL AS TEXT) AS identifier,
+                CAST(NULL AS TEXT) AS dev_version,
+                TRUE AS is_pending_restatement
+            )
+            FROM sqlmesh._intervals
+            WHERE {strip_catalog} = ? AND NOT is_dev AND NOT is_removed
+            ORDER BY created_ts DESC LIMIT 1
+            """,  # noqa: S608  # strip_catalog is a module-local literal, not input
+            [model_name],
+        )
+
+        after = db.execute(
+            "SELECT last_executed_at FROM meta.model_freshness WHERE model_name = ?",
+            [model_name],
+        ).fetchone()
+
+    assert after is not None, f"{model_name} vanished from the view"
+    assert after[0] == before, (
+        f"a requested-but-unbackfilled restatement moved {model_name}'s "
+        f"last_executed_at from {before} to {after[0]} — a restatement that "
+        "fails mid-backfill would report the stale model as freshly rebuilt"
+    )
