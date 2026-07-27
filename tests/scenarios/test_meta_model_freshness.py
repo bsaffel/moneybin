@@ -60,3 +60,70 @@ def test_meta_model_freshness_returns_row_per_model() -> None:
     for name, executed, kind in external_rows:
         assert kind == "EXTERNAL", f"{name} has model_kind {kind!r}, want EXTERNAL"
         assert executed is None, f"{name} is EXTERNAL but has last_executed_at"
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_a_version_that_never_backfilled_reports_no_execution() -> None:
+    """A recorded-but-unbuilt version must not inherit its predecessor's stamp.
+
+    SQLMesh writes a plan's snapshot rows before backfilling them, so a plan
+    interrupted in between leaves a model whose *current* version has no
+    interval while the previous version's intervals survive. Intervals belong
+    to a ``(name, version)`` pair — SQLMesh's own accessor is
+    ``hydrate_with_intervals_by_version``, and ``_intervals.version`` is
+    written as ``snapshot.version`` — so attributing any of a model's
+    executions to whichever version is current reports content that never ran
+    as freshly built. ``TransformService.freshness()`` reads this column to
+    decide ``pending``, which makes that a fail-open in the staleness signal.
+    """
+    scenario = load_shipped_scenario("idempotency-rerun")
+    assert scenario is not None
+
+    strip_catalog = "REGEXP_REPLACE(REPLACE(name, '\"', ''), '^[^.]+\\.', '')"
+
+    with scenario_env(scenario) as (db, _tmp, env):
+        run_step("generate", scenario.setup, db, env=env)
+        run_step("transform", scenario.setup, db, env=env)
+
+        built = db.execute(
+            """
+            SELECT model_name FROM meta.model_freshness
+            WHERE model_name LIKE 'core.%' AND last_executed_at IS NOT NULL
+            ORDER BY model_name LIMIT 1
+            """
+        ).fetchone()
+        assert built is not None, "no built core model to perturb"
+        model_name = str(built[0])
+
+        # Stand in for a plan that recorded a new version and then failed
+        # before backfilling it: a newer snapshot row for the same model, with
+        # no matching row in `_intervals`. Cloning the model's own newest row
+        # keeps every other column truthful, so the version is the only thing
+        # under test.
+        db.execute(
+            f"""
+            INSERT INTO sqlmesh._snapshots
+            SELECT * REPLACE (
+                'probe_unbuilt_identifier' AS identifier,
+                'probe_unbuilt_version' AS version,
+                (SELECT MAX(updated_ts) + 1000 FROM sqlmesh._snapshots) AS updated_ts
+            )
+            FROM sqlmesh._snapshots
+            WHERE {strip_catalog} = ?
+            ORDER BY updated_ts DESC LIMIT 1
+            """,  # noqa: S608  # strip_catalog is a module-local literal, not input
+            [model_name],
+        )
+
+        executed = db.execute(
+            "SELECT last_executed_at FROM meta.model_freshness WHERE model_name = ?",
+            [model_name],
+        ).fetchone()
+
+    assert executed is not None, f"{model_name} vanished from the view"
+    assert executed[0] is None, (
+        f"{model_name}'s current version has no interval, but the view reported "
+        f"last_executed_at={executed[0]} — an execution borrowed from an older "
+        "version, reporting never-built content as freshly built"
+    )

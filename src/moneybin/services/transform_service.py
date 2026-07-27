@@ -15,11 +15,11 @@ from datetime import UTC, datetime
 
 import duckdb
 
+from moneybin import sqlmesh_registry
 from moneybin.database import Database, sqlmesh_context
 from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
 from moneybin.seeds import refresh_views
 from moneybin.services.matching_service import MatchingService
-from moneybin.sqlmesh_registry import model_presence
 from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
@@ -147,17 +147,31 @@ _SYMBOLIC_MODEL_KINDS: frozenset[str] = frozenset({"EMBEDDED", "EXTERNAL"})
 # INCREMENTAL_* kinds `apply()`'s `run()` step already covers.
 _UNREBUILT_MODEL_KINDS: frozenset[str] = _SYMBOLIC_MODEL_KINDS | {"SEED", "VIEW"}
 
-# A NULL kind stays in scope deliberately: an unrecognized model should hold the
-# minimum down, not slip past it.
-_OLDEST_EXECUTION_SCAN = f"""
-    SELECT
-        (MIN(last_executed_at) AT TIME ZONE 'UTC'),
-        COUNT(*) FILTER (WHERE last_executed_at IS NULL)
-    FROM meta.model_freshness
-    WHERE COALESCE(model_kind, '') NOT IN (
-        {", ".join(f"'{kind}'" for kind in sorted(_UNREBUILT_MODEL_KINDS))}
-    )
-"""  # noqa: S608  # kinds come from the module constant above, never user input
+
+def _oldest_execution_scan(model_count: int) -> str:
+    """Scan for the least-recently-rebuilt model, over a bound name list.
+
+    Scoped to the models the project still declares, not every name SQLMesh
+    state retains. Renaming or removing a model leaves its ``_snapshots`` and
+    ``_intervals`` rows behind until the janitor's TTL expires them, so the
+    view keeps returning a row that no apply can ever rebuild — ``apply()``
+    only runs what the project still defines. Left in the minimum, that frozen
+    stamp pins ``pending`` true from the next raw landing onward with nothing a
+    user or agent can do to clear it.
+
+    A NULL kind stays in scope deliberately: an unrecognized model should hold
+    the minimum down, not slip past it.
+    """
+    kinds = ", ".join(f"'{kind}'" for kind in sorted(_UNREBUILT_MODEL_KINDS))
+    names = ", ".join("?" for _ in range(model_count))
+    return f"""
+        SELECT
+            (MIN(last_executed_at) AT TIME ZONE 'UTC'),
+            COUNT(*) FILTER (WHERE last_executed_at IS NULL)
+        FROM meta.model_freshness
+        WHERE COALESCE(model_kind, '') NOT IN ({kinds})
+          AND LOWER(model_name) IN ({names})
+    """  # noqa: S608  # kinds are a module constant; names are `?` placeholders
 
 
 @dataclass(frozen=True)
@@ -379,7 +393,7 @@ class TransformService:
         wall-clock values for display only; they do not drive the
         pending decision.
         """
-        presence = model_presence(self._db)
+        presence = sqlmesh_registry.model_presence(self._db)
         # A warehouse nobody has built yet is not stale — it is what a profile
         # looks like between `db init` and its first refresh. Reporting that as
         # pending would make the flag permanently true on a healthy first run.
@@ -611,17 +625,27 @@ class TransformService:
         model keeps its true age and holds the minimum down.
 
         Scoped to the kinds a refresh actually rebuilds — see
-        :data:`_UNREBUILT_MODEL_KINDS`. A kind SQLMesh never re-executes has a
-        frozen stamp, and one of those in the minimum pins ``pending`` true from
-        the next import onward with no way to clear it.
+        :data:`_UNREBUILT_MODEL_KINDS` — and to the models the project still
+        declares, see :func:`_oldest_execution_scan`. Both exclusions guard the
+        same fail-closed: a stamp that no refresh can advance, left in the
+        minimum, pins ``pending`` true from the next import onward with no way
+        to clear it.
 
         Returns ``None`` — which reads as pending — when the view is absent (no
         apply yet), unreadable, or when any rebuildable model has never been
         backfilled. Every degraded path fails closed: ``freshness()`` has no
         catch of its own and sits on the ``system_status`` path.
         """
+        registered = sorted(sqlmesh_registry.registered_model_names())
+        if not registered:
+            # No declared models means the registry could not read the project
+            # at all. Reporting "nothing to rebuild" there is the fail-open
+            # this whole scan exists to close.
+            return None
         try:
-            row = self._db.execute(_OLDEST_EXECUTION_SCAN).fetchone()
+            row = self._db.execute(
+                _oldest_execution_scan(len(registered)), registered
+            ).fetchone()
         except duckdb.Error:
             logger.debug("model-execution stamp read failed", exc_info=True)
             return None

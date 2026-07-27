@@ -304,8 +304,13 @@ def test_freshness_pending_when_a_model_has_never_been_executed(
     "fresh enough" would let a half-built warehouse answer `pending=False`;
     the read fails closed instead.
     """
-    declare_only_models("core.dim_accounts")
+    declare_only_models("core.dim_accounts", "core.fct_transactions")
     record_sqlmesh_apply(freshness_db, _ts(2026, 5, 13, 19, 0))
+    # Declared *and* present in the catalog: the scan reads only models the
+    # project still declares, and a declared model absent from the catalog
+    # would make this pending through `missing_models` instead — passing the
+    # assertion below without ever exercising the never-executed stamp.
+    freshness_db.execute("CREATE TABLE core.fct_transactions (transaction_id VARCHAR)")
     freshness_db.execute(
         "INSERT INTO meta.model_freshness "
         "VALUES ('core.fct_transactions', NULL, NULL, NULL, 'FULL')"
@@ -314,7 +319,9 @@ def test_freshness_pending_when_a_model_has_never_been_executed(
     # this pending.
     freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
 
-    assert TransformService(freshness_db).freshness().pending is True
+    result = TransformService(freshness_db).freshness()
+    assert result.missing_models == ()
+    assert result.pending is True
 
 
 def test_freshness_ignores_models_sqlmesh_never_executes(
@@ -361,6 +368,32 @@ def test_freshness_ignores_models_a_refresh_never_rebuilds(
         "('prep.stg_ofx__accounts', NULL, NULL, ?, 'VIEW'), "
         "('seeds.categories', NULL, NULL, ?, 'SEED')",
         [_ts(2026, 1, 1), _ts(2026, 1, 1)],
+    )
+    freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
+
+    assert TransformService(freshness_db).freshness().pending is False
+
+
+def test_freshness_ignores_models_the_project_no_longer_declares(
+    freshness_db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """A retained snapshot for a deleted model must not hold the minimum down.
+
+    Renaming or removing a model leaves its ``_snapshots`` and ``_intervals``
+    rows in SQLMesh state until the janitor's TTL expires them, so the view
+    keeps returning a row for a model the project no longer declares — and
+    which no apply can rebuild, because ``apply()`` only runs what the project
+    still defines. Counted in the minimum, its frozen stamp pins ``pending``
+    true from the next raw landing onward with no refresh able to clear it:
+    the same fail-closed as the VIEW/SEED case above, reached by deleting a
+    model rather than by its kind.
+    """
+    declare_only_models("core.dim_accounts")
+    record_sqlmesh_apply(freshness_db, _ts(2026, 5, 13, 19, 0))
+    freshness_db.execute(
+        "INSERT INTO meta.model_freshness VALUES "
+        "('core.fct_renamed_away', NULL, NULL, ?, 'FULL')",
+        [_ts(2026, 1, 1)],
     )
     freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
 
