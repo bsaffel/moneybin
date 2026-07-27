@@ -37,7 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reclassification cannot turn an approval you read one way into a permanent
   downgrade of something else, and the approval is refused if the class moves
   between the question and the write. A blank `--reason` is refused: it is the
-  only durable record of why the floor was lowered. `reports set --clear-params`
+  only durable record of why the floor was lowered, and both it and the set of
+  downgrades a report accumulates are length-bounded, since every later edit
+  copies them into its audit record. `reports set --clear-params`
   drops every declared parameter, which is the only way to move a parameterized
   report to SQL with no placeholders left: omitting `--param` means "leave the
   declarations alone", every occurrence of the flag requires a value, and a
@@ -57,6 +59,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   report `report_query_execution_failed` and name the likely cause instead of
   surfacing a DuckDB binder error, which quotes the statement it failed to bind.
   The log keeps the exception type and a SHA-256 digest of the query.
+
+  `reports run` caps a text run at 1,000,000 rows, which `--limit --help` now
+  states and the table says whenever it bites — a truncated financial answer
+  never renders as a complete one. A `reports reclassify` approval is also
+  re-checked against current policy on every re-derivation, so a release that
+  raises the class you downgraded *to* retires the approval and masks the column
+  rather than serving it under a floor nobody would grant today.
 
   The same rule covers every name you choose, not only the SQL. A report's name,
   its output aliases, and its declared parameter names never enter a log record:

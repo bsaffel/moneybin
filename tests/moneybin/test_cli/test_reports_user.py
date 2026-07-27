@@ -19,6 +19,7 @@ from typer.testing import CliRunner
 from moneybin import error_codes
 from moneybin.cli.commands.reports import user_reports
 from moneybin.cli.main import app
+from moneybin.cli.output import CLI_MAX_ROWS
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.execute import ReportResult
@@ -315,6 +316,20 @@ def test_run_coerces_a_parameter_to_its_declared_type_before_executing() -> None
     assert parse.call_args.args[1:] == ("core:merchants", ["top=5"])
     assert catalog.execute.call_args.kwargs["parameters"] == {"top": 5}
     assert catalog.execute.call_args.kwargs["limit"] == 3
+
+
+def test_run_help_states_the_default_row_cap_it_actually_applies() -> None:
+    """The help said "unbounded" while the code substituted a cap.
+
+    A user reading "Default: unbounded" and receiving 1,000,000 of 4,000,000
+    rows has an incomplete financial answer and a documented reason to believe
+    it is complete. Derived from the constant, so the two cannot drift.
+    """
+    result = runner.invoke(app, ["reports", "run", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "unbounded" not in result.output
+    assert f"{CLI_MAX_ROWS:,}" in " ".join(result.output.split())
 
 
 def test_run_rejects_a_limit_below_one() -> None:

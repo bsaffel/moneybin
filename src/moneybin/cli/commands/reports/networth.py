@@ -8,6 +8,7 @@ import typer
 from pydantic import JsonValue
 
 from moneybin.cli.output import (
+    CLI_MAX_ROWS,
     OutputFormat,
     currency_label,
     output_option,
@@ -16,9 +17,6 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
-from moneybin.reports._framework.cli_register import (
-    _CLI_MAX_ROWS,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701 — shared report cap
-)
 
 
 def reports_networth(
@@ -47,7 +45,7 @@ def reports_networth(
                     "as_of": as_of,
                     "account_ids": cast(JsonValue, account),
                 },
-                limit=_CLI_MAX_ROWS,
+                limit=CLI_MAX_ROWS,
             )
 
     def _render_text(_: object) -> None:
@@ -117,7 +115,7 @@ def reports_networth_history(
                     "to_date": to_date,
                     "interval": interval,
                 },
-                limit=_CLI_MAX_ROWS,
+                limit=CLI_MAX_ROWS,
             )
 
     def _render_text(_: object) -> None:

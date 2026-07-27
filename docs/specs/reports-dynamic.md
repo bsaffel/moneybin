@@ -641,6 +641,18 @@ it fails closed. Reapplying by column name alone would let an approval collected
 against a weak class silently suppress a stronger one — the inverse of what the
 downgrade was reviewed for.
 
+**And only while the pair is still one R5 would approve today.** Class identity
+is the first condition, not the whole of it: the fingerprint hashes the policy
+triples precisely so a tier or transform change forces this branch, and
+re-derivation that reapplies on identity alone spends that forced work for
+nothing. A release lifting `AGGREGATE` to `TXN_AMOUNT`'s tier turns the z-score
+approval into the equal-tier weakening `is_weaker_class` refuses outright — and
+because the stored map already holds `AGGREGATE`, the reapplied map would match
+it exactly and the run would proceed normally, undegraded. So the reapplication
+re-asks `is_weaker_class` on every re-derivation. Declining is what makes the
+change visible: the comparison against the stored map then differs, the column
+fails closed, and the report degrades like any other drift.
+
 **Re-resolution covers the stored parameter classes, not just the output
 columns.** A dynamic report's parameter classes are derived at save (R2 step 5)
 from the columns its filters compare against, so they go stale by exactly the

@@ -17,13 +17,14 @@ from pydantic import JsonValue
 
 from moneybin.database import Database, DatabaseNotInitializedError
 from moneybin.mcp.tools.reports import reports
-from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
 from moneybin.reports._framework.catalog import ReportCatalog, ServiceReportSpec
 from moneybin.reports._framework.contract import (
     OutputColumn,
     ParamSpec,
     ReportSemantics,
 )
+from moneybin.reports._framework.dynamic import DEGRADED_STALE_CLASSIFICATION
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     CatalogReportResult,
@@ -196,6 +197,61 @@ async def test_reports_catalog_elevates_to_medium_when_a_user_report_is_listed(
     assert response.classes_returned == ["aggregate", "user_note"]
     assert captured[0]["sensitivity"] == "medium"
     assert captured[0]["classes_returned"] == ["aggregate", "user_note"]
+
+
+@pytest.mark.unit
+async def test_reports_run_of_a_drifted_saved_report_says_so_in_the_envelope(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R4's verdict has to reach the agent, not only the CLI and the receipt.
+
+    The CLI prints the reason and the export receipt carries its code, each with
+    its own test; ``summary.degraded`` / ``degraded_reason`` is how the agent
+    learns the same thing, and nothing exercised it through an actual tool call.
+    A drifted report returns ``*****`` either way, so without this an agent reads
+    masked cells as the honest answer.
+
+    Driven through the real service and a real reclassification rather than a
+    mocked result: the wiring under test is exactly the hand-off from catalog
+    status to envelope, which a stubbed ``CatalogReportResult`` would supply.
+    """
+    from moneybin.services.user_reports_service import UserReportsService
+
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id) VALUES (?)", ["acct_11112222"]
+    )
+    UserReportsService(db).create(
+        name="my_accounts",
+        query_sql="SELECT account_id FROM core.dim_accounts",
+        actor="cli",
+    )
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "dim_accounts")] = {
+        **CLASSIFICATION[("core", "dim_accounts")],
+        "account_id": DataClass.ROUTING_NUMBER,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    with (
+        patch(
+            "moneybin.reports._framework.catalog.get_database",
+            return_value=_database_context(db),
+        ),
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=_database_context(db),
+        ),
+        patch("moneybin.mcp.tools.reports.get_max_rows", return_value=50),
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        response = await reports(report_id="my_accounts")
+
+    assert response.error is None
+    assert response.summary.degraded is True
+    assert response.summary.degraded_reason is not None
+    assert response.summary.degraded_reason.startswith(DEGRADED_STALE_CLASSIFICATION)
+    assert [row["account_id"] for row in response.data.rows] == ["*****"]
 
 
 @pytest.mark.unit

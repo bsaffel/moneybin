@@ -21,7 +21,6 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics import registry as metrics
-from moneybin.privacy.redaction import mask_strength
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.reports._framework.contract import USER_REPORT_NAME, ParamSpec
@@ -29,6 +28,7 @@ from moneybin.reports._framework.derive import (
     DerivedClassification,
     class_fingerprint,
     derive_classification,
+    is_weaker_class,
     with_downgrades,
 )
 from moneybin.reports._framework.dynamic import (
@@ -41,6 +41,7 @@ from moneybin.services._validators import (
     DESCRIPTION_MAX_LEN,
     IDENTIFIER_MAX_LEN,
     NOTE_MAX_LEN,
+    REPORT_DOWNGRADES_MAX_LEN,
     REPORT_PARAMS_MAX_LEN,
     REPORT_QUERY_MAX_LEN,
 )
@@ -90,28 +91,6 @@ class ReclassifyOutcome:
     to_class: DataClass
 
 
-def is_weaker_class(from_class: DataClass, to_class: DataClass) -> bool:
-    """Whether ``to_class`` is a legitimate downgrade of ``from_class``.
-
-    The tier must **strictly fall**, and masking may not strengthen. Requiring
-    the tier to fall is what rejects an equal-tier weakening, which is the
-    dangerous case a "neither component rises and at least one falls" rule
-    admits: ``ROUTING_NUMBER → ACCOUNT_IDENTIFIER`` holds CRITICAL and drops
-    masking from whole to partial, so every future run would render the real
-    last four digits where every row previously showed ``'*****'``.
-
-    The downgrade mechanism exists because derivation over-classifies *computed*
-    columns — an author asserting "this z-score reveals no amount" makes a claim
-    about information content. That argument is unavailable when both classes
-    agree on the tier and differ only in transform, so no reason can waive it.
-    Same rule ``.claude/rules/reports.md`` already applies to materialized
-    reports at CI time; the runtime path gets the same guard, not a weaker one.
-    """
-    return to_class.tier < from_class.tier and mask_strength(to_class) <= mask_strength(
-        from_class
-    )
-
-
 def _require_bounded(value: str | None, *, field: str, limit: int) -> None:
     """Bound one stored text field, because ``VARCHAR`` does not.
 
@@ -141,6 +120,21 @@ def _require_bounded_params(entries: Sequence[Mapping[str, Any]]) -> None:
     a default compared against a LOW column, unbounded until now.
     """
     _require_bounded(json.dumps(entries), field="params", limit=REPORT_PARAMS_MAX_LEN)
+
+
+def _require_bounded_downgrades(downgrades: Mapping[str, Mapping[str, str]]) -> None:
+    """Bound the stored ``class_downgrades`` JSON, not one entry of it.
+
+    Same measurement as :func:`_require_bounded_params`, and for the same reason:
+    the serialized block is what the row stores and what every later mutation
+    copies into its audit images, so a per-entry bound leaves the total free to
+    grow with the number of downgraded columns.
+    """
+    _require_bounded(
+        json.dumps(downgrades),
+        field="class_downgrades",
+        limit=REPORT_DOWNGRADES_MAX_LEN,
+    )
 
 
 class UserReportsService:
@@ -516,6 +510,17 @@ class UserReportsService:
             **(row.get("class_downgrades") or {}),
             column: {"from": from_class.value, "to": to_class.value, "reason": reason},
         }
+        # `reason` is bounded per entry above; this bounds what they accumulate
+        # into. The map gains an entry per downgraded column and every later
+        # mutation copies the whole of it into its before/after audit images, so
+        # the row, the catalog read, and the audit history all grow together —
+        # the same shape that made the `params` block worth bounding.
+        #
+        # Here rather than beside the reason check, which deliberately precedes
+        # the confirmation gate: the composed map does not exist until
+        # `from_class` has been derived, and deriving it is what the fingerprint
+        # and class guards above are for.
+        _require_bounded_downgrades(downgrades)
         classes = with_downgrades(dict(derived.classes), downgrades)
         self._repo.set(
             report_id,

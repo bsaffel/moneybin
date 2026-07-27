@@ -377,7 +377,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     [--output json] [--quiet]
 |   +-- run <handle>               -- Run one report by ID or name
 |   |     [--param key=value]        Repeatable; coerced to the declared type
-|   |     [--limit N]                Default: unbounded
+|   |     [--limit N]                Default: 1,000,000; text output says when it bites
 |   |     [--output json] [--quiet]
 |   +-- explain <handle>           -- Query, class map, lineage, freshness, portability
 |   |     [--param key=value]        Values render the executed SQL form; runs nothing

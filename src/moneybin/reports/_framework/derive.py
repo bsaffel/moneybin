@@ -269,6 +269,33 @@ def downgrade_pair(entry: Mapping[str, str]) -> tuple[DataClass, DataClass]:
         ) from e
 
 
+def is_weaker_class(from_class: DataClass, to_class: DataClass) -> bool:
+    """Whether ``to_class`` is a legitimate downgrade of ``from_class``.
+
+    The tier must **strictly fall**, and masking may not strengthen. Requiring
+    the tier to fall is what rejects an equal-tier weakening, which is the
+    dangerous case a "neither component rises and at least one falls" rule
+    admits: ``ROUTING_NUMBER → ACCOUNT_IDENTIFIER`` holds CRITICAL and drops
+    masking from whole to partial, so every future run would render the real
+    last four digits where every row previously showed ``'*****'``.
+
+    The downgrade mechanism exists because derivation over-classifies *computed*
+    columns — an author asserting "this z-score reveals no amount" makes a claim
+    about information content. That argument is unavailable when both classes
+    agree on the tier and differ only in transform, so no reason can waive it.
+    Same rule ``.claude/rules/reports.md`` already applies to materialized
+    reports at CI time; the runtime path gets the same guard, not a weaker one.
+
+    Lives here rather than beside the service that gates a *new* approval,
+    because :func:`with_downgrades` has to ask the same question of an *old*
+    one on every re-derivation, and a second copy of this rule is how the two
+    answers would drift.
+    """
+    return to_class.tier < from_class.tier and mask_strength(to_class) <= mask_strength(
+        from_class
+    )
+
+
 def with_downgrades(
     classes: dict[str, DataClass], downgrades: Mapping[str, Mapping[str, str]]
 ) -> dict[str, DataClass]:
@@ -278,13 +305,28 @@ def with_downgrades(
     approved against. Reapplying by column name alone would let an approval
     collected against a weak class silently suppress a stronger one.
 
+    And only while the pair is *still* one R5 would approve. An approval is an
+    assertion about the tier and transform its two classes carried when it was
+    granted, which is why :func:`class_fingerprint` hashes those triples — but
+    moving the fingerprint only buys a re-derivation, and re-derivation that
+    reapplies on class identity alone spends that for nothing. A release that
+    lifts the ``to`` class to the ``from`` class's tier turns a legal downgrade
+    into the equal-tier weakening ``is_weaker_class`` refuses outright, and
+    because the stored map already holds ``to``, nothing downstream would have
+    noticed: the reapplied map would match it exactly and the report would serve
+    normally. Declining to reapply is what makes it visible — the caller's own
+    comparison against the stored map then differs, so the column fails closed
+    and the report degrades, which is R4's answer to every other drift.
+
     One implementation for all three callers — the save path, the edit path, and
     the run path's re-resolution. They held two copies of this loop, and the
     validation gap above lived in both.
     """
     for column, entry in downgrades.items():
         approved_from, approved_to = downgrade_pair(entry)
-        if classes.get(column) is approved_from:
+        if classes.get(column) is approved_from and is_weaker_class(
+            approved_from, approved_to
+        ):
             classes[column] = approved_to
     return classes
 

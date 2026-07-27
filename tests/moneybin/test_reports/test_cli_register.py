@@ -192,6 +192,27 @@ def test_the_text_path_says_why_a_drifted_report_is_masked() -> None:
     assert "stale_classification" in result.output
 
 
+def test_the_text_path_says_when_rows_were_cut() -> None:
+    """An incomplete financial answer that looks complete is the worse failure.
+
+    ``truncated`` reaches JSON and MCP callers through the envelope, and the
+    text path renders no envelope metadata — so a capped run printed a table
+    that reads as the whole result. Same reason the drift note above exists.
+    """
+    app = _multi_command_app()
+    cut = replace(_result(), truncated=True, total_count=4200)
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = cut
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "1 of 4,200" in result.output
+    assert "--limit" in result.output
+
+
 def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:
     """R4's other half: the note must not fire on the clean path.
 

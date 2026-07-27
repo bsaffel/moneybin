@@ -35,6 +35,7 @@ from moneybin.services._validators import (
     DESCRIPTION_MAX_LEN,
     IDENTIFIER_MAX_LEN,
     NOTE_MAX_LEN,
+    REPORT_DOWNGRADES_MAX_LEN,
     REPORT_PARAMS_MAX_LEN,
     REPORT_QUERY_MAX_LEN,
 )
@@ -937,6 +938,53 @@ def test_reclassify_accepts_a_reason_exactly_at_the_bound(
     row = UserReportsRepo(saved_db).get(report_id)
     assert row is not None
     assert "spend" in row["class_downgrades"]
+
+
+def test_reclassify_bounds_the_accumulated_downgrade_map(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """Per-entry bounds do not bound the map they accumulate into.
+
+    ``reason`` is capped at ``NOTE_MAX_LEN`` each, but a report gains one entry
+    per downgraded column and every later mutation copies the whole map into its
+    before/after audit images — the same growth-times-audit shape that made the
+    ``params`` block worth bounding. Each downgrade here is a real, separately
+    confirmed call, so what grows is what a user could actually accumulate.
+    """
+    columns = ", ".join(f"SUM(amount) AS c{index}" for index in range(1, 6))
+    # The interpolated part is a loop index building a test fixture, not input.
+    query_sql = f"SELECT {columns} FROM core.fct_transactions"  # noqa: S608
+    report_id = _create(service, query_sql=query_sql)
+
+    def _downgrade(column: str) -> None:
+        service.reclassify(
+            report_id,
+            column=column,
+            to_class=DataClass.AGGREGATE,
+            reason="x" * NOTE_MAX_LEN,
+            confirmed=True,
+            confirmed_via="prompt",
+            expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+            expected_from_class=DataClass.TXN_AMOUNT,
+            actor="cli",
+        )
+
+    for index in range(1, 4):
+        _downgrade(f"c{index}")
+
+    with pytest.raises(UserError) as raised:
+        _downgrade("c4")
+
+    assert raised.value.code == error_codes.REPORT_FIELD_TOO_LONG
+    assert raised.value.details is not None
+    assert raised.value.details["field"] == "class_downgrades"
+    assert raised.value.details["limit"] == REPORT_DOWNGRADES_MAX_LEN
+    # The length is reported; the accumulated reasons never are.
+    assert "x" * 50 not in str(raised.value)
+    # Refused entirely, not partially written.
+    row = UserReportsRepo(saved_db).get(report_id)
+    assert row is not None
+    assert sorted(row["class_downgrades"]) == ["c1", "c2", "c3"]
 
 
 def test_every_admitted_downgrade_drops_the_tier_and_never_masks_more_weakly() -> None:

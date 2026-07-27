@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import sqlglot
+from sqlglot import exp
 
 from moneybin.privacy.redaction import MaskStrength, mask_strength
 from moneybin.privacy.report_class_derivation import (
@@ -12,6 +14,7 @@ from moneybin.privacy.report_class_derivation import (
     derive_core_view_classes,
     derive_report_classes,
 )
+from moneybin.privacy.report_materialization import materialization_blockers
 from moneybin.privacy.taxonomy import DataClass, Tier
 
 
@@ -156,6 +159,53 @@ def test_derivation_accepts_a_cte_reference_with_no_schema(tmp_path: Path) -> No
     derived = _derive_one(model, tmp_path)
 
     assert derived[("reports", "cte_probe")] == {"amount": DataClass.TXN_AMOUNT}
+
+
+@pytest.mark.parametrize(
+    ("sql", "blocked"),
+    [
+        (
+            "SELECT d.amount AS amount "
+            "FROM (SELECT t.amount AS amount FROM core.fct_transactions AS t) AS d "
+            "UNION ALL SELECT d.amount AS amount FROM d",
+            True,
+        ),
+        (
+            "WITH c AS (SELECT t.amount AS amount FROM core.fct_transactions AS t) "
+            "SELECT c.amount AS amount FROM c",
+            False,
+        ),
+        (
+            "SELECT d.amount AS amount "
+            "FROM (SELECT t.amount AS amount FROM core.fct_transactions AS t) AS d",
+            False,
+        ),
+    ],
+    ids=["shadowed-by-a-sibling-branch", "real-cte", "real-derived-table"],
+)
+def test_the_unqualified_read_check_resolves_names_per_reference(
+    sql: str, blocked: bool
+) -> None:
+    """The skip is per-reference, not per-query.
+
+    Collecting the defined names tree-wide let a derived table in one branch
+    vouch for a bare upstream read of the same name in another, where nothing
+    defines it. ``resolve_output_classes(strict=True)`` fails that query closed
+    too, which is why this calls ``assert_acyclic`` directly — routed through
+    the whole deriver, the strict resolver claims the refusal and the fixture
+    proves nothing about this check. What it costs in practice is
+    ``materialization_blockers`` reporting a report graduable when it is not,
+    which is the answer ``reports explain`` prints.
+
+    The two benign shapes are what stop a fix from simply refusing every bare
+    name: an intermediate result the query really does define must still pass.
+    """
+    tree = sqlglot.parse_one(sql, dialect="duckdb")
+    assert isinstance(tree, exp.Query)
+
+    blockers = materialization_blockers(tree, "reports.probe")
+
+    assert any("without a schema" in blocker for blocker in blockers) is blocked
 
 
 # ---------------------------------------------------------------------------

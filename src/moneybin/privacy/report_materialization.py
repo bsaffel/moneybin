@@ -19,6 +19,7 @@ inspection command would flip that shape partway through a run.
 from __future__ import annotations
 
 from sqlglot import exp
+from sqlglot.optimizer.scope import build_scope
 
 REPORTS_SCHEMA = "reports"
 
@@ -78,21 +79,33 @@ def assert_acyclic(query: exp.Query, model_name: str) -> None:
     # A CTE reference parses with an empty db — but so does an *unqualified* read
     # of a real table (`FROM large_transactions`), and skipping every bare name
     # made this check blind to the unqualified spelling of the very read it
-    # exists to reject. Only names a CTE in this query actually defines are
-    # skipped; any other bare name is an upstream read whose schema derivation
-    # cannot know.
-    cte_names = {
-        cte.alias_or_name.lower() for cte in query.find_all(exp.CTE)
-    } | _derived_table_names(query)
+    # exists to reject. So a bare name is skipped only where something in scope
+    # at that reference defines it. Asked tree-wide, a derived table in one UNION
+    # branch vouched for a bare read in another that nothing defines.
+    #
+    # sqlglot's own scope resolution answers it: `scope.sources` maps each name
+    # visible at that point to the Scope defining it, or to the `exp.Table` it
+    # reads. Still a Table means no definition in scope claimed the name.
+    #
+    # Keyed by `alias_or_name`, which is how `sources` itself is keyed: reading
+    # `table.name` instead looks up "fct_transactions" for `FROM fct_transactions
+    # AS t`, finds nothing, and lets every *aliased* bare read through.
+    root = build_scope(query)
+    for scope in root.traverse() if root is not None else ():
+        for table in scope.tables:
+            # No scope at all (`root is None`) skips this loop and leaves every
+            # bare name unchecked, so the qualified arms below stay the floor and
+            # this one refuses rather than assuming a definition it cannot see.
+            source = scope.sources.get(table.alias_or_name)
+            if not table.db and isinstance(source, exp.Table):
+                raise ReportDerivationError(
+                    f"{model_name}: reads {table.name} without a schema. Derivation "
+                    "resolves upstream columns by schema, so an unqualified read "
+                    "names no ground truth — qualify it as core.* or app.*."
+                )
     for table in query.find_all(exp.Table):
         if not table.db:
-            if table.name.lower() in cte_names:
-                continue
-            raise ReportDerivationError(
-                f"{model_name}: reads {table.name} without a schema. Derivation "
-                "resolves upstream columns by schema, so an unqualified read "
-                "names no ground truth — qualify it as core.* or app.*."
-            )
+            continue
         # DuckDB resolves a schema case-insensitively but sqlglot preserves the
         # spelling, and the saved-report caller reaches here through a bare parse
         # (the save path's own `qualify` would have folded it). Without folding,
@@ -113,15 +126,6 @@ def assert_acyclic(query: exp.Query, model_name: str) -> None:
                 "columns from an unclassified schema cannot be derived, so the "
                 "resulting map would silently under-describe them."
             )
-
-
-def _derived_table_names(query: exp.Query) -> set[str]:
-    """Aliases of inline derived tables — also bare names that read no upstream."""
-    return {
-        subquery.alias_or_name.lower()
-        for subquery in query.find_all(exp.Subquery)
-        if subquery.alias_or_name
-    }
 
 
 def materialization_blockers(query: exp.Query, model_name: str) -> tuple[str, ...]:

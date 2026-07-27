@@ -962,6 +962,75 @@ def test_spec_from_row_masks_a_row_whose_downgrade_entry_is_half_written(
     assert dict(dynamic.spec.classes) == {"account_id": FAIL_CLOSED_CLASS}
 
 
+def test_spec_from_row_drops_a_downgrade_the_current_policy_would_refuse(
+    dynamic_db: Database,
+) -> None:
+    """Moving the fingerprint is only half of what a policy change has to buy.
+
+    The triples exist so a tier or transform change forces re-derivation — but
+    re-derivation reapplied the approval on class *identity* alone, so a pair
+    the current ``is_weaker_class`` refuses went on applying. This is the exact
+    pair that function's docstring names: ``ROUTING_NUMBER → ACCOUNT_IDENTIFIER``
+    holds CRITICAL and drops masking from whole to partial, so serving it
+    publishes the real last four digits where every row showed ``'*****'``.
+
+    A stored entry can only be this shape if the policy moved under it — an
+    older build's approval, or one granted before either class was retiered —
+    which is precisely the case the fingerprint forces this branch for. And
+    because the stored map already holds ``ACCOUNT_IDENTIFIER``, reapplying left
+    the maps identical and the report served normally, undegraded.
+    """
+    row = _saved(
+        dynamic_db, query_sql="SELECT routing_number AS rn FROM core.dim_accounts"
+    )
+    row["classes"] = {"rn": DataClass.ACCOUNT_IDENTIFIER.value}
+    row["class_downgrades"] = {
+        "rn": {
+            "from": DataClass.ROUTING_NUMBER.value,
+            "to": DataClass.ACCOUNT_IDENTIFIER.value,
+            "reason": "approved under a policy that no longer holds",
+        }
+    }
+    row["class_fingerprint"] = "stale-forces-the-mismatch-branch"
+
+    dynamic = spec_from_row(dynamic_db, row)
+
+    assert dynamic.spec.classes["rn"] is FAIL_CLOSED_CLASS
+    assert dynamic.degraded
+
+    masked = run_report(dynamic.spec, dynamic_db, max_rows=10)
+    assert {record["rn"] for record in masked.records} == {"*****"}
+
+
+def test_spec_from_row_keeps_a_downgrade_the_current_policy_still_allows(
+    dynamic_db: Database,
+) -> None:
+    """The benign twin: a legal approval must still survive the same branch.
+
+    ``TXN_AMOUNT (HIGH) → AGGREGATE (LOW)`` drops a tier and does not strengthen
+    masking, so the recheck has nothing to say about it. Without this, a recheck
+    that simply refused to reapply anything would pass the test above while
+    masking every legitimately downgraded column on the next unrelated drift.
+    """
+    row = _saved(
+        dynamic_db, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
+    )
+    row["classes"] = {"spend": DataClass.AGGREGATE.value}
+    row["class_downgrades"] = {
+        "spend": {
+            "from": DataClass.TXN_AMOUNT.value,
+            "to": DataClass.AGGREGATE.value,
+            "reason": "monthly total reveals no single amount",
+        }
+    }
+    row["class_fingerprint"] = "stale-forces-the-mismatch-branch"
+
+    dynamic = spec_from_row(dynamic_db, row)
+
+    assert dynamic.spec.classes["spend"] is DataClass.AGGREGATE
+    assert not dynamic.degraded
+
+
 def test_spec_from_row_drops_a_downgrade_whose_derived_class_moved(
     dynamic_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

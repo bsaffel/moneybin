@@ -20,6 +20,7 @@ import typer
 
 from moneybin import error_codes
 from moneybin.cli.output import (
+    CLI_MAX_ROWS,
     OutputFormat,
     output_option,
     quiet_option,
@@ -32,10 +33,6 @@ from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 logger = logging.getLogger(__name__)
-
-# The CLI is an operator/agent surface, so the framing cap is effectively off;
-# a report's own LIMIT parameters are what bound its result.
-_CLI_MAX_ROWS = 1_000_000
 
 _PARAM_BIND_HELP = (
     "Parameter value as key=value; repeat for multiple values. "
@@ -136,7 +133,11 @@ def reports_run(
     handle: str = typer.Argument(..., help="Report ID or name, any tier."),
     param: list[str] | None = typer.Option(None, "--param", help=_PARAM_BIND_HELP),
     limit: int | None = typer.Option(
-        None, "--limit", help="Maximum rows to return. Default: unbounded."
+        None,
+        "--limit",
+        # Built from the constant, not restated: a cap the help contradicts is
+        # how a truncated financial answer comes to read as a complete one.
+        help=f"Maximum rows to return. Default: {CLI_MAX_ROWS:,}.",
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001  # result rows are data, never suppressed
@@ -160,7 +161,7 @@ def reports_run(
                 db,
                 report_id=handle,
                 parameters=parameters,
-                limit=_CLI_MAX_ROWS if limit is None else limit,
+                limit=CLI_MAX_ROWS if limit is None else limit,
             )
     render_report_result(result, output, cli_actor="reports_run")
 

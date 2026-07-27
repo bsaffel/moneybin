@@ -28,6 +28,14 @@ REPORT_QUERY_MAX_LEN = 20_000
 #: parameter serializes to roughly 60-100 characters, so this admits dozens with
 #: generous defaults while keeping all three bounded.
 REPORT_PARAMS_MAX_LEN = 4_000
+#: A saved report's serialized `class_downgrades` block, not one entry of it.
+#: `reason` is already bounded per entry by `NOTE_MAX_LEN`, but the map grows one
+#: entry per downgraded column and the whole of it is copied into the before/after
+#: images every later mutation audits. An entry serializes to roughly 60
+#: characters plus its reason, so this admits four maximum-length reasons or
+#: around sixty ordinary one-sentence ones — well past any report that has had a
+#: human confirm a downgrade per column.
+REPORT_DOWNGRADES_MAX_LEN = 8_000
 
 _SLUG_RE = re.compile(r"^[a-z0-9_-]+(:[a-z0-9_-]+)?$")
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")

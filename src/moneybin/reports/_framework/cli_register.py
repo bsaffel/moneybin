@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import typer
 
 from moneybin.cli.output import (
+    CLI_MAX_ROWS,
     OutputFormat,
     output_option,
     quiet_option,
@@ -29,10 +30,6 @@ if TYPE_CHECKING:
     # Type-only: importing `execute` here would pull sql_lineage → sqlglot into
     # the CLI cold-start path, which this module exists to keep clear.
     from moneybin.reports._framework.execute import CatalogReportResult
-
-# The CLI is an operator/agent surface; result size is bounded by the runner's
-# own LIMIT params (top, etc.), so the framing cap is effectively off.
-_CLI_MAX_ROWS = 1_000_000
 
 
 def _cli_signature(spec: ReportSpec) -> inspect.Signature:
@@ -88,6 +85,15 @@ def render_report_result(
         # reader to skip the warning that matters.
         if result.degraded and result.degraded_reason:
             typer.echo(f"⚠️  {result.degraded_reason}")
+        # Same gap, same surface: `truncated` rides the envelope to JSON and MCP
+        # callers, so without this the text path renders a capped table that
+        # reads as the whole answer — worse here than a masked cell, because
+        # nothing about the rows themselves looks unusual.
+        if result.truncated:
+            typer.echo(
+                f"⚠️  Showing {len(result.records):,} of {result.total_count:,} rows; "
+                "raise --limit or narrow the report to see the rest."
+            )
 
     render_or_json(
         result.to_envelope(),
@@ -129,7 +135,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     db,
                     report_id=spec.report_id,
                     parameters=kwargs,
-                    limit=_CLI_MAX_ROWS,
+                    limit=CLI_MAX_ROWS,
                 )
             render_report_result(result, output, cli_actor=cli_actor)
 
