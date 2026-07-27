@@ -97,6 +97,67 @@ def test_every_money_aggregating_example_names_its_currency() -> None:
     assert not offenders, "\n".join(offenders)
 
 
+# Curated examples that deliberately lead their sort with currency_code, keyed
+# by (view, question). Each value argues why interleaving is not the lever for
+# that query — not that truncation is unlikely to reach it.
+_CURRENCY_FIRST_SORT_OK: dict[tuple[str, str], str] = {
+    (
+        "reports.net_worth",
+        "Net worth today, one row per currency",
+    ): (
+        "reports.net_worth is grained (balance_date, currency_code) and this "
+        "example pins one date, so the result is exactly one row per currency. "
+        "No ordering survives truncation better: any prefix of k rows holds k "
+        "currencies whatever the sort key is."
+    ),
+    (
+        "core.fct_investment_lots",
+        "Total remaining cost basis across all open lots in an account "
+        "(substitute YOUR_ACCOUNT_ID)",
+    ): (
+        "GROUP BY currency_code alone, so the result is one row per currency — "
+        "the same argument as above. Ordering cannot recover a currency that a "
+        "cap dropped when every currency costs one row."
+    ),
+}
+
+
+def test_no_example_leads_its_sort_with_currency_code() -> None:
+    """A curated example must not hand a row cap one currency before the next.
+
+    `sql_query` truncates with a prefix — `sql_query.py` keeps `rows[:max_rows]`
+    — and so does an agent's own `LIMIT`, which these examples invite by asking
+    for "top" anything. Leading with `currency_code` therefore fills the whole
+    budget with the lexicographically-first currency and the rest are absent,
+    not merely ranked lower, with nothing in the response saying so.
+
+    That is the same defect `test_no_runner_leads_its_sort_with_currency_code`
+    removed from the report runners. This is the second channel: the SQL we
+    *teach* agents to write. A guard over `reports/definitions/*.py` cannot see
+    it, so fixing one channel and leaving the other is how two patterns for the
+    same job survive side by side.
+
+    Set equality, not a subset: a new example that leads with `currency_code`
+    fails, and so does a stale exemption for an example that was since fixed.
+    """
+    offenders = {
+        (view, ex.question)
+        for view, examples in EXAMPLES.items()
+        for ex in examples
+        if "ORDER BY currency_code" in " ".join(ex.sql.split())
+    }
+
+    assert offenders == set(_CURRENCY_FIRST_SORT_OK), (
+        "curated examples leading their sort with currency_code let a truncated "
+        "response omit a whole currency; rank within each currency and order by "
+        "that rank first, or lead with the non-currency dimension:\n"
+        + "\n".join(
+            f"  {view}: {question!r}"
+            for view, question in sorted(offenders ^ set(_CURRENCY_FIRST_SORT_OK))
+        )
+    )
+
+
 def test_examples_only_reference_interface_tables() -> None:
     """Every key in EXAMPLES must be a known interface table."""
     interface_names = {t.full_name for t in INTERFACE_TABLES}

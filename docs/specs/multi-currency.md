@@ -218,6 +218,16 @@ Numbered, testable. Tagged by phase.
    `test_every_money_aggregating_example_names_its_currency`, which derives its
    eligible set from `CLASSIFICATION` so a new money example on a
    currency-bearing table inherits the guard rather than escaping it.
+   The prefix-truncation defect had a second channel the runner scan cannot
+   see: `sql_query` also keeps a prefix (`rows[:max_rows]`), and so does an
+   agent's own `LIMIT`, which examples asking for "top" anything invite. Twelve
+   curated examples led their sort with `currency_code` and now rank within
+   each currency first, or lead with the non-currency dimension where the query
+   is a time series or a closed vocabulary. Two keep `ORDER BY currency_code`
+   because they return exactly one row per currency, where ordering is not the
+   lever — any prefix of *k* rows holds *k* currencies whatever the sort key
+   is. `test_no_example_leads_its_sort_with_currency_code` asserts set equality
+   against those two, so a new offender fails and so does a stale exemption.
    **Which payloads owe a currency, 2026-07-26.** The MCP-side enumeration
    (`test_money_tools_name_their_currency`) asked whether a payload carries a
    money-classed field and no `DataClass.CURRENCY`, and six tools answered yes.

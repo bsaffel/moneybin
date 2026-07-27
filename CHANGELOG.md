@@ -81,6 +81,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   interleave: rank 1 of every currency, then rank 2. Compare amounts only
   between rows sharing a `currency_code`. A single-currency profile sees the
   same order as before.
+- **The curated `sql_schema` examples interleave their currencies too
+  (M1K.1).** Fourteen examples led their sort with `currency_code`, and both
+  the `sql_query` row cap and any `LIMIT` an agent adds keep a prefix — so an
+  agent copying "Top merchants by lifetime spend" got one currency's rows and
+  none of the others. Twelve now rank within each currency first, or lead with
+  the month or term the query is really grouped by. The other two return
+  exactly one row per currency, where ordering is not the lever.
 - **`transactions` rows name their currency (M1K.1).** The `transactions` MCP
   tool and `moneybin transactions list --output json` returned bare amounts.
   A mixed-currency page reports `summary.display_currency: null` by design, so

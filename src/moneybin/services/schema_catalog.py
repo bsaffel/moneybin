@@ -48,7 +48,9 @@ EXAMPLES: dict[str, list[Example]] = {
                 WHERE transaction_direction = 'expense'
                   AND transaction_year_month = STRFTIME(CURRENT_DATE - INTERVAL 1 MONTH, '%Y-%m')
                 GROUP BY category, currency_code
-                ORDER BY currency_code, total DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total DESC
+                ), currency_code
             """,
         ),
         Example(
@@ -71,7 +73,7 @@ EXAMPLES: dict[str, list[Example]] = {
                 WHERE transaction_direction = 'expense'
                   AND transaction_date >= CURRENT_DATE - INTERVAL 12 MONTH
                 GROUP BY transaction_year_month, currency_code
-                ORDER BY currency_code, transaction_year_month
+                ORDER BY transaction_year_month, currency_code
             """,
         ),
         Example(
@@ -127,7 +129,9 @@ EXAMPLES: dict[str, list[Example]] = {
                 FROM core.fct_transaction_lines
                 WHERE line_amount < 0
                 GROUP BY line_category, currency_code
-                ORDER BY currency_code, total DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total DESC
+                ), currency_code
             """,
         ),
     ],
@@ -413,7 +417,9 @@ EXAMPLES: dict[str, list[Example]] = {
                 FROM reports.cash_flow
                 WHERE year_month >= strftime(current_date - INTERVAL 12 MONTH, '%Y-%m')
                 GROUP BY category, currency_code
-                ORDER BY currency_code, total_outflow ASC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total_outflow ASC
+                ), currency_code
             """,
         ),
     ],
@@ -424,7 +430,9 @@ EXAMPLES: dict[str, list[Example]] = {
                 SELECT year_month, category, currency_code, total_spend, mom_pct, yoy_pct
                 FROM reports.spending_trend
                 WHERE year_month = (SELECT MAX(year_month) FROM reports.spending_trend)
-                ORDER BY currency_code, total_spend DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total_spend DESC
+                ), currency_code
             """,
         ),
     ],
@@ -436,7 +444,9 @@ EXAMPLES: dict[str, list[Example]] = {
                        annualized_cost, confidence
                 FROM reports.recurring_subscriptions
                 WHERE status = 'active' AND confidence >= 0.7
-                ORDER BY currency_code, annualized_cost DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY annualized_cost DESC
+                ), currency_code
             """,
         ),
     ],
@@ -445,12 +455,13 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Top merchants by lifetime spend",
             sql="""
                 SELECT merchant_normalized, currency_code, total_spend, txn_count,
-                       top_category
+                       top_category,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY currency_code ORDER BY total_spend DESC
+                       ) AS rank_in_currency
                 FROM reports.merchant_activity
-                QUALIFY ROW_NUMBER() OVER (
-                    PARTITION BY currency_code ORDER BY total_spend DESC
-                ) <= 25
-                ORDER BY currency_code, total_spend DESC
+                QUALIFY rank_in_currency <= 25
+                ORDER BY rank_in_currency, currency_code
             """,
         ),
     ],
@@ -462,7 +473,9 @@ EXAMPLES: dict[str, list[Example]] = {
                        merchant_normalized, category
                 FROM reports.large_transactions
                 WHERE is_top_100
-                ORDER BY currency_code, ABS(amount) DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY ABS(amount) DESC
+                ), currency_code
             """,
         ),
         Example(
@@ -472,7 +485,9 @@ EXAMPLES: dict[str, list[Example]] = {
                        amount_zscore_account
                 FROM reports.large_transactions
                 WHERE amount_zscore_account > 2.5
-                ORDER BY currency_code, amount_zscore_account DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY amount_zscore_account DESC
+                ), currency_code
             """,
         ),
     ],
@@ -484,7 +499,9 @@ EXAMPLES: dict[str, list[Example]] = {
                        asserted_balance, computed_balance, drift, status
                 FROM reports.balance_drift
                 WHERE status IN ('drift', 'warning')
-                ORDER BY currency_code, drift_abs DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY drift_abs DESC
+                ), currency_code
             """,
         ),
     ],
@@ -525,7 +542,9 @@ EXAMPLES: dict[str, list[Example]] = {
                 FROM core.fct_investment_transactions
                 WHERE type IN ('dividend', 'interest')
                 GROUP BY security_id, currency_code
-                ORDER BY currency_code, total_income DESC
+                ORDER BY ROW_NUMBER() OVER (
+                    PARTITION BY currency_code ORDER BY total_income DESC
+                ), currency_code
             """,
         ),
     ],
@@ -562,7 +581,7 @@ EXAMPLES: dict[str, list[Example]] = {
                 FROM core.fct_realized_gains
                 WHERE YEAR(disposal_date) = YEAR(CURRENT_DATE)
                 GROUP BY term, currency_code
-                ORDER BY currency_code, term
+                ORDER BY term, currency_code
             """,
         ),
         Example(
