@@ -44,6 +44,10 @@ def _database() -> MagicMock:
 def _service(**attributes: Any) -> MagicMock:
     service = MagicMock()
     service.resolve.return_value = _ROW
+    # A real class, not a child mock: `reclassify` interpolates this into the
+    # confirmation prompt, and `<MagicMock id=...>` there would be a passing test
+    # describing an unreadable question.
+    service.derived_class.return_value = DataClass.TXN_AMOUNT
     for name, value in attributes.items():
         getattr(service, name).return_value = value
     return service
@@ -637,6 +641,90 @@ def test_reclassify_passes_the_prompt_answer_through_to_the_service(
         service.reclassify.call_args.kwargs["expected_fingerprint"]
         == _ROW["class_fingerprint"]
     )
+
+
+def test_reclassify_asks_about_the_class_derivation_produces_now() -> None:
+    """The prompt has to name the floor being waived, not just the target.
+
+    The stored fingerprint only moves on a *write*, so an upstream taxonomy change
+    that raised this column's class leaves it matching — and the old prompt named
+    only ``aggregate``, so a human approving what they read as
+    ``txn_amount → aggregate`` could be approving ``routing_number → aggregate``.
+    The class is derived fresh at the moment the fingerprint is read, shown, and
+    handed back as ``expected_from_class`` so the service refuses if it moved
+    again between the question and the write.
+    """
+    service = _service(
+        derived_class=DataClass.ROUTING_NUMBER,
+        reclassify=ReclassifyOutcome(
+            report_id=_ROW["report_id"],
+            column="spend",
+            from_class=DataClass.ROUTING_NUMBER,
+            to_class=DataClass.AGGREGATE,
+        ),
+    )
+
+    with _patch_database(), _patch_service(service):
+        result = runner.invoke(
+            app,
+            [
+                "reports",
+                "reclassify",
+                "my_accounts",
+                "--column",
+                "spend",
+                "--to",
+                "aggregate",
+                "--reason",
+                "A single total reveals no transaction amount.",
+            ],
+            input="y\n",
+        )
+
+    assert result.exit_code == 0, result.output
+    # The question, not the receipt: the success line reports `from_class` too, so
+    # a bare `"routing_number" in output` would pass with the prompt unchanged.
+    assert "from routing_number to aggregate" in _flatten(result.output)
+    assert service.derived_class.call_args.kwargs["column"] == "spend"
+    # Read from the row resolved before the prompt, for the same reason the
+    # fingerprint is: a class derived after the answer would agree with itself.
+    assert service.derived_class.call_args.args[0] is _ROW
+    assert (
+        service.reclassify.call_args.kwargs["expected_from_class"]
+        is DataClass.ROUTING_NUMBER
+    )
+
+
+def test_reclassify_rejects_a_blank_reason_before_it_asks_anyone() -> None:
+    """A request that cannot be stored must not spend a human confirmation.
+
+    The service refuses a blank reason outright — it is the only durable record of
+    why a masking floor was lowered. Discovering that *after* the prompt would ask
+    someone to approve a downgrade that was never going to land.
+    """
+    service = _service()
+
+    with _patch_database(), _patch_service(service):
+        result = runner.invoke(
+            app,
+            [
+                "reports",
+                "reclassify",
+                "my_accounts",
+                "--column",
+                "spend",
+                "--to",
+                "aggregate",
+                "--reason",
+                "   ",
+            ],
+            input="y\n",
+        )
+
+    assert result.exit_code == 2
+    assert "reason" in _flatten(result.output).lower()
+    assert "Permanently lower" not in result.output
+    assert service.reclassify.call_count == 0
 
 
 def test_reclassify_reports_that_it_could_not_ask_rather_than_aborting() -> None:

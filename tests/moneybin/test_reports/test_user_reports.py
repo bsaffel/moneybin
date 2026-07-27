@@ -8,6 +8,7 @@ synthesized runner), and the classification-downgrade capability from
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -469,6 +470,7 @@ def test_reclassify_refuses_an_approval_whose_revision_moved(
             confirmed=True,
             confirmed_via="prompt",
             expected_fingerprint=shown,
+            expected_from_class=DataClass.TXN_AMOUNT,
             actor="cli",
         )
 
@@ -481,10 +483,81 @@ def test_reclassify_refuses_an_approval_whose_revision_moved(
     assert row["classes"]["spend"] == DataClass.ROUTING_NUMBER.value
 
 
+def test_reclassify_refuses_an_approval_whose_derived_class_moved(
+    service: UserReportsService,
+    saved_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stored fingerprint cannot see an upstream reclassification.
+
+    Only a *write* refreshes ``class_fingerprint`` — ``_reresolved``'s docstring
+    says reads never do. So when the taxonomy raises the class of a column a
+    saved report reads, the row is untouched, the fingerprint the caller read
+    still matches, and the human approves a downgrade *from whatever derivation
+    now produces*: ``--to aggregate`` on ``SUM(amount)`` is
+    ``TXN_AMOUNT → AGGREGATE`` before the change and ``ROUTING_NUMBER →
+    AGGREGATE`` after it. Both drop a tier, so the strictly-weaker rule admits
+    the second one too. No concurrent writer is involved, which is why the
+    single-process calibration does not excuse it.
+
+    Isolation matters here: the fingerprint deliberately still matches, so this
+    fixture can only be caught by the derived-class binding. That is also why the
+    counter is asserted — the two refusals share a message but not a label, and a
+    test that could not tell them apart would pass with the new guard deleted.
+    """
+    report_id = _create(
+        service, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
+    )
+    row = service.resolve(report_id)
+    shown = service.derived_class(row, column="spend")
+    assert shown is DataClass.TXN_AMOUNT
+    before = _counter(
+        "user_report_reclassify_total", outcome="refused_derivation_moved"
+    )
+
+    # The upstream reclassification, landing while the prompt is open. Nothing
+    # writes the row, so nothing refreshes the fingerprint guarding it.
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "fct_transactions")] = {
+        **CLASSIFICATION[("core", "fct_transactions")],
+        "amount": DataClass.ROUTING_NUMBER,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    with pytest.raises(UserError) as raised:
+        service.reclassify(
+            report_id,
+            column="spend",
+            to_class=DataClass.AGGREGATE,
+            reason="A single total reveals no transaction amount.",
+            confirmed=True,
+            confirmed_via="prompt",
+            expected_fingerprint=str(row["class_fingerprint"]),
+            expected_from_class=shown,
+            actor="cli",
+        )
+
+    assert raised.value.code == error_codes.REPORT_CHANGED_DURING_CONFIRMATION
+    assert (
+        _counter("user_report_reclassify_total", outcome="refused_derivation_moved")
+        == before + 1
+    )
+    stored = UserReportsRepo(saved_db).get(report_id)
+    assert stored is not None
+    assert stored["class_downgrades"] == {}
+    # The fingerprint the old guard compares never moved — proof that this fixture
+    # reaches the new one rather than being caught on the way in.
+    assert str(stored["class_fingerprint"]) == str(row["class_fingerprint"])
+
+
 def test_reclassify_lowers_the_stored_class_and_records_the_approval(
     service: UserReportsService, saved_db: Database
 ) -> None:
-    """Also the benign twin of the revision guard: an unmoved row still downgrades."""
+    """Also the benign twin of both revision guards: an unmoved report downgrades.
+
+    Neither the stored fingerprint nor the derived class has moved, so a
+    fail-closed guard that refused everything would fail here.
+    """
     report_id = _create(
         service, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
     )
@@ -497,6 +570,7 @@ def test_reclassify_lowers_the_stored_class_and_records_the_approval(
         confirmed=True,
         confirmed_via="prompt",
         expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+        expected_from_class=DataClass.TXN_AMOUNT,
         actor="cli",
     )
 
@@ -535,6 +609,7 @@ def test_reclassify_records_which_path_supplied_the_confirmation(
         confirmed=True,
         confirmed_via=confirmed_via,
         expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+        expected_from_class=DataClass.TXN_AMOUNT,
         actor="cli",
     )
 
@@ -570,6 +645,7 @@ def test_reclassify_leaves_the_report_on_the_fingerprint_match_path(
         confirmed=True,
         confirmed_via="prompt",
         expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+        expected_from_class=DataClass.TXN_AMOUNT,
         actor="cli",
     )
     row = UserReportsRepo(saved_db).get(report_id)
@@ -606,6 +682,7 @@ def test_reclassify_refuses_an_equal_tier_weakening(
             confirmed=True,
             confirmed_via="prompt",
             expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+            expected_from_class=DataClass.ROUTING_NUMBER,
             actor="cli",
         )
 
@@ -631,6 +708,7 @@ def test_reclassify_refuses_a_class_that_raises_the_tier(
             confirmed=True,
             confirmed_via="prompt",
             expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+            expected_from_class=DataClass.AGGREGATE,
             actor="cli",
         )
 
@@ -654,6 +732,7 @@ def test_reclassify_refuses_an_unconfirmed_downgrade(
             confirmed=False,
             confirmed_via="prompt",
             expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+            expected_from_class=DataClass.TXN_AMOUNT,
             actor="cli",
         )
 
@@ -677,10 +756,106 @@ def test_reclassify_refuses_a_column_the_report_does_not_return(
             confirmed=True,
             confirmed_via="prompt",
             expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+            # Never compared: a column that does not exist has no class to have
+            # moved, so the unknown-column refusal has to come first.
+            expected_from_class=DataClass.AGGREGATE,
             actor="cli",
         )
 
     assert raised.value.code == "report_column_unknown"
+
+
+def test_derived_class_refuses_a_column_the_report_does_not_return(
+    service: UserReportsService,
+) -> None:
+    """The pre-prompt read refuses a typo instead of asking about it.
+
+    ``reclassify`` refuses the same column, but only after the human has been
+    asked to approve a downgrade of something the report never returned. One
+    predicate, both call sites.
+    """
+    report_id = _create(service)
+
+    with pytest.raises(UserError) as raised:
+        service.derived_class(service.resolve(report_id), column="nonexistent")
+
+    assert raised.value.code == error_codes.REPORT_COLUMN_UNKNOWN
+
+
+def test_the_downgrade_warning_names_the_report_and_not_the_column(
+    service: UserReportsService, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The twin of the catalog's collision-warning guard, one call away from it.
+
+    A saved report's output alias is user-authored text, so ``amazon_spend`` is as
+    plausible a column name as a merchant name — and ``SanitizedLogFormatter``
+    masks digit runs and dollar amounts, never free text. The catalog's collision
+    warning withholds a report name for exactly this reason and is guarded by
+    ``test_the_collision_warning_names_the_reports_and_not_the_name``; this log
+    line had no such guard, which is how it kept the column. ``app.audit_log``
+    holds the column, inside the encrypted database.
+    """
+    report_id = _create(
+        service,
+        query_sql="SELECT SUM(amount) AS amazon_spend FROM core.fct_transactions",
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="moneybin.services.user_reports_service"
+    ):
+        service.reclassify(
+            report_id,
+            column="amazon_spend",
+            to_class=DataClass.AGGREGATE,
+            reason="A single total reveals no transaction amount.",
+            confirmed=True,
+            confirmed_via="prompt",
+            expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+            expected_from_class=DataClass.TXN_AMOUNT,
+            actor="cli",
+        )
+
+    assert "amazon_spend" not in caplog.text
+    assert report_id in caplog.text
+    # The classes are taxonomy labels, not user text, and they are what makes the
+    # line worth keeping — a downgrade nobody can see the direction of is noise.
+    assert DataClass.TXN_AMOUNT.value in caplog.text
+    assert DataClass.AGGREGATE.value in caplog.text
+
+
+@pytest.mark.parametrize("reason", ["", "   ", "\t\n"])
+def test_reclassify_refuses_a_blank_reason(
+    service: UserReportsService, saved_db: Database, reason: str
+) -> None:
+    """The audit entry is the whole product of this path, and a blank one is empty.
+
+    A stored downgrade is permanent and invisible in every later result; the
+    ``reason`` is the only thing that distinguishes a waived over-classification
+    from an unjustified disclosure months later. Whitespace is included because
+    ``--reason " "`` satisfies a required-option check and an ``if not reason``
+    guard alike.
+    """
+    report_id = _create(
+        service, query_sql="SELECT SUM(amount) AS spend FROM core.fct_transactions"
+    )
+
+    with pytest.raises(UserError) as raised:
+        service.reclassify(
+            report_id,
+            column="spend",
+            to_class=DataClass.AGGREGATE,
+            reason=reason,
+            confirmed=True,
+            confirmed_via="prompt",
+            expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+            expected_from_class=DataClass.TXN_AMOUNT,
+            actor="cli",
+        )
+
+    assert raised.value.code == error_codes.REPORT_REASON_REQUIRED
+    row = UserReportsRepo(saved_db).get(report_id)
+    assert row is not None
+    assert row["class_downgrades"] == {}
 
 
 def test_every_admitted_downgrade_drops_the_tier_and_never_masks_more_weakly() -> None:
@@ -789,6 +964,7 @@ def test_an_unknown_column_is_counted_apart_from_a_refused_downgrade(
             confirmed=True,
             confirmed_via="prompt",
             expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+            expected_from_class=DataClass.AGGREGATE,
             actor="cli",
         )
 
@@ -827,6 +1003,7 @@ def test_a_surface_that_could_not_ask_is_counted_apart_from_a_decline(
                 confirmed=confirmed,
                 confirmed_via="prompt",
                 expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+                expected_from_class=DataClass.TXN_AMOUNT,
                 actor="cli",
             )
         assert raised.value.code == "report_class_confirm_required"
@@ -863,6 +1040,7 @@ def test_a_flag_confirmation_is_counted_apart_from_a_prompted_one(
         confirmed=True,
         confirmed_via="flag",
         expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+        expected_from_class=DataClass.TXN_AMOUNT,
         actor="cli",
     )
 
@@ -950,6 +1128,7 @@ def test_update_clears_class_downgrades_when_the_sql_changes(
         confirmed=True,
         confirmed_via="prompt",
         expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+        expected_from_class=DataClass.TXN_AMOUNT,
         actor="cli",
     )
 
@@ -1312,6 +1491,8 @@ def test_reclassify_ignores_a_stored_default_it_is_not_touching(
         confirmed=True,
         confirmed_via="prompt",
         expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+        # `account_id` moved, not `amount` — the approved column is untouched.
+        expected_from_class=DataClass.TXN_AMOUNT,
         actor="cli",
     )
 

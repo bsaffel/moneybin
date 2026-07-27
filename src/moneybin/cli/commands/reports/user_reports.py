@@ -460,7 +460,7 @@ def _confirm_delete(name: object, report_id: str) -> bool:
 
 
 def _prompt_for_downgrade(
-    name: object, column: str, to_class: DataClass
+    name: object, column: str, from_class: DataClass, to_class: DataClass
 ) -> bool | None:
     """Ask the human, or report that this surface could not ask.
 
@@ -470,11 +470,17 @@ def _prompt_for_downgrade(
     refused or why. Returning ``None`` routes it through the same refusal every
     other caller gets — and counts it as a surface that could not ask rather
     than as a human who said no.
+
+    ``from_class`` is the class derivation produces *now*, not the stored one.
+    Naming only the target class left the answer ambiguous exactly when it
+    mattered: an upstream reclassification writes nothing, so the stored
+    fingerprint still matches, and a downgrade read as ``txn_amount → aggregate``
+    could be ``routing_number → aggregate``.
     """
     try:
         return typer.confirm(
-            f"Permanently lower masking of {column!r} to {to_class.value} for "
-            f"{name}, on every future run?",
+            f"Permanently lower masking of {column!r} from {from_class.value} to "
+            f"{to_class.value} for {name}, on every future run?",
             err=True,
         )
     except click.Abort:
@@ -517,14 +523,32 @@ def reports_reclassify(
             f"{', '.join(sorted(item.value for item in DataClass))}",
             param_hint="--to",
         ) from e
+    if not reason.strip():
+        # The service refuses this too — that is where the invariant lives. Here
+        # it is a usage error so it lands before the prompt: asking a human to
+        # approve a downgrade that cannot be stored spends the one interaction
+        # this command gets.
+        raise typer.BadParameter(
+            "a reason is required; it is the only record of why this column "
+            "reveals less than its derived class",
+            param_hint="--reason",
+        )
 
     with handle_cli_errors(cli_actor="reports_reclassify"):
         # Same ordering as `delete`, for the same reason: the writer lock must not
         # be held across an interactive prompt.
         with get_database(read_only=True) as db:
-            row = UserReportsService(db).resolve(handle)
+            service = UserReportsService(db)
+            row = service.resolve(handle)
+            # Derived in the same read as the fingerprint, because that is the
+            # revision the prompt is about to describe. A plain read never
+            # refreshes the stored fingerprint, so it cannot report an upstream
+            # reclassification — only a fresh derivation can.
+            from_class = service.derived_class(row, column=column)
         confirmed = (
-            True if yes else _prompt_for_downgrade(row["name"], column, to_class)
+            True
+            if yes
+            else _prompt_for_downgrade(row["name"], column, from_class, to_class)
         )
         with get_database(read_only=False) as db:
             outcome = UserReportsService(db).reclassify(
@@ -541,6 +565,9 @@ def reports_reclassify(
                 # is that the write connection re-resolves, so re-reading it here
                 # would pin the row to itself and guard nothing.
                 expected_fingerprint=str(row["class_fingerprint"]),
+                # And the class the prompt actually named, for the drift the
+                # fingerprint cannot see.
+                expected_from_class=from_class,
                 actor="cli",
             )
 

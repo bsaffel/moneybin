@@ -707,6 +707,12 @@ USER_REPORT_RECLASSIFY_TOTAL = Counter(
     "Classification-downgrade attempts on a saved report, by outcome.",
     # outcome: confirmed_prompt | confirmed_flag | declined | no_elicitation
     #          | refused_not_weaker | refused_unknown_column
-    #          | refused_revision_moved
+    #          | refused_revision_moved | refused_derivation_moved
+    #          | refused_blank_reason
+    # The two `*_moved` labels report the same message to the caller and are
+    # deliberately separate here: one means the stored row was rewritten, the
+    # other that derivation's answer changed with the row untouched. Only the
+    # second can fire without any write, so collapsing them would hide the one
+    # that no concurrent writer explains.
     ["outcome"],
 )

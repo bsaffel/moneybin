@@ -414,6 +414,11 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     # The audit row's `confirmed_via` names the path that confirmed
 |   |     # (`prompt` or `flag`); `actor` is `cli` on both, so nothing else can
 |   |     # tell an assistant's `--yes` from a human at the prompt.
+|   |     # The prompt names the class derivation produces *now*, not the stored
+|   |     # one, and the approval is bound to it: an upstream reclassification
+|   |     # writes nothing, so the revision guard alone cannot see it.
+|   |     # A blank or whitespace `--reason` is a usage error — it is the only
+|   |     # durable record of why the floor was lowered.
 |   +-- networth                   -- Cross-domain net worth aggregation (accounts + assets) [--as-of DATE]
 |   +-- networth-history           -- Net worth time series [--from DATE] [--to DATE]
 |   +-- cashflow                   -- Inflow / outflow over a window [--from-month YYYY-MM] [--to-month YYYY-MM] [--by]

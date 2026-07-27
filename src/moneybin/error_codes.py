@@ -294,6 +294,7 @@ REPORT_QUERY_COLUMN_DUPLICATE = "report_query_column_duplicate"
 REPORT_QUERY_INVALID = "report_query_invalid"
 REPORT_QUERY_SCHEMA_NOT_ALLOWED = "report_query_schema_not_allowed"
 REPORT_QUERY_UNRESOLVABLE = "report_query_unresolvable"
+REPORT_REASON_REQUIRED = "report_reason_required"
 
 
 # ---------------------------------------------------------------------------

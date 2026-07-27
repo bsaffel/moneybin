@@ -845,6 +845,30 @@ before asking, and a mismatch refuses with
 `delete` needs no equivalent: it is bound to an identity a concurrent edit does
 not move.
 
+**The prompt names the class derivation produces now, and the approval is bound
+to that too.** The fingerprint closes only half the window, because only a
+*write* refreshes it — a read never does. So an upstream reclassification (a
+taxonomy change raising the class of a column the report reads) leaves the row,
+and therefore its fingerprint, untouched: the guard above still passes, and the
+human approves a downgrade *from whatever derivation now produces*. The
+strictly-weaker rule cannot notice either — `--to aggregate` on `SUM(amount)` is
+`TXN_AMOUNT → AGGREGATE` before such a change and `ROUTING_NUMBER → AGGREGATE`
+after it, and both drop a tier. This needs no concurrent writer, so the
+single-process calibration does not excuse it. Every caller therefore derives the
+current class in the same read that takes the fingerprint, shows it in the
+confirmation, and passes it back; a mismatch refuses with the same
+`report_changed_during_confirmation` code, counted apart as
+`refused_derivation_moved` because no write explains it. The passed class is a
+**guard, never an input**: the stored `from` is still the service's own fresh
+derivation, so a caller cannot name its own floor.
+
+**A blank `reason` is refused.** The stored reason is the entire product of this
+path — the downgrade itself is permanent and invisible in every later result, so
+the reason is the only thing that distinguishes a waived over-classification from
+an unjustified disclosure read months later. Whitespace counts as blank: a
+required-option check passes `--reason " "`. Refused with
+`report_reason_required`, counted as `refused_blank_reason`.
+
 **A downgrade must lower the tier, and an equal-tier weakening is refused
 outright.** The runtime capability applies the rule `.claude/rules/reports.md`
 already states for materialized reports — not a second rule beside it:
@@ -1182,7 +1206,7 @@ remains the only MCP identity this draft assumes.
 | `moneybin_user_report_runs_total` | Counter | `tier`, `outcome` |
 | `moneybin_user_report_unresolved_columns_total` | Counter | — |
 | `moneybin_user_report_drift_detected_total` | Counter | `resolution` (`equal`, `failed_closed`) |
-| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed_prompt`, `confirmed_flag`, `declined`, `refused_not_weaker`, `refused_unknown_column`, `refused_revision_moved`, `no_elicitation`) |
+| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed_prompt`, `confirmed_flag`, `declined`, `refused_not_weaker`, `refused_unknown_column`, `refused_revision_moved`, `refused_derivation_moved`, `refused_blank_reason`, `no_elicitation`) |
 
 The unresolved-columns and drift counters carry the load: together they say
 whether the invisible classification is invisible in practice, or whether users

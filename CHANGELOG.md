@@ -30,7 +30,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   parameter change; `reports delete` is undoable through `system audit undo`;
   `reports reclassify` lowers one column's masking floor on an explicit human
   confirmation, and its audit row records whether that confirmation came from the
-  prompt or from `--yes`. (#367)
+  prompt or from `--yes`. That confirmation names the class the report's SQL
+  derives *right now* — `'spend' from txn_amount to aggregate` — so an upstream
+  reclassification cannot turn an approval you read one way into a permanent
+  downgrade of something else, and the approval is refused if the class moves
+  between the question and the write. A blank `--reason` is refused: it is the
+  only durable record of why the floor was lowered. (#367)
 - **Every report can show its work: `moneybin reports explain <handle>` (M2I).**
   Returns the query in two forms — the executed form with parameters rendered as
   literals, and the stored template — plus each output column's privacy class and

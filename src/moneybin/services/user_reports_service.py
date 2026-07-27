@@ -25,6 +25,7 @@ from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.reports._framework.contract import USER_REPORT_NAME, ParamSpec
 from moneybin.reports._framework.derive import (
+    DerivedClassification,
     class_fingerprint,
     derive_classification,
     with_downgrades,
@@ -308,6 +309,7 @@ class UserReportsService:
         confirmed: bool | None,
         confirmed_via: ConfirmedVia,
         expected_fingerprint: str,
+        expected_from_class: DataClass,
         actor: str,
     ) -> ReclassifyOutcome:
         """Lower one column's masking floor, permanently, on human approval.
@@ -342,12 +344,43 @@ class UserReportsService:
         reason. ``delete`` needs no equivalent: it is bound to an identity that
         a concurrent edit does not move.
 
-        ``from`` is the class **derivation currently produces**, not the stored
-        (possibly already-downgraded) one, so an approval is always recorded
-        against the floor it actually waived.
+        ``expected_from_class`` closes the half of that window the fingerprint
+        cannot see, and is required for the same reason. Only a *write* refreshes
+        a stored fingerprint — a read never does — so an upstream reclassification
+        that raises the class of a column this report reads leaves the row, and
+        therefore the fingerprint, untouched. The caller would then approve a
+        downgrade *from whatever derivation now produces*: ``--to aggregate`` on
+        ``SUM(amount)`` is ``TXN_AMOUNT → AGGREGATE`` before such a change and
+        ``ROUTING_NUMBER → AGGREGATE`` after it, and both drop a tier, so the
+        strictly-weaker rule admits the second too. Callers therefore derive the
+        class, show it, and pass back what they showed; a mismatch refuses.
+
+        The argument is a **guard, never an input**. Trusting it would make this
+        the one path where a class arrives declared rather than derived — the
+        widening ``.claude/rules/reports.md`` exists to prevent.
+
+        ``from`` is therefore the class **derivation currently produces**, not the
+        argument and not the stored (possibly already-downgraded) class, so an
+        approval is always recorded against the floor it actually waived.
         """
         row = self.resolve(handle)
         report_id = str(row["report_id"])
+        if not reason.strip():
+            # Checked before the confirmation gate: this is a malformed request,
+            # not an unauthorized one, and a caller that prompts first would
+            # otherwise spend a human decision on a downgrade that cannot be
+            # stored. `--reason " "` satisfies a required-option check.
+            metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
+                outcome="refused_blank_reason"
+            ).inc()
+            raise UserError(
+                "A classification downgrade needs a reason.",
+                code=error_codes.REPORT_REASON_REQUIRED,
+                hint=(
+                    "The stored reason is the only record of why this column "
+                    "reveals less than its derived class."
+                ),
+            )
         if confirmed is not True:
             metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
                 outcome="declined" if confirmed is False else "no_elicitation"
@@ -378,32 +411,23 @@ class UserReportsService:
                 details={"report_id": report_id, "column": column},
             )
 
-        # Defaults are stripped for derivation, the same way the run path strips
-        # them: `_refuse_sensitive_defaults` is a *write* gate on a default being
-        # stored, and this request stores no parameters at all. Leaving them on
-        # let an upstream reclassification of some unrelated filter's column
-        # refuse a downgrade whose caller never mentioned that parameter.
-        declared = tuple(
-            replace(parameter, default=None, required=True)
-            for parameter in declared_params(row.get("params") or ())
-        )
-        derived = derive_classification(
-            self._db, query_sql=str(row["query_sql"]), params=declared
-        )
-        from_class = derived.classes.get(column)
-        if from_class is None:
-            # Not `refused_not_weaker`: that label is the abuse signal — someone
-            # trying to publish a value everyone agrees is sensitive — and the
-            # comparison it names cannot even be evaluated for a column that does
-            # not exist. Counting a typo under it inflates the one number here
-            # that is supposed to mean something.
+        derived = self._derive(row)
+        from_class = self._require_derived_class(derived, column)
+        if from_class is not expected_from_class:
             metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
-                outcome="refused_unknown_column"
+                outcome="refused_derivation_moved"
             ).inc()
             raise UserError(
-                f"This report returns no column named {column!r}.",
-                code=error_codes.REPORT_COLUMN_UNKNOWN,
-                details={"columns": sorted(derived.classes)},
+                "The classification of this column changed since it was shown, so "
+                "the approval no longer applies to it — nothing was reclassified. "
+                "Re-run to see the current classification.",
+                code=error_codes.REPORT_CHANGED_DURING_CONFIRMATION,
+                details={
+                    "report_id": report_id,
+                    "column": column,
+                    "shown": expected_from_class.value,
+                    "current": from_class.value,
+                },
             )
         if not is_weaker_class(from_class, to_class):
             metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
@@ -446,8 +470,14 @@ class UserReportsService:
         metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
             outcome=f"confirmed_{confirmed_via}"
         ).inc()
+        # The column is withheld for the same reason the catalog's collision
+        # warning withholds a report name: a saved report's output alias is
+        # user-authored text, and `amazon_spend` is as plausible a merchant name
+        # as a column one. `SanitizedLogFormatter` cannot recognize either. The
+        # report_id and the two classes identify the event, and `app.audit_log`
+        # holds the column inside the encrypted database where it belongs.
         logger.warning(
-            f"user_report.reclassify report_id={report_id} column={column} "
+            f"user_report.reclassify report_id={report_id} "
             f"from={from_class.value} to={to_class.value}"
         )
         return ReclassifyOutcome(
@@ -456,6 +486,60 @@ class UserReportsService:
             from_class=from_class,
             to_class=to_class,
         )
+
+    def derived_class(self, row: Mapping[str, Any], *, column: str) -> DataClass:
+        """The class derivation produces for one column of ``row`` right now.
+
+        The read half of :meth:`reclassify`: a caller derives this before it asks,
+        shows it, and hands it back as ``expected_from_class``. Reading it here
+        rather than letting the prompt name only the *target* class is what makes
+        the human's answer about the floor they are actually waiving.
+
+        Refusing an unknown column is shared with the write path rather than
+        duplicated, so a typo is refused before anyone is asked about it and the
+        two surfaces cannot disagree about which columns a report returns.
+        """
+        return self._require_derived_class(self._derive(row), column)
+
+    def _derive(self, row: Mapping[str, Any]) -> DerivedClassification:
+        """Run derivation over a stored row's SQL exactly as it stands now.
+
+        Defaults are stripped, the same way the run path strips them:
+        ``_refuse_sensitive_defaults`` is a *write* gate on a default being
+        stored, and a downgrade request stores no parameters at all. Leaving them
+        on let an upstream reclassification of some unrelated filter's column
+        refuse a downgrade whose caller never mentioned that parameter.
+        """
+        declared = tuple(
+            replace(parameter, default=None, required=True)
+            for parameter in declared_params(row.get("params") or ())
+        )
+        return derive_classification(
+            self._db, query_sql=str(row["query_sql"]), params=declared
+        )
+
+    def _require_derived_class(
+        self, derived: DerivedClassification, column: str
+    ) -> DataClass:
+        """One column's derived class, refusing a name the report does not return.
+
+        Not `refused_not_weaker`: that label is the abuse signal — someone trying
+        to publish a value everyone agrees is sensitive — and the comparison it
+        names cannot even be evaluated for a column that does not exist. Counting
+        a typo under it inflates the one number here that is supposed to mean
+        something.
+        """
+        from_class = derived.classes.get(column)
+        if from_class is None:
+            metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
+                outcome="refused_unknown_column"
+            ).inc()
+            raise UserError(
+                f"This report returns no column named {column!r}.",
+                code=error_codes.REPORT_COLUMN_UNKNOWN,
+                details={"columns": sorted(derived.classes)},
+            )
+        return from_class
 
     def _require_free_name(
         self, name: str, *, current_report_id: str | None = None
