@@ -11,7 +11,7 @@ from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from functools import partial
-from typing import cast
+from typing import Literal, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -32,12 +32,19 @@ from moneybin.privacy.payloads.networth import (
     NetWorthHistoryPoint,
     NetWorthSnapshotPayload,
 )
+from moneybin.privacy.payloads.reports import (
+    ReportCatalogEntry,
+    ReportOutputColumn,
+    ReportSemanticsPayload,
+)
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import PayloadEncoder
 from moneybin.reports._framework import registry
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
     ServiceReportSpec,
+    catalog_classes_returned,
+    catalog_sensitivity,
     get_report_catalog,
     open_report_catalog,
 )
@@ -1214,6 +1221,79 @@ def test_a_locked_database_is_still_an_error_when_browsing() -> None:
         with pytest.raises(DatabaseKeyError):
             with open_report_catalog():
                 pass  # pragma: no cover — the open raises before the body runs
+
+
+def _listing_entry(
+    *, tier: Literal["builtin", "extension", "user"], report_id: str = "core:spending"
+) -> ReportCatalogEntry:
+    """One catalog listing row, varying only the field ``catalog_sensitivity`` reads."""
+    return ReportCatalogEntry(
+        report_id=report_id,
+        name=report_id.split(":")[-1],
+        tier=tier,
+        description="A listing row.",
+        parameter_schema={},
+        parameter_classes={},
+        examples=[],
+        columns=[ReportOutputColumn(name="total", data_class="aggregate")],
+        output_classes={"total": "aggregate"},
+        semantics=ReportSemanticsPayload(
+            unit=None,
+            currency=None,
+            sign=None,
+            kind="unknown",
+            valuation_basis=None,
+            fx_basis=None,
+            time_basis=None,
+            denominator=None,
+            comparison_window=None,
+            exclusions=(),
+            provenance=(),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("tiers", "expected"),
+    [
+        (("builtin",), "low"),
+        (("builtin", "extension"), "low"),
+        (("user",), "medium"),
+        (("builtin", "user"), "medium"),
+        (("builtin", "extension", "user"), "medium"),
+        ((), "low"),
+    ],
+)
+def test_catalog_sensitivity_elevates_on_any_user_tier_row(
+    tiers: tuple[Literal["builtin", "extension", "user"], ...],
+    expected: Literal["low", "medium"],
+) -> None:
+    """A listing holding one user-authored name is a MEDIUM response.
+
+    Tested directly on the mixed-tier rows rather than through a surface that
+    opens a database. Every caller-side test reached this via
+    ``open_report_catalog()``, which degrades to the packaged tiers alone on a
+    profile with no database — so the user arm was never actually taken and the
+    ``low`` assertions passed for the wrong reason.
+    """
+    entries = [
+        _listing_entry(tier=tier, report_id=f"{tier}:r{index}")
+        for index, tier in enumerate(tiers)
+    ]
+
+    assert catalog_sensitivity(entries) == expected
+
+
+def test_catalog_classes_returned_follows_the_elevated_sensitivity() -> None:
+    """The audit event's class list is the envelope tier's other half.
+
+    Pinned beside ``catalog_sensitivity`` because the privacy event and the
+    envelope must never disagree about what a listing published.
+    """
+    assert catalog_classes_returned(catalog_sensitivity([])) == ["aggregate"]
+    assert catalog_classes_returned(
+        catalog_sensitivity([_listing_entry(tier="user")])
+    ) == ["aggregate", "user_note"]
 
 
 def test_report_envelope_names_the_currency_its_rows_are_denominated_in(
