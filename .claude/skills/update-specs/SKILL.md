@@ -1,6 +1,6 @@
 ---
 name: update-specs
-description: Reconcile docs/specs/ with the implementation that actually shipped in the current scope. Reviews recent code changes, identifies which specs the changes touch via docs/specs/INDEX.md, and updates each spec to reflect design evolutions, refactors, or follow-up work that didn't get its own spec. Auto-edits small drift; surfaces design-intent changes for review. Use this whenever finishing a feature branch, after a follow-up PR adds behavior the original spec didn't describe, after a refactor renames or moves primitives referenced in specs, or whenever the user asks "are the specs still accurate?" / "update the specs" / "sync the specs to the code." If you've just finished implementation work that drifted from the spec it was based on, suggest running it without waiting to be asked.
+description: Reconcile docs/specs/ with what actually shipped in the current scope — find the affected specs via docs/specs/INDEX.md, auto-edit small drift, surface design-intent changes for review. Trigger: finishing a feature branch, a follow-up PR adds behavior no spec describes, a refactor renames primitives specs cite, or "are the specs accurate?" / "update the specs". Suggest it unprompted when implementation drifted from its spec.
 ---
 
 # /update-specs

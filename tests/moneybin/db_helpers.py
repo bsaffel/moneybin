@@ -6,9 +6,37 @@ need to INSERT test data directly require concrete tables, so we define
 minimal CREATE TABLE statements here.
 """
 
+from datetime import UTC, datetime
+
 import duckdb
 
 from moneybin.database import Database
+
+
+def record_sqlmesh_apply(db: Database, when: datetime) -> None:
+    """Stamp a finished SQLMesh apply at ``when``, read as UTC.
+
+    ``TransformService.freshness()`` decides ``pending`` by comparing raw
+    landing times against this stamp, so any fixture that means "the
+    warehouse has been refreshed" must write it — seeding ``core.dim_accounts``
+    no longer says that. Mirrors what a real plan finalize persists: one
+    ``prod`` row in the state schema SQLMesh keeps inside the MoneyBin
+    database, with ``finalized_ts`` in epoch milliseconds.
+
+    Callers pass a naive ``when`` and get UTC. Pin the session zone to UTC
+    too if the fixture's raw landing literals are naive, so both sides
+    describe the same instants on any machine.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS sqlmesh")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS sqlmesh._environments "
+        "(name VARCHAR, finalized_ts BIGINT)"
+    )
+    db.execute(
+        "INSERT INTO sqlmesh._environments (name, finalized_ts) VALUES ('prod', ?)",
+        [int(when.replace(tzinfo=UTC).timestamp() * 1000)],
+    )
+
 
 # ---------------------------------------------------------------------------
 # Core table DDL — keep in sync with the SQLMesh model output columns.

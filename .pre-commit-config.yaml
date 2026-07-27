@@ -24,8 +24,15 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # Claude Code denies in-place writes under .claude/ and to .mcp.json.
+      # end-of-file-fixer opens every file rb+ before checking whether a fix is
+      # needed, so it fails there unconditionally; trailing-whitespace opens
+      # read-only first and fails only when it would rewrite. Both are excluded
+      # so a commit touching agent config never needs a sandbox bypass.
       - id: trailing-whitespace
+        exclude: '^(\.claude/|\.mcp\.json$)'
       - id: end-of-file-fixer
+        exclude: '^(\.claude/|\.mcp\.json$)'
       - id: check-yaml
       - id: check-added-large-files
         args: ['--maxkb=1000']
