@@ -13,14 +13,21 @@ CATEGORY_NAME_MAX_LEN = 100
 MERCHANT_NAME_MAX_LEN = 200
 MERCHANT_PATTERN_MAX_LEN = 500
 DESCRIPTION_MAX_LEN = 2000
+#: Also bounds a report's stored reclassify ``reason`` — an audit annotation.
 NOTE_MAX_LEN = 2000
-"""Also bounds a report's stored reclassify ``reason`` — an audit annotation."""
 SLUG_MAX_LEN = 100
 #: A saved report's stored SELECT. Generous next to the others because a real
 #: analytical query with CTEs legitimately runs to a few thousand characters —
 #: but bounded, because DuckDB's VARCHAR is not, and every catalog read,
 #: `reports explain`, and export receipt renders this text again.
 REPORT_QUERY_MAX_LEN = 20_000
+#: A saved report's serialized `params` declaration block, not one field of it:
+#: a declared default, a help string, and the number of parameters all land in
+#: the same JSON column, and the total is what the row stores, the catalog
+#: republishes, and every later mutation copies into its audit images. One
+#: parameter serializes to roughly 60-100 characters, so this admits dozens with
+#: generous defaults while keeping all three bounded.
+REPORT_PARAMS_MAX_LEN = 4_000
 
 _SLUG_RE = re.compile(r"^[a-z0-9_-]+(:[a-z0-9_-]+)?$")
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")

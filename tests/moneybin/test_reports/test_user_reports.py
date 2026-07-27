@@ -35,6 +35,7 @@ from moneybin.services._validators import (
     DESCRIPTION_MAX_LEN,
     IDENTIFIER_MAX_LEN,
     NOTE_MAX_LEN,
+    REPORT_PARAMS_MAX_LEN,
     REPORT_QUERY_MAX_LEN,
 )
 from moneybin.services.audit_service import AuditService
@@ -1042,6 +1043,83 @@ def test_save_accepts_text_exactly_at_the_limit(
     passes just as well when it rejects one character too early.
     """
     assert _create(service, **{field: value})
+
+
+_LOW_PARAM_SQL = "SELECT account_id FROM core.fct_transactions WHERE account_id = $acct"
+
+
+def test_save_bounds_the_stored_parameter_declaration(
+    service: UserReportsService,
+) -> None:
+    """A permitted default is still user text, so its size is what is left to bound.
+
+    ``_refuse_sensitive_defaults`` rejects an above-LOW default outright, which
+    leaves the *legal* kind — one compared against a LOW column — copied verbatim
+    into the ``params`` JSON. The catalog republishes it on every listing and each
+    later mutation duplicates it into the before/after images the audit keeps, so
+    an unbounded default inflates the row, the response, and the audit history at
+    once. ``description`` and ``query`` are already bounded for the same reason.
+    """
+    with pytest.raises(UserError) as caught:
+        _create(
+            service,
+            query_sql=_LOW_PARAM_SQL,
+            params=[
+                _param("acct", str, default="x" * REPORT_PARAMS_MAX_LEN, required=False)
+            ],
+        )
+
+    assert caught.value.code == error_codes.REPORT_FIELD_TOO_LONG
+    assert caught.value.details is not None
+    assert caught.value.details["field"] == "params"
+    assert caught.value.details["limit"] == REPORT_PARAMS_MAX_LEN
+    # The length is reported; the oversized value itself never is.
+    assert "x" * 50 not in str(caught.value)
+
+
+def test_save_accepts_a_parameter_declaration_within_the_bound(
+    service: UserReportsService,
+) -> None:
+    """The partner: a real declaration must still save under the new limit.
+
+    The exact-boundary case belongs to ``_require_bounded`` itself, pinned by
+    ``test_save_accepts_text_exactly_at_the_limit`` and the reclassify-reason
+    bound; a caller cannot type the serialized JSON's length directly. What this
+    covers instead is the failure that check cannot see — a limit set so low, or
+    measured over the wrong string, that an ordinary parameter stops saving.
+    """
+    assert _create(
+        service,
+        query_sql=_LOW_PARAM_SQL,
+        params=[_param("acct", str, default="acct_11112222", required=False)],
+    )
+
+
+def test_update_bounds_the_stored_parameter_declaration(
+    service: UserReportsService,
+) -> None:
+    """The second write path stores the same JSON and needs the same bound.
+
+    ``update`` re-runs the whole save pipeline whenever ``params`` moves, so a
+    bound on ``create`` alone would leave the identical blob reachable by saving a
+    small declaration and then growing it.
+    """
+    report_id = _create(
+        service, query_sql=_LOW_PARAM_SQL, params=[_param("acct", str, required=True)]
+    )
+
+    with pytest.raises(UserError) as caught:
+        service.update(
+            report_id,
+            params=[
+                _param("acct", str, default="x" * REPORT_PARAMS_MAX_LEN, required=False)
+            ],
+            actor="cli",
+        )
+
+    assert caught.value.code == error_codes.REPORT_FIELD_TOO_LONG
+    assert caught.value.details is not None
+    assert caught.value.details["field"] == "params"
 
 
 def test_a_rejected_save_counts_as_rejected(service: UserReportsService) -> None:

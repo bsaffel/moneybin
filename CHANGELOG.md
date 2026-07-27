@@ -47,7 +47,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to echo. A `redacted` export withholds it — the receipt carries `sql: null`
   while keeping `lineage`, `parameter_classes`, and `output_classes`, so what the
   export read stays auditable without republishing a literal your rows would have
-  masked; the unredacted artifact still carries the statement. And when an
+  masked; the unredacted artifact still carries the statement. A masked column's
+  name goes with it, since a header beside a `*****` cell is what would survive:
+  the artifact publishes `redacted_column_1` in place of an alias you wrote, and
+  leaves every unmasked column's name alone. And when an
   upstream rename invalidates a stored query, `reports run` and `export report`
   report `report_query_execution_failed` and name the likely cause instead of
   surfacing a DuckDB binder error, which quotes the statement it failed to bind.

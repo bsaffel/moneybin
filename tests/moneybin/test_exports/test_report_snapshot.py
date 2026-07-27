@@ -40,7 +40,9 @@ from moneybin.reports._framework.execute import (
 )
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.reports.service_reports import NETWORTH_HISTORY_REPORT
+from moneybin.services.user_reports_service import UserReportsService
 from moneybin.tables import TableRef
+from tests.moneybin.db_helpers import create_core_tables_raw
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 _VIEW = TableRef("reports", "test_export")
@@ -367,6 +369,144 @@ def test_a_redacted_report_export_withholds_the_saved_query(db: Database) -> Non
     )
     assert unredacted.provenance is not None
     assert "acct_11112222" in str(unredacted.provenance.receipt["sql"])
+
+
+def test_a_redacted_user_report_export_withholds_a_sensitive_column_alias(
+    db: Database,
+) -> None:
+    """A masked column's header must not publish what its own cells withhold.
+
+    A saved report's output name is user-authored, so
+    ``routing_number AS "021000021"`` copies a critical literal into the workbook
+    header, the data-dictionary entry, and the receipt's ``output_classes`` key.
+    ``apply_export_redaction`` transforms row values only, so all three survive
+    beside a cell masked to ``*****`` — in the same artifact that already
+    withholds the SQL for exactly this threat.
+
+    Only the masked column is renamed, and only for the user tier: ``my_account``
+    keeps its name because its values are published anyway, and a built-in's
+    ``routing_number`` header is repo-authored — it names the column's meaning
+    rather than a value, and blanking it would cost readability for no gain.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, routing_number) VALUES (?, ?)",
+        ["acct_11112222", "021000021"],
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="routing_alias",
+            query_sql=(
+                'SELECT routing_number AS "021000021", account_id AS my_account '
+                "FROM core.dim_accounts"
+            ),
+            actor="cli",
+        )
+        .report_id
+    )
+    service = ExportService(db)
+
+    redacted = service.prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+    )
+
+    table = redacted.tables[0]
+    assert [column.name for column in table.columns] == [
+        "redacted_column_1",
+        "my_account",
+    ]
+    assert table.rows == (("*****", "acct_11112222"),)
+    assert "021000021" not in json.dumps(redacted.manifest)
+    assert "021000021" not in json.dumps(redacted.data_dictionary)
+    assert redacted.provenance is not None
+    assert set(redacted.provenance.receipt["output_classes"]) == {  # type: ignore[arg-type]
+        "redacted_column_1",
+        "my_account",
+    }
+
+    unredacted = service.prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    # The alias is the author's own label for their own data: an unredacted
+    # export publishes the value itself, so withholding the name buys nothing.
+    assert [column.name for column in unredacted.tables[0].columns] == [
+        "021000021",
+        "my_account",
+    ]
+
+
+def test_a_redacted_user_report_export_keeps_its_column_names_distinct(
+    db: Database,
+) -> None:
+    """Renaming a column must never merge it into another one.
+
+    An artifact's column names are its dict keys downstream — ``redact_records``
+    zips them against each row — so two columns sharing a name silently collapse
+    into one, publishing the surviving column's value under both headers. That is
+    reachable here because the alias a placeholder replaces is user-authored: a
+    visible column aliased ``redacted_column_1`` collides with the placeholder
+    minted for a masked first column. Renaming everything positionally is the
+    resolution, since distinct positions cannot collide.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, routing_number) VALUES (?, ?)",
+        ["acct_11112222", "021000021"],
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="alias_collision",
+            query_sql=(
+                'SELECT routing_number AS "021000021", '
+                "account_id AS redacted_column_1 FROM core.dim_accounts"
+            ),
+            actor="cli",
+        )
+        .report_id
+    )
+
+    redacted = ExportService(db).prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+    )
+
+    table = redacted.tables[0]
+    assert [column.name for column in table.columns] == [
+        "redacted_column_1",
+        "redacted_column_2",
+    ]
+    assert table.rows == (("*****", "acct_11112222"),)
+
+
+def test_a_redacted_builtin_report_export_keeps_its_declared_column_names(
+    db: Database,
+) -> None:
+    """The benign twin: a repo-authored header must survive its column's masking.
+
+    ``account_number`` is masked to ``****2222`` here, so a rename keyed on
+    masking alone — without the user-tier condition — would blank a name that
+    describes the column rather than disclosing a value, and no privacy test in
+    this repo fails on over-masking.
+    """
+    redacted = _service(db).prepare_report(
+        profile="test",
+        report_id="test:export",
+        report_parameters={},
+    )
+
+    assert [column.name for column in redacted.tables[0].columns] == [
+        "account_number",
+        "amount",
+    ]
 
 
 def test_prepare_report_exports_every_row_without_the_mcp_response_cap(

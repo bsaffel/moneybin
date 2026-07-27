@@ -131,6 +131,16 @@ masks — and row redaction reaches rows only. The receipt keeps `lineage`,
 `parameter_classes`, and `output_classes` in both modes, so what the export
 reads stays auditable without republishing the literal.
 
+The same authored-text problem reaches the column *names*. `SELECT
+routing_number AS "021000021"` puts the literal in the artifact header, the data
+dictionary, and the receipt's `output_classes` key — three places row redaction
+does not reach. A redacted export of a **user-tier** report therefore publishes
+`redacted_column_<position>` in place of any column whose own values it masked,
+and leaves every other name alone: a header is a disclosure only when its cells
+are hidden. A `builtin` or `extension` header is repo-authored and names the
+column's meaning rather than a value, so it survives unchanged; an unredacted
+artifact keeps the author's alias, because it publishes the value beside it.
+
 MCP callers supply `redaction_mode="redacted"` or
 `redaction_mode="unredacted"`. An explicit `redaction_mode` does not prompt.
 Omission elicits the choice when the client supports elicitation; otherwise the

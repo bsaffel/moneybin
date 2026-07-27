@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from time import perf_counter
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from pydantic import JsonValue
 
@@ -37,9 +37,13 @@ from moneybin.exports.snapshot import (
     prepared_table_checksum,
 )
 from moneybin.metrics.registry import EXPORT_DURATION_SECONDS, EXPORT_RUNS_TOTAL
+from moneybin.privacy.redaction import MaskStrength, mask_strength
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import (
+    RegisteredReport,
     ReportCatalog,
     get_report_catalog,
+    report_tier,
 )
 from moneybin.reports._framework.contract import ReportSpec
 from moneybin.reports._framework.execute import redact_report_parameters
@@ -56,6 +60,12 @@ if TYPE_CHECKING:
     from moneybin.exports.sheets import SheetsAuthorization
     from moneybin.exports.workbook_roles import WorkbookRolePermit
     from moneybin.services.audit_service import AuditEvent
+
+
+#: Stem of the positional name a redacted export publishes in place of a masked
+#: user-authored column alias. Positional rather than class-derived so two masked
+#: columns cannot collide on one name.
+_REDACTED_COLUMN_NAME: Final = "redacted_column"
 
 
 class _SheetsPublisher(Protocol):
@@ -493,9 +503,15 @@ class ExportService:
             # caps never limit durable export contents.
             limit=None,
         )
+        published = _published_column_names(
+            spec,
+            execution.columns,
+            execution.output_classes,
+            redaction_mode,
+        )
         columns = tuple(
             PreparedColumn(
-                name=name,
+                name=published[name],
                 duckdb_type=duckdb_type,
                 data_class=execution.output_classes[name],
             )
@@ -551,7 +567,7 @@ class ExportService:
             sql=receipt_sql,
             lineage=execution.provenance,
             output_classes={
-                name: data_class.value
+                published[name]: data_class.value
                 for name, data_class in execution.output_classes.items()
             },
             # The current ReportSpec exposes neither field, and both want the
@@ -585,6 +601,51 @@ class ExportService:
             ),
         )
         return apply_export_redaction(snapshot, redaction_mode)
+
+
+def _published_column_names(
+    spec: RegisteredReport,
+    columns: Sequence[str],
+    output_classes: Mapping[str, DataClass],
+    redaction_mode: RedactionMode,
+) -> dict[str, str]:
+    """Map each output column to the name a redacted artifact may publish.
+
+    A saved report's output name is user-authored, so
+    ``routing_number AS "021000021"`` puts a critical literal in the header, the
+    data-dictionary entry, and the receipt's class-map key. ``redact_records``
+    transforms row *values*, so all three would survive beside a masked cell —
+    the same disclosure the withheld receipt SQL above exists to prevent.
+
+    A header is a leak exactly when its own cells are hidden: with the values
+    published the name discloses nothing new, and with them masked the name is
+    what survives. So only the masked columns are renamed, and only for the user
+    tier — a ``builtin`` or ``extension`` header is repo-authored and names the
+    column's meaning rather than a value.
+
+    Renaming is positional, so the names stay distinct; if a passthrough column
+    already carries a placeholder's shape, every column is renamed instead, since
+    two columns sharing a name would collapse into one in ``redact_records``.
+    """
+    identity = {name: name for name in columns}
+    if redaction_mode != "redacted" or report_tier(spec) != "user":
+        return identity
+
+    placeholders = {
+        name: f"{_REDACTED_COLUMN_NAME}_{position}"
+        for position, name in enumerate(columns, start=1)
+    }
+    published = {
+        name: (
+            placeholders[name]
+            if mask_strength(output_classes[name]) is not MaskStrength.PASSTHROUGH
+            else name
+        )
+        for name in columns
+    }
+    if len(set(published.values())) != len(columns):
+        return placeholders
+    return published
 
 
 def _report_spec_source(spec: ReportSpec) -> TableRef | None:

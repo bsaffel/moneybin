@@ -11,6 +11,7 @@ service composes the repo and never issues DML of its own.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -40,6 +41,7 @@ from moneybin.services._validators import (
     DESCRIPTION_MAX_LEN,
     IDENTIFIER_MAX_LEN,
     NOTE_MAX_LEN,
+    REPORT_PARAMS_MAX_LEN,
     REPORT_QUERY_MAX_LEN,
 )
 from moneybin.services.audit_service import AuditEvent
@@ -127,6 +129,20 @@ def _require_bounded(value: str | None, *, field: str, limit: int) -> None:
         )
 
 
+def _require_bounded_params(entries: Sequence[Mapping[str, Any]]) -> None:
+    """Bound the stored ``params`` JSON — the one field a declaration can inflate.
+
+    Measured on the serialized block rather than on any single declared string,
+    because that JSON is what the row stores, what the catalog republishes on
+    every listing, and what each later mutation copies into its before/after audit
+    images. One check therefore covers a long default, a long help string, and a
+    large number of parameters at once. ``_refuse_sensitive_defaults`` already
+    rejects an above-LOW default outright, so what remains here is the legal kind:
+    a default compared against a LOW column, unbounded until now.
+    """
+    _require_bounded(json.dumps(entries), field="params", limit=REPORT_PARAMS_MAX_LEN)
+
+
 class UserReportsService:
     """Save, update, archive, delete, and downgrade user-created reports."""
 
@@ -196,11 +212,17 @@ class UserReportsService:
             metrics.USER_REPORT_SAVES_TOTAL.labels(outcome="rejected").inc()
             raise
 
+        # Bounded here rather than beside `description` and `query` above: the
+        # thing that has to stay bounded is the stored JSON, which does not exist
+        # until derivation has supplied the parameter classes it carries.
+        entries = stored_params(params, derived.parameter_classes)
+        _require_bounded_params(entries)
+
         event = self._repo.create(
             name=name,
             description=description,
             query_sql=query_sql,
-            params=stored_params(params, derived.parameter_classes),
+            params=entries,
             classes={
                 column: data_class.value
                 for column, data_class in derived.classes.items()
@@ -289,11 +311,13 @@ class UserReportsService:
             {} if cleared else (row.get("class_downgrades") or {})
         )
         classes = with_downgrades(dict(derived.classes), downgrades)
+        entries = stored_params(effective_params, derived.parameter_classes)
+        _require_bounded_params(entries)
 
         self._repo.set(
             report_id,
             query_sql=effective_sql,
-            params=stored_params(effective_params, derived.parameter_classes),
+            params=entries,
             classes={
                 column: data_class.value for column, data_class in classes.items()
             },
