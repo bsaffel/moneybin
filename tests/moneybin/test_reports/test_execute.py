@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.contract import Binding, ReportQuery, ReportSpec
 from moneybin.reports._framework.execute import (
@@ -104,6 +108,54 @@ def test_execute_catalog_report_exposes_raw_execution_before_public_redaction(
     assert raw.period == "all time"
     assert raw.semantics is spec.semantics
     assert raw.provenance == ("reports.test_summary",)
+
+
+def test_a_stale_saved_query_fails_without_echoing_its_sql(
+    reports_db: Database,
+) -> None:
+    """An upstream change must not turn a saved report into a disclosure.
+
+    A saved report's SQL is user-authored and can carry an inline literal. When an
+    upstream rename invalidates it, DuckDB's binder error echoes the statement it
+    failed to bind, and ``handle_cli_errors`` re-raises an *unclassified*
+    exception — so ``reports run`` and ``export report`` would print a traceback
+    carrying that literal. The MCP wrapper masks unclassified failures; the CLI
+    does not, so the boundary itself has to classify the failure and drop the SQL.
+    """
+
+    def stale(db: Database) -> ReportQuery:  # noqa: ARG001  # report contract handle
+        """Saved query naming a column no longer present upstream.
+
+        Args:
+            db: Open read-only database connection.
+        """
+        return ReportQuery(
+            "SELECT account_id FROM reports.test_summary "
+            "WHERE routing_number = '021000021'",
+            [],
+            actions=("reports.next",),
+            period="all time",
+        )
+
+    classes = {"account_id": DataClass.ACCOUNT_IDENTIFIER}
+    spec = build_spec(
+        stale,
+        report_id="test:stale",
+        name="stale",
+        view=_VIEW,
+        classes=classes,
+        parameter_classes={},
+        columns=output_columns(classes),
+        semantics=TEST_SEMANTICS,
+    )
+
+    with pytest.raises(UserError) as exc_info:
+        execute_catalog_report(spec, reports_db, max_rows=10)
+
+    assert exc_info.value.code == error_codes.REPORT_QUERY_EXECUTION_FAILED
+    message = str(exc_info.value)
+    assert "021000021" not in message
+    assert "routing_number" not in message
 
 
 def test_masked_output_carries_the_inspection_hint(reports_db: Database) -> None:

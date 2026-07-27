@@ -93,13 +93,19 @@ def assert_acyclic(query: exp.Query, model_name: str) -> None:
                 "resolves upstream columns by schema, so an unqualified read "
                 "names no ground truth — qualify it as core.* or app.*."
             )
-        if table.db == REPORTS_SCHEMA:
+        # DuckDB resolves a schema case-insensitively but sqlglot preserves the
+        # spelling, and the saved-report caller reaches here through a bare parse
+        # (the save path's own `qualify` would have folded it). Without folding,
+        # `FROM CORE.dim_accounts` matches neither branch below and a report that
+        # saves, classifies, and runs correctly is reported unmaterializable.
+        schema = table.db.lower()
+        if schema == REPORTS_SCHEMA:
             raise ReportDerivationError(
                 f"{model_name}: reads {table.db}.{table.name}. A model derived "
                 "from source must read only core.*/app.*, or the derived class "
                 "map becomes self-referential."
             )
-        if table.db not in DERIVABLE_UPSTREAM_SCHEMAS:
+        if schema not in DERIVABLE_UPSTREAM_SCHEMAS:
             raise ReportDerivationError(
                 f"{model_name}: reads {table.db}.{table.name}, which has no "
                 "CLASSIFICATION ground truth. A model derived from source must "

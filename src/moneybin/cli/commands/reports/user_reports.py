@@ -341,6 +341,11 @@ def reports_set(
         "--param",
         help=f"Replace the whole declared parameter list. {_PARAM_DECLARE_HELP}",
     ),
+    clear_params: bool = typer.Option(
+        False,
+        "--clear-params",
+        help="Drop every declared parameter (for SQL with no placeholders left).",
+    ),
     archive: bool = typer.Option(
         False, "--archive", help="Hide the report from the default catalog."
     ),
@@ -363,6 +368,10 @@ def reports_set(
         raise typer.BadParameter(
             "--archive and --restore are opposites", param_hint="--archive"
         )
+    if clear_params and param:
+        raise typer.BadParameter(
+            "--clear-params and --param are opposites", param_hint="--clear-params"
+        )
     # `is not None`, not truthiness: `--sql ""` must reach the service and be
     # refused as an invalid query, not be silently dropped from the update.
     query_sql = (
@@ -372,7 +381,11 @@ def reports_set(
         "name": UNSET if name is None else name,
         "description": UNSET if description is None else description,
         "query_sql": UNSET if query_sql is None else query_sql,
-        "params": UNSET if param is None else param,
+        # `--clear-params` is the only way to say "no declarations": every
+        # `--param` occurrence requires a value, so an omitted option can only
+        # mean UNSET, and derivation refuses a declaration the new SQL no longer
+        # interpolates — leaving an otherwise-valid update with no spelling.
+        "params": [] if clear_params else (UNSET if param is None else param),
         "is_active": False if archive else (True if restore else UNSET),
     }
     if all(value is UNSET for value in fields.values()):
@@ -620,17 +633,29 @@ def _render_save(
     def _render_text(_: ResponseEnvelope[Any]) -> None:
         typer.echo(f"✅ {verb} {outcome.name} ({outcome.report_id})")
         if outcome.unresolved_columns:
-            logger.warning(
+            typer.echo(
                 f"⚠️  Masked — no upstream class could be derived for "
                 f"{', '.join(outcome.unresolved_columns)}. "
                 "Project the underlying column directly to resolve it."
             )
         if outcome.cleared_downgrades:
-            logger.warning(
+            typer.echo(
                 f"⚠️  Cleared the approved downgrade for "
                 f"{', '.join(outcome.cleared_downgrades)}; the query changed. "
                 "Re-apply with `moneybin reports reclassify`."
             )
+
+    # Echoed above, counted here. A saved report's output alias is user-authored
+    # text — `amazon_spend` is as plausible a merchant name as a column one, and
+    # `SanitizedLogFormatter` recognizes neither — so the terminal gets the names
+    # and the durable record gets the identity and the shape. Logged outside
+    # `_render_text` so `--output json` records the event too.
+    if outcome.unresolved_columns or outcome.cleared_downgrades:
+        logger.warning(
+            f"user_report.{cli_actor} notes report_id={outcome.report_id} "
+            f"unresolved_columns={len(outcome.unresolved_columns)} "
+            f"cleared_downgrades={len(outcome.cleared_downgrades)}"
+        )
 
     render_or_json(
         build_envelope(

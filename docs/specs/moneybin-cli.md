@@ -395,9 +395,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     # Classification is derived from the SQL and stored; never declared.
 |   +-- set <handle>               -- Rename, re-describe, re-query, archive, restore
 |   |     [--name TEXT] [--description TEXT]
-|   |     [--sql TEXT | --sql-file PATH] [--param ...]
+|   |     [--sql TEXT | --sql-file PATH] [--param ...] [--clear-params]
 |   |     [--archive] [--restore]
 |   |     [--output json]
+|   |     # --clear-params drops every declaration; --param and it are opposites.
 |   |     # Changing SQL or parameters re-derives the privacy contract and drops
 |   |     # any approved downgrade — an approval covers one column of one query.
 |   +-- delete <handle>            -- Delete one saved report permanently

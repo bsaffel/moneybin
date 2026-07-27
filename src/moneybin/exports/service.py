@@ -527,18 +527,28 @@ class ExportService:
             parameter.name: parameter.data_class.value for parameter in parameters
         }
         snapshot_parameters: Mapping[str, object]
+        receipt_sql: str | None
         if redaction_mode == "redacted":
             snapshot_parameters = redact_report_parameters(
                 spec,
                 execution.parameters,
             )
+            # A saved report's SQL is user-authored, so a critical literal can sit
+            # inline in the statement (`WHERE routing_number = '021000021'`) rather
+            # than in a parameter this redacts. `apply_export_redaction` transforms
+            # table rows only, so a verbatim receipt would republish in the manifest
+            # exactly what the redacted policy was chosen to withhold. Withheld for
+            # every tier: the receipt keeps lineage and both class maps regardless,
+            # so the statement is the one field whose value here is convenience.
+            receipt_sql = None
         else:
             snapshot_parameters = execution.parameters
+            receipt_sql = execution.sql
         receipt = ReportExportReceipt(
             report_id=execution.report_id,
             parameters=snapshot_parameters,
             parameter_classes=parameter_classes,
-            sql=execution.sql,
+            sql=receipt_sql,
             lineage=execution.provenance,
             output_classes={
                 name: data_class.value

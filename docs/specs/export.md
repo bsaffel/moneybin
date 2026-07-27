@@ -123,6 +123,14 @@ lower-tier fields such as amounts, dates, merchant names, and descriptions
 remain in the artifact. It is protection against critical-identifier exposure,
 not a claim that the artifact is fully anonymized.
 
+A redacted report export also withholds the executed query: the receipt's `sql`
+is `null`, and the unredacted artifact carries it verbatim. A user-created
+report's SQL is authored text, so a CRITICAL literal can sit in the statement
+(`WHERE routing_number = '021000021'`) rather than in a parameter the engine
+masks — and row redaction reaches rows only. The receipt keeps `lineage`,
+`parameter_classes`, and `output_classes` in both modes, so what the export
+reads stays auditable without republishing the literal.
+
 MCP callers supply `redaction_mode="redacted"` or
 `redaction_mode="unredacted"`. An explicit `redaction_mode` does not prompt.
 Omission elicits the choice when the client supports elicitation; otherwise the

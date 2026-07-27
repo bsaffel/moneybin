@@ -35,7 +35,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reclassification cannot turn an approval you read one way into a permanent
   downgrade of something else, and the approval is refused if the class moves
   between the question and the write. A blank `--reason` is refused: it is the
-  only durable record of why the floor was lowered. (#367)
+  only durable record of why the floor was lowered. `reports set --clear-params`
+  drops every declared parameter, which is the only way to move a parameterized
+  report to SQL with no placeholders left: omitting `--param` means "leave the
+  declarations alone", every occurrence of the flag requires a value, and a
+  declaration the new SQL no longer interpolates is refused.
+
+  Because the SQL is yours, two boundaries treat it as data rather than as text
+  to echo. A `redacted` export withholds it — the receipt carries `sql: null`
+  while keeping `lineage`, `parameter_classes`, and `output_classes`, so what the
+  export read stays auditable without republishing a literal your rows would have
+  masked; the unredacted artifact still carries the statement. And when an
+  upstream rename invalidates a stored query, `reports run` and `export report`
+  report `report_query_execution_failed` and name the likely cause instead of
+  surfacing a DuckDB binder error, which quotes the statement it failed to bind.
+  The log keeps the exception type and a SHA-256 digest of the query. (#367)
 - **Every report can show its work: `moneybin reports explain <handle>` (M2I).**
   Returns the query in two forms — the executed form with parameters rendered as
   literals, and the stored template — plus each output column's privacy class and

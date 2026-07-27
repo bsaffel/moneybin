@@ -14,14 +14,19 @@ caller that already holds a spec and wants neither — today only tests.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Protocol, cast
 
+import duckdb
 from pydantic import JsonValue
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
+from moneybin.log_sanitizer import sql_digest
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
 from moneybin.privacy.sql_lineage import derive_query_tier
@@ -38,6 +43,8 @@ from moneybin.reports._framework.contract import (
     ReportSpec,
     bound_value,
 )
+
+logger = logging.getLogger(__name__)
 
 type FrozenJsonValue = (
     None
@@ -365,7 +372,25 @@ def execute_catalog_report(
         if isinstance(rq.params, Mapping)
         else [bound_value(item) for item in rq.params]
     )
-    cursor = db.execute(rq.sql, bindings)
+    try:
+        cursor = db.execute(rq.sql, bindings)
+    except duckdb.Error as e:
+        # A saved report's SQL is user-authored, and DuckDB's binder error echoes
+        # the statement it failed to bind — inline literals included. The MCP
+        # wrapper masks an unclassified failure, but `handle_cli_errors` re-raises
+        # one, so an upstream rename would print a routing number in a CLI
+        # traceback. Classify it here, where every tier's rows pass through, and
+        # keep only the exception type and the digest in the log.
+        logger.warning(
+            f"report execution failed: {type(e).__name__} "
+            f"(report_id={spec.report_id}, sql sha256={sql_digest(rq.sql)})"
+        )
+        raise UserError(
+            "The report's query could not run against the current schema. An "
+            "upstream table or column it reads may have been renamed or removed; "
+            "`moneybin reports explain` shows what it reads.",
+            code=error_codes.REPORT_QUERY_EXECUTION_FAILED,
+        ) from e
     descriptions = cursor.description or []
     columns = [str(description[0]) for description in descriptions]
     column_types = [

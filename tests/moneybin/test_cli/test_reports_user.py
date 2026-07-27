@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from moneybin.cli.commands.reports import user_reports
 from moneybin.cli.main import app
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.execute import ReportResult
@@ -397,6 +398,55 @@ def test_create_reports_unresolved_columns_as_a_warning_not_a_failure() -> None:
     assert "mystery" in result.output
 
 
+@pytest.mark.parametrize(
+    ("field", "alias"),
+    [
+        ("unresolved_columns", "amazon_spend"),
+        ("cleared_downgrades", "wholefoods_total"),
+    ],
+)
+def test_a_save_note_keeps_the_column_alias_out_of_the_durable_log(
+    field: str, alias: str
+) -> None:
+    """The alias reaches the terminal; the log keeps an id and a count.
+
+    A saved report's output alias is user-authored text — ``amazon_spend`` is as
+    plausible a merchant name as a column one, and ``SanitizedLogFormatter``
+    cannot recognize either. These notes are console presentation, so the detail
+    belongs in an echoed line and the durable record keeps only what identifies
+    the event.
+
+    The logger is replaced rather than read through ``caplog`` for a reason that
+    is itself the bug: the note is *only* a log call today, so the record and the
+    console line are the same string. Substituting the sink separates them — the
+    alias must survive in the output with logging silenced, which no assertion
+    over a shared string can require.
+
+    Parametrized over both notes rather than only the reviewed one: they are the
+    same defect twice, four lines apart, so fixing one and leaving the other is
+    how a second pattern for the same job survives beside the first.
+    """
+    service = _service(create=_save_outcome(**{field: (alias,)}))
+
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch.object(user_reports, "logger") as log,
+    ):
+        result = runner.invoke(
+            app,
+            ["reports", "create", "opaque", "--sql", f"SELECT 1 AS {alias}"],
+        )
+
+    assert result.exit_code == 0, result.output
+    # The user still learns which column the note is about.
+    assert alias in result.output
+    logged = [str(call.args[0]) for call in log.warning.call_args_list]
+    assert logged, "expected a durable record identifying the event"
+    assert not any(alias in message for message in logged)
+    assert any(_ROW["report_id"] in message for message in logged)
+
+
 def test_create_says_nothing_extra_when_every_column_resolved() -> None:
     """R3's other half: silence everywhere the inference was not uncertain.
 
@@ -477,6 +527,60 @@ def test_set_sends_only_the_supplied_fields_to_the_service() -> None:
     assert kwargs["query_sql"] is UNSET
     assert kwargs["params"] is UNSET
     assert kwargs["is_active"] is UNSET
+
+
+def test_set_can_clear_every_parameter_declaration() -> None:
+    """Dropping the last placeholder from a saved query must be expressible.
+
+    An omitted ``--param`` means "leave the declarations alone" (``UNSET``), and
+    every occurrence of the repeatable option requires a value — so there was no
+    spelling for the empty list. Meanwhile ``derive.py::_refuse_unused_parameters``
+    rejects a declaration the new SQL no longer interpolates, which made an
+    otherwise-valid update unreachable from the CLI: the report could neither keep
+    its stale declarations nor shed them. ``--clear-params`` follows the
+    ``--clear-FIELD`` convention ``accounts set`` already established.
+    """
+    service = _service(update=_save_outcome())
+
+    with _patch_database(), _patch_service(service):
+        result = runner.invoke(
+            app,
+            [
+                "reports",
+                "set",
+                "my_accounts",
+                "--sql",
+                "SELECT 1 AS n",
+                "--clear-params",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert service.update.call_args.kwargs["params"] == []
+
+
+def test_set_refuses_to_clear_and_declare_parameters_at_once() -> None:
+    """The two flags express opposite intents; silently preferring one hides it.
+
+    Asserts the refusal's own wording, not the flag name: an unrecognized option
+    also exits 2 and echoes the name it did not recognize, so a name-only
+    assertion passes just as well when the flag does not exist at all.
+    """
+    with _patch_database(), _patch_service(_service(update=_save_outcome())):
+        result = runner.invoke(
+            app,
+            [
+                "reports",
+                "set",
+                "my_accounts",
+                "--clear-params",
+                "--param",
+                "top:int=5",
+            ],
+        )
+
+    assert result.exit_code == 2
+    assert "opposites" in result.output
 
 
 def test_set_archives_by_clearing_is_active() -> None:

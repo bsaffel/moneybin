@@ -301,6 +301,72 @@ def test_prepare_report_applies_redaction_after_raw_execution(db: Database) -> N
     }
 
 
+def test_a_redacted_report_export_withholds_the_saved_query(db: Database) -> None:
+    """A redacted artifact must not republish the query that produced it.
+
+    A user-created report's SQL is user-authored text, so a critical literal can
+    sit inline in the statement itself rather than in a parameter. Redaction
+    transforms table rows only, so a receipt carrying the statement verbatim
+    discloses exactly what the redacted policy was chosen to withhold — in the
+    manifest and the workbook metadata tab, beside correctly-masked cells.
+
+    Withheld for every tier rather than only the user tier: the receipt keeps
+    lineage, parameter classes, output classes, and semantics either way, so the
+    statement is the one field whose value here is debugging convenience, and a
+    tier test would be a second thing to keep correct for no privacy gain.
+    """
+
+    def runner(db: Database) -> ReportQuery:  # noqa: ARG001  # report contract handle
+        """Saved query carrying an inline account literal.
+
+        Args:
+            db: Open database connection.
+        """
+        return ReportQuery(
+            "SELECT account_number, amount FROM reports.test_export "
+            "WHERE account_number = 'acct_11112222'",
+            [],
+            actions=("reports.inspect",),
+            period="all time",
+        )
+
+    classes = {
+        "account_number": DataClass.ACCOUNT_IDENTIFIER,
+        "amount": DataClass.TXN_AMOUNT,
+    }
+    spec = build_spec(
+        runner,
+        report_id="test:saved",
+        name="saved_export",
+        view=_VIEW,
+        classes=classes,
+        parameter_classes={},
+        columns=output_columns(classes),
+        semantics=TEST_SEMANTICS,
+    )
+    service = _service(db, catalog=ReportCatalog((spec,)))
+
+    redacted = service.prepare_report(
+        profile="test",
+        report_id="test:saved",
+        report_parameters={},
+    )
+    assert redacted.redaction_mode == "redacted"
+    assert redacted.provenance.receipt["sql"] is None
+    # The artifact, not just the in-memory receipt: the manifest is what ships.
+    manifest_sql = redacted.manifest["provenance"]["receipt"]["sql"]  # type: ignore[index]
+    assert manifest_sql is None
+    assert "acct_11112222" not in json.dumps(redacted.manifest)
+
+    unredacted = service.prepare_report(
+        profile="test",
+        report_id="test:saved",
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+    assert "acct_11112222" in str(unredacted.provenance.receipt["sql"])
+
+
 def test_prepare_report_exports_every_row_without_the_mcp_response_cap(
     db: Database,
 ) -> None:

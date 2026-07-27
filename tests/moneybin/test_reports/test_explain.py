@@ -487,6 +487,49 @@ def test_graduation_is_eligible_for_a_core_only_named_projection(
     assert explanation.graduation_blockers == ()
 
 
+def test_graduation_case_folds_the_schema_before_deciding(
+    saved_db: Database, service: UserReportsService
+) -> None:
+    """DuckDB resolves a schema case-insensitively; the verdict must agree.
+
+    ``FROM CORE.dim_accounts`` saves, classifies, and runs correctly — the save
+    path qualifies the tree first, and ``qualify`` folds identifiers for a
+    case-insensitive dialect. ``_graduation`` instead bare-parses, so the user's
+    spelling survives into a membership test against lowercase ``{"core",
+    "app"}`` and a materializable report is told it is blocked. ``assert_acyclic``
+    already folds ``table.name`` for its CTE check; the schema is the half that
+    was left unfolded.
+    """
+    explanation = _explain_saved(
+        saved_db,
+        service,
+        sql="SELECT account_id, routing_number FROM CORE.dim_accounts",
+    )
+
+    assert explanation.graduation == "eligible"
+    assert explanation.graduation_blockers == ()
+
+
+def test_graduation_still_blocks_a_mixed_case_reports_read(
+    saved_db: Database, service: UserReportsService
+) -> None:
+    """Case-folding must not turn the acyclic refusal into a default-open one.
+
+    The benign-input partner to the test above: folding the schema so ``CORE``
+    matches must also make ``REPORTS`` match the schema it is forbidden to read,
+    or the fix would let the spelling ``REPORTS.test_summary`` slip past the one
+    check that keeps a derived class map from becoming self-referential.
+    """
+    explanation = _explain_saved(
+        saved_db,
+        service,
+        sql="SELECT account_id, amount FROM REPORTS.test_summary",
+    )
+
+    assert explanation.graduation == "blocked"
+    assert any("test_summary" in blocker for blocker in explanation.graduation_blockers)
+
+
 def test_graduation_is_blocked_by_a_reports_read(
     saved_db: Database, service: UserReportsService
 ) -> None:
