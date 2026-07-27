@@ -15,7 +15,8 @@ WITH snapshots AS (
   SELECT
     REGEXP_REPLACE(REPLACE(name, '"', ''), '^[^.]+\.', '') AS model_name,
     version,
-    updated_ts
+    updated_ts,
+    kind_name
   FROM sqlmesh._snapshots
 ), latest_per_name AS (
   SELECT
@@ -25,11 +26,15 @@ WITH snapshots AS (
   GROUP BY
     model_name
 ), latest_version_per_name AS (
+  /* A version is a content fingerprint and the kind is part of that content, so
+     every row in a (model, version) group carries the same `kind_name`; MAX()
+     just picks it deterministically. */
   SELECT
     model_name,
     version,
     MIN(updated_ts) AS version_first_seen_ms,
-    MAX(updated_ts) AS version_last_touched_ms
+    MAX(updated_ts) AS version_last_touched_ms,
+    MAX(kind_name) AS kind_name
   FROM snapshots
   GROUP BY
     model_name,
@@ -38,22 +43,42 @@ WITH snapshots AS (
   SELECT
     model_name,
     version,
-    version_first_seen_ms
+    version_first_seen_ms,
+    kind_name
   FROM (
     SELECT
       model_name,
       version,
       version_first_seen_ms,
+      kind_name,
       ROW_NUMBER() OVER (PARTITION BY model_name ORDER BY version_last_touched_ms DESC, version DESC) AS rn
     FROM latest_version_per_name
   )
   WHERE
     rn = 1
+), executions AS (
+  /* `_intervals` records the intervals a model was actually backfilled over,
+     one row per execution. Unlike `_snapshots.updated_ts` it does not move for
+     metadata-only touches, so it is the surface that distinguishes "this model
+     was rebuilt" from "the environment was promoted". Dev and removed rows are
+     excluded so only prod execution counts. */
+  SELECT
+    REGEXP_REPLACE(REPLACE(name, '"', ''), '^[^.]+\.', '') AS model_name,
+    MAX(created_ts) AS last_executed_ms
+  FROM sqlmesh._intervals
+  WHERE
+    NOT is_dev AND NOT is_removed
+  GROUP BY
+    model_name
 )
 SELECT
   l.model_name, /* Schema-qualified model name, e.g. 'core.dim_accounts', 'seeds.categories'. */
   EPOCH_MS(c.version_first_seen_ms)::TIMESTAMP AS last_changed_at, /* When the current content version of this model was first materialized. Advances only when model definition or dependencies change. */
-  EPOCH_MS(l.last_applied_ms)::TIMESTAMP AS last_applied_at /* When SQLMesh last wrote to any snapshot row for this model. Underlying source is `_snapshots.updated_ts`, which captures snapshot-record updates (push/touch/unpause/state changes), not strict model-execution events. Advances on every apply; metadata-only touches (restore, environment promotion) also bump it. For strict "was this model just executed?" semantics, the SQLMesh `_intervals` / run-history surface is more authoritative — wire one in if a future consumer needs it. */
+  EPOCH_MS(l.last_applied_ms)::TIMESTAMP AS last_applied_at, /* When SQLMesh last wrote to any snapshot row for this model. Underlying source is `_snapshots.updated_ts`, which captures snapshot-record updates (push/touch/unpause/state changes), not strict model-execution events. Advances on every apply; metadata-only touches (restore, environment promotion) also bump it. Use `last_executed_at` for strict "was this model rebuilt?" semantics. */
+  EPOCH_MS(e.last_executed_ms)::TIMESTAMP AS last_executed_at, /* When this model was last actually backfilled, from `_intervals.created_ts`. Unlike `last_applied_at` it does NOT advance when the environment is merely promoted, so a selective plan (`transform restate --model`, a seed-only plan) leaves untouched models reading their true age. NULL when the model has intervals nowhere: either it was registered but never backfilled, or it is symbolic and never executes at all — check `model_kind` to tell those apart. UTC, like its siblings here. */
+  c.kind_name AS model_kind /* SQLMesh model kind for the current version: 'FULL', 'VIEW', 'SEED', 'EXTERNAL', 'EMBEDDED', an INCREMENTAL_* variant, etc. 'EXTERNAL' and 'EMBEDDED' are symbolic — SQLMesh never executes them, so their `last_executed_at` is always NULL and freshness consumers must exclude them. NULL for a snapshot written before SQLMesh recorded the kind. */
 FROM latest_per_name AS l
 JOIN current_version_per_name AS c
+  USING (model_name)
+LEFT JOIN executions AS e
   USING (model_name)

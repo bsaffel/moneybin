@@ -257,7 +257,7 @@ For schema-aware composition without burning tokens on the full catalog, call `s
 
 MoneyBin is pre-v1. Column names and view shapes in `core.*` and `reports.*` may rename or restructure before launch — but every change lands in [`CHANGELOG.md`](../../CHANGELOG.md). Post-launch, the surface locks: additive changes only, with deprecation windows for anything that has to move.
 
-Practical implication for scripts: pin to MoneyBin versions in your tooling and re-read the changelog when bumping. `meta.model_freshness` reports the SQLMesh model versions in effect (`last_changed_at`, `last_applied_at` per model) — useful for schema-drift checks; `moneybin db info` reports the running DuckDB version — useful for the client-compatibility check in [DuckDB version compatibility](#duckdb-version-compatibility) above. The two are unrelated version axes; neither substitutes for the other.
+Practical implication for scripts: pin to MoneyBin versions in your tooling and re-read the changelog when bumping. `meta.model_freshness` reports the SQLMesh model versions in effect (`last_changed_at`, `last_applied_at`, `last_executed_at` per model) — useful for schema-drift checks; `moneybin db info` reports the running DuckDB version — useful for the client-compatibility check in [DuckDB version compatibility](#duckdb-version-compatibility) above. The two are unrelated version axes; neither substitutes for the other.
 
 ## See also
 

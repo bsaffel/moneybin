@@ -715,7 +715,7 @@ MCP-visible app tables are tagged `audience="interface"` in [`src/moneybin/table
 | Table | Grain | Purpose |
 |---|---|---|
 | `meta.fct_transaction_provenance` | One row per (gold record × contributing source row) | Links every `core.fct_transactions.transaction_id` to every source row that contributed. Unmatched records have exactly one provenance row (`match_id = NULL`). Matched groups have one row per contributing source. |
-| `meta.model_freshness` | One row per registered SQLMesh model | Public-contract wrapper over `sqlmesh._snapshots`. Exposes `last_changed_at` (when the current content version was first materialized) and `last_applied_at` (when SQLMesh last wrote to any snapshot row). |
+| `meta.model_freshness` | One row per registered SQLMesh model | Public-contract wrapper over `sqlmesh._snapshots` and `sqlmesh._intervals`. Exposes `last_changed_at` (when the current content version was first materialized), `last_applied_at` (when SQLMesh last wrote to any snapshot row — promotions included), `last_executed_at` (when the model was last actually backfilled), and `model_kind`. Use `last_executed_at` for "how old is this data?"; it is NULL for symbolic kinds (`EXTERNAL`, `EMBEDDED`), which never execute, and frozen at the first build for `VIEW` / `SEED`, which SQLMesh does not re-run once their interval is complete. |
 
 `meta.fct_transaction_provenance` columns:
 
