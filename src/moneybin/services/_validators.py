@@ -15,6 +15,11 @@ MERCHANT_PATTERN_MAX_LEN = 500
 DESCRIPTION_MAX_LEN = 2000
 NOTE_MAX_LEN = 2000
 SLUG_MAX_LEN = 100
+#: A saved report's stored SELECT. Generous next to the others because a real
+#: analytical query with CTEs legitimately runs to a few thousand characters —
+#: but bounded, because DuckDB's VARCHAR is not, and every catalog read,
+#: `reports explain`, and export receipt renders this text again.
+REPORT_QUERY_MAX_LEN = 20_000
 
 _SLUG_RE = re.compile(r"^[a-z0-9_-]+(:[a-z0-9_-]+)?$")
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")

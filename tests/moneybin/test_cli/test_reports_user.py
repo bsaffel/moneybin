@@ -630,12 +630,21 @@ def test_set_warns_when_a_query_change_cleared_an_approved_downgrade() -> None:
 
 
 def test_delete_aborts_when_the_prompt_is_declined() -> None:
+    """Declining is the requested outcome, so it exits 0 and deletes nothing.
+
+    ``cli.md`` reserves exit 1 for "operation ran and failed". This asserted 1,
+    which pinned the defect in place: every sibling destructive confirm
+    (``transactions notes``, ``transactions splits``, ``import``, ``export``,
+    ``db``, ``gsheet``) exits 0 on decline, so a script testing ``$?`` could not
+    distinguish "the user said no" from "the delete errored" on this command
+    alone.
+    """
     service = _service()
 
     with _patch_database(), _patch_service(service):
         result = runner.invoke(app, ["reports", "delete", "my_accounts"], input="n\n")
 
-    assert result.exit_code == 1
+    assert result.exit_code == 0
     service.delete.assert_not_called()
 
 

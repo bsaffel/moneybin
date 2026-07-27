@@ -36,6 +36,11 @@ from moneybin.reports._framework.dynamic import (
     unknown_semantics,
 )
 from moneybin.repositories.user_reports_repo import UNSET, Unset, UserReportsRepo
+from moneybin.services._validators import (
+    DESCRIPTION_MAX_LEN,
+    IDENTIFIER_MAX_LEN,
+    REPORT_QUERY_MAX_LEN,
+)
 from moneybin.services.audit_service import AuditEvent
 from moneybin.services.entity_reference import (
     EntityCandidate,
@@ -104,6 +109,23 @@ def is_weaker_class(from_class: DataClass, to_class: DataClass) -> bool:
     )
 
 
+def _require_bounded(value: str | None, *, field: str, limit: int) -> None:
+    """Bound one stored text field, because ``VARCHAR`` does not.
+
+    ``security.md`` requires a maximum on user-supplied strings before they reach
+    the database. Every field here is reachable from one ``reports create`` —
+    ``--sql-file`` reads a file of any size — and an unbounded blob is then
+    re-rendered by ``reports list``, ``reports explain``, and every export
+    receipt. The length is reported; the value never is.
+    """
+    if value is not None and len(value) > limit:
+        raise UserError(
+            f"A report's {field} may not exceed {limit} characters.",
+            code=error_codes.REPORT_FIELD_TOO_LONG,
+            details={"field": field, "limit": limit, "length": len(value)},
+        )
+
+
 class UserReportsService:
     """Save, update, archive, delete, and downgrade user-created reports."""
 
@@ -111,10 +133,6 @@ class UserReportsService:
         """Compose the audited repo over one open database connection."""
         self._db = db
         self._repo = UserReportsRepo(db)
-
-    def rows(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
-        """Stored rows in stable ``report_id`` order, JSON columns decoded."""
-        return self._repo.list(include_archived=include_archived)
 
     def resolve(self, handle: str) -> dict[str, Any]:
         """Resolve a ``report_id`` or name to its stored row.
@@ -167,6 +185,8 @@ class UserReportsService:
         stored; the user never supplies or sees it unless they ask.
         """
         self._require_free_name(name)
+        _require_bounded(description, field="description", limit=DESCRIPTION_MAX_LEN)
+        _require_bounded(query_sql, field="query", limit=REPORT_QUERY_MAX_LEN)
         try:
             derived = derive_classification(
                 self._db, query_sql=query_sql, params=params
@@ -221,6 +241,12 @@ class UserReportsService:
         report_id = str(row["report_id"])
         if not isinstance(name, Unset):
             self._require_free_name(name, current_report_id=report_id)
+        if not isinstance(description, Unset):
+            _require_bounded(
+                description, field="description", limit=DESCRIPTION_MAX_LEN
+            )
+        if not isinstance(query_sql, Unset):
+            _require_bounded(query_sql, field="query", limit=REPORT_QUERY_MAX_LEN)
 
         fields: dict[str, Any] = {
             "name": name,
@@ -557,6 +583,15 @@ class UserReportsService:
                 f"{name!r} is not a valid report name.",
                 code=error_codes.REPORT_NAME_INVALID,
                 hint="Use lowercase letters, digits, hyphens, and underscores.",
+            )
+        # Separate from the pattern, which is unanchored in length: `[a-z][a-z0-9_-]*`
+        # matches a megabyte of letters. DuckDB's VARCHAR is unbounded too, so the
+        # bound has to live here.
+        if len(name) > IDENTIFIER_MAX_LEN:
+            raise UserError(
+                f"A report name may not exceed {IDENTIFIER_MAX_LEN} characters.",
+                code=error_codes.REPORT_NAME_INVALID,
+                details={"limit": IDENTIFIER_MAX_LEN, "length": len(name)},
             )
         existing = self._repo.find_by_name(name)
         if existing is not None and existing["report_id"] != current_report_id:

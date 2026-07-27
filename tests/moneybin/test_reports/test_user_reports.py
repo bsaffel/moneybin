@@ -31,6 +31,11 @@ from moneybin.reports._framework.catalog import (
 from moneybin.reports._framework.contract import ParamSpec, ReportSpec
 from moneybin.reports._framework.dynamic import spec_from_row, user_report_specs
 from moneybin.repositories.user_reports_repo import UserReportsRepo
+from moneybin.services._validators import (
+    DESCRIPTION_MAX_LEN,
+    IDENTIFIER_MAX_LEN,
+    REPORT_QUERY_MAX_LEN,
+)
 from moneybin.services.audit_service import AuditService
 from moneybin.services.user_reports_service import (
     ConfirmedVia,
@@ -911,6 +916,59 @@ def test_a_save_counts_itself_and_its_unresolved_columns(
     assert _counter("user_report_unresolved_columns_total") == before_columns + 2
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "limit"),
+    [
+        ("name", "a" * (IDENTIFIER_MAX_LEN + 1), IDENTIFIER_MAX_LEN),
+        ("description", "d" * (DESCRIPTION_MAX_LEN + 1), DESCRIPTION_MAX_LEN),
+        (
+            # A valid SELECT padded past the bound by a trailing comment: the
+            # length check must refuse it before derivation parses anything.
+            "query_sql",
+            "SELECT account_id FROM core.dim_accounts -- "  # noqa: S608  # test input, refused before execution
+            + "y" * REPORT_QUERY_MAX_LEN,
+            REPORT_QUERY_MAX_LEN,
+        ),
+    ],
+)
+def test_save_bounds_every_stored_text_field(
+    service: UserReportsService, field: str, value: str, limit: int
+) -> None:
+    """DuckDB's VARCHAR is unbounded; the application has to set the limit.
+
+    ``security.md`` requires a maximum on user-supplied strings before they reach
+    the database, and every one of these is reachable from a single
+    ``reports create`` — ``--sql-file`` will read a file of any size. An unbounded
+    blob is then re-rendered by ``reports list``, ``reports explain``, and every
+    export receipt.
+
+    Bounds are derived from the constants, never from a literal here, so a limit
+    change cannot leave this test asserting the old one.
+    """
+    with pytest.raises(UserError) as exc_info:
+        _create(service, **{field: value})
+
+    assert str(limit) in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "a" * IDENTIFIER_MAX_LEN),
+        ("description", "d" * DESCRIPTION_MAX_LEN),
+    ],
+)
+def test_save_accepts_text_exactly_at_the_limit(
+    service: UserReportsService, field: str, value: str
+) -> None:
+    """The boundary belongs to the accepted side — an off-by-one would reject it.
+
+    The partner every bound needs: a guard tested only from the rejecting side
+    passes just as well when it rejects one character too early.
+    """
+    assert _create(service, **{field: value})
+
+
 def test_a_rejected_save_counts_as_rejected(service: UserReportsService) -> None:
     before = _counter("user_report_saves_total", outcome="rejected")
 
@@ -1143,6 +1201,71 @@ def test_update_clears_class_downgrades_when_the_sql_changes(
     assert row is not None
     assert row["class_downgrades"] == {}
     assert row["classes"]["spend"] == DataClass.TXN_AMOUNT.value
+
+
+def test_a_params_only_update_keeps_an_approved_downgrade(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """Re-deriving is not the same as discarding the human decision.
+
+    A request touching ``params`` re-runs the whole save pipeline, so it walks the
+    same code that clears downgrades on an SQL change — but the SQL is unchanged,
+    so the approval still covers exactly the column and query it was given for and
+    must survive. The sibling above proves the clear fires on an SQL change, and
+    the metadata-only test proves derivation is skipped entirely; neither can fail
+    if the clear condition widened to *any* re-derivation, which would silently
+    revoke an approved masking floor.
+    """
+    report_id = _create(
+        service,
+        query_sql=(
+            "SELECT SUM(amount) AS spend FROM core.fct_transactions "
+            "WHERE account_id = $acct"
+        ),
+        params=[_param("acct")],
+    )
+    service.reclassify(
+        report_id,
+        column="spend",
+        to_class=DataClass.AGGREGATE,
+        reason="A single total reveals no transaction amount.",
+        confirmed=True,
+        confirmed_via="prompt",
+        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+        expected_from_class=DataClass.TXN_AMOUNT,
+        actor="cli",
+    )
+
+    outcome = service.update(
+        report_id, params=[_param("acct", help="Account to total.")], actor="cli"
+    )
+
+    assert outcome.cleared_downgrades == ()
+    row = UserReportsRepo(saved_db).get(report_id)
+    assert row is not None
+    assert row["class_downgrades"]["spend"]["to"] == DataClass.AGGREGATE.value
+    assert row["classes"]["spend"] == DataClass.AGGREGATE.value
+
+
+def test_the_repo_listing_hides_an_archived_row_by_default(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """``include_archived=False`` is the repo's default and had no caller.
+
+    Every call site passed ``True``, so the filtering branch was reachable only
+    through the default — which nothing exercised once the unused
+    ``UserReportsService.rows()`` wrapper was removed.
+    """
+    kept = _create(service, name="kept")
+    hidden = _create(service, name="hidden")
+    service.update(hidden, is_active=False, actor="cli")
+
+    repo = UserReportsRepo(saved_db)
+    assert {row["report_id"] for row in repo.list()} == {kept}
+    assert {row["report_id"] for row in repo.list(include_archived=True)} == {
+        kept,
+        hidden,
+    }
 
 
 def test_update_of_metadata_alone_leaves_the_classification_untouched(

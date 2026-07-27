@@ -431,7 +431,11 @@ def reports_delete(
         report_id = str(row["report_id"])
         if not yes and not _confirm_delete(row["name"], report_id):
             typer.echo("Delete cancelled.", err=True)
-            raise typer.Exit(1)
+            # Exit 0: declining a confirmation is the requested outcome, not a
+            # failure. `cli.md` reserves 1 for "operation ran and failed", and
+            # every sibling destructive confirm exits 0 on decline, so a script
+            # testing `$?` would read a decline here as an error nowhere else.
+            raise typer.Exit(0)
         with get_database(read_only=False) as db:
             # By `report_id`, and the service re-resolves it: the row may have
             # been deleted while the prompt was open, and a stale name must not
@@ -465,6 +469,13 @@ def _confirm_delete(name: object, report_id: str) -> bool:
     ``Aborted.`` — no error code, and no JSON envelope for a caller that asked for
     one. Raised as a ``UserError`` instead, the same way
     :func:`_prompt_for_downgrade` routes its own unaskable case.
+
+    PATTERN: confirm-abort-envelope — the target shape for every CLI confirm.
+    The other 29 `typer.confirm` call sites (31 total across 18 modules; find them
+    with `grep -rn "typer.confirm" src/moneybin/cli/commands/`) still let `Abort`
+    escape, so a piped invocation without `--yes` gets a bare `Aborted.` there.
+    Each is a mechanical change, but 18 modules of unrelated commands do not
+    belong in this milestone's diff, so the migration is filed instead.
     """
     try:
         return typer.confirm(f"Delete saved report {name} ({report_id})?", err=True)
