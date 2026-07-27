@@ -298,10 +298,15 @@ def _unreadable_row(row: Mapping[str, Any], error: Exception) -> DynamicReport:
         ),
         archived=not row.get("is_active", True),
         degraded=True,
+        # The exception's *type*, never its message. A parser error quotes the
+        # fragment it choked on, so interpolating it republished the stored SQL —
+        # inline literals included — through the MCP envelope, the JSON output,
+        # and the CLI, beside a result whose every row is masked. The type still
+        # separates a parse failure from a decode one, and names no content.
         degraded_reason=(
-            f"{DEGRADED_UNREADABLE_ROW}: {error}; the stored report cannot be read "
-            "by this version of MoneyBin, so every column is masked. Save it again "
-            "to rebuild its contract."
+            f"{DEGRADED_UNREADABLE_ROW}: {type(error).__name__}; the stored report "
+            "cannot be read by this version of MoneyBin, so every column is masked. "
+            "Save it again to rebuild its contract."
         ),
         degraded_code=DEGRADED_UNREADABLE_ROW,
     )

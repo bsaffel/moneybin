@@ -962,6 +962,52 @@ def test_spec_from_row_masks_a_row_whose_downgrade_entry_is_half_written(
     assert dict(dynamic.spec.classes) == {"account_id": FAIL_CLOSED_CLASS}
 
 
+def test_derivation_masks_a_projected_parameter_carrying_a_critical_value(
+    dynamic_db: Database,
+) -> None:
+    """A projected ``$param`` returns a value lineage cannot see.
+
+    ``SELECT $acct AS acct … WHERE routing_number = $acct`` puts no *column* in
+    the projection, so ``resolve_output_classes`` had nothing to trace and landed
+    on ``AGGREGATE`` — passthrough. The report then returned the supplied routing
+    number in its own rows, in the clear, with the parameter beside it masked.
+
+    The projection now takes the parameter's class. For any *projected*
+    placeholder that is ``FAIL_CLOSED_CLASS`` today, because
+    ``resolve_placeholder_classes`` resolves a placeholder from the column it is
+    compared against and one appearing in both positions "identifies neither" —
+    so the run masks wholly, which is the answer this leak needed.
+    """
+    derived = derive_classification(
+        dynamic_db,
+        query_sql=(
+            "SELECT $acct AS acct FROM core.dim_accounts WHERE routing_number = $acct"
+        ),
+        params=(_param("acct"),),
+    )
+
+    assert derived.classes["acct"] is FAIL_CLOSED_CLASS
+
+
+def test_derivation_leaves_an_ordinary_projection_untouched(
+    dynamic_db: Database,
+) -> None:
+    """The benign twin: only projections that return a parameter are affected.
+
+    Without this, raising every projection to a fail-closed floor would pass the
+    test above while masking every saved report in the catalog.
+    """
+    derived = derive_classification(
+        dynamic_db,
+        query_sql=(
+            "SELECT account_id FROM core.dim_accounts WHERE routing_number = $acct"
+        ),
+        params=(_param("acct"),),
+    )
+
+    assert derived.classes["account_id"] is DataClass.RECORD_ID
+
+
 def test_spec_from_row_degrades_when_a_stored_projection_disappears(
     dynamic_db: Database,
 ) -> None:
@@ -1390,6 +1436,38 @@ def test_a_row_whose_query_can_no_longer_be_classified_stays_listed_and_masked(
     assert dynamic.degraded_reason.startswith(DEGRADED_UNRESOLVABLE_QUERY)
     assert dynamic.degraded_code == DEGRADED_UNRESOLVABLE_QUERY
     assert set(dynamic.spec.classes.values()) == {FAIL_CLOSED_CLASS}
+
+
+def test_an_unreadable_row_reports_its_cause_without_quoting_the_statement(
+    dynamic_db: Database,
+) -> None:
+    """A parser error quotes the SQL it choked on, and that reaches every surface.
+
+    ``degraded_reason`` rides the envelope to MCP and JSON callers and prints on
+    the CLI, so interpolating the exception republished the offending fragment —
+    inline literals included — beside a result whose rows are masked. It is the
+    same disclosure the export receipt's withheld ``sql`` exists to prevent, one
+    surface over.
+
+    The exception *type* stays: it is what distinguishes a parse failure from a
+    decode failure for whoever has to fix it, and it names no content.
+    """
+    row = _row(
+        query_sql=(
+            "SELECT routing_number FROM core.dim_accounts "
+            "WHERE account_id = '021000021' AND"
+        )
+    )
+
+    dynamic = spec_from_row(dynamic_db, row)
+
+    assert dynamic.degraded
+    assert dynamic.degraded_code == DEGRADED_UNREADABLE_ROW
+    reason = dynamic.degraded_reason or ""
+    assert reason.startswith(DEGRADED_UNREADABLE_ROW)
+    assert "021000021" not in reason
+    assert "SELECT" not in reason
+    assert "SqlParseError" in reason
 
 
 def test_spec_from_row_reports_whether_the_stored_row_is_archived(

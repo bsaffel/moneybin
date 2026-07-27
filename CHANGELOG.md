@@ -59,7 +59,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   upstream rename invalidates a stored query, `reports run` and `export report`
   report `report_query_execution_failed` and name the likely cause instead of
   surfacing a DuckDB binder error, which quotes the statement it failed to bind.
-  The log keeps the exception type and a SHA-256 digest of the query.
+  The log keeps the exception type and a SHA-256 digest of the query, and a
+  report whose stored SQL a later release can no longer parse says so by
+  exception type rather than repeating the fragment it choked on. A parameter
+  your query *returns* (`SELECT $acct AS acct`) is masked like the filter value
+  it is, rather than published in the clear because no column backs it.
 
   `reports run` caps a text run at 1,000,000 rows, which `--limit --help` now
   states and the table says whenever it bites — a truncated financial answer

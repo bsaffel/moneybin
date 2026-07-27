@@ -34,6 +34,7 @@ from moneybin.log_sanitizer import sql_digest
 from moneybin.privacy.redaction import mask_strength
 from moneybin.privacy.sql_lineage import (
     FAIL_CLOSED_CLASS,
+    PLACEHOLDER_NODES,
     SchemaSnapshot,
     SqlParseError,
     SqlSchemaError,
@@ -41,6 +42,7 @@ from moneybin.privacy.sql_lineage import (
     get_current_schema_snapshot,
     is_data_query,
     parse_cached,
+    placeholder_name,
     read_column_classes,
     resolve_output_classes,
     resolve_placeholder_classes,
@@ -224,6 +226,7 @@ def derive_classification(
         for parameter in params
     }
     _refuse_sensitive_defaults(params, parameter_classes)
+    _inherit_projected_parameter_classes(qualified, output_classes, parameter_classes)
 
     columns = _describe_result_columns(db, query_sql, params)
     classes = classes_by_result_column(columns, output_classes, query_sql)
@@ -267,6 +270,58 @@ def downgrade_pair(entry: Mapping[str, str]) -> tuple[DataClass, DataClass]:
             code=error_codes.REPORT_DOWNGRADE_UNREADABLE,
             hint="Save the report again to rebuild its classification contract.",
         ) from e
+
+
+def _class_rank(data_class: DataClass) -> tuple[int, int]:
+    """Order classes by how much they withhold: tier first, then transform.
+
+    The same two components ``is_weaker_class`` compares and
+    ``class_fingerprint`` hashes. Tier alone is not an order at CRITICAL, where
+    all four classes share a tier and only the transform separates whole masking
+    from partial.
+    """
+    return int(data_class.tier), int(mask_strength(data_class))
+
+
+def _inherit_projected_parameter_classes(
+    tree: exp.Expr,
+    output_classes: dict[str, DataClass],
+    parameter_classes: Mapping[str, DataClass],
+) -> None:
+    """Raise a projection's class to that of any parameter it returns.
+
+    A projected ``$placeholder`` puts no column in the projection, so lineage has
+    nothing to trace and ``resolve_output_classes`` answers ``AGGREGATE`` —
+    passthrough. But the value is not unknown at all: the same binding resolves
+    as a *filter*, and ``SELECT $acct AS acct … WHERE routing_number = $acct``
+    returned the supplied routing number in the clear beside the parameter
+    metadata that masked it. One value cannot be two classes because it appears
+    in two positions.
+
+    Written as inheritance rather than a flat fail-closed floor, though today
+    the two coincide: ``resolve_placeholder_classes`` resolves a placeholder
+    from the column it is compared against, so a projected one resolves to
+    ``FAIL_CLOSED_CLASS`` — a projection is not a comparison, and a placeholder
+    in both positions "identifies neither". Taking the parameter's own answer
+    means a later classifier that *can* resolve a projected placeholder narrows
+    this automatically, instead of a second rule here contradicting it.
+
+    Keyed by projection, matching ``output_classes``, so the existing
+    ``classes_by_result_column`` bridge maps both to DuckDB result names at once.
+    """
+    for select in tree.find_all(exp.Select):
+        for projection in select.expressions:
+            inherited = [
+                parameter_classes.get(name, FAIL_CLOSED_CLASS)
+                for node in projection.find_all(*PLACEHOLDER_NODES)
+                if (name := placeholder_name(node))
+            ]
+            if not inherited:
+                continue
+            floor = max(inherited, key=_class_rank)
+            current = output_classes.get(projection.alias_or_name)
+            if current is None or _class_rank(current) < _class_rank(floor):
+                output_classes[projection.alias_or_name] = floor
 
 
 def is_weaker_class(from_class: DataClass, to_class: DataClass) -> bool:
