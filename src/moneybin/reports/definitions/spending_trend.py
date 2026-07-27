@@ -159,28 +159,45 @@ def spending_trend(
         report_id="core:spending",
     )
 
-    sql = f"""
+    ranked = f"""
         SELECT year_month, category, currency_code, total_spend, txn_count,
                prev_month_spend, mom_delta, mom_pct,
                prev_year_spend, yoy_delta, yoy_pct,
-               trailing_3mo_avg
+               trailing_3mo_avg,
+               ROW_NUMBER() OVER (
+                   PARTITION BY year_month, currency_code
+                   ORDER BY total_spend DESC
+               ) AS rank_in_currency
         FROM {REPORTS_SPENDING_TREND.full_name}
         WHERE 1=1
     """  # noqa: S608  # TableRef interpolation
     params: list[object] = []
     if from_month:
-        sql += " AND year_month >= substr(?, 1, 7)"
+        ranked += " AND year_month >= substr(?, 1, 7)"
         params.append(from_month)
     if to_month:
-        sql += " AND year_month <= substr(?, 1, 7)"
+        ranked += " AND year_month <= substr(?, 1, 7)"
         params.append(to_month)
     if category:
-        sql += " AND category = ?"
+        ranked += " AND category = ?"
         params.append(category)
-    # currency_code sorts before the magnitude so each month's categories stay
-    # grouped by the unit they are denominated in; ranking spend across
-    # currencies would order by exchange-rate scale rather than by spending.
-    sql += " ORDER BY year_month, currency_code, total_spend DESC"
+
+    # Spend still ranks only within a currency — comparing total_spend across
+    # denominations would order by exchange-rate scale rather than by spending.
+    # But sorting currency-major on top of that let the row cap take every
+    # category of the lexicographically-first currency before the next currency
+    # started, so a capped month reported one currency's categories and dropped
+    # the others entirely. Sorting on the per-currency rank interleaves them, so
+    # any prefix of a month holds every currency that fits
+    # (multi-currency.md Requirement 5).
+    sql = f"""
+        SELECT year_month, category, currency_code, total_spend, txn_count,
+               prev_month_spend, mom_delta, mom_pct,
+               prev_year_spend, yoy_delta, yoy_pct,
+               trailing_3mo_avg
+        FROM ({ranked})
+        ORDER BY year_month, rank_in_currency, currency_code
+    """  # noqa: S608  # subquery built from TableRef + allowlisted filters
 
     actions = [
         "Run reports(report_id='core:spending', "

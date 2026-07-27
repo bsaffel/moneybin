@@ -447,9 +447,17 @@ def _derive_display_currency(data: Any) -> str | None:
 
 
 def _has_currency_field(data: Any) -> bool:
-    """True when ``data`` is a record object carrying a currency_code field."""
+    """True when ``data`` is a record carrying a currency_code field.
+
+    Mapping rows count. ``sql_query`` returns ``list[dict[str, Any]]``
+    (``SqlQueryResult.records``), so a dataclass/``BaseModel``-only test made
+    every ad-hoc query report an unknown currency — even one projecting
+    ``currency_code`` with every row in agreement.
+    """
     if isinstance(data, type):
         return False
+    if isinstance(data, Mapping):
+        return _CURRENCY_FIELD in data
     if is_dataclass(data):
         return any(item.name == _CURRENCY_FIELD for item in fields(data))
     if isinstance(data, BaseModel):
@@ -457,11 +465,19 @@ def _has_currency_field(data: Any) -> bool:
     return False
 
 
+def _currency_value(row: Any) -> str | None:
+    """The row's currency_code, however that row carries it."""
+    if isinstance(row, Mapping):
+        code = cast(Mapping[str, Any], row)[_CURRENCY_FIELD]
+        return None if code is None else str(code)
+    return cast("str | None", getattr(row, _CURRENCY_FIELD))
+
+
 def _currency_of_rows(rows: list[Any]) -> str | None:
     """Resolve the one currency a row list agrees on, else ``None``."""
     if not rows or not all(_has_currency_field(row) for row in rows):
         return None
-    return resolve_display_currency(getattr(row, _CURRENCY_FIELD) for row in rows)
+    return resolve_display_currency(_currency_value(row) for row in rows)
 
 
 def _primary_rows(data: Any) -> list[Any] | None:

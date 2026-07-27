@@ -3736,3 +3736,49 @@ def test_pending_queue_degrades_when_matched_view_predates_a_column(
     assert rows is not None
     flagged = {r["transaction_id"]: r["pending_transfer_match"] for r in rows}
     assert flagged["t_expense"] is False
+
+
+def test_impact_queue_spans_currencies_under_cap(db: Database) -> None:
+    """A capped impact queue must not be filled by the high-denomination unit.
+
+    `priority_score` is `ABS(amount) * age_days` — a nominal magnitude, so
+    ¥9,000 outranks $50 on scale alone, not on how much either matters. Ranked
+    across currencies before `LIMIT`, the yen rows take every slot and the
+    dollar row is absent from the queue rather than further down it, so a
+    curator working `sort="impact"` never sees it (`multi-currency.md`
+    Requirement 5).
+
+    Three JPY rows against one USD row with a cap of two is what makes the two
+    orderings disagree: cross-currency ranking gives JPY, JPY; ranking within
+    each currency gives JPY, USD. Equal counts per currency would pass against
+    the bug.
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_jp', 'Tokyo Card', false), ('acct_us', 'Checking', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "currency_code, is_transfer) VALUES "
+        "('t_jpy1', 'acct_jp', DATE '2026-04-01', -9000.00, 'Depato', "
+        "'JPY', false), "
+        "('t_jpy2', 'acct_jp', DATE '2026-04-01', -8000.00, 'Konbini', "
+        "'JPY', false), "
+        "('t_jpy3', 'acct_jp', DATE '2026-04-01', -7000.00, 'Ramen', "
+        "'JPY', false), "
+        "('t_usd', 'acct_us', DATE '2026-04-01', -50.00, 'Local cafe', "
+        "'USD', false)"
+    )
+    _install_uncategorized_queue_view(db)
+    _install_matched_stub(db)
+
+    rows = CategorizationQueries(db).list_uncategorized_transactions(
+        limit=2, sort="impact"
+    )
+
+    assert rows is not None
+    leading = [r["currency_code"] for r in rows]
+    assert set(leading) == {"JPY", "USD"}, (
+        f"capped impact queue is {leading}; the dollar row is hidden entirely"
+    )

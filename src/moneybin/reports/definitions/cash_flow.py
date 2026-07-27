@@ -114,23 +114,41 @@ def cash_flow(
         select_cols += ", category"
         group_cols += ", category"
 
-    sql = f"""
+    grouped = f"""
         SELECT {select_cols},
                SUM(inflow) AS inflow,
                SUM(outflow) AS outflow,
                SUM(net) AS net,
-               SUM(txn_count) AS txn_count
+               SUM(txn_count) AS txn_count,
+               ROW_NUMBER() OVER (
+                   PARTITION BY year_month, currency_code
+                   ORDER BY ABS(SUM(net)) DESC
+               ) AS rank_in_currency
         FROM {REPORTS_CASH_FLOW.full_name}
         WHERE 1=1
     """  # noqa: S608  # select_cols + TableRef allowlists
     params: list[object] = []
     if from_month:
-        sql += " AND year_month >= substr(?, 1, 7)"
+        grouped += " AND year_month >= substr(?, 1, 7)"
         params.append(from_month)
     if to_month:
-        sql += " AND year_month <= substr(?, 1, 7)"
+        grouped += " AND year_month <= substr(?, 1, 7)"
         params.append(to_month)
-    sql += f" GROUP BY {group_cols} ORDER BY year_month, currency_code"  # noqa: S608  # group_cols allowlist
+    grouped += f" GROUP BY {group_cols}"  # noqa: S608  # group_cols allowlist
+
+    # `by="account"` / `"category"` puts several rows in one month per currency,
+    # so sorting currency-major hands the row cap that whole month's budget in
+    # the lexicographically-first currency and the others are absent from the
+    # response rather than ranked lower. Ranking within (month, currency) and
+    # sorting on that rank takes one row from each currency before a second from
+    # any (multi-currency.md Requirement 5). `by="none"` is already one row per
+    # (month, currency), where every rank is 1 and this reduces to the plain
+    # chronological listing.
+    sql = f"""
+        SELECT {select_cols}, inflow, outflow, net, txn_count
+        FROM ({grouped})
+        ORDER BY year_month, rank_in_currency, currency_code
+    """  # noqa: S608  # select_cols allowlist
 
     actions = [
         "Rerun reports(report_id='core:cashflow', "

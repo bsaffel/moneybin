@@ -557,3 +557,51 @@ class TestMultiCurrency:
             ("USD", Decimal("200.00")),
             ("EUR", Decimal("-100.00")),
         }
+
+    def test_history_keeps_a_late_arriving_currency_inside_the_cap(
+        self, db: Database
+    ) -> None:
+        """A currency that opens later must survive a truncated history.
+
+        `core:networth_history` is a registered report, so `reports(..., limit=N)`
+        keeps `records[:N]`. Ordering on `period` walked all of the older
+        currency's months before reaching the newer one's single month, so a
+        capped response dropped that currency entirely rather than ending its
+        series early. Ordering on each currency's own period index interleaves
+        them, so a prefix holds every currency that has data.
+
+        The uneven coverage is the point: with both currencies present in every
+        period, `ORDER BY period, currency_code` already alternates and would
+        pass against the bug.
+        """
+        rows: list[dict[str, object]] = [
+            {
+                "balance_date": date(2026, month, 28),
+                "currency_code": "EUR",
+                "net_worth": Decimal("500.00"),
+                "account_count": 1,
+                "total_assets": Decimal("500.00"),
+                "total_liabilities": Decimal("0.00"),
+            }
+            for month in (1, 2, 3, 4)
+        ]
+        rows.append({
+            "balance_date": date(2026, 4, 28),
+            "currency_code": "USD",
+            "net_worth": Decimal("900.00"),
+            "account_count": 1,
+            "total_assets": Decimal("900.00"),
+            "total_liabilities": Decimal("0.00"),
+        })
+        _seed_reports_net_worth(db, rows)
+
+        points = (
+            NetworthService(db)
+            .history(date(2026, 1, 1), date(2026, 5, 1), interval="monthly")
+            .points
+        )
+        leading = [p.currency_code for p in points[:2]]
+
+        assert set(leading) == {"EUR", "USD"}, (
+            f"first two points are {leading}; a cap here would hide USD entirely"
+        )

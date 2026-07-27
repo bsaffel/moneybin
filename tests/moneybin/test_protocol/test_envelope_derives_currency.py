@@ -140,3 +140,44 @@ def test_payload_with_no_currency_field_stays_unknown() -> None:
         build_envelope(data=_NoCurrency(Decimal("1.00"))).summary.display_currency
         is None
     )
+
+
+def test_derives_currency_from_mapping_rows() -> None:
+    """`sql_query`'s rows are plain dicts and must derive like typed rows.
+
+    `execute_sql_query` returns `list[dict[str, Any]]` (`SqlQueryResult.records`),
+    so a dataclass/`BaseModel`-only check left every ad-hoc query reporting
+    `display_currency: null` — including `SELECT amount, currency_code ...`
+    where every row agrees. Null is honest rather than wrong, so this never
+    mislabelled a result, but it contradicted the tool's own docstring on the
+    surface agents reach for most.
+    """
+    envelope = build_envelope(
+        data=[
+            {"amount": Decimal("-12.00"), "currency_code": "EUR"},
+            {"amount": Decimal("-8.00"), "currency_code": "EUR"},
+        ]
+    )
+
+    assert envelope.summary.display_currency == "EUR"
+
+
+def test_mapping_rows_that_disagree_stay_unknown() -> None:
+    """A mixed-currency ad-hoc query must not be labelled with one of them."""
+    envelope = build_envelope(
+        data=[
+            {"amount": Decimal("-12.00"), "currency_code": "EUR"},
+            {"amount": Decimal("-8.00"), "currency_code": "USD"},
+        ]
+    )
+
+    assert envelope.summary.display_currency is None
+
+
+def test_mapping_rows_without_a_currency_column_stay_unknown() -> None:
+    """A projection that omits currency_code says nothing about denomination."""
+    envelope = build_envelope(
+        data=[{"amount": Decimal("-12.00")}, {"amount": Decimal("-8.00")}]
+    )
+
+    assert envelope.summary.display_currency is None

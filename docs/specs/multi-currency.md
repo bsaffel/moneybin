@@ -204,12 +204,11 @@ Numbered, testable. Tagged by phase.
    `recurring_subscriptions` ranked correctly per currency and then re-grouped
    by `currency_code` at the top level, undoing it. All four now order by
    rank-within-currency first, so any prefix represents every currency.
-   `cash_flow` and `spending_trend` lead with `year_month` and are unaffected:
-   truncating a time series drops tail months across all currencies alike.
-   `test_no_runner_leads_its_sort_with_currency_code` scans the runner sources
-   rather than waiting for someone to build a mixed-currency fixture per
-   report — the defect reached four runners because each was fixed where it was
-   found rather than swept for. Separately, `core.fct_transaction_lines` — the
+   `test_no_report_sort_lets_a_cap_omit_a_currency` scans the sources rather
+   than waiting for someone to build a mixed-currency fixture per report — the
+   defect reached four runners because each was fixed where it was found rather
+   than swept for. (`cash_flow` and `spending_trend` were exempted here on a
+   rationale the next paragraph retracts.) Separately, `core.fct_transaction_lines` — the
    canonical split-expanded grain — projected every parent column except the
    denomination, so an agent on it could not tell a EUR line from a USD one; it
    now carries `currency_code`, as does `core.uncategorized_queue`, whose review
@@ -228,6 +227,49 @@ Numbered, testable. Tagged by phase.
    lever — any prefix of *k* rows holds *k* currencies whatever the sort key
    is. `test_no_example_leads_its_sort_with_currency_code` asserts set equality
    against those two, so a new offender fails and so does a stale exemption.
+
+   **The sweep that closed the class, 2026-07-27.** The exemption above was
+   wrong. It held that a leading `year_month` makes truncation drop tail months
+   across all currencies alike — true only when each (month, currency) is
+   exactly one row, which is the case for neither report. `cash_flow` groups on
+   a caller-chosen dimension and `spending_trend` on category, so a single month
+   holds several rows per currency and sorting currency-major hands that month's
+   entire budget to the lexicographically-first currency. Both now rank within
+   (month, currency) and order `year_month, rank_in_currency, currency_code`:
+   the month stays outermost because it is a time series, and the rank
+   interleaves the currencies inside it. The invariant is therefore *not* that a
+   rank leads the sort, but that a rank precedes any bare `currency_code` key.
+
+   Enumerating the whole grid rather than the reported sites found two more the
+   review had not. `networth_history` is a `ServiceReportSpec` whose SQL lives in
+   `networth_service`, so a scan over `reports/definitions/` could never see it;
+   it walked one currency's entire series before starting the next, and a
+   currency opened partway through the window vanished from a capped response
+   instead of showing a shorter series. And the `sort="impact"` branch of
+   `CategorizationQueries.list_uncategorized_transactions` ranks `priority_score`
+   — `ABS(amount) * age_days`, which `core.uncategorized_queue`'s own column
+   comment calls meaningful only within one currency — across denominations
+   before `LIMIT`, so the highest-denomination currency filled the whole queue.
+   That last one names no `currency_code` in its sort at all. The class has two
+   limbs, and only one is a property of the sort keys:
+
+   - **Interleaving** — `currency_code` sorts major to the metric. A source scan
+     owns it: `test_no_report_sort_lets_a_cap_omit_a_currency` covers both report
+     channels, deriving the service channel from the service classes
+     `service_reports` imports, so a new service-backed report inherits the guard
+     rather than escaping it the way `networth_history` did.
+   - **Cross-unit ranking** — a money metric ranked across currencies with no
+     `PARTITION BY currency_code`. It leaves no trace in the sort keys, so no
+     scan can catch it; it is guarded behaviourally beside the surface that ranks
+     (`test_impact_queue_spans_currencies_under_cap`).
+
+   `sort="date"` is deliberately untouched: `txn_date` is currency-agnostic, so a
+   cap drops the oldest rows across every currency alike, and interleaving there
+   would only break the "most recent first" contract the sort exists to provide.
+   `SpendingService.by_category` sums `ABS(amount)` with no `currency_code`
+   anywhere in the module and is a real blend, but it has no caller in
+   `src/moneybin/`; it is tracked for deletion or segmentation rather than fixed
+   here, and sits outside the guard's scope because it is not report-reachable.
    **Which payloads owe a currency, 2026-07-26.** The MCP-side enumeration
    (`test_money_tools_name_their_currency`) asked whether a payload carries a
    money-classed field and no `DataClass.CURRENCY`, and six tools answered yes.

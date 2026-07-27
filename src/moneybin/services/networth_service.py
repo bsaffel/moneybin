@@ -146,6 +146,15 @@ class NetworthService:
         # Each currency is its own series: bucketing and the period-over-period
         # LAG both key on currency_code, so a change is never the difference
         # between two currencies' positions (multi-currency.md Requirement 5).
+        #
+        # Ordering on each currency's own period index rather than on `period`
+        # is what keeps that true of a *capped* response. `core:networth_history`
+        # is a registered report, so `reports(..., limit=N)` truncates these rows
+        # with a prefix; sorting `period, currency_code` filled the last period
+        # with the lexicographically-first currencies and cut the rest, making a
+        # currency's series look like it ended early instead of like it was
+        # truncated. Interleaving by rank ends every currency's series at the
+        # same point.
         sql = f"""
             WITH bucketed AS (
                 SELECT
@@ -160,14 +169,15 @@ class NetworthService:
                 SELECT
                     period, currency_code, end_net_worth,
                     LAG(end_net_worth) OVER (PARTITION BY currency_code ORDER BY period) AS prev,
-                    end_net_worth - LAG(end_net_worth) OVER (PARTITION BY currency_code ORDER BY period) AS change_abs
+                    end_net_worth - LAG(end_net_worth) OVER (PARTITION BY currency_code ORDER BY period) AS change_abs,
+                    ROW_NUMBER() OVER (PARTITION BY currency_code ORDER BY period) AS rank_in_currency
                 FROM bucketed
             )
             SELECT
                 period, currency_code, end_net_worth, change_abs,
                 CASE WHEN prev IS NULL OR prev = 0 THEN NULL
                      ELSE change_abs / prev END AS change_pct
-            FROM with_change ORDER BY period, currency_code
+            FROM with_change ORDER BY rank_in_currency, currency_code
         """  # noqa: S608  # bucket_expr from allowlist; values parameterized
         rows = self._db.execute(sql, [from_date, to_date]).fetchall()
         points = [

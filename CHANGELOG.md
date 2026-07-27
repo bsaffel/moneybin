@@ -88,6 +88,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   none of the others. Twelve now rank within each currency first, or lead with
   the month or term the query is really grouped by. The other two return
   exactly one row per currency, where ordering is not the lever.
+- **Grouped reports and the categorization queue interleave their currencies
+  too (M1K.1).** The two entries above fixed this defect where it was found —
+  four ranked reports, then fourteen curated SQL examples — and it kept
+  resurfacing in siblings nobody had swept for. Enumerating every
+  truncation-reachable sort found four more. `reports cashflow` and `reports
+  spending` sorted each month currency-major, so a capped month reported one
+  currency's categories and dropped the rest. `reports networth-history` walked
+  one currency's entire series before starting the next, so a currency opened
+  partway through the window disappeared from a capped response rather than
+  showing a shorter series. `transactions categorize pending --sort impact`
+  ranked `ABS(amount) * age_days` across denominations, letting the
+  highest-denomination currency fill the whole queue — the one case with no
+  `currency_code` in its sort at all. All four now rank within each currency and
+  sort on that rank. A single source guard replaces the old literal scan and
+  covers both report channels, the SQL runners and the service-backed reports,
+  so the next sibling fails a test rather than a review round.
+- **`sql_query` names the currency its rows agree on (M1K.1).** The envelope
+  derived `summary.display_currency` from dataclass and Pydantic rows only, and
+  `sql_query` returns plain dicts — so every ad-hoc query reported an unknown
+  currency, including `SELECT amount, currency_code ...` where every row agreed.
+  Mapping rows now derive like typed ones. A query whose rows disagree, or that
+  omits the column, still reports null.
 - **`transactions` rows name their currency (M1K.1).** The `transactions` MCP
   tool and `moneybin transactions list --output json` returned bare amounts.
   A mixed-currency page reports `summary.display_currency: null` by design, so

@@ -7,9 +7,7 @@ and the enum-allowlist ValueError branches the surfaces rely on.
 
 from __future__ import annotations
 
-import inspect
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -498,35 +496,10 @@ def test_recurring_groups_candidates_by_the_currency_they_are_billed_in(
 # --------------------------------------------------------------------------
 
 
-def test_no_runner_leads_its_sort_with_currency_code() -> None:
-    """No report may hand the row cap one currency's rows before the next.
-
-    The three per-report tests below each need a mixed-currency fixture, so
-    they only cover the reports someone thought to write a fixture for. This
-    defect reached four of the six runners — `balance_drift` first, then
-    `large_transactions`, `merchant_activity`, and `recurring_subscriptions`
-    — because each was fixed where it was found rather than swept for. A
-    source scan fires on the fifth without anyone building a fixture for it.
-
-    Leading with `currency_code` is the whole tell: `records[:max_rows]` keeps
-    a prefix, so the first sort key decides what a truncated response can
-    contain. `cash_flow` and `spending_trend` lead with `year_month` and are
-    fine — truncation there drops tail *months* across all currencies alike,
-    which is a time series ending early rather than a currency going missing.
-    """
-    definitions = Path(inspect.getfile(large_transactions)).parent
-
-    offenders = [
-        f"{path.name}:{number}: {line.strip()}"
-        for path in sorted(definitions.glob("*.py"))
-        for number, line in enumerate(path.read_text().splitlines(), 1)
-        if "ORDER BY currency_code" in line
-    ]
-    assert not offenders, (
-        "sort leads with currency_code, so a truncated response can omit a "
-        "whole currency; rank within each currency and order by that rank "
-        "first:\n" + "\n".join(offenders)
-    )
+# The source scan that sweeps for this across every report channel lives in
+# `test_currency_truncation.py`. It replaced a literal `"ORDER BY
+# currency_code"` scan kept here, which could not see `ORDER BY year_month,
+# currency_code` and had exempted `cash_flow` / `spending_trend` outright.
 
 
 def test_large_transactions_interleaves_currencies_before_truncation(
@@ -584,5 +557,62 @@ def test_recurring_interleaves_currencies_before_truncation(db: Database) -> Non
     leading = [row["currency_code"] for row in rows[:2]]
 
     assert set(leading) == {"JPY", "USD"}, (
+        f"first two rows are {leading}; a cap here would hide a whole currency"
+    )
+
+
+def test_cashflow_interleaves_currencies_within_a_month(db: Database) -> None:
+    """A cap of two must not return two EUR categories and no USD one.
+
+    `by="category"` is what makes the two orderings disagree: it puts several
+    rows in one month per currency, so currency-major yields EUR, EUR, EUR, USD
+    while interleaving by rank yields EUR, USD, EUR, EUR. The default
+    `by="none"` is one row per (month, currency) and would pass against the bug.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.cash_flow AS
+        SELECT * FROM (VALUES
+            ('2026-01', 'A1', 'Alpha', 'Food',   'EUR', 100.0, -30.0,  70.0, 5),
+            ('2026-01', 'A1', 'Alpha', 'Travel', 'EUR',   0.0, -50.0, -50.0, 2),
+            ('2026-01', 'A1', 'Alpha', 'Rent',   'EUR',   0.0, -40.0, -40.0, 1),
+            ('2026-01', 'A2', 'Beta',  'Food',   'USD',  20.0,  -8.0,  12.0, 1)
+        ) AS t(year_month, account_id, account_name, category, currency_code,
+               inflow, outflow, net, txn_count)
+    """)
+
+    rows = _rows(db, cash_flow, by="category", from_month="2026-01", to_month="2026-12")
+    leading = [row["currency_code"] for row in rows[:2]]
+
+    assert set(leading) == {"EUR", "USD"}, (
+        f"first two rows are {leading}; a cap here would hide a whole currency"
+    )
+
+
+def test_spending_trend_interleaves_currencies_within_a_month(db: Database) -> None:
+    """A cap of two must not return two EUR categories and no USD one.
+
+    Three EUR categories against one USD category in the same month, so
+    currency-major ordering fills the cap with EUR before USD's row is
+    reached — the response then reports one currency's spending as if it were
+    the month's.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.spending_trend AS
+        SELECT * FROM (VALUES
+            ('2026-01', 'Food',   'EUR', 300.0, 9, 280.0, 20.0, 0.07, 250.0, 50.0, 0.20, 290.0),
+            ('2026-01', 'Travel', 'EUR', 200.0, 4, 180.0, 20.0, 0.11, 150.0, 50.0, 0.33, 190.0),
+            ('2026-01', 'Rent',   'EUR', 100.0, 1,  90.0, 10.0, 0.11,  80.0, 20.0, 0.25,  95.0),
+            ('2026-01', 'Food',   'USD',  50.0, 3,  45.0,  5.0, 0.11,  40.0, 10.0, 0.25,  47.0)
+        ) AS t(year_month, category, currency_code, total_spend, txn_count,
+               prev_month_spend, mom_delta, mom_pct,
+               prev_year_spend, yoy_delta, yoy_pct, trailing_3mo_avg)
+    """)
+
+    rows = _rows(db, spending_trend, from_month="2026-01", to_month="2026-12")
+    leading = [row["currency_code"] for row in rows[:2]]
+
+    assert set(leading) == {"EUR", "USD"}, (
         f"first two rows are {leading}; a cap here would hide a whole currency"
     )
