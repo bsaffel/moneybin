@@ -131,15 +131,18 @@ masks — and row redaction reaches rows only. The receipt keeps `lineage`,
 `parameter_classes`, and `output_classes` in both modes, so what the export
 reads stays auditable without republishing the literal.
 
-The same authored-text problem reaches the column *names*. `SELECT
-routing_number AS "021000021"` puts the literal in the artifact header, the data
-dictionary, and the receipt's `output_classes` key — three places row redaction
-does not reach. A redacted export of a **user-tier** report therefore publishes
-`redacted_column_<position>` in place of any column whose own values it masked,
-and leaves every other name alone: a header is a disclosure only when its cells
-are hidden. A `builtin` or `extension` header is repo-authored and names the
-column's meaning rather than a value, so it survives unchanged; an unredacted
-artifact keeps the author's alias, because it publishes the value beside it.
+The same authored-text problem reaches the *names*. `SELECT routing_number AS
+"021000021"` puts the literal in the artifact header, the data dictionary, and
+the receipt's `output_classes` key; `WHERE routing_number = $acct_021000021` puts
+one in the receipt's `parameters` and `parameter_classes` keys and in the
+subject. Redaction reaches values, not keys. A redacted export of a **user-tier**
+report therefore publishes `redacted_column_<position>` or
+`redacted_parameter_<position>` in place of any column or parameter whose own
+value it masked, and leaves every other name alone: a name is a disclosure only
+when the value beside it is hidden. A `builtin` or `extension` name is
+repo-authored and describes the column or filter rather than a value, so it
+survives unchanged; an unredacted artifact keeps the author's own names, because
+it publishes the values beside them.
 
 MCP callers supply `redaction_mode="redacted"` or
 `redaction_mode="unredacted"`. An explicit `redaction_mode` does not prompt.

@@ -40,7 +40,6 @@ from moneybin.metrics.registry import EXPORT_DURATION_SECONDS, EXPORT_RUNS_TOTAL
 from moneybin.privacy.redaction import MaskStrength, mask_strength
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import (
-    RegisteredReport,
     ReportCatalog,
     get_report_catalog,
     report_tier,
@@ -62,10 +61,11 @@ if TYPE_CHECKING:
     from moneybin.services.audit_service import AuditEvent
 
 
-#: Stem of the positional name a redacted export publishes in place of a masked
-#: user-authored column alias. Positional rather than class-derived so two masked
-#: columns cannot collide on one name.
+#: Stems of the positional names a redacted export publishes in place of a masked
+#: user-authored column alias or parameter name. Positional rather than
+#: class-derived so two masked members cannot collide on one name.
 _REDACTED_COLUMN_NAME: Final = "redacted_column"
+_REDACTED_PARAMETER_NAME: Final = "redacted_parameter"
 
 
 class _SheetsPublisher(Protocol):
@@ -503,11 +503,14 @@ class ExportService:
             # caps never limit durable export contents.
             limit=None,
         )
-        published = _published_column_names(
-            spec,
+        # Only a saved report's names are the author's own text, and only a
+        # redacted artifact hides the values that make one a disclosure.
+        withhold_names = redaction_mode == "redacted" and report_tier(spec) == "user"
+        published = _published_names(
             execution.columns,
             execution.output_classes,
-            redaction_mode,
+            stem=_REDACTED_COLUMN_NAME,
+            withhold=withhold_names,
         )
         columns = tuple(
             PreparedColumn(
@@ -539,16 +542,32 @@ class ExportService:
         )
         status = catalog.status(execution.report_id)
         parameters = spec.params if isinstance(spec, ReportSpec) else spec.parameters
+        parameter_classes_by_name = {
+            parameter.name: parameter.data_class for parameter in parameters
+        }
+        published_parameters = _published_names(
+            tuple(parameter_classes_by_name),
+            parameter_classes_by_name,
+            stem=_REDACTED_PARAMETER_NAME,
+            withhold=withhold_names,
+        )
         parameter_classes = {
-            parameter.name: parameter.data_class.value for parameter in parameters
+            published_parameters[name]: data_class.value
+            for name, data_class in parameter_classes_by_name.items()
         }
         snapshot_parameters: Mapping[str, object]
         receipt_sql: str | None
         if redaction_mode == "redacted":
-            snapshot_parameters = redact_report_parameters(
-                spec,
-                execution.parameters,
-            )
+            # Keyed by declared name, exactly as `redact_report_parameters` reads
+            # its own class map, so an undeclared key is an invariant violation
+            # here rather than a name that quietly keeps itself.
+            snapshot_parameters = {
+                published_parameters[name]: value
+                for name, value in redact_report_parameters(
+                    spec,
+                    execution.parameters,
+                ).items()
+            }
             # A saved report's SQL is user-authored, so a critical literal can sit
             # inline in the statement (`WHERE routing_number = '021000021'`) rather
             # than in a parameter this redacts. `apply_export_redaction` transforms
@@ -603,47 +622,49 @@ class ExportService:
         return apply_export_redaction(snapshot, redaction_mode)
 
 
-def _published_column_names(
-    spec: RegisteredReport,
-    columns: Sequence[str],
-    output_classes: Mapping[str, DataClass],
-    redaction_mode: RedactionMode,
+def _published_names(
+    names: Sequence[str],
+    classes: Mapping[str, DataClass],
+    *,
+    stem: str,
+    withhold: bool,
 ) -> dict[str, str]:
-    """Map each output column to the name a redacted artifact may publish.
+    """Map each user-authored name to the one a redacted artifact may publish.
 
-    A saved report's output name is user-authored, so
-    ``routing_number AS "021000021"`` puts a critical literal in the header, the
-    data-dictionary entry, and the receipt's class-map key. ``redact_records``
-    transforms row *values*, so all three would survive beside a masked cell —
-    the same disclosure the withheld receipt SQL above exists to prevent.
+    A saved report's names are its author's text, so
+    ``routing_number AS "021000021"`` puts a critical literal in the artifact
+    header, the data-dictionary entry, and the receipt's class-map key, and
+    ``WHERE routing_number = $acct_021000021`` puts one in the receipt's parameter
+    keys and the subject. Redaction transforms *values*, so all of them would
+    survive beside a masked one — the same disclosure the withheld receipt SQL
+    exists to prevent.
 
-    A header is a leak exactly when its own cells are hidden: with the values
-    published the name discloses nothing new, and with them masked the name is
-    what survives. So only the masked columns are renamed, and only for the user
-    tier — a ``builtin`` or ``extension`` header is repo-authored and names the
-    column's meaning rather than a value.
+    A name is a disclosure exactly when its own value is hidden: published
+    alongside its value it discloses nothing further, and masked it is what
+    survives. So only the masked members are renamed, and ``withhold`` is false
+    for anything but a redacted user-tier export — a ``builtin`` or ``extension``
+    name is repo-authored and describes the column or filter rather than a value.
 
-    Renaming is positional, so the names stay distinct; if a passthrough column
-    already carries a placeholder's shape, every column is renamed instead, since
-    two columns sharing a name would collapse into one in ``redact_records``.
+    Renaming is positional, so the names stay distinct. If a passthrough member
+    already carries a placeholder's shape, every member is renamed instead: these
+    names are dict keys downstream — in ``redact_records``, the receipt, and the
+    subject — so two sharing one would collapse into a single entry.
     """
-    identity = {name: name for name in columns}
-    if redaction_mode != "redacted" or report_tier(spec) != "user":
-        return identity
+    if not withhold:
+        return {name: name for name in names}
 
     placeholders = {
-        name: f"{_REDACTED_COLUMN_NAME}_{position}"
-        for position, name in enumerate(columns, start=1)
+        name: f"{stem}_{position}" for position, name in enumerate(names, start=1)
     }
     published = {
         name: (
             placeholders[name]
-            if mask_strength(output_classes[name]) is not MaskStrength.PASSTHROUGH
+            if mask_strength(classes[name]) is not MaskStrength.PASSTHROUGH
             else name
         )
-        for name in columns
+        for name in names
     }
-    if len(set(published.values())) != len(columns):
+    if len(set(published.values())) != len(names):
         return placeholders
     return published
 

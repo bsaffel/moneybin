@@ -442,6 +442,77 @@ def test_a_redacted_user_report_export_withholds_a_sensitive_column_alias(
     ]
 
 
+def test_a_redacted_user_report_export_withholds_a_sensitive_parameter_name(
+    db: Database,
+) -> None:
+    """A parameter's name is user-authored on the same terms as a column alias.
+
+    The receipt keys both ``parameters`` and ``parameter_classes`` by declared
+    name and the subject repeats them, so
+    ``WHERE routing_number = $acct_021000021`` publishes the literal three more
+    times beside a value masked to ``*****``. ``only_account`` keeps its name in
+    the same artifact: its value is published, so its name discloses nothing.
+
+    The ``builtin``-tier half of this is
+    ``test_prepare_report_applies_redaction_after_raw_execution``, which pins that
+    a declared ``account_number`` parameter keeps its name while its value masks.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, routing_number) VALUES (?, ?)",
+        ["acct_11112222", "021000021"],
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="param_alias",
+            query_sql=(
+                "SELECT account_id FROM core.dim_accounts "
+                "WHERE routing_number = $acct_021000021 AND account_id = $only_account"
+            ),
+            params=[
+                ParamSpec(
+                    name="acct_021000021",
+                    annotation=str,
+                    default=None,
+                    required=True,
+                    help="",
+                    data_class=DataClass.UNRESOLVED,
+                ),
+                ParamSpec(
+                    name="only_account",
+                    annotation=str,
+                    default=None,
+                    required=True,
+                    help="",
+                    data_class=DataClass.UNRESOLVED,
+                ),
+            ],
+            actor="cli",
+        )
+        .report_id
+    )
+
+    redacted = ExportService(db).prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={
+            "acct_021000021": "021000021",
+            "only_account": "acct_11112222",
+        },
+    )
+
+    expected = {"redacted_parameter_1": "*****", "only_account": "acct_11112222"}
+    assert redacted.subject.as_manifest()["parameters"] == expected
+    assert redacted.provenance is not None
+    assert redacted.provenance.receipt["parameters"] == expected
+    assert redacted.provenance.receipt["parameter_classes"] == {
+        "redacted_parameter_1": DataClass.ROUTING_NUMBER.value,
+        "only_account": DataClass.RECORD_ID.value,
+    }
+    assert "021000021" not in json.dumps(redacted.manifest)
+
+
 def test_a_redacted_user_report_export_keeps_its_column_names_distinct(
     db: Database,
 ) -> None:
