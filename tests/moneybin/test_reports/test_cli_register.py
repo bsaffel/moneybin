@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import typer
@@ -163,6 +164,50 @@ def test_register_report_cli_adds_named_command() -> None:
     register_report_cli(_spec(), app)
     names = {c.name for c in app.registered_commands}
     assert "balance-drift" in names  # cli_name = name with hyphens
+
+
+def test_the_text_path_says_why_a_drifted_report_is_masked() -> None:
+    """A ``*****`` with no reason is the failure mode R4 exists to prevent.
+
+    The catalog sets ``degraded`` and ``degraded_reason`` and masks the affected
+    columns, but ``render_or_json`` renders no envelope metadata on the text path —
+    so ``reports run`` printed the masked table alone while JSON and MCP callers
+    received the reason. Silent masking trains the reader to accept ``*****`` as
+    normal, which is exactly what makes the honest case unreadable.
+    """
+    app = _multi_command_app()
+    drifted = replace(
+        _result(),
+        degraded=True,
+        degraded_reason="stale_classification: account_id moved upward",
+    )
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = drifted
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "stale_classification" in result.output
+
+
+def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:
+    """R4's other half: the note must not fire on the clean path.
+
+    A warning printed beside every ordinary table is a warning nobody reads, so
+    the marker's absence here is what gives it meaning above.
+    """
+    app = _multi_command_app()
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _result()
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "⚠️" not in result.output
 
 
 def test_cli_command_json_output_emits_envelope() -> None:

@@ -81,6 +81,13 @@ def render_report_result(
                 for record in result.records
             ]
             render_rich_table(result.columns, rows)
+        # R4's verdict, on the surface that cannot see the envelope. JSON and MCP
+        # callers read `summary.degraded_reason`; `render_or_json` renders no
+        # envelope metadata on the text path, so without this a drifted report
+        # printed `*****` and said nothing — the silent masking that teaches a
+        # reader to skip the warning that matters.
+        if result.degraded and result.degraded_reason:
+            typer.echo(f"⚠️  {result.degraded_reason}")
 
     render_or_json(
         result.to_envelope(),

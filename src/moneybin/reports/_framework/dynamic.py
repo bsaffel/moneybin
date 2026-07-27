@@ -355,18 +355,25 @@ def _classed_params(
     that was correct at the time.
     """
     classed: list[ParamSpec] = []
+    dropped: list[str] = []
     for parameter in declared:
         data_class = parameter_classes.get(parameter.name, FAIL_CLOSED_CLASS)
         if not parameter.required and data_class.tier > Tier.LOW:
-            logger.warning(
-                f"user report parameter {parameter.name!r} reclassified to "
-                f"{data_class.value}; dropping its stored default."
-            )
+            dropped.append(data_class.value)
             classed.append(
                 replace(parameter, data_class=data_class, default=None, required=True)
             )
         else:
             classed.append(replace(parameter, data_class=data_class))
+    if dropped:
+        # A declared parameter's name is user-authored, exactly like an output
+        # alias — `--param amazon_spend:str=…` is a name a user picks. The count
+        # and the new classes carry the operational fact; the spec the caller
+        # receives names which parameter became required.
+        logger.warning(
+            f"{len(dropped)} user report parameter(s) reclassified to "
+            f"{', '.join(sorted(set(dropped)))}; dropping their stored defaults."
+        )
     return tuple(classed)
 
 

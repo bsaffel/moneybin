@@ -1013,6 +1013,42 @@ def test_explain_reports_a_suppressed_executed_form_with_the_fix() -> None:
     assert "acct" in flat
 
 
+def test_explain_echoes_the_drift_reason_and_keeps_it_out_of_the_log() -> None:
+    """The drift reason names the columns that moved, so it is user-authored text.
+
+    Same shape as the save notes: routed through ``logger.warning`` it reached the
+    log file with the aliases and — because diagnostic logging is off the console
+    — never reached the reader who ran ``reports explain`` at all. The terminal
+    gets the reason; the record gets the report id.
+    """
+    explanation = _explanation(
+        drift_detected=True,
+        drift_reason="stale_classification: amazon_spend moved upward",
+    )
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(explanation),
+        patch.object(user_reports, "logger") as log,
+    ):
+        result = runner.invoke(app, ["reports", "explain", "my_accounts"])
+
+    assert result.exit_code == 0, result.output
+    # The substantive half: with logging substituted, the reason must still reach
+    # the reader. Before the fix the reason was *only* a log call, so this fails
+    # on the defect rather than passing vacuously alongside the guard below.
+    assert "amazon_spend" in _flatten(result.output)
+    # The guard. An empty record set satisfies it, and that is the intended state
+    # here — drift is logged in counts at its detection site, not re-logged by the
+    # renderer — so this fails only on a record that carries the alias back.
+    logged = [str(call.args[0]) for call in log.warning.call_args_list]
+    assert not any("amazon_spend" in message for message in logged)
+
+
 def test_explain_json_carries_the_provenance_and_freshness() -> None:
     explanation = _explanation(drift_detected=True, drift_reason="stale_classification")
     with (

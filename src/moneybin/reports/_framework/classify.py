@@ -39,13 +39,21 @@ def classify_columns(spec: ReportSpec, columns: list[str]) -> dict[str, DataClas
     correctly-declared report — it is defense in depth.
     """
     classified: dict[str, DataClass] = {}
+    undeclared = 0
     for col in columns:
         declared = spec.classes.get(col)
         if declared is None:
-            logger.warning(
-                f"Report {spec.name!r} column {col!r} is undeclared; "
-                "failing closed (masked)."
-            )
+            undeclared += 1
             declared = _FAIL_CLOSED
         classified[col] = declared
+    if undeclared:
+        # Neither the report name nor the alias. A packaged report's undeclared
+        # column is a build-time bug CI catches, so the tier that reaches this at
+        # runtime is the user tier — where both are text the user typed, and
+        # `amazon_spend` is as plausible a merchant name as a column one. The
+        # report_id identifies the event; the response names the masked columns.
+        logger.warning(
+            f"report {spec.report_id} has {undeclared} undeclared column(s); "
+            "failing closed (masked)."
+        )
     return classified

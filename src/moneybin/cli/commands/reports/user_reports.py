@@ -218,8 +218,12 @@ def reports_explain(
             typer.echo(f"{label}: {value}")
         for blocker in explanation.graduation_blockers:
             typer.echo(f"  ⚠️  {blocker}")
+        # Echoed, not logged. The reason names the columns that moved, and a saved
+        # report's aliases are user-authored. No safe record is lost by dropping
+        # the log call: `_reresolved` already logs the drift where it is detected,
+        # in counts, and this path reaches it through `spec_from_row`.
         if explanation.drift_reason:
-            logger.warning(f"⚠️  {explanation.drift_reason}")
+            typer.echo(f"  ⚠️  {explanation.drift_reason}")
         if explanation.sql_unavailable:
             typer.echo(f"SQL: {explanation.sql_unavailable}")
         if explanation.withheld_parameters:

@@ -773,6 +773,52 @@ def test_spec_from_row_serves_the_stored_map_without_re_resolving(
     assert not dynamic.degraded
 
 
+def test_the_reclassified_parameter_warning_withholds_the_parameter_name(
+    dynamic_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A declared parameter's name is user-authored text, like a column alias.
+
+    ``--param amazon_spend:str=...`` is a name a user chooses, and
+    ``SanitizedLogFormatter`` cannot tell it from a merchant label. The record
+    keeps the count and the new class; the response already names the parameter
+    it made required.
+    """
+    row = _saved(
+        dynamic_db,
+        query_sql=(
+            "SELECT account_id FROM core.dim_accounts WHERE account_id = $amazon_spend"
+        ),
+        params=[
+            {
+                "name": "amazon_spend",
+                "annotation": "str",
+                "default": "acct_11112222",
+            }
+        ],
+    )
+
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "dim_accounts")] = {
+        **CLASSIFICATION[("core", "dim_accounts")],
+        "account_id": DataClass.ROUTING_NUMBER,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    with caplog.at_level(logging.WARNING):
+        dynamic = spec_from_row(dynamic_db, row)
+
+    # The invariant the warning exists to report still holds.
+    (parameter,) = dynamic.spec.params
+    assert parameter.required is True
+    assert parameter.default is None
+
+    logged = [record.getMessage() for record in caplog.records]
+    assert logged, "expected a record about the dropped default"
+    assert not any("amazon_spend" in message for message in logged)
+
+
 def test_spec_from_row_fails_closed_when_a_column_is_reclassified_upward(
     dynamic_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -19,7 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   report is masked exactly as it is in a built-in. If an upstream column is later
   reclassified as more sensitive, the saved report notices and masks that column
   rather than serving the stale class, and the response says so
-  (`summary.degraded`) rather than masking silently. An exported artifact records
+  (`summary.degraded`) rather than masking silently — including on the plain-text
+  path, where `reports run` prints the reason under the table instead of leaving a
+  bare `*****` for the reader to interpret. An exported artifact records
   the same verdict in its provenance receipt, so a file opened months later still
   distinguishes columns masked by drift from columns that were empty at source.
   `reports set --archive`
@@ -49,7 +51,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   upstream rename invalidates a stored query, `reports run` and `export report`
   report `report_query_execution_failed` and name the likely cause instead of
   surfacing a DuckDB binder error, which quotes the statement it failed to bind.
-  The log keeps the exception type and a SHA-256 digest of the query. (#367)
+  The log keeps the exception type and a SHA-256 digest of the query.
+
+  The same rule covers every name you choose, not only the SQL. A report's name,
+  its output aliases, and its declared parameter names never enter a log record:
+  each site logs the report id with a count or a class and echoes the detail to
+  the terminal, because `SanitizedLogFormatter` masks account numbers and dollar
+  amounts by pattern and cannot recognize `amazon_spend`. A test enumerates the
+  shape across the reports surface so a new log line cannot reintroduce it. (#367)
 - **Every report can show its work: `moneybin reports explain <handle>` (M2I).**
   Returns the query in two forms — the executed form with parameters rendered as
   literals, and the stored template — plus each output column's privacy class and
