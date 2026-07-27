@@ -622,7 +622,7 @@ not sit a second dispatcher beside it.
 | Inspect | Unadmitted capability; MCP identity remains unnamed | `moneybin reports explain` |
 | Downgrade a class | Unadmitted capability; MCP identity remains unnamed | `moneybin reports reclassify` |
 
-**The MCP registry remains the operating 47-tool contract.** This draft does
+**The MCP registry remains the operating 49-tool contract.** This draft does
 not reserve three identities or count them against the hard maximum of 50. The
 implementing PR must first try an existing projection, method, batch, target
 state, report entry, or workflow umbrella, then complete the seven-question
@@ -1061,7 +1061,7 @@ would hide a surface that is refusing every downgrade for mechanical reasons.
   admission test: the implementing PR must first try an existing projection,
   method, batch, target state, report entry, or workflow umbrella, then supply
   the seven-question record, serialized byte delta, and evaluation evidence for
-  every remaining identity. The 47-tool standard registry does not grow until
+  every remaining identity. The 49-tool standard registry does not grow until
   that evidence passes; the fallback is an existing admitted operation or
   CLI-only operator control, not a speculative alias or an override of
   ADR-016's hard maximum.

@@ -261,13 +261,24 @@ class TestProfileShow:
         mock_svc.show.assert_called_once_with("bob")
 
     @patch("moneybin.cli.commands.profile.ProfileService")
-    def test_show_not_found_fails(self, mock_cls: MagicMock) -> None:
+    def test_show_not_found_fails(
+        self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A missing profile exits cleanly instead of raising a traceback.
+
+        `exit_code == 1` alone cannot assert this: CliRunner reports 1 for an
+        unhandled exception too. The discriminating checks are that nothing
+        propagated out of the command and that the user was actually told why.
+        """
         from moneybin.services.profile_service import ProfileNotFoundError
 
         mock_svc = mock_cls.return_value
         mock_svc.show.side_effect = ProfileNotFoundError("not found")
-        result = runner.invoke(app, ["show", "ghost"])
+        with caplog.at_level(logging.ERROR, logger="moneybin.cli.utils"):
+            result = runner.invoke(app, ["show", "ghost"])
         assert result.exit_code == 1
+        assert not isinstance(result.exception, ProfileNotFoundError)
+        assert "not found" in caplog.text
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_show_displays_db_status(

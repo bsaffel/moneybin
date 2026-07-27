@@ -72,6 +72,7 @@ def _mock_pipeline(
     net = mocker.patch("moneybin.services.networth_service.NetworthService")
     net.return_value.current.return_value = NetWorthSnapshotPayload(
         balance_date=datetime.date(2025, 1, 1) if net_worth is not None else None,
+        currency_code="USD" if net_worth is not None else None,
         net_worth=Decimal(net_worth) if net_worth is not None else None,
         total_assets=Decimal("150.00") if net_worth is not None else None,
         total_liabilities=Decimal("50.00") if net_worth is not None else None,

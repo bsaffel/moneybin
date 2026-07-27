@@ -44,6 +44,9 @@ class TransactionRow:
     account_id: Annotated[str, DataClass.RECORD_ID]
     transaction_date: Annotated[str, DataClass.TXN_DATE]
     amount: Annotated[Decimal, DataClass.TXN_AMOUNT]
+    # A mixed-currency page reports display_currency=None, so without this the
+    # amount above has no denomination anywhere in the response.
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
     description: Annotated[str, DataClass.DESCRIPTION]
     memo: Annotated[str | None, DataClass.DESCRIPTION]
     source_type: Annotated[str, DataClass.TXN_TYPE]

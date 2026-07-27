@@ -12,6 +12,7 @@ SELECT
   a.display_name AS account_name, /* Account display name */
   t.transaction_date AS txn_date, /* Transaction date */
   t.amount, /* Signed amount */
+  t.currency_code, /* ISO 4217 currency the amount is denominated in; priority_score compares nominal magnitudes and is only meaningful within one currency */
   t.description, /* Original description */
   t.merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant was resolved */
   t.merchant_name AS merchant_normalized, /* Normalized merchant string (display) */

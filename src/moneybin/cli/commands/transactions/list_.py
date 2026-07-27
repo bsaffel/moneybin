@@ -153,6 +153,7 @@ def transactions_list(
                 account_id=t.account_id,
                 transaction_date=t.transaction_date,
                 amount=t.amount,
+                currency_code=t.currency_code,
                 description=t.description,
                 memo=t.memo,
                 source_type=t.source_type,

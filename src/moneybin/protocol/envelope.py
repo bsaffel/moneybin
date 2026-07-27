@@ -11,7 +11,7 @@ See ``mcp-architecture.md`` section 4 for design rationale.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal
 from enum import StrEnum
@@ -57,6 +57,46 @@ class DetailLevel(StrEnum):
     FULL = "full"
 
 
+def resolve_display_currency(codes: Iterable[str | None]) -> str | None:
+    """The one currency every row is denominated in, else ``None``.
+
+    Rows are segmented per currency (multi-currency.md Requirement 5), so the
+    envelope may only name a display currency when they agree on exactly one
+    known one. An unknown (NULL) currency is its own segment and never resolves
+    to whichever currency the other rows happen to carry — that would be the
+    Requirement 5 blend, relabelled. No rows at all names nothing.
+
+    Lives here rather than beside any one caller because ``display_currency`` is
+    an envelope field: reports and the balance reads must answer it the same
+    way, or the same data reads as two different currencies across surfaces.
+    """
+    seen = set(codes)
+    if len(seen) != 1:
+        return None
+    only = next(iter(seen))
+    return str(only) if only else None
+
+
+class Unset:
+    """Sentinel type distinguishing "caller said nothing" from "caller said None".
+
+    ``None`` is a real answer for ``display_currency`` — it means the rows span
+    more than one currency, or none is known. A caller that resolved that over a
+    wider set than the returned page (the reports framework, which sees every
+    matching row before truncation) must be able to state it and keep it, so
+    silence needs its own value.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        """Render as ``<unset>`` so a stray sentinel is obvious in a traceback."""
+        return "<unset>"
+
+
+UNSET = Unset()
+
+
 @dataclass(frozen=True, slots=True)
 class SummaryMeta:
     """Metadata section of the response envelope.
@@ -70,12 +110,25 @@ class SummaryMeta:
     has_more: bool = False
     period: str | None = None
     sensitivity: Literal["low", "medium", "high", "critical"] = "low"
-    display_currency: str = "USD"
+    # Nullable: a response whose rows span more than one currency — or whose
+    # currency is unknown — has no single display currency, and naming one
+    # would contradict the rows (multi-currency.md Requirement 5). Null means
+    # "read each row's currency_code", not "unset". The claim is scoped to the
+    # rows in THIS response; when has_more is true, later pages may carry other
+    # currencies. Defaults to unknown, never USD: a summary built without one
+    # has not been told a currency, and inventing the author's home currency is
+    # what mislabelled every non-USD balance before M1K.1.
+    display_currency: str | None = None
     degraded: bool = False
     degraded_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dict, omitting None fields and False degraded."""
+        """Convert to dict, omitting a null ``period`` and a false ``degraded``.
+
+        ``display_currency`` is emitted unconditionally, null included: null is
+        the answer "not one known currency", and a consumer that finds no key
+        cannot tell that answer from a tool that never set one.
+        """
         d: dict[str, Any] = {
             "total_count": self.total_count,
             "returned_count": self.returned_count,
@@ -242,7 +295,7 @@ def build_envelope(
     returned_count: int | None = None,
     next_cursor: str | None = None,
     period: str | None = None,
-    display_currency: str = "USD",
+    display_currency: str | None | Unset = UNSET,
     actions: list[str] | None = None,
     degraded: bool = False,
     degraded_reason: str | None = None,
@@ -272,7 +325,14 @@ def build_envelope(
         next_cursor: Opaque pagination token. When provided, ``summary.has_more``
             is forced to ``True`` regardless of count comparison.
         period: Human-readable period string (e.g., ``"2026-01 to 2026-04"``).
-        display_currency: Currency for all amounts in the response.
+        display_currency: Currency for all amounts in this response; None when
+            they span more than one currency, or the currency is unknown.
+            Scoped to the returned rows — later pages may differ when
+            has_more is true. Omit it and the payload's own ``currency_code``
+            answers; pass it only to state a currency the payload cannot show
+            — resolved over a wider set than the returned page, or held
+            somewhere other than a ``currency_code`` field. Passing ``None``
+            explicitly states "not one currency" and is preserved.
         actions: Contextual next-step hints.
         degraded: Whether this is a degraded (no-consent) response.
         degraded_reason: Why the response is degraded.
@@ -317,13 +377,19 @@ def build_envelope(
             returned = actual_total
     has_more = next_cursor is not None or actual_total > returned
 
+    resolved_currency = (
+        _derive_display_currency(data_any)
+        if isinstance(display_currency, Unset)
+        else display_currency
+    )
+
     summary = SummaryMeta(
         total_count=actual_total,
         returned_count=returned,
         has_more=has_more,
         period=period,
         sensitivity=sensitivity,
-        display_currency=display_currency,
+        display_currency=resolved_currency,
         degraded=degraded,
         degraded_reason=degraded_reason,
     )
@@ -350,6 +416,92 @@ _AUXILIARY_LIST_FIELDS = frozenset({
     "unmapped_columns",
     "flagged_fields",
 })
+
+
+_CURRENCY_FIELD = "currency_code"
+
+
+def _derive_display_currency(data: Any) -> str | None:
+    """Read the currency off the payload; ``None`` when it doesn't state one.
+
+    Called only when the caller passed nothing. A payload that carries its own
+    ``currency_code`` — every ``investments.*`` row, ``AccountSummary``,
+    ``AccountDetail``, ``AccountSettingsPayload``, ``BalanceObservationRow`` —
+    already holds the single correct answer, so reading it is the opposite of
+    guessing. The former ``"USD"`` default guessed, and guessed wrong for every
+    non-USD profile on the nine money-bearing tools that never overrode it.
+
+    Not inference: ``resolve_display_currency`` collapses the rows to one code
+    or declines. A payload with no currency field anywhere stays unknown rather
+    than borrowing a neighbour's.
+    """
+    if isinstance(data, dict):
+        return None
+    if isinstance(data, list):
+        rows = cast(list[Any], data)
+        return _currency_of_rows(rows)
+    if _has_currency_field(data):
+        return resolve_display_currency([getattr(data, _CURRENCY_FIELD)])
+    rows = _primary_rows(data)
+    return _currency_of_rows(rows) if rows is not None else None
+
+
+def _has_currency_field(data: Any) -> bool:
+    """True when ``data`` is a record carrying a currency_code field.
+
+    Mapping rows count. ``sql_query`` returns ``list[dict[str, Any]]``
+    (``SqlQueryResult.records``), so a dataclass/``BaseModel``-only test made
+    every ad-hoc query report an unknown currency — even one projecting
+    ``currency_code`` with every row in agreement.
+    """
+    if isinstance(data, type):
+        return False
+    if isinstance(data, Mapping):
+        return _CURRENCY_FIELD in data
+    if is_dataclass(data):
+        return any(item.name == _CURRENCY_FIELD for item in fields(data))
+    if isinstance(data, BaseModel):
+        return _CURRENCY_FIELD in type(data).model_fields
+    return False
+
+
+def _currency_value(row: Any) -> str | None:
+    """The row's currency_code, however that row carries it."""
+    if isinstance(row, Mapping):
+        code = cast(Mapping[str, Any], row)[_CURRENCY_FIELD]
+        return None if code is None else str(code)
+    return cast("str | None", getattr(row, _CURRENCY_FIELD))
+
+
+def _currency_of_rows(rows: list[Any]) -> str | None:
+    """Resolve the one currency a row list agrees on, else ``None``."""
+    if not rows or not all(_has_currency_field(row) for row in rows):
+        return None
+    return resolve_display_currency(_currency_value(row) for row in rows)
+
+
+def _primary_rows(data: Any) -> list[Any] | None:
+    """The payload's sole non-auxiliary list field, if it has exactly one.
+
+    Mirrors ``_count_primary_lists``' choice of "the" row collection so the
+    derived currency describes the same rows that ``returned_count`` counts.
+    """
+    if isinstance(data, type):
+        return None
+    if is_dataclass(data):
+        names = [item.name for item in fields(data)]
+    elif isinstance(data, BaseModel):
+        names = list(type(data).model_fields)
+    else:
+        return None
+    primary: list[list[Any]] = []
+    for name in names:
+        if name in _AUXILIARY_LIST_FIELDS:
+            continue
+        value: Any = getattr(data, name)
+        if isinstance(value, list):
+            primary.append(cast(list[Any], value))
+    return primary[0] if len(primary) == 1 else None
 
 
 def _count_typed_payload(data: Any) -> int:

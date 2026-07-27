@@ -318,10 +318,12 @@ def test_report_result_actions_use_executable_standard_calls() -> None:
     networth = MagicMock()
     networth.current.return_value = SimpleNamespace(
         balance_date=None,
+        currency_code=None,
         net_worth=0,
         total_assets=0,
         total_liabilities=0,
         account_count=0,
+        per_currency=[],
         per_account=[],
     )
     networth.history.return_value = SimpleNamespace(points=[])

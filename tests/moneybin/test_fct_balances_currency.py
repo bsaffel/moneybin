@@ -6,6 +6,8 @@ test_fct_balances_plaid.py) to isolate the SQL from the extractor path.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
@@ -56,6 +58,317 @@ def _accept_link(db: Database, *, native_key: str, canonical_id: str) -> None:
         """,  # noqa: S608  # test fixture, not executing user SQL
         [f"link_{native_key}", canonical_id, native_key, _ITEM],
     )
+
+
+def _insert_ofx_account(db: Database, *, account_id: str) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.ofx_accounts
+            (account_id, account_type, source_file, extracted_at,
+             source_type, source_origin)
+        VALUES (?, 'CHECKING', 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank')
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [account_id],
+    )
+
+
+def _insert_ofx_balance(
+    db: Database,
+    *,
+    account_id: str,
+    on_date: str,
+    balance: str,
+    source_file: str,
+    currency_code: str | None = "USD",
+) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.ofx_balances
+            (account_id, statement_end_date, ledger_balance, ledger_balance_date,
+             source_file, extracted_at, source_type, source_origin, currency_code)
+        VALUES (?, ?::TIMESTAMP, ?::DECIMAL(18, 2), ?::TIMESTAMP, ?,
+                CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [account_id, on_date, balance, on_date, source_file, currency_code],
+    )
+
+
+def _insert_ofx_transaction_on(
+    db: Database,
+    *,
+    txn_id: str,
+    account_id: str,
+    on_date: str,
+    amount: str,
+    currency_code: str,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.ofx_transactions
+            (source_transaction_id, account_id, transaction_type, date_posted,
+             amount, payee, source_file, extracted_at, source_type,
+             source_origin, currency_code)
+        VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, ?::DECIMAL(18, 2), 'Test Payee',
+                'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [txn_id, account_id, on_date, amount, currency_code],
+    )
+
+
+def _seed_mixed_currency_account(db: Database, *, account_id: str) -> None:
+    """A USD account whose 07-02 activity is one USD and one EUR transaction.
+
+    Both transactions are needed to isolate the defect: with only the EUR one,
+    a carry that correctly excludes it and a carry that never applied any
+    adjustment produce the same number.
+    """
+    _insert_ofx_account(db, account_id=account_id)
+    _insert_ofx_balance(
+        db,
+        account_id=account_id,
+        on_date="2026-07-01",
+        balance="1000.00",
+        source_file="ofx_test_open",
+    )
+    # 873.00 = 1000 - 100 USD - the EUR 25 settling at ~27 USD. MoneyBin cannot
+    # know that rate, which is exactly why the EUR row must not enter the carry.
+    _insert_ofx_balance(
+        db,
+        account_id=account_id,
+        on_date="2026-07-03",
+        balance="873.00",
+        source_file="ofx_test_close",
+    )
+    _insert_ofx_transaction_on(
+        db,
+        txn_id=f"{account_id}_usd",
+        account_id=account_id,
+        on_date="2026-07-02",
+        amount="-100.00",
+        currency_code="USD",
+    )
+    _insert_ofx_transaction_on(
+        db,
+        txn_id=f"{account_id}_eur",
+        account_id=account_id,
+        on_date="2026-07-02",
+        amount="-25.00",
+        currency_code="EUR",
+    )
+
+
+@pytest.mark.slow
+def test_foreign_currency_transaction_stays_out_of_the_carried_balance(
+    db: Database,
+) -> None:
+    """A transaction in another currency is never added to the carried balance.
+
+    multi-currency.md Requirement 5. The carry is denominated in the observation's
+    currency, so adding a EUR amount to a USD balance sums unlike units — and the
+    blend is invisible downstream, because the resulting row still claims USD.
+    """
+    _seed_mixed_currency_account(db, account_id="bal_mix")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        """
+        SELECT balance, is_observed FROM core.fct_balances_daily
+        WHERE account_id = 'bal_mix' AND balance_date = '2026-07-02'::DATE
+        """
+    ).fetchone()
+    assert row is not None
+    assert row[1] is False, "07-02 has no observation; it must be interpolated"
+    # 1000 - 100 USD. Summing the EUR 25 as though it were dollars gives 875.00.
+    assert row[0] == Decimal("900.00")
+
+
+@pytest.mark.slow
+def test_unconverted_foreign_activity_surfaces_as_reconciliation_drift(
+    db: Database,
+) -> None:
+    """Excluding a foreign transaction leaves the gap visible, not silent.
+
+    The next observation's reconciliation_delta is the movement the carry could
+    not explain, which is what `reports.balance_drift` already reports on.
+    """
+    _seed_mixed_currency_account(db, account_id="bal_drift")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        """
+        SELECT reconciliation_delta FROM core.fct_balances_daily
+        WHERE account_id = 'bal_drift' AND balance_date = '2026-07-03'::DATE
+        """
+    ).fetchone()
+    assert row is not None
+    # 873.00 observed - 900.00 carried = the 27.00 of EUR spending MoneyBin
+    # cannot express in USD. Blending the raw 25.00 in would report -2.00.
+    assert row[0] == Decimal("-27.00")
+
+
+@pytest.mark.slow
+def test_a_currency_change_between_observations_yields_no_reconciliation_delta(
+    db: Database,
+) -> None:
+    """When the observed currency changes, the prior carry is not comparable.
+
+    `core.fct_balances` resolves currency per row, so a corrected re-import can
+    legitimately move an account from USD to EUR between two observations.
+    Subtracting the USD carry from the EUR observation would produce a number in
+    no unit at all — and it would be labelled with the *new* currency, so
+    `reports.balance_drift`'s currency_mismatch guard (which compares the row
+    against the account) cannot see it: both sides read EUR and agree. NULL is
+    the honest answer, and balance_drift already renders it as `no-data`.
+    """
+    _insert_ofx_account(db, account_id="bal_switch")
+    _insert_ofx_balance(
+        db,
+        account_id="bal_switch",
+        on_date="2026-07-01",
+        balance="1000.00",
+        source_file="ofx_switch_usd",
+        currency_code="USD",
+    )
+    _insert_ofx_balance(
+        db,
+        account_id="bal_switch",
+        on_date="2026-07-03",
+        balance="900.00",
+        source_file="ofx_switch_eur",
+        currency_code="EUR",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        """
+        SELECT reconciliation_delta, currency_code FROM core.fct_balances_daily
+        WHERE account_id = 'bal_switch' AND balance_date = '2026-07-03'::DATE
+        """
+    ).fetchone()
+    assert row is not None
+    # Blending would report 900 - 1000 = -100.00, a EUR-labelled USD difference.
+    assert row[0] is None
+    assert row[1] == "EUR", "the later observation's own currency must win"
+
+
+@pytest.mark.slow
+def test_an_observation_that_states_no_currency_inherits_the_accounts(
+    db: Database,
+) -> None:
+    """An unknown->known transition never reaches the daily model's gate.
+
+    Worth pinning because it is the obvious test to reach for and it would
+    assert the wrong thing. `dim_accounts.currency_code` is
+    `ARG_MAX(currency_code, extracted_at) FILTER (WHERE NOT currency_code IS
+    NULL)` — one value per account, learned from whichever observation stated
+    one — and `fct_balances` projects
+    `COALESCE(u.currency_code, a.currency_code)`. So an earlier observation that
+    stated nothing inherits the account's EUR rather than staying NULL, and both
+    rows reach `fct_balances_daily` already agreeing.
+
+    That makes the delta genuinely well-defined: both balances are EUR, so
+    voiding it here would withhold a real reconciliation. The gate is for two
+    *different known* currencies (covered above) and, at this grain, nothing
+    else — the unknown segment only survives when the account has no currency
+    anywhere, which the next test covers.
+    """
+    _insert_ofx_account(db, account_id="bal_unknown_then_eur")
+    _insert_ofx_balance(
+        db,
+        account_id="bal_unknown_then_eur",
+        on_date="2026-07-01",
+        balance="1000.00",
+        source_file="ofx_unknown",
+        currency_code=None,
+    )
+    _insert_ofx_balance(
+        db,
+        account_id="bal_unknown_then_eur",
+        on_date="2026-07-03",
+        balance="900.00",
+        source_file="ofx_now_eur",
+        currency_code="EUR",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        """
+        SELECT balance_date, reconciliation_delta, currency_code
+        FROM core.fct_balances_daily
+        WHERE account_id = 'bal_unknown_then_eur'
+          AND balance_date IN ('2026-07-01'::DATE, '2026-07-02'::DATE,
+                               '2026-07-03'::DATE)
+        ORDER BY balance_date
+        """
+    ).fetchall()
+    assert [(r[1], r[2]) for r in rows] == [
+        (None, "EUR"),  # first observation: no prior carry, currency inherited
+        (None, "EUR"),  # carried day: not observed, so no delta of its own
+        # 900.00 - 1000.00, no transactions between: both sides are EUR, so
+        # this is a real reconciliation and must NOT be voided.
+        (Decimal("-100.00"), "EUR"),
+    ]
+
+
+@pytest.mark.slow
+def test_an_unknown_currency_carry_still_reconciles_against_itself(
+    db: Database,
+) -> None:
+    """Two unknown-currency observations DO reconcile — NULL matches NULL.
+
+    The companion to the test above, and the case the currency gate is most
+    likely to over-fire on: an account nobody has assigned a currency to still
+    has a well-defined reconciliation, because both amounts are in the same
+    (unnamed) unit. Voiding it would blank the drift report for exactly the
+    population `system doctor`'s currency_integrity check is walking the user
+    out of.
+
+    This does NOT exercise `_to_currency`'s NaN branch — verified by removing
+    that branch and watching all 14 balance tests still pass. DuckDB renders an
+    all-NULL VARCHAR column as object dtype holding None, so the currency cell
+    never arrives as NaN; the guard is defensive. (`_to_decimal`'s NaN branch is
+    a live path — an all-NULL DECIMAL column does come back as float64.)
+    """
+    _insert_ofx_account(db, account_id="bal_unknown_pair")
+    _insert_ofx_balance(
+        db,
+        account_id="bal_unknown_pair",
+        on_date="2026-07-01",
+        balance="1000.00",
+        source_file="ofx_unknown_a",
+        currency_code=None,
+    )
+    _insert_ofx_balance(
+        db,
+        account_id="bal_unknown_pair",
+        on_date="2026-07-03",
+        balance="900.00",
+        source_file="ofx_unknown_b",
+        currency_code=None,
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        """
+        SELECT reconciliation_delta, currency_code FROM core.fct_balances_daily
+        WHERE account_id = 'bal_unknown_pair'
+          AND balance_date = '2026-07-03'::DATE
+        """
+    ).fetchone()
+    assert row is not None
+    # 900.00 observed - 1000.00 carried, with no transactions between them.
+    assert row[0] == Decimal("-100.00")
+    assert row[1] is None
 
 
 @pytest.mark.slow

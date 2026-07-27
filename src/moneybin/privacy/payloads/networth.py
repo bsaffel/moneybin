@@ -28,17 +28,40 @@ class NetWorthAccountRow:
     display_name: Annotated[str | None, DataClass.USER_NOTE]
     balance: Annotated[Decimal, DataClass.BALANCE]
     observation_source: Annotated[str | None, DataClass.TXN_TYPE]
+    currency_code: Annotated[str | None, DataClass.CURRENCY] = None
 
 
 @dataclass(frozen=True, slots=True)
-class NetWorthSnapshotPayload:
-    """Net worth at a point in time + per-account breakdown."""
+class NetWorthCurrencySegment:
+    """Totals for the accounts denominated in one currency."""
 
-    balance_date: Annotated[date | None, DataClass.TXN_DATE]
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
     net_worth: Annotated[Decimal | None, DataClass.BALANCE]
     total_assets: Annotated[Decimal | None, DataClass.BALANCE]
     total_liabilities: Annotated[Decimal | None, DataClass.BALANCE]
     account_count: Annotated[int, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class NetWorthSnapshotPayload:
+    """Net worth at a point in time + per-currency and per-account breakdowns.
+
+    The headline scalars carry a figure only when every contributing account
+    shares one currency. Holding two currencies makes a single total
+    meaningless until conversion ships (multi-currency.md Requirement 5), so
+    `net_worth`, `total_assets`, `total_liabilities`, and `currency_code` go
+    null and `per_currency` carries each currency's own totals. A
+    single-currency profile — the common case — sees the same figures it
+    always did, plus the currency they are denominated in.
+    """
+
+    balance_date: Annotated[date | None, DataClass.TXN_DATE]
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
+    net_worth: Annotated[Decimal | None, DataClass.BALANCE]
+    total_assets: Annotated[Decimal | None, DataClass.BALANCE]
+    total_liabilities: Annotated[Decimal | None, DataClass.BALANCE]
+    account_count: Annotated[int, DataClass.AGGREGATE]
+    per_currency: list[NetWorthCurrencySegment] = field(default_factory=list)
     per_account: list[NetWorthAccountRow] = field(default_factory=list)
 
 
@@ -48,6 +71,7 @@ class NetWorthHistoryPoint:
 
     # period as string (ISO date) per the existing wire format
     period: Annotated[str | None, DataClass.TXN_DATE]
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
     net_worth: Annotated[Decimal, DataClass.BALANCE]
     change_abs: Annotated[Decimal | None, DataClass.BALANCE]
     change_pct: Annotated[Decimal | float | None, DataClass.AGGREGATE]

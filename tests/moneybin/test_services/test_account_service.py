@@ -1167,3 +1167,59 @@ class TestNullAccountType:
         counts = service.summary().count_by_type
         assert None not in counts, f"count_by_type carries a None key: {counts!r}"
         assert counts.get("<unset>") == 1, counts
+
+
+class TestNullCurrencyCode:
+    """A NULL currency_code must not surface as the string "None".
+
+    The same defect as TestNullAccountType, in the same two read paths, on the
+    column beside it: `str(row[6])` renders SQL NULL as "None". Removing
+    `dim_accounts`' blind `'USD'` fallback (multi-currency.md Requirement 3)
+    made NULL a routine outcome rather than an unreachable one — an account
+    whose source never stated a currency now keeps it unknown, and
+    `system doctor`'s `currency_integrity` check exists precisely to fail until
+    the user resolves those rows. "None" reads to an agent as a denomination.
+    """
+
+    @pytest.fixture
+    def uncurrencied_account_db(self, db: Database) -> Database:
+        """One account with a known type and an unknown currency.
+
+        account_type is deliberately populated: a row that is NULL in both
+        columns would pass these tests off the account_type fix and prove
+        nothing about currency_code.
+        """
+        conn = db.conn
+        create_core_tables_raw(conn)
+        conn.execute("""
+            INSERT INTO core.dim_accounts
+                (account_id, routing_number, account_type, institution_name,
+                 institution_fid, source_type, source_file, extracted_at,
+                 loaded_at, updated_at)
+            VALUES
+            ('ACCNOCUR', '333000075', 'checking', 'Unstated Bank', '9999',
+             'tabular', 'unstated.csv', '2025-01-01', CURRENT_TIMESTAMP,
+             CURRENT_TIMESTAMP)
+        """)
+        return db
+
+    @pytest.mark.unit
+    def test_list_accounts_preserves_null_currency_code(
+        self, uncurrencied_account_db: Database
+    ) -> None:
+        service = AccountService(uncurrencied_account_db)
+        acct = service.list_accounts().rows[0]
+        assert acct.currency_code is None, (
+            f"NULL rendered as {acct.currency_code!r} instead of None"
+        )
+
+    @pytest.mark.unit
+    def test_get_account_preserves_null_currency_code(
+        self, uncurrencied_account_db: Database
+    ) -> None:
+        service = AccountService(uncurrencied_account_db)
+        acct = service.get_account("ACCNOCUR")
+        assert acct is not None
+        assert acct.currency_code is None, (
+            f"NULL rendered as {acct.currency_code!r} instead of None"
+        )

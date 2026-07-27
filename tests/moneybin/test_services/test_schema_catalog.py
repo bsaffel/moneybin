@@ -5,6 +5,9 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
+from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
+from moneybin.reports._framework.registry import spec_of
+from moneybin.reports.definitions import ALL_REPORTS
 from moneybin.services.schema_catalog import (
     CONVENTIONS,
     EXAMPLES,
@@ -31,6 +34,128 @@ def test_example_dataclass_shape() -> None:
     ex = Example(question="q?", sql="SELECT 1")
     assert ex.question == "q?"
     assert ex.sql == "SELECT 1"
+
+
+def test_every_currency_segmented_report_example_names_its_currency() -> None:
+    """An example on a per-currency report must project its currency column.
+
+    These examples are what an agent copies. A report whose rows are segmented
+    per currency (`ReportSemantics.currency`) but whose example ranks or
+    aggregates without naming that column hands back an apparently-global
+    answer that is really per-currency-but-unlabelled — the presentation half
+    of the no-blend invariant (multi-currency.md Requirement 5).
+
+    Derived from each report's own declared semantics rather than a list kept
+    here, so a new currency-segmented report inherits the guard instead of
+    silently escaping it.
+    """
+    segmented = {
+        spec.view.full_name: spec.semantics.currency
+        for spec in map(spec_of, ALL_REPORTS)
+        if spec.semantics.currency
+    }
+    assert segmented, "expected at least one currency-segmented report"
+
+    offenders = [
+        f"{view} example {ex.question!r} never names {column}"
+        for view, column in segmented.items()
+        for ex in EXAMPLES.get(view, ())
+        if column not in ex.sql
+    ]
+    assert not offenders, "\n".join(offenders)
+
+
+def test_every_money_aggregating_example_names_its_currency() -> None:
+    """An example that sums money must name the currency it summed.
+
+    The sibling guard above derives from `ReportSemantics.currency`, so it only
+    reaches `reports.*` views. A `core.*` table has no report semantics and
+    escaped it entirely — which is how seven curated examples came to blend
+    denominations while every `reports.*` example was correct.
+
+    Derived from `CLASSIFICATION` on both sides: a table is eligible when it
+    declares a `CURRENCY` column, so a table that genuinely has no currency
+    (`core.dim_categories`) never trips, and a new money example on a
+    currency-bearing table inherits the guard rather than escaping it.
+
+    Restricted to SUM/AVG because those combine rows into one figure. COUNT is
+    currency-agnostic, and MIN/MAX here fall on dates.
+    """
+    currency_tables = {
+        f"{schema}.{table}"
+        for (schema, table), columns in CLASSIFICATION.items()
+        if DataClass.CURRENCY in columns.values()
+    }
+    assert currency_tables, "expected at least one currency-bearing table"
+
+    offenders = [
+        f"{view} example {ex.question!r} aggregates money without currency_code"
+        for view in currency_tables
+        for ex in EXAMPLES.get(view, ())
+        if ("SUM(" in ex.sql or "AVG(" in ex.sql) and "currency_code" not in ex.sql
+    ]
+    assert not offenders, "\n".join(offenders)
+
+
+# Curated examples that deliberately lead their sort with currency_code, keyed
+# by (view, question). Each value argues why interleaving is not the lever for
+# that query — not that truncation is unlikely to reach it.
+_CURRENCY_FIRST_SORT_OK: dict[tuple[str, str], str] = {
+    (
+        "reports.net_worth",
+        "Net worth today, one row per currency",
+    ): (
+        "reports.net_worth is grained (balance_date, currency_code) and this "
+        "example pins one date, so the result is exactly one row per currency. "
+        "No ordering survives truncation better: any prefix of k rows holds k "
+        "currencies whatever the sort key is."
+    ),
+    (
+        "core.fct_investment_lots",
+        "Total remaining cost basis across all open lots in an account "
+        "(substitute YOUR_ACCOUNT_ID)",
+    ): (
+        "GROUP BY currency_code alone, so the result is one row per currency — "
+        "the same argument as above. Ordering cannot recover a currency that a "
+        "cap dropped when every currency costs one row."
+    ),
+}
+
+
+def test_no_example_leads_its_sort_with_currency_code() -> None:
+    """A curated example must not hand a row cap one currency before the next.
+
+    `sql_query` truncates with a prefix — `sql_query.py` keeps `rows[:max_rows]`
+    — and so does an agent's own `LIMIT`, which these examples invite by asking
+    for "top" anything. Leading with `currency_code` therefore fills the whole
+    budget with the lexicographically-first currency and the rest are absent,
+    not merely ranked lower, with nothing in the response saying so.
+
+    That is the same defect `test_no_runner_leads_its_sort_with_currency_code`
+    removed from the report runners. This is the second channel: the SQL we
+    *teach* agents to write. A guard over `reports/definitions/*.py` cannot see
+    it, so fixing one channel and leaving the other is how two patterns for the
+    same job survive side by side.
+
+    Set equality, not a subset: a new example that leads with `currency_code`
+    fails, and so does a stale exemption for an example that was since fixed.
+    """
+    offenders = {
+        (view, ex.question)
+        for view, examples in EXAMPLES.items()
+        for ex in examples
+        if "ORDER BY currency_code" in " ".join(ex.sql.split())
+    }
+
+    assert offenders == set(_CURRENCY_FIRST_SORT_OK), (
+        "curated examples leading their sort with currency_code let a truncated "
+        "response omit a whole currency; rank within each currency and order by "
+        "that rank first, or lead with the non-currency dimension:\n"
+        + "\n".join(
+            f"  {view}: {question!r}"
+            for view, question in sorted(offenders ^ set(_CURRENCY_FIRST_SORT_OK))
+        )
+    )
 
 
 def test_examples_only_reference_interface_tables() -> None:

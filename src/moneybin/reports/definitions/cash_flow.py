@@ -25,6 +25,7 @@ from moneybin.tables import REPORTS_CASH_FLOW
         # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
         "category": DataClass.CATEGORY,
+        "currency_code": DataClass.CURRENCY,
         "inflow": DataClass.TXN_AMOUNT,
         "outflow": DataClass.TXN_AMOUNT,
         "net": DataClass.TXN_AMOUNT,
@@ -40,6 +41,11 @@ from moneybin.tables import REPORTS_CASH_FLOW
         OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
         OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
+        OutputColumn(
+            "currency_code",
+            "ISO 4217 currency these sums are denominated in; null means unknown.",
+            DataClass.CURRENCY,
+        ),
         OutputColumn("inflow", "Sum of positive amounts.", DataClass.TXN_AMOUNT),
         OutputColumn(
             "outflow", "Sum of negative amounts, kept negative.", DataClass.TXN_AMOUNT
@@ -51,11 +57,11 @@ from moneybin.tables import REPORTS_CASH_FLOW
     ),
     semantics=ReportSemantics(
         unit="currency",
-        currency="summary.display_currency",
+        currency="currency_code",
         sign="negative expense; positive income",
         kind="flow",
         valuation_basis="transaction amount",
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis="inclusive calendar-month period",
         denominator=None,
         comparison_window=None,
@@ -74,7 +80,7 @@ def cash_flow(
 
     Defaults to the last 12 calendar months when both bounds are omitted.
     Amounts use the accounting convention (negative = expense, positive =
-    income) in the currency named by summary.display_currency.
+    income) in each row's own currency_code; rows are segmented per currency, never blended.
 
     Args:
         db: Open read-only database connection.
@@ -95,8 +101,11 @@ def cash_flow(
         report_id="core:cashflow",
     )
 
-    select_cols = "year_month"
-    group_cols = "year_month"
+    # currency_code groups unconditionally, for every `by` value. Dropping it
+    # from one grouping would re-blend the currencies the view just separated
+    # (multi-currency.md Requirement 5).
+    select_cols = "year_month, currency_code"
+    group_cols = "year_month, currency_code"
     if by in ("account", "account-and-category"):
         # account_id keeps rows distinct when two accounts share a display_name.
         select_cols += ", account_id, account_name"
@@ -105,23 +114,41 @@ def cash_flow(
         select_cols += ", category"
         group_cols += ", category"
 
-    sql = f"""
+    grouped = f"""
         SELECT {select_cols},
                SUM(inflow) AS inflow,
                SUM(outflow) AS outflow,
                SUM(net) AS net,
-               SUM(txn_count) AS txn_count
+               SUM(txn_count) AS txn_count,
+               ROW_NUMBER() OVER (
+                   PARTITION BY year_month, currency_code
+                   ORDER BY ABS(SUM(net)) DESC
+               ) AS rank_in_currency
         FROM {REPORTS_CASH_FLOW.full_name}
         WHERE 1=1
     """  # noqa: S608  # select_cols + TableRef allowlists
     params: list[object] = []
     if from_month:
-        sql += " AND year_month >= substr(?, 1, 7)"
+        grouped += " AND year_month >= substr(?, 1, 7)"
         params.append(from_month)
     if to_month:
-        sql += " AND year_month <= substr(?, 1, 7)"
+        grouped += " AND year_month <= substr(?, 1, 7)"
         params.append(to_month)
-    sql += f" GROUP BY {group_cols} ORDER BY year_month"  # noqa: S608  # group_cols allowlist
+    grouped += f" GROUP BY {group_cols}"  # noqa: S608  # group_cols allowlist
+
+    # `by="account"` / `"category"` puts several rows in one month per currency,
+    # so sorting currency-major hands the row cap that whole month's budget in
+    # the lexicographically-first currency and the others are absent from the
+    # response rather than ranked lower. Ranking within (month, currency) and
+    # sorting on that rank takes one row from each currency before a second from
+    # any (multi-currency.md Requirement 5). `by="none"` is already one row per
+    # (month, currency), where every rank is 1 and this reduces to the plain
+    # chronological listing.
+    sql = f"""
+        SELECT {select_cols}, inflow, outflow, net, txn_count
+        FROM ({grouped})
+        ORDER BY year_month, rank_in_currency, currency_code
+    """  # noqa: S608  # select_cols allowlist
 
     actions = [
         "Rerun reports(report_id='core:cashflow', "

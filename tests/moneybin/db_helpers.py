@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     last_four VARCHAR,
     account_subtype VARCHAR,
     holder_category VARCHAR,
-    currency_code VARCHAR DEFAULT 'USD',
+    currency_code VARCHAR,
     credit_limit DECIMAL(18, 2),
     archived BOOLEAN DEFAULT FALSE,
     include_in_net_worth BOOLEAN DEFAULT TRUE
@@ -143,6 +143,7 @@ SELECT
     s.note AS line_note,
     CASE WHEN s.split_id IS NULL THEN 'whole' ELSE 'split' END AS line_kind,
     t.account_id,
+    t.currency_code,
     t.transaction_date,
     t.merchant_name,
     t.description,
@@ -190,6 +191,7 @@ REPORTS_NET_WORTH_DDL = """\
 CREATE VIEW IF NOT EXISTS reports.net_worth AS
 SELECT
     CURRENT_DATE AS balance_date,
+    CAST(NULL AS VARCHAR) AS currency_code,
     0.00::DECIMAL(18, 2) AS net_worth,
     0 AS account_count,
     0.00::DECIMAL(18, 2) AS total_assets,
@@ -392,6 +394,7 @@ SELECT CAST(NULL AS VARCHAR) AS transaction_id,
        CAST(NULL AS VARCHAR) AS account_name,
        CAST(NULL AS DATE) AS txn_date,
        CAST(NULL AS DECIMAL(18, 2)) AS amount,
+       CAST(NULL AS VARCHAR) AS currency_code,
        CAST(NULL AS VARCHAR) AS description,
        CAST(NULL AS VARCHAR) AS merchant_id,
        CAST(NULL AS VARCHAR) AS merchant_normalized,

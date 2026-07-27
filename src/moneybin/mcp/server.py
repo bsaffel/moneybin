@@ -28,13 +28,13 @@ mcp = FastMCP(
         """\
         MoneyBin is a local-first personal finance platform. All data lives in DuckDB on the user's machine.
 
-        Standard tools cover system, reports, accounts, investments, transactions, reviews, taxonomy, import, sync, gsheet, exports, privacy, refresh, and sql. Names use domain_<sub>_verb with the verb last.
+        Standard tools cover system, profile, reports, accounts, investments, transactions, reviews, taxonomy, import, sync, gsheet, exports, privacy, refresh, and sql. Names use domain_<sub>_verb with the verb last.
 
         Call system_status first to inspect available data, freshness, review queues, and whether derived core.* tables need refresh_run. Call reports() without a report_id to discover registered analytics, then pass a stable report_id and parameters to run one. sql_query is the privacy-safe read-only SQL escape hatch; use sql_schema for its curated schema.
 
         Every tool returns {summary, data, actions}. Prefer batch tools; list parameters are capped per call, and summary.has_more plus actions explain continuation.
 
-        Money amounts are JSON numbers in summary.display_currency. The accounting convention is negative = expense, positive = income; transfers are exempt.
+        Money amounts are JSON numbers. summary.display_currency names the currency of the rows in that response when they all share one; it is null when they span more than one currency or the currency is unknown, and each row's own currency_code is then the authority. It describes the returned rows only — when summary.has_more is true, later pages may carry other currencies. MoneyBin does not convert between currencies, so never add amounts whose currency_code differs. profile() reports which currency the user treats as home. The accounting convention is negative = expense, positive = income; transfers are exempt.
 
         Privacy tiers are low, medium, high, and critical and are logged per call. Critical account and routing fields remain masked; all other fields — including amounts, descriptions, and dates — reach the model provider as-is. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred.
 
@@ -216,6 +216,7 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.import_tools import register_import_tools
     from moneybin.mcp.tools.investments import register_investments_tools
     from moneybin.mcp.tools.privacy import register_privacy_tools
+    from moneybin.mcp.tools.profile import register_profile_tools
     from moneybin.mcp.tools.refresh import register_refresh_tools
     from moneybin.mcp.tools.reports import register_reports_tools
     from moneybin.mcp.tools.reviews import register_review_tools
@@ -244,6 +245,7 @@ def register_core_tools() -> None:
     # §17 "Dependency tracker".
 
     register_system_tools(mcp)
+    register_profile_tools(mcp)
     register_reports_tools(mcp)
     register_accounts_tools(mcp)
     register_investments_tools(mcp)

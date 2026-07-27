@@ -22,7 +22,7 @@ WITH ranked AS (
     source_transaction_id,
     reference_number,
     balance,
-    currency,
+    UPPER(NULLIF(TRIM(currency), '')) AS currency,
     member_name,
     source_file,
     source_type,

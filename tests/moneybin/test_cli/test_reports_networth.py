@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.output import UNKNOWN_CURRENCY
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.execute import ReportResult
 
@@ -40,6 +41,7 @@ def _snapshot_result(
     total_assets: Decimal | None = Decimal("15000.00"),
     total_liabilities: Decimal | None = Decimal("-2500.00"),
     account_count: int = 3,
+    currency_code: str | None = "USD",
     account_id: str | None = "****acct_a",
     account_name: str | None = "Checking",
     account_balance: Decimal | None = Decimal("5000.00"),
@@ -48,6 +50,7 @@ def _snapshot_result(
     return _result([
         {
             "balance_date": balance_date,
+            "currency_code": currency_code,
             "net_worth": net_worth,
             "total_assets": total_assets,
             "total_liabilities": total_liabilities,
@@ -149,6 +152,89 @@ class TestReportsNetworth:
         assert payload["data"] == snapshot.records
 
     @pytest.mark.unit
+    def test_text_render_shows_one_headline_per_currency(
+        self, runner: CliRunner
+    ) -> None:
+        """Two currencies print two positions and no combined total.
+
+        This is the user-facing half of Requirement 7, and text is the only
+        surface where it can go wrong quietly: JSON carries per_currency
+        whatever the renderer does, while the text path previously printed the
+        first row's subtotal under a single "Net worth" heading — a number
+        that looked like the whole position and was one currency's share of it.
+        """
+        snapshot = _result([
+            {
+                "balance_date": date(2026, 1, 31),
+                "currency_code": "USD",
+                "net_worth": Decimal("12500.00"),
+                "total_assets": Decimal("15000.00"),
+                "total_liabilities": Decimal("-2500.00"),
+                "account_count": 2,
+                "account_id": "****acct_a",
+                "account_name": "Checking",
+                "account_balance": Decimal("5000.00"),
+                "observation_source": "ofx",
+            },
+            {
+                "balance_date": date(2026, 1, 31),
+                "currency_code": "EUR",
+                "net_worth": Decimal("800.00"),
+                "total_assets": Decimal("800.00"),
+                "total_liabilities": Decimal("0.00"),
+                "account_count": 1,
+                "account_id": "****acct_b",
+                "account_name": "Euro Savings",
+                "account_balance": Decimal("800.00"),
+                "observation_source": "ofx",
+            },
+        ])
+        with (
+            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = snapshot
+            result = runner.invoke(app, ["reports", "networth"])
+
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout + result.stderr
+        assert "USD" in out and "EUR" in out
+        assert "12500.00" in out and "800.00" in out
+        # 13300.00 is the blend; its absence is the assertion that matters.
+        assert "13300" not in out
+        assert "does not convert between currencies" in out
+
+    @pytest.mark.unit
+    def test_breakdown_renders_unknown_currency_without_the_word_none(
+        self, runner: CliRunner
+    ) -> None:
+        """A null currency must not reach the user as the string "None".
+
+        The headline block guards this already, so the assertion is scoped to
+        the per-account line: a whole-output check would pass on the headline's
+        label alone and prove nothing about the breakdown.
+        """
+        snapshot = _snapshot_result(currency_code=None, account_name="Checking")
+        with (
+            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = snapshot
+            result = runner.invoke(app, ["reports", "networth"])
+
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout + result.stderr
+        breakdown = next(
+            line for line in out.splitlines() if line.lstrip().startswith("Checking")
+        )
+        assert "None" not in breakdown
+        assert UNKNOWN_CURRENCY in breakdown
+
+    @pytest.mark.unit
     def test_account_filter(self, runner: CliRunner) -> None:
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),
@@ -186,12 +272,14 @@ class TestReportsNetworthHistory:
         mock_rows: list[dict[str, object]] = [
             {
                 "period": "2026-01-01",
+                "currency_code": "USD",
                 "net_worth": Decimal("1000.00"),
                 "change_abs": None,
                 "change_pct": None,
             },
             {
                 "period": "2026-02-01",
+                "currency_code": "USD",
                 "net_worth": Decimal("1200.00"),
                 "change_abs": Decimal("200.00"),
                 "change_pct": 0.2,
@@ -221,6 +309,49 @@ class TestReportsNetworthHistory:
         payload = json.loads(result.stdout)
         assert payload["status"] == "ok"
         assert len(payload["data"]) == 2
+
+    @pytest.mark.unit
+    def test_series_labels_unknown_currency_like_the_snapshot(
+        self, runner: CliRunner
+    ) -> None:
+        """History and snapshot must name an unknown currency the same way.
+
+        Two spellings for one state is what let the breakdown's raw ``!s`` sit
+        beside two correct guards without looking wrong.
+        """
+        mock_rows: list[dict[str, object]] = [
+            {
+                "period": "2026-01-01",
+                "currency_code": None,
+                "net_worth": Decimal("1000.00"),
+                "change_abs": None,
+                "change_pct": None,
+            }
+        ]
+        with (
+            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.reports._framework.catalog.get_report_catalog"
+            ) as mock_catalog,
+        ):
+            mock_catalog.return_value.execute.return_value = _result(mock_rows)
+            result = runner.invoke(
+                app,
+                [
+                    "reports",
+                    "networth-history",
+                    "--from",
+                    "2026-01-01",
+                    "--to",
+                    "2026-02-01",
+                ],
+            )
+
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout + result.stderr
+        series = next(line for line in out.splitlines() if "1000.00" in line)
+        assert "None" not in series
+        assert UNKNOWN_CURRENCY in series
 
     @pytest.mark.unit
     def test_default_interval_monthly(self, runner: CliRunner) -> None:

@@ -374,6 +374,7 @@ def transactions_categorize_pending(
                 if r.get("txn_date") is not None
                 else None,
                 amount=float(r["amount"]) if r.get("amount") is not None else None,
+                currency_code=r.get("currency_code"),
                 description=r.get("description"),
                 memo=None,
                 account_id=r.get("account_id"),

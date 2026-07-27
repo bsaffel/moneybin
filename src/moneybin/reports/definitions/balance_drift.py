@@ -24,6 +24,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         # dim_accounts.display_name (user-authored) → USER_NOTE; not the bank's
         # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
+        "currency_code": DataClass.CURRENCY,
         "assertion_date": DataClass.TXN_DATE,
         "asserted_balance": DataClass.BALANCE,
         "computed_balance": DataClass.BALANCE,
@@ -45,6 +46,11 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
     columns=(
         OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
+        OutputColumn(
+            "currency_code",
+            "ISO 4217 currency this row is denominated in; null means unknown.",
+            DataClass.CURRENCY,
+        ),
         OutputColumn(
             "assertion_date", "User-asserted balance date.", DataClass.TXN_DATE
         ),
@@ -78,14 +84,14 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
     ),
     semantics=ReportSemantics(
         unit="currency",
-        currency="summary.display_currency",
+        currency="currency_code",
         sign="drift is asserted balance minus computed balance; drift_abs is unsigned",
         kind="position",
         valuation_basis=(
             "transaction-derived position reconstructed from daily balance minus "
             "reconciliation_delta"
         ),
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis=(
             "asserted and transaction-derived positions compared as of "
             "assertion_date; freshness measured from assertion_date through "
@@ -104,7 +110,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         "(drift / asserted_balance); a percentage reveals no absolute "
         "balance figure",
         "status": "coarse 4-way bucket on |drift| (<$1 / <$10 / >=$10 / "
-        "no-data), never the drift or balance values themselves",
+        "no-data, currency-mismatch), never the drift or balance values themselves",
     },
 )
 def balance_drift(
@@ -116,14 +122,18 @@ def balance_drift(
 ) -> ReportQuery:
     """Balance reconciliation drift: asserted vs computed, one row per assertion.
 
-    Balances are positions in summary.display_currency. Drift is asserted balance
+    Balances are positions in the account's own currency_code. Drift is asserted balance
     minus the independent transaction-derived position for assertion_date.
+
+    Rows interleave the currencies, worst drift first within each, so a
+    truncated result still represents every currency. Compare drift_abs only
+    between rows sharing a currency_code.
 
     Args:
         db: Open read-only database connection.
         account: Filter to an account; accepts account_id or case-insensitive
             display_name. Ambiguous display_name matches raise; None for all.
-        status: drift | warning | clean | no-data | all.
+        status: drift | warning | clean | no-data | currency-mismatch | all.
         since: ISO date; only assertions on or after.
 
     Examples:
@@ -137,7 +147,7 @@ def balance_drift(
         # lexicographically and silently mis-filters.
         validate_date(since, "since")
     sql = f"""
-        SELECT account_id, account_name, assertion_date, asserted_balance,
+        SELECT account_id, account_name, currency_code, assertion_date, asserted_balance,
                computed_balance, drift, drift_abs, drift_pct,
                days_since_assertion, status
         FROM {REPORTS_BALANCE_DRIFT.full_name}
@@ -155,7 +165,18 @@ def balance_drift(
     if since:
         sql += " AND assertion_date >= ?"
         params.append(since)
-    sql += " ORDER BY drift_abs DESC"
+    # Interleave the currencies rather than ranking their magnitudes together.
+    # The framework truncates with `records[:max_rows]`, so a global
+    # `ORDER BY drift_abs DESC` lets one high-denomination currency fill the cap
+    # and drop the others out of the response entirely. Ties break on
+    # currency_code because "which drift is larger" has no answer across
+    # currencies without conversion. A single-currency profile is unaffected:
+    # its ROW_NUMBER already ascends in drift_abs order.
+    sql += """
+        ORDER BY ROW_NUMBER() OVER (
+            PARTITION BY currency_code ORDER BY drift_abs DESC
+        ), currency_code
+    """
 
     actions = [
         "Rerun reports(report_id='core:balance_drift', "

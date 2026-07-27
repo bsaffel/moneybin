@@ -73,7 +73,7 @@ The order below is what `ImportService._import_tabular_file` executes (`src/mone
 | Sign convention | Per-profile or inferred | `--sign {negative_is_expense\|negative_is_income\|split_debit_credit}` | Overrides detection. |
 | Excel sheet | Largest sheet | `--sheet <name>` | Explicit sheet by name. |
 
-**Multi-currency files.** The `currency` column is parsed when present (e.g., the `maybe` profile reads it into `raw.tabular_transactions.currency`) and carried through to `core.fct_transactions.currency_code` — every source (tabular, OFX `<CURDEF>`, Plaid, manual) captures its own currency end-to-end rather than defaulting the unknown case to USD; a row without one inherits `core.dim_accounts.currency_code`. What's still missing: no conversion, no home-currency setting, and no no-blend guard — a mixed-currency file imports without warning, and a report summing across currencies adds the raw numbers with no FX applied.
+**Multi-currency files.** The `currency` column is parsed when present (e.g., the `maybe` profile reads it into `raw.tabular_transactions.currency`) and carried through to `core.fct_transactions.currency_code` — every source (tabular, OFX `<CURDEF>`, Plaid, manual) captures its own currency end-to-end rather than defaulting the unknown case to USD; a row without one inherits `core.dim_accounts.currency_code`. Reports sub-total each currency separately rather than adding the raw numbers, and `moneybin system doctor` reports a profile holding more than one. What's still missing is conversion: two currencies produce two sub-totals and no combined figure.
 
 Each named profile below ships in `src/moneybin/data/tabular_formats/<name>.yaml` and matches first-import autodetection without needing `--format`. Field-mapping legend: each profile lists `field_mapping` (source-column → canonical field). Anything appearing in `header_signature` but **not** in `field_mapping` is read off the row but not persisted — those are the "fields dropped" entries.
 
@@ -257,7 +257,7 @@ Every read-only and write-shaped CLI command supports `--output json` and emits 
 }
 ```
 
-`status` flips to `"error"` and an `error` block is added on classified failure. `summary.degraded` + `summary.degraded_reason` appear when an MCP tool returns aggregates in place of row-level data without consent.
+`status` flips to `"error"` and an `error` block is added on classified failure. `summary.degraded` + `summary.degraded_reason` appear when an MCP tool returns aggregates in place of row-level data without consent. `summary.display_currency` is always emitted and is `null` when the rows span more than one currency or none is known — read each row's `currency_code` in that case.
 
 **`moneybin import files --output json` `data` shape** (`src/moneybin/cli/commands/import_cmd.py`):
 
@@ -364,7 +364,7 @@ Per-source error surfaces. CLI exits 1 with the exception class name visible in 
 | `payment_channel` | no | `in_store` / `online` / `other`. |
 | `transaction_type` | no | Free-text type code. |
 | `check_number` | no | Free text. |
-| `currency_code` | no | Defaults to `USD`. |
+| `currency_code` | no | Written only when `--currency` is passed. Omitted, the row inherits `core.dim_accounts.currency_code` in `core.fct_transactions`; no literal default is applied. |
 
 **Resulting raw row** (`raw.manual_transactions`):
 
@@ -376,7 +376,7 @@ import_id             = <new raw.import_log row>
 account_id            = <resolved from dim_accounts>
 transaction_date, amount, description, merchant_name, memo,
 payment_channel, transaction_type, check_number,
-currency_code         = <as supplied>
+currency_code         = <as supplied, else NULL>
 category, subcategory = NULL  -- categories always live in app.transaction_categories
 created_by            = 'cli' | 'mcp'
 ```
@@ -410,7 +410,7 @@ Honest gap list. See [`docs/roadmap.md`](../roadmap.md) for current sequencing.
 - **Beancount / hledger ledger files.** No plain-text-accounting parsers. Workaround: export the source transactions your ledger was built from and import those.
 - **Broker / investment statements outside Plaid.** No eTrade, Schwab, Fidelity, or Vanguard CSV parsers, and no investments-aware PDF routing — a brokerage positions/holdings PDF lands in `raw.pdf_seeds`, not a core investments table. A Plaid-linked brokerage account is first-class: securities, investment transactions, holdings, and cost basis (FIFO, HIFO, specific-identification, average-cost) are implemented — see "Investments" under Plaid sync above.
 - **HSA / 401(k) transaction history outside Plaid.** If Plaid exposes the account, raw rows land; otherwise unsupported.
-- **FX conversion.** Every source captures its own `currency_code` (tabular, OFX, Plaid, manual) — see "Multi-currency files" above — but there's no conversion, no home-currency setting, and no no-blend guard. A report summing across currencies adds the raw numbers unconverted.
+- **FX conversion.** Every source captures its own `currency_code` (tabular, OFX, Plaid, manual) and reports sub-total each currency separately — see "Multi-currency files" above. Nothing converts between them, so a two-currency profile gets two sub-totals and no combined figure.
 - **Scanned / image-only PDFs.** A PDF with no text layer is declined outright (`import_pdf_no_text_layer`); no vision/OCR backend runs. Text-layer bank and credit-card statements extract deterministically or through agent-assisted recipe derivation — see "PDF statements" above.
 - **Tax forms.** No W-2, 1040, 1099-INT/DIV/B, K-1, or state-form parsers — including from a text-layer PDF, which lands in `raw.pdf_seeds` rather than a tax-shaped table.
 - **Direct Monarch / Copilot API pulls.** CSV-only — export from the tool, import the file.

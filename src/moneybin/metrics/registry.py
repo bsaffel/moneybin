@@ -279,6 +279,19 @@ TRANSFER_MATCH_CONFIDENCE = Histogram(
     "Distribution of transfer match confidence scores",
 )
 
+# ── Multi-currency integrity ─────────────────────────────────────────────────
+
+PROFILE_CURRENCIES = Gauge(
+    "moneybin_profile_currencies",
+    "Distinct known currencies held across transactions, accounts, and balances",
+)
+
+UNKNOWN_CURRENCY_ROWS = Gauge(
+    "moneybin_unknown_currency_rows",
+    "Rows whose currency is unknown, so their amounts join no total",
+    ["grain"],
+)
+
 # ── Categorization ────────────────────────────────────────────────────────────
 
 CATEGORIZATION_AUTO_RATE = Gauge(
