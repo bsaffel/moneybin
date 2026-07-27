@@ -15,11 +15,11 @@ from datetime import UTC, datetime
 
 import duckdb
 
+from moneybin import sqlmesh_registry
 from moneybin.database import Database, sqlmesh_context
 from moneybin.metrics.registry import SQLMESH_RUN_DURATION_SECONDS
 from moneybin.seeds import refresh_views
 from moneybin.services.matching_service import MatchingService
-from moneybin.sqlmesh_registry import model_presence
 from moneybin.tables import DIM_ACCOUNTS, IMPORT_LOG
 
 logger = logging.getLogger(__name__)
@@ -94,10 +94,11 @@ def _build_raw_landing_scan(
     # The ::TIMESTAMPTZ cast resolves each naive landing stamp in the *reading*
     # session's zone, which is the writing zone only while the profile stays on
     # one machine. Carry the database across zones and these stamps skew against
-    # SQLMesh's absolute `finalized_ts` by the offset delta, which can strand
-    # `pending` true or briefly mask real staleness until the next apply
-    # re-anchors it. A naive value cannot yield its instant at read time, so the
-    # fix is storing the landing columns as TIMESTAMPTZ, not a different cast.
+    # the model execution stamp — an absolute epoch out of `_intervals` — by the
+    # offset delta, which can strand `pending` true or briefly mask real
+    # staleness until the next apply re-anchors it. A naive value cannot yield
+    # its instant at read time, so the fix is storing the landing columns as
+    # TIMESTAMPTZ, not a different cast.
     if not filter_bad_imports:
         return f"""
             SELECT MAX(landed_at)::TIMESTAMPTZ FROM (
@@ -118,6 +119,59 @@ def _build_raw_landing_scan(
 
 
 _RAW_LANDING_SCAN = _build_raw_landing_scan(_RAW_LANDING_COLUMNS)
+
+# SQLMesh calls a model *symbolic* when it never executes it, so it never
+# records an interval for one and `last_executed_at` stays NULL forever.
+# `_oldest_model_execution_at` must skip them or its never-backfilled check
+# trips on every read: every table `external_models.yaml` declares is EXTERNAL,
+# and that file covers the `raw.*` sources the transforms read.
+#
+# `test_symbolic_model_kinds_match_sqlmesh` asserts this equals the set SQLMesh
+# itself calls symbolic, so a kind added upstream fails loudly here rather than
+# silently pinning `pending` true for the life of the profile.
+_SYMBOLIC_MODEL_KINDS: frozenset[str] = frozenset({"EMBEDDED", "EXTERNAL"})
+
+# Kinds a refresh does not re-execute, on top of the symbolic ones. Their
+# interval stamp freezes at the first build, so leaving them in the minimum
+# below pins `pending` true from the next import onward and *no* `refresh_run`
+# can clear it — the mirror-image fail-closed of the bug this scan fixes.
+#
+# * VIEW — recomputed at query time, so a view is never stale by construction.
+#   SQLMesh records one interval when it creates the view and none afterwards:
+#   `apply()` restates only `kind.is_full`, and `run()` finds no missing
+#   interval for a view whose interval is already complete.
+# * SEED — rebuilt only when the seed file changes, and seeds read no `raw.*`
+#   table, so a raw landing can never make one stale.
+#
+# What remains is exactly the set a refresh rebuilds: FULL today, plus the
+# INCREMENTAL_* kinds `apply()`'s `run()` step already covers.
+_UNREBUILT_MODEL_KINDS: frozenset[str] = _SYMBOLIC_MODEL_KINDS | {"SEED", "VIEW"}
+
+
+def _oldest_execution_scan(model_count: int) -> str:
+    """Scan for the least-recently-rebuilt model, over a bound name list.
+
+    Scoped to the models the project still declares, not every name SQLMesh
+    state retains. Renaming or removing a model leaves its ``_snapshots`` and
+    ``_intervals`` rows behind until the janitor's TTL expires them, so the
+    view keeps returning a row that no apply can ever rebuild — ``apply()``
+    only runs what the project still defines. Left in the minimum, that frozen
+    stamp pins ``pending`` true from the next raw landing onward with nothing a
+    user or agent can do to clear it.
+
+    A NULL kind stays in scope deliberately: an unrecognized model should hold
+    the minimum down, not slip past it.
+    """
+    kinds = ", ".join(f"'{kind}'" for kind in sorted(_UNREBUILT_MODEL_KINDS))
+    names = ", ".join("?" for _ in range(model_count))
+    return f"""
+        SELECT
+            (MIN(last_executed_at) AT TIME ZONE 'UTC'),
+            COUNT(*) FILTER (WHERE last_executed_at IS NULL)
+        FROM meta.model_freshness
+        WHERE COALESCE(model_kind, '') NOT IN ({kinds})
+          AND LOWER(model_name) IN ({names})
+    """  # noqa: S608  # kinds are a module constant; names are `?` placeholders
 
 
 @dataclass(frozen=True)
@@ -321,36 +375,31 @@ class TransformService:
         * a raw row landed after the last SQLMesh apply finished.
 
         The second check scans every raw table a model reads
-        (:data:`_RAW_LANDING_COLUMNS`) against one global apply stamp —
-        SQLMesh's own ``finalized_ts``, read with a plain SELECT because a
-        ``Context`` costs seconds. One stamp rather than a per-model
-        comparison is what makes this safe to generalize: it advances however
-        the warehouse was rebuilt, so sources on independent provider cadences
-        cannot pin ``pending`` true in a way no ``refresh_run`` can clear.
+        (:data:`_RAW_LANDING_COLUMNS`) against SQLMesh's own record of when it
+        last rebuilt each model, read with a plain SELECT because a ``Context``
+        costs seconds. The apply side is the *oldest* model's execution time
+        rather than the newest promotion of ``prod``, so a selective plan
+        cannot clear the flag for models it never rebuilt — see
+        :meth:`_oldest_model_execution_at`.
 
-        Two known limits, both narrower than the fail-open they replaced:
-
-        * SQLMesh finalizes the environment on *every* promotion of ``prod``,
-          selective ones included, so ``transform seed`` and ``transform
-          restate --model`` advance the stamp without rebuilding the models
-          that consume a newly landed row.
-        * The landing stamps are naive and resolve through the *reading*
-          session's zone while the apply stamp is an absolute epoch, so the
-          comparison holds only while the profile is read in the zone that
-          wrote it.
+        One known limit remains: the landing stamps are naive and resolve
+        through the *reading* session's zone, while the execution stamp is an
+        absolute epoch, so the comparison holds only while the profile is read
+        in the zone that wrote it. Carrying a profile across zones can skew it
+        by the offset delta until the next apply re-anchors both sides.
 
         ``last_apply_at`` (``dim_accounts.updated_at``) and
         ``latest_import_at`` (``import_log.completed_at``) remain
         wall-clock values for display only; they do not drive the
         pending decision.
         """
-        presence = model_presence(self._db)
+        presence = sqlmesh_registry.model_presence(self._db)
         # A warehouse nobody has built yet is not stale — it is what a profile
         # looks like between `db init` and its first refresh. Reporting that as
         # pending would make the flag permanently true on a healthy first run.
         missing_models = () if presence.never_built else presence.missing
         landed_at = self._max_raw_landed_at()
-        applied_at = self._last_apply_finalized_at()
+        applied_at = self._oldest_model_execution_at()
 
         if landed_at is None:
             raw_ahead = False
@@ -559,35 +608,47 @@ class TransformService:
         names = {str(row[0]) for row in rows}
         return frozenset(names & set(_RAW_LANDING_COLUMNS)), "import_log" in names
 
-    def _last_apply_finalized_at(self) -> datetime | None:
-        """When SQLMesh last finished promoting the ``prod`` environment.
+    def _oldest_model_execution_at(self) -> datetime | None:
+        """When the least-recently-rebuilt SQLMesh model was last backfilled.
 
-        Reads the state table SQLMesh keeps inside the MoneyBin database
-        with a plain SELECT rather than a ``Context``, for the same reason
-        ``freshness()`` avoids one. The existence probe is scoped to the
-        current catalog because an in-process ``memory.sqlmesh._environments``
-        can otherwise satisfy it while the SELECT reads the persistent table —
-        the catalog split ``_pin_cursor_to_moneybin`` exists to prevent.
+        The *oldest* model, not the newest promotion. SQLMesh finalizes the
+        environment on every promotion of ``prod``, so a selective plan —
+        ``moneybin transform restate --model``, or a seed-only plan that has
+        work to do — advances ``_environments.finalized_ts`` without rebuilding
+        anything else. Keyed on that stamp, one restatement of an unrelated
+        model reports the entire warehouse fresh while every untouched model
+        still holds pre-import data: a fail-open in the signal whose whole job
+        is catching staleness.
 
-        SQLMesh owns this table's layout and migrates it across versions, so a
-        read failure is a real possibility on an un-migrated state schema. It
-        degrades to ``None`` rather than propagating: ``freshness()`` has no
-        catch of its own and is on the ``system_status`` path, and ``None``
-        means "no apply we can see", which reports pending rather than clean.
+        ``meta.model_freshness.last_executed_at`` comes from ``_intervals``,
+        which moves only when a model is genuinely backfilled, so an untouched
+        model keeps its true age and holds the minimum down.
+
+        Scoped to the kinds a refresh actually rebuilds — see
+        :data:`_UNREBUILT_MODEL_KINDS` — and to the models the project still
+        declares, see :func:`_oldest_execution_scan`. Both exclusions guard the
+        same fail-closed: a stamp that no refresh can advance, left in the
+        minimum, pins ``pending`` true from the next import onward with no way
+        to clear it.
+
+        Returns ``None`` — which reads as pending — when the view is absent (no
+        apply yet), unreadable, or when any rebuildable model has never been
+        backfilled. Every degraded path fails closed: ``freshness()`` has no
+        catch of its own and sits on the ``system_status`` path.
         """
+        registered = sorted(sqlmesh_registry.registered_model_names())
+        if not registered:
+            # No declared models means the registry could not read the project
+            # at all. Reporting "nothing to rebuild" there is the fail-open
+            # this whole scan exists to close.
+            return None
         try:
-            exists = self._db.execute(
-                "SELECT 1 FROM information_schema.tables "
-                "WHERE table_catalog = current_database() "
-                "AND table_schema = 'sqlmesh' AND table_name = '_environments'"
-            ).fetchone()
-            if not exists:
-                return None
             row = self._db.execute(
-                "SELECT to_timestamp(MAX(finalized_ts) / 1000.0) "
-                "FROM sqlmesh._environments WHERE name = 'prod'"
+                _oldest_execution_scan(len(registered)), registered
             ).fetchone()
         except duckdb.Error:
-            logger.debug("SQLMesh apply-stamp read failed", exc_info=True)
+            logger.debug("model-execution stamp read failed", exc_info=True)
             return None
-        return row[0] if row and row[0] is not None else None
+        if row is None or row[0] is None or row[1]:
+            return None
+        return row[0]

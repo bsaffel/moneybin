@@ -6,7 +6,7 @@ need to INSERT test data directly require concrete tables, so we define
 minimal CREATE TABLE statements here.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 import duckdb
 
@@ -14,27 +14,31 @@ from moneybin.database import Database
 
 
 def record_sqlmesh_apply(db: Database, when: datetime) -> None:
-    """Stamp a finished SQLMesh apply at ``when``, read as UTC.
+    """Stamp every model as executed at ``when``, read as UTC.
 
     ``TransformService.freshness()`` decides ``pending`` by comparing raw
-    landing times against this stamp, so any fixture that means "the
-    warehouse has been refreshed" must write it — seeding ``core.dim_accounts``
-    no longer says that. Mirrors what a real plan finalize persists: one
-    ``prod`` row in the state schema SQLMesh keeps inside the MoneyBin
-    database, with ``finalized_ts`` in epoch milliseconds.
+    landing times against the *oldest* model execution, so any fixture that
+    means "the warehouse has been refreshed" must write it — seeding
+    ``core.dim_accounts`` no longer says that. Stands in for the
+    ``meta.model_freshness`` view SQLMesh materializes over its own
+    ``_snapshots`` / ``_intervals`` state; the view's derivation is covered by
+    the scenario and integration suites, so this keeps only the columns
+    ``freshness()`` reads plus enough shape to stay honest about the contract.
 
     Callers pass a naive ``when`` and get UTC. Pin the session zone to UTC
     too if the fixture's raw landing literals are naive, so both sides
     describe the same instants on any machine.
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS sqlmesh")
+    db.execute("CREATE SCHEMA IF NOT EXISTS meta")
     db.execute(
-        "CREATE TABLE IF NOT EXISTS sqlmesh._environments "
-        "(name VARCHAR, finalized_ts BIGINT)"
+        "CREATE OR REPLACE TABLE meta.model_freshness "
+        "(model_name VARCHAR, last_changed_at TIMESTAMP, "
+        "last_applied_at TIMESTAMP, last_executed_at TIMESTAMP, "
+        "model_kind VARCHAR)"
     )
     db.execute(
-        "INSERT INTO sqlmesh._environments (name, finalized_ts) VALUES ('prod', ?)",
-        [int(when.replace(tzinfo=UTC).timestamp() * 1000)],
+        "INSERT INTO meta.model_freshness VALUES ('core.dim_accounts', ?, ?, ?, 'FULL')",
+        [when, when, when],
     )
 
 
