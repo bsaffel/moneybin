@@ -60,7 +60,17 @@ text to read a provenance from (a service-backed report), or the projection's
 name is one lineage never saw.
 """
 
-type GraduationState = Literal["eligible", "blocked", "already_materialized"]
+type GraduationState = Literal[
+    "eligible", "blocked", "already_materialized", "service_backed"
+]
+"""Whether this report could become a SQLMesh ``reports.*`` model.
+
+``eligible`` — a saved report that could. ``blocked`` — a saved report that
+could not, with the reason in ``graduation_blockers``. ``already_materialized``
+— a runner-backed report, which is a `reports.*` model today.
+``service_backed`` — a service report, which owns no model and never graduates
+into one, so "already materialized" would be false portability evidence.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +155,7 @@ def explain_spec(
     freshness = _freshness(db, report) if tier == "user" else _Freshness()
     forms, unavailable = _sql_forms(db, report, parameters=parameters, tier=tier)
     query_sql = None if forms is None else forms.sql_template
-    graduation, blockers = _graduation(query_sql, report.report_id, tier=tier)
+    graduation, blockers = _graduation(report, query_sql, tier=tier)
 
     return ReportExplanation(
         report_id=report.report_id,
@@ -302,7 +312,7 @@ def _projection_sources(
 
 
 def _graduation(
-    query_sql: str | None, report_id: str, *, tier: ReportTier
+    report: RegisteredReport, query_sql: str | None, *, tier: ReportTier
 ) -> tuple[GraduationState, tuple[str, ...]]:
     """Whether this report could become a SQLMesh ``reports.*`` model.
 
@@ -311,9 +321,16 @@ def _graduation(
     explicitly conditional. The obligation is honesty, not restriction — so a
     report that runs correctly today and can never be materialized says so, with
     the specific reason.
+
+    Keyed on the spec's kind, not on whether a query string turned up: a
+    runner-backed report whose SQL this surface suppressed is still materialized,
+    while a service report with no SQL anywhere never was.
     """
+    if isinstance(report, ServiceReportSpec):
+        return "service_backed", ()
     if tier != "user" or query_sql is None:
         return "already_materialized", ()
+    report_id = report.report_id
     try:
         tree = parse_cached(query_sql)
     except SqlParseError:

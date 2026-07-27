@@ -1015,6 +1015,11 @@ relation the service reads, which for `core:networth` is three
 to fill the slot does not, and the whole point of the provenance chip is that
 it can be checked.
 
+The same bound reaches the graduation verdict, which is keyed on the spec's kind
+rather than on whether a query turned up: a service-backed report returns
+`service_backed`, not `already_materialized`, because it owns no `reports.*`
+model to have been materialized into.
+
 Everything else report inspection returns — class map, lineage, freshness,
 graduation eligibility — is parameter-independent and available for all three.
 

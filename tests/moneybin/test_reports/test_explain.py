@@ -585,10 +585,35 @@ def test_graduation_is_blocked_by_a_star_projection(
     assert any("SELECT *" in blocker for blocker in explanation.graduation_blockers)
 
 
-def test_a_built_in_report_is_already_materialized(saved_db: Database) -> None:
-    explanation = explain_report(saved_db, handle="core:networth", parameters={})
+def test_a_runner_backed_built_in_is_already_materialized(saved_db: Database) -> None:
+    """A runner-backed built-in really is a ``reports.*`` model already.
+
+    The exemplar has to be runner-backed. This test named ``core:networth``
+    before, which is service-backed and has no model at all — so it pinned the
+    wrong verdict in place instead of proving this one.
+    """
+    explanation = explain_report(saved_db, handle="core:merchants", parameters={})
 
     assert explanation.graduation == "already_materialized"
+    assert explanation.graduation_blockers == ()
+
+
+def test_a_service_backed_report_is_not_called_materialized(
+    saved_db: Database,
+) -> None:
+    """A service report has no model of its own, so it never "already" is one.
+
+    ``already_materialized`` is portability evidence: it tells the reader this
+    report is a relation in the graph, so it is schedulable, exportable, and
+    dependable. A ``ServiceReportSpec`` runs an executor and owns no
+    ``reports.*`` model, so that is the one answer this field must not give —
+    the distinction ``sql_unavailable`` and ``ColumnOrigin.undetermined``
+    already draw one field over.
+    """
+    explanation = explain_report(saved_db, handle="core:networth", parameters={})
+
+    assert explanation.graduation == "service_backed"
+    assert explanation.graduation_blockers == ()
 
 
 # ---------------------------------------------------------------------------
