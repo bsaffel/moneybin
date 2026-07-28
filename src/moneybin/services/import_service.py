@@ -3335,16 +3335,14 @@ class ImportService:
         # and creating a fresh dim_accounts entry.
         if account_id_override:
             account_id = account_id_override
+            masked_acct = None
         else:
             # Mask the captured account identifier BEFORE slugifying it into
-            # the account_id PK. The captured value may be a full unmasked
-            # institution account number ("Account Number: 123456789"), and
-            # storing that verbatim into raw.tabular_transactions.account_id
+            # the source-native account key. The captured value may be a full
+            # unmasked institution account number ("Account Number: 123456789"),
+            # and storing that verbatim into raw.tabular_transactions.account_id
             # / raw.tabular_accounts.account_id leaks it through every
             # downstream surface that treats account_id as an opaque identifier.
-            # `_to_account_number_mask` reduces it to a last-4 mask; slugify
-            # then strips the asterisks, yielding a stable digits-only suffix
-            # ("chase_6789") that is safe to flow through raw/core/app.
             masked_acct = _to_account_number_mask(decision.metadata.account_id)
             if masked_acct:
                 account_id = f"{issuer_slug}_{slugify(masked_acct)}"
@@ -3352,6 +3350,33 @@ class ImportService:
                 # Fallback: routing requires metadata for reconciliation, but
                 # guard against a future path that relaxes that constraint.
                 account_id = resolved_alias
+
+        # The value above is a source-NATIVE key (DP-1), exactly like the
+        # tabular path's — never a canonical account id. Registering it with
+        # AccountResolver is what writes the native->canonical mapping staging
+        # joins on. Skipping that step let the raw key flow into dim_accounts as
+        # an account in its own right, so the same card arriving from a second
+        # source had nothing to be proposed against and both halves loaded.
+        # last_four is None for a digits-free token ("xxxx"), which correctly
+        # denies the institution+last4 signal and routes to name review rather
+        # than inventing a strong match.
+        AccountResolver(
+            self._db,
+            actor="system",
+            emit_metrics=emit_metrics,
+            observations=observations,
+        ).resolve(
+            SourceAccount(
+                source_type="pdf",
+                source_origin=resolved_alias,
+                source_account_key=account_id,
+                account_name=resolved_alias,
+                institution=fp.get("issuer") or None,
+                last_four=_last4_from_account_number(masked_acct),
+                explicit_account_id=account_id_override,
+            ),
+            in_outer_txn=in_outer_txn,
+        )
 
         sign_conv: str = decision.recipe.sign_convention
 
