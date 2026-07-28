@@ -47,7 +47,7 @@ Related specs and docs:
 10. **CLI commands:** `moneybin reports networth`, `moneybin reports networth-history`, `moneybin accounts balance show`, `moneybin accounts balance history`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance assertion-delete`, `moneybin accounts balance reconcile`. The `accounts` parent group is registered by [`account-management.md`](account-management.md); this spec contributes the `balance` sub-group.
 11. **MCP surface** (per [`moneybin-mcp.md`](moneybin-mcp.md)): use `reports(report_id="core:networth")` for a snapshot and `reports(report_id="core:networth_history", parameters={"from_date":"2026-01-01","to_date":"2026-06-30","interval":"monthly"})` for history. History requires `from_date` and `to_date`; `interval` is optional. Balance operations use `accounts_balances(view=...)` and `accounts_balance_assert(account=..., as_of=..., state=...)`.
 12. **All commands support `--output json`** for non-interactive parity.
-13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (M1J and M1K respectively). Net worth v1 covers cash accounts only.
+13. **Balance-spine v1.** Net worth v1 values every included account from `fct_balances_daily`, so an investment account is already counted, at its provider-reported balance; its positions never enter as holdings. Market-valued holdings (M1J Pillar D) and multi-currency conversion (M1K) are future extensions.
 
 ## Data Model
 
@@ -352,7 +352,7 @@ This lets the scenario suite (`make test-scenarios`) validate that `fct_balances
 
 ## Out of Scope
 
-- **Investment holdings in net worth** — M1J concern. Net worth v1 is cash-only. Investment tracking (`investments-overview.md`, M1J — Pillar D net-worth integration) will extend `fct_balances` with holdings valuation when it ships.
+- **Investment holdings in net worth** — M1J concern. Net worth v1 reads `fct_balances_daily` only, so an investment account enters at its provider-reported balance and its positions never enter as holdings. Investment tracking ([`investments-overview.md`](investments-overview.md), M1J — Pillar D net-worth integration) will value investment accounts from holdings when it ships. It must count each investment account **exactly once**, not add holdings on top of the balance: for an investment account the provider's reported balance already *is* the total position value (measured: Σ `provider_reported_value` = `fct_balances.balance` = 320.76, residual 0.00), so layering `dim_holdings.market_value` on top double-counts every brokerage account. See that spec's Open questions for the invariant, the open mechanism choice, and the two tests Pillar D must ship.
 - **Multi-currency conversion** — M1K concern. All balances assumed single-currency for v1. Multi-currency (`multi-currency.md`, M1K) will add home-currency conversion to `fct_balances_daily`.
 - **Balance forecasting/projection** — "What will my net worth be in 6 months?" is a separate feature requiring trend extrapolation.
 - **Balance alerts/notifications** — "Notify me when balance drops below X" is out of scope for the data model spec.
@@ -424,6 +424,6 @@ Tests:
 2. **Reconciliation deltas are computed, not stored.** They self-heal as data quality improves. No manual cleanup needed.
 3. **`fct_balances_daily` is FULL materialized.** Recomputed on every `sqlmesh run`. Ensures consistency after any data change.
 4. **Source precedence:** user assertion > institution snapshot > tabular running balance. Most authoritative source wins within a day.
-5. **Cash-only v1.** Investment and multi-currency extensions are designed to slot in without breaking changes.
+5. **Balance-spine v1.** Investment and multi-currency extensions are designed to slot in without breaking changes.
 6. **CLI taxonomy follows `moneybin-cli.md` v2.** Per-account workflows live under `accounts balance *`; cross-domain aggregation lives under `reports networth *`. The `track` group is dissolved by the v2 restructure — net-worth ships against the v2 surface, not v1.
 7. **Bundled landing with `account-management.md`.** Shared `accounts` namespace and `app.account_settings` cross-reference make a single PR cycle the only sane shape. See §Coordination.

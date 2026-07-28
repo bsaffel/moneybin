@@ -17,10 +17,14 @@ Phase C.1 shipped: `core.dim_holdings` carries `market_value`, `unrealized_gain`
 delivers in its existing sync payload. External feeds, manual overrides, and
 trade-implied prices (C.2) and the daily valued series (C.3) remain designed.
 `src/moneybin/sqlmesh/models/reports/net_worth.sql` reads `core.fct_balances_daily`
-alone and excludes holdings entirely. A brokerage account therefore contributes
-its cash balance to net worth and none of its positions. This spec carries the
-remaining price-observation and daily-series work that Pillar D
-(`investments-net-worth.md`) joins into `reports.net_worth`.
+alone and excludes holdings entirely. A brokerage account therefore enters net
+worth at its provider-reported balance, and none of its positions enter as
+holdings — but that balance already *is* the total position value, not a cash
+sleeve, so the positions' value is counted today, just not as holdings. This spec
+carries the remaining price-observation and daily-series work that Pillar D
+(`investments-net-worth.md`) folds into `reports.net_worth`, subject to the
+count-once constraint in
+[`investments-overview.md`](investments-overview.md) → Open questions.
 
 ## Background
 
@@ -58,8 +62,8 @@ Related specs:
   spec stores a quote currency per price and converts nothing.
 - [`asset-tracking.md`](asset-tracking.md) — defines the staleness vocabulary
   this spec is the first to implement.
-- [`reports-net-worth.md`](reports-net-worth.md) — the cash-only net worth that
-  Pillar D extends.
+- [`reports-net-worth.md`](reports-net-worth.md) — the balance-spine net worth
+  that Pillar D values from holdings, counting each account once.
 
 ---
 
