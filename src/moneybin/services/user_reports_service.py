@@ -28,6 +28,7 @@ from moneybin.reports._framework.derive import (
     DerivedClassification,
     class_fingerprint,
     derive_classification,
+    drifted_columns,
     is_weaker_class,
     with_downgrades,
 )
@@ -506,8 +507,48 @@ class UserReportsService:
                 },
             )
 
+        stored_downgrades: Mapping[str, Mapping[str, str]] = (
+            row.get("class_downgrades") or {}
+        )
+        # The approval covers ONE column, but the write below persists the whole
+        # freshly derived map. An upstream reclassification that moved a
+        # *different* output column therefore rode along on it: no confirmation
+        # was shown for that column, no audit row named it, and refreshing the
+        # fingerprint told the read path the stale contract was current — so
+        # `_reresolved` stopped degrading it. A weakening reached the stored floor
+        # without the gate that exists to be the only way there.
+        #
+        # Neither guard above can see it. The fingerprint compared is the *stored*
+        # one, which no read refreshes, so upstream drift leaves it matching; and
+        # `expected_from_class` binds the approved column alone.
+        #
+        # The same comparison the run path makes, against the same two maps.
+        unrelated = tuple(
+            name
+            for name in drifted_columns(
+                with_downgrades(dict(derived.classes), stored_downgrades),
+                {
+                    name: DataClass(value)
+                    for name, value in (row.get("classes") or {}).items()
+                },
+            )
+            if name != column
+        )
+        if unrelated:
+            metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
+                outcome="refused_unrelated_drift"
+            ).inc()
+            raise UserError(
+                "Another column's classification changed since this report was "
+                "saved, so approving this one would store that change too — "
+                "nothing was reclassified. Run the report to see what moved, then "
+                "save it again before downgrading.",
+                code=error_codes.REPORT_CLASSIFICATION_STALE,
+                details={"report_id": report_id, "columns": list(unrelated)},
+            )
+
         downgrades: dict[str, Mapping[str, str]] = {
-            **(row.get("class_downgrades") or {}),
+            **stored_downgrades,
             column: {"from": from_class.value, "to": to_class.value, "reason": reason},
         }
         # `reason` is bounded per entry above; this bounds what they accumulate

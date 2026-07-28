@@ -42,6 +42,7 @@ from moneybin.reports._framework.derive import (
     annotation_of,
     class_fingerprint,
     derive_classification,
+    drifted_columns,
     json_scalar,
     read_tables,
     token_of,
@@ -411,10 +412,9 @@ def _reresolved(
     approval collected against a weak class silently suppress a stronger one,
     which is the inverse of what the downgrade was reviewed for.
 
-    **Any** movement fails closed, in either direction — not only a rise. A
-    derived class that moved *down* is a weakening no human reviewed, and only
-    ``reports reclassify`` may lower a floor. The cost is real and worth naming:
-    one upstream reclassification (``account_id``'s ``ACCOUNT_IDENTIFIER →
+    ``drifted_columns`` decides what moved, and its docstring carries the rule:
+    any movement in either direction. The cost is real and worth naming: one
+    upstream reclassification (``account_id``'s ``ACCOUNT_IDENTIFIER →
     RECORD_ID``, say) masks that column on every saved report reading the table
     until each is saved again, because reads never refresh the fingerprint.
     ``.claude/rules/reports.md`` describes this as failing closed on a column
@@ -434,22 +434,10 @@ def _reresolved(
 
     reapplied = with_downgrades(dict(derived.classes), downgrades)
 
-    changed_columns = tuple(
-        sorted(
-            {
-                name
-                for name, data_class in reapplied.items()
-                if stored_classes.get(name) is not data_class
-            }
-            # Both directions. Walking the derived map alone never visits a name
-            # the stored map has and this one does not, so a saved `SELECT *`
-            # whose upstream column was retired compared equal and served as
-            # healthy with a narrower contract than the one it stored. Nothing
-            # can be masked for a column that no longer exists; saying the
-            # contract moved is the whole of the answer here.
-            | (set(stored_classes) - set(reapplied))
-        )
-    )
+    # Nothing can be masked for a column that no longer exists; saying the
+    # contract moved is the whole of the answer here. `drifted_columns` owns that
+    # rule and the both-directions comparison, shared with the downgrade path.
+    changed_columns = drifted_columns(reapplied, stored_classes)
     changed_parameters = tuple(
         sorted(
             name

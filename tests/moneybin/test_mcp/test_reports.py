@@ -255,6 +255,38 @@ async def test_reports_run_of_a_drifted_saved_report_says_so_in_the_envelope(
 
 
 @pytest.mark.unit
+async def test_reports_returns_not_found_for_an_unknown_report_id(
+    db: Database,
+) -> None:
+    """The likeliest real MCP error for this feature: a hallucinated handle.
+
+    An agent mistyping or inventing a ``user:r…`` id is asserted at the catalog
+    layer, but nothing checked that the code survives the tool wrapper's own error
+    translation — which is the only place the agent reads it. Driven through the
+    real catalog so the wrapper's translation is what is under test.
+    """
+    create_core_tables_raw(db.conn)
+
+    with (
+        patch(
+            "moneybin.reports._framework.catalog.get_database",
+            return_value=_database_context(db),
+        ),
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=_database_context(db),
+        ),
+        patch("moneybin.mcp.tools.reports.get_max_rows", return_value=50),
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        response = await reports(report_id="user:rnosuchreport")
+
+    assert response.to_dict()["status"] == "error"
+    assert response.error is not None
+    assert response.error.code == "report_id_not_found"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("parameters", "limit"),
     [

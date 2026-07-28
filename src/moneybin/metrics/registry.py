@@ -722,10 +722,15 @@ USER_REPORT_RECLASSIFY_TOTAL = Counter(
     #          | refused_not_weaker | refused_unknown_column
     #          | refused_revision_moved | refused_derivation_moved
     #          | refused_blank_reason | refused_reason_too_long
+    #          | refused_unrelated_drift
     # The two `*_moved` labels report the same message to the caller and are
     # deliberately separate here: one means the stored row was rewritten, the
     # other that derivation's answer changed with the row untouched. Only the
     # second can fire without any write, so collapsing them would hide the one
     # that no concurrent writer explains.
+    # `refused_unrelated_drift` is a third thing again: the approved column is
+    # fine and some *other* output column moved, so a sustained rate here means
+    # saved reports are going stale faster than their owners re-save them —
+    # a backlog signal, not an abuse one.
     ["outcome"],
 )

@@ -1008,6 +1008,78 @@ def test_derivation_leaves_an_ordinary_projection_untouched(
     assert derived.classes["account_id"] is DataClass.RECORD_ID
 
 
+def test_derivation_masks_a_parameter_projected_by_a_later_union_branch(
+    dynamic_db: Database,
+) -> None:
+    """A set operation names its output from branch 0 and draws values from all.
+
+    The first fix for the projected-parameter leak keyed the inherited class by
+    each ``SELECT``'s own local alias. A later branch's alias names no output
+    column — DuckDB calls this result ``value``, from branch 0 — so the entry
+    landed under ``other``, a key nothing reads, and the routing number came back
+    in the clear anyway. Classification per output *position* is what the
+    combining rule already does for columns; a parameter is not exempt.
+    """
+    derived = derive_classification(
+        dynamic_db,
+        query_sql=(
+            "SELECT 'x' AS value "
+            "UNION ALL "
+            "SELECT $acct AS other FROM core.dim_accounts WHERE routing_number = $acct"
+        ),
+        params=(_param("acct"),),
+    )
+
+    assert derived.classes["value"] is FAIL_CLOSED_CLASS
+
+
+def test_derivation_masks_a_parameter_projected_through_a_derived_table(
+    dynamic_db: Database,
+) -> None:
+    """The value reaches the output through a source, not through the projection.
+
+    The outer projection is a bare column reference, so walking the outermost
+    projection for placeholders finds none — the parameter is projected one scope
+    down. Resolving it needs the same scope walk that classifies a derived
+    table's columns, which is why this belongs to the one classifier rather than
+    to a second rule that has to re-implement the walk.
+    """
+    derived = derive_classification(
+        dynamic_db,
+        query_sql=(
+            "SELECT t.v AS acct FROM ("
+            "SELECT $acct AS v FROM core.dim_accounts WHERE routing_number = $acct"
+            ") t"
+        ),
+        params=(_param("acct"),),
+    )
+
+    assert derived.classes["acct"] is FAIL_CLOSED_CLASS
+
+
+def test_derivation_leaves_a_union_of_ordinary_columns_untouched(
+    dynamic_db: Database,
+) -> None:
+    """The set-operation benign twin.
+
+    A parameter used only as a filter leaves both branches classified from their
+    own columns, so the fix above cannot be a blanket floor over every position
+    a set operation returns.
+    """
+    derived = derive_classification(
+        dynamic_db,
+        query_sql=(
+            "SELECT account_id AS value FROM core.dim_accounts "
+            "UNION ALL "
+            "SELECT account_id AS other FROM core.dim_accounts "
+            "WHERE routing_number = $acct"
+        ),
+        params=(_param("acct"),),
+    )
+
+    assert derived.classes["value"] is DataClass.RECORD_ID
+
+
 def test_spec_from_row_degrades_when_a_stored_projection_disappears(
     dynamic_db: Database,
 ) -> None:

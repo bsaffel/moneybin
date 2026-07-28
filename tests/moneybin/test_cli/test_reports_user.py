@@ -9,17 +9,21 @@ that reach the service.
 from __future__ import annotations
 
 import json
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from moneybin import error_codes
 from moneybin.cli.commands.reports import user_reports
 from moneybin.cli.main import app
 from moneybin.cli.output import CLI_MAX_ROWS
+from moneybin.cli.report_params import parse_parameter_value
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.execute import ReportResult
@@ -1387,3 +1391,74 @@ def test_a_confirm_prompt_is_never_held_open_over_the_writer_lock(
     assert all(read_only for read_only in at_prompt[0]), (
         "a write connection was already open when the prompt appeared"
     )
+
+
+@pytest.mark.parametrize(
+    ("raw", "annotation", "expected"),
+    [
+        ("2026-01-01", date, date(2026, 1, 1)),
+        ("10.50", Decimal, Decimal("10.50")),
+        ("true", bool, True),
+        ("false", bool, False),
+        ("1.5", float, 1.5),
+        ("5", int, 5),
+        # `_annotation_accepts_container`: JSON syntax is read as JSON, not as a
+        # string, so a list parameter is expressible from one `--param`.
+        ("[1, 2]", list[int], [1, 2]),
+        # `_annotation_accepts_none`: the literal `null` binds None only where the
+        # declaration admits it — the pair below proves the "only" half.
+        ("null", int | None, None),
+    ],
+    ids=[
+        "date",
+        "decimal",
+        "bool-true",
+        "bool-false",
+        "float",
+        "int",
+        "json-list",
+        "null-into-optional",
+    ],
+)
+def test_the_param_binder_coerces_each_declared_type(
+    raw: str, annotation: object, expected: object
+) -> None:
+    """The CLI's own coercion, unmocked.
+
+    Every other test of this path patches ``coerce_report_parameters`` out, which
+    proves the wiring and nothing about the coercion. ``--param since=2026-01-01``
+    reaching a runner as the string it was typed as is a boundary bug the report's
+    own body would report as its internals failing.
+    """
+    assert parse_parameter_value(raw, annotation) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "annotation"),
+    [
+        ("2026-13-01", date),
+        # A locale-style decimal is refused rather than read as 1050 or 10.
+        ("10,50", Decimal),
+        ("not-a-float", float),
+        ("[1,", list[int]),
+        ("null", int),
+    ],
+    ids=[
+        "impossible-date",
+        "locale-decimal",
+        "non-numeric-float",
+        "truncated-json",
+        "null-into-non-optional",
+    ],
+)
+def test_the_param_binder_refuses_a_value_it_cannot_coerce(
+    raw: str, annotation: object
+) -> None:
+    """A malformed value is a usage error, named at the flag that carried it.
+
+    The refusal matters as much as the coercion: silently reading ``10,50`` as
+    ``10`` would filter a money column by a number the user did not type. Typer
+    renders ``BadParameter`` as exit code 2 with the ``--param`` hint.
+    """
+    with pytest.raises(typer.BadParameter):
+        parse_parameter_value(raw, annotation)

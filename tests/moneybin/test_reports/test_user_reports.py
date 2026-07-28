@@ -987,6 +987,103 @@ def test_reclassify_bounds_the_accumulated_downgrade_map(
     assert sorted(row["class_downgrades"]) == ["c1", "c2", "c3"]
 
 
+_TWO_COLUMN_SQL = (
+    "SELECT last_four AS lf, institution_name AS inst FROM core.dim_accounts"
+)
+
+
+def test_reclassify_refuses_when_an_unrelated_column_drifted(
+    service: UserReportsService,
+    saved_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Approving one column must not carry an unreviewed change to another.
+
+    The write persists the whole freshly derived map, so an upstream
+    reclassification that *lowered* a different output column's class rode along
+    on the approval — no confirmation shown for it, no audit row naming it, and
+    the refreshed fingerprint then told the read path the stale contract was
+    current. Only ``reclassify`` may lower a floor, and it may lower the one floor
+    it asked about.
+
+    Isolated deliberately: ``lf``'s own derived class does not move, so the
+    fingerprint guard and the derived-class guard both pass and this fixture can
+    only be caught by the unrelated-drift comparison.
+    """
+    report_id = _create(service, query_sql=_TWO_COLUMN_SQL)
+    row = service.resolve(report_id)
+    shown = service.derived_class(row, column="lf")
+    assert shown is DataClass.INSTITUTION_ACCOUNT_NUMBER
+    before = _counter("user_report_reclassify_total", outcome="refused_unrelated_drift")
+
+    # The unrelated weakening: `inst` drops from INSTITUTION to a LOW aggregate.
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "dim_accounts")] = {
+        **CLASSIFICATION[("core", "dim_accounts")],
+        "institution_name": DataClass.AGGREGATE,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    with pytest.raises(UserError) as raised:
+        service.reclassify(
+            report_id,
+            column="lf",
+            to_class=DataClass.AGGREGATE,
+            reason="The last four digits are printed on the statement anyway.",
+            confirmed=True,
+            confirmed_via="prompt",
+            expected_fingerprint=str(row["class_fingerprint"]),
+            expected_from_class=shown,
+            actor="cli",
+        )
+
+    assert raised.value.code == error_codes.REPORT_CLASSIFICATION_STALE
+    assert (
+        _counter("user_report_reclassify_total", outcome="refused_unrelated_drift")
+        == before + 1
+    )
+    # The drifted column is named so the user can act; no class value is quoted.
+    assert raised.value.details is not None
+    assert raised.value.details["columns"] == ["inst"]
+    # Nothing was written: not the approval, and not the drift it would have
+    # carried. The unrefreshed fingerprint is what keeps the read path degrading.
+    stored = UserReportsRepo(saved_db).get(report_id)
+    assert stored is not None
+    assert stored["class_downgrades"] == {}
+    assert stored["classes"]["inst"] == DataClass.INSTITUTION.value
+    assert str(stored["class_fingerprint"]) == str(row["class_fingerprint"])
+
+
+def test_reclassify_allows_a_downgrade_beside_an_unmoved_second_column(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """The benign twin: another column merely *existing* is not drift.
+
+    Same two-column report, no upstream change. Without this, a guard that
+    refused whenever the report returned more than the approved column would pass
+    the test above and make every multi-column report unreclassifiable.
+    """
+    report_id = _create(service, query_sql=_TWO_COLUMN_SQL)
+
+    service.reclassify(
+        report_id,
+        column="lf",
+        to_class=DataClass.AGGREGATE,
+        reason="The last four digits are printed on the statement anyway.",
+        confirmed=True,
+        confirmed_via="prompt",
+        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+        expected_from_class=DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        actor="cli",
+    )
+
+    row = UserReportsRepo(saved_db).get(report_id)
+    assert row is not None
+    assert row["classes"]["lf"] == DataClass.AGGREGATE.value
+    assert row["classes"]["inst"] == DataClass.INSTITUTION.value
+    assert sorted(row["class_downgrades"]) == ["lf"]
+
+
 def test_every_admitted_downgrade_drops_the_tier_and_never_masks_more_weakly() -> None:
     """The rule as a property over the whole enum, not one fixture pair.
 
@@ -1179,6 +1276,44 @@ def test_a_rejected_save_counts_as_rejected(service: UserReportsService) -> None
         )
 
     assert _counter("user_report_saves_total", outcome="rejected") == before + 1
+
+
+@pytest.mark.parametrize(
+    ("query_sql", "expected_code"),
+    [
+        ("DELETE FROM core.dim_accounts", error_codes.REPORT_QUERY_INVALID),
+        # Both statements are individually legal reads, so this reaches the
+        # multi-statement guard rather than the write-pattern one. `SELECT 1; DROP
+        # TABLE …` would trip the write check first and prove nothing about it.
+        (
+            "SELECT 1 AS a; SELECT account_id FROM core.dim_accounts",
+            error_codes.REPORT_QUERY_INVALID,
+        ),
+        # `raw.plaid_accounts` exists in this database, so qualification succeeds
+        # and the schema allowlist is what refuses — not the unknown-table guard.
+        (
+            "SELECT * FROM raw.plaid_accounts",
+            error_codes.REPORT_QUERY_SCHEMA_NOT_ALLOWED,
+        ),
+    ],
+    ids=["non-select", "multi-statement", "cross-schema"],
+)
+def test_create_refuses_sql_the_save_contract_forbids(
+    service: UserReportsService, query_sql: str, expected_code: str
+) -> None:
+    """The gate is unit-tested below the service; this drives it *through* create.
+
+    Each shape is refused by a different guard inside ``derive_classification``,
+    and the service reaches all three through one call. A wiring bug between them
+    — the schema allowlist dropped while threading arguments, say — would leave
+    every lower-level test green while the entry point users and agents actually
+    call admitted the query. The specific code is asserted because these refusals
+    are a public contract the CLI and MCP both classify on.
+    """
+    with pytest.raises(UserError) as caught:
+        service.create(name="bad", query_sql=query_sql, actor="cli")
+
+    assert caught.value.code == expected_code
 
 
 def test_running_a_saved_report_counts_against_the_user_tier(
@@ -1650,8 +1785,19 @@ def test_the_run_envelope_reports_that_a_report_degraded(
     ``DynamicReport.degraded`` was asserted by every drift test and read by
     nobody: the catalog dropped it on the way to the envelope, so a caller
     receiving masked rows had no machine-readable reason for them.
+
+    ``institution_name`` is the load-bearing part of the fixture: it is
+    passthrough before the drift and unaffected by it, so asserting that its real
+    value survives is what separates "mask the column that moved" from "mask the
+    whole row on any drift". A query of ``account_id, routing_number`` alone
+    cannot tell those apart — the second column is masked either way.
     """
-    report_id = _create(service)
+    report_id = _create(
+        service,
+        query_sql=(
+            "SELECT account_id, institution_name AS inst FROM core.dim_accounts"
+        ),
+    )
 
     reclassified = dict(CLASSIFICATION)
     reclassified[("core", "dim_accounts")] = {
@@ -1667,6 +1813,8 @@ def test_the_run_envelope_reports_that_a_report_degraded(
 
     assert summary["degraded"] is True
     assert "account_id" in summary["degraded_reason"]
+    assert {record["account_id"] for record in result.records} == {"*****"}
+    assert {record["inst"] for record in result.records} == {"Test Bank", "Other Bank"}
 
 
 def test_an_undegraded_run_leaves_the_envelope_undegraded(
@@ -1697,8 +1845,18 @@ def test_a_builtin_run_carries_no_degraded_flag(saved_db: Database) -> None:
         ("date", "2026-01-01", date(2026, 1, 1)),
         ("decimal", "10.50", Decimal("10.50")),
         ("decimal", 10, Decimal(10)),
+        # A JSON number arrives as a float. `Decimal(0.1)` is the binary
+        # expansion `0.1000000000000000055511151231257827...`, which then filters
+        # a money column — so the coercion routes through `str` deliberately, and
+        # this case is what fails if a regression drops that.
+        ("decimal", 0.1, Decimal("0.1")),
     ],
-    ids=["date-from-iso-string", "decimal-from-string", "decimal-from-int"],
+    ids=[
+        "date-from-iso-string",
+        "decimal-from-string",
+        "decimal-from-int",
+        "decimal-from-float",
+    ],
 )
 def test_a_json_caller_can_bind_a_type_json_cannot_represent(
     service: UserReportsService,
@@ -1731,8 +1889,23 @@ def test_a_json_caller_can_bind_a_type_json_cannot_represent(
     assert validated == {"bound": expected}
 
 
+@pytest.mark.parametrize(
+    ("token", "column", "supplied"),
+    [
+        ("date", "transaction_date", "not-a-date"),
+        # The `ArithmeticError` half of the same guard: `Decimal("not-a-number")`
+        # raises `InvalidOperation`, which is not a `ValueError`. Uncaught it
+        # would reach the caller as a bare traceback rather than this refusal.
+        ("decimal", "amount", "not-a-number"),
+    ],
+    ids=["malformed-date", "malformed-decimal"],
+)
 def test_a_value_that_is_not_the_declared_type_is_still_refused(
-    service: UserReportsService, saved_db: Database
+    service: UserReportsService,
+    saved_db: Database,
+    token: str,
+    column: str,
+    supplied: str,
 ) -> None:
     """The benign twin: coercion must not become "accept anything".
 
@@ -1743,15 +1916,14 @@ def test_a_value_that_is_not_the_declared_type_is_still_refused(
     report_id = _create(
         service,
         query_sql=(
-            "SELECT transaction_id FROM core.fct_transactions "
-            "WHERE transaction_date > $bound"
+            f"SELECT transaction_id FROM core.fct_transactions WHERE {column} > $bound"  # noqa: S608  # parametrized column name from this test's own table, not user input
         ),
-        params=[_param("bound", date)],
+        params=[_param("bound", {"date": date, "decimal": Decimal}[token])],
     )
 
     with pytest.raises(UserError) as caught:
         get_report_catalog(saved_db).resolve_request(
-            report_id=report_id, parameters={"bound": "not-a-date"}, limit=1
+            report_id=report_id, parameters={"bound": supplied}, limit=1
         )
 
     assert caught.value.code == error_codes.REPORT_PARAMETER_INVALID_TYPE
@@ -1789,12 +1961,18 @@ def test_reclassify_ignores_a_stored_default_it_is_not_touching(
     defaults still attached let an upstream reclassification of an unrelated
     filter's column refuse a downgrade whose caller never mentioned that
     parameter, with an error about a default they did not supply.
+
+    ``account_id`` is a filter here and **not** projected, so the reclassification
+    below moves this report's parameter class and none of its output columns. That
+    isolates the default gate from the unrelated-drift refusal, which the earlier
+    ``SELECT account_id, …`` form would also have tripped — one fixture answering
+    for two guards proves neither.
     """
     report_id = _create(
         service,
         query_sql=(
-            "SELECT account_id, SUM(amount) AS spend FROM core.fct_transactions "
-            "WHERE account_id = $acct GROUP BY account_id"
+            "SELECT SUM(amount) AS spend FROM core.fct_transactions "
+            "WHERE account_id = $acct"
         ),
         params=[_param("acct", str, default="acct_11112222", required=False)],
     )

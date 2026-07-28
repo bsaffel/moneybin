@@ -216,6 +216,23 @@ amount (`WHERE amount > $min`) therefore still takes that column's class and
 still may not carry a default; whether that is too strict is a separate
 question this spec does not answer by widening the rule.
 
+**A parameter the query *returns* is classified like the value it carries.** A
+projected `$placeholder` puts no column in the projection, so lineage has nothing
+to trace and answered `AGGREGATE` — passthrough. But the value is not unknown:
+`SELECT $acct AS acct … WHERE routing_number = $acct` returned the supplied
+routing number in the clear beside the parameter metadata that masked it. One
+value cannot be two classes because it appears in two positions. A placeholder is
+therefore classified as one of the values a projection is derived from, inside
+`resolve_output_classes` alongside the columns — not by a second rule over the
+finished map. That placement is what makes the answer hold for every shape a
+bound value can reach the output through: a later `UNION ALL` branch (whose local
+alias names no output column, since a set operation takes names from the first
+branch and values from every branch by position), a derived table, a CTE, or a
+nested subquery. It also survives the counting-aggregate collapse, whose "every
+column is inside a count" test passes vacuously over a projection holding no
+column at all — `COUNT(*) || $acct`. Ad-hoc `sql_query` binds no parameters, so it
+supplies no map and every placeholder there fails closed.
+
 #### `report_id` is namespaced, and the namespace is not decoration
 
 `ReportSpec.__post_init__` rejects any `report_id` that does not match
@@ -885,6 +902,24 @@ confirmation, and passes it back; a mismatch refuses with the same
 **guard, never an input**: the stored `from` is still the service's own fresh
 derivation, so a caller cannot name its own floor.
 
+**An approval covers one column, so unrelated drift is refused.** The write
+persists the whole freshly derived map, so an upstream reclassification that
+moved a *different* output column rode along on the approval: no confirmation
+named that column, no audit row recorded it, and the refreshed fingerprint then
+told the read path the stale contract was current, so R4 stopped degrading it. A
+weakening reached the stored floor without passing the one gate that may lower
+one. Neither guard above sees it — the compared fingerprint is the stored one,
+which no read refreshes, and the derived-class check binds the approved column
+alone. Before writing, the service therefore reapplies the stored downgrades to a
+fresh derivation and compares that map against the stored one, exactly as R4's
+read path does; any column other than the approved one that moved refuses with
+`report_classification_stale`, counted as `refused_unrelated_drift`. The response
+names the moved columns and no class values. The remedy is to save the report
+again, which is what a drifted report already needs — R4 is degrading it
+meanwhile. Parameters need no equivalent: a parameter class that moved leaves the
+stored `params` block disagreeing with the fingerprint computed over it, so the
+read path's recomputation mismatches and degrades on its own.
+
 **A blank `reason` is refused.** The stored reason is the entire product of this
 path — the downgrade itself is permanent and invisible in every later result, so
 the reason is the only thing that distinguishes a waived over-classification from
@@ -1234,7 +1269,7 @@ remains the only MCP identity this draft assumes.
 | `moneybin_user_report_runs_total` | Counter | `tier`, `outcome` |
 | `moneybin_user_report_unresolved_columns_total` | Counter | — |
 | `moneybin_user_report_drift_detected_total` | Counter | `resolution` (`equal`, `failed_closed`) |
-| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed_prompt`, `confirmed_flag`, `declined`, `refused_not_weaker`, `refused_unknown_column`, `refused_revision_moved`, `refused_derivation_moved`, `refused_blank_reason`, `no_elicitation`) |
+| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed_prompt`, `confirmed_flag`, `declined`, `refused_not_weaker`, `refused_unknown_column`, `refused_revision_moved`, `refused_derivation_moved`, `refused_unrelated_drift`, `refused_blank_reason`, `refused_reason_too_long`, `no_elicitation`) |
 
 The unresolved-columns and drift counters carry the load: together they say
 whether the invisible classification is invisible in practice, or whether users

@@ -259,6 +259,68 @@ def test_set_of_metadata_alone_leaves_the_fingerprint_untouched(
     assert stored["is_active"] is False
 
 
+def test_the_repo_does_not_enforce_the_masking_floor(
+    repo: UserReportsRepo,
+) -> None:
+    """Pins where the "only reclassify may lower a class" rule does *not* live.
+
+    ``set`` and ``create`` take whatever ``classes`` map they are handed. The
+    floor — confirmation, ``is_weaker_class``, and the audited reason — is
+    enforced one layer up in ``UserReportsService.reclassify``, deliberately: the
+    repo is the audited write primitive for every mutation, and a class check here
+    would have to be satisfied by the save path too, which legitimately writes any
+    derived class.
+
+    So this test asserts a *weakening lands* — not because that is desirable, but
+    because a future caller reaching this method directly (a script, a migration,
+    a new service method) bypasses the gate entirely and nothing here would say
+    so. If a floor is ever added at this layer, this test should fail and be
+    replaced by its inverse.
+    """
+    report_id = _create(repo, classes={"n": DataClass.ROUTING_NUMBER.value})
+
+    repo.set(report_id, classes={"n": DataClass.AGGREGATE.value}, actor="script")
+
+    stored = repo.get(report_id)
+    assert stored is not None
+    assert stored["classes"] == {"n": DataClass.AGGREGATE.value}
+    # The audit row is the only trace such a call leaves: no reason, no
+    # confirmation, no `class_downgrades` entry naming the column.
+    assert stored["class_downgrades"] == {}
+
+
+def test_list_filters_archived_reports_at_the_repo_layer(
+    repo: UserReportsRepo,
+) -> None:
+    """``list()``'s own SQL, exercised here rather than only through the service."""
+    active = _create(repo, name="active-report")
+    archived = _create(repo, name="archived-report")
+    repo.set(archived, is_active=False, actor="cli")
+
+    default = {str(row["report_id"]) for row in repo.list()}
+    including = {str(row["report_id"]) for row in repo.list(include_archived=True)}
+
+    assert default == {active}
+    assert including == {active, archived}
+
+
+def test_list_returns_nothing_when_the_table_is_absent(db: Database) -> None:
+    """``list()`` answers empty rather than raising when the table is not there.
+
+    A read-only surface can open a database whose schema predates this table, and
+    it must be able to enumerate an empty catalog instead of failing — so the
+    method catches DuckDB's ``CatalogException``.
+
+    The table is dropped explicitly rather than by skipping ``run_migration``:
+    ``init_schemas`` creates ``app.user_reports`` from the checked-in DDL, so
+    omitting the migration leaves the table in place and the test passes with the
+    fallback deleted — proving nothing. Verified by removing the ``except``.
+    """
+    db.execute(f"DROP TABLE {USER_REPORTS.full_name}")
+
+    assert UserReportsRepo(db).list() == []
+
+
 def test_archiving_keeps_the_report_and_its_name(repo: UserReportsRepo) -> None:
     """Archive is visibility state: the row and its unique name both survive."""
     report_id = _create(repo)

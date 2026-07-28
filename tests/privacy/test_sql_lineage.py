@@ -136,6 +136,19 @@ def _classes(sql: str, db: Database) -> dict[str, DataClass]:
     return resolve_output_classes(expand_star(parse_cached(sql), snap), snap)
 
 
+def _classes_bound(
+    sql: str, db: Database, placeholder_classes: dict[str, DataClass]
+) -> dict[str, DataClass]:
+    """``_classes`` for a query with parameters, as the report deriver calls it."""
+    snap = get_current_schema_snapshot(db)
+    return resolve_output_classes(
+        expand_star(parse_cached(sql), snap),
+        snap,
+        sql,
+        placeholder_classes=placeholder_classes,
+    )
+
+
 def _routing_chain_ctes(depth: int) -> list[str]:
     """CTE bodies passing ``routing_number`` through ``depth`` levels of aliasing.
 
@@ -851,6 +864,77 @@ def test_count_of_critical_column_stays_aggregate(populated_db: Database) -> Non
     """
     out = _classes("SELECT COUNT(account_id) AS n FROM core.dim_accounts", populated_db)
     assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_count_beside_a_projected_parameter_is_not_collapsed(
+    populated_db: Database,
+) -> None:
+    """The counting-aggregate collapse passes VACUOUSLY over a placeholder.
+
+    Its guard asks whether every ``exp.Column`` sits inside a count; a projection
+    holding only ``COUNT(*)`` and a placeholder has no column at all, so ``any``
+    over nothing is False and the projection collapsed to ``AGGREGATE`` —
+    publishing the bound value beside a count of rows. The same shape of vacuous
+    pass that the opaque-node veto above this rule exists to stop.
+    """
+    out = _classes_bound(
+        "SELECT COUNT(*) || $acct AS x FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.ROUTING_NUMBER},
+    )
+    assert out == {"x": DataClass.ROUTING_NUMBER}
+
+
+def test_a_projection_combining_a_column_and_a_parameter_takes_the_stronger(
+    populated_db: Database,
+) -> None:
+    """A projection can return a column's value AND a bound one at once.
+
+    ``account_id || $acct`` derives from both, so the class describing it is the
+    combination — the same rule two co-referenced columns already follow. Reading
+    only the columns publishes the binding beside them.
+    """
+    out = _classes_bound(
+        "SELECT account_id || $acct AS x FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.ROUTING_NUMBER},
+    )
+    assert out == {"x": DataClass.ROUTING_NUMBER}
+
+
+def test_a_parameter_confined_inside_a_count_stays_aggregate(
+    populated_db: Database,
+) -> None:
+    """The benign twin of the vacuous-collapse guard.
+
+    A placeholder whose only appearance is inside a counting aggregate has its
+    value collapsed to a count exactly as a column does, so the guard must not
+    treat every placeholder as surfacing. Without this, ``COUNT($x)`` would mask a
+    row count.
+    """
+    out = _classes_bound(
+        "SELECT COUNT($acct) AS n FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.ROUTING_NUMBER},
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_an_unnamed_positional_placeholder_fails_closed(
+    populated_db: Database,
+) -> None:
+    """A bare ``?`` names no parameter, so no class can be looked up for it.
+
+    Nothing may bind a value this classifier cannot name. The fallback is the
+    whole-masking class rather than the caller's declared map, which a positional
+    placeholder is absent from by construction.
+    """
+    out = _classes_bound(
+        "SELECT ? AS x FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.RECORD_ID},
+    )
+    assert out == {"x": FAIL_CLOSED_CLASS}
 
 
 def test_two_unaliased_projections_get_distinct_keys(populated_db: Database) -> None:

@@ -70,7 +70,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   never renders as a complete one. A `reports reclassify` approval is also
   re-checked against current policy on every re-derivation, so a release that
   raises the class you downgraded *to* retires the approval and masks the column
-  rather than serving it under a floor nobody would grant today.
+  rather than serving it under a floor nobody would grant today. It covers the one
+  column you confirmed and nothing else: if another of the report's columns has
+  drifted since it was saved, the downgrade is refused and names that column, so
+  approving one thing cannot quietly store a change to another. Save the report
+  again and the approval goes through.
 
   The same rule covers every name you choose, not only the SQL. A report's name,
   its output aliases, and its declared parameter names never enter a log record:

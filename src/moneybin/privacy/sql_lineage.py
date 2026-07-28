@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -750,6 +750,11 @@ class _ResolveCtx:
     (see ``_scope_source_names``). Computed once per call and carried unchanged
     through the recursion, because a name bound by the outer query still shadows
     the catalog inside a nested scope.
+
+    ``placeholder_classes`` is the caller's resolved parameter map, empty for a
+    surface that binds nothing. It is carried through the recursion because a
+    parameter can be projected at any depth — inside a CTE or a derived table —
+    and still reach the output.
     """
 
     snapshot: SchemaSnapshot
@@ -759,6 +764,7 @@ class _ResolveCtx:
     tree: exp.Expr
     strict: bool
     shadowed: frozenset[str]
+    placeholder_classes: Mapping[str, DataClass]
 
 
 def _output_index(source: Scope, name: str) -> int | None:
@@ -1031,6 +1037,27 @@ def _resolve_projection(
     if _has_uncounted_opaque(inner):
         return None
 
+    # A projected placeholder is a VALUE, not a literal: the caller binds it, and
+    # its class is the one `resolve_placeholder_classes` already resolved from the
+    # column it is compared against. A projection returning one returns whatever
+    # was bound, so it is classified here alongside the columns rather than by a
+    # second rule downstream — `SELECT $acct AS acct … WHERE routing_number =
+    # $acct` returned the supplied routing number in the clear.
+    #
+    # Gathered BEFORE the counting-aggregate rule, which asks only about
+    # `exp.Column` nodes and so passes VACUOUSLY over a projection whose other
+    # content is a placeholder: `COUNT(*) || $acct` has no column, `any` over
+    # nothing is False, and the projection collapsed to AGGREGATE beside a row
+    # count. Same shape of vacuous pass as the opaque-node veto above.
+    bound: list[DataClass] = []
+    for node in inner.find_all(*PLACEHOLDER_NODES):
+        if _within_counting_agg(node, inner):
+            continue
+        # A positional `?` names nothing, so no map can answer for it; a named one
+        # absent from the map was never declared. Both fail closed.
+        found = ctx.placeholder_classes.get(placeholder_name(node))
+        bound.append(FAIL_CLOSED_CLASS if found is None else found)
+
     # A counting aggregate at the projection's TOP level collapses values to a
     # count — but it only governs the projection when EVERY column reference is
     # itself inside a counting aggregate (e.g. COUNT(DISTINCT account_id) → LOW).
@@ -1039,11 +1066,15 @@ def _resolve_projection(
     # classify by that column. A count inside a scalar subquery
     # (`(SELECT COUNT(*) FROM t) + amount`) never governs — its tier still comes
     # from the co-referenced columns (here, `amount`).
-    if any(
-        isinstance(n, _COUNTING_AGGS) and not _within_subquery(n, inner)
-        for n in inner.find_all(exp.AggFunc)
-    ) and not any(
-        not _within_counting_agg(c, inner) for c in inner.find_all(exp.Column)
+    if (
+        any(
+            isinstance(n, _COUNTING_AGGS) and not _within_subquery(n, inner)
+            for n in inner.find_all(exp.AggFunc)
+        )
+        and not any(
+            not _within_counting_agg(c, inner) for c in inner.find_all(exp.Column)
+        )
+        and not bound
     ):
         return DataClass.AGGREGATE
 
@@ -1063,7 +1094,10 @@ def _resolve_projection(
         # sits in a subquery, fell through to here and masked a plain number.
         # Two predicates answering "is this opaque" by different rules is the
         # bug; keep the precise one and let it stand alone.
-        return DataClass.AGGREGATE
+        #
+        # A bound placeholder is the one thing here that is neither a literal nor
+        # a column, so it answers for the projection when nothing else can.
+        return _combined_class(bound) if bound else DataClass.AGGREGATE
 
     # Built only when the projection actually nests a SELECT (a scalar or IN
     # subquery); the common case pays nothing.
@@ -1100,8 +1134,9 @@ def _resolve_projection(
     # Value-preserving agg or plain expression: highest-tier referenced class —
     # via `_combined_class`, because the projected value is derived from ALL of
     # these columns, and two different CRITICAL classes cannot stand in for each
-    # other (`last_four || routing_number` must not take the partial mask).
-    return _combined_class(classes)
+    # other (`last_four || routing_number` must not take the partial mask). Any
+    # bound placeholder joins them: `account_id || $acct` returns both values.
+    return _combined_class(classes + bound)
 
 
 def _classify_projection(
@@ -1195,6 +1230,8 @@ def resolve_output_classes(
     snapshot: SchemaSnapshot,
     sql_for_log: str = "",
     strict: bool = False,
+    *,
+    placeholder_classes: Mapping[str, DataClass] | None = None,
 ) -> dict[str, DataClass]:
     """Map each output column name (insertion-ordered) to its DataClass.
 
@@ -1208,6 +1245,16 @@ def resolve_output_classes(
     The build-time report-class deriver sets it True, because a derived class
     map that quietly absorbed a fallback is not the verified artifact it claims
     to be.
+
+    ``placeholder_classes`` maps each declared parameter to the class
+    :func:`resolve_placeholder_classes` resolved for it, so a *projected*
+    parameter is classified from what the caller binds. Omit it on a surface that
+    binds no parameters (ad-hoc ``sql_query``, the build-time deriver over model
+    SQL): every placeholder then fails closed, which is the honest answer for a
+    query that cannot execute at all without a binding. Handling this here rather
+    than in the caller is what makes one traversal cover every shape a parameter
+    can reach the output through — a later set-operation branch, a derived table,
+    a CTE — instead of a second rule re-deriving output positions beside this one.
     """
     branches = _union_select_branches(tree)
     if not branches:
@@ -1221,6 +1268,7 @@ def resolve_output_classes(
         tree=tree,
         strict=strict,
         shadowed=_scope_source_names(tree),
+        placeholder_classes=placeholder_classes or {},
     )
     # Alias scope is per-branch: a UNION may reuse one alias for different
     # tables across branches (legal SQL), so a tree-wide map (last-write-wins)
