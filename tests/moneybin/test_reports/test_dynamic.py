@@ -1443,11 +1443,20 @@ def test_synthesized_runner_fills_a_declared_default(dynamic_db: Database) -> No
 def test_synthesized_runner_rejects_an_unknown_parameter_name(
     dynamic_db: Database,
 ) -> None:
-    """R8's deciding property: an unknown name raises rather than mis-binding."""
+    """R8's deciding property: an unknown name raises rather than mis-binding.
+
+    Asserts the code and ``details`` rather than ``match="nope"``: a supplied
+    parameter name is caller text, and matching it in the message required the
+    message to carry it into ``logger.error``.
+    """
     dynamic = spec_from_row(dynamic_db, _saved(dynamic_db))
 
-    with pytest.raises(UserError, match="nope"):
+    with pytest.raises(UserError) as raised:
         run_report(dynamic.spec, dynamic_db, max_rows=10, nope="x")
+
+    assert raised.value.code == error_codes.REPORT_PARAMETER_UNKNOWN
+    assert raised.value.details is not None
+    assert raised.value.details["unknown"] == ["nope"]
 
 
 def test_synthesized_runner_requires_a_parameter_with_no_default(
@@ -1464,8 +1473,14 @@ def test_synthesized_runner_requires_a_parameter_with_no_default(
         ),
     )
 
-    with pytest.raises(UserError, match="who"):
+    with pytest.raises(UserError) as raised:
         run_report(dynamic.spec, dynamic_db, max_rows=10)
+
+    # The code and `details`, not `match="who"` — a declared parameter name is
+    # author text, so the refusal names it only where no log can persist it.
+    assert raised.value.code == error_codes.REPORT_PARAMETER_MISSING
+    assert raised.value.details is not None
+    assert raised.value.details["missing"] == ["who"]
 
 
 def test_stored_params_omit_an_unresolved_class_rather_than_declaring_it() -> None:

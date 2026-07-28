@@ -482,9 +482,10 @@ def _synthesized_runner(query_sql: str, params: Sequence[ParamSpec]) -> Runner:
         unknown = sorted(set(values) - set(declared))
         if unknown:
             raise UserError(
-                f"Unknown report parameter(s): {', '.join(unknown)}.",
+                "This report does not declare one of the supplied parameters.",
                 code=error_codes.REPORT_PARAMETER_UNKNOWN,
-                hint=f"Declared: {', '.join(declared) or 'none'}.",
+                hint="Run `moneybin reports explain` to see what it declares.",
+                details={"unknown": unknown, "declared": sorted(declared)},
             )
         # The class on each binding is the one derived from the column the
         # placeholder is compared against (R9) — never declared by the user, and
@@ -501,8 +502,9 @@ def _synthesized_runner(query_sql: str, params: Sequence[ParamSpec]) -> Runner:
                 bindings[name] = Binding(parameter.default, parameter.data_class)
         if missing:
             raise UserError(
-                f"Missing required report parameter(s): {', '.join(sorted(missing))}.",
+                "A required report parameter was not supplied.",
                 code=error_codes.REPORT_PARAMETER_MISSING,
+                details={"missing": sorted(missing)},
             )
         return ReportQuery(sql=query_sql, params=bindings)
 

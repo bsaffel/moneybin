@@ -668,9 +668,9 @@ class UserReportsService:
                 outcome="refused_unknown_column"
             ).inc()
             raise UserError(
-                f"This report returns no column named {column!r}.",
+                "This report returns no column by that name.",
                 code=error_codes.REPORT_COLUMN_UNKNOWN,
-                details={"columns": sorted(derived.classes)},
+                details={"column": column, "columns": sorted(derived.classes)},
             )
         return from_class
 
@@ -687,9 +687,10 @@ class UserReportsService:
         """
         if USER_REPORT_NAME.fullmatch(name) is None:
             raise UserError(
-                f"{name!r} is not a valid report name.",
+                "That is not a valid report name.",
                 code=error_codes.REPORT_NAME_INVALID,
                 hint="Use lowercase letters, digits, hyphens, and underscores.",
+                details={"name": name},
             )
         # Separate from the pattern, which is unanchored in length: `[a-z][a-z0-9_-]*`
         # matches a megabyte of letters. DuckDB's VARCHAR is unbounded too, so the
@@ -707,27 +708,27 @@ class UserReportsService:
                 # row remains. Reporting a bare conflict for a report the default
                 # catalog hides is the failure this branch exists to prevent.
                 raise UserError(
-                    f"An archived report already uses the name {name!r}.",
+                    "An archived report already uses that name.",
                     code=error_codes.REPORT_NAME_ARCHIVED,
-                    details={"report_id": existing["report_id"]},
+                    details={"name": name, "report_id": existing["report_id"]},
                     hint=(
                         "Restore it with `moneybin reports set <id> --restore`, "
                         "or free the name with `moneybin reports delete <id>`."
                     ),
                 )
             raise UserError(
-                f"A saved report already uses the name {name!r}.",
+                "A saved report already uses that name.",
                 code=error_codes.REPORT_NAME_TAKEN,
-                details={"report_id": existing["report_id"]},
+                details={"name": name, "report_id": existing["report_id"]},
             )
         # The packaged tiers only: passing `db` here would rebuild every saved
         # report's spec to re-derive names this method already has from the repo.
         for report in get_report_catalog().list():
             if report.name == name:
                 raise UserError(
-                    f"The name {name!r} is already held by {report.report_id}.",
+                    f"That name is already held by {report.report_id}.",
                     code=error_codes.REPORT_NAME_TAKEN,
-                    details={"report_id": report.report_id},
+                    details={"name": name, "report_id": report.report_id},
                 )
 
 
