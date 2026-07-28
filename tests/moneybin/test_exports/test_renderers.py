@@ -20,6 +20,7 @@ from openpyxl import load_workbook
 
 import moneybin.exports.renderers as renderers
 from moneybin.exports.local import validate_xlsx
+from moneybin.exports.redaction import apply_export_redaction
 from moneybin.exports.renderers import (
     decode_csv_cell,
     normalize_tabular_cell,
@@ -273,6 +274,53 @@ def test_parquet_round_trips_native_typed_values_through_duckdb(
         "note",
     ]
     assert relation.fetchall() == list(make_snapshot().tables[0].rows)
+
+
+def test_parquet_writes_a_masked_column_whose_value_is_no_longer_a_number(
+    tmp_path: Path,
+) -> None:
+    """The typed channel is the one a retyped mask breaks; CSV never notices.
+
+    Parquet declares its schema up front from ``PreparedColumn.duckdb_type``, so
+    a masked value that is no longer the declared type fails the whole artifact
+    with ``ArrowInvalid`` rather than one cell. Redaction is what changes the
+    value, so redaction is what has to move the type — asserting on the declared
+    string alone would leave that unproven, since only a real write exercises
+    ``parquet_schema_for``.
+    """
+    columns = (
+        PreparedColumn("account_len", "BIGINT", DataClass.INSTITUTION_ACCOUNT_NUMBER),
+        PreparedColumn("amount", "DECIMAL(18,2)", DataClass.TXN_AMOUNT),
+    )
+    rows = ((4, Decimal("12.30")),)
+    table = PreparedTable(
+        name="probe",
+        source=TableRef("reports", "probe"),
+        columns=columns,
+        rows=rows,
+        checksum_sha256=prepared_table_checksum(columns, rows),
+    )
+    unredacted = replace(
+        make_snapshot(report=True),
+        redaction_mode="unredacted",
+        tables=(table,),
+        _data_dictionary=build_data_dictionary((table,)),
+    )
+
+    rendered = render_parquet(
+        apply_export_redaction(unredacted, "redacted"), tmp_path / "bundle"
+    )
+
+    relation = duckdb.read_parquet(str(rendered.table_files["probe"]))
+    assert relation.columns == ["account_len", "amount"]
+    # The masked column arrives as text; the passthrough column keeps its own type.
+    assert relation.fetchall() == [("*****", Decimal("12.30"))]
+    assert pq.read_schema(  # type: ignore[reportUnknownMemberType]  # pyarrow lacks complete type stubs
+        rendered.table_files["probe"]
+    ) == pa.schema([
+        pa.field("account_len", pa.string()),
+        pa.field("amount", pa.decimal128(18, 2)),
+    ])
 
 
 def test_parquet_schema_follows_prepared_columns_for_empty_values(

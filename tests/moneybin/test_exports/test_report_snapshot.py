@@ -7,7 +7,9 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
+import duckdb
 import pytest
 from pydantic import JsonValue
 from pytest_mock import MockerFixture
@@ -15,6 +17,7 @@ from pytest_mock import MockerFixture
 import moneybin.reports._framework.catalog as report_catalog
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.exports.renderers import render_parquet
 from moneybin.exports.service import ExportService
 from moneybin.exports.snapshot import PreparedExport
 from moneybin.privacy.payloads.networth import (
@@ -915,6 +918,53 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
         )
     assert exc_info.value.code == "report_parameter_unknown"
     assert calls == 2
+
+
+def test_a_saved_report_masking_a_numeric_column_still_exports_to_parquet(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """The whole chain a saved report walks to a typed artifact, driven end to end.
+
+    Lineage hands ``INSTITUTION_ACCOUNT_NUMBER`` down through ``length()`` without
+    the column's type, so a saved report is the only way to reach a masked value
+    whose declared type is not text: no built-in report declares a masking class
+    on any output column, and both masked bundle columns are already ``VARCHAR``.
+    That makes this reachable only through the feature this branch adds, which is
+    why the coverage is here and not at the renderer alone.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four) VALUES (?, ?)",
+        ["acct_11112222", "4021"],
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="masked_length",
+            query_sql="SELECT length(last_four) AS n FROM core.dim_accounts",
+            actor="cli",
+        )
+        .report_id
+    )
+
+    snapshot = ExportService(db).prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+    )
+
+    table = snapshot.tables[0]
+    assert [(column.duckdb_type, column.data_class) for column in table.columns] == [
+        ("VARCHAR", DataClass.INSTITUTION_ACCOUNT_NUMBER)
+    ]
+    assert table.rows == (("*****",),)
+
+    rendered = render_parquet(snapshot, tmp_path / "bundle")
+
+    assert duckdb.read_parquet(str(rendered.table_files[report_id])).fetchall() == [
+        ("*****",)
+    ]
 
 
 def test_networth_history_export_retains_native_values_with_truthful_types(

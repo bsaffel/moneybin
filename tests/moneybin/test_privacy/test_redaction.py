@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal, TypedDict
 
@@ -394,6 +395,50 @@ def test_transforms_covers_every_data_class() -> None:
     missing = set(DataClass) - set(_TRANSFORMS)
     assert not missing, (
         f"DataClass values missing from _TRANSFORMS: {sorted(m.name for m in missing)}"
+    )
+
+
+def test_every_masking_transform_returns_text_whatever_it_is_given() -> None:
+    """The one fact ``apply_export_redaction`` retypes a masked column on.
+
+    A redacted export declares ``VARCHAR`` for every masked column, because every
+    masking transform today answers with a string. That is a property of
+    ``_TRANSFORMS``, not a second list beside it — the same reason
+    ``mask_strength`` measures rather than restates. PR 3's amount bucketing is
+    the live case: a bucket returned as a ``Decimal`` or a range tuple would keep
+    masking correctly while making ``VARCHAR`` a lie, and the export would fail on
+    the typed channel only. This turns that into a red test at the transform.
+    """
+    from moneybin.privacy.redaction import (  # noqa: PLC0415
+        _TRANSFORMS,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    probes: tuple[object, ...] = (
+        "1234567890",
+        4,
+        Decimal("40.21"),
+        True,
+        b"4021",
+        date(2026, 7, 28),
+        ("4", "0"),
+    )
+    offenders = {
+        data_class.name: type(masked).__name__
+        for data_class in _TRANSFORMS
+        if mask_strength(data_class) is not MaskStrength.PASSTHROUGH
+        for probe in probes
+        if not isinstance(masked := _TRANSFORMS[data_class](probe, None), str)
+    }
+
+    assert not offenders, (
+        "a masked column is exported as VARCHAR, so every masking transform must "
+        f"return text; these returned something else: {offenders}"
+    )
+    # None survives as None — a masked column stays nullable, and VARCHAR is.
+    assert all(
+        _TRANSFORMS[data_class](None, None) is None
+        for data_class in _TRANSFORMS
+        if mask_strength(data_class) is not MaskStrength.PASSTHROUGH
     )
 
 

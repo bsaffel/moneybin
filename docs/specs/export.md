@@ -123,6 +123,18 @@ lower-tier fields such as amounts, dates, merchant names, and descriptions
 remain in the artifact. It is protection against critical-identifier exposure,
 not a claim that the artifact is fully anonymized.
 
+A masked column is declared `VARCHAR` in the redacted artifact, whatever type the
+query returned. Every mask answers with text, so a column whose unredacted type is
+numeric holds `*****` once masked — Parquet declares its schema before writing, so
+a stale numeric declaration fails the whole file, and CSV would write the string
+under a manifest promising a number. The manifest, the data dictionary, and the
+Parquet schema therefore describe the artifact beside them rather than the
+unredacted export of the same query, and the two modes differ in declared type
+exactly where they differ in value. Reachable through a saved report, whose
+lineage carries a class through an expression (`SELECT length(last_four)`) without
+carrying the expression's type; no built-in report declares a masking class on an
+output column.
+
 A redacted export of a **user-created** report also withholds the executed
 query: the receipt's `sql` is `null`, and the unredacted artifact carries it
 verbatim. A user-created report's SQL is authored text, so a CRITICAL literal can

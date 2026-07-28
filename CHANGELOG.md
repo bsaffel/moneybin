@@ -392,8 +392,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   returned, but the query could not be answered on any surface and a report saved
   that way was creatable and permanently unrunnable. Values that are not text now
   mask whole (`*****`) rather than partially, which is stronger than the mask it
-  replaces: there are no last four digits to keep in a value that is not text.
-  (#367)
+  replaces: there are no last four digits to keep in a value that is not text. A
+  redacted export of such a report declares the type the mask produced rather than
+  the one it replaced, so its Parquet file and its manifest agree. (#367)
 - **"Transforms up to date" now accounts for everything you can add, not just
   accounts.** The staleness flag on `system_status` and `moneybin transform
   status` watched three account tables out of the seventeen a refresh reads, so
