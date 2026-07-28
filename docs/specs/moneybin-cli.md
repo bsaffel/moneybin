@@ -399,8 +399,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     [--archive] [--restore]
 |   |     [--output json]
 |   |     # --clear-params drops every declaration; --param and it are opposites.
-|   |     # Changing SQL or parameters re-derives the privacy contract and drops
-|   |     # any approved downgrade — an approval covers one column of one query.
+|   |     # Changing SQL or parameters re-derives the privacy contract; only new
+|   |     # SQL drops an approved downgrade — a re-declared parameter leaves the
+|   |     # column and the query an approval covers exactly as approved.
 |   +-- delete <handle>            -- Delete one saved report permanently
 |   |     [--yes] [--output json]
 |   |     # `system audit undo` restores it; `set --archive` hides without deleting.

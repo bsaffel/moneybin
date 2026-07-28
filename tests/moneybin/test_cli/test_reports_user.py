@@ -727,6 +727,24 @@ def test_set_sends_an_empty_query_to_the_service_instead_of_dropping_it() -> Non
     assert service.update.call_args.kwargs["query_sql"] == ""
 
 
+def test_set_help_attributes_downgrade_clearing_to_the_sql_alone() -> None:
+    """The prose is the only place this rule is stated before the user acts.
+
+    ``--param`` re-derives but deliberately keeps an approved downgrade — the
+    behavioural half of this pair is
+    ``test_user_reports.py::test_a_params_only_update_keeps_an_approved_downgrade``.
+    Help that credits a parameter change with clearing it invites the opposite
+    belief about a masking floor, and this one is only ever read *before* the
+    mutation, so nothing downstream corrects it.
+    """
+    result = runner.invoke(app, ["reports", "set", "--help"])
+
+    assert result.exit_code == 0, result.output
+    flat = _flatten(result.output)
+    assert "re-derives the privacy contract" in flat
+    assert "only new SQL drops an approved classification downgrade" in flat
+
+
 def test_set_warns_when_a_query_change_cleared_an_approved_downgrade() -> None:
     service = _service(update=_save_outcome(cleared_downgrades=("spend",)))
 

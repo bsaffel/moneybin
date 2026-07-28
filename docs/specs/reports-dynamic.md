@@ -507,6 +507,15 @@ is the same stale-authority failure one level down. The mutation clears the map
 and its response names the cleared columns; re-apply through the classification-
 downgrade capability.
 
+**A `params`-only change re-derives and keeps the map.** It is the same code path,
+so the distinction has to be deliberate: the SQL an approval was granted against
+is unchanged, so the approval still covers exactly the column and query a human
+read. Clearing on any re-derivation would revoke an approved floor the user never
+asked to revoke, and the reapply rule already covers the case that matters — a
+downgrade whose column now derives a different class is not reapplied (R4). State
+this wherever the rule is surfaced: `set --help` claiming otherwise would have a
+user believe a `--param` edit restored a floor that is still lowered.
+
 #### Not every savable report is graduation-eligible
 
 `sql_query` permits reading `reports.*` and permits `SELECT *`; the M2P.3

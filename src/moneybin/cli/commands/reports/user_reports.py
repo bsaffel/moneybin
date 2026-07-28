@@ -360,9 +360,11 @@ def reports_set(
 ) -> None:
     """Update one saved report: rename, re-describe, re-query, archive, restore.
 
-    Changing the SQL or the parameters re-derives the privacy contract and drops
-    any approved classification downgrade — an approval covers one column of one
-    query, not the name it was filed under.
+    Changing the SQL or the parameters re-derives the privacy contract; only new
+    SQL drops an approved classification downgrade. An approval covers one column
+    of one query, so a rewrite voids it while a re-declared parameter leaves both
+    unchanged — and an approval whose column now derives a different class stops
+    applying on its own.
     """
     from moneybin.cli.report_params import parse_parameter_declaration
     from moneybin.repositories.user_reports_repo import UNSET
