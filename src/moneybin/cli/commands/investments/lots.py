@@ -110,8 +110,8 @@ def investments_lots_select(
 
     Requires the security to resolve to ``specific`` cost basis — only specific
     identification consumes lot selections. Elect it first with
-    ``moneybin investments securities set --method specific``; ``--clear``
-    needs no election.
+    ``moneybin investments securities set <security-id> --method specific``;
+    ``--clear`` needs no election.
     """
     if clear and lot:
         typer.echo("error: --clear and --lot are mutually exclusive", err=True)

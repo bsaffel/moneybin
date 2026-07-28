@@ -1479,6 +1479,9 @@ class InvestmentService:
         elected 'specific' and has not refreshed yet would be wrongly refused.
         Clearing (``selections=[]``) is exempt — it deletes rather than writes, so
         gating it would strand selections made while the election was 'specific'.
+        A ``security_id`` with no ``app.securities`` row is refused outright
+        rather than resolved: the account default would otherwise answer on
+        behalf of a security that no longer exists.
         """
         if security_id is None:
             # The engine skips security-NULL events outright, so this disposal
@@ -1501,15 +1504,36 @@ class InvestmentService:
                 ),
             )
         security = self._fetch_security(security_id)
+        if security is None:
+            # A merge deletes the losing security while core.* keeps naming it
+            # until the next refresh. Consulting the ACCOUNT default here would
+            # resolve 'specific' and admit a selection against lot ids the
+            # refresh is about to re-key under the survivor — the selection then
+            # stops matching and the engine discards it, which is the silent
+            # discard this guard exists to prevent. No RecoveryAction:
+            # investments_securities_set on a deleted id raises
+            # mutation_not_found, and an action that 404s is worse than none.
+            raise UserError(
+                f"Security {security_id!r} is not in the securities catalog, so "
+                "this disposal's cost-basis election cannot be resolved and a "
+                "lot selection against it would not survive the next refresh.",
+                code=error_codes.INVESTMENT_SECURITY_NOT_IN_CATALOG,
+                hint=(
+                    "💡 If a security-link merge just ran, the ledger still names "
+                    "the deleted security until you run 'moneybin refresh' "
+                    "(MCP: refresh_run) — refresh, then select lots against the "
+                    "surviving security."
+                ),
+            )
         settings = self._db.execute(
             f"SELECT default_cost_basis_method "  # noqa: S608  # TableRef constant
             f"FROM {ACCOUNT_SETTINGS.full_name} WHERE account_id = ?",
             [account_id],
         ).fetchone()
         method = resolve_cost_basis_method(
-            security_method=security.cost_basis_method if security else None,
+            security_method=security.cost_basis_method,
             account_default=settings[0] if settings is not None else None,
-            security_type=security.security_type if security else None,
+            security_type=security.security_type,
         )
         if method == "specific":
             return
@@ -1518,36 +1542,26 @@ class InvestmentService:
             "lot selections; only 'specific' identification consumes them.",
             code=error_codes.INVESTMENT_METHOD_NOT_SPECIFIC,
             hint=(
-                "💡 Elect specific identification first — "
-                "'moneybin investments securities set --method specific' "
+                "💡 Elect specific identification first — 'moneybin investments "
+                f"securities set {security_id} --method specific' "
                 "(MCP: investments_securities_set) — then retry the selection."
             ),
-            # No action when app.securities has no row for this id: the ledger is
-            # materialized, so a merge that deleted the losing security leaves
-            # core.fct_investment_transactions pointing at it until the next
-            # refresh. investments_securities_set on that id raises
-            # mutation_not_found, and a confidence='certain' action that 404s is
-            # worse than none — the hint still names the fix.
-            recovery_actions=(
-                [
-                    RecoveryAction(
-                        tool="investments_securities_set",
-                        arguments={
-                            "security_id": security_id,
-                            "cost_basis_method": "specific",
-                        },
-                        rationale=(
-                            "Lot selections are consumed only under specific "
-                            "identification; electing it on this security makes "
-                            "the selection take effect."
-                        ),
-                        confidence="certain",
-                        idempotent=True,
-                    )
-                ]
-                if security is not None
-                else None
-            ),
+            recovery_actions=[
+                RecoveryAction(
+                    tool="investments_securities_set",
+                    arguments={
+                        "security_id": security_id,
+                        "cost_basis_method": "specific",
+                    },
+                    rationale=(
+                        "Lot selections are consumed only under specific "
+                        "identification; electing it on this security makes "
+                        "the selection take effect."
+                    ),
+                    confidence="certain",
+                    idempotent=True,
+                )
+            ],
         )
 
     def _validate_selection_lots(

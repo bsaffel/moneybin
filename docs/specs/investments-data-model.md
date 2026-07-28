@@ -447,20 +447,30 @@ disposal's cost-basis method before accepting a non-empty selection and raises
 `investment_method_not_specific` unless it is `specific`. `_consumption_plan`
 reads `app.lot_selections` only under `specific`, so accepting the write under
 any other method would persist rows the next `sqlmesh run` discards while
-reporting success. When the disposal names a security, the error carries a
-`RecoveryAction` for `investments_securities_set(cost_basis_method="specific")`
-on it; the CLI equivalent is `investments securities set --method specific`. The
-action is omitted when `app.securities` has no row for that id — an accepted
-merge deletes the losing security while the materialized ledger still points at
-it until the next refresh, and an action that would raise `mutation_not_found`
-is worse than none.
+reporting success. The error carries a `RecoveryAction` for
+`investments_securities_set(cost_basis_method="specific")` on the disposal's
+security; the CLI equivalent is
+`investments securities set <security-id> --method specific`.
 
-A disposal with a NULL `security_id` is a different failure and gets its own
-code, `investment_security_not_bound`: the engine skips security-NULL events
-entirely, so the disposal replays under no method at all and naming an election
-would send the caller somewhere that cannot help. Its hint points at the pending
-security link (accept, refresh, retry) and carries no `RecoveryAction` —
-`RecoveryAction` forbids placeholder arguments, and there is no id to name.
+Two related failures carry their own codes. Neither disposal replays under a
+resolvable election, so reporting a method problem would send the caller
+somewhere that cannot help.
+
+`investment_security_not_in_catalog` — the disposal names a `security_id` with
+no `app.securities` row, which an accepted merge produces by deleting the losing
+security while the materialized ledger still names it until the next refresh.
+The selection is refused *before* the account default is consulted: resolving it
+would return `specific` for an account defaulting to `specific` and admit a write
+against lot ids the refresh is about to re-key under the survivor, leaving a
+selection that no longer matches and is silently discarded. It carries no
+`RecoveryAction` — `investments_securities_set` on a deleted id raises
+`mutation_not_found` — and its hint points at `refresh` instead.
+
+`investment_security_not_bound` — the disposal's `security_id` is NULL. The
+engine skips security-NULL events entirely, so the disposal replays under no
+method at all. Its hint points at the pending security link (accept, refresh,
+retry) and carries no `RecoveryAction` — `RecoveryAction` forbids placeholder
+arguments, and there is no id to name.
 
 Clearing (`selections=[]`) is exempt. It deletes rather than writes, and gating
 it would strand selections made while the election was `specific` — removable

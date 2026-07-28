@@ -519,8 +519,11 @@ def investments_lots_select(
     identification consumes lot selections, so a non-empty selection under any
     other method raises investment_method_not_specific rather than persisting a
     write that the next refresh would discard — elect it with
-    `investments_securities_set(cost_basis_method="specific")` first. Clearing
-    is always allowed.
+    `investments_securities_set(cost_basis_method="specific")` first. A disposal
+    whose security is unbound (NULL) or absent from app.securities is refused
+    under its own code instead — investment_security_not_bound or
+    investment_security_not_in_catalog — because neither replays under an
+    election that can be resolved. Clearing is always allowed.
 
     Args:
         disposal_txn_id: investment_transaction_id of the disposal (must be

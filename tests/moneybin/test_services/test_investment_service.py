@@ -1374,21 +1374,37 @@ class TestSelectLots:
             )
         ]
 
-    def test_refusal_omits_the_action_when_the_security_row_is_gone(
+    def test_refuses_selection_when_the_security_row_is_gone(
         self, db: Database
     ) -> None:
         # An accepted security-link merge deletes the losing security while the
-        # materialized ledger still points at it until the next refresh. An
-        # investments_securities_set action on that id would raise
-        # mutation_not_found, so a confidence='certain' action must not be
-        # handed back — the hint still names the fix.
+        # materialized ledger still points at it until the next refresh. No
+        # RecoveryAction is offered — investments_securities_set on that id
+        # would raise mutation_not_found — so the hint carries the fix alone.
         _seed_disposal_and_lots(db, cost_basis_method=None)
         db.conn.execute("DELETE FROM app.securities WHERE security_id = 'sec_1'")
         with pytest.raises(UserError) as exc:
             db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
-        assert exc.value.code == error_codes.INVESTMENT_METHOD_NOT_SPECIFIC
+        assert exc.value.code == error_codes.INVESTMENT_SECURITY_NOT_IN_CATALOG
         assert exc.value.recovery_actions is None
-        assert "specific" in (exc.value.hint or "")
+        assert "refresh" in (exc.value.hint or "").lower()
+        assert _selected_lots(db) == []
+
+    def test_a_specific_account_default_cannot_rescue_a_deleted_security(
+        self, db: Database
+    ) -> None:
+        # The account default must not be consulted once the security row is
+        # gone. Resolving it returned 'specific' and let the write through
+        # against lot ids the next refresh re-keys under the merge survivor;
+        # the selection then stops matching and _consumption_plan discards it —
+        # the exact silent discard this guard exists to prevent.
+        _seed_disposal_and_lots(db, cost_basis_method=None)
+        _set_account_default_method(db, "specific")
+        db.conn.execute("DELETE FROM app.securities WHERE security_id = 'sec_1'")
+        with pytest.raises(UserError) as exc:
+            db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
+        assert exc.value.code == error_codes.INVESTMENT_SECURITY_NOT_IN_CATALOG
+        assert _selected_lots(db) == []
 
     def test_security_specific_beats_an_account_default_of_fifo(
         self, db: Database

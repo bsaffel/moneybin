@@ -259,6 +259,7 @@ INVESTMENT_DATES_NOT_ALLOWED = "investment_dates_not_allowed"
 INVESTMENT_METHOD_NOT_SPECIFIC = "investment_method_not_specific"
 INVESTMENT_OPEN_ONLY_NOT_ALLOWED = "investment_open_only_not_allowed"
 INVESTMENT_SECURITY_NOT_BOUND = "investment_security_not_bound"
+INVESTMENT_SECURITY_NOT_IN_CATALOG = "investment_security_not_in_catalog"
 
 
 # ---------------------------------------------------------------------------

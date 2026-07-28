@@ -90,12 +90,15 @@ def resolve_cost_basis_method(
     disagree about which method a disposal will actually replay under.
 
     An account-level ``'average'`` default does NOT apply to a non-fund security
-    the account happens to hold. Req 12 validates 'average' to mutual_fund/etf at
-    election time (``upsert_security`` / ``AccountService.settings_update``), but
-    that per-field check can't see the OTHER side of this fallback: an account
-    holding a mix of funds and stocks with no per-security override. Falling
-    through to the global default for the ineligible security matches the stated
-    restriction instead of leaking 'average' onto a type it was never valid for.
+    the account happens to hold. Req 12's mutual_fund/etf restriction is enforced
+    at election time by ``upsert_security``, which sees one security's type; the
+    account default gets no such check (``AccountService.settings_update``
+    validates only against the closed ``COST_BASIS_METHODS`` vocabulary, since
+    that default is not scoped to any one security's type). This fallback is
+    therefore where the restriction lands for an account holding a mix of funds
+    and stocks with no per-security override: falling through to the global
+    default for the ineligible security matches the stated restriction instead
+    of leaking 'average' onto a type it was never valid for.
     An *explicitly elected* per-security 'average' is returned unchecked — that
     election was validated when it was written.
     """
