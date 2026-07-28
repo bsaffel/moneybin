@@ -77,7 +77,11 @@ class PreparedTable:
     """One ordered, typed output table with an integrity checksum."""
 
     name: str
-    source: TableRef
+    source: TableRef | None
+    """The single relation these rows were read from, or ``None`` when there is
+    no such relation — a query-time report evaluated over several ``core`` /
+    ``app`` tables. The artifact then emits ``"source": null``; readers wanting
+    the full read set use the report receipt's ``lineage``."""
     columns: tuple[PreparedColumn, ...]
     rows: tuple[tuple[object, ...], ...]
     checksum_sha256: str
@@ -148,7 +152,7 @@ class PreparedExport:
             "tables": [
                 {
                     "name": table.name,
-                    "source": table.source.full_name,
+                    "source": _source_name(table.source),
                     "row_count": len(table.rows),
                     "checksum_sha256": table.checksum_sha256,
                     "columns": [
@@ -224,7 +228,7 @@ def build_data_dictionary(tables: tuple[PreparedTable, ...]) -> dict[str, object
         "tables": [
             {
                 "name": table.name,
-                "source": table.source.full_name,
+                "source": _source_name(table.source),
                 "columns": [
                     {
                         "name": column.name,
@@ -257,6 +261,11 @@ def prepared_table_checksum(
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _source_name(source: TableRef | None) -> str | None:
+    """Render a prepared table's source relation for the artifact."""
+    return None if source is None else source.full_name
 
 
 def _json_safe(value: object) -> object:

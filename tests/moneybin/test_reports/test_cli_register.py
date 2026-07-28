@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import typer
@@ -18,7 +19,7 @@ from moneybin.reports._framework.cli_register import (
     register_report_cli,
 )
 from moneybin.reports._framework.contract import ReportQuery
-from moneybin.reports._framework.execute import ReportResult
+from moneybin.reports._framework.execute import ReportResult, inspection_hint
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.tables import TableRef
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
@@ -163,6 +164,126 @@ def test_register_report_cli_adds_named_command() -> None:
     register_report_cli(_spec(), app)
     names = {c.name for c in app.registered_commands}
     assert "balance-drift" in names  # cli_name = name with hyphens
+
+
+def test_the_text_path_says_why_a_drifted_report_is_masked() -> None:
+    """A ``*****`` with no reason is the failure mode R4 exists to prevent.
+
+    The catalog sets ``degraded`` and ``degraded_reason`` and masks the affected
+    columns, but ``render_or_json`` renders no envelope metadata on the text path —
+    so ``reports run`` printed the masked table alone while JSON and MCP callers
+    received the reason. Silent masking trains the reader to accept ``*****`` as
+    normal, which is exactly what makes the honest case unreadable.
+    """
+    app = _multi_command_app()
+    drifted = replace(
+        _result(),
+        degraded=True,
+        degraded_reason="stale_classification: account_id moved upward",
+    )
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = drifted
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "stale_classification" in result.output
+
+
+def test_the_text_path_says_when_rows_were_cut() -> None:
+    """An incomplete financial answer that looks complete is the worse failure.
+
+    ``truncated`` reaches JSON and MCP callers through the envelope, and the
+    text path renders no envelope metadata — so a capped run printed a table
+    that reads as the whole result. Same reason the drift note above exists.
+
+    The note states what was shown and that more exists, never a total: a
+    truncated execution sets ``total_count`` to the ``limit + 1`` it probed, so
+    printing it would report one row missing where millions are. The fixture
+    carries a ``total_count`` that is *not* the probe value precisely so a
+    regression that starts printing it again is visible here.
+    """
+    app = _multi_command_app()
+    cut = replace(_result(), truncated=True, total_count=4200)
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = cut
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "first 1 rows" in result.output
+    assert "more exist" in result.output
+    assert "--limit" in result.output
+    # The probe total never reaches the user as a count of what was cut.
+    assert "4,200" not in result.output
+    assert "4200" not in result.output
+
+
+def test_the_text_path_prints_the_hint_the_masked_output_earned() -> None:
+    """The hint names a CLI command, and the CLI was the one surface that hid it.
+
+    ``redact_catalog_execution`` appends ``inspection_hint`` to ``actions`` whenever
+    a column masks, and ``actions`` rides the envelope to JSON and MCP callers — so
+    the two surfaces that cannot run ``moneybin reports explain`` were the ones told
+    to, while the terminal printed ``*****`` alone. Third instance of the asymmetry
+    the two notes above fix, and the sharpest: the hint's own docstring says it
+    names a CLI command deliberately.
+
+    Built from ``inspection_hint`` rather than a copied literal so a reworded hint
+    keeps this honest instead of pinning prose the renderer no longer emits.
+    """
+    app = _multi_command_app()
+    hint = inspection_hint("test:balance_drift", ("account_id",))
+    masked = replace(_result(), actions=[hint])
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = masked
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert hint in result.output
+
+
+def test_the_text_path_adds_no_hint_when_the_report_offered_none() -> None:
+    """The hint's other half: a 💡 beside every table is a 💡 nobody reads.
+
+    Separate from the drift-silence test below rather than folded into it: a
+    fixture that trips both markers would stay green with either renderer removed.
+    """
+    app = _multi_command_app()
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _result()
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "💡" not in result.output
+
+
+def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:
+    """R4's other half: the note must not fire on the clean path.
+
+    A warning printed beside every ordinary table is a warning nobody reads, so
+    the marker's absence here is what gives it meaning above.
+    """
+    app = _multi_command_app()
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _result()
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "⚠️" not in result.output
 
 
 def test_cli_command_json_output_emits_envelope() -> None:

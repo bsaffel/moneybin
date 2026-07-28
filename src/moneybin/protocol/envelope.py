@@ -334,8 +334,12 @@ def build_envelope(
             somewhere other than a ``currency_code`` field. Passing ``None``
             explicitly states "not one currency" and is preserved.
         actions: Contextual next-step hints.
-        degraded: Whether this is a degraded (no-consent) response.
-        degraded_reason: Why the response is degraded.
+        degraded: Whether the response is less than the caller asked for —
+            aggregates in place of rows without consent, a section that could
+            not be read, or a report whose stored classification is stale.
+        degraded_reason: Which of those applies. Set it whenever ``degraded``
+            is set: one flag carrying several meanings is only usable if the
+            response says which one it means.
         recovery_actions: Structured actions an agent can execute to fix a
             partial-success failure (e.g. a best-effort step that crashed).
             The navigational ``actions`` field stays distinct — it answers

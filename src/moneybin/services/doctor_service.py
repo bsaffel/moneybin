@@ -54,6 +54,7 @@ from moneybin.tables import (
     TRANSACTION_TAGS,
     USER_CATEGORIES,
     USER_MERCHANTS,
+    USER_REPORTS,
     TableRef,
 )
 
@@ -419,6 +420,7 @@ class DoctorService:
                 updated_col="created_at",
                 full=full,
             ),
+            self._run_app_audit_coverage(USER_REPORTS, "report_id", full=full),
             # Singleton table: `scope` is a constant PK, so coverage checks the
             # one row's watermark against its audit trail.
             self._run_app_audit_coverage(PROFILE_SETTINGS, "scope", full=full),

@@ -49,10 +49,15 @@ def test_every_currency_segmented_report_example_names_its_currency() -> None:
     here, so a new currency-segmented report inherits the guard instead of
     silently escaping it.
     """
+    # A view-less spec (a saved report, whose class map is derived from stored SQL
+    # rather than a SQLMesh model) is skipped rather than keyed some other way:
+    # `EXAMPLES` is keyed by view name, so it holds no entry for one, and there is
+    # nothing here to check. Keying on `report_id` instead would make every lookup
+    # below miss and quietly empty the guard.
     segmented = {
         spec.view.full_name: spec.semantics.currency
         for spec in map(spec_of, ALL_REPORTS)
-        if spec.semantics.currency
+        if spec.semantics.currency and spec.view is not None
     }
     assert segmented, "expected at least one currency-segmented report"
 

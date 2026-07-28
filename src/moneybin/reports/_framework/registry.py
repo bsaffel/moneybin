@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from types import ModuleType
 from typing import TYPE_CHECKING, cast
 
-from moneybin.reports._framework.contract import ReportSpec, Runner
+from moneybin.reports._framework.contract import USER_NAMESPACE, ReportSpec, Runner
 
 if TYPE_CHECKING:
     import typer
@@ -25,10 +25,29 @@ _extension_reports: dict[str, ReportSpec] = {}
 
 
 def register_extension_report(spec: ReportSpec) -> None:
-    """Add one discovered SQL-backed extension report by stable full ID."""
+    """Add one discovered SQL-backed extension report by stable full ID.
+
+    The ``user:`` namespace is refused. ``report_tier`` reads the namespace, so
+    an extension shipping ``user:x`` would appear on every surface as the
+    caller's own saved report — and the user tier is the one whose class map is
+    *derived* from its SQL at save time, never declared. A ``@report`` runner
+    declares ``classes={...}``, so admitting one here would publish an
+    author-declared masking floor as a derived one, which is the widening
+    ``.claude/rules/reports.md`` exists to prevent.
+    """
+    _refuse_reserved_namespace(spec)
     if spec.report_id in _extension_reports:
         raise ValueError(f"duplicate extension report_id: {spec.report_id}")
     _extension_reports[spec.report_id] = spec
+
+
+def _refuse_reserved_namespace(spec: ReportSpec) -> None:
+    """Reject an ID claiming the user tier's namespace."""
+    if spec.report_id.startswith(f"{USER_NAMESPACE}:"):
+        raise ValueError(
+            f"extension report_id may not use the reserved "
+            f"'{USER_NAMESPACE}:' namespace: {spec.report_id}"
+        )
 
 
 def register_extension_reports(
@@ -39,6 +58,12 @@ def register_extension_reports(
     from moneybin.reports._framework.cli_register import register_report_cli
 
     specs = [spec_of(runner) for runner in runners]
+    # Checked with the duplicate IDs below, not left to the per-spec call: this
+    # function commits nothing until the whole batch validates, and a package
+    # whose third report claims `user:` must not leave its first two in the
+    # process catalog with no CLI command beside them.
+    for spec in specs:
+        _refuse_reserved_namespace(spec)
     batch_ids = [spec.report_id for spec in specs]
     duplicate_ids = {
         report_id for report_id in batch_ids if batch_ids.count(report_id) > 1

@@ -256,7 +256,10 @@ INVESTMENT_ACCOUNT_NOT_ALLOWED = "investment_account_not_allowed"
 INVESTMENT_CURSOR_INVALID = "investment_cursor_invalid"
 INVESTMENT_DATE_RANGE_INVALID = "investment_date_range_invalid"
 INVESTMENT_DATES_NOT_ALLOWED = "investment_dates_not_allowed"
+INVESTMENT_METHOD_NOT_SPECIFIC = "investment_method_not_specific"
 INVESTMENT_OPEN_ONLY_NOT_ALLOWED = "investment_open_only_not_allowed"
+INVESTMENT_SECURITY_NOT_BOUND = "investment_security_not_bound"
+INVESTMENT_SECURITY_NOT_IN_CATALOG = "investment_security_not_in_catalog"
 
 
 # ---------------------------------------------------------------------------
@@ -271,15 +274,33 @@ PRIVACY_PAGINATION_NOT_ALLOWED = "privacy_pagination_not_allowed"
 # Report — registered report catalog and execution
 # ---------------------------------------------------------------------------
 
+REPORT_CHANGED_DURING_CONFIRMATION = "report_changed_during_confirmation"
+REPORT_CLASS_CONFIRM_REQUIRED = "report_class_confirm_required"
+REPORT_CLASS_NOT_WEAKER = "report_class_not_weaker"
+REPORT_CLASSIFICATION_STALE = "report_classification_stale"
+REPORT_COLUMN_UNKNOWN = "report_column_unknown"
+REPORT_DOWNGRADE_UNREADABLE = "report_downgrade_unreadable"
+REPORT_FIELD_TOO_LONG = "report_field_too_long"
 REPORT_ID_AMBIGUOUS = "report_id_ambiguous"
 REPORT_ID_NOT_FOUND = "report_id_not_found"
 REPORT_ID_REQUIRED = "report_id_required"
 REPORT_LIMIT_INVALID = "report_limit_invalid"
+REPORT_NAME_ARCHIVED = "report_name_archived"
+REPORT_NAME_INVALID = "report_name_invalid"
+REPORT_NAME_TAKEN = "report_name_taken"
+REPORT_PARAMETER_DEFAULT_NOT_ALLOWED = "report_parameter_default_not_allowed"
+REPORT_PARAMETER_DUPLICATE = "report_parameter_duplicate"
 REPORT_PARAMETER_INVALID_RANGE = "report_parameter_invalid_range"
 REPORT_PARAMETER_INVALID_TYPE = "report_parameter_invalid_type"
 REPORT_PARAMETER_INVALID_VALUE = "report_parameter_invalid_value"
 REPORT_PARAMETER_MISSING = "report_parameter_missing"
 REPORT_PARAMETER_UNKNOWN = "report_parameter_unknown"
+REPORT_QUERY_COLUMN_DUPLICATE = "report_query_column_duplicate"
+REPORT_QUERY_EXECUTION_FAILED = "report_query_execution_failed"
+REPORT_QUERY_INVALID = "report_query_invalid"
+REPORT_QUERY_SCHEMA_NOT_ALLOWED = "report_query_schema_not_allowed"
+REPORT_QUERY_UNRESOLVABLE = "report_query_unresolvable"
+REPORT_REASON_REQUIRED = "report_reason_required"
 
 
 # ---------------------------------------------------------------------------

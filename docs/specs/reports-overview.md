@@ -3,10 +3,13 @@
 > Umbrella doc for the reports-surface initiative (milestone **M2P**). Child
 > specs listed in [The three sub-projects](#the-three-sub-projects) are written
 > separately.
-> Status: draft
+> Status: in-progress
 > Type: Umbrella
-> Last updated: 2026-07-18 — initial umbrella. Captures the design decisions
-> from the post-#330 reports-surface brainstorm.
+> Last updated: 2026-07-26 — reconciled against the two shipped children
+> (M2P.1, M2P.2) and promoted out of draft. D4 now states where each mode
+> derives its classes, D1 names the repo that landed, and the milestone
+> question is closed. Written 2026-07-18 from the post-#330 reports-surface
+> brainstorm.
 > Companions: [`reports-recipe-library.md`](reports-recipe-library.md) (the seven
 > shipped built-in views), [`reports-net-worth.md`](reports-net-worth.md)
 > (`NetworthService`-backed exception), [`extension-contracts.md`](extension-contracts.md)
@@ -103,11 +106,14 @@ derivable from raw. Encryption and backup follow from that placement (they are
 properties of the database file). **Audit does not.** Under
 [Invariant 10](app-integrity-invariant.md), audit coverage comes from routing
 every protected `app.*` write through a `*Repo` in `src/moneybin/repositories/`,
-not from the table's schema. So M2P.2 owes `app.user_reports` a `UserReportRepo`
-— a service issuing raw `INSERT`/`UPDATE`/`DELETE` against it is a contract
+not from the table's schema. So `app.user_reports` needs a repo of its own — a
+service issuing raw `INSERT`/`UPDATE`/`DELETE` against it is a contract
 violation, and dynamic reports are precisely the kind of user-authored,
 agent-mutated state that needs recoverability. An export/graduate path emits the
 materialized file form.
+
+M2P.2 landed this as `UserReportsRepo`, and `reports delete` is undoable through
+`system audit undo` because of it.
 
 **D2 — A report is defined by its query, not its view.** A `reports.*` view is
 an optional backing optimization, not part of the contract. This keeps user
@@ -118,12 +124,33 @@ report ⟹ carries a declared class map* is a **definition**, not a convention.
 This matches AGENTS.md's own layer definition ("Curated presentation models, one
 per CLI/MCP report"). Service-internal views move to `core`/`prep`.
 
-**D4 — Column classes are derived, then verified.** The declaration remains the
-**runtime authority** (SQLMesh deploys a `kind VIEW` model as
-`SELECT * FROM <internal table>`, so runtime introspection of the deployed view
-sees only a pointer — ADR-013). But the declaration is a **derived, verifiable
-artifact**, not a hand-authored assertion: derive it from the **model source** at
-build time, where lineage is complete, and have CI verify it still matches.
+**D4 — Column classes are derived, then verified.** No report carries a
+hand-authored class assertion: the class map is a **derived, verifiable
+artifact** in both modes. What differs is *when* derivation runs and what checks
+it afterwards, because the two modes have different authoring moments.
+
+| Mode | Derived | Authority at runtime | Verified by |
+|---|---|---|---|
+| **Materialized** | From the **model source** at build time, where lineage is complete | The stored declaration (ADR-013) | CI, on every change |
+| **Dynamic** | From the user's SQL at **save time** | The stored class map | A `class_fingerprint` over the map's inputs, checked on every run |
+
+For the materialized mode the declaration remains the runtime authority because
+SQLMesh deploys a `kind VIEW` model as `SELECT * FROM <internal table>`, so
+runtime introspection of the deployed view sees only a pointer — ADR-013. Build
+time is where lineage is reviewable, so that is where derivation belongs, and CI
+holds it there.
+
+A dynamic report has no model source and no build step, so save time is its only
+authoring moment — and nothing stops the *upstream* classification from moving
+afterwards. Hence the fingerprint: it keys on the class map's inputs rather than
+a schema-migration counter, which is blind to edits in `CLASSIFICATION` or a
+`@report` declaration. On a mismatch the report re-derives and fails closed
+rather than serving the stale, weaker class, and says so through
+`summary.degraded`.
+
+Both modes call the **same classifier** — one `resolve_output_classes`, two call
+sites. That is what makes this one decision rather than two parallel ones, and
+it is the coherence property the three-tier parity promise rests on.
 
 > **Framing correction worth preserving.** Materialization does *not* destroy
 > lineage — it destroys *runtime* lineage through the deployed pointer view. The
@@ -146,6 +173,17 @@ explicit downgrade. Both failure modes — a *missing* declaration and a *silent
 wrong* one — are mechanically caught, while the judgment that genuinely needs a
 human stays with the human.
 
+The dynamic mode needs the same escape hatch without a code review to hold it, so
+M2P.2 made it a verb: `moneybin reports reclassify HANDLE --column --to --reason`.
+Three guards stand in for CI. The downgrade must **drop the sensitivity tier** —
+a same-tier weakening is refused whatever the reason, because "this computed
+column reveals less" is unavailable when both classes agree on the tier and
+differ only in transform. It requires an **explicit confirmation** that an agent
+must not supply on the user's behalf, and the audit row records which path
+supplied it. And a downgrade is **cleared** when the report's SQL or parameters
+change, since it was a judgment about one column of one query. This is the only
+path that durably lowers a masking floor, on either mode.
+
 **D6 — Materialization mechanically carries the classes forward.** The tool that
 materializes a dynamic report already knows that report's resolved classes, so
 it writes the `classes=` map itself. **You cannot materialize without declaring,
@@ -155,7 +193,15 @@ being documentation a contributor might skip and becomes a step they cannot.
 
 ## The three sub-projects
 
-Each is independently shippable. Dependencies run A → B → C.
+Each is independently shippable. Dependencies run A → B → C. A and B have
+shipped; C is not started, which is why this umbrella is `in-progress` rather
+than `implemented`.
+
+| Sub-project | Milestone | Status | Spec |
+|---|---|---|---|
+| A — Foundation | M2P.1 | implemented | [`reports-foundation.md`](reports-foundation.md) |
+| B — Dynamic reports | M2P.2 | implemented | [`reports-dynamic.md`](reports-dynamic.md) |
+| C — Materialization & distribution | M2P.3 | not started | — |
 
 ### A — Foundation: one contract, coherent surface (M2P.1)
 
@@ -169,20 +215,30 @@ the #330 transitional bridge (derivation subsumes it); moves
 
 ### B — Dynamic reports: the ask→save→verify loop (M2P.2)
 
-The headline capability. `app.user_reports`; create/run/list/edit/delete across
-MCP **and** CLI with the same envelope and privacy path as built-ins; classes
-resolved by construction via `resolve_output_classes`; and the verification
-surface — "show me the SQL", lineage to source rows, freshness. Roadmap item
-**M2I** ("Show me the SQL" report lineage) lands here. Specified in
+The headline capability. `app.user_reports`; classes resolved by construction via
+`resolve_output_classes`; and the verification surface — "show me the SQL",
+lineage to source rows, freshness. Roadmap item **M2I** ("Show me the SQL"
+report lineage) landed here as `moneybin reports explain`. Specified in
 [`reports-dynamic.md`](reports-dynamic.md).
+
+**Reading and running** a saved report adds no MCP tool: the shipped
+`reports(report_id=…, parameters=…)` catalog/runner resolves all three tiers, so
+a user report reaches the same envelope and privacy path as a built-in through
+the same identity. **The other verbs are CLI-only** — `create`, `set` (which
+carries rename and `--archive`), `delete`, `explain`, and `reclassify`, alongside
+the tier-spanning `list` and `run` — because ADR-016's bounded registry admits no
+new MCP identity without a passed admission record. Seven verbs, zero new MCP
+tools; the registry count is unchanged by this milestone. This section
+originally promised the lifecycle "across MCP **and** CLI"; #344's bounded
+registry and `reports-dynamic.md` R5 superseded that, and R5 is authoritative.
 
 ### C — Materialization & distribution (M2P.3)
 
 The promotion path (dynamic → materialized, with D6's mechanical class capture),
 the `/moneybin-create-report` skill already specified in
 [`extension-contracts.md`](extension-contracts.md), and sharing/installing a
-report. Contributor UX is milestoned **M3I** there — reconcile addressing when
-scheduling.
+report. That skill's contributor-facing authoring UX is milestoned **M3I** in
+`extension-contracts.md`; C owns the graduation path itself.
 
 ## Relationship to `queryable-internal-schemas`
 
@@ -191,11 +247,13 @@ widens the ad-hoc `sql_query` surface to internal schemas for
 debugging/inspection; its Phase 2 (M2O.2) is what finally makes gsheet/PDF
 **seed views** queryable. This umbrella is about the report *primitive*.
 
-They meet in one place that B must decide: once Phase 2 opens `raw`/`prep`
-behind a content-net floor, may a dynamic report be built over **floored**
-(undeclared) columns, or is report creation restricted to fully-classified
-schemas? A report is a durable, re-runnable, shareable artifact, so the bar
-should plausibly be higher than for a one-off query — resolve it in B.
+They met in one place, and B decided it: **report creation is restricted to the
+fully-classified schemas** (`core`, `app`, `reports`). A report is a durable,
+re-runnable, shareable artifact, so its bar is higher than a one-off query's.
+`raw`/`prep` are not reachable through `sql_query` today, so the harder question
+— whether a durable artifact may be built over **floored** (undeclared) columns
+once Phase 2 opens them behind a content-net floor — is not yet live, and belongs
+to M2O.2 when it is. See [`reports-dynamic.md`](reports-dynamic.md) R2.
 
 ## Origin
 
@@ -233,11 +291,40 @@ enumerate the *exposed* set.
   one.
 - **When does a dynamic report earn materialization?** Cost/latency judgment, or
   an explicit user/agent action? Resolve in C.
+- **Does a report's envelope sensitivity count its parameters?** Today it does
+  not: `ReportResult.classes_returned` is `sorted({c.value for c in
+  self.output_classes.values()})` and `tier` follows the report's declared tier,
+  both derived from output columns alone. A report that *filters* on an above-LOW
+  parameter therefore echoes that parameter's value in the payload under an
+  envelope that never names its class. Measured, not assumed: only CRITICAL
+  classes mask — `txn_date`/MEDIUM and `txn_amount`/HIGH both measure
+  PASSTHROUGH — so the value is returned verbatim. It reaches the shipped
+  catalog, not only saved reports: 5 of 8 built-ins already declare an above-LOW
+  parameter, and `core:balance_drift` is the sharpest case, since its CRITICAL
+  `account` value *is* masked while its class is still missing from the audit
+  row. Two remedies, both changing the `reports` response envelope for most of
+  the catalog — a public contract, so a one-way door: **(A)** fold effective
+  parameter classes into `tier`/`classes_returned`, at the cost of
+  `core:spending` reporting `medium` on every windowed call; **(B)** stop echoing
+  above-LOW parameter values, which has a coherence argument A lacks —
+  `_redact_and_freeze_parameter` already reduces a MEDIUM+ *dict* parameter to
+  `{entry_count, redacted}` while leaving scalars passthrough, and `reports
+  explain` already withholds above-LOW parameter values — at the cost of an agent
+  no longer being able to confirm which window it queried. Lean toward A. That
+  `explain` withholds while `run` echoes is a separate disagreement that outlives
+  whichever remedy wins. **Resolve before consent enforcement makes the label
+  load-bearing**: while enforcement is deferred this is an audit-label accuracy
+  gap, not a live access-control bypass.
 - ~~**Dynamic reports over floored columns**~~ — **scoped out in B, decided in
   M2O.2.** Report creation is restricted to fully-classified schemas (`core`,
   `app`, `reports`). `raw`/`prep` are not reachable through `sql_query` today,
   so the question is not yet live; when M2O.2 opens them behind a content-net
   floor, whether a *durable* artifact may be built over floored columns is
   decided there. See [`reports-dynamic.md`](reports-dynamic.md) R2.
-- **Milestone reconciliation.** This umbrella claims **M2P**; `extension-contracts.md`
-  milestones contributor UX at M3I. Reconcile at `draft → ready`.
+- ~~**Milestone reconciliation.**~~ — **no conflict; the two addresses cover
+  different work.** M2P.3 owns the report primitive's graduation path —
+  dynamic → materialized, with D6's mechanical class capture, plus
+  sharing/installing one report. M3I owns extension *contributor tooling*
+  (scaffolders, validator, plugin bundle), which is where
+  `/moneybin-create-report`'s authoring UX lands. [`docs/roadmap.md`](../roadmap.md)
+  already lists them separately and states the split. C keeps M2P.3.

@@ -1,5 +1,5 @@
 {
-  "sha256": "b4f5d08d6ead64b5d5fcead60a75a7714ede3bb69ac23ac300e6fc88e2390c13",
+  "sha256": "d0b4478596117a5ef40243ae0886261c6a83ce5a426b76139ac7b26b8de07acc",
   "tool_count": 49,
   "tools": [
     {
@@ -2080,7 +2080,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Select specific acquisition lots for one disposal. Writes app.lot_selections; replace the selection to revert.",
+        "description": "Select specific acquisition lots for one disposal. Requires the security to resolve to 'specific' cost basis. Writes app.lot_selections; replace the selection to revert.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2110,12 +2110,12 @@
         },
         "name": "investments_lots_select"
       },
-      "description_bytes": 110,
+      "description_bytes": 169,
       "input_schema_bytes": 536,
       "name": "investments_lots_select",
       "other_bytes": 65,
       "output_schema_bytes": 0,
-      "total_bytes": 848
+      "total_bytes": 907
     },
     {
       "annotation_bytes": 90,
@@ -4999,5 +4999,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 52986
+  "total_bytes": 53045
 }

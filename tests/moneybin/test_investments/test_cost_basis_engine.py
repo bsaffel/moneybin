@@ -16,10 +16,13 @@ from decimal import Decimal
 import pytest
 
 from moneybin.investments.cost_basis import (
+    AVERAGE_ELIGIBLE_SECURITY_TYPES,
+    DEFAULT_COST_BASIS_METHOD,
     LedgerEvent,
     Lot,
     RealizedGain,
     compute_lots_and_gains,
+    resolve_cost_basis_method,
 )
 
 pytestmark = pytest.mark.unit
@@ -2349,3 +2352,58 @@ def test_oversold_under_hifo_generalizes_zero_basis_remainder() -> None:
     assert sum((g.proceeds for g in gains), D("0")) == D("1000.00")
     for lot in lots:
         assert lot.remaining_quantity == D("0")
+
+
+# ---------------------------------------------------------------------------
+# Elected-method resolution (security -> account default -> global)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("security_method", "account_default", "security_type", "expected"),
+    [
+        ("specific", "fifo", "equity", "specific"),
+        (None, "hifo", "equity", "hifo"),
+        (None, None, "equity", DEFAULT_COST_BASIS_METHOD),
+        # Req 12 validates 'average' at election time per field, but can't see an
+        # account holding a mix of funds and stocks with no per-security override.
+        (None, "average", "equity", DEFAULT_COST_BASIS_METHOD),
+        (None, "average", None, DEFAULT_COST_BASIS_METHOD),
+        # Eligibility is enforced when the election is written, not when read.
+        ("average", None, "equity", "average"),
+    ],
+    ids=[
+        "security-election-beats-account-default",
+        "account-default-applies-when-security-unset",
+        "no-election-falls-back-to-global-default",
+        "account-average-does-not-leak-onto-ineligible-type",
+        "account-average-does-not-apply-to-unknown-type",
+        "explicit-security-average-returned-unchecked",
+    ],
+)
+def test_resolve_cost_basis_method(
+    security_method: str | None,
+    account_default: str | None,
+    security_type: str | None,
+    expected: str,
+) -> None:
+    assert (
+        resolve_cost_basis_method(
+            security_method=security_method,
+            account_default=account_default,
+            security_type=security_type,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize("security_type", sorted(AVERAGE_ELIGIBLE_SECURITY_TYPES))
+def test_account_average_applies_to_every_eligible_security_type(
+    security_type: str,
+) -> None:
+    assert (
+        resolve_cost_basis_method(
+            security_method=None, account_default="average", security_type=security_type
+        )
+        == "average"
+    )

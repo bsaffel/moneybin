@@ -38,6 +38,12 @@ from sqlglot import exp
 from sqlmesh.core.dialect import parse as sqlmesh_parse
 from sqlmesh.core.model import SqlModel, load_sql_based_model
 
+from moneybin.privacy.report_materialization import (
+    REPORTS_SCHEMA,
+    ReportDerivationError,
+    assert_acyclic,
+    assert_no_star,
+)
 from moneybin.privacy.sql_lineage import (
     SchemaSnapshot,
     resolve_output_classes,
@@ -47,18 +53,8 @@ from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 
 logger = logging.getLogger(__name__)
 
-_REPORTS_SCHEMA = "reports"
-# The only schemas a derivable model may read: CLASSIFICATION is an
-# independently authored ground truth for both, and the snapshot is built from
-# it. A read of any other schema (seeds/prep/raw/meta) has no ground truth to
-# derive against, so it must fail loudly rather than resolve to a floor.
-_DERIVABLE_UPSTREAM_SCHEMAS = frozenset({"core", "app"})
 _CORE_SCHEMA = "core"
 _DIALECT = "duckdb"
-
-
-class ReportDerivationError(Exception):
-    """A view model could not be derived. Never falls back silently."""
 
 
 def _upstream_snapshot() -> SchemaSnapshot:
@@ -69,7 +65,7 @@ def _upstream_snapshot() -> SchemaSnapshot:
     for core/app it *is* the catalog. Deliberately contains no reports.*
     entries: reports.* classes come from derivation/declaration, not from
     CLASSIFICATION, so a model reading reports.* would make the derived map
-    self-referential — ``_assert_acyclic`` rejects that outright.
+    self-referential — ``assert_acyclic`` rejects that outright.
 
     Shared unchanged by both ``derive_report_classes`` (reports.* models read
     core/app upstream) and ``derive_core_view_classes`` (core view models read
@@ -85,69 +81,6 @@ def _upstream_snapshot() -> SchemaSnapshot:
         for column in columns
     )
     return snapshot_from_columns(ordered)
-
-
-def _is_star_projection(proj: exp.Expr) -> bool:
-    """True for a bare ``*`` or ``t.*`` top-level projection.
-
-    Deliberately narrower than "contains a Star anywhere" — ``COUNT(*)`` also
-    nests an ``exp.Star`` (as the aggregate's argument), but is a legitimate,
-    fully-resolvable projection, not a wildcard column list. Only a star that
-    IS the projection (unqualified ``*``, parsed as ``exp.Star``; or
-    qualified ``t.*``, parsed as ``exp.Column(this=exp.Star())``) counts.
-    """
-    return isinstance(proj, exp.Star) or (
-        isinstance(proj, exp.Column) and isinstance(proj.this, exp.Star)
-    )
-
-
-def _assert_no_star(query: exp.Query, model_name: str) -> None:
-    """Reject ``SELECT *`` (or ``t.*``) in ANY select — not just the final one.
-
-    A star in a CTE body is just as disqualifying as one in the final
-    projection: nothing expands it (the deriver runs without a live catalog),
-    so ``_output_index`` cannot name-match through it and the column degrades
-    to a fallback — silently, where this check is meant to be a hard error.
-    Checking only ``query.selects`` left that gap.
-    """
-    for select in query.find_all(exp.Select):
-        if any(_is_star_projection(p) for p in select.selects):
-            raise ReportDerivationError(
-                f"{model_name}: a projection uses SELECT *. Derivation needs an "
-                "explicit column list; name the columns in the model."
-            )
-
-
-def _assert_acyclic(query: exp.Query, model_name: str) -> None:
-    """Reject any read of ``reports.*`` — the one schema with no ground truth.
-
-    Applies identically whether the model under derivation is itself a
-    reports.* model or a core.* view: core/app columns have an independently
-    authored ground truth (CLASSIFICATION), so reading them is never circular
-    regardless of who reads them. reports.* columns have no such ground
-    truth — they ARE derivation's own output (or a hand-declared
-    ``@report(classes=...)`` verified against it) — so a model of either kind
-    reading reports.* would make the derived map self-referential.
-    """
-    for table in query.find_all(exp.Table):
-        # A CTE or derived-table reference parses with an empty db; only a
-        # schema-qualified read names a real upstream, so skip the rest.
-        if not table.db:
-            continue
-        if table.db == _REPORTS_SCHEMA:
-            raise ReportDerivationError(
-                f"{model_name}: reads {table.db}.{table.name}. A model derived "
-                "from source must read only core.*/app.*, or the derived class "
-                "map becomes self-referential."
-            )
-        if table.db not in _DERIVABLE_UPSTREAM_SCHEMAS:
-            raise ReportDerivationError(
-                f"{model_name}: reads {table.db}.{table.name}, which has no "
-                "CLASSIFICATION ground truth. A model derived from source must "
-                f"read only {'/'.join(sorted(_DERIVABLE_UPSTREAM_SCHEMAS))}.* — "
-                "columns from an unclassified schema cannot be derived, so the "
-                "resulting map would silently under-describe them."
-            )
 
 
 def _load_model(path: Path) -> SqlModel:
@@ -189,8 +122,8 @@ def _derive_model_classes(
             f"{model.name}: query is {type(query).__name__}, not a "
             "resolvable SQL AST (Jinja/macro queries aren't supported)."
         )
-    _assert_no_star(query, model.name)
-    _assert_acyclic(query, model.name)
+    assert_no_star(query, model.name)
+    assert_acyclic(query, model.name)
     try:
         # strict=True: the runtime classifier answers an unresolvable
         # projection with a conservative fallback, which is right for user
@@ -292,7 +225,7 @@ def derive_report_classes(
     """
     from moneybin.database import SQLMESH_ROOT  # noqa: PLC0415  # avoid import cycle
 
-    root = models_root or (SQLMESH_ROOT / "models" / _REPORTS_SCHEMA)
+    root = models_root or (SQLMESH_ROOT / "models" / REPORTS_SCHEMA)
     out, _excluded = _derive_view_classes(root, exclude_non_derivable=False)
     return out
 

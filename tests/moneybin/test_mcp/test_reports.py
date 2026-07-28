@@ -15,21 +15,23 @@ from fastmcp import Client, FastMCP
 from mcp.types import TextContent
 from pydantic import JsonValue
 
-from moneybin.database import Database
+from moneybin.database import Database, DatabaseNotInitializedError
 from moneybin.mcp.tools.reports import reports
-from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
 from moneybin.reports._framework.catalog import ReportCatalog, ServiceReportSpec
 from moneybin.reports._framework.contract import (
     OutputColumn,
     ParamSpec,
     ReportSemantics,
 )
+from moneybin.reports._framework.dynamic import DEGRADED_STALE_CLASSIFICATION
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     CatalogReportResult,
     build_catalog_execution,
 )
 from moneybin.reports._framework.registry import register_generic_reports_tool
+from tests.moneybin.db_helpers import create_core_tables_raw
 
 _SEMANTICS = ReportSemantics(
     unit="currency",
@@ -124,9 +126,23 @@ async def test_reports_without_id_returns_catalog_with_runtime_classification() 
     def capture_event(event: dict[str, Any]) -> None:
         captured.append(event)
 
-    with patch(
-        "moneybin.mcp.decorator.write_privacy_event",
-        capture_event,
+    # The catalog spans all three tiers, so listing opens a read-only database
+    # for the user tier — it is no longer a pure-metadata call. The open lives in
+    # `open_report_catalog` (catalog.py), which resolves its own `get_database`,
+    # so the patch has to name *that* module: patching this tool's import left
+    # the real open running, and its `DatabaseNotInitializedError` degraded the
+    # catalog to the packaged tiers — making the `low` assertions below pass
+    # because no user report existed rather than because the tier was computed.
+    # Stated as the degradation it is, so the fixture isolates one condition.
+    with (
+        patch(
+            "moneybin.reports._framework.catalog.get_database",
+            side_effect=DatabaseNotInitializedError("no database yet"),
+        ),
+        patch(
+            "moneybin.mcp.decorator.write_privacy_event",
+            capture_event,
+        ),
     ):
         response = await reports()
 
@@ -140,6 +156,134 @@ async def test_reports_without_id_returns_catalog_with_runtime_classification() 
     assert captured[0]["sensitivity"] == "low"
     assert captured[0]["classes_returned"] == ["aggregate"]
     assert captured[0]["row_count"] == len(response.data.reports)
+
+
+@pytest.mark.unit
+async def test_reports_catalog_elevates_to_medium_when_a_user_report_is_listed(
+    db: Database,
+) -> None:
+    """A listing carrying a user-authored name reports MEDIUM, not LOW.
+
+    The counterpart to the degraded test above, and the one arm no test reached:
+    every other catalog test runs on a profile with no database, where the user
+    tier is absent and ``low`` is correct for the wrong reason. This saves a
+    report through the real service so the tier is present in the rows
+    ``catalog_sensitivity`` actually reads.
+    """
+    from moneybin.services.user_reports_service import UserReportsService
+
+    create_core_tables_raw(db.conn)
+    UserReportsService(db).create(
+        name="my_accounts",
+        query_sql="SELECT account_id FROM core.dim_accounts",
+        description="Accounts I care about.",
+        actor="cli",
+    )
+
+    captured: list[dict[str, Any]] = []
+
+    with (
+        patch(
+            "moneybin.reports._framework.catalog.get_database",
+            return_value=_database_context(db),
+        ),
+        patch("moneybin.mcp.decorator.write_privacy_event", captured.append),
+    ):
+        response = await reports()
+
+    assert response.error is None
+    assert "user" in {entry.tier for entry in response.data.reports}
+    assert response.summary.sensitivity == "medium"
+    assert response.classes_returned == ["aggregate", "user_note"]
+    assert captured[0]["sensitivity"] == "medium"
+    assert captured[0]["classes_returned"] == ["aggregate", "user_note"]
+
+
+@pytest.mark.unit
+async def test_reports_run_of_a_drifted_saved_report_says_so_in_the_envelope(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R4's verdict has to reach the agent, not only the CLI and the receipt.
+
+    The CLI prints the reason and the export receipt carries its code, each with
+    its own test; ``summary.degraded`` / ``degraded_reason`` is how the agent
+    learns the same thing, and nothing exercised it through an actual tool call.
+    A drifted report returns ``*****`` either way, so without this an agent reads
+    masked cells as the honest answer.
+
+    Driven through the real service and a real reclassification rather than a
+    mocked result: the wiring under test is exactly the hand-off from catalog
+    status to envelope, which a stubbed ``CatalogReportResult`` would supply.
+    """
+    from moneybin.services.user_reports_service import UserReportsService
+
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id) VALUES (?)", ["acct_11112222"]
+    )
+    UserReportsService(db).create(
+        name="my_accounts",
+        query_sql="SELECT account_id FROM core.dim_accounts",
+        actor="cli",
+    )
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "dim_accounts")] = {
+        **CLASSIFICATION[("core", "dim_accounts")],
+        "account_id": DataClass.ROUTING_NUMBER,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    with (
+        patch(
+            "moneybin.reports._framework.catalog.get_database",
+            return_value=_database_context(db),
+        ),
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=_database_context(db),
+        ),
+        patch("moneybin.mcp.tools.reports.get_max_rows", return_value=50),
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        response = await reports(report_id="my_accounts")
+
+    assert response.error is None
+    assert response.summary.degraded is True
+    assert response.summary.degraded_reason is not None
+    assert response.summary.degraded_reason.startswith(DEGRADED_STALE_CLASSIFICATION)
+    assert [row["account_id"] for row in response.data.rows] == ["*****"]
+
+
+@pytest.mark.unit
+async def test_reports_returns_not_found_for_an_unknown_report_id(
+    db: Database,
+) -> None:
+    """The likeliest real MCP error for this feature: a hallucinated handle.
+
+    An agent mistyping or inventing a ``user:r…`` id is asserted at the catalog
+    layer, but nothing checked that the code survives the tool wrapper's own error
+    translation — which is the only place the agent reads it. Driven through the
+    real catalog so the wrapper's translation is what is under test.
+    """
+    create_core_tables_raw(db.conn)
+
+    with (
+        patch(
+            "moneybin.reports._framework.catalog.get_database",
+            return_value=_database_context(db),
+        ),
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=_database_context(db),
+        ),
+        patch("moneybin.mcp.tools.reports.get_max_rows", return_value=50),
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        response = await reports(report_id="user:rnosuchreport")
+
+    assert response.to_dict()["status"] == "error"
+    assert response.error is not None
+    assert response.error.code == "report_id_not_found"
 
 
 @pytest.mark.unit
@@ -307,7 +451,15 @@ async def test_generic_reports_fastmcp_schema_and_catalog_transport() -> None:
     def capture_event(event: dict[str, Any]) -> None:
         captured.append(event)
 
-    with patch("moneybin.mcp.decorator.write_privacy_event", capture_event):
+    # Same patch target as the catalog test above, for the same reason: the open
+    # this needs to control belongs to `open_report_catalog`, not to this tool.
+    with (
+        patch(
+            "moneybin.reports._framework.catalog.get_database",
+            side_effect=DatabaseNotInitializedError("no database yet"),
+        ),
+        patch("moneybin.mcp.decorator.write_privacy_event", capture_event),
+    ):
         async with Client(mcp) as client:
             tools = await client.list_tools()
             result = await client.call_tool("reports", {})

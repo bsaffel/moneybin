@@ -7,10 +7,28 @@ not a substitute for writing clean log statements.
 The formatter masks and emits a warning — it never suppresses log entries.
 """
 
+import hashlib
 import logging
 import re
 
 _sanitizer_logger = logging.getLogger(__name__)
+
+
+def sql_digest(sql: str) -> str:
+    """A stable, non-reversible handle for one SQL statement, safe to log.
+
+    DuckDB and sqlglot quote the statement they failed on — a binder error
+    carries a whole ``LINE 1: SELECT ...`` echo — so interpolating one of their
+    messages into a log record writes any inline literal it holds to a log file,
+    which ``.claude/rules/security.md`` forbids. The formatter below cannot save
+    that record: it recognises SSNs, runs of eight or more digits, and dollar
+    amounts, and a merchant name or a transaction description is none of those.
+
+    Log this beside the exception's *type* instead. Two records about the same
+    statement still correlate, which is what a reader of the log actually needs.
+    """
+    return hashlib.sha256(sql.encode()).hexdigest()[:12]
+
 
 # SSN: NNN-NN-NNNN. Dates like 2026-04-20 have 4 digits before the first dash
 # and don't match this pattern, so no date-exclusion guard is needed.

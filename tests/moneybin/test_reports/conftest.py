@@ -4,6 +4,10 @@
 covers, seeds a few transactions, and creates ``reports.test_summary`` — a view
 whose body references ``core.fct_transactions`` so lineage can derive real
 per-column classes (account_id → CRITICAL, SUM(amount) → HIGH, COUNT → LOW).
+
+``saved_db`` is the same shape over the shared ``db`` fixture, which carries the
+full ``app`` schema — so a report can actually be saved. Both the user-tier
+tests and R7's execution-parity tests need it.
 """
 
 from __future__ import annotations
@@ -51,3 +55,36 @@ def reports_db(tmp_path: Path) -> Generator[Database, None, None]:
         yield db
     finally:
         db.close()
+
+
+@pytest.fixture
+def saved_db(db: Database) -> Database:
+    """The shared schema (including ``app.user_reports``) plus classified core rows."""
+    create_core_tables_raw(db.conn)
+    db.execute(
+        """
+        INSERT INTO core.dim_accounts
+            (account_id, routing_number, institution_name, display_name)
+        VALUES ('acct_11112222', '021000021', 'Test Bank', 'Checking'),
+               ('acct_99998888', '026009593', 'Other Bank', 'Savings')
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions (transaction_id, account_id, amount)
+        VALUES ('t1', 'acct_11112222', -30.00),
+               ('t2', 'acct_99998888', 100.00)
+        """
+    )
+    # A `reports.*` view no `@report` declares. `reports_class_map()` has never
+    # heard of it, so its columns are the honest unresolvable case — the same
+    # fail-closed answer a package-contributed view would get today.
+    db.execute(
+        """
+        CREATE OR REPLACE VIEW reports.test_summary AS
+        SELECT account_id, SUM(amount) AS amount, COUNT(*) AS txn_count
+        FROM core.fct_transactions
+        GROUP BY account_id
+        """
+    )
+    return db

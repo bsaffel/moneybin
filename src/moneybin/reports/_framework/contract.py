@@ -24,6 +24,55 @@ from moneybin.tables import TableRef
 Runner = Callable[..., "ReportQuery"]
 _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 
+#: ``report_id`` namespace owned by the user tier — the one tier whose reports
+#: are database rows rather than code. ``mint_user_report_id`` produces it and
+#: ``report_tier`` reads it; defined here beside the id grammar it belongs to.
+USER_NAMESPACE = "user"
+
+#: A saved report's ``name``. Both surfaces resolve a report by this string and
+#: ``ReportSpec.cli_name`` derives a Typer command name from it, so it is held to
+#: the same slug shape every shipped report's name already has.
+USER_REPORT_NAME = re.compile(r"[a-z][a-z0-9_-]*")
+
+
+@dataclass(frozen=True, slots=True)
+class Binding:
+    """One bound query value plus the class of the value **actually bound**.
+
+    R9 of ``reports-dynamic.md``: the class attaches to the binding, not to the
+    runner signature. ``balance_drift`` declares ``account: str`` — free text a
+    user typed, which classifies as the account name it is — and binds
+    ``AccountService.resolve_strict(account)``, a minted opaque ``account_id``
+    (``RECORD_ID``, LOW). Neither class describes the other's value, so a
+    renderer that recovered the class from the signature would print one value
+    under another's class. Positional inference fails one step earlier still:
+    runners append conditionally, so binding *N* is not a fixed offset into the
+    signature.
+
+    Report inspection reads the class off the binding it is about to render and
+    never reconstructs it from anything else.
+    """
+
+    value: object
+    data_class: DataClass
+
+
+def bound_value(binding: object) -> object:
+    """The value to hand DuckDB, tolerating an unclassed extension binding."""
+    return binding.value if isinstance(binding, Binding) else binding
+
+
+def bound_class(binding: object) -> DataClass:
+    """The class governing ``binding``; an unclassed value fails closed.
+
+    ``DataClass.UNRESOLVED`` is ``privacy.sql_lineage.FAIL_CLOSED_CLASS``, named
+    directly here so this module stays clear of the sqlglot import chain. A
+    runner outside this repo is not type-checked against :class:`Binding`, so
+    the runtime answers for a bare value rather than crashing on it — and the
+    answer is the one that withholds.
+    """
+    return binding.data_class if isinstance(binding, Binding) else DataClass.UNRESOLVED
+
 
 @dataclass(frozen=True, slots=True)
 class ReportQuery:
@@ -35,7 +84,19 @@ class ReportQuery:
     """
 
     sql: str
-    params: Sequence[object] = ()
+    params: Sequence[Binding] | Mapping[str, Binding] = ()
+    """Positional ``?`` bindings, or a name→binding mapping for ``$name`` SQL.
+
+    A dynamic report stores named placeholders (R8 of ``reports-dynamic.md``):
+    positional storage would need a name→position map maintained beside the SQL,
+    and adding a ``WHERE`` clause shifts every later position — mis-binding
+    silently rather than raising. Built-in runners keep binding positionally.
+
+    Typed as :class:`Binding` so pyright-strict makes every in-repo binding site
+    declare its class — the completeness check R9 asks for, applied at the
+    author's keyboard rather than in a test run. The runtime still accepts a
+    bare value (see :func:`bound_class`) because an extension runner outside
+    this repo is not checked against this contract."""
     actions: Sequence[str] = ()
     period: str | None = None
 
@@ -69,15 +130,24 @@ class OutputColumn:
 
 @dataclass(frozen=True, slots=True)
 class ReportSemantics:
-    """Financial interpretation metadata for a report's metrics."""
+    """Financial interpretation metadata for a report's metrics.
 
-    unit: str
+    ``kind`` admits ``"unknown"`` and ``unit`` / ``sign`` / ``time_basis`` admit
+    ``None`` so a user-created report can state that its financial
+    interpretation is unknown. MoneyBin cannot derive these from an arbitrary
+    ``SELECT``, and defaulting them would publish a claim about the user's query
+    that nobody made — an agent reading ``sign: "natural"`` on a report whose
+    author flipped the sign gets a confidently wrong answer, which is worse than
+    getting none. Decorated reports still supply all three.
+    """
+
+    unit: str | None
     currency: str | None
-    sign: str
-    kind: Literal["position", "flow", "ratio", "count"]
+    sign: str | None
+    kind: Literal["position", "flow", "ratio", "count", "unknown"]
     valuation_basis: str | None
     fx_basis: str | None
-    time_basis: str
+    time_basis: str | None
     denominator: str | None
     comparison_window: str | None
     exclusions: tuple[str, ...]
@@ -101,7 +171,10 @@ class ReportSpec:
     report_id: str
     name: str
     description: str
-    view: TableRef
+    view: TableRef | None
+    """The ``reports.*`` view backing this report, or ``None`` when it is not
+    graph-backed. A user-created report is evaluated at query time and has no
+    SQLMesh view, so it cannot be ``kind FULL`` or join scheduled refresh."""
     runner: Runner
     classes: Mapping[str, DataClass]
     columns: tuple[OutputColumn, ...]

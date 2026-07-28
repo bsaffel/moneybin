@@ -99,7 +99,7 @@ cost-basis-method election, and specific-lot selection overrides. Everything in
 | **A. Investment data model** | The securities dimension + the investment-transaction ledger (raw → prep → core), plus manual entry | No | [`investments-data-model.md`](investments-data-model.md) *(foundation child — A+B)* |
 | **B. Cost-basis & gain/loss engine** | Derived lots; FIFO + HIFO + specific-ID + average-cost; realized gain/loss; short-term/long-term split | No | [`investments-data-model.md`](investments-data-model.md) *(ships with A)* |
 | **C. Price feeds & valuation** | Broker-carried, stooq, and CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss. **C.1 shipped** — the broker-carried close values `core.dim_holdings`; C.2 (stooq, CoinGecko, overrides) and C.3 (daily series) remain designed | Yes (it *is* the feed) | [`investments-price-feeds.md`](investments-price-feeds.md) |
-| **D. Net-worth integration** | Holdings valuation into `reports.net_worth` / `fct_balances` | Yes (consumes C) | `investments-net-worth.md` *(planned)* |
+| **D. Net-worth integration** | Holdings valuation folded into `reports.net_worth` counting each investment account **once** — never added on top of its existing balance observation (see Open questions) | Yes (consumes C) | `investments-net-worth.md` *(planned)* |
 
 ### Already-carved children
 
@@ -230,8 +230,10 @@ cost-basis methods.
    the gated children wait on.
 2. **Pillar C** ([`investments-price-feeds.md`](investments-price-feeds.md)) —
    append-only price history, daily valuation, unrealized gain/loss.
-3. **Pillar D** (`investments-net-worth.md`) — holdings valuation into
-   `reports.net_worth`.
+3. **Pillar D** (`investments-net-worth.md`) — holdings valuation folded into
+   `reports.net_worth` without double-counting the account's existing balance
+   observation. The count-once constraint is fixed; the mechanism is open — see
+   Open questions before designing it.
 4. **Already-carved children** (Plaid sync, OFX import, portfolio reports, matching)
    — proceed against the now-fixed contracts, in any order. M1J closes when the
    milestone's promise (1099-B reconciliation + holdings in net worth) is met.
@@ -246,8 +248,9 @@ cost-basis methods.
   state is authoritative.
 - **Method coverage.** FIFO, HIFO, specific-ID, and average-cost all produce correct ST/LT
   splits over the same lot ledger.
-- **Net worth completeness.** Once Pillar D ships, `reports.net_worth` includes
-  market-valued holdings alongside cash and physical assets.
+- **Net worth completeness.** Once Pillar D ships, `reports.net_worth` counts each
+  investment account's value exactly once — never both its holdings valuation and
+  its balance observation — and a test fails if both are counted.
 - **Contract stability.** The gated children (sync, import, reports, matching) build
   against the core tables here without schema changes.
 
@@ -255,6 +258,30 @@ cost-basis methods.
 
 Cross-cutting decisions deferred to child specs or to resolve during implementation.
 
+- **Pillar D counts each investment account once — constraint fixed, mechanism
+  open.** `reports.net_worth` already counts investment accounts, through their
+  balance observation in `core.fct_balances`. For an investment account the
+  provider's reported balance *is* the total position value, not a separate cash
+  sleeve: measured on a Plaid IRA holding 3 positions, Σ
+  `provider_reported_value` = 320.76 and `fct_balances.balance` = 320.76,
+  residual 0.00. Adding `dim_holdings.market_value` on top therefore counts every
+  brokerage account twice, silently, inside a headline number.
+
+  The fixed invariant is that each investment account's value enters
+  `reports.net_worth` **exactly once**. Pillar D picks the mechanism: value the
+  account from its holdings and suppress its balance observation, or keep the
+  balance spine and exclude priced positions from the holdings roll-up. Whichever
+  it picks must not drop value at the other end — `core.dim_holdings` emits
+  `market_value = NULL` (never 0) for `unpriced` and `withheld` positions, and an
+  investment account may hold uninvested cash with no security row, so a naive Σ
+  `market_value` under-reports exactly where the balance observation did not.
+  Either substitution is conditional on an actual `fct_balances_daily` row for the
+  same account and date: an account with priced holdings but no balance
+  observation emits no row at all (no anchor, no backfill), so an unconditional
+  exclusion counts it zero times rather than once. Pillar D ships with a test that
+  fails on the double-count and one that fails on the dropped-value case, the
+  latter covering both a NULL-`market_value` position and a holdings-only account
+  with no balance anchor.
 - **Lot-selection override home — resolved.** The canonical lot-selection override
   lives in a **core** `app.*` table (`app.lot_selections` in the foundation child),
   not the `us_tax` package — cost basis is core, and a non-US user with no `us_tax`
