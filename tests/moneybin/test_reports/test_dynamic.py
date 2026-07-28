@@ -333,6 +333,40 @@ def test_derivation_refuses_two_declarations_of_one_parameter_name(
     assert "declared more than once" in str(raised.value)
 
 
+def test_the_duplicate_refusal_keeps_the_parameter_name_out_of_the_message(
+    dynamic_db: Database,
+) -> None:
+    """The same withholding the sensitive-default refusal makes, one guard over.
+
+    In text mode ``handle_cli_errors`` writes ``message`` and ``hint`` through
+    ``logger.error``, and a declaration name is the author's own text —
+    ``amazon_spend`` is as plausible a merchant name as a filter one, and
+    ``SanitizedLogFormatter`` recognizes neither. Fixing that refusal and leaving
+    this one is how one rule comes to have two answers inside one file.
+
+    Same fixture reasoning as the refusal above: ``LIMIT $amazon_spend`` classes
+    AGGREGATE so the default is permitted, the name is referenced so the
+    unused-parameter guard passes, and the bindings collapse so DESCRIBE
+    succeeds — no other guard can claim this refusal.
+    """
+    with pytest.raises(UserError) as raised:
+        derive_classification(
+            dynamic_db,
+            query_sql="SELECT account_id FROM core.dim_accounts LIMIT $amazon_spend",
+            params=(
+                _param("amazon_spend", int),
+                _param("amazon_spend", int, default=50, required=False),
+            ),
+        )
+
+    assert raised.value.code == error_codes.REPORT_PARAMETER_DUPLICATE
+    assert "amazon_spend" not in raised.value.message
+    assert "amazon_spend" not in (raised.value.hint or "")
+    # Withheld from the log, not from the caller.
+    assert raised.value.details is not None
+    assert raised.value.details["parameters"] == ["amazon_spend"]
+
+
 def test_derivation_accepts_two_parameters_with_distinct_names(
     dynamic_db: Database,
 ) -> None:

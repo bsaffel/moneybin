@@ -544,6 +544,17 @@ everywhere else.
   caller *except* the one it names a CLI command for. The text renderer prints
   each entry in `actions[]`, which is what makes this requirement true rather
   than merely represented.
+- **A refusal names the problem; `details` names the author's text.** Report
+  names, output aliases, and parameter names are all user-authored, and
+  `amazon_spend` is as plausible a merchant name as a filter one — a string
+  `SanitizedLogFormatter` has no pattern for. In text mode `handle_cli_errors`
+  writes a `UserError`'s `message` and `hint` through `logger.error`, so both
+  persist; `details` reaches the caller and the JSON envelope and no durable log.
+  Every refusal on this path therefore keeps the message generic and carries the
+  names in `details` — the terminal still shows them, the log file never does.
+  Three refusals apply this rule (a reclassify's column alias, a parameter
+  carrying a sensitive default, a name declared twice); a fourth that interpolates
+  an author's string into `message` is a regression, not a new judgment call.
 
 The residual honesty: *over*-classification cannot be detected automatically —
 that is why D5 leaves the downgrade judgment to a human. A z-score correctly

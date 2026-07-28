@@ -603,11 +603,17 @@ def _refuse_duplicate_parameters(params: Sequence[ParamSpec]) -> None:
     names = [parameter.name for parameter in params]
     repeated = sorted({name for name in names if names.count(name) > 1})
     if repeated:
+        # Names withheld from the message and carried in `details`, the same split
+        # `_refuse_sensitive_defaults` makes below and for the same reason: a
+        # declaration name is the author's own text, `handle_cli_errors` writes
+        # `message` and `hint` through `logger.error`, and `SanitizedLogFormatter`
+        # cannot recognize `amazon_spend` as anything worth masking. `details`
+        # reaches the caller and the JSON envelope, neither a durable log.
         raise UserError(
-            "Parameter(s) declared more than once: "
-            f"{', '.join(f'${name}' for name in repeated)}.",
+            "A parameter name is declared more than once.",
             code=error_codes.REPORT_PARAMETER_DUPLICATE,
             hint="Declare each parameter once; one name carries one type and default.",
+            details={"parameters": repeated},
         )
 
 
