@@ -384,6 +384,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **A query that measured a masked column answered "This is a MoneyBin bug".**
+  `sql_query` and a saved report both classify an expression by the column it
+  reads, so `SELECT length(last_four) …` kept the account-number class and reached
+  a mask that measures its input — `len()` on an integer, raising from inside
+  redaction. Nothing leaked, because the failure happened before any row was
+  returned, but the query could not be answered on any surface and a report saved
+  that way was creatable and permanently unrunnable. Values that are not text now
+  mask whole (`*****`) rather than partially, which is stronger than the mask it
+  replaces: there are no last four digits to keep in a value that is not text.
+  (#367)
 - **"Transforms up to date" now accounts for everything you can add, not just
   accounts.** The staleness flag on `system_status` and `moneybin transform
   status` watched three account tables out of the seventeen a refresh reads, so

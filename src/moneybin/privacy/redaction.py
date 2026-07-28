@@ -71,12 +71,31 @@ class ConsentSet:
     """
 
 
-def _mask_account_identifier(
-    value: str | None, _consent: ConsentSet | None
-) -> str | None:
-    """ACCOUNT_IDENTIFIER → ``"****" + value[-4:]`` (or ``"****"`` if shorter)."""
+def _mask_account_identifier(value: Any, _consent: ConsentSet | None) -> Any:
+    """ACCOUNT_IDENTIFIER → ``"****" + value[-4:]`` (or ``"****"`` if shorter).
+
+    A non-string value masks whole. This is the only transform that *measures*
+    its input, so the only one that can fail on a value's shape — and lineage
+    hands a class down through an expression without its type. ``length(last_four)``
+    keeps ``INSTITUTION_ACCOUNT_NUMBER`` and arrives here as an ``int``, where
+    ``len()`` raised ``TypeError`` out of ``redact_records``: ``sql_query``
+    answered ``infra_unclassified_error`` ("This is a MoneyBin bug") and a saved
+    report could be created and then never run on any surface. A non-``str``
+    ``Sized`` was worse than the crash — a 2-tuple measured shorter than four and
+    masked to ``"****"``, a partial mask's output for a value it never partially
+    masked.
+
+    Whole-masking is the fail-closed answer, and it is strictly stronger than the
+    partial it replaces: the last four digits are the only thing the partial
+    preserves, and there are none to preserve in a value that is not text.
+    ``mask_strength`` probes with strings, so this class still measures PARTIAL —
+    the branch cannot quietly promote it past a genuinely whole-masked class at
+    the same tier.
+    """
     if value is None:
         return None
+    if not isinstance(value, str):
+        return _mask_unresolved(value, _consent)
     return "****" + value[-4:] if len(value) >= 4 else "****"
 
 

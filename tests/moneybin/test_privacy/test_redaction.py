@@ -11,7 +11,10 @@ from pydantic import BaseModel
 
 from moneybin.privacy.redaction import (
     ConsentSet,
+    MaskStrength,
     _scrub_embedded_pii,  # pyright: ignore[reportPrivateUsage]
+    mask_strength,
+    redact_records,
     redact_typed,
 )
 from moneybin.privacy.taxonomy import DataClass
@@ -94,6 +97,58 @@ def test_routing_number_none_passes_through() -> None:
 def test_institution_account_number_uses_last_four_pattern() -> None:
     out = redact_typed(_sample_row(), consent=None)
     assert out.last_four == "****4242"
+
+
+@pytest.mark.parametrize(
+    "value", [4, Decimal("4"), True, b"4021", ("4", "0"), Decimal("40.21")]
+)
+def test_a_partial_mask_masks_a_non_string_whole_instead_of_raising(
+    value: object,
+) -> None:
+    """A transform that raises is not a weaker mask; it is no answer at all.
+
+    This is the only transform that measures its input, so the only one that can
+    fail on a value's shape — and lineage hands a class down through an expression
+    without its type. An ``INSTITUTION_ACCOUNT_NUMBER`` column wrapped in
+    ``length()`` arrives here as an ``int``, where ``len()`` raised ``TypeError``
+    out of ``redact_records``. Every consumer of the shared table saw it:
+    ``sql_query`` answered ``infra_unclassified_error`` ("This is a MoneyBin bug"),
+    and a saved report could be created and then never run on any surface.
+
+    The ``Sized`` non-strings are the sharper half — a 2-tuple measured shorter
+    than four and returned ``"****"``, a partial mask's output for a value it
+    never partially masked.
+    """
+    (masked,) = redact_records(
+        [{"n": value}], {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}, consent=None
+    )
+
+    assert masked["n"] == "*****"
+
+
+def test_a_partial_mask_still_keeps_the_last_four_of_a_string() -> None:
+    """The benign twin: whole-masking a non-string must not widen to strings.
+
+    Without this, replacing the partial mask outright would pass the test above
+    and silently destroy the last four digits every consumer relies on.
+    """
+    (masked,) = redact_records(
+        [{"n": "1234567890"}], {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}, consent=None
+    )
+
+    assert masked["n"] == "****7890"
+
+
+def test_the_non_string_fallback_does_not_move_the_measured_mask_strength() -> None:
+    """``mask_strength`` probes with strings, and the ordering it feeds must hold.
+
+    Guards across the privacy surface rank classes by this value; a partial mask
+    that measured WHOLE would let one stand in for a genuinely whole-masked class
+    at the same tier — the substitution ``MaskStrength``'s own docstring exists to
+    prevent.
+    """
+    assert mask_strength(DataClass.INSTITUTION_ACCOUNT_NUMBER) is MaskStrength.PARTIAL
+    assert mask_strength(DataClass.ACCOUNT_IDENTIFIER) is MaskStrength.PARTIAL
 
 
 def test_high_tier_balance_passes_through_in_pr2() -> None:

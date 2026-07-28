@@ -291,6 +291,30 @@ enumerate the *exposed* set.
   one.
 - **When does a dynamic report earn materialization?** Cost/latency judgment, or
   an explicit user/agent action? Resolve in C.
+- **Does a report's envelope sensitivity count its parameters?** Today it does
+  not: `ReportResult.classes_returned` is `sorted({c.value for c in
+  self.output_classes.values()})` and `tier` follows the report's declared tier,
+  both derived from output columns alone. A report that *filters* on an above-LOW
+  parameter therefore echoes that parameter's value in the payload under an
+  envelope that never names its class. Measured, not assumed: only CRITICAL
+  classes mask — `txn_date`/MEDIUM and `txn_amount`/HIGH both measure
+  PASSTHROUGH — so the value is returned verbatim. It reaches the shipped
+  catalog, not only saved reports: 5 of 8 built-ins already declare an above-LOW
+  parameter, and `core:balance_drift` is the sharpest case, since its CRITICAL
+  `account` value *is* masked while its class is still missing from the audit
+  row. Two remedies, both changing the `reports` response envelope for most of
+  the catalog — a public contract, so a one-way door: **(A)** fold effective
+  parameter classes into `tier`/`classes_returned`, at the cost of
+  `core:spending` reporting `medium` on every windowed call; **(B)** stop echoing
+  above-LOW parameter values, which has a coherence argument A lacks —
+  `_redact_and_freeze_parameter` already reduces a MEDIUM+ *dict* parameter to
+  `{entry_count, redacted}` while leaving scalars passthrough, and `reports
+  explain` already withholds above-LOW parameter values — at the cost of an agent
+  no longer being able to confirm which window it queried. Lean toward A. That
+  `explain` withholds while `run` echoes is a separate disagreement that outlives
+  whichever remedy wins. **Resolve before consent enforcement makes the label
+  load-bearing**: while enforcement is deferred this is an audit-label accuracy
+  gap, not a live access-control bypass.
 - ~~**Dynamic reports over floored columns**~~ — **scoped out in B, decided in
   M2O.2.** Report creation is restricted to fully-classified schemas (`core`,
   `app`, `reports`). `raw`/`prep` are not reachable through `sql_query` today,

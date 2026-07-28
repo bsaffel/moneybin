@@ -1371,6 +1371,96 @@ def test_a_rejected_save_counts_as_rejected(service: UserReportsService) -> None
     assert _counter("user_report_saves_total", outcome="rejected") == before + 1
 
 
+def _create_kwargs_rejected_at(boundary: str) -> dict[str, Any]:
+    """One ``create`` call refused by the named validation, and only that one."""
+    return {
+        "invalid-name": {"name": "no spaces allowed"},
+        "long-description": {"description": "d" * (DESCRIPTION_MAX_LEN + 1)},
+        "long-query": {
+            "query_sql": f"SELECT 1 AS a -- {'x' * REPORT_QUERY_MAX_LEN}"  # noqa: S608  # test input, not executing SQL
+        },
+        "long-params": {
+            "query_sql": _LOW_PARAM_SQL,
+            "params": [
+                _param("acct", str, default="x" * REPORT_PARAMS_MAX_LEN, required=False)
+            ],
+        },
+    }[boundary]
+
+
+@pytest.mark.parametrize(
+    "boundary", ["invalid-name", "long-description", "long-query", "long-params"]
+)
+def test_every_refused_save_counts_as_rejected(
+    service: UserReportsService, boundary: str
+) -> None:
+    """``rejected`` has to mean "this save was refused", whichever check refused it.
+
+    The increment sat around ``derive_classification`` alone, so a refused name and
+    every length bound raised straight past it — the metric undercounted precisely
+    the boundary validations it exists to tell apart from a successful save. The
+    ``long-params`` case is the one derivation cannot cover even in principle: the
+    stored JSON does not exist until derivation has supplied the parameter classes
+    it carries, so that check is necessarily downstream of the old ``try``.
+    """
+    before = _counter("user_report_saves_total", outcome="rejected")
+
+    with pytest.raises(UserError):
+        _create(service, **_create_kwargs_rejected_at(boundary))
+
+    assert _counter("user_report_saves_total", outcome="rejected") == before + 1
+
+
+def test_a_refused_rename_counts_as_rejected(service: UserReportsService) -> None:
+    """``update``'s validations are the same checks and owe the same count.
+
+    A name collision is reachable only here — ``create`` mints a fresh report, so
+    the taken-name branch belongs to the edit path.
+    """
+    taken = _create(service, name="already_taken")
+    other = _create(service, name="something_else")
+    assert taken != other
+    before = _counter("user_report_saves_total", outcome="rejected")
+
+    with pytest.raises(UserError):
+        service.update(other, name="already_taken", actor="cli")
+
+    assert _counter("user_report_saves_total", outcome="rejected") == before + 1
+
+
+def test_a_metadata_only_update_counts_as_a_save(service: UserReportsService) -> None:
+    """Otherwise counting its refusals makes the ratio the counter reports a lie.
+
+    A rename or an archive returns before derivation — correctly, there is nothing
+    to re-derive — and counted neither outcome. Once a refused rename counts
+    ``rejected``, a successful one must count ``saved``, or the refused share is
+    measured against a population that excludes the successes it should be
+    compared to. ``saved`` and ``rejected`` partition every attempted save.
+    """
+    report_id = _create(service)
+    before = _counter("user_report_saves_total", outcome="saved")
+
+    service.update(report_id, name="renamed_without_rederiving", actor="cli")
+
+    assert _counter("user_report_saves_total", outcome="saved") == before + 1
+
+
+def test_an_accepted_save_counts_once(service: UserReportsService) -> None:
+    """The benign twin for both fixes above.
+
+    A wrapper around the validation pipeline must not also catch and re-count the
+    accepted path, and the metadata-only count must not double up with the
+    re-deriving one.
+    """
+    before = _counter("user_report_saves_total", outcome="saved")
+    rejected_before = _counter("user_report_saves_total", outcome="rejected")
+
+    _create(service, query_sql=_LOW_PARAM_SQL, params=[_param("acct")])
+
+    assert _counter("user_report_saves_total", outcome="saved") == before + 1
+    assert _counter("user_report_saves_total", outcome="rejected") == rejected_before
+
+
 @pytest.mark.parametrize(
     ("query_sql", "expected_code"),
     [

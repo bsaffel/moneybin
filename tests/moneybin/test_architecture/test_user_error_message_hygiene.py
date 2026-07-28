@@ -89,6 +89,37 @@ def _interpolated(node: ast.AST | None) -> set[str]:
     }
 
 
+def _raises_user_error(node: ast.AST) -> bool:
+    """Whether ``node`` constructs a ``UserError``, by either spelling.
+
+    ``UserError(...)`` and ``errors.UserError(...)`` both count. Matching only the
+    bare name is how a source scan goes quietly green: every call site in the swept
+    path uses the bare form today, so the narrower check passes — and would keep
+    passing through a refactor to the qualified one, covering nothing.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id == "UserError"
+    return isinstance(func, ast.Attribute) and func.attr == "UserError"
+
+
+def _aliased_imports(tree: ast.AST) -> set[str]:
+    """Local names bound to ``UserError`` by an aliasing import.
+
+    The name check above cannot see through ``as``, so the scan asserts nobody
+    aliases it rather than pretending to follow one.
+    """
+    return {
+        alias.asname
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name == "UserError" and alias.asname
+    }
+
+
 def _scan() -> dict[str, set[str]]:
     root = Path(moneybin.__file__).parent
     found: dict[str, set[str]] = {}
@@ -97,13 +128,16 @@ def _scan() -> dict[str, set[str]]:
         files = sorted(target.rglob("*.py")) if target.is_dir() else [target]
         for file in files:
             tree = ast.parse(file.read_text())
+            aliased = _aliased_imports(tree)
+            assert not aliased, (
+                f"{file.relative_to(root)} imports UserError as {sorted(aliased)}; "
+                "this scan matches it by name, so an alias would hide its raises. "
+                "Import it plainly."
+            )
             for node in ast.walk(tree):
-                if not (
-                    isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Name)
-                    and node.func.id == "UserError"
-                ):
+                if not _raises_user_error(node):
                     continue
+                assert isinstance(node, ast.Call)  # noqa: S101  # narrowed above
                 message = node.args[0] if node.args else None
                 hint = next(
                     (kw.value for kw in node.keywords if kw.arg == "hint"), None
@@ -138,3 +172,22 @@ def test_the_scan_reaches_the_modules_it_claims_to_cover() -> None:
     for entry in _REPORT_PATH:
         assert (root / entry).exists(), f"{entry} no longer exists; fix _REPORT_PATH"
     assert "reports/_framework/derive.py" in _scan()
+
+
+def test_the_scan_matches_both_spellings_of_the_raise() -> None:
+    """A qualified call must count, or the guard lapses on a mechanical refactor.
+
+    Every swept site writes the bare ``UserError(...)`` today, so nothing in the
+    live tree distinguishes a scan that handles ``errors.UserError(...)`` from one
+    that silently skips it. Fixtures are the only way to tell them apart.
+    """
+    assert _raises_user_error(_sole_expression('UserError(f"leaks {name}")'))
+    assert _raises_user_error(_sole_expression('errors.UserError(f"leaks {name}")'))
+    assert not _raises_user_error(_sole_expression('ValueError(f"not ours {name}")'))
+
+
+def _sole_expression(source: str) -> ast.expr:
+    """The one expression ``source`` consists of, as a node."""
+    statement = ast.parse(source).body[0]
+    assert isinstance(statement, ast.Expr), source
+    return statement.value

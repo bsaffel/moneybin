@@ -1228,6 +1228,34 @@ def test_spec_from_row_degrades_when_a_stored_projection_disappears(
     assert "institution_name" in (dynamic.degraded_reason or "")
 
 
+def test_a_saved_report_runs_when_an_expression_changes_a_masked_column_type(
+    dynamic_db: Database,
+) -> None:
+    """A report that saves must be runnable; masking is not a place to crash.
+
+    Lineage propagates a class through an expression but not a type, so
+    ``length(last_four)`` keeps ``INSTITUTION_ACCOUNT_NUMBER`` and reaches the
+    partial mask as an ``int``. Derivation and the save both succeeded, then every
+    run died in ``redact_records`` — CLI, MCP, and export alike — so the report was
+    creatable and permanently unrunnable. Fixed in the shared transform rather
+    than in derivation, because ``sql_query`` reaches the same mask through the
+    same resolver and failed the same way.
+
+    The class stays as derived: the value masks *more* strongly than
+    ``INSTITUTION_ACCOUNT_NUMBER`` promises, never less.
+    """
+    dynamic_db.execute("UPDATE core.dim_accounts SET last_four = '4021'")
+    row = _saved(
+        dynamic_db, query_sql="SELECT length(last_four) AS n FROM core.dim_accounts"
+    )
+    assert row["classes"] == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER.value}
+
+    dynamic = spec_from_row(dynamic_db, row)
+    masked = run_report(dynamic.spec, dynamic_db, max_rows=10)
+
+    assert {record["n"] for record in masked.records} == {"*****"}
+
+
 def test_spec_from_row_drops_a_downgrade_the_current_policy_would_refuse(
     dynamic_db: Database,
 ) -> None:

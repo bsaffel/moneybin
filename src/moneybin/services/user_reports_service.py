@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -196,22 +197,20 @@ class UserReportsService:
         permitted schemas — nothing else. The class map is derived here and
         stored; the user never supplies or sees it unless they ask.
         """
-        self._require_free_name(name)
-        _require_bounded(description, field="description", limit=DESCRIPTION_MAX_LEN)
-        _require_bounded(query_sql, field="query", limit=REPORT_QUERY_MAX_LEN)
-        try:
+        with _counting_rejections():
+            self._require_free_name(name)
+            _require_bounded(
+                description, field="description", limit=DESCRIPTION_MAX_LEN
+            )
+            _require_bounded(query_sql, field="query", limit=REPORT_QUERY_MAX_LEN)
             derived = derive_classification(
                 self._db, query_sql=query_sql, params=params
             )
-        except UserError:
-            metrics.USER_REPORT_SAVES_TOTAL.labels(outcome="rejected").inc()
-            raise
-
-        # Bounded here rather than beside `description` and `query` above: the
-        # thing that has to stay bounded is the stored JSON, which does not exist
-        # until derivation has supplied the parameter classes it carries.
-        entries = stored_params(params, derived.parameter_classes)
-        _require_bounded_params(entries)
+            # Bounded here rather than beside `description` and `query` above: the
+            # thing that has to stay bounded is the stored JSON, which does not
+            # exist until derivation has supplied the parameter classes it carries.
+            entries = stored_params(params, derived.parameter_classes)
+            _require_bounded_params(entries)
 
         event = self._repo.create(
             name=name,
@@ -255,16 +254,20 @@ class UserReportsService:
         stale LOW class, because ``run_report`` treats the stored map as
         authoritative. A ``set`` touching neither field skips derivation.
         """
+        # `resolve` stays outside the count: a handle that names no report is a
+        # wrong target, not a refused save, and counting it would put a typo in
+        # the same bucket as a rejected name.
         row = self.resolve(handle)
         report_id = str(row["report_id"])
-        if not isinstance(name, Unset):
-            self._require_free_name(name, current_report_id=report_id)
-        if not isinstance(description, Unset):
-            _require_bounded(
-                description, field="description", limit=DESCRIPTION_MAX_LEN
-            )
-        if not isinstance(query_sql, Unset):
-            _require_bounded(query_sql, field="query", limit=REPORT_QUERY_MAX_LEN)
+        with _counting_rejections():
+            if not isinstance(name, Unset):
+                self._require_free_name(name, current_report_id=report_id)
+            if not isinstance(description, Unset):
+                _require_bounded(
+                    description, field="description", limit=DESCRIPTION_MAX_LEN
+                )
+            if not isinstance(query_sql, Unset):
+                _require_bounded(query_sql, field="query", limit=REPORT_QUERY_MAX_LEN)
 
         fields: dict[str, Any] = {
             "name": name,
@@ -273,6 +276,11 @@ class UserReportsService:
         }
         if isinstance(query_sql, Unset) and isinstance(params, Unset):
             self._repo.set(report_id, actor=actor, **fields)
+            # Counted like every other save, though it derives nothing. Its
+            # refusals count `rejected` above, so leaving its successes uncounted
+            # would measure the refused share against a population that excludes
+            # them.
+            _count_save(())
             return SaveOutcome(
                 report_id=report_id,
                 name=str(name) if not isinstance(name, Unset) else str(row["name"]),
@@ -286,13 +294,12 @@ class UserReportsService:
             if isinstance(params, Unset)
             else tuple(params)
         )
-        try:
+        with _counting_rejections():
             derived = derive_classification(
                 self._db, query_sql=effective_sql, params=effective_params
             )
-        except UserError:
-            metrics.USER_REPORT_SAVES_TOTAL.labels(outcome="rejected").inc()
-            raise
+            entries = stored_params(effective_params, derived.parameter_classes)
+            _require_bounded_params(entries)
 
         # A downgrade is a judgment about one column of one query, so it does not
         # survive a rewrite. Cleared even when the new SQL happens to derive the
@@ -306,8 +313,6 @@ class UserReportsService:
             {} if cleared else (row.get("class_downgrades") or {})
         )
         classes = with_downgrades(dict(derived.classes), downgrades)
-        entries = stored_params(effective_params, derived.parameter_classes)
-        _require_bounded_params(entries)
 
         self._repo.set(
             report_id,
@@ -760,6 +765,29 @@ def _count_save(unresolved_columns: Sequence[str]) -> None:
     metrics.USER_REPORT_SAVES_TOTAL.labels(outcome="saved").inc()
     if unresolved_columns:
         metrics.USER_REPORT_UNRESOLVED_COLUMNS_TOTAL.inc(len(unresolved_columns))
+
+
+@contextmanager
+def _counting_rejections() -> Generator[None, None, None]:
+    """Count every save this validation pipeline refuses, not only a bad query.
+
+    The increment used to sit around ``derive_classification`` alone, so a refused
+    name and every length bound raised past it: the counter undercounted exactly
+    the boundary validations that ``rejected`` exists to distinguish from
+    ``saved``. Wrapping the pipeline rather than incrementing at each ``raise``
+    keeps a new check counted by default — the failure mode here was a check
+    landing outside a narrow guard, and adding checks is the normal direction of
+    travel.
+
+    Wraps validation and derivation, and stops before the repo write: ``rejected``
+    means the *input* was refused, and a write that fails is an infrastructure
+    outcome the audit path already carries.
+    """
+    try:
+        yield
+    except UserError:
+        metrics.USER_REPORT_SAVES_TOTAL.labels(outcome="rejected").inc()
+        raise
 
 
 def _target_of(event: AuditEvent) -> str:
