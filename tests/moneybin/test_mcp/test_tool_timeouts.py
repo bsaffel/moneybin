@@ -503,7 +503,13 @@ async def test_back_to_back_call_after_timeout_succeeds(
     first = await hang_tool()
     assert first.error is not None and first.error.code == error_codes.INFRA_TIMED_OUT
 
-    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 5.0)
+    # Must comfortably exceed quick_tool's own 5 s wait on _conn_released.
+    # An equal cap makes the two deadlines race: a background thread scheduled
+    # late under loaded CI lets the wait consume the whole budget, and the cap
+    # fires first (observed: elapsed_s 5.001 vs timeout_s 5.0), masking the
+    # inner assertion's diagnostic. The cap is not what this test asserts, so
+    # use the production value.
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 30.0)
     second = await quick_tool()
     assert second.error is None
     assert second.data == [{"x": 42}]
