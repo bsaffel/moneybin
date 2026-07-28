@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import typing
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from functools import partial
-from typing import cast
-from unittest.mock import MagicMock
+from typing import Literal, cast
+from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
 from pydantic import JsonValue
 from pytest_mock import MockerFixture
 
-from moneybin.database import Database
+from moneybin.database import (
+    Database,
+    DatabaseKeyError,
+    DatabaseNotInitializedError,
+)
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.networth import (
     NetWorthAccountRow,
@@ -27,15 +32,25 @@ from moneybin.privacy.payloads.networth import (
     NetWorthHistoryPoint,
     NetWorthSnapshotPayload,
 )
+from moneybin.privacy.payloads.reports import (
+    ReportCatalogEntry,
+    ReportOutputColumn,
+    ReportSemanticsPayload,
+)
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import PayloadEncoder
 from moneybin.reports._framework import registry
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
     ServiceReportSpec,
+    catalog_classes_returned,
+    catalog_sensitivity,
     get_report_catalog,
+    open_report_catalog,
 )
 from moneybin.reports._framework.contract import (
+    USER_NAMESPACE,
+    Binding,
     OutputColumn,
     ParamSpec,
     ReportQuery,
@@ -87,7 +102,7 @@ def _sql_runner(
     """Test SQL report."""
     return ReportQuery(
         "SELECT ? AS value",
-        [count],
+        [Binding(count, DataClass.AGGREGATE)],
         actions=[f"Label present: {label is not None}"],
         period="test period",
     )
@@ -284,6 +299,27 @@ def test_exact_namespaced_id_wins_over_matching_short_name() -> None:
     catalog = ReportCatalog((alias_collision, exact))
 
     assert catalog.resolve("core:summary") is exact
+
+
+def test_the_collision_warning_names_the_reports_and_not_the_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A colliding report name may be a merchant name, so it cannot be logged.
+
+    A saved report is named by its user, and ``amazon-spend`` is both a
+    plausible name and a merchant name ``.claude/rules/security.md`` forbids in
+    a log file — ``SanitizedLogFormatter`` masks digit runs and dollar amounts,
+    never free text. The report IDs carry everything an operator can act on.
+    """
+    with caplog.at_level(logging.WARNING, logger="moneybin.reports._framework.catalog"):
+        ReportCatalog((
+            _sql_report(report_id="core:summary", name="amazon-spend"),
+            _sql_report(report_id="user:rab12cd34ef56", name="amazon-spend"),
+        ))
+
+    assert "amazon-spend" not in caplog.text
+    assert "core:summary" in caplog.text
+    assert "user:rab12cd34ef56" in caplog.text
 
 
 def test_ambiguous_short_id_lists_sorted_namespaced_candidates() -> None:
@@ -1107,6 +1143,157 @@ def test_duplicate_extension_report_id_is_rejected(
 
     with pytest.raises(ValueError, match="duplicate extension report_id"):
         register_extension_report(_sql_report(report_id="retirement:summary"))
+
+
+def test_an_extension_may_not_claim_the_user_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``user:`` means "derived at save time from a row", and code cannot be that.
+
+    ``report_tier`` reads the namespace, so an extension shipping ``user:x``
+    would be presented on every surface as the caller's own saved report: listed
+    under ``--tier user``, explained at MEDIUM as user-authored text, and — the
+    part that matters — believed to carry a class map *derived* from its SQL. Its
+    ``classes={...}`` is declared by the package author instead, which is exactly
+    the "user-supplied class in the map" that `.claude/rules/reports.md` forbids.
+    """
+    monkeypatch.setattr(registry, "_extension_reports", {})
+
+    with pytest.raises(ValueError, match=f"{USER_NAMESPACE}:"):
+        register_extension_report(
+            _sql_report(report_id=f"{USER_NAMESPACE}:retirement", name="retirement")
+        )
+
+    assert extension_report_specs() == ()
+
+
+def test_an_extension_namespace_that_merely_begins_with_user_registers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reserved thing is the namespace, not the four characters.
+
+    ``user_notes`` is a package name a real extension could pick, and a check
+    written as "starts with ``user``" would lock it out. The refusal above must
+    fail closed on the namespace and stay open here.
+    """
+    monkeypatch.setattr(registry, "_extension_reports", {})
+    report = _sql_report(report_id="user_notes:summary", name="user_notes_summary")
+
+    register_extension_report(report)
+
+    assert extension_report_specs() == (report,)
+
+
+# ---------------------------------------------------------------------------
+# Browsing without a database
+# ---------------------------------------------------------------------------
+
+
+def test_the_catalog_serves_the_packaged_tiers_when_no_database_exists() -> None:
+    """Browsing must not require ``db init``: two of three tiers are repo files.
+
+    An agent calling ``reports()`` with no arguments to orient itself used to
+    receive the built-in catalog with no database touched. Adding the user tier
+    turned that into a database-not-initialized error on a fresh profile, and
+    turned a mistyped ``export report`` id into advice to run ``db unlock``.
+    """
+    with patch(
+        "moneybin.reports._framework.catalog.get_database",
+        side_effect=DatabaseNotInitializedError("no database yet"),
+    ):
+        with open_report_catalog() as (catalog, db):
+            report_ids = {report.report_id for report in catalog.list()}
+
+    assert db is None
+    assert "core:networth" in report_ids
+
+
+def test_a_locked_database_is_still_an_error_when_browsing() -> None:
+    """The benign twin: only "never initialized" degrades.
+
+    A locked or wrong-key database is a real failure with a real fix. Swallowing
+    it would hand back a catalog silently missing the user's own reports.
+    """
+    with patch(
+        "moneybin.reports._framework.catalog.get_database",
+        side_effect=DatabaseKeyError("wrong key"),
+    ):
+        with pytest.raises(DatabaseKeyError):
+            with open_report_catalog():
+                pass  # pragma: no cover — the open raises before the body runs
+
+
+def _listing_entry(
+    *, tier: Literal["builtin", "extension", "user"], report_id: str = "core:spending"
+) -> ReportCatalogEntry:
+    """One catalog listing row, varying only the field ``catalog_sensitivity`` reads."""
+    return ReportCatalogEntry(
+        report_id=report_id,
+        name=report_id.split(":")[-1],
+        tier=tier,
+        description="A listing row.",
+        parameter_schema={},
+        parameter_classes={},
+        examples=[],
+        columns=[ReportOutputColumn(name="total", data_class="aggregate")],
+        output_classes={"total": "aggregate"},
+        semantics=ReportSemanticsPayload(
+            unit=None,
+            currency=None,
+            sign=None,
+            kind="unknown",
+            valuation_basis=None,
+            fx_basis=None,
+            time_basis=None,
+            denominator=None,
+            comparison_window=None,
+            exclusions=(),
+            provenance=(),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("tiers", "expected"),
+    [
+        (("builtin",), "low"),
+        (("builtin", "extension"), "low"),
+        (("user",), "medium"),
+        (("builtin", "user"), "medium"),
+        (("builtin", "extension", "user"), "medium"),
+        ((), "low"),
+    ],
+)
+def test_catalog_sensitivity_elevates_on_any_user_tier_row(
+    tiers: tuple[Literal["builtin", "extension", "user"], ...],
+    expected: Literal["low", "medium"],
+) -> None:
+    """A listing holding one user-authored name is a MEDIUM response.
+
+    Tested directly on the mixed-tier rows rather than through a surface that
+    opens a database. Every caller-side test reached this via
+    ``open_report_catalog()``, which degrades to the packaged tiers alone on a
+    profile with no database — so the user arm was never actually taken and the
+    ``low`` assertions passed for the wrong reason.
+    """
+    entries = [
+        _listing_entry(tier=tier, report_id=f"{tier}:r{index}")
+        for index, tier in enumerate(tiers)
+    ]
+
+    assert catalog_sensitivity(entries) == expected
+
+
+def test_catalog_classes_returned_follows_the_elevated_sensitivity() -> None:
+    """The audit event's class list is the envelope tier's other half.
+
+    Pinned beside ``catalog_sensitivity`` because the privacy event and the
+    envelope must never disagree about what a listing published.
+    """
+    assert catalog_classes_returned(catalog_sensitivity([])) == ["aggregate"]
+    assert catalog_classes_returned(
+        catalog_sensitivity([_listing_entry(tier="user")])
+    ) == ["aggregate", "user_note"]
 
 
 def test_report_envelope_names_the_currency_its_rows_are_denominated_in(

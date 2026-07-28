@@ -216,7 +216,13 @@ def test_export_report_rejects_invalid_parameter_bindings(
     tmp_path: Path,
 ) -> None:
     """Malformed, duplicate, and mistyped --param values fail before delivery."""
-    with patch("moneybin.exports.service.ExportService.run") as run:
+    # The catalog spans the user tier now, so resolving the report opens a
+    # database even though nothing here reads a row from it.
+    with (
+        patch("moneybin.exports.service.ExportService.run") as run,
+        patch("moneybin.database.get_database") as get_database,
+    ):
+        get_database.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(
             app,
             [
@@ -274,6 +280,13 @@ def test_export_resolves_custom_local_path_before_service_call(tmp_path: Path) -
 
 
 def test_export_report_parser_errors_are_safe_stderr() -> None:
+    """A mistyped report id is an argument mistake, with or without a database.
+
+    Deliberately unpatched: binding a *built-in* report's parameters is a
+    repo-metadata question, so the catalog degrades to the packaged tiers when no
+    database exists. Needing a ``get_database`` patch here to keep passing was the
+    tell that a bad id had started reporting a database error instead.
+    """
     result = runner.invoke(app, ["export", "report", "core:not_a_report"])
 
     assert result.exit_code == 1

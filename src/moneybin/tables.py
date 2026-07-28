@@ -87,6 +87,7 @@ VERSIONS = TableRef("app", "versions")
 GSHEET_CONNECTIONS = TableRef("app", "gsheet_connections")
 EXPORT_DESTINATIONS = TableRef("app", "export_destinations")
 AI_CONSENT_GRANTS = TableRef("app", "ai_consent_grants")
+USER_REPORTS = TableRef("app", "user_reports", audience="interface")
 
 # -- App tabular tables --
 TABULAR_FORMATS = TableRef("app", "tabular_formats")

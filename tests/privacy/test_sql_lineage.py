@@ -11,10 +11,13 @@ from pathlib import Path
 
 import pytest
 import yaml
+from sqlglot import exp
 
 from moneybin.database import Database
 from moneybin.privacy.sql_lineage import (
     _MAX_SCOPE_DEPTH,  # pyright: ignore[reportPrivateUsage]
+    FAIL_CLOSED_CLASS,
+    ProjectionSource,
     SqlParseError,
     _class_of_key,  # pyright: ignore[reportPrivateUsage]
     derive_query_tier,
@@ -24,8 +27,11 @@ from moneybin.privacy.sql_lineage import (
     is_metadata_query,
     is_multi_statement,
     parse_cached,
+    read_column_classes,
     reports_class_map,
     resolve_output_classes,
+    resolve_placeholder_classes,
+    resolve_projection_sources,
     tables_outside_schemas,
 )
 from moneybin.privacy.taxonomy import DataClass, Tier
@@ -90,8 +96,6 @@ def test_schema_snapshot_cached_until_version_changes(populated_db: Database) ->
 # ---------------------------------------------------------------------------
 
 
-from sqlglot import exp  # noqa: E402 — imported after stdlib block
-
 from moneybin.privacy.sql_lineage import collect_input_columns  # noqa: E402
 
 
@@ -130,6 +134,19 @@ def test_collect_input_columns_finds_where_and_join_cols(
 def _classes(sql: str, db: Database) -> dict[str, DataClass]:
     snap = get_current_schema_snapshot(db)
     return resolve_output_classes(expand_star(parse_cached(sql), snap), snap)
+
+
+def _classes_bound(
+    sql: str, db: Database, placeholder_classes: dict[str, DataClass]
+) -> dict[str, DataClass]:
+    """``_classes`` for a query with parameters, as the report deriver calls it."""
+    snap = get_current_schema_snapshot(db)
+    return resolve_output_classes(
+        expand_star(parse_cached(sql), snap),
+        snap,
+        sql,
+        placeholder_classes=placeholder_classes,
+    )
 
 
 def _routing_chain_ctes(depth: int) -> list[str]:
@@ -607,13 +624,16 @@ def test_nested_set_operation_classifies_the_value_bearing_branches(
 def test_except_takes_classes_from_the_left_branch_only(
     populated_db: Database,
 ) -> None:
-    """``EXCEPT``/``INTERSECT`` emit LEFT-branch values; the right only filters.
+    """``EXCEPT`` emits LEFT-branch values; the right operand only filters.
 
     The counterpart to ``test_union_classifies_every_branch_by_position``: a
     UNION must take the max across branches because both supply values, but
     widening that rule to EXCEPT would over-redact every difference query. Pins
     that the asymmetry is deliberate, so a future "just treat all SetOperations
     like UNION" simplification has to argue with a test.
+
+    ``INTERSECT`` is **not** in this bucket — see
+    ``test_intersect_classifies_both_branches``.
     """
     out = _classes(
         "SELECT account_type AS v FROM core.dim_accounts "
@@ -622,6 +642,23 @@ def test_except_takes_classes_from_the_left_branch_only(
     )
     assert out == {"v": DataClass.TXN_TYPE}
     assert derive_query_tier(out) is Tier.LOW
+
+
+def test_intersect_classifies_both_branches(populated_db: Database) -> None:
+    """``INTERSECT`` draws values from BOTH operands, unlike ``EXCEPT``.
+
+    A row survives an INTERSECT only when the value is present on both sides, so
+    the value it returns *is* the right operand's value. Classifying from the
+    left branch alone made the query an oracle: the LOW/MEDIUM left column named
+    the class while every returned row was a real ``routing_number``.
+    """
+    out = _classes(
+        "SELECT account_type AS v FROM core.dim_accounts "
+        "INTERSECT SELECT routing_number AS v FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"v": DataClass.ROUTING_NUMBER}
+    assert derive_query_tier(out) is Tier.CRITICAL
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +866,77 @@ def test_count_of_critical_column_stays_aggregate(populated_db: Database) -> Non
     assert out == {"n": DataClass.AGGREGATE}
 
 
+def test_count_beside_a_projected_parameter_is_not_collapsed(
+    populated_db: Database,
+) -> None:
+    """The counting-aggregate collapse passes VACUOUSLY over a placeholder.
+
+    Its guard asks whether every ``exp.Column`` sits inside a count; a projection
+    holding only ``COUNT(*)`` and a placeholder has no column at all, so ``any``
+    over nothing is False and the projection collapsed to ``AGGREGATE`` —
+    publishing the bound value beside a count of rows. The same shape of vacuous
+    pass that the opaque-node veto above this rule exists to stop.
+    """
+    out = _classes_bound(
+        "SELECT COUNT(*) || $acct AS x FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.ROUTING_NUMBER},
+    )
+    assert out == {"x": DataClass.ROUTING_NUMBER}
+
+
+def test_a_projection_combining_a_column_and_a_parameter_takes_the_stronger(
+    populated_db: Database,
+) -> None:
+    """A projection can return a column's value AND a bound one at once.
+
+    ``account_id || $acct`` derives from both, so the class describing it is the
+    combination — the same rule two co-referenced columns already follow. Reading
+    only the columns publishes the binding beside them.
+    """
+    out = _classes_bound(
+        "SELECT account_id || $acct AS x FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.ROUTING_NUMBER},
+    )
+    assert out == {"x": DataClass.ROUTING_NUMBER}
+
+
+def test_a_parameter_confined_inside_a_count_stays_aggregate(
+    populated_db: Database,
+) -> None:
+    """The benign twin of the vacuous-collapse guard.
+
+    A placeholder whose only appearance is inside a counting aggregate has its
+    value collapsed to a count exactly as a column does, so the guard must not
+    treat every placeholder as surfacing. Without this, ``COUNT($x)`` would mask a
+    row count.
+    """
+    out = _classes_bound(
+        "SELECT COUNT($acct) AS n FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.ROUTING_NUMBER},
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_an_unnamed_positional_placeholder_fails_closed(
+    populated_db: Database,
+) -> None:
+    """A bare ``?`` names no parameter, so no class can be looked up for it.
+
+    Nothing may bind a value this classifier cannot name. The fallback is the
+    whole-masking class rather than the caller's declared map, which a positional
+    placeholder is absent from by construction.
+    """
+    out = _classes_bound(
+        "SELECT ? AS x FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.RECORD_ID},
+    )
+    assert out == {"x": FAIL_CLOSED_CLASS}
+
+
 def test_two_unaliased_projections_get_distinct_keys(populated_db: Database) -> None:
     """Two unnamed projections must not collide on one output key.
 
@@ -981,6 +1089,59 @@ def test_reports_class_map_is_keyed_by_reports_schema() -> None:
     assert all(schema == "reports" for (schema, _table) in m)
 
 
+def test_reports_class_map_skips_a_spec_with_no_graph_backed_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dynamic report has no ``reports.*`` view, so it has nothing to key on.
+
+    The map keys on ``(spec.view.schema, spec.view.name)``; without the skip a
+    synthesized spec raises ``AttributeError`` on ``None.schema`` and takes down
+    classification for every report, not just the dynamic one.
+    """
+    from moneybin.reports._framework.contract import (
+        OutputColumn,
+        ReportQuery,
+        ReportSemantics,
+        ReportSpec,
+    )
+
+    def _runner(db: object) -> ReportQuery:
+        return ReportQuery(sql="SELECT 1 AS n")
+
+    _runner._report_spec = ReportSpec(  # type: ignore[attr-defined]
+        report_id="user:r0123456789ab",
+        name="saved_report",
+        description="A saved report",
+        view=None,
+        runner=_runner,
+        classes={"n": DataClass.AGGREGATE},
+        columns=(
+            OutputColumn(name="n", description="n", data_class=DataClass.AGGREGATE),
+        ),
+        semantics=ReportSemantics(
+            unit=None,
+            currency=None,
+            sign=None,
+            kind="unknown",
+            valuation_basis=None,
+            fx_basis=None,
+            time_basis=None,
+            denominator=None,
+            comparison_window=None,
+            exclusions=(),
+            provenance=(),
+        ),
+    )
+    from moneybin.reports import definitions
+
+    monkeypatch.setattr(definitions, "ALL_REPORTS", (*definitions.ALL_REPORTS, _runner))
+
+    m = reports_class_map()
+
+    assert all(schema == "reports" for (schema, _table) in m)
+    assert (None, "saved_report") not in m
+
+
 # A prior version of this module asserted every report's account_id column
 # must declare ACCOUNT_IDENTIFIER (CRITICAL). That premise is wrong:
 # account_id is a deliberately opaque minted surrogate classified RECORD_ID
@@ -1017,3 +1178,207 @@ def test_class_of_key_unknown_reports_column_is_none() -> None:
     # known-table / unknown-column path specifically.)
     (schema, table), _cols = next(iter(reports_class_map().items()))
     assert _class_of_key((schema, table, "no_such_column_xyz")) is None
+
+
+# ---------------------------------------------------------------------------
+# Parameter classing — both `$name` parse shapes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["placeholder", "parameter"],
+    ids=["bare-sqlglot", "sqlmesh-imported"],
+)
+def test_parameter_class_resolves_under_both_dollar_name_parse_shapes(
+    populated_db: Database, shape: str
+) -> None:
+    """``$name`` parses to two different node types, and both must resolve.
+
+    Bare sqlglot yields ``Placeholder(this="acct")``. Importing SQLMesh rewrites
+    the tokenizer process-wide so the identical text yields
+    ``Parameter(this=Var(this="acct"))`` — its macro-parameter syntax. MoneyBin
+    imports SQLMesh on several paths, so which shape a process sees depends on
+    import order.
+
+    Matching one shape only is not merely a missed class: an unmatched
+    placeholder resolves ``UNRESOLVED``, which changes the stored parameter
+    classes, which moves the dynamic-report drift fingerprint — so match and
+    mismatch would flip on import order alone. Both shapes are constructed here
+    rather than inferred from whatever this process happens to have imported.
+    """
+    sql = "SELECT account_id FROM core.dim_accounts WHERE routing_number = $acct"
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = expand_star(parse_cached(sql), snapshot)
+
+    target = next(
+        node
+        for node in tree.walk()
+        if isinstance(node, (exp.Placeholder, exp.Parameter))
+    )
+    target.replace(
+        exp.Placeholder(this="acct")
+        if shape == "placeholder"
+        else exp.Parameter(this=exp.Var(this="acct"))
+    )
+
+    assert resolve_placeholder_classes(tree, snapshot) == {
+        "acct": DataClass.ROUTING_NUMBER
+    }
+
+
+# ---------------------------------------------------------------------------
+# Case-insensitive table scoping, row-count placeholders, UNION provenance
+# ---------------------------------------------------------------------------
+
+
+def test_read_column_classes_resolves_a_table_named_in_any_case(
+    populated_db: Database,
+) -> None:
+    """DuckDB matches identifiers without regard to case; the read set must too.
+
+    ``tables_outside_schemas`` already case-folds, so ``FROM CORE.DIM_ACCOUNTS``
+    passes every gate. If the read set does not fold too, the query resolves to
+    no columns at all — which silently empties the dynamic-report drift
+    fingerprint and its provenance list rather than raising anything.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    lower = read_column_classes(
+        parse_cached("SELECT account_id FROM core.dim_accounts"), snapshot
+    )
+    upper = read_column_classes(
+        parse_cached("SELECT account_id FROM CORE.DIM_ACCOUNTS"), snapshot
+    )
+
+    assert lower, "expected the lowercase spelling to resolve columns"
+    assert upper == lower
+
+
+def test_a_row_count_placeholder_classes_as_an_aggregate(
+    populated_db: Database,
+) -> None:
+    """``LIMIT $top`` binds a row count, which can echo no column's data.
+
+    Every built-in declares its own ``LIMIT ?`` parameter ``AGGREGATE``. Leaving
+    the saved-report path at ``UNRESOLVED`` would mean one report kind may carry
+    a page-size default and the other may not, for the same value.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT account_id FROM core.dim_accounts LIMIT $top")
+
+    assert resolve_placeholder_classes(tree, snapshot) == {"top": DataClass.AGGREGATE}
+
+
+def test_a_filter_placeholder_still_takes_its_column_class(
+    populated_db: Database,
+) -> None:
+    """The benign-input twin of the row-count case: a filter must not lower.
+
+    A rule stated as "a placeholder outside a comparison is safe" would also
+    admit ``WHERE routing_number = $acct``'s operand once someone widened it.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = expand_star(
+        parse_cached(
+            "SELECT account_id FROM core.dim_accounts "
+            "WHERE routing_number = $acct LIMIT $top"
+        ),
+        snapshot,
+    )
+
+    assert resolve_placeholder_classes(tree, snapshot) == {
+        "acct": DataClass.ROUTING_NUMBER,
+        "top": DataClass.AGGREGATE,
+    }
+
+
+def test_a_placeholder_fails_closed_when_two_tables_bind_its_alias(
+    populated_db: Database,
+) -> None:
+    """A reused alias must not resolve against whichever table sqlglot saw last.
+
+    ``resolve_placeholder_classes`` needs one map for the whole tree — a
+    placeholder can sit in any scope — and ``_build_alias_map`` is
+    last-write-wins. Here both branches legally bind ``a``, to tables whose
+    ``labels`` column carries different classes: the tree-wide map answered
+    ``app.metrics.labels`` (AGGREGATE, LOW) for *both*, so the shared
+    "used with two different classes" guard never fired and ``$tag`` came back
+    LOW — which is the tier at which ``render_sql_forms`` splices a bound value
+    into the published SQL as a literal. The real left-branch class is
+    ``USER_NOTE``.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = expand_star(
+        parse_cached(
+            "SELECT a.labels AS v FROM app.imports a WHERE a.labels = $tag "
+            "UNION ALL "
+            "SELECT a.labels AS v FROM app.metrics a WHERE a.labels = $tag"
+        ),
+        snapshot,
+    )
+
+    assert resolve_placeholder_classes(tree, snapshot) == {"tag": FAIL_CLOSED_CLASS}
+
+
+def test_projection_sources_withhold_an_upstream_two_tables_bind(
+    populated_db: Database,
+) -> None:
+    """The provenance half of the same gap: no upstream beats a wrong one.
+
+    ``resolve_output_classes`` gets this right by building its alias map per
+    branch; ``resolve_projection_sources`` merges positionally and so needs one
+    tree-wide map. It stays a passthrough — that is a fact about the projection
+    text — but names no upstream, rather than pointing ``reports explain`` at a
+    table the value never came from.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached(
+        "SELECT a.labels AS v FROM app.imports a "
+        "UNION ALL SELECT a.labels AS v FROM app.metrics a"
+    )
+
+    assert resolve_projection_sources(tree, snapshot) == {
+        "v": ProjectionSource(passthrough=True, upstream=None)
+    }
+
+
+def test_union_projection_sources_merge_by_position_not_by_alias(
+    populated_db: Database,
+) -> None:
+    """One output position fed by two branches has one entry, keyed like classes.
+
+    ``resolve_output_classes`` takes output names from the first branch and
+    combines each *position* across branches. Merging sources by alias instead
+    invents an output column per branch alias and reports the first branch's
+    table as the sole upstream of a column every branch feeds.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached(
+        "SELECT account_id AS a FROM core.dim_accounts "
+        "UNION ALL SELECT display_name AS b FROM core.dim_accounts"
+    )
+
+    sources = resolve_projection_sources(tree, snapshot)
+
+    assert set(sources) == set(resolve_output_classes(tree, snapshot))
+    assert sources["a"].passthrough is True
+    assert sources["a"].upstream is None
+
+
+def test_union_projection_sources_keep_an_agreed_upstream(
+    populated_db: Database,
+) -> None:
+    """The benign twin: branches that agree still name their shared upstream.
+
+    A positional merge that collapsed every set operation to ``upstream=None``
+    would pass the test above while telling the user nothing.
+    """
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached(
+        "SELECT account_id AS a FROM core.dim_accounts "
+        "UNION ALL SELECT account_id AS b FROM core.dim_accounts"
+    )
+
+    sources = resolve_projection_sources(tree, snapshot)
+
+    assert sources["a"].upstream == "core.dim_accounts.account_id"

@@ -1640,6 +1640,214 @@ class TestPrivacyConsent:
         run_cli("privacy", "revoke-all", "--yes", env=env).assert_success()
 
 
+class TestUserReports:
+    """`moneybin reports create/list/run/reclassify/set/delete` over a real DB.
+
+    The saved query reads ``app.user_reports`` itself. That is a real permitted
+    read (``app`` is inside the save allowlist), needs no SQLMesh build, and
+    guarantees a non-empty result — the report returns itself, which is the
+    ask→save→verify loop end to end in one subprocess chain.
+    """
+
+    def test_saved_report_lifecycle(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            tmp_path, "userreports", _mutating_profile_template
+        )
+
+        created = run_cli(
+            "reports",
+            "create",
+            "my_reports",
+            "--sql",
+            "SELECT report_id, name FROM app.user_reports",
+            "--description",
+            "Every report I have saved.",
+            "--output",
+            "json",
+            env=env,
+        )
+        created.assert_success()
+        report_id = json.loads(created.stdout)["data"]["report_id"]
+        assert report_id.startswith("user:")
+
+        listed = run_cli(
+            "reports", "list", "--tier", "user", "--output", "json", env=env
+        )
+        listed.assert_success()
+        entries = json.loads(listed.stdout)["data"]
+        assert [entry["report_id"] for entry in entries] == [report_id]
+        assert entries[0]["tier"] == "user"
+
+        # The report returns its own row: derived classes let `name` through
+        # (USER_NOTE is MEDIUM, and every transform below CRITICAL is
+        # passthrough), so this also proves the class map is not over-masking.
+        ran = run_cli("reports", "run", report_id, "--output", "json", env=env)
+        ran.assert_success()
+        rows = json.loads(ran.stdout)["data"]
+        assert [row["name"] for row in rows] == ["my_reports"]
+
+        # A saved report resolves by name too, and binds `$name` by position-free
+        # keyword — R8.
+        parameterized = run_cli(
+            "reports",
+            "create",
+            "one_report",
+            "--sql",
+            "SELECT report_id FROM app.user_reports WHERE name = $wanted",
+            "--param",
+            "wanted",
+            "--output",
+            "json",
+            env=env,
+        )
+        parameterized.assert_success()
+        bound = run_cli(
+            "reports",
+            "run",
+            "one_report",
+            "--param",
+            "wanted=my_reports",
+            "--output",
+            "json",
+            env=env,
+        )
+        bound.assert_success()
+        assert [row["report_id"] for row in json.loads(bound.stdout)["data"]] == [
+            report_id
+        ]
+
+        # R6's verify surface over the same saved report: both SQL forms, the
+        # per-column provenance, and the graduation verdict.
+        explained = run_cli(
+            "reports", "explain", report_id, "--output", "json", env=env
+        )
+        explained.assert_success()
+        evidence = json.loads(explained.stdout)["data"]
+        assert evidence["tier"] == "user"
+        assert evidence["sql"] is not None
+        assert evidence["sql_template"] is not None
+        by_column = {column["column"]: column for column in evidence["columns"]}
+        assert by_column["name"]["upstream"] == "app.user_reports.name"
+        assert by_column["name"]["origin"] == "upstream"
+        assert evidence["lineage"] == ["app.user_reports"]
+        assert evidence["class_fingerprint"]
+        assert evidence["drift_detected"] is False
+        # `app.*` has an independently authored CLASSIFICATION ground truth, so a
+        # named projection over it clears both materialization rules. The blocked
+        # cases (a `reports.*` read, a star projection) are unit-tested; this is
+        # the eligible one, which no assertion about masking would catch.
+        assert evidence["graduation"] == "eligible"
+        assert evidence["graduation_blockers"] == []
+
+        # A parameter with no supplied value withholds the executed form and
+        # names the flag that would produce it.
+        unbound = run_cli(
+            "reports", "explain", "one_report", "--output", "json", env=env
+        )
+        unbound.assert_success()
+        pending = json.loads(unbound.stdout)["data"]
+        assert pending["sql"] is None
+        assert pending["sql_suppressed_by"] == ["wanted"]
+        assert "$wanted" in pending["sql_template"]
+
+        downgraded = run_cli(
+            "reports",
+            "reclassify",
+            report_id,
+            "--column",
+            "name",
+            "--to",
+            "aggregate",
+            "--reason",
+            "A report name I wrote reveals nothing about my finances.",
+            "--yes",
+            "--output",
+            "json",
+            env=env,
+        )
+        downgraded.assert_success()
+        assert json.loads(downgraded.stdout)["data"]["from"] == "user_note"
+
+        # The audit row has to say a flag supplied that confirmation, not a human.
+        # `actor` is "cli" either way, so this field is the only thing standing
+        # between an assistant self-accepting a permanent masking downgrade and a
+        # human approving one — and it has to survive the JSON round-trip through
+        # `context_json` and the privacy payload to be worth anything.
+        trail = run_cli(
+            "system",
+            "audit",
+            "list",
+            "--target-id",
+            report_id,
+            "--action",
+            "user_report.set",
+            "--output",
+            "json",
+            env=env,
+        )
+        trail.assert_success()
+        events = json.loads(trail.stdout)["data"]
+        assert [event["context_json"] for event in events] == [
+            {"confirmed_via": "flag"}
+        ]
+
+        # An equal-tier weakening is refused whatever the reason: report_id is
+        # RECORD_ID, so there is no lower tier to move it to.
+        refused = run_cli(
+            "reports",
+            "reclassify",
+            report_id,
+            "--column",
+            "report_id",
+            "--to",
+            "aggregate",
+            "--reason",
+            "Trying to weaken a class that is already LOW.",
+            "--yes",
+            env=env,
+        )
+        assert refused.exit_code == 1, refused.output
+
+        run_cli("reports", "set", report_id, "--archive", env=env).assert_success()
+        active = run_cli(
+            "reports", "list", "--tier", "user", "--output", "json", env=env
+        )
+        active.assert_success()
+        assert report_id not in {
+            entry["report_id"] for entry in json.loads(active.stdout)["data"]
+        }
+        archived = run_cli(
+            "reports", "list", "--include-archived", "--output", "json", env=env
+        )
+        archived.assert_success()
+        widened = {
+            entry["report_id"]: entry["archived"]
+            for entry in json.loads(archived.stdout)["data"]
+        }
+        assert widened[report_id] is True
+        # A widened listing must still be the whole catalog, not a swapped view.
+        assert any(rid.startswith("core:") for rid in widened)
+
+        # Archiving hides a report; it must not retire it. The unit tests assert
+        # this on the catalog, which is one layer in from the thing a user does —
+        # and an unrunnable archived report is exactly what shipped before.
+        still_runs = run_cli("reports", "run", report_id, "--output", "json", env=env)
+        still_runs.assert_success()
+        # The saved query selects from `app.user_reports`, so by now it returns
+        # this report and the parameterized one saved above — compared as a set
+        # because the query declares no ORDER BY.
+        assert {row["name"] for row in json.loads(still_runs.stdout)["data"]} == {
+            "my_reports",
+            "one_report",
+        }
+
+        run_cli("reports", "delete", report_id, "--yes", env=env).assert_success()
+        gone = run_cli("reports", "run", report_id, env=env)
+        assert gone.exit_code == 1, gone.output
+
+
 class TestDemo:
     """`moneybin demo` — the evaluator preset (real full pipeline)."""
 

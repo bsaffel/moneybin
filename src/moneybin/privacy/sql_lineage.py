@@ -37,8 +37,8 @@ DO carry both ``name`` (real table) and ``db`` (schema) after qualify.
 from __future__ import annotations
 
 import functools
-import hashlib
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -50,6 +50,7 @@ from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, build_scope
 
 from moneybin.database import Database
+from moneybin.log_sanitizer import sql_digest
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
 
 logger = logging.getLogger(__name__)
@@ -261,6 +262,35 @@ def _build_alias_map(tree: exp.Expr) -> dict[str, tuple[str, str]]:
     return alias_map
 
 
+def _ambiguous_aliases(tree: exp.Expr) -> frozenset[str]:
+    """Alias names a **tree-wide** ``_build_alias_map`` cannot answer for.
+
+    ``_build_alias_map`` is last-write-wins, so one alias bound to two different
+    tables anywhere in the tree — legal SQL, and what a ``UNION`` branch or a
+    subquery reusing ``a`` produces — resolves to whichever table sqlglot walked
+    last. ``resolve_output_classes`` sidesteps this by building its map per
+    branch; callers that genuinely need one map for the whole tree consult this
+    set instead and fail closed on the names it holds, rather than resolving a
+    column against a table it never came from.
+
+    Pass the tree ``_build_alias_map`` gets. Both read ``Table.db``, so both see
+    only tables that carry a schema — written qualified, or qualified by
+    :func:`_qualified`. A tree where *no* table does leaves both empty, which is
+    safe because nothing resolves for a collision to matter to; a tree where only
+    some do would hide a collision here that ``_build_alias_map`` still answers
+    for. Note this is the opposite precondition to
+    :func:`read_column_classes`, which requires the unqualified tree.
+    """
+    bound: dict[str, set[tuple[str, str]]] = {}
+    for tbl in tree.find_all(exp.Table):
+        schema, real_name = tbl.db, tbl.name
+        if not (schema and real_name):
+            continue
+        for key in {tbl.alias or real_name, real_name}:
+            bound.setdefault(key, set()).add((schema, real_name))
+    return frozenset(name for name, tables in bound.items() if len(tables) > 1)
+
+
 # ---------------------------------------------------------------------------
 # Star expansion + input-column collection
 # ---------------------------------------------------------------------------
@@ -404,9 +434,7 @@ FAIL_CLOSED_CLASS = DataClass.UNRESOLVED
 
 def _coverage_gap_class(key: tuple[str, str, str], sql_for_log: str) -> DataClass:
     schema, table, column = key
-    sql_hash = (
-        hashlib.sha256(sql_for_log.encode()).hexdigest()[:12] if sql_for_log else "n/a"
-    )
+    sql_hash = sql_digest(sql_for_log) if sql_for_log else "n/a"
     # schema/table/column are identifiers, not data — safe to log (No PII in logs).
     logger.warning(
         f"sql_lineage: undeclared deployed column {schema}.{table}.{column}; "
@@ -492,16 +520,31 @@ def _tables_in_scope(tree: exp.Expr, snapshot: SchemaSnapshot) -> set[tuple[str,
     over-redacts a query that never touched the real table. That is the safe
     direction, and it is the same trade ``collect_input_columns`` already makes
     by not passing ``shadowed`` — see its docstring.
+
+    Identifiers are matched case-insensitively and returned in the *snapshot's*
+    casing, for the reason ``tables_outside_schemas`` case-folds: DuckDB resolves
+    identifiers without regard to case, and callers pass the tree exactly as the
+    user wrote it. Comparing raw casing against the snapshot returned an empty
+    set for ``FROM CORE.DIM_ACCOUNTS`` — a table every gate had already admitted
+    — which floors a table-scoped bound at AGGREGATE and empties the
+    dynamic-report drift key. Returning the snapshot's own casing is what lets
+    the result be looked up in ``snapshot.columns`` by the callers here.
     """
-    known_by_name: dict[str, set[str]] = {}
+    canonical: dict[tuple[str, str], tuple[str, str]] = {}
+    by_name: dict[str, set[tuple[str, str]]] = {}
     for schema, table, _col in snapshot.columns:
-        known_by_name.setdefault(table, set()).add(schema)
+        canonical[(schema.lower(), table.lower())] = (schema, table)
+        by_name.setdefault(table.lower(), set()).add((schema, table))
     found: set[tuple[str, str]] = set()
     for tbl in tree.find_all(exp.Table):
+        name = tbl.name.lower()
         if tbl.db:
-            found.add((tbl.db, tbl.name))
+            # An unknown qualified table keeps its written form: it contributes
+            # no columns either way, and inventing a canonical name for a table
+            # the snapshot has never seen would claim knowledge we lack.
+            found.add(canonical.get((tbl.db.lower(), name), (tbl.db, tbl.name)))
         else:
-            found |= {(s, tbl.name) for s in known_by_name.get(tbl.name, set())}
+            found |= by_name.get(name, set())
     return found
 
 
@@ -598,9 +641,7 @@ def _conservative_floor(
     # Never log the raw SQL — it can carry literal PII (e.g. a description or
     # account-number filter). A short hash gives forensic correlation without
     # leaking content (No PII in logs).
-    sql_hash = (
-        hashlib.sha256(sql_for_log.encode()).hexdigest()[:12] if sql_for_log else "n/a"
-    )
+    sql_hash = sql_digest(sql_for_log) if sql_for_log else "n/a"
     logger.warning(
         f"sql_lineage: unresolved projection; conservative fallback (sql sha256={sql_hash})"
     )
@@ -709,6 +750,11 @@ class _ResolveCtx:
     (see ``_scope_source_names``). Computed once per call and carried unchanged
     through the recursion, because a name bound by the outer query still shadows
     the catalog inside a nested scope.
+
+    ``placeholder_classes`` is the caller's resolved parameter map, empty for a
+    surface that binds nothing. It is carried through the recursion because a
+    parameter can be projected at any depth — inside a CTE or a derived table —
+    and still reach the output.
     """
 
     snapshot: SchemaSnapshot
@@ -718,6 +764,7 @@ class _ResolveCtx:
     tree: exp.Expr
     strict: bool
     shadowed: frozenset[str]
+    placeholder_classes: Mapping[str, DataClass]
 
 
 def _output_index(source: Scope, name: str) -> int | None:
@@ -990,6 +1037,27 @@ def _resolve_projection(
     if _has_uncounted_opaque(inner):
         return None
 
+    # A projected placeholder is a VALUE, not a literal: the caller binds it, and
+    # its class is the one `resolve_placeholder_classes` already resolved from the
+    # column it is compared against. A projection returning one returns whatever
+    # was bound, so it is classified here alongside the columns rather than by a
+    # second rule downstream — `SELECT $acct AS acct … WHERE routing_number =
+    # $acct` returned the supplied routing number in the clear.
+    #
+    # Gathered BEFORE the counting-aggregate rule, which asks only about
+    # `exp.Column` nodes and so passes VACUOUSLY over a projection whose other
+    # content is a placeholder: `COUNT(*) || $acct` has no column, `any` over
+    # nothing is False, and the projection collapsed to AGGREGATE beside a row
+    # count. Same shape of vacuous pass as the opaque-node veto above.
+    bound: list[DataClass] = []
+    for node in inner.find_all(*PLACEHOLDER_NODES):
+        if _within_counting_agg(node, inner):
+            continue
+        # A positional `?` names nothing, so no map can answer for it; a named one
+        # absent from the map was never declared. Both fail closed.
+        found = ctx.placeholder_classes.get(placeholder_name(node))
+        bound.append(FAIL_CLOSED_CLASS if found is None else found)
+
     # A counting aggregate at the projection's TOP level collapses values to a
     # count — but it only governs the projection when EVERY column reference is
     # itself inside a counting aggregate (e.g. COUNT(DISTINCT account_id) → LOW).
@@ -998,11 +1066,15 @@ def _resolve_projection(
     # classify by that column. A count inside a scalar subquery
     # (`(SELECT COUNT(*) FROM t) + amount`) never governs — its tier still comes
     # from the co-referenced columns (here, `amount`).
-    if any(
-        isinstance(n, _COUNTING_AGGS) and not _within_subquery(n, inner)
-        for n in inner.find_all(exp.AggFunc)
-    ) and not any(
-        not _within_counting_agg(c, inner) for c in inner.find_all(exp.Column)
+    if (
+        any(
+            isinstance(n, _COUNTING_AGGS) and not _within_subquery(n, inner)
+            for n in inner.find_all(exp.AggFunc)
+        )
+        and not any(
+            not _within_counting_agg(c, inner) for c in inner.find_all(exp.Column)
+        )
+        and not bound
     ):
         return DataClass.AGGREGATE
 
@@ -1022,7 +1094,10 @@ def _resolve_projection(
         # sits in a subquery, fell through to here and masked a plain number.
         # Two predicates answering "is this opaque" by different rules is the
         # bug; keep the precise one and let it stand alone.
-        return DataClass.AGGREGATE
+        #
+        # A bound placeholder is the one thing here that is neither a literal nor
+        # a column, so it answers for the projection when nothing else can.
+        return _combined_class(bound) if bound else DataClass.AGGREGATE
 
     # Built only when the projection actually nests a SELECT (a scalar or IN
     # subquery); the common case pays nothing.
@@ -1059,8 +1134,9 @@ def _resolve_projection(
     # Value-preserving agg or plain expression: highest-tier referenced class —
     # via `_combined_class`, because the projected value is derived from ALL of
     # these columns, and two different CRITICAL classes cannot stand in for each
-    # other (`last_four || routing_number` must not take the partial mask).
-    return _combined_class(classes)
+    # other (`last_four || routing_number` must not take the partial mask). Any
+    # bound placeholder joins them: `account_id || $acct` returns both values.
+    return _combined_class(classes + bound)
 
 
 def _classify_projection(
@@ -1102,9 +1178,15 @@ def _union_select_branches(node: exp.Expr) -> list[exp.Select]:
       result takes the first branch's column NAMES but its VALUES come from
       every branch by position, so classifying only the first would let a
       CRITICAL column in a later branch leak.
-    - ``EXCEPT`` / ``INTERSECT`` emit rows drawn from the LEFT branch only
-      (the right operand filters, it does not contribute values), so only the
-      left branch is returned.
+    - ``INTERSECT`` likewise draws from BOTH branches. A row survives an
+      INTERSECT only when the value is present on *both* sides, so the value it
+      returns is the right operand's value just as much as the left's:
+      ``SELECT '021000021' AS v INTERSECT SELECT routing_number FROM
+      core.dim_accounts`` returns a real routing number, and classifying it from
+      the left branch alone calls it ``AGGREGATE`` and publishes it unmasked.
+    - ``EXCEPT`` alone emits rows drawn from the LEFT branch only (the right
+      operand filters, it does not contribute values), so only the left branch
+      is returned.
 
     Recursing on ``node.left`` also matters for correctness, not just clarity:
     ``tree.find(exp.Select)`` walks breadth-first, so for
@@ -1112,9 +1194,9 @@ def _union_select_branches(node: exp.Expr) -> list[exp.Select]:
     output names and classes from the operand that contributes no values while
     A and B go unclassified.
     """
-    if isinstance(node, exp.Union):
+    if isinstance(node, (exp.Union, exp.Intersect)):
         return _union_select_branches(node.left) + _union_select_branches(node.right)
-    if isinstance(node, exp.SetOperation):  # EXCEPT / INTERSECT — left values only
+    if isinstance(node, exp.SetOperation):  # EXCEPT — left values only
         return _union_select_branches(node.left)
     if isinstance(node, exp.Select):
         return [node]
@@ -1148,6 +1230,8 @@ def resolve_output_classes(
     snapshot: SchemaSnapshot,
     sql_for_log: str = "",
     strict: bool = False,
+    *,
+    placeholder_classes: Mapping[str, DataClass] | None = None,
 ) -> dict[str, DataClass]:
     """Map each output column name (insertion-ordered) to its DataClass.
 
@@ -1161,6 +1245,16 @@ def resolve_output_classes(
     The build-time report-class deriver sets it True, because a derived class
     map that quietly absorbed a fallback is not the verified artifact it claims
     to be.
+
+    ``placeholder_classes`` maps each declared parameter to the class
+    :func:`resolve_placeholder_classes` resolved for it, so a *projected*
+    parameter is classified from what the caller binds. Omit it on a surface that
+    binds no parameters (ad-hoc ``sql_query``, the build-time deriver over model
+    SQL): every placeholder then fails closed, which is the honest answer for a
+    query that cannot execute at all without a binding. Handling this here rather
+    than in the caller is what makes one traversal cover every shape a parameter
+    can reach the output through — a later set-operation branch, a derived table,
+    a CTE — instead of a second rule re-deriving output positions beside this one.
     """
     branches = _union_select_branches(tree)
     if not branches:
@@ -1174,6 +1268,7 @@ def resolve_output_classes(
         tree=tree,
         strict=strict,
         shadowed=_scope_source_names(tree),
+        placeholder_classes=placeholder_classes or {},
     )
     # Alias scope is per-branch: a UNION may reuse one alias for different
     # tables across branches (legal SQL), so a tree-wide map (last-write-wins)
@@ -1315,6 +1410,270 @@ def tables_outside_schemas(
     return bad
 
 
+# The comparison shapes a parameter's class can be read off. A positive
+# allowlist, not "anything that isn't an expression": a placeholder somewhere
+# this module has not reasoned about must land on FAIL_CLOSED_CLASS, the same
+# way ``is_metadata_query`` refuses to be the complement of ``is_data_query``.
+_PLACEHOLDER_COMPARISONS: tuple[type[exp.Binary], ...] = (
+    exp.EQ,
+    exp.NEQ,
+    exp.GT,
+    exp.GTE,
+    exp.LT,
+    exp.LTE,
+    exp.Like,
+    exp.ILike,
+)
+
+
+# `$name` parses to TWO different node types depending on whether SQLMesh has
+# been imported into the process. Bare sqlglot yields `Placeholder(this="name")`;
+# SQLMesh's dialect extensions rewrite the tokenizer so the same text yields
+# `Parameter(this=Var(this="name"))` — its macro-parameter syntax. MoneyBin
+# imports SQLMesh on several paths (transform, doctor, `sqlmesh_context`), so
+# which shape a given process sees depends on import order, and matching only one
+# would make every parameter resolve UNRESOLVED in half the processes — and move
+# the drift fingerprint with it, flipping match/mismatch on import order alone.
+PLACEHOLDER_NODES: tuple[type[exp.Expr], ...] = (exp.Placeholder, exp.Parameter)
+
+
+def placeholder_name(node: exp.Expr) -> str:
+    """The parameter name behind either ``$name`` parse shape.
+
+    Empty for a positional ``?``, which carries no name at all. Public because
+    the provenance renderer walks the same two node shapes to decide what to
+    substitute — two spellings of this rule would desync on the next dialect
+    quirk.
+    """
+    inner = node.this
+    # `Placeholder` carries the bare name; `Parameter` wraps it in a `Var`.
+    if isinstance(inner, exp.Var):
+        return inner.name
+    return str(inner or "")
+
+
+def _compared_column(placeholder: exp.Expr) -> exp.Column | None:
+    """The one column ``placeholder`` is directly compared against, if any.
+
+    "Directly" is the whole rule. ``WHERE date_part('year', txn_date) = $year``
+    compares against an *expression* that happens to contain a column, and
+    ``$year`` is not a transaction date — reading the class off ``txn_date``
+    there would attach a class to a value it does not describe. Only a bare
+    ``exp.Column`` on the other side resolves.
+    """
+    parent = placeholder.parent
+    if isinstance(parent, _PLACEHOLDER_COMPARISONS):
+        other = parent.right if parent.left is placeholder else parent.left
+        return other if isinstance(other, exp.Column) else None
+    # `col IN ($a, $b)` and `col BETWEEN $lo AND $hi` both hang their operands
+    # off a node whose `this` is the compared column.
+    if isinstance(parent, (exp.In, exp.Between)):
+        return parent.this if isinstance(parent.this, exp.Column) else None
+    return None
+
+
+def _is_row_count_position(placeholder: exp.Expr) -> bool:
+    """Whether ``placeholder`` binds a row count rather than a value.
+
+    ``LIMIT $top`` / ``OFFSET $skip`` bound how many rows come back; neither can
+    carry a column's data, so classifying them ``UNRESOLVED`` over-classifies the
+    one parameter shape every built-in already declares ``AGGREGATE``
+    (``large_transactions``, ``merchant_activity``). This is a *positional*
+    exemption, not "a placeholder outside a comparison is safe": anywhere a bound
+    value could echo a column — inside a function argument, one side of an
+    arithmetic expression compared against a column — still fails closed.
+    """
+    return isinstance(placeholder.parent, (exp.Limit, exp.Offset))
+
+
+def resolve_placeholder_classes(
+    tree: exp.Expr, snapshot: SchemaSnapshot
+) -> dict[str, DataClass]:
+    """Map each named ``$placeholder`` to the class of the column it filters.
+
+    A parameter is the same question :func:`resolve_output_classes` asks of a
+    projection, asked of an input, so it fails closed the same way: anything
+    that does not resolve to exactly one classified column is
+    ``FAIL_CLOSED_CLASS``. One placeholder used in two places with *different*
+    classes also fails closed — it identifies neither.
+
+    Consumers render a LOW-classed binding as a literal, so under-classifying
+    here prints a value in the clear beside the rows it selected.
+
+    One position is exempt rather than fail-closed — see
+    :func:`_is_row_count_position`.
+    """
+    alias_map = _build_alias_map(tree)
+    # A placeholder can sit in any scope, so this path needs one map for the
+    # whole tree — which is last-write-wins. An alias two tables bind therefore
+    # fails closed rather than resolving against whichever table came last; see
+    # :func:`_ambiguous_aliases`.
+    ambiguous = _ambiguous_aliases(tree)
+    shadowed = _scope_source_names(tree)
+    found: dict[str, DataClass] = {}
+    for placeholder in tree.find_all(*PLACEHOLDER_NODES):
+        name = placeholder_name(placeholder)
+        if not name:
+            continue
+        column = _compared_column(placeholder)
+        key = (
+            None
+            if column is None or column.table in ambiguous
+            else _column_key(column, alias_map, snapshot, shadowed)
+        )
+        if key is None and _is_row_count_position(placeholder):
+            resolved = DataClass.AGGREGATE
+        else:
+            resolved = (
+                FAIL_CLOSED_CLASS
+                if key is None
+                else (_class_of_key(key) or FAIL_CLOSED_CLASS)
+            )
+        prior = found.get(name)
+        found[name] = (
+            resolved if prior is None or prior is resolved else FAIL_CLOSED_CLASS
+        )
+    return found
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionSource:
+    """Where one output column came from, as far as the query text can say.
+
+    ``passthrough`` is a fact about the projection: it is a bare column
+    reference, not an expression. ``upstream`` is a fact about the *catalog*:
+    the ``schema.table.column`` this database can confirm it names. The two are
+    separate because a passthrough column over a view that has not been built
+    yet is resolvable in principle and unconfirmable in practice, and reporting
+    that as "computed" would be a lie about the query.
+    """
+
+    passthrough: bool
+    upstream: str | None
+
+
+def resolve_projection_sources(
+    tree: exp.Expr, snapshot: SchemaSnapshot
+) -> dict[str, ProjectionSource]:
+    """Map each output column name to the upstream column it passes through.
+
+    The provenance half of :func:`resolve_output_classes`, which answers the
+    same question about *class*. Keyed identically — output names from the first
+    branch, insertion-ordered, unnamed projections suffixed by position — so a
+    caller can join the two.
+
+    Branches are merged **by position**, exactly as classes are, because that is
+    what SQL does: output column *i* receives rows from branch *i* of every
+    branch. Merging by alias instead invents one output column per branch alias
+    and hands the first branch's table back as the sole upstream of a column
+    every branch feeds.
+
+    A ``UNION`` whose branches disagree on a column's source names no single
+    upstream for it, the same collapse :func:`_combined_class` performs on
+    class. The two fields collapse independently: two branches that both pass a
+    column through are still a passthrough even when the columns differ, while
+    one branch passing through and another aggregating is not.
+    """
+    try:
+        qualified = _qualified(tree, snapshot)
+    except SqlSchemaError:
+        # A report over a view that has not been built yet cannot be qualified.
+        # Its projections are still readable as passthrough-or-computed, which is
+        # strictly more than nothing. Only a table written schema-qualified still
+        # resolves an upstream here; the rest carry no schema for the alias map to
+        # key on, so they name none.
+        qualified = tree
+    alias_map = _build_alias_map(qualified)
+    # Merging is positional across branches, so one tree-wide map is what this
+    # path needs — and an alias two branches bind to different tables would name
+    # an upstream the value never came from. Withhold it instead.
+    ambiguous = _ambiguous_aliases(qualified)
+    shadowed = _scope_source_names(qualified)
+
+    branches = _union_select_branches(qualified) or [qualified]
+    per_branch = [
+        [
+            _projection_source(projection, alias_map, snapshot, shadowed, ambiguous)
+            for projection in select.expressions
+        ]
+        for select in branches
+    ]
+    sources: dict[str, ProjectionSource] = {}
+    for position, projection in enumerate(branches[0].expressions):
+        # Same key scheme as `resolve_output_classes`: an unaliased expression
+        # yields "" from `alias_or_name`, and a positional suffix keeps two of
+        # them distinct so the second cannot overwrite the first.
+        name = projection.alias_or_name or f"?_{position}"
+        candidates = [
+            branch[position] for branch in per_branch if position < len(branch)
+        ]
+        sources[name] = _combined_source(candidates)
+    return sources
+
+
+def _projection_source(
+    projection: exp.Expr,
+    alias_map: dict[str, tuple[str, str]],
+    snapshot: SchemaSnapshot,
+    shadowed: frozenset[str],
+    ambiguous: frozenset[str] = frozenset(),
+) -> ProjectionSource:
+    """Read one projection's passthrough-and-upstream facts."""
+    inner = projection.unalias()
+    if not isinstance(inner, exp.Column):
+        return ProjectionSource(passthrough=False, upstream=None)
+    if inner.table in ambiguous:
+        # Still a passthrough — that is a fact about the projection text — but no
+        # upstream this map can name honestly.
+        return ProjectionSource(passthrough=True, upstream=None)
+    key = _column_key(inner, alias_map, snapshot, shadowed)
+    return ProjectionSource(
+        passthrough=True, upstream=None if key is None else ".".join(key)
+    )
+
+
+def _combined_source(candidates: Sequence[ProjectionSource]) -> ProjectionSource:
+    """Collapse one output position's sources across every branch feeding it."""
+    if not candidates:  # pragma: no cover — branches[0] always supplies one
+        return ProjectionSource(passthrough=False, upstream=None)
+    upstreams = {candidate.upstream for candidate in candidates}
+    return ProjectionSource(
+        passthrough=all(candidate.passthrough for candidate in candidates),
+        upstream=next(iter(upstreams)) if len(upstreams) == 1 else None,
+    )
+
+
+def read_column_classes(
+    tree: exp.Expr, snapshot: SchemaSnapshot
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Sorted ``(schema, table, column, class)`` for every column ``tree`` reads.
+
+    Table-scoped rather than projection-scoped, because this is the input set a
+    *stored* class map goes stale against: reclassifying any column of a table
+    the query reads can change what the next derivation returns, not only the
+    columns the query names today. Undeclared columns contribute
+    ``FAIL_CLOSED_CLASS`` — the answer ``_scope_input_max`` already gives them —
+    so a registry gap moves the key instead of dropping out of it.
+
+    Callers must pass the **unqualified** parsed tree, the same one on both the
+    save and run paths: ``qualify`` can rewrite table references, and two
+    differently-prepared trees would produce two keys for one query and leave
+    every run on the mismatch branch.
+    """
+    tables = _tables_in_scope(tree, snapshot)
+    read: list[tuple[str, str, str, str]] = []
+    for key in snapshot.columns:
+        schema, table, column = key
+        if (schema, table) in tables:
+            read.append((
+                schema,
+                table,
+                column,
+                (_class_of_key(key) or FAIL_CLOSED_CLASS).value,
+            ))
+    return tuple(sorted(read))
+
+
 def derive_query_tier(output_classes: dict[str, DataClass]) -> Tier:
     """Max tier across all output columns; LOW for an empty projection."""
     if not output_classes:
@@ -1367,6 +1726,11 @@ def reports_class_map() -> dict[tuple[str, str], dict[str, DataClass]]:
     out: dict[tuple[str, str], dict[str, DataClass]] = {}
     for runner in ALL_REPORTS:
         spec = spec_of(runner)
+        # A dynamic report is not graph-backed, so it has no (schema, table) to
+        # key on. Its classes live in app.user_reports and reach redaction
+        # through its synthesized spec, never through this view-keyed map.
+        if spec.view is None:
+            continue
         out[(spec.view.schema, spec.view.name)] = dict(spec.classes)
     for key, cols in DERIVED_REPORT_CLASSES.items():
         out[key] = dict(cols)

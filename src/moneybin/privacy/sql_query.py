@@ -29,6 +29,7 @@ from sqlglot import exp
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.log_sanitizer import sql_digest
 from moneybin.privacy.redaction import redact_records
 from moneybin.privacy.sql_lineage import (
     FAIL_CLOSED_CLASS,
@@ -227,7 +228,7 @@ def _fetch(
     return columns, rows[:max_rows], truncated
 
 
-def _classes_by_result_column(
+def classes_by_result_column(
     columns: list[str],
     output_classes: dict[str, DataClass],
     query: str,
@@ -307,7 +308,7 @@ def _classes_by_result_column(
 
 
 def _fail_closed(column: str, query: str) -> DataClass:
-    sql_hash = hashlib.sha256(query.encode()).hexdigest()[:12]
+    sql_hash = sql_digest(query)
     column_hash = hashlib.sha256(column.encode()).hexdigest()[:12]
     # For an ordinary named/expanded projection the column NAME is an
     # identifier DuckDB derives from the query text. But the opaque-projection
@@ -462,23 +463,30 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     # happens above at parse_cached, outside this block, so SqlParseError can't
     # surface here.)
     except (SqlSchemaError, duckdb.CatalogException) as e:
-        # Don't echo str(e) to the client: a DuckDB/lineage message can quote
-        # the query verbatim (including literal values). Log it server-side
-        # (SanitizedLogFormatter masks PII) — the code + message classify it.
-        logger.warning(f"sql_query unknown table/column: {e}")
+        # str(e) reaches neither the client nor the log: a DuckDB or lineage
+        # message can quote the query verbatim, literal values included, and the
+        # log file is the more durable of the two boundaries. `sql_digest` says
+        # why the formatter cannot be relied on to catch it.
+        logger.warning(
+            f"sql_query unknown table/column: {type(e).__name__} "
+            f"(sql sha256={sql_digest(query)})"
+        )
         raise UserError(
             "Unknown table or column.",
             code=error_codes.SQL_UNKNOWN_TABLE,
         ) from e
     except duckdb.Error as e:
-        logger.warning(f"sql_query execution error: {e}")
+        logger.warning(
+            f"sql_query execution error: {type(e).__name__} "
+            f"(sql sha256={sql_digest(query)})"
+        )
         raise UserError(
             "Query execution failed.",
             code=error_codes.SQL_QUERY_ERROR,
         ) from e
 
     records = [dict(zip(columns, row, strict=False)) for row in rows]
-    col_classes = _classes_by_result_column(columns, output_classes, query)
+    col_classes = classes_by_result_column(columns, output_classes, query)
     redacted = redact_records(records, col_classes, consent=None)
 
     return SqlQueryResult(
@@ -509,8 +517,11 @@ def _fetch_metadata(
     try:
         return _fetch(db, query, max_rows)
     except duckdb.Error as e:
-        # See execute_sql_query: keep str(e) out of the client envelope.
-        logger.warning(f"sql_query metadata error: {e}")
+        # See execute_sql_query: keep str(e) out of both the envelope and the log.
+        logger.warning(
+            f"sql_query metadata error: {type(e).__name__} "
+            f"(sql sha256={sql_digest(query)})"
+        )
         raise UserError(
             "Query execution failed.",
             code=error_codes.SQL_QUERY_ERROR,

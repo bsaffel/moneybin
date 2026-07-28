@@ -134,6 +134,34 @@ def test_routing_number_masked(mcp_db: object) -> None:  # type: ignore[type-arg
 
 
 @pytest.mark.integration
+def test_an_expression_over_a_masked_column_answers_instead_of_erroring(
+    mcp_db: object,  # type: ignore[type-arg]
+) -> None:
+    """The pre-existing half of a defect reported against saved reports.
+
+    ``sql_query`` and the report runner reach one transform table through one
+    resolver, so ``length(last_four)`` — ``INSTITUTION_ACCOUNT_NUMBER`` by lineage,
+    ``int`` at runtime — raised ``TypeError`` inside the partial mask here too, and
+    the decorator turned it into ``infra_unclassified_error``: an internal-bug
+    envelope for a query that is valid and answerable. Fixing it in report
+    derivation, where it was reported, would have left this surface broken.
+    """
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO core.dim_accounts (account_id, last_four) "
+            "VALUES ('ACCLEN', '4021')"
+        )
+
+    env = _run(
+        "SELECT length(last_four) AS n FROM core.dim_accounts "
+        "WHERE last_four IS NOT NULL"
+    )
+
+    assert env.error is None
+    assert [row["n"] for row in env.data] == ["*****"]
+
+
+@pytest.mark.integration
 def test_disallowed_schema_refused(mcp_db: object) -> None:  # type: ignore[type-arg]
     """Queries against schemas outside core/app are refused (closes the leak).
 

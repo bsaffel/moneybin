@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
+import duckdb
 import pytest
 from pydantic import JsonValue
 from pytest_mock import MockerFixture
@@ -14,27 +17,37 @@ from pytest_mock import MockerFixture
 import moneybin.reports._framework.catalog as report_catalog
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.exports.renderers import render_parquet
 from moneybin.exports.service import ExportService
 from moneybin.exports.snapshot import PreparedExport
 from moneybin.privacy.payloads.networth import (
     NetWorthHistoryPayload,
     NetWorthHistoryPoint,
 )
-from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.catalog import ReportCatalog, ServiceReportSpec
+from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
+from moneybin.reports._framework.catalog import (
+    ReportCatalog,
+    ReportStatus,
+    ServiceReportSpec,
+    report_tier,
+)
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ParamSpec,
     ReportQuery,
     ReportSpec,
 )
+from moneybin.reports._framework.dynamic import DEGRADED_STALE_CLASSIFICATION
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     build_catalog_execution,
 )
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.reports.service_reports import NETWORTH_HISTORY_REPORT
+from moneybin.services.user_reports_service import UserReportsService
 from moneybin.tables import TableRef
+from tests.moneybin.db_helpers import create_core_tables_raw
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 _VIEW = TableRef("reports", "test_export")
@@ -56,7 +69,12 @@ def _report(
     return ReportQuery(
         "SELECT account_number, amount FROM reports.test_export "
         "WHERE account_number = ? ORDER BY account_number LIMIT ?",
-        [account_number, top],
+        [
+            # The binding carries the class of the value bound: an institution
+            # account number, which the provenance renderer must withhold.
+            Binding(account_number, DataClass.INSTITUTION_ACCOUNT_NUMBER),
+            Binding(top, DataClass.AGGREGATE),
+        ],
         actions=("reports.inspect",),
         period="all time",
     )
@@ -82,7 +100,7 @@ def _spec() -> ReportSpec:
     )
 
 
-def _service(db: Database) -> ExportService:
+def _service(db: Database, *, catalog: ReportCatalog | None = None) -> ExportService:
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute(
         """
@@ -99,7 +117,7 @@ def _service(db: Database) -> ExportService:
             ('acct_99998888', 100.00)
         """
     )
-    return ExportService(db, report_catalog=ReportCatalog((_spec(),)))
+    return ExportService(db, report_catalog=catalog or ReportCatalog((_spec(),)))
 
 
 def _first_row(snapshot: PreparedExport) -> dict[str, object]:
@@ -168,6 +186,10 @@ def test_prepare_report_executes_once_and_preserves_the_report_receipt(
         },
         "freshness": None,
         "graduation_eligibility": None,
+        # A report the catalog holds no drift verdict for — every packaged report,
+        # and a saved one whose stored class map still matches its SQL.
+        "degraded": False,
+        "degraded_reason": None,
         "semantics": {
             "unit": "count",
             "currency": None,
@@ -193,6 +215,80 @@ def test_prepare_report_executes_once_and_preserves_the_report_receipt(
     json.dumps(snapshot.manifest)
 
 
+def test_a_report_with_no_graph_backed_view_records_a_null_manifest_source(
+    db: Database,
+) -> None:
+    """A report with no ``reports.*`` view records ``source: null``, not a guess.
+
+    A user-created report is evaluated at query time over whatever ``core`` /
+    ``app`` tables its SQL names, so no single source view exists. The
+    alternative — falling back to ``TableRef("reports", <name>)`` — writes a view
+    that does not exist into the artifact, and provenance that cannot be checked
+    is worse than none. Nothing is lost: the complete read-table set is already
+    carried by ``provenance.receipt.lineage``, which this asserts stays intact.
+    """
+    viewless = replace(_spec(), view=None)
+    service = _service(db, catalog=ReportCatalog((viewless,)))
+
+    snapshot = service.prepare_report(
+        profile="test",
+        report_id="test:export",
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    assert snapshot.tables[0].source is None
+    assert snapshot.manifest["tables"][0]["source"] is None  # type: ignore[index]
+    assert snapshot.data_dictionary["tables"][0]["source"] is None  # type: ignore[index]
+    receipt = snapshot.manifest["provenance"]["receipt"]  # type: ignore[index]
+    assert receipt["lineage"] == ["reports.test_summary"]  # type: ignore[index]
+    json.dumps(snapshot.manifest)
+
+
+def test_prepare_report_carries_a_degraded_reports_drift_into_the_receipt(
+    db: Database,
+) -> None:
+    """A drifting saved report still exports, and the artifact says it drifted.
+
+    R4 serves a stale class map fail-closed: every column whose upstream class
+    moved is masked to ``UNRESOLVED``. The rows written to the file are therefore
+    not the rows the report's own ``output_classes`` describe, and an artifact
+    outlives the session that produced it — a reader months later has no other
+    way to learn that the columns were masked by drift rather than empty at
+    source.
+
+    It does not *refuse*: masking more than declared is not an availability
+    failure, and refusing would turn one upstream reclassification into an export
+    outage for every saved report that reads the affected column.
+    """
+    reason = "stale_classification: upstream classification changed for amount"
+    saved = replace(_spec(), report_id="user:rab12cd34ef56", name="my_export")
+    service = _service(
+        db,
+        catalog=ReportCatalog(
+            (saved,),
+            status={
+                saved.report_id: ReportStatus(degraded=True, degraded_reason=reason)
+            },
+        ),
+    )
+
+    snapshot = service.prepare_report(
+        profile="test",
+        report_id=saved.report_id,
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    assert snapshot.provenance is not None
+    assert snapshot.provenance.receipt["degraded"] is True
+    assert snapshot.provenance.receipt["degraded_reason"] == reason
+    # The artifact, not just the in-memory receipt: the manifest is what ships.
+    manifest_receipt = snapshot.manifest["provenance"]["receipt"]  # type: ignore[index]
+    assert manifest_receipt["degraded_reason"] == reason  # type: ignore[index]
+    json.dumps(snapshot.manifest)
+
+
 def test_prepare_report_applies_redaction_after_raw_execution(db: Database) -> None:
     snapshot = _service(db).prepare_report(
         profile="test",
@@ -210,6 +306,462 @@ def test_prepare_report_applies_redaction_after_raw_execution(db: Database) -> N
         "top": 2,
         "account_number": "****2222",
     }
+
+
+def test_a_redacted_builtin_report_export_keeps_its_reviewed_sql(
+    db: Database,
+) -> None:
+    """A built-in's statement is repo-authored, so withholding it buys nothing.
+
+    A receipt exists to make an artifact reproducible: ``lineage`` says which
+    tables were read and ``sql`` says what was asked of them. A built-in's query is
+    reviewed, already public in the repo, and binds its values rather than inlining
+    them — the receipt redacts those bindings separately — so there is no literal
+    to withhold, and dropping the statement costs every default export its
+    verifiability for no privacy gain.
+
+    Same tier rule as the column headers above: repo-authored names and
+    repo-authored SQL are withheld together or not at all.
+    """
+
+    def runner(db: Database) -> ReportQuery:  # noqa: ARG001  # report contract handle
+        """Reviewed query binding its filter rather than inlining it.
+
+        Args:
+            db: Open database connection.
+        """
+        return ReportQuery(
+            "SELECT account_number, amount FROM reports.test_export "
+            "WHERE account_number = ?",
+            [Binding("acct_11112222", DataClass.INSTITUTION_ACCOUNT_NUMBER)],
+            actions=("reports.inspect",),
+            period="all time",
+        )
+
+    classes = {
+        "account_number": DataClass.ACCOUNT_IDENTIFIER,
+        "amount": DataClass.TXN_AMOUNT,
+    }
+    spec = build_spec(
+        runner,
+        report_id="test:saved",
+        name="saved_export",
+        view=_VIEW,
+        classes=classes,
+        parameter_classes={},
+        columns=output_columns(classes),
+        semantics=TEST_SEMANTICS,
+    )
+    service = _service(db, catalog=ReportCatalog((spec,)))
+
+    redacted = service.prepare_report(
+        profile="test",
+        report_id="test:saved",
+        report_parameters={},
+    )
+    assert redacted.redaction_mode == "redacted"
+    assert report_tier(spec) == "builtin"
+    assert redacted.provenance is not None
+    # The artifact, not just the in-memory receipt: the manifest is what ships.
+    manifest_sql = redacted.manifest["provenance"]["receipt"]["sql"]  # type: ignore[index]
+    assert manifest_sql == (
+        "SELECT account_number, amount FROM reports.test_export "
+        "WHERE account_number = ?"
+    )
+    # Retaining the statement publishes no value, because the value is a binding.
+    assert "acct_11112222" not in json.dumps(redacted.manifest)
+
+
+def test_a_redacted_user_report_export_withholds_the_saved_query(
+    db: Database,
+) -> None:
+    """A saved report's SQL is user-authored, so a critical literal can sit in it.
+
+    ``apply_export_redaction`` transforms table rows only, so a receipt carrying
+    the statement verbatim republishes in the manifest and the workbook metadata
+    tab exactly what the redacted policy withheld from the cells — beside
+    correctly-masked values. Nothing checks a user's SQL for inline literals,
+    because nothing can: the statement is the author's own text.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, routing_number) VALUES (?, ?)",
+        ["acct_11112222", "021000021"],
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="inline_literal",
+            query_sql=(
+                "SELECT account_id FROM core.dim_accounts "
+                "WHERE routing_number = '021000021'"
+            ),
+            actor="cli",
+        )
+        .report_id
+    )
+    service = ExportService(db)
+
+    redacted = service.prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+    )
+
+    assert redacted.provenance is not None
+    assert redacted.provenance.receipt["sql"] is None
+    assert redacted.manifest["provenance"]["receipt"]["sql"] is None  # type: ignore[index]
+    assert "021000021" not in json.dumps(redacted.manifest)
+
+    unredacted = service.prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    # The author's own statement, published only where the values are too.
+    assert unredacted.provenance is not None
+    assert "021000021" in str(unredacted.provenance.receipt["sql"])
+
+
+def test_a_redacted_user_report_export_withholds_a_sensitive_column_alias(
+    db: Database,
+) -> None:
+    """A masked column's header must not publish what its own cells withhold.
+
+    A saved report's output name is user-authored, so
+    ``routing_number AS "021000021"`` copies a critical literal into the workbook
+    header, the data-dictionary entry, and the receipt's ``output_classes`` key.
+    ``apply_export_redaction`` transforms row values only, so all three survive
+    beside a cell masked to ``*****`` — in the same artifact that already
+    withholds the SQL for exactly this threat.
+
+    Every authored name goes, not only the masked column's — ``my_account`` is
+    the author's text too, and its sensitivity is not decided by the column it
+    happens to label. Only for the user tier: a built-in's ``routing_number``
+    header is repo-authored, names the column's meaning rather than a value, and
+    blanking it would cost readability for no gain.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, routing_number) VALUES (?, ?)",
+        ["acct_11112222", "021000021"],
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="routing_alias",
+            query_sql=(
+                'SELECT routing_number AS "021000021", account_id AS my_account '
+                "FROM core.dim_accounts"
+            ),
+            actor="cli",
+        )
+        .report_id
+    )
+    service = ExportService(db)
+
+    redacted = service.prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+    )
+
+    table = redacted.tables[0]
+    assert [column.name for column in table.columns] == [
+        "redacted_column_1",
+        "redacted_column_2",
+    ]
+    assert table.rows == (("*****", "acct_11112222"),)
+    assert "021000021" not in json.dumps(redacted.manifest)
+    assert "021000021" not in json.dumps(redacted.data_dictionary)
+    assert redacted.provenance is not None
+    assert set(redacted.provenance.receipt["output_classes"]) == {  # type: ignore[arg-type]
+        "redacted_column_1",
+        "redacted_column_2",
+    }
+
+    unredacted = service.prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    # The alias is the author's own label for their own data: an unredacted
+    # export publishes the value itself, so withholding the name buys nothing.
+    assert [column.name for column in unredacted.tables[0].columns] == [
+        "021000021",
+        "my_account",
+    ]
+
+
+def test_a_redacted_user_report_export_withholds_a_sensitive_parameter_name(
+    db: Database,
+) -> None:
+    """A parameter's name is user-authored on the same terms as a column alias.
+
+    The receipt keys both ``parameters`` and ``parameter_classes`` by declared
+    name and the subject repeats them, so
+    ``WHERE routing_number = $acct_021000021`` publishes the literal three more
+    times beside a value masked to ``*****``. ``only_account`` goes with it: a
+    declared name is authored text whatever its value's class turns out to be.
+
+    The ``builtin``-tier half of this is
+    ``test_prepare_report_applies_redaction_after_raw_execution``, which pins that
+    a declared ``account_number`` parameter keeps its name while its value masks.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, routing_number) VALUES (?, ?)",
+        ["acct_11112222", "021000021"],
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="param_alias",
+            query_sql=(
+                "SELECT account_id FROM core.dim_accounts "
+                "WHERE routing_number = $acct_021000021 AND account_id = $only_account"
+            ),
+            params=[
+                ParamSpec(
+                    name="acct_021000021",
+                    annotation=str,
+                    default=None,
+                    required=True,
+                    help="",
+                    data_class=DataClass.UNRESOLVED,
+                ),
+                ParamSpec(
+                    name="only_account",
+                    annotation=str,
+                    default=None,
+                    required=True,
+                    help="",
+                    data_class=DataClass.UNRESOLVED,
+                ),
+            ],
+            actor="cli",
+        )
+        .report_id
+    )
+
+    redacted = ExportService(db).prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={
+            "acct_021000021": "021000021",
+            "only_account": "acct_11112222",
+        },
+    )
+
+    expected = {
+        "redacted_parameter_1": "*****",
+        "redacted_parameter_2": "acct_11112222",
+    }
+    assert redacted.subject.as_manifest()["parameters"] == expected
+    assert redacted.provenance is not None
+    assert redacted.provenance.receipt["parameters"] == expected
+    assert redacted.provenance.receipt["parameter_classes"] == {
+        "redacted_parameter_1": DataClass.ROUTING_NUMBER.value,
+        "redacted_parameter_2": DataClass.RECORD_ID.value,
+    }
+    assert "021000021" not in json.dumps(redacted.manifest)
+
+
+def test_a_redacted_user_report_export_withholds_a_name_beside_a_published_value(
+    db: Database,
+) -> None:
+    """A name can carry the literal on its own, with no masked value to key on.
+
+    ``SELECT 1 AS "021000021"`` puts a routing number in the header while the
+    value beside it is a benign ``1``, so the earlier value-keyed rule — withhold
+    a name exactly where its own value is masked — published it. The premise was
+    wrong: a user-authored name is arbitrary text, and its sensitivity is not a
+    function of the column it labels.
+
+    So a redacted user-tier export withholds *every* authored name. MoneyBin
+    cannot classify arbitrary text — the same reason ``catalog.py`` withholds a
+    report's name wholesale from its collision warning rather than judging it —
+    and a redacted artifact outlives the session, so the fail-closed answer is
+    the only sound one.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id) VALUES (?)", ["acct_11112222"]
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="benign_value_sensitive_name",
+            query_sql=(
+                'SELECT 1 AS "021000021", account_id AS my_account '
+                "FROM core.dim_accounts"
+            ),
+            actor="cli",
+        )
+        .report_id
+    )
+    service = ExportService(db)
+
+    redacted = service.prepare_report(
+        profile="test", report_id=report_id, report_parameters={}
+    )
+
+    table = redacted.tables[0]
+    assert [column.name for column in table.columns] == [
+        "redacted_column_1",
+        "redacted_column_2",
+    ]
+    # The values are untouched: withholding the name is not masking the column.
+    assert table.rows == ((1, "acct_11112222"),)
+    assert "021000021" not in json.dumps(redacted.manifest)
+    assert "021000021" not in json.dumps(redacted.data_dictionary)
+
+    unredacted = service.prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    assert [column.name for column in unredacted.tables[0].columns] == [
+        "021000021",
+        "my_account",
+    ]
+
+
+def test_a_redacted_user_report_export_keeps_its_column_names_distinct(
+    db: Database,
+) -> None:
+    """An alias shaped like the scheme earns no exemption from it.
+
+    Column names are dict keys downstream — ``redact_records`` zips them against
+    each row — so two columns sharing one silently collapse into a single entry,
+    publishing one column's value under both headers. Renaming every name
+    positionally makes that unreachable by construction, and this is the fixture
+    that would notice a "keep this one, it looks fine" branch coming back: the
+    second column is authored as ``redacted_column_1``, so any rule that
+    preserved a name it recognized would mint exactly the collision above.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, routing_number) VALUES (?, ?)",
+        ["acct_11112222", "021000021"],
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="alias_collision",
+            query_sql=(
+                'SELECT routing_number AS "021000021", '
+                "account_id AS redacted_column_1 FROM core.dim_accounts"
+            ),
+            actor="cli",
+        )
+        .report_id
+    )
+
+    redacted = ExportService(db).prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+    )
+
+    table = redacted.tables[0]
+    assert [column.name for column in table.columns] == [
+        "redacted_column_1",
+        "redacted_column_2",
+    ]
+    assert table.rows == (("*****", "acct_11112222"),)
+
+
+def test_a_redacted_builtin_report_export_keeps_its_declared_column_names(
+    db: Database,
+) -> None:
+    """The benign twin: a repo-authored header must survive its column's masking.
+
+    ``account_number`` is masked to ``****2222`` here, so a rename keyed on
+    masking alone — without the user-tier condition — would blank a name that
+    describes the column rather than disclosing a value, and no privacy test in
+    this repo fails on over-masking.
+    """
+    redacted = _service(db).prepare_report(
+        profile="test",
+        report_id="test:export",
+        report_parameters={},
+    )
+
+    assert [column.name for column in redacted.tables[0].columns] == [
+        "account_number",
+        "amount",
+    ]
+
+
+def test_a_redacted_user_report_export_withholds_a_drifted_column_alias(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The drift sentence names the same columns the header rename withholds.
+
+    ``spec_from_row`` writes every moved column into ``degraded_reason`` so a
+    reader learns which ones went stale — the author's own labels, which is the
+    right answer on their own terminal. Copied verbatim into a redacted artifact
+    it republishes exactly the text the rename, the class-map key, and the
+    withheld SQL all withhold, one field over.
+
+    A redacted receipt publishes the reason *code* instead: still enough to tell
+    a stale class map from an unreadable row months later, without the names.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id) VALUES (?)", ["acct_11112222"]
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="drifting_alias",
+            query_sql='SELECT account_id AS "021000021" FROM core.dim_accounts',
+            actor="cli",
+        )
+        .report_id
+    )
+    # The saved map says RECORD_ID; this is the upward move R4 serves fail-closed.
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "dim_accounts")] = {
+        **CLASSIFICATION[("core", "dim_accounts")],
+        "account_id": DataClass.ROUTING_NUMBER,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    redacted = ExportService(db).prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+    )
+
+    assert redacted.provenance is not None
+    assert redacted.provenance.receipt["degraded"] is True
+    assert (
+        redacted.provenance.receipt["degraded_reason"] == DEGRADED_STALE_CLASSIFICATION
+    )
+    assert "021000021" not in json.dumps(redacted.manifest)
+
+    unredacted = ExportService(db).prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    # Same rule as the header: an unredacted export publishes the value itself,
+    # so naming the column that carries it costs nothing.
+    assert unredacted.provenance is not None
+    reason = unredacted.provenance.receipt["degraded_reason"]
+    assert isinstance(reason, str)
+    assert reason.startswith(DEGRADED_STALE_CLASSIFICATION)
+    assert "021000021" in reason
 
 
 def test_prepare_report_exports_every_row_without_the_mcp_response_cap(
@@ -366,6 +918,53 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
         )
     assert exc_info.value.code == "report_parameter_unknown"
     assert calls == 2
+
+
+def test_a_saved_report_masking_a_numeric_column_still_exports_to_parquet(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """The whole chain a saved report walks to a typed artifact, driven end to end.
+
+    Lineage hands ``INSTITUTION_ACCOUNT_NUMBER`` down through ``length()`` without
+    the column's type, so a saved report is the only way to reach a masked value
+    whose declared type is not text: no built-in report declares a masking class
+    on any output column, and both masked bundle columns are already ``VARCHAR``.
+    That makes this reachable only through the feature this branch adds, which is
+    why the coverage is here and not at the renderer alone.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, last_four) VALUES (?, ?)",
+        ["acct_11112222", "4021"],
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="masked_length",
+            query_sql="SELECT length(last_four) AS n FROM core.dim_accounts",
+            actor="cli",
+        )
+        .report_id
+    )
+
+    snapshot = ExportService(db).prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+    )
+
+    table = snapshot.tables[0]
+    assert [(column.duckdb_type, column.data_class) for column in table.columns] == [
+        ("VARCHAR", DataClass.INSTITUTION_ACCOUNT_NUMBER)
+    ]
+    assert table.rows == (("*****",),)
+
+    rendered = render_parquet(snapshot, tmp_path / "bundle")
+
+    assert duckdb.read_parquet(str(rendered.table_files[report_id])).fetchall() == [
+        ("*****",)
+    ]
 
 
 def test_networth_history_export_retains_native_values_with_truthful_types(

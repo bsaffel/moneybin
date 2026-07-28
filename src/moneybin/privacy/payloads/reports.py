@@ -10,15 +10,24 @@ from moneybin.privacy.taxonomy import DataClass
 
 
 class ReportSemanticsPayload(BaseModel):
-    """Financial interpretation metadata repeated by catalog and result."""
+    """Financial interpretation metadata repeated by catalog and result.
 
-    unit: Annotated[str, DataClass.AGGREGATE]
+    Mirrors ``ReportSemantics`` field-for-field, including its
+    ``"unknown"`` / ``None`` arms for user-created reports. Keep the two in
+    lockstep: this is a Pydantic model, so ``test_annotated_registry_sync``
+    (which gates on ``is_dataclass``) does not cover it — the only guard against
+    divergence is ``_semantics_to_payload`` failing to type-check.
+    """
+
+    unit: Annotated[str | None, DataClass.AGGREGATE]
     currency: Annotated[str | None, DataClass.AGGREGATE]
-    sign: Annotated[str, DataClass.AGGREGATE]
-    kind: Annotated[Literal["position", "flow", "ratio", "count"], DataClass.AGGREGATE]
+    sign: Annotated[str | None, DataClass.AGGREGATE]
+    kind: Annotated[
+        Literal["position", "flow", "ratio", "count", "unknown"], DataClass.AGGREGATE
+    ]
     valuation_basis: Annotated[str | None, DataClass.AGGREGATE]
     fx_basis: Annotated[str | None, DataClass.AGGREGATE]
-    time_basis: Annotated[str, DataClass.AGGREGATE]
+    time_basis: Annotated[str | None, DataClass.AGGREGATE]
     denominator: Annotated[str | None, DataClass.AGGREGATE]
     comparison_window: Annotated[str | None, DataClass.AGGREGATE]
     exclusions: Annotated[tuple[str, ...], DataClass.AGGREGATE]
@@ -37,7 +46,29 @@ class ReportCatalogEntry(BaseModel):
     """Complete static metadata for one registered report."""
 
     report_id: Annotated[str, DataClass.AGGREGATE]
+    name: Annotated[str, DataClass.AGGREGATE]
+    """The handle every operation accepts, and the one a human can retype.
+
+    ``report_id`` is namespaced and, for the user tier, minted — ``user:r`` plus
+    twelve hex characters nobody chose. ``name`` is what the CLI command is
+    called and what ``resolve()`` matches, so a listing without it publishes an
+    identity its reader cannot act on from memory. ``AGGREGATE`` like
+    ``description``, for the reason ``catalog_sensitivity`` gives: a user's own
+    report name masked to ``'*****'`` would make the catalog unusable, so the
+    envelope's *tier* carries the honesty instead of the annotation."""
+    tier: Annotated[Literal["builtin", "extension", "user"], DataClass.AGGREGATE]
+    """Which registry tier served this entry. A user-created report is a row in
+    one local database rather than a reviewed, installable artifact, so a caller
+    reading the catalog is owed that distinction without having to parse an ID."""
     description: Annotated[str, DataClass.AGGREGATE]
+    archived: Annotated[bool, DataClass.AGGREGATE] = False
+    """Whether the user has hidden this report from the default listing.
+
+    Always ``False`` for the builtin and extension tiers, which have no archived
+    state. It rides on the shared entry rather than on a user-tier-only payload
+    because a widened listing must be able to mark the rows it widened to
+    include — a caller cannot otherwise tell a report it may run from one the
+    user had put away."""
     parameter_schema: Annotated[dict[str, JsonValue], DataClass.AGGREGATE]
     parameter_classes: Annotated[dict[str, str], DataClass.AGGREGATE]
     examples: Annotated[list[str], DataClass.AGGREGATE]
