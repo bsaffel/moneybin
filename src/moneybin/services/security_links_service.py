@@ -584,6 +584,14 @@ class SecurityLinksService:
         Returns the full replacement set per touched disposal (unchanged disposals
         omitted) — ``set_for_disposal`` is a whole-set replace, so a partial set
         would delete the selections it left out.
+
+        Deliberately exempt from the elected-method precondition
+        ``InvestmentService.select_lots`` enforces (only 'specific' consumes lot
+        selections). A merge is data repair, not a new election: refusing to
+        carry selections across because the *survivor* resolves to FIFO would
+        strand them on a security id that no longer exists. They land inert
+        instead, which is recoverable — electing 'specific' on the survivor
+        reactivates them.
         """
         try:
             rows = self._db.execute(

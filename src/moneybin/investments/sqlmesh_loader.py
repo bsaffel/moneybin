@@ -25,13 +25,10 @@ from decimal import Decimal
 
 import pandas as pd
 
-from moneybin.investments.cost_basis import LedgerEvent
+from moneybin.investments.cost_basis import LedgerEvent, resolve_cost_basis_method
 
 if t.TYPE_CHECKING:
     from sqlmesh import ExecutionContext  # type: ignore[import-untyped]
-
-# Global fallback when neither the security nor the account elects a method.
-_DEFAULT_METHOD = "fifo"
 
 MethodFor = Callable[[str, str], str]
 SelectionsFor = Callable[[str], list[tuple[str, Decimal]]]
@@ -164,21 +161,8 @@ def _load_ledger(
     return events, group_updated_at
 
 
-_AVERAGE_ELIGIBLE_TYPES = frozenset({"mutual_fund", "etf"})
-
-
 def _load_method_for(context: ExecutionContext) -> MethodFor:
-    """Build the elected-method resolver: per-security -> per-account -> fifo.
-
-    An account-level ``default_cost_basis_method='average'`` does NOT apply to
-    a non-fund security it happens to hold — Req 12 validates 'average' to
-    mutual_fund/etf at election time (``upsert_security``/``AccountService.
-    settings_update``), but that per-field check can't see the OTHER side of
-    this fallback: an account holding a mix of funds and stocks with no
-    per-security override. Falling through silently to global FIFO for the
-    ineligible security matches the stated restriction instead of leaking
-    'average' onto a security type it was never valid for.
-    """
+    """Fetch the election tables and bind them to ``resolve_cost_basis_method``."""
     securities: pd.DataFrame = context.fetchdf(
         "SELECT security_id, cost_basis_method, security_type FROM app.securities"
     )
@@ -203,16 +187,11 @@ def _load_method_for(context: ExecutionContext) -> MethodFor:
     }
 
     def method_for(account_id: str, security_id: str) -> str:
-        elected = security_method.get(security_id)
-        if elected is not None:
-            return elected
-        elected = account_default.get(account_id)
-        if elected is not None and (
-            elected != "average"
-            or security_type.get(security_id) in _AVERAGE_ELIGIBLE_TYPES
-        ):
-            return elected
-        return _DEFAULT_METHOD
+        return resolve_cost_basis_method(
+            security_method=security_method.get(security_id),
+            account_default=account_default.get(account_id),
+            security_type=security_type.get(security_id),
+        )
 
     return method_for
 
