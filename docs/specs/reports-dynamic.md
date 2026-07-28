@@ -538,6 +538,13 @@ everywhere else.
   implementing PR binds that hint only to an admitted surface. A `'*****'` with
   no explanation becomes a two-call fix.
 
+  **On every surface, including the terminal.** Carrying the hint in the
+  envelope satisfies JSON and MCP callers, and it is the CLI text path that has
+  no envelope to read — so a hint that only rides the envelope reaches every
+  caller *except* the one it names a CLI command for. The text renderer prints
+  each entry in `actions[]`, which is what makes this requirement true rather
+  than merely represented.
+
 The residual honesty: *over*-classification cannot be detected automatically —
 that is why D5 leaves the downgrade judgment to a human. A z-score correctly
 derives as `TXN_AMOUNT` (HIGH) and masks. The `actions[]` hint plus the

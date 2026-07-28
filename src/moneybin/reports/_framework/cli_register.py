@@ -101,6 +101,14 @@ def render_report_result(
                 f"⚠️  Showing the first {len(result.records):,} rows; more exist. "
                 "Raise --limit or narrow the report to see the rest."
             )
+        # Third instance of the same asymmetry, and the one that inverted its own
+        # intent: `inspection_hint` deliberately names a CLI command — "Run
+        # `moneybin reports explain …`" — so the surfaces that cannot run it were
+        # told to while the terminal printed `*****` and stopped. Every action is
+        # rendered, not just that hint: a runner's own `actions` are next steps for
+        # whoever called it, and the text path is a caller.
+        for action in result.actions:
+            typer.echo(f"💡 {action}")
 
     render_or_json(
         result.to_envelope(),

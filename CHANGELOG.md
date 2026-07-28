@@ -20,8 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reclassified as more sensitive, the saved report notices and masks that column
   rather than serving the stale class, and the response says so
   (`summary.degraded`) rather than masking silently — including on the plain-text
-  path, where `reports run` prints the reason under the table instead of leaving a
-  bare `*****` for the reader to interpret. An exported artifact records
+  path, where `reports run` prints the reason under the table, alongside the
+  `reports explain` command that names every column's derived class whenever any
+  column masked, instead of leaving a bare `*****` for the reader to interpret.
+  An exported artifact records
   the same verdict in its provenance receipt, so a file opened months later still
   distinguishes columns masked by drift from columns that were empty at source.
   `reports set --archive`

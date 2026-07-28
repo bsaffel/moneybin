@@ -382,6 +382,101 @@ def test_create_reads_the_query_from_a_file(tmp_path: Path) -> None:
     )
 
 
+def test_create_routes_a_missing_sql_file_through_the_json_error_boundary(
+    tmp_path: Path,
+) -> None:
+    """A file that cannot be read owes ``--output json`` an error envelope.
+
+    The read ran *before* ``handle_cli_errors``, so the OSError became a Typer
+    usage error: plain text on a JSON invocation, and exit 2 where ``cli.md``
+    reserves 2 for usage errors and puts a failed read at 1. Nothing had to be
+    written to classify it — ``classify_user_error`` already answers
+    ``FileNotFoundError``; the read just never reached the handler that asks.
+    """
+    missing = tmp_path / "absent.sql"
+
+    with _patch_database(), _patch_service(_service(create=_save_outcome())):
+        result = runner.invoke(
+            app,
+            [
+                "reports",
+                "create",
+                "spend",
+                "--sql-file",
+                str(missing),
+                "--output",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == error_codes.INFRA_FILE_NOT_FOUND
+
+
+def test_create_routes_an_undecodable_sql_file_through_the_json_error_boundary(
+    tmp_path: Path,
+) -> None:
+    """Non-UTF-8 bytes escaped as a traceback, which no envelope contract survives.
+
+    ``UnicodeDecodeError`` is a ``ValueError``, so it fell through the ``except
+    OSError`` that caught the sibling case entirely — an unclassified crash rather
+    than the wrong exit code. Asserted separately from the missing-file test
+    because one ``except`` clause covering both is exactly what was wrong.
+    """
+    undecodable = tmp_path / "spend.sql"
+    undecodable.write_bytes(b"SELECT \xff\xfe FROM core.dim_accounts")
+
+    with _patch_database(), _patch_service(_service(create=_save_outcome())):
+        result = runner.invoke(
+            app,
+            [
+                "reports",
+                "create",
+                "spend",
+                "--sql-file",
+                str(undecodable),
+                "--output",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == error_codes.INFRA_INVALID_INPUT
+
+
+def test_set_routes_a_missing_sql_file_through_the_json_error_boundary(
+    tmp_path: Path,
+) -> None:
+    """``set`` reads the same file through the same helper, one command later.
+
+    Both call sites sat outside the handler, so fixing only ``create`` would leave
+    the identical defect in the command that replaces a saved report's query.
+    """
+    missing = tmp_path / "absent.sql"
+
+    with _patch_database(), _patch_service(_service(update=_save_outcome())):
+        result = runner.invoke(
+            app,
+            [
+                "reports",
+                "set",
+                "my_accounts",
+                "--sql-file",
+                str(missing),
+                "--output",
+                "json",
+            ],
+        )
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == error_codes.INFRA_FILE_NOT_FOUND
+
+
 def test_create_declares_a_typed_parameter_with_a_default() -> None:
     service = _service(create=_save_outcome())
 

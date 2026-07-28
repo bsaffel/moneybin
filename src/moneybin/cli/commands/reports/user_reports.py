@@ -312,12 +312,11 @@ def reports_create(
     from moneybin.cli.report_params import parse_parameter_declaration
     from moneybin.services.user_reports_service import UserReportsService
 
-    query_sql = _query_sql(sql, sql_file)
-
-    # Declaration parsing sits *inside* the handler: an unsupported type raises
-    # UserError, and outside it that reaches the user as a bare traceback with no
-    # message and no JSON envelope.
+    # Reading the file and parsing the declarations both sit *inside* the handler:
+    # each raises for a reason the user caused, and outside it that reaches them as
+    # a bare traceback or a usage error with no JSON envelope.
     with handle_cli_errors(cli_actor="reports_create"):
+        query_sql = _query_sql(sql, sql_file)
         params = [parse_parameter_declaration(raw) for raw in param or []]
         with get_database(read_only=False) as db:
             outcome = UserReportsService(db).create(
@@ -377,28 +376,31 @@ def reports_set(
         raise typer.BadParameter(
             "--clear-params and --param are opposites", param_hint="--clear-params"
         )
-    # `is not None`, not truthiness: `--sql ""` must reach the service and be
-    # refused as an invalid query, not be silently dropped from the update.
-    query_sql = (
-        _query_sql(sql, sql_file) if (sql is not None or sql_file is not None) else None
-    )
-    fields: dict[str, Any] = {
-        "name": UNSET if name is None else name,
-        "description": UNSET if description is None else description,
-        "query_sql": UNSET if query_sql is None else query_sql,
-        # `--clear-params` is the only way to say "no declarations": every
-        # `--param` occurrence requires a value, so an omitted option can only
-        # mean UNSET, and derivation refuses a declaration the new SQL no longer
-        # interpolates — leaving an otherwise-valid update with no spelling.
-        "params": [] if clear_params else (UNSET if param is None else param),
-        "is_active": False if archive else (True if restore else UNSET),
-    }
-    if all(value is UNSET for value in fields.values()):
-        raise typer.BadParameter("nothing to change", param_hint="--name")
-
-    # Declaration parsing sits inside the handler so an unsupported type reaches
-    # the user as a message rather than a traceback.
+    # Reading the file and parsing the declarations both sit inside the handler so
+    # a failure the user caused reaches them as a message — or a JSON envelope —
+    # rather than a traceback or a usage error. The two flag conflicts above stay
+    # outside it: those really are usage errors, and exit 2 is theirs.
     with handle_cli_errors(cli_actor="reports_set"):
+        # `is not None`, not truthiness: `--sql ""` must reach the service and be
+        # refused as an invalid query, not be silently dropped from the update.
+        query_sql = (
+            _query_sql(sql, sql_file)
+            if (sql is not None or sql_file is not None)
+            else None
+        )
+        fields: dict[str, Any] = {
+            "name": UNSET if name is None else name,
+            "description": UNSET if description is None else description,
+            "query_sql": UNSET if query_sql is None else query_sql,
+            # `--clear-params` is the only way to say "no declarations": every
+            # `--param` occurrence requires a value, so an omitted option can only
+            # mean UNSET, and derivation refuses a declaration the new SQL no
+            # longer interpolates — leaving an otherwise-valid update unspellable.
+            "params": [] if clear_params else (UNSET if param is None else param),
+            "is_active": False if archive else (True if restore else UNSET),
+        }
+        if all(value is UNSET for value in fields.values()):
+            raise typer.BadParameter("nothing to change", param_hint="--name")
         if param is not None:
             fields["params"] = [parse_parameter_declaration(raw) for raw in param]
         with get_database(read_only=False) as db:
@@ -634,7 +636,20 @@ def reports_reclassify(
 
 
 def _query_sql(sql: str | None, sql_file: Path | None) -> str:
-    """Read the report's SELECT from exactly one of the two sources."""
+    """Read the report's SELECT from exactly one of the two sources.
+
+    Call this *inside* the caller's ``handle_cli_errors`` block. Which of the two
+    sources was supplied is a usage question, and ``BadParameter``'s exit 2 is
+    right for it; whether the named file could be read is not — `cli.md` puts a
+    failed read at exit 1, and `--output json` is owed an error envelope for one.
+
+    The read raises rather than translating, because the shared classifier already
+    has better answers than a local ``BadParameter`` did: ``FileNotFoundError``
+    names the missing path, ``PermissionError`` carries the platform's
+    Full-Disk-Access advice, and ``UnicodeDecodeError`` — a ``ValueError``, so
+    never caught by the ``except OSError`` that used to sit here — classifies as
+    invalid input instead of escaping as a traceback.
+    """
     if (sql is None) == (sql_file is None):
         raise typer.BadParameter(
             "supply the query with either --sql or --sql-file", param_hint="--sql"
@@ -642,12 +657,7 @@ def _query_sql(sql: str | None, sql_file: Path | None) -> str:
     if sql is not None:
         return sql
     assert sql_file is not None  # noqa: S101  # narrowed by the exclusivity check
-    try:
-        return sql_file.read_text()
-    except OSError as e:
-        raise typer.BadParameter(
-            f"could not read {sql_file}", param_hint="--sql-file"
-        ) from e
+    return sql_file.read_text()
 
 
 def _render_save(

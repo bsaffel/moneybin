@@ -19,7 +19,7 @@ from moneybin.reports._framework.cli_register import (
     register_report_cli,
 )
 from moneybin.reports._framework.contract import ReportQuery
-from moneybin.reports._framework.execute import ReportResult
+from moneybin.reports._framework.execute import ReportResult, inspection_hint
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.tables import TableRef
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
@@ -221,6 +221,51 @@ def test_the_text_path_says_when_rows_were_cut() -> None:
     # The probe total never reaches the user as a count of what was cut.
     assert "4,200" not in result.output
     assert "4200" not in result.output
+
+
+def test_the_text_path_prints_the_hint_the_masked_output_earned() -> None:
+    """The hint names a CLI command, and the CLI was the one surface that hid it.
+
+    ``redact_catalog_execution`` appends ``inspection_hint`` to ``actions`` whenever
+    a column masks, and ``actions`` rides the envelope to JSON and MCP callers — so
+    the two surfaces that cannot run ``moneybin reports explain`` were the ones told
+    to, while the terminal printed ``*****`` alone. Third instance of the asymmetry
+    the two notes above fix, and the sharpest: the hint's own docstring says it
+    names a CLI command deliberately.
+
+    Built from ``inspection_hint`` rather than a copied literal so a reworded hint
+    keeps this honest instead of pinning prose the renderer no longer emits.
+    """
+    app = _multi_command_app()
+    hint = inspection_hint("test:balance_drift", ("account_id",))
+    masked = replace(_result(), actions=[hint])
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = masked
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert hint in result.output
+
+
+def test_the_text_path_adds_no_hint_when_the_report_offered_none() -> None:
+    """The hint's other half: a 💡 beside every table is a 💡 nobody reads.
+
+    Separate from the drift-silence test below rather than folded into it: a
+    fixture that trips both markers would stay green with either renderer removed.
+    """
+    app = _multi_command_app()
+    with (
+        patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _result()
+        result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "💡" not in result.output
 
 
 def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:
