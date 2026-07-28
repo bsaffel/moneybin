@@ -275,8 +275,13 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
   `market_value = NULL` (never 0) for `unpriced` and `withheld` positions, and an
   investment account may hold uninvested cash with no security row, so a naive Σ
   `market_value` under-reports exactly where the balance observation did not.
-  Pillar D ships with a test that fails on the double-count and a test that fails
-  on the dropped-value case.
+  Either substitution is conditional on an actual `fct_balances_daily` row for the
+  same account and date: an account with priced holdings but no balance
+  observation emits no row at all (no anchor, no backfill), so an unconditional
+  exclusion counts it zero times rather than once. Pillar D ships with a test that
+  fails on the double-count and one that fails on the dropped-value case, the
+  latter covering both a NULL-`market_value` position and a holdings-only account
+  with no balance anchor.
 - **Lot-selection override home — resolved.** The canonical lot-selection override
   lives in a **core** `app.*` table (`app.lot_selections` in the foundation child),
   not the `us_tax` package — cost basis is core, and a non-US user with no `us_tax`
