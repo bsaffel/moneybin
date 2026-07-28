@@ -415,4 +415,4 @@ field is not part of the live catalog response.
 5. **`sell` not `dispose`.** Natural language for the 90% case. Edge cases (gift, loss) handled with `--amount 0` and `--notes`.
 6. **`value set/unset`** — declarative verb pair for valuations. "Set" handles both insert and update. "Unset" is the natural inverse.
 7. **Source precedence mirrors net worth.** Manual > appraisal > automated estimate, same philosophy as balance observation precedence.
-8. **Cash-only v1 alignment.** This spec extends net worth v1 with physical assets while keeping investments and multi-currency as future work.
+8. **Balance-spine v1 alignment.** This spec extends net worth v1 with physical assets while keeping market-valued investment holdings and multi-currency as future work.
