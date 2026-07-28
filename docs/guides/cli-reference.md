@@ -382,7 +382,7 @@ Investment ledger, positions, tax lots, realized gains, and the securities catal
 | `investments holdings` | Current positions: quantity, cost basis, average cost, market value, unrealized gain, and the date and age of the close used. A position with no usable price shows `-`, never a zero. | `--account` |
 | `investments gains` | Realized gain/loss (the 1099-B surface) from `core.fct_realized_gains`. | `--account`, `--security`, `--from`, `--to`, `--term {short,long}` |
 | `investments lots list` | Tax lots with remaining quantity and basis. Open lots only by default. | `--account`, `--security`, `--open/--all` |
-| `investments lots select <disposal-txn-id>` | Set the full specific-identification lot selection for a disposal (declarative replace). `--clear` reverts to FIFO. | `--lot LOT_ID:QTY` (repeatable), `--clear` |
+| `investments lots select <disposal-txn-id>` | Set the full specific-identification lot selection for a disposal (declarative replace). Requires the security to resolve to `specific` cost basis; `--clear` reverts to FIFO and needs no election. | `--lot LOT_ID:QTY` (repeatable), `--clear` |
 | `investments securities list` | List the securities catalog. | `--type` |
 | `investments securities add` | Add one security to the catalog. | `--name`, `--type`, `--ticker`, `--exchange`, `--cusip`, `--isin`, `--figi`, `--coingecko-id`, `--cash-equivalent`, `--method`, `--currency` |
 | `investments securities set <security-id>` | Partial update of one security. At least one field flag required. | `--name`, `--ticker`, `--exchange`, `--cusip`, `--isin`, `--figi`, `--coingecko-id`, `--method`, `--currency` |

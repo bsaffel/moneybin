@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.database import Database
+from moneybin.repositories.securities_repo import SecuritiesRepo
 from tests.moneybin.db_helpers import create_core_dim_stub_views, create_core_tables
 
 
@@ -730,6 +731,48 @@ class TestLotsList:
 # ---------------------------------------------------------------------------
 
 
+def _elect_cost_basis_method(db: Database, method: str) -> None:
+    """Elect ``method`` on ``sec_1``, the security the lot fixtures reference.
+
+    Bypasses the CLI ``_add_security`` helper above deliberately: that path mints
+    a random id, and the lot/disposal fixtures here reference ``sec_1`` by name.
+    """
+    SecuritiesRepo(db).upsert(
+        security_id="sec_1",
+        name="Apple Inc.",
+        security_type="equity",
+        ticker="AAPL",
+        cost_basis_method=method,
+        actor="cli",
+    )
+
+
+def _seed_single_lot_disposal(db: Database, method: str) -> None:
+    """Elect ``method`` on ``sec_1``, then seed a −5 sell against one 5-unit lot.
+
+    ``investments lots select`` refuses a selection the resolved method would
+    discard, so a fixture that only writes ``core.*`` rows has to state the
+    election the write depends on.
+    """
+    _elect_cost_basis_method(db, method)
+    db.conn.execute(
+        """
+        INSERT INTO core.fct_investment_transactions
+            (investment_transaction_id, account_id, security_id, trade_date,
+             type, quantity)
+        VALUES ('sell_1', 'acct_brokerage', 'sec_1', '2024-06-15', 'sell', -5)
+        """  # noqa: S608  # test fixture insert, static SQL
+    )
+    db.conn.execute(
+        """
+        INSERT INTO core.fct_investment_lots
+            (lot_id, account_id, security_id, acquisition_date,
+             original_quantity, remaining_quantity)
+        VALUES ('lot_a', 'acct_brokerage', 'sec_1', '2024-01-10', 5, 5)
+        """  # noqa: S608  # test fixture insert, static SQL
+    )
+
+
 class TestLotsSelect:
     """Tests for `investments lots select` (set + --clear)."""
 
@@ -737,6 +780,7 @@ class TestLotsSelect:
     def test_select_sets_and_clear_removes(
         self, runner: CliRunner, db: Database
     ) -> None:
+        _elect_cost_basis_method(db, "specific")
         db.conn.execute(
             """
             INSERT INTO core.fct_investment_transactions
@@ -808,22 +852,7 @@ class TestLotsSelect:
         # Must match the investments_lots_select MCP tool's tier: selected
         # quantities carry TXN_AMOUNT (HIGH) — a hardcoded "low" here would
         # break the redaction-contract parity cli.md requires.
-        db.conn.execute(
-            """
-            INSERT INTO core.fct_investment_transactions
-                (investment_transaction_id, account_id, security_id, trade_date,
-                 type, quantity)
-            VALUES ('sell_1', 'acct_brokerage', 'sec_1', '2024-06-15', 'sell', -5)
-            """  # noqa: S608  # test fixture insert, static SQL
-        )
-        db.conn.execute(
-            """
-            INSERT INTO core.fct_investment_lots
-                (lot_id, account_id, security_id, acquisition_date,
-                 original_quantity, remaining_quantity)
-            VALUES ('lot_a', 'acct_brokerage', 'sec_1', '2024-01-10', 5, 5)
-            """  # noqa: S608  # test fixture insert, static SQL
-        )
+        _seed_single_lot_disposal(db, "specific")
         result = runner.invoke(
             app,
             [
@@ -842,6 +871,23 @@ class TestLotsSelect:
         assert data["summary"]["sensitivity"] == "high"
         assert data["data"]["disposal_txn_id"] == "sell_1"
         assert data["data"]["selections"] == [{"lot_id": "lot_a", "quantity": 5.0}]
+
+    @pytest.mark.unit
+    def test_select_under_a_non_specific_method_exits_1_and_writes_nothing(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        _seed_single_lot_disposal(db, "fifo")
+        result = runner.invoke(
+            app, ["investments", "lots", "select", "sell_1", "--lot", "lot_a:5"]
+        )
+        assert result.exit_code == 1, result.output
+        assert "specific" in result.stderr
+        count = db.conn.execute(
+            "SELECT COUNT(*) FROM app.lot_selections "
+            "WHERE investment_transaction_id = 'sell_1'"  # noqa: S608  # test read, static SQL
+        ).fetchone()
+        assert count is not None
+        assert count[0] == 0
 
     @pytest.mark.unit
     def test_select_and_clear_mutually_exclusive_exits_2(

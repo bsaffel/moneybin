@@ -1135,9 +1135,18 @@ class TestInvestmentsSecuritiesSet:
 class TestInvestmentsLotsSelect:
     """Tests for the investments_lots_select MCP tool (Shape 1a state-set)."""
 
-    def _seed_disposal_and_lots(self) -> None:
+    def _seed_disposal_and_lots(
+        self, cost_basis_method: str | None = "specific"
+    ) -> None:
+        """Seed one disposal + two lots; ``sec_1`` elects ``specific`` by default.
+
+        Any other resolved method makes the tool refuse the write, so the
+        election is the precondition every selection test here depends on.
+        """
         _seed_investment_core()
-        sec = _add_security(security_id="sec_1", ticker="AAPL")
+        sec = _add_security(
+            security_id="sec_1", ticker="AAPL", cost_basis_method=cost_basis_method
+        )
         with get_database(read_only=False) as db:
             db.execute(
                 """
@@ -1187,10 +1196,12 @@ class TestInvestmentsLotsSelect:
     @pytest.mark.unit
     async def test_empty_selections_clears(self, mcp_db: Path) -> None:
         self._seed_disposal_and_lots()
-        await investments_lots_select(
+        seeded = await investments_lots_select(
             disposal_txn_id="sell_1",
             selections=[{"lot_id": "lot_a", "quantity": "5"}],
         )
+        # Without this the clear has nothing to remove and the test is vacuous.
+        assert seeded.to_dict()["status"] == "ok"
         result = await investments_lots_select(disposal_txn_id="sell_1", selections=[])
         parsed = result.to_dict()
         assert parsed["data"]["selections"] == []
@@ -1213,6 +1224,26 @@ class TestInvestmentsLotsSelect:
         parsed = result.to_dict()
         assert parsed["status"] == "error"
         assert parsed["error"]["code"] == "mutation_not_found"
+
+    @pytest.mark.unit
+    async def test_non_specific_method_returns_standard_error_envelope(
+        self, mcp_db: Path
+    ) -> None:
+        self._seed_disposal_and_lots(cost_basis_method=None)
+        result = await investments_lots_select(
+            disposal_txn_id="sell_1",
+            selections=[{"lot_id": "lot_a", "quantity": "6"}],
+        )
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "investment_method_not_specific"
+        assert parsed["recovery_actions"][0]["tool"] == "investments_securities_set"
+        with get_database(read_only=True) as db:
+            rows = db.execute(
+                "SELECT 1 FROM app.lot_selections "
+                "WHERE investment_transaction_id = 'sell_1'"
+            ).fetchall()
+        assert rows == []
 
     @pytest.mark.unit
     async def test_malformed_selection_returns_standard_error_envelope(
