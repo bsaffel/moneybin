@@ -729,7 +729,8 @@ USER_REPORT_RECLASSIFY_TOTAL = Counter(
     # second can fire without any write, so collapsing them would hide the one
     # that no concurrent writer explains.
     # `refused_unrelated_drift` is a third thing again: the approved column is
-    # fine and some *other* output column moved, so a sustained rate here means
+    # fine and something else moved — another output column, or one of the
+    # report's parameters — so a sustained rate here means
     # saved reports are going stale faster than their owners re-save them —
     # a backlog signal, not an abuse one.
     ["outcome"],

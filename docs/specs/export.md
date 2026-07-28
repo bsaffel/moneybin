@@ -123,13 +123,20 @@ lower-tier fields such as amounts, dates, merchant names, and descriptions
 remain in the artifact. It is protection against critical-identifier exposure,
 not a claim that the artifact is fully anonymized.
 
-A redacted report export also withholds the executed query: the receipt's `sql`
-is `null`, and the unredacted artifact carries it verbatim. A user-created
-report's SQL is authored text, so a CRITICAL literal can sit in the statement
-(`WHERE routing_number = '021000021'`) rather than in a parameter the engine
-masks — and row redaction reaches rows only. The receipt keeps `lineage`,
-`parameter_classes`, and `output_classes` in both modes, so what the export
-reads stays auditable without republishing the literal.
+A redacted export of a **user-created** report also withholds the executed
+query: the receipt's `sql` is `null`, and the unredacted artifact carries it
+verbatim. A user-created report's SQL is authored text, so a CRITICAL literal can
+sit in the statement (`WHERE routing_number = '021000021'`) rather than in a
+parameter the engine masks — and row redaction reaches rows only. The receipt
+keeps `lineage`, `parameter_classes`, and `output_classes` in both modes, so what
+the export reads stays auditable without republishing the literal.
+
+A built-in or extension report keeps its `sql` in both modes. That statement is
+repo-authored and reviewed, already public in the repo, and binds its values
+rather than inlining them — the receipt redacts those bindings separately — so
+there is no literal to withhold and dropping it would cost every default export
+the one field that makes the artifact reproducible. Tier decides it, on the same
+reasoning as the names below.
 
 The same authored-text problem reaches the *names*. `SELECT routing_number AS
 "021000021"` puts the literal in the artifact header, the data dictionary, and

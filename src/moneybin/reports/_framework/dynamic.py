@@ -42,7 +42,7 @@ from moneybin.reports._framework.derive import (
     annotation_of,
     class_fingerprint,
     derive_classification,
-    drifted_columns,
+    drifted_names,
     json_scalar,
     read_tables,
     token_of,
@@ -412,7 +412,7 @@ def _reresolved(
     approval collected against a weak class silently suppress a stronger one,
     which is the inverse of what the downgrade was reviewed for.
 
-    ``drifted_columns`` decides what moved, and its docstring carries the rule:
+    ``drifted_names`` decides what moved, and its docstring carries the rule:
     any movement in either direction. The cost is real and worth naming: one
     upstream reclassification (``account_id``'s ``ACCOUNT_IDENTIFIER →
     RECORD_ID``, say) masks that column on every saved report reading the table
@@ -435,15 +435,14 @@ def _reresolved(
     reapplied = with_downgrades(dict(derived.classes), downgrades)
 
     # Nothing can be masked for a column that no longer exists; saying the
-    # contract moved is the whole of the answer here. `drifted_columns` owns that
+    # contract moved is the whole of the answer here. `drifted_names` owns that
     # rule and the both-directions comparison, shared with the downgrade path.
-    changed_columns = drifted_columns(reapplied, stored_classes)
-    changed_parameters = tuple(
-        sorted(
-            name
-            for name, data_class in derived.parameter_classes.items()
-            if stored_parameter_classes.get(name) is not data_class
-        )
+    changed_columns = drifted_names(reapplied, stored_classes)
+    # The same comparison, so a parameter cannot be held to a laxer rule than a
+    # column: walking the derived map alone never visited a stored parameter the
+    # derivation no longer produces.
+    changed_parameters = drifted_names(
+        derived.parameter_classes, stored_parameter_classes
     )
     if not changed_columns and not changed_parameters:
         USER_REPORT_DRIFT_DETECTED_TOTAL.labels(resolution="equal").inc()

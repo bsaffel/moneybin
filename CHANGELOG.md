@@ -71,8 +71,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   re-checked against current policy on every re-derivation, so a release that
   raises the class you downgraded *to* retires the approval and masks the column
   rather than serving it under a floor nobody would grant today. It covers the one
-  column you confirmed and nothing else: if another of the report's columns has
-  drifted since it was saved, the downgrade is refused and names that column, so
+  column you confirmed and nothing else: if anything else about the report's
+  classification has drifted since it was saved — another output column, or one of
+  its filter parameters — the downgrade is refused and names what moved, so
   approving one thing cannot quietly store a change to another. Save the report
   again and the approval goes through.
 

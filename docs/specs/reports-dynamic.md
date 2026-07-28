@@ -916,9 +916,23 @@ read path does; any column other than the approved one that moved refuses with
 `report_classification_stale`, counted as `refused_unrelated_drift`. The response
 names the moved columns and no class values. The remedy is to save the report
 again, which is what a drifted report already needs — R4 is degrading it
-meanwhile. Parameters need no equivalent: a parameter class that moved leaves the
-stored `params` block disagreeing with the fingerprint computed over it, so the
-read path's recomputation mismatches and degrades on its own.
+meanwhile.
+
+**A drifted parameter refuses the approval on the same terms.** A filter-only
+parameter is never projected, so it appears in no output map and the column
+comparison above cannot see it move. That mattered because the write keys the
+fingerprint on the freshly derived parameter classes while persisting none of
+them — `set` takes no `params` — and recomputes the read-set term from the live
+schema, which is what had been carrying the drift signal. Approving an unrelated
+column therefore erased it: the row went from degraded to healthy, served the
+stale weaker parameter class, and republished a stored default that
+`_refuse_sensitive_defaults` would refuse to write. So the same comparison runs
+over the parameter maps, and any parameter that moved refuses with
+`report_classification_stale` too, naming the parameters in `details.parameters`
+beside `details.columns`. Both maps use one implementation (`drifted_names`),
+shared with R4's read path, so a parameter cannot be held to a laxer rule than a
+column. The remedy is the same re-save, which refreshes `params` and the
+fingerprint together.
 
 **A blank `reason` is refused.** The stored reason is the entire product of this
 path — the downgrade itself is permanent and invisible in every later result, so

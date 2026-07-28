@@ -517,8 +517,12 @@ def test_derivation_refuses_a_stored_default_on_an_above_low_parameter(
     ``_parameter_schema`` copies a non-required parameter's default verbatim
     into the published schema, and the catalog entry classes that whole schema
     ``AGGREGATE`` — LOW, unmasked. So the value never gets to be a default.
+
+    Matched on the code and ``details`` rather than on the name in the message: the
+    name is the author's own text and the message reaches ``logger.error``, so
+    asserting it appeared there pinned the leak in place.
     """
-    with pytest.raises(UserError, match="acct"):
+    with pytest.raises(UserError) as caught:
         derive_classification(
             dynamic_db,
             query_sql=(
@@ -526,6 +530,10 @@ def test_derivation_refuses_a_stored_default_on_an_above_low_parameter(
             ),
             params=(_param("acct", str, default="021000021", required=False),),
         )
+
+    assert caught.value.code == error_codes.REPORT_PARAMETER_DEFAULT_NOT_ALLOWED
+    assert caught.value.details is not None
+    assert caught.value.details["parameter"] == "acct"
 
 
 def test_derivation_allows_a_stored_default_on_a_low_parameter(

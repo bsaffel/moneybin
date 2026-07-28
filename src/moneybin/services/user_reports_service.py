@@ -28,7 +28,7 @@ from moneybin.reports._framework.derive import (
     DerivedClassification,
     class_fingerprint,
     derive_classification,
-    drifted_columns,
+    drifted_names,
     is_weaker_class,
     with_downgrades,
 )
@@ -525,7 +525,7 @@ class UserReportsService:
         # The same comparison the run path makes, against the same two maps.
         unrelated = tuple(
             name
-            for name in drifted_columns(
+            for name in drifted_names(
                 with_downgrades(dict(derived.classes), stored_downgrades),
                 {
                     name: DataClass(value)
@@ -534,17 +534,37 @@ class UserReportsService:
             )
             if name != column
         )
-        if unrelated:
+        # Parameters need the same guard and cannot borrow the column one: a
+        # filter-only parameter is never projected, so it appears in no output map
+        # and a rise in its class is invisible above. The write then keys the
+        # fingerprint on the *derived* parameter classes while persisting none of
+        # them — `set` takes no `params` — and recomputes the read-set term from the
+        # live schema, which is what had been carrying the drift signal. So the next
+        # read matches, serves the stale weaker class, and republishes the stored
+        # default that `_refuse_sensitive_defaults` would now refuse to write, on a
+        # row `_reresolved` had been failing closed.
+        drifted_parameters = drifted_names(
+            derived.parameter_classes,
+            {
+                parameter.name: parameter.data_class
+                for parameter in declared_params(row.get("params") or ())
+            },
+        )
+        if unrelated or drifted_parameters:
             metrics.USER_REPORT_RECLASSIFY_TOTAL.labels(
                 outcome="refused_unrelated_drift"
             ).inc()
             raise UserError(
-                "Another column's classification changed since this report was "
-                "saved, so approving this one would store that change too — "
-                "nothing was reclassified. Run the report to see what moved, then "
-                "save it again before downgrading.",
+                "Part of this report's classification changed since it was saved, "
+                "so approving this column would store that change too — nothing "
+                "was reclassified. Run the report to see what moved, then save it "
+                "again before downgrading.",
                 code=error_codes.REPORT_CLASSIFICATION_STALE,
-                details={"report_id": report_id, "columns": list(unrelated)},
+                details={
+                    "report_id": report_id,
+                    "columns": list(unrelated),
+                    "parameters": list(drifted_parameters),
+                },
             )
 
         downgrades: dict[str, Mapping[str, str]] = {

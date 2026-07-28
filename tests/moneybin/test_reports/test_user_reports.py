@@ -991,6 +991,13 @@ _TWO_COLUMN_SQL = (
     "SELECT last_four AS lf, institution_name AS inst FROM core.dim_accounts"
 )
 
+#: A parameter that filters and is never projected, beside an output column whose
+#: class cannot move with it: ``spend`` sums ``amount``, so reclassifying
+#: ``account_id`` upstream moves this report's *parameter* class and nothing else.
+_PARAM_FILTER_SQL = (
+    "SELECT SUM(amount) AS spend FROM core.fct_transactions WHERE account_id = $acct"
+)
+
 
 def test_reclassify_refuses_when_an_unrelated_column_drifted(
     service: UserReportsService,
@@ -1082,6 +1089,92 @@ def test_reclassify_allows_a_downgrade_beside_an_unmoved_second_column(
     assert row["classes"]["lf"] == DataClass.AGGREGATE.value
     assert row["classes"]["inst"] == DataClass.INSTITUTION.value
     assert sorted(row["class_downgrades"]) == ["lf"]
+
+
+def test_reclassify_refuses_when_a_parameter_drifted(
+    service: UserReportsService, saved_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drifted *parameter* must block the approval exactly as a column does.
+
+    The column guard cannot see this one: a filter-only parameter is never
+    projected, so it appears in no output map. Left unguarded, the write refreshed
+    the fingerprint over the freshly derived parameter classes while persisting
+    none of them, and recomputed the read-set term from the live schema — erasing
+    the very mismatch that had been failing the row closed. The next read then
+    matched, served the stale weaker class, and republished the stored default.
+
+    Observed before the guard: ``degraded`` went ``True`` → ``False`` and the
+    parameter went ``unresolved`` (fail-closed, default stripped) →
+    ``record_id`` with its default published and ``required`` false.
+    """
+    report_id = _create(service, query_sql=_PARAM_FILTER_SQL, params=[_param("acct")])
+    row = service.resolve(report_id)
+    before = _counter("user_report_reclassify_total", outcome="refused_unrelated_drift")
+
+    # `account_id` rises to CRITICAL; `spend` sums `amount` and cannot move with it.
+    reclassified = dict(CLASSIFICATION)
+    reclassified[("core", "fct_transactions")] = {
+        **CLASSIFICATION[("core", "fct_transactions")],
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    }
+    monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
+
+    with pytest.raises(UserError) as raised:
+        service.reclassify(
+            report_id,
+            column="spend",
+            to_class=DataClass.AGGREGATE,
+            reason="a monthly total reveals no single amount",
+            confirmed=True,
+            confirmed_via="prompt",
+            expected_fingerprint=str(row["class_fingerprint"]),
+            expected_from_class=DataClass.TXN_AMOUNT,
+            actor="cli",
+        )
+
+    assert raised.value.code == error_codes.REPORT_CLASSIFICATION_STALE
+    assert (
+        _counter("user_report_reclassify_total", outcome="refused_unrelated_drift")
+        == before + 1
+    )
+    # The parameter is named, and no output column is blamed for its movement.
+    assert raised.value.details is not None
+    assert raised.value.details["parameters"] == ["acct"]
+    assert raised.value.details["columns"] == []
+    # Nothing written, so the read path keeps failing the row closed.
+    stored = UserReportsRepo(saved_db).get(report_id)
+    assert stored is not None
+    assert stored["class_downgrades"] == {}
+    assert str(stored["class_fingerprint"]) == str(row["class_fingerprint"])
+
+
+def test_reclassify_allows_a_downgrade_beside_an_unmoved_parameter(
+    service: UserReportsService, saved_db: Database
+) -> None:
+    """The benign twin: a parameter merely *existing* is not drift.
+
+    Same report, no upstream change. Without this, a guard that refused whenever
+    a report declared a parameter would pass the test above and make every
+    parameterized report unreclassifiable.
+    """
+    report_id = _create(service, query_sql=_PARAM_FILTER_SQL, params=[_param("acct")])
+
+    service.reclassify(
+        report_id,
+        column="spend",
+        to_class=DataClass.AGGREGATE,
+        reason="a monthly total reveals no single amount",
+        confirmed=True,
+        confirmed_via="prompt",
+        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+        expected_from_class=DataClass.TXN_AMOUNT,
+        actor="cli",
+    )
+
+    row = UserReportsRepo(saved_db).get(report_id)
+    assert row is not None
+    assert row["classes"]["spend"] == DataClass.AGGREGATE.value
+    assert sorted(row["class_downgrades"]) == ["spend"]
 
 
 def test_every_admitted_downgrade_drops_the_tier_and_never_masks_more_weakly() -> None:
@@ -1951,29 +2044,25 @@ def test_a_date_default_survives_the_save_and_reaches_the_catalog(
     ]
 
 
-def test_reclassify_ignores_a_stored_default_it_is_not_touching(
+def test_reclassify_blames_the_drift_not_a_stored_default(
     service: UserReportsService, saved_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The default gate is a *write* gate, and reclassify stores no parameters.
+    """The refusal must name what moved, not a default the caller never supplied.
 
-    ``_refuse_sensitive_defaults`` exists so an above-LOW default cannot be
-    written — the catalog publishes defaults unmasked. Re-deriving with the stored
-    defaults still attached let an upstream reclassification of an unrelated
-    filter's column refuse a downgrade whose caller never mentioned that
-    parameter, with an error about a default they did not supply.
+    ``_refuse_sensitive_defaults`` is a *write* gate — an above-LOW default cannot
+    be stored, because the catalog publishes defaults unmasked — and ``_derive``
+    strips defaults so a *read* cannot trip it. Without that stripping this
+    reclassify would fail with ``report_parameter_default_not_allowed``, an error
+    about a parameter its caller never mentioned, instead of the drift that is
+    actually blocking the approval. Both codes refuse; only one is truthful, which
+    is what this pins.
 
-    ``account_id`` is a filter here and **not** projected, so the reclassification
-    below moves this report's parameter class and none of its output columns. That
-    isolates the default gate from the unrelated-drift refusal, which the earlier
-    ``SELECT account_id, …`` form would also have tripped — one fixture answering
-    for two guards proves neither.
+    The drift itself is refused by ``test_reclassify_refuses_when_a_parameter_drifted``;
+    this fixture adds the stored default that used to change the error.
     """
     report_id = _create(
         service,
-        query_sql=(
-            "SELECT SUM(amount) AS spend FROM core.fct_transactions "
-            "WHERE account_id = $acct"
-        ),
+        query_sql=_PARAM_FILTER_SQL,
         params=[_param("acct", str, default="acct_11112222", required=False)],
     )
 
@@ -1985,21 +2074,22 @@ def test_reclassify_ignores_a_stored_default_it_is_not_touching(
     }
     monkeypatch.setattr("moneybin.privacy.sql_lineage.CLASSIFICATION", reclassified)
 
-    outcome = service.reclassify(
-        report_id,
-        column="spend",
-        to_class=DataClass.AGGREGATE,
-        reason="a monthly total reveals no single amount",
-        confirmed=True,
-        confirmed_via="prompt",
-        expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
-        # `account_id` moved, not `amount` — the approved column is untouched.
-        expected_from_class=DataClass.TXN_AMOUNT,
-        actor="cli",
-    )
+    with pytest.raises(UserError) as raised:
+        service.reclassify(
+            report_id,
+            column="spend",
+            to_class=DataClass.AGGREGATE,
+            reason="a monthly total reveals no single amount",
+            confirmed=True,
+            confirmed_via="prompt",
+            expected_fingerprint=service.resolve(report_id)["class_fingerprint"],
+            # `account_id` moved, not `amount` — the approved column is untouched.
+            expected_from_class=DataClass.TXN_AMOUNT,
+            actor="cli",
+        )
 
-    assert outcome.column == "spend"
-    assert outcome.to_class is DataClass.AGGREGATE
+    assert raised.value.code == error_codes.REPORT_CLASSIFICATION_STALE
+    assert raised.value.code != error_codes.REPORT_PARAMETER_DEFAULT_NOT_ALLOWED
 
 
 def test_saving_an_above_low_default_is_still_refused(
@@ -2021,6 +2111,38 @@ def test_saving_an_above_low_default_is_still_refused(
         )
 
     assert caught.value.code == error_codes.REPORT_PARAMETER_DEFAULT_NOT_ALLOWED
+
+
+def test_the_default_refusal_keeps_the_parameter_name_out_of_the_message(
+    service: UserReportsService,
+) -> None:
+    """A parameter name is the author's own text, so the message cannot carry it.
+
+    In text mode ``handle_cli_errors`` writes ``message`` and ``hint`` through
+    ``logger.error``, which persists both: ``amazon_spend`` is as plausible a
+    merchant name as a filter one, and ``SanitizedLogFormatter`` cannot recognize
+    either. The name still reaches the caller and the JSON envelope through
+    ``details``, neither of which is a durable log — the same split the reclassify
+    log makes for a report's column alias.
+    """
+    with pytest.raises(UserError) as caught:
+        _create(
+            service,
+            query_sql=(
+                "SELECT account_id FROM core.dim_accounts "
+                "WHERE routing_number = $amazon_spend"
+            ),
+            params=[_param("amazon_spend", str, default="021000021", required=False)],
+        )
+
+    assert caught.value.code == error_codes.REPORT_PARAMETER_DEFAULT_NOT_ALLOWED
+    assert "amazon_spend" not in caught.value.message
+    assert "amazon_spend" not in (caught.value.hint or "")
+    # The refused default is a routing number here; it is never quoted back either.
+    assert "021000021" not in caught.value.message
+    # Withheld from the log, not from the caller.
+    assert caught.value.details is not None
+    assert caught.value.details["parameter"] == "amazon_spend"
 
 
 def test_building_the_catalog_reads_the_live_schema_once(

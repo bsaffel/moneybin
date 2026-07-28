@@ -338,13 +338,18 @@ def with_downgrades(
     return classes
 
 
-def drifted_columns(
+def drifted_names(
     reapplied: Mapping[str, DataClass], stored: Mapping[str, DataClass]
 ) -> tuple[str, ...]:
-    """Every column whose class differs between a re-derivation and the stored map.
+    """Every name whose class differs between a re-derivation and the stored map.
+
+    Asked of a report's output columns and of its parameters alike: both are
+    name-to-class maps derived from the same SQL and persisted beside each other,
+    and a parameter that moved is as unreviewed as a column that moved.
 
     ``reapplied`` must already carry the approved downgrades (:func:`with_downgrades`),
     because a legitimately downgraded report differs from raw derivation by design.
+    Parameters carry no downgrades, so callers pass the derived map as it stands.
 
     **Any** movement counts, in either direction — not only a rise. A derived class
     that moved *down* is a weakening no human reviewed, and only
@@ -355,8 +360,8 @@ def drifted_columns(
     upstream column was retired compared equal — the read path served it as
     healthy with a narrower contract than the one it stored.
 
-    One implementation for the two callers that ask this question of the same two
-    maps: the run path, which fails the moved columns closed and degrades, and the
+    One implementation for the callers that ask this question of the same two
+    maps: the run path, which fails the moved names closed and degrades, and the
     downgrade path, which refuses to write an approval on top of movement nobody
     reviewed. They are the same comparison, so the both-directions rule above
     cannot hold in one and lapse in the other.
@@ -563,11 +568,20 @@ def _refuse_sensitive_defaults(
             continue
         data_class = parameter_classes.get(parameter.name, FAIL_CLOSED_CLASS)
         if data_class.tier > Tier.LOW:
+            # The name is withheld from the message and carried in `details`
+            # instead. A parameter name is the author's own text — `amazon_spend`
+            # is as plausible a merchant name as a filter one — and in text mode
+            # `handle_cli_errors` writes `message` and `hint` through
+            # `logger.error`, which persists them where `SanitizedLogFormatter`
+            # cannot recognize either. `details` reaches the JSON envelope and the
+            # caller, neither of which is a durable log. Same rule as the
+            # reclassify log, which withholds the column for the same reason.
             raise UserError(
-                f"Parameter ${parameter.name} classifies as {data_class.value} "
-                f"({data_class.tier.name} tier), so it cannot carry a default.",
+                f"A parameter classifying as {data_class.value} "
+                f"({data_class.tier.name} tier) cannot carry a default.",
                 code=error_codes.REPORT_PARAMETER_DEFAULT_NOT_ALLOWED,
                 hint="Declare it required — the report catalog publishes defaults unmasked.",
+                details={"parameter": parameter.name},
             )
 
 

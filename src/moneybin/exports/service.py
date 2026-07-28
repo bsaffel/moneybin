@@ -501,11 +501,12 @@ class ExportService:
             # caps never limit durable export contents.
             limit=None,
         )
-        # Only a saved report's names are the author's own text, and only a
-        # redacted artifact has to withhold them.
-        withhold_names = redaction_mode == "redacted" and report_tier(spec) == "user"
+        # Only a saved report's names and SQL are the author's own text, and only a
+        # redacted artifact has to withhold them. One predicate for both: they are
+        # withheld for the same reason, so they cannot disagree about the tier.
+        withhold_authored = redaction_mode == "redacted" and report_tier(spec) == "user"
         published = _published_names(
-            execution.columns, stem=_REDACTED_COLUMN_NAME, withhold=withhold_names
+            execution.columns, stem=_REDACTED_COLUMN_NAME, withhold=withhold_authored
         )
         columns = tuple(
             PreparedColumn(
@@ -543,7 +544,7 @@ class ExportService:
         published_parameters = _published_names(
             tuple(parameter_classes_by_name),
             stem=_REDACTED_PARAMETER_NAME,
-            withhold=withhold_names,
+            withhold=withhold_authored,
         )
         parameter_classes = {
             published_parameters[name]: data_class.value
@@ -566,10 +567,14 @@ class ExportService:
             # inline in the statement (`WHERE routing_number = '021000021'`) rather
             # than in a parameter this redacts. `apply_export_redaction` transforms
             # table rows only, so a verbatim receipt would republish in the manifest
-            # exactly what the redacted policy was chosen to withhold. Withheld for
-            # every tier: the receipt keeps lineage and both class maps regardless,
-            # so the statement is the one field whose value here is convenience.
-            receipt_sql = None
+            # exactly what the redacted policy was chosen to withhold.
+            #
+            # The user tier only, on the same reasoning as the names above: a
+            # built-in's SQL is repo-authored and reviewed, keeps its values in
+            # bindings the receipt redacts separately, and is already public in the
+            # repo — so withholding it discloses nothing and costs the receipt the
+            # one field that makes the artifact reproducible.
+            receipt_sql = None if withhold_authored else execution.sql
         else:
             snapshot_parameters = execution.parameters
             receipt_sql = execution.sql
@@ -597,7 +602,7 @@ class ExportService:
             # keep out of a redacted artifact. The code says a stale class map
             # from an unreadable row without repeating any of them.
             degraded_reason=(
-                status.degraded_code if withhold_names else status.degraded_reason
+                status.degraded_code if withhold_authored else status.degraded_reason
             ),
         )
         tables = (table,)

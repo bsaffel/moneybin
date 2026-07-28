@@ -26,6 +26,7 @@ from moneybin.reports._framework.catalog import (
     ReportCatalog,
     ReportStatus,
     ServiceReportSpec,
+    report_tier,
 )
 from moneybin.reports._framework.contract import (
     Binding,
@@ -304,31 +305,32 @@ def test_prepare_report_applies_redaction_after_raw_execution(db: Database) -> N
     }
 
 
-def test_a_redacted_report_export_withholds_the_saved_query(db: Database) -> None:
-    """A redacted artifact must not republish the query that produced it.
+def test_a_redacted_builtin_report_export_keeps_its_reviewed_sql(
+    db: Database,
+) -> None:
+    """A built-in's statement is repo-authored, so withholding it buys nothing.
 
-    A user-created report's SQL is user-authored text, so a critical literal can
-    sit inline in the statement itself rather than in a parameter. Redaction
-    transforms table rows only, so a receipt carrying the statement verbatim
-    discloses exactly what the redacted policy was chosen to withhold — in the
-    manifest and the workbook metadata tab, beside correctly-masked cells.
+    A receipt exists to make an artifact reproducible: ``lineage`` says which
+    tables were read and ``sql`` says what was asked of them. A built-in's query is
+    reviewed, already public in the repo, and binds its values rather than inlining
+    them — the receipt redacts those bindings separately — so there is no literal
+    to withhold, and dropping the statement costs every default export its
+    verifiability for no privacy gain.
 
-    Withheld for every tier rather than only the user tier: the receipt keeps
-    lineage, parameter classes, output classes, and semantics either way, so the
-    statement is the one field whose value here is debugging convenience, and a
-    tier test would be a second thing to keep correct for no privacy gain.
+    Same tier rule as the column headers above: repo-authored names and
+    repo-authored SQL are withheld together or not at all.
     """
 
     def runner(db: Database) -> ReportQuery:  # noqa: ARG001  # report contract handle
-        """Saved query carrying an inline account literal.
+        """Reviewed query binding its filter rather than inlining it.
 
         Args:
             db: Open database connection.
         """
         return ReportQuery(
             "SELECT account_number, amount FROM reports.test_export "
-            "WHERE account_number = 'acct_11112222'",
-            [],
+            "WHERE account_number = ?",
+            [Binding("acct_11112222", DataClass.INSTITUTION_ACCOUNT_NUMBER)],
             actions=("reports.inspect",),
             period="all time",
         )
@@ -355,21 +357,69 @@ def test_a_redacted_report_export_withholds_the_saved_query(db: Database) -> Non
         report_parameters={},
     )
     assert redacted.redaction_mode == "redacted"
+    assert report_tier(spec) == "builtin"
     assert redacted.provenance is not None
-    assert redacted.provenance.receipt["sql"] is None
     # The artifact, not just the in-memory receipt: the manifest is what ships.
     manifest_sql = redacted.manifest["provenance"]["receipt"]["sql"]  # type: ignore[index]
-    assert manifest_sql is None
+    assert manifest_sql == (
+        "SELECT account_number, amount FROM reports.test_export "
+        "WHERE account_number = ?"
+    )
+    # Retaining the statement publishes no value, because the value is a binding.
     assert "acct_11112222" not in json.dumps(redacted.manifest)
+
+
+def test_a_redacted_user_report_export_withholds_the_saved_query(
+    db: Database,
+) -> None:
+    """A saved report's SQL is user-authored, so a critical literal can sit in it.
+
+    ``apply_export_redaction`` transforms table rows only, so a receipt carrying
+    the statement verbatim republishes in the manifest and the workbook metadata
+    tab exactly what the redacted policy withheld from the cells — beside
+    correctly-masked values. Nothing checks a user's SQL for inline literals,
+    because nothing can: the statement is the author's own text.
+    """
+    create_core_tables_raw(db.conn)
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, routing_number) VALUES (?, ?)",
+        ["acct_11112222", "021000021"],
+    )
+    report_id = (
+        UserReportsService(db)
+        .create(
+            name="inline_literal",
+            query_sql=(
+                "SELECT account_id FROM core.dim_accounts "
+                "WHERE routing_number = '021000021'"
+            ),
+            actor="cli",
+        )
+        .report_id
+    )
+    service = ExportService(db)
+
+    redacted = service.prepare_report(
+        profile="test",
+        report_id=report_id,
+        report_parameters={},
+    )
+
+    assert redacted.provenance is not None
+    assert redacted.provenance.receipt["sql"] is None
+    assert redacted.manifest["provenance"]["receipt"]["sql"] is None  # type: ignore[index]
+    assert "021000021" not in json.dumps(redacted.manifest)
 
     unredacted = service.prepare_report(
         profile="test",
-        report_id="test:saved",
+        report_id=report_id,
         report_parameters={},
         redaction_mode="unredacted",
     )
+
+    # The author's own statement, published only where the values are too.
     assert unredacted.provenance is not None
-    assert "acct_11112222" in str(unredacted.provenance.receipt["sql"])
+    assert "021000021" in str(unredacted.provenance.receipt["sql"])
 
 
 def test_a_redacted_user_report_export_withholds_a_sensitive_column_alias(
