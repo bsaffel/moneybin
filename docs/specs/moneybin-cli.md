@@ -367,7 +367,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   # The seven verbs below span every report tier — built-in, extension, and
 |   |   # user-created (reports-dynamic.md). `list` / `run` / `explain` serve all
 |   |   # three; `create` / `set` / `delete` / `reclassify` own only the user tier,
-|   |   # because a built-in is a file in the repo. All eight are CLI-only: no MCP
+|   |   # because a built-in is a file in the repo. All seven are CLI-only: no MCP
 |   |   # identity is named for a lifecycle or inspection verb, and the shipped
 |   |   # `reports(report_id=..., parameters=...)` tool remains the only MCP
 |   |   # identity. HANDLE is a report_id or a name, resolved in that order.

@@ -196,13 +196,22 @@ def test_derivation_rejects_duplicate_result_column_names(
 
     ``redact_records`` masks by name, so one entry survives holding whichever
     class resolved last — and it would govern whichever value survives.
+
+    Asserts the code and ``details``, not ``match="'x'"``. Matching the alias in
+    the message required the message to carry it, and an output alias is
+    author-chosen text this refusal must keep out of the durable log — the same
+    way a ``match=`` on a parameter name had pinned that leak two commits ago.
     """
-    with pytest.raises(UserError, match="'x'"):
+    with pytest.raises(UserError) as raised:
         derive_classification(
             dynamic_db,
             query_sql="SELECT 0 AS x, routing_number AS x FROM core.dim_accounts",
             params=(),
         )
+
+    assert raised.value.code == error_codes.REPORT_QUERY_COLUMN_DUPLICATE
+    assert raised.value.details is not None
+    assert raised.value.details["columns"] == ["x"]
 
 
 def test_derivation_describes_an_overloaded_builtin_over_a_typed_parameter(
@@ -282,9 +291,9 @@ def test_derivation_names_a_declared_parameter_the_query_never_references(
             params=(_param("unused", str),),
         )
 
-    # The code, not the prose: the DESCRIBE handler *also* names ``$unused``, in
-    # its "(declared $unused: str)" tail, so matching on the name alone passes
-    # either way and isolates neither refusal.
+    # The code, not the prose. Neither message names the parameter any more —
+    # both carry it in `details` — so there is no name to match on, and even when
+    # there was, both refusals named it and matching on it isolated neither.
     assert raised.value.code == error_codes.REPORT_QUERY_INVALID
     assert "never references" in str(raised.value)
 
@@ -392,6 +401,12 @@ def test_derivation_accepts_two_parameters_with_distinct_names(
 # failed on.
 _MERCHANT = "ACME PLUMBING"
 
+#: The same free text in *identifier* position. A parameter name and an output
+#: alias are author-chosen, so a merchant name is as plausible there as in a
+#: literal, and `SanitizedLogFormatter` has no pattern for either. `_MERCHANT`
+#: covers what a query can quote; this covers what a query can name.
+_MERCHANT_IDENT = "acme_plumbing"
+
 
 def _assert_log_names_the_failure_without_quoting_it(
     caplog: pytest.LogCaptureFixture, cause: BaseException, prefix: str
@@ -402,6 +417,72 @@ def _assert_log_names_the_failure_without_quoting_it(
     assert "sql sha256=" in caplog.text
     assert str(cause) not in caplog.text
     assert _MERCHANT not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("query_sql", "params", "code", "details_key"),
+    [
+        pytest.param(
+            "SELECT account_id FROM core.dim_accounts",
+            (_param(_MERCHANT_IDENT, str),),
+            error_codes.REPORT_QUERY_INVALID,
+            "parameters",
+            id="unused-parameter",
+        ),
+        pytest.param(
+            "SELECT account_id FROM core.dim_accounts "  # noqa: S608  # `_MERCHANT_IDENT` is a test constant interpolated as an identifier
+            f"WHERE date_part(${_MERCHANT_IDENT}, CURRENT_DATE) = 1",
+            (_param(_MERCHANT_IDENT, int),),
+            error_codes.REPORT_QUERY_UNRESOLVABLE,
+            "parameters",
+            id="unresolvable-describe",
+        ),
+        pytest.param(
+            f"SELECT account_id AS {_MERCHANT_IDENT}, "  # noqa: S608  # same test constant, aliased twice on purpose
+            f"routing_number AS {_MERCHANT_IDENT} FROM core.dim_accounts",
+            (),
+            error_codes.REPORT_QUERY_COLUMN_DUPLICATE,
+            "columns",
+            id="duplicate-output-alias",
+        ),
+    ],
+)
+def test_every_save_refusal_keeps_author_chosen_names_out_of_the_message(
+    dynamic_db: Database,
+    query_sql: str,
+    params: tuple[ParamSpec, ...],
+    code: str,
+    details_key: str,
+) -> None:
+    """One rule, every refusal that names something the author chose.
+
+    ``handle_cli_errors`` writes a ``UserError``'s ``message`` and ``hint``
+    through ``logger.error`` in text mode, so a refusal naming a parameter or an
+    output alias persists that name where ``SanitizedLogFormatter`` cannot
+    recognise it. Two refusals were fixed one at a time, each found by a reviewer
+    walking from the previous fix to the next unfixed site; this asserts the whole
+    set at once so a third round of the same finding is not possible.
+
+    Parametrized rather than split because the *rule* is the subject, not any one
+    refusal. Each case still isolates its own guard: the unused-parameter case
+    declares a name the query never mentions, the DESCRIBE case declares a type
+    that cannot bind where it is used, and the duplicate-alias case declares no
+    parameters at all — so no case can be claimed by a sibling guard.
+
+    The DESCRIBE case is the sharpest of the three: the ``logger.warning`` four
+    lines above that refusal already withholds the failing SQL, logging only its
+    type and digest, and then the refusal built every parameter name into a
+    message the shared handler logs anyway.
+    """
+    with pytest.raises(UserError) as raised:
+        derive_classification(dynamic_db, query_sql=query_sql, params=params)
+
+    assert raised.value.code == code
+    assert _MERCHANT_IDENT not in raised.value.message
+    assert _MERCHANT_IDENT not in (raised.value.hint or "")
+    # Withheld from the durable log, not from the caller.
+    assert raised.value.details is not None
+    assert raised.value.details[details_key] == [_MERCHANT_IDENT]
 
 
 def test_a_failed_qualification_logs_no_query_text(

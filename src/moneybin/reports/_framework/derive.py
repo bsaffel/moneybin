@@ -633,10 +633,10 @@ def _refuse_unused_parameters(
     unused = [parameter.name for parameter in params if parameter.name not in resolved]
     if unused:
         raise UserError(
-            "Declared parameter(s) the query never references: "
-            f"{', '.join(f'${name}' for name in unused)}.",
+            "The query never references a declared parameter.",
             code=error_codes.REPORT_QUERY_INVALID,
             hint="Reference each declared parameter as $name, or drop the declaration.",
+            details={"parameters": unused},
         )
 
 
@@ -687,15 +687,23 @@ def _describe_result_columns(
             f"user report save: could not describe result columns: "
             f"{type(e).__name__} (sql sha256={sql_digest(query_sql)})"
         )
-        declared = ", ".join(
-            f"${parameter.name}: {token_of(parameter.annotation)}"
-            for parameter in params
-        )
+        # The declarations move to `details` for the same reason the warning above
+        # logs only a digest: this message reaches `logger.error` through
+        # `handle_cli_errors`, and a parameter name is author-chosen text the
+        # sanitizer cannot recognize. The type is usually the culprit here, so it
+        # travels with the name rather than being dropped.
         raise UserError(
             "Could not resolve the report's result columns. Every column must "
             "exist, and each parameter's declared type must fit every position "
-            f"it is used in{f' (declared {declared})' if declared else ''}.",
+            "it is used in.",
             code=error_codes.REPORT_QUERY_UNRESOLVABLE,
+            details={
+                "parameters": [parameter.name for parameter in params],
+                "declared": ", ".join(
+                    f"${parameter.name}: {token_of(parameter.annotation)}"
+                    for parameter in params
+                ),
+            },
         ) from e
 
     columns = [str(row[0]) for row in rows]
@@ -707,9 +715,9 @@ def _describe_result_columns(
         # whichever value survives. The mask stops corresponding to the value it
         # covers, so a duplicate name is refused rather than named as a risk.
         raise UserError(
-            "Result column names must be unique; these repeat: "
-            f"{', '.join(repr(name) for name in duplicates)}.",
+            "Result column names must be unique; at least one repeats.",
             code=error_codes.REPORT_QUERY_COLUMN_DUPLICATE,
             hint="Alias each projection distinctly.",
+            details={"columns": duplicates},
         )
     return columns
