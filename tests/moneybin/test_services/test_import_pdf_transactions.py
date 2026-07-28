@@ -722,20 +722,33 @@ def test_pdf_transactions_path_cleanup_on_ingest_failure(
         (None, None),
         ("", None),
         ("   ", None),
-        # Already-masked tokens (any supported prefix) → stripped, unchanged
+        # Already-masked tokens normalise to one canonical shape regardless of
+        # the glyphs the statement used. These previously round-tripped
+        # verbatim, which made ONE card key two different ways: a statement
+        # printing "****1234" produced chase_1234 while the same card printing
+        # "xxxx1234" produced chase_xxxx1234, so consecutive statements never
+        # matched each other.
         ("****1234", "****1234"),
-        ("xxxx1234", "xxxx1234"),
-        ("XXXX1234", "XXXX1234"),
+        ("xxxx1234", "****1234"),
+        ("XXXX1234", "****1234"),
         ("  ****1234  ", "****1234"),
+        # Space- and hyphen-grouped card numbers keep the TRAILING group.
+        ("XXXX XXXX XXXX 1234", "****1234"),
+        ("**** **** **** 1234", "****1234"),
+        ("1234-5678-9012-3456", "****3456"),
         # Multi-digit raw values reduce to ****<last4>
         ("123456789", "****6789"),
         ("Account Number: 5678", "****5678"),
         ("1234", "****1234"),
-        # No-digits branch returns the captured value verbatim (stripped),
+        # Fewer-than-4-digits returns the captured value verbatim (stripped),
         # never silently dropped — the column stays observable to the operator
-        # even if the captured token is something exotic.
+        # even if the captured token is something exotic. Crucially it is NOT
+        # padded into a short "****12": a fabricated last4 reads as
+        # authoritative to the institution+last4 merge signal.
         ("ABC-XYZ", "ABC-XYZ"),
         ("  ABC  ", "ABC"),
+        ("xxxx", "xxxx"),
+        ("12", "12"),
     ],
 )
 def test_to_account_number_mask_covers_every_branch(
@@ -801,6 +814,89 @@ def test_a_fully_masked_pdf_account_registers_through_the_resolver(
         [native_key],
     ).fetchone()
     assert link_row is not None, f"no source_native link for native key {native_key!r}"
+
+
+@pytest.mark.integration
+def test_consecutive_statements_of_one_card_share_one_account(
+    db: Database, tmp_path: Path
+) -> None:
+    """Two statements of the same card must not split across two accounts.
+
+    The native key is issuer+last4, identical for every statement of a card.
+    What varies is the filename — so scoping the link to a per-file alias makes
+    the strong-ref lookup miss its own prior link, minting a fresh canonical
+    account and a fresh review candidate every month, even after a human
+    accepted last month's. The link scope must be the issuer/format identity,
+    stable across statements, exactly as the tabular path derives it.
+    """
+    doc = _make_doc(text_lines=_standard_text_lines(), tables=[_standard_table()])
+    svc = ImportService(db)
+
+    for stem in ("chase_january_2024", "chase_february_2024"):
+        pdf = tmp_path / f"{stem}.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake")
+        with patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ):
+            svc.import_file(pdf, refresh=False)
+
+    accounts = db.execute(
+        "SELECT DISTINCT account_id FROM app.account_links "
+        "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+        "AND source_type = 'pdf'"
+    ).fetchall()
+    assert len(accounts) == 1, (
+        f"one card resolved to {len(accounts)} accounts across two statements"
+    )
+
+
+@pytest.mark.integration
+def test_account_id_override_pins_identity_through_the_resolver(
+    db: Database, tmp_path: Path
+) -> None:
+    """`--account-id` must bind explicitly rather than mint from the statement.
+
+    This branch skips mask derivation entirely (`masked_acct = None`), so it
+    reaches the resolver with `last_four=None` and an explicit binding. It
+    previously short-circuited before any resolver contact existed, so nothing
+    covered it once the resolver call went in.
+    """
+    doc = _make_doc(text_lines=_standard_text_lines(), tables=[_standard_table()])
+    svc = ImportService(db)
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        result = svc.import_file(pdf, refresh=False, account_id="my_pinned_account")
+
+    assert result.transactions == 2
+    # The rows carry the pinned id, not an issuer+mask key derived from the PDF.
+    raw_ids = [
+        str(r[0])
+        for r in db.execute(
+            "SELECT DISTINCT account_id FROM raw.tabular_transactions "
+            "WHERE source_type = 'pdf'"
+        ).fetchall()
+    ]
+    assert raw_ids == ["my_pinned_account"]
+    # And the explicit binding is registered, so a later statement of the same
+    # card adopts it instead of minting beside it.
+    link = db.execute(
+        "SELECT account_id FROM app.account_links "
+        "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+        "AND source_type = 'pdf' AND ref_value = ?",
+        ["my_pinned_account"],
+    ).fetchone()
+    assert link is not None
+    # The explicit binding is honoured rather than minting a fresh canonical id
+    # beside it. This also pins the self-referential shape of the override link
+    # (ref_value == account_id): the pinned value is both the source-native key
+    # and the canonical account, because the caller supplied a canonical id.
+    assert str(link[0]) == "my_pinned_account"
 
 
 # ---------------------------------------------------------------------------

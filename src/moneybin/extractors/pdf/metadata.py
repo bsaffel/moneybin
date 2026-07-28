@@ -45,8 +45,19 @@ _TIMEOUT_SEC = 0.1
 #: Public alias used by auto_derive to freeze metadata anchors into a Recipe.
 DEFAULT_ANCHORS: dict[str, list[str]] = {
     "account_id": [
-        r"Account\s+Number[:\s]+(\S+)",
+        # Card numbers print as space- or hyphen-separated groups
+        # ("XXXX XXXX XXXX 1234"). Capture every group so the TRAILING one
+        # survives: on a masked layout those are the only account-discriminating
+        # digits the statement discloses. Stopping at the first whitespace token
+        # returns the bare mask ("XXXX" → a digit-free account key) for a masked
+        # layout, and the *leading* four — an authoritative-looking wrong last4
+        # that then feeds the institution+last4 merge signal — for an unmasked
+        # one. Each group needs 3+ chars so a trailing date ("XXXX1234 01/31/24")
+        # can't extend the match.
+        r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)",
         r"Account\s+ending\s+in\s+(\d+)",
+        # Institution-specific tokens that aren't digit/mask runs (e.g. "ACCT-9Z").
+        r"Account\s+Number[:\s]+(\S+)",
     ],
     "period_start": [
         r"Statement\s+Period:\s+(\d{2}/\d{2}/\d{4})",

@@ -556,9 +556,6 @@ def _pdf_format_name(fp: dict[str, Any]) -> str:
     return f"{issuer_slug}_{digest}"
 
 
-_ACCOUNT_MASK_PREFIXES: tuple[str, ...] = ("****", "xxxx", "XXXX")
-
-
 def _to_account_number_mask(raw: str | None) -> str | None:
     """Reduce a captured PDF account identifier to a last-4 display mask.
 
@@ -574,18 +571,25 @@ def _to_account_number_mask(raw: str | None) -> str | None:
     consumers treat as already masked. Apply the reduction at the import
     boundary so the raw schema's privacy contract is preserved.
 
-    Returns the original string when no digits are present (e.g. an
-    institution-specific token) so we never silently drop a captured value.
+    Normalisation is load-bearing for account identity, not cosmetic. The
+    output feeds the source-native account key, so every rendering of ONE card
+    must reduce to one value: "****1234", "xxxx1234" and "XXXX XXXX XXXX 1234"
+    are the same account and must not key three different ways. Returning the
+    captured token verbatim for mask-prefixed values did exactly that, so
+    consecutive statements of one card never matched each other.
+
+    Returns the original string when fewer than 4 digits are present (e.g. an
+    institution-specific token, or a fully-masked "xxxx") so we never silently
+    drop a captured value — and never fabricate a short "last 4" that would
+    look authoritative to the institution+last4 merge signal.
     """
     if raw is None:
         return None
     stripped = raw.strip()
     if not stripped:
         return None
-    if any(stripped.startswith(prefix) for prefix in _ACCOUNT_MASK_PREFIXES):
-        return stripped
     digits = "".join(c for c in stripped if c.isdigit())
-    if not digits:
+    if len(digits) < 4:
         return stripped
     return f"****{digits[-4:]}"
 
@@ -3328,6 +3332,22 @@ class ImportService:
             )
         fp = decision.fp
         issuer_slug = slugify(fp.get("issuer", "unknown"))
+        # Identity scope for the source-native key. It must be IDENTICAL across
+        # every statement of one card, because the strong-ref lookup and the
+        # staging JOINs both key on (source_type, source_origin, ref_value) — a
+        # per-file value makes each statement miss its own prior link and mint a
+        # fresh account every month. This is the same exporter/format-identity
+        # rule the tabular path applies (see the derivation comment there); do
+        # NOT swap it back to the filename alias.
+        #
+        # Deliberately NOT matched_format_name: that is None on first contact and
+        # populated from the second statement on, so it would differ across
+        # exactly the two imports this needs to unify.
+        #
+        # `resolved_alias` stays the per-file scope for raw.import_log and the
+        # raw.pdf_<alias> view — those are genuinely per-document and revert
+        # depends on them.
+        identity_origin = issuer_slug
         account_id: str
         # Explicit account override takes precedence — agents/users can
         # pin a PDF whose statement omits an account anchor to an existing
@@ -3360,22 +3380,53 @@ class ImportService:
         # last_four is None for a digits-free token ("xxxx"), which correctly
         # denies the institution+last4 signal and routes to name review rather
         # than inventing a strong match.
-        AccountResolver(
-            self._db,
-            actor="system",
+        # Guarded like the OFX resolver loop: this runs after begin_import() but
+        # outside the ingestion try below, so an unhandled raise here (e.g.
+        # _write_native_mapping's conflict guard) would strand import_log at
+        # status="importing" forever and never emit the failure metric.
+        try:
+            resolved_account = AccountResolver(
+                self._db,
+                actor="system",
+                emit_metrics=emit_metrics,
+                observations=observations,
+            ).resolve(
+                SourceAccount(
+                    source_type="pdf",
+                    source_origin=identity_origin,
+                    source_account_key=account_id,
+                    account_name=resolved_alias,
+                    institution=fp.get("issuer") or None,
+                    last_four=_last4_from_account_number(masked_acct),
+                    explicit_account_id=account_id_override,
+                ),
+                in_outer_txn=in_outer_txn,
+            )
+        except Exception:
+            try:
+                import_log.finalize_import(
+                    self._db, import_id, status="failed", rows_total=0, rows_imported=0
+                )
+            except Exception:  # noqa: BLE001 — failure-path finalize is best-effort
+                logger.warning(
+                    f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
+                    exc_info=True,
+                )
+            record_counter(
+                PDF_IMPORT_TOTAL,
+                labels={"outcome": "failed", "rung": rung},
+                emit_metrics=emit_metrics,
+                observations=observations,
+                disposition="rollback",
+            )
+            raise
+        # Every other resolve() call site records this; the spec's observability
+        # section requires it for each AccountResolver outcome.
+        record_counter(
+            ACCOUNT_LINK_OUTCOMES_TOTAL,
+            labels={"result": resolved_account.outcome},
             emit_metrics=emit_metrics,
             observations=observations,
-        ).resolve(
-            SourceAccount(
-                source_type="pdf",
-                source_origin=resolved_alias,
-                source_account_key=account_id,
-                account_name=resolved_alias,
-                institution=fp.get("issuer") or None,
-                last_four=_last4_from_account_number(masked_acct),
-                explicit_account_id=account_id_override,
-            ),
-            in_outer_txn=in_outer_txn,
         )
 
         sign_conv: str = decision.recipe.sign_convention
@@ -3474,7 +3525,9 @@ class ImportService:
                 "description": str(desc) if desc is not None else None,
                 "source_file": str(canonical),
                 "source_type": "pdf",
-                "source_origin": resolved_alias,
+                # Must equal the account_links.source_origin written above —
+                # prep.stg_tabular__transactions JOINs on the exact triple.
+                "source_origin": identity_origin,
                 "import_id": import_id,
                 "row_number": idx,
             })
@@ -3561,7 +3614,9 @@ class ImportService:
                 "currency": [None],
                 "source_file": [str(canonical)],
                 "source_type": ["pdf"],
-                "source_origin": [resolved_alias],
+                # Matches the transactions rows and the account_links row —
+                # prep.stg_tabular__accounts JOINs on the same triple.
+                "source_origin": [identity_origin],
                 "import_id": [import_id],
             })
             self._db.ingest_dataframe(

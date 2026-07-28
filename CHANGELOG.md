@@ -290,8 +290,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
-- **"Transforms up to date" now accounts for everything you can add, not just
-  accounts.** The staleness flag on `system_status` and `moneybin transform
+- **A card imported from both a PDF statement and a bank file no longer loads
+  twice (#371).** PDF import built its account key as a string and skipped the
+  identity resolver every other source uses, so the same card arriving as a PDF
+  and as OFX had nothing to be matched against and both halves loaded. PDF now
+  resolves through the same ladder, and the resulting link is scoped to the
+  issuer rather than the filename, so consecutive statements of one card land on
+  one account instead of a fresh account per file.
+- **Statements that print the card number in groups keep their last four
+  digits (#371).** Metadata capture stopped at the first whitespace-delimited
+  token, so `Account Number: XXXX XXXX XXXX 1234` yielded the bare mask `XXXX` —
+  an account key carrying no digits at all — and an unmasked
+  `1234 5678 9012 3456` yielded `1234`, reporting the *leading* four as the last
+  four. The whole grouped number is captured and reduced to its trailing four.
+  Masks also normalise, so one card whose statements render `****1234` and
+  `xxxx1234` no longer keys two different ways. Re-import affected statements to
+  pick up the corrected key.
   status` watched three account tables out of the seventeen a refresh reads, so
   a manually recorded transaction, a manually recorded investment trade, a
   synced holding, and a fetched security price all landed while MoneyBin
