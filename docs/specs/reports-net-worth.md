@@ -352,7 +352,7 @@ This lets the scenario suite (`make test-scenarios`) validate that `fct_balances
 
 ## Out of Scope
 
-- **Investment holdings in net worth** — M1J concern. Net worth v1 is cash-only. Investment tracking (`investments-overview.md`, M1J — Pillar D net-worth integration) will extend `fct_balances` with holdings valuation when it ships.
+- **Investment holdings in net worth** — M1J concern. Net worth v1 is cash-only. Investment tracking ([`investments-overview.md`](investments-overview.md), M1J — Pillar D net-worth integration) will value investment accounts from holdings when it ships. It must **replace** each investment account's balance observation, not add to it: for an investment account the provider's reported balance already *is* the total position value (measured: Σ `provider_reported_value` = `fct_balances.balance` = 320.76, residual 0.00), so layering `dim_holdings.market_value` on top double-counts every brokerage account. See that spec's Open questions for the constraint and the required double-count test.
 - **Multi-currency conversion** — M1K concern. All balances assumed single-currency for v1. Multi-currency (`multi-currency.md`, M1K) will add home-currency conversion to `fct_balances_daily`.
 - **Balance forecasting/projection** — "What will my net worth be in 6 months?" is a separate feature requiring trend extrapolation.
 - **Balance alerts/notifications** — "Notify me when balance drops below X" is out of scope for the data model spec.
