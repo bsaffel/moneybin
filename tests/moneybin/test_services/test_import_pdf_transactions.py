@@ -711,6 +711,62 @@ def test_pdf_transactions_path_cleanup_on_ingest_failure(
 
 
 # ---------------------------------------------------------------------------
+# Test 8b: AccountResolver failure finalizes the import instead of stranding it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_pdf_resolver_failure_finalizes_import_and_records_the_failure_metric(
+    db: Database, tmp_path: Path
+) -> None:
+    """A raise inside resolve() must not strand import_log at "importing".
+
+    The resolve() call sits after begin_import() but outside the ingestion
+    try/except below it, so without its own guard an unhandled raise there
+    leaves the row "importing" forever and never emits the failure metric —
+    the import looks perpetually in-flight rather than failed.
+    """
+    from moneybin.metrics.registry import PDF_IMPORT_TOTAL
+
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    observations = MetricObservations()
+    metric = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic")
+    before = metric._value.get()  # type: ignore[reportPrivateUsage]
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        patch(
+            "moneybin.services.import_service.AccountResolver.resolve",
+            side_effect=RuntimeError("simulated resolver failure"),
+        ),
+        pytest.raises(RuntimeError, match="simulated resolver failure"),
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            emit_metrics=False,
+            observations=observations,
+        )
+
+    # Finalized as "failed" — not left at "importing".
+    log_status = db.execute(
+        "SELECT status FROM raw.import_log WHERE source_type = 'pdf' "
+        "ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
+    assert log_status is not None
+    assert log_status[0] == "failed"
+
+    # The failure metric is buffered, then emitted on flush.
+    assert metric._value.get() == before  # type: ignore[reportPrivateUsage]
+    observations.flush("rollback")
+    assert metric._value.get() == before + 1  # type: ignore[reportPrivateUsage]
+
+
+# ---------------------------------------------------------------------------
 # Test 9: _to_account_number_mask covers every branch of the privacy boundary
 # ---------------------------------------------------------------------------
 

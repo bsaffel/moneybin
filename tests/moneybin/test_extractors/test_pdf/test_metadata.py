@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from moneybin.extractors.pdf.metadata import StatementMetadata, capture_metadata
 
 # ---------------------------------------------------------------------------
@@ -120,6 +122,40 @@ def test_grouped_plain_account_number_last_four_is_the_final_group() -> None:
     assert meta.account_id is not None
     digits = "".join(c for c in meta.account_id if c.isdigit())
     assert digits[-4:] == "3456"
+
+
+@pytest.mark.parametrize(
+    ("account_line", "expected"),
+    [
+        # Masked grouped card: every group is captured, so the trailing one —
+        # the only account-discriminating digits on the page — survives.
+        ("Account Number: XXXX XXXX XXXX 1234", "XXXX XXXX XXXX 1234"),
+        # Unmasked grouped card: same shape, so last4 is the FINAL group.
+        ("Account Number: 1234 5678 9012 3456", "1234 5678 9012 3456"),
+        # A trailing statement date must not extend the capture.
+        ("Account Number: XXXX1234 01/31/24", "XXXX1234"),
+        # Institution token that opens with letters: the digit/mask-run anchor
+        # never matches, so the (\\S+) anchor captures it.
+        ("Account Number: ACCT-9Z", "ACCT-9Z"),
+        # Institution token that opens with 3+ digits. The digit/mask-run
+        # anchor CAN match its leading "123" — it must not, or `_first_match`
+        # stops there and the (\\S+) anchor becomes permanently unreachable
+        # for every token of this shape.
+        ("Account Number: 123-ABC-456", "123-ABC-456"),
+    ],
+)
+def test_account_anchor_ordering_captures_the_whole_token(
+    account_line: str, expected: str
+) -> None:
+    """A partial digit-run match must never claim the account field.
+
+    `capture_metadata` is first-match-wins across the ordered anchor list, so
+    an anchor that matches *part* of a token silently retires every anchor
+    after it. The grouped-card anchor and the institution-token fallback have
+    to stay reachable from the same document.
+    """
+    meta = capture_metadata(f"Bank Statement\n{account_line}\n")
+    assert meta.account_id == expected
 
 
 # ---------------------------------------------------------------------------

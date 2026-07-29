@@ -398,8 +398,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `1234 5678 9012 3456` yielded `1234`, reporting the *leading* four as the last
   four. The whole grouped number is captured and reduced to its trailing four.
   Masks also normalise, so one card whose statements render `****1234` and
-  `xxxx1234` no longer keys two different ways. Re-import affected statements to
-  pick up the corrected key.
+  `xxxx1234` no longer keys two different ways. Institution account tokens that
+  are not digit/mask runs (`ACCT-9Z`, `123-ABC-456`) are captured whole rather
+  than truncated to a leading digit group.
+
+  **Upgrading — revert before re-importing.** Statements already imported under
+  the old key need `moneybin import revert <import_id>` *first*, then a fresh
+  import. Do not simply re-import: the corrected key feeds both the
+  `raw.tabular_transactions` primary key and the `transaction_id` content hash,
+  so the new rows do not collide with the old ones — they land alongside them
+  and double the statement. Reverting first is also what clears the stale
+  per-file link scope; a re-import on its own leaves the old rows, and the
+  transactions they carry, uncanonicalized. `moneybin import history` lists the
+  import IDs.
 - **Picking tax lots no longer reports success on a write nothing will read.**
   `moneybin investments lots select` and `investments_lots_select` accepted a
   lot selection for any security, but the cost-basis engine reads
