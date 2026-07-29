@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from moneybin.extractors.pdf.metadata import StatementMetadata, capture_metadata
 
 # ---------------------------------------------------------------------------
@@ -42,6 +44,38 @@ TRANSACTIONS
 TOTAL
 """
 
+# Chase credit-card layout: the card number prints as space-separated groups.
+# The masked form carries the only account-discriminating digits the statement
+# has, in the LAST group.
+_CHASE_GROUPED_MASKED_TEXT = """\
+Chase Bank Statement
+Account Number: XXXX XXXX XXXX 1234
+Opening/Closing Date 01/01/24 - 01/31/24
+
+Previous Balance: $100.00
+New Balance: $200.00
+
+TRANSACTIONS
+01/05/2024  Coffee Shop    -4.50
+TOTAL
+"""
+
+# Same layout, unmasked. The last four are 3456 — a capture that stops at the
+# first group would report 1234, an authoritative-looking but wrong last4 that
+# then feeds the institution+last4 merge signal.
+_CHASE_GROUPED_PLAIN_TEXT = """\
+Chase Bank Statement
+Account Number: 1234 5678 9012 3456
+Opening/Closing Date 01/01/24 - 01/31/24
+
+Previous Balance: $100.00
+New Balance: $200.00
+
+TRANSACTIONS
+01/05/2024  Coffee Shop    -4.50
+TOTAL
+"""
+
 # ---------------------------------------------------------------------------
 # account_id
 # ---------------------------------------------------------------------------
@@ -62,6 +96,66 @@ def test_account_id_preserves_mask() -> None:
     meta = capture_metadata(_CHASE_TEXT)
     assert meta.account_id is not None
     assert "****" in meta.account_id
+
+
+def test_grouped_masked_account_number_keeps_the_last_four() -> None:
+    """A space-grouped card number must not be truncated to its first group.
+
+    Chase prints "XXXX XXXX XXXX 1234". Capturing one whitespace-delimited
+    token yields the bare mask "XXXX" and throws away the only digits the
+    statement discloses, which is what produced the digit-free `chase_xxxx`
+    account key in the wild.
+    """
+    meta = capture_metadata(_CHASE_GROUPED_MASKED_TEXT)
+    assert meta.account_id is not None
+    assert meta.account_id.endswith("1234")
+
+
+def test_grouped_plain_account_number_last_four_is_the_final_group() -> None:
+    """The trailing group is the last4 — never the leading one.
+
+    Stopping at the first group reports 1234 for an account ending 3456. That
+    is worse than capturing nothing: it looks authoritative and feeds the
+    institution+last4 merge signal with the wrong value.
+    """
+    meta = capture_metadata(_CHASE_GROUPED_PLAIN_TEXT)
+    assert meta.account_id is not None
+    digits = "".join(c for c in meta.account_id if c.isdigit())
+    assert digits[-4:] == "3456"
+
+
+@pytest.mark.parametrize(
+    ("account_line", "expected"),
+    [
+        # Masked grouped card: every group is captured, so the trailing one —
+        # the only account-discriminating digits on the page — survives.
+        ("Account Number: XXXX XXXX XXXX 1234", "XXXX XXXX XXXX 1234"),
+        # Unmasked grouped card: same shape, so last4 is the FINAL group.
+        ("Account Number: 1234 5678 9012 3456", "1234 5678 9012 3456"),
+        # A trailing statement date must not extend the capture.
+        ("Account Number: XXXX1234 01/31/24", "XXXX1234"),
+        # Institution token that opens with letters: the digit/mask-run anchor
+        # never matches, so the (\\S+) anchor captures it.
+        ("Account Number: ACCT-9Z", "ACCT-9Z"),
+        # Institution token that opens with 3+ digits. The digit/mask-run
+        # anchor CAN match its leading "123" — it must not, or `_first_match`
+        # stops there and the (\\S+) anchor becomes permanently unreachable
+        # for every token of this shape.
+        ("Account Number: 123-ABC-456", "123-ABC-456"),
+    ],
+)
+def test_account_anchor_ordering_captures_the_whole_token(
+    account_line: str, expected: str
+) -> None:
+    """A partial digit-run match must never claim the account field.
+
+    `capture_metadata` is first-match-wins across the ordered anchor list, so
+    an anchor that matches *part* of a token silently retires every anchor
+    after it. The grouped-card anchor and the institution-token fallback have
+    to stay reachable from the same document.
+    """
+    meta = capture_metadata(f"Bank Statement\n{account_line}\n")
+    assert meta.account_id == expected
 
 
 # ---------------------------------------------------------------------------
