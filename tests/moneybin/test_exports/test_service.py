@@ -207,9 +207,16 @@ def test_run_releases_read_only_snapshot_before_local_publication(
     # separate write lease for the receipt. Asserting the sequence rather than
     # a single call keeps the real property — no writer lock is ever held
     # across filesystem I/O — falsifiable if the receipt write moves inside.
+    #
+    # max_wait=0 on that second lease is load-bearing. MCPConfig proves a
+    # timed-out worker cannot commit after the caller gave up by requiring
+    # tool_timeout_seconds >= the write-lock wait, and that proof assumes the
+    # write begins when the tool does. This one begins after publication,
+    # whose duration is unbounded, so a queued wait could outlive the tool
+    # deadline and commit late. One non-blocking attempt cannot queue at all.
     assert [opened.kwargs for opened in get_database.call_args_list] == [
         {"read_only": True},
-        {"read_only": False},
+        {"read_only": False, "max_wait": 0},
     ]
     assert result == receipt
 
@@ -284,15 +291,20 @@ def test_run_returns_the_receipt_when_the_audit_write_cannot_open(
     """A failed receipt write must not turn a published export into an error.
 
     The receipt write opens its own connection *after* the artifact is already
-    on disk (or in Sheets), and a concurrent holder can keep it waiting past
-    ``DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS`` — so this raise is reachable, not
-    theoretical. Propagating it would report failure for an irreversible
+    on disk (or in Sheets), and takes a single non-blocking attempt — so any
+    concurrent holder at that instant raises, making this reachable rather
+    than theoretical. Propagating it would report failure for an irreversible
     success and lose the caller's only copy of the receipt, inviting a re-run
     that publishes a second artifact. Fail loudly in the log, not in the
     return value.
+
+    What reaches the log is bounded too: a lock or attach failure carries the
+    database path in its message, and ``SanitizedLogFormatter`` masks amounts
+    and account numbers, not filesystem paths.
     """
     read_lease = _database_context(db)
-    get_database.side_effect = [read_lease, DatabaseLockError("writer busy")]
+    locked = DatabaseLockError("/Users/someone/Documents/MoneyBin/main.duckdb held")
+    get_database.side_effect = [read_lease, locked]
 
     destination = _destination("local")
     receipt = replace(_receipt(destination), export_id="exp-locked")
@@ -311,6 +323,11 @@ def test_run_returns_the_receipt_when_the_audit_write_cannot_open(
 
     assert result == receipt
     assert "exp-locked" in caplog.text
+    assert "DatabaseLockError" in caplog.text
+    # The type and origin are useful; the message is not worth the path it
+    # carries. Asserting the absence keeps a later switch back to
+    # logger.exception (which appends both message and traceback) failing.
+    assert "/Users/someone" not in caplog.text
 
 
 @patch("moneybin.config.get_settings")

@@ -252,7 +252,9 @@ class ExportService:
         Opens its own short write transaction *after* publication returns. The
         read-only snapshot lease is already released by this point, so the
         writer lock is never held across filesystem or Sheets I/O — the
-        property #349 exists to protect.
+        property #349 exists to protect. Because it opens late, it takes a
+        single non-blocking attempt rather than the default queued wait, which
+        could otherwise outlive the caller's tool deadline.
 
         Never raises. By the time this runs the artifact is already published
         and cannot be withdrawn, so letting a write failure escape would report
@@ -262,11 +264,20 @@ class ExportService:
         to the thing that actually failed, and logs it.
         """
         from moneybin.database import get_database  # noqa: PLC0415
+        from moneybin.errors import exception_origin  # noqa: PLC0415
         from moneybin.services.audit_service import AuditService  # noqa: PLC0415
 
         destination = receipt.destination
         try:
-            with get_database(read_only=False) as db:
+            # One non-blocking attempt, never a queued wait. MCPConfig proves
+            # a timed-out worker cannot commit after the caller gave up by
+            # requiring tool_timeout_seconds >= the write-lock wait — a proof
+            # that holds only while the write starts when the tool does. This
+            # write starts after publication, whose duration is unbounded, so
+            # a queued wait could outlive the tool deadline and commit late.
+            # Losing a best-effort receipt is cheaper than reporting a timeout
+            # for an export that succeeded, which invites a duplicate re-run.
+            with get_database(read_only=False, max_wait=0) as db:
                 AuditService(db).record_audit_event(
                     action="export.run",
                     # No app.* row backs an export, so the target names the
@@ -310,11 +321,16 @@ class ExportService:
                         "checksums": dict(receipt.checksums),
                     },
                 )
-        except Exception:  # noqa: BLE001  # never fail an already-published export
-            logger.exception(
+        except Exception as exc:  # noqa: BLE001  # never fail a published export
+            # Type and origin, never the message or traceback: a lock or
+            # attach failure carries the database path, and
+            # SanitizedLogFormatter masks amounts and account numbers, not
+            # filesystem paths. Same boundary rule as mcp/decorator.py.
+            logger.error(
                 f"Export {receipt.export_id} published successfully but its "
-                f"receipt could not be recorded to the audit log; recover it "
-                f"from the returned receipt or the artifact itself."
+                f"receipt could not be recorded to the audit log "
+                f"({type(exc).__name__} at {exception_origin(exc)}); recover "
+                f"it from the returned receipt or the artifact itself."
             )
 
     def resolve_destination(self, reference: str) -> ExportDestination:

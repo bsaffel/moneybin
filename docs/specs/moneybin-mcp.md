@@ -194,11 +194,13 @@ stays below the 50-tool hard limit:
   run produced rather than where the file is now — a destination root can be
   repointed or removed after publication — and the checksums are what confirm
   a candidate file is that artifact. That write opens its own connection after publication returns, so no
-  writer lock is held across filesystem or Sheets I/O. A receipt write that
-  cannot open — a concurrent holder outlasting the writer-lock wait — is logged
-  and never converts a published export into an error, because the artifact
-  already exists and a reported failure would invite a re-run that publishes a
-  second one. The published artifact is permanent: `system_audit_undo` refuses
+  writer lock is held across filesystem or Sheets I/O. Because it opens after
+  publication rather than at tool start, it takes a single non-blocking
+  attempt: a queued wait could outlive the caller's tool deadline and commit
+  after a timeout was already returned. A receipt write that cannot open — the
+  writer lock held at that moment — is logged and never converts a published
+  export into an error, because the artifact already exists and a reported
+  failure would invite a re-run that publishes a second one. The published artifact is permanent: `system_audit_undo` refuses
   the row because its target lies outside the repository-owned `app.*` surface.
 - `exports_set` asserts one named local or Sheets destination's typed target
   state. It shares the same service/repository owners as
