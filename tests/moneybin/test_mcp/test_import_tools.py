@@ -766,12 +766,15 @@ async def test_preview_override_rereads_number_format_from_the_kept_columns(
     European debit/credit pair staged `us` against `1.234,56` values — a
     silent 1000x error on every row, persisted into the saved format.
     """
+    # Each row fills one side only, and the sample window opens on a run of
+    # credits — the shape that made a first-present-destination read return
+    # the "us" default off a column of blanks.
     csv = tmp_path / "mixed_formats.csv"
     csv.write_text(
         "Date,Amount,Soll,Haben,Description\n"
-        '2026-01-05,"1,234.56","1.234,56","0,00",Coffee\n'
-        '2026-01-06,"2,500.00","2.500,00","0,00",Rent\n'
-        '2026-01-07,"3,750.25","3.750,25","0,00",Payroll\n',
+        '2026-01-05,"1,234.56",,"1.234,56",Refund\n'
+        '2026-01-06,"2,500.00",,"2.500,00",Payroll\n'
+        '2026-01-07,"3,750.25","3.750,25",,Rent\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

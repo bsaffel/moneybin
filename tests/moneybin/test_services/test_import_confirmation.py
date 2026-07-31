@@ -606,8 +606,34 @@ class TestCoerceNumberFormat:
                 },
                 sample_values={
                     "amount": ["1,234.56"],  # the retired US column
-                    "debit_amount": ["1.234,56"],
-                    "credit_amount": ["2.500,00"],
+                    # Each row fills one side only — the real shape of a split
+                    # layout, not a column of paired values.
+                    "debit_amount": ["1.234,56", "", "2.500,00"],
+                    "credit_amount": ["", "3.750,25", ""],
+                },
+                detected="us",
+            )
+            == "european"
+        )
+
+    def test_an_all_blank_split_column_does_not_shadow_the_other(self) -> None:
+        """A blank sample window is not evidence of a format.
+
+        collect_samples takes the first rows unfiltered, so a run of
+        credit-only transactions leaves debit_amount a non-empty list of
+        blanks. Reading the first *present* destination handed those to
+        detect_number_format, which found nothing parseable and returned its
+        own "us" default — without ever looking at the column that holds the
+        values.
+        """
+        from moneybin.services.import_confirmation import coerce_number_format
+
+        assert (
+            coerce_number_format(
+                field_mapping={"debit_amount": "Soll", "credit_amount": "Haben"},
+                sample_values={
+                    "debit_amount": ["", "", None],
+                    "credit_amount": ["1.234,56", "2.500,00", "3.750,25"],
                 },
                 detected="us",
             )
@@ -634,6 +660,15 @@ class TestCoerceNumberFormat:
             coerce_number_format(
                 field_mapping={"debit_amount": "Soll"},
                 sample_values={},
+                detected="european",
+            )
+            == "european"
+        )
+        # Blanks are the same as absent — not evidence for the "us" default.
+        assert (
+            coerce_number_format(
+                field_mapping={"debit_amount": "Soll", "credit_amount": "Haben"},
+                sample_values={"debit_amount": ["", None], "credit_amount": [" "]},
                 detected="european",
             )
             == "european"

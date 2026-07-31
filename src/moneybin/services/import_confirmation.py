@@ -397,20 +397,35 @@ def coerce_number_format(
     silently parses ``1.234,56`` as ``1.23456`` — and the wrong format is then
     saved for every later import of that layout.
 
-    Re-derives from the surviving amount column. Keeps ``detected`` when no
-    samples are available, since a guess from nothing is worse than the
-    detector's answer.
+    Re-derives from the surviving amount column, pooling both halves of a
+    split pair. Pooling is not an optimization: ``collect_samples`` takes the
+    first rows unfiltered, and each row of a debit/credit layout fills only one
+    side, so a sample window that happens to be all credits leaves
+    ``debit_amount`` a non-empty list of blanks. Reading the first *present*
+    destination would hand that to ``detect_number_format``, which finds
+    nothing parseable and returns its own ``us`` default — the wrong answer,
+    never having looked at the column holding the values. The two halves are
+    the same currency and locale by construction, so pooling them is also
+    strictly more signal than either alone.
+
+    Keeps ``detected`` when nothing parseable survives, since a guess from
+    blanks is worse than the detector's answer.
     """
     from moneybin.extractors.tabular.date_detection import detect_number_format
 
-    for dest in ("amount", "debit_amount", "credit_amount"):
+    sources = (
+        ("amount",) if "amount" in field_mapping else ("debit_amount", "credit_amount")
+    )
+    usable: list[str | None] = []
+    for dest in sources:
         if dest not in field_mapping:
             continue
-        values = sample_values.get(dest)
-        if not values:
-            continue
-        return detect_number_format([str(v) if v is not None else None for v in values])
-    return detected
+        for value in sample_values.get(dest) or ():
+            if value is not None and str(value).strip():
+                usable.append(str(value))
+    if not usable:
+        return detected
+    return detect_number_format(usable)
 
 
 def validate_partial_mapping(
