@@ -830,6 +830,14 @@ async def test_preview_override_rereads_number_format_from_the_kept_columns(
     assert corrected.data.number_format != "us", (
         "number_format still reflects the retired Amount column"
     )
+    # The same override necessarily runs coerce_sign_convention's single→split
+    # branch. Asserting only the number format left that direction uncovered —
+    # the split→single direction is checked end-to-end elsewhere, so this was a
+    # one-sided gap, and a regression there would parse every row under a
+    # non-split convention with nothing here to catch it.
+    assert corrected.data.sign_convention == "split_debit_credit", (
+        corrected.data.sign_convention
+    )
 
 
 async def test_import_preview_refuses_a_mapping_override_on_a_pdf(

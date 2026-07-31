@@ -675,7 +675,12 @@ class TestTabularConfirmationFlow:
                 emit_metrics=False,
                 observations=observations,
             )
-        observations.flush("commit")
+        # The disposition the real MCP caller uses on this path: it wraps the
+        # channel call in `except BaseException: db.rollback();
+        # observations.flush("rollback")`. Flushing "commit" here asserted
+        # against a disposition no caller ever reaches on a refusal, so the
+        # test stayed green while the metrics were being discarded.
+        observations.flush("rollback")
 
         assert (
             IMPORT_REVALIDATION_FAILURE_TOTAL.labels(channel="tabular")._value.get()  # type: ignore[reportPrivateUsage]
@@ -852,7 +857,12 @@ class TestTabularConfirmationFlow:
                 observations=observations,
             )
 
-        observations.flush("commit")
+        # The disposition the real MCP caller uses on this path: it wraps the
+        # channel call in `except BaseException: db.rollback();
+        # observations.flush("rollback")`. Flushing "commit" here asserted
+        # against a disposition no caller ever reaches on a refusal, so the
+        # test stayed green while the metrics were being discarded.
+        observations.flush("rollback")
         assert (
             IMPORT_DETECTION_SCORE._sum.get()  # type: ignore[reportPrivateUsage]
             == before + 0.75

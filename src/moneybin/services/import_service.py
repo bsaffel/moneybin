@@ -1621,6 +1621,10 @@ class ImportService:
                 labels={},
                 emit_metrics=emit_metrics,
                 observations=observations,
+                # The gates below raise, and the MCP caller flushes "rollback"
+                # on exception — a "commit" item is discarded there, which is
+                # exactly the histogram bias the comment above warns against.
+                disposition="rollback",
             )
 
             # An explicit --date-format is the documented way in for a real
@@ -1647,6 +1651,7 @@ class ImportService:
                     },
                     emit_metrics=emit_metrics,
                     observations=observations,
+                    disposition="rollback",
                 )
                 raise ImportConfirmationRequiredError(
                     ConfirmationRequired(
@@ -1798,6 +1803,7 @@ class ImportService:
                 labels={"channel": "tabular"},
                 emit_metrics=emit_metrics,
                 observations=observations,
+                disposition="rollback",
             )
             record_counter(
                 IMPORT_CONFIRMATIONS_TOTAL,
@@ -1808,6 +1814,7 @@ class ImportService:
                 },
                 emit_metrics=emit_metrics,
                 observations=observations,
+                disposition="rollback",
             )
             raise ImportConfirmationRequiredError(
                 ConfirmationRequired(

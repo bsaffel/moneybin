@@ -583,6 +583,128 @@ class TestResolveOrConfirm:
         assert "not in the source" in out.error_message
 
 
+class TestCoerceSignConvention:
+    """The amount-shape coercion its two siblings are modelled on."""
+
+    def test_a_swap_to_split_retires_a_single_amount_rule(self) -> None:
+        from moneybin.services.import_confirmation import coerce_sign_convention
+
+        assert (
+            coerce_sign_convention(
+                field_mapping={"debit_amount": "Soll", "credit_amount": "Haben"},
+                detected="negative_is_expense",
+            )
+            == "split_debit_credit"
+        )
+
+    def test_a_swap_to_single_retires_a_split_rule(self) -> None:
+        """A split rule against one amount column rejects every row."""
+        from moneybin.services.import_confirmation import coerce_sign_convention
+
+        assert (
+            coerce_sign_convention(
+                field_mapping={"amount": "Amount"},
+                detected="split_debit_credit",
+            )
+            == "negative_is_expense"
+        )
+
+    def test_an_unchanged_shape_keeps_the_detected_convention(self) -> None:
+        """Including negative_is_income, which no coercion may quietly flip."""
+        from moneybin.services.import_confirmation import coerce_sign_convention
+
+        assert (
+            coerce_sign_convention(
+                field_mapping={"amount": "Amount"},
+                detected="negative_is_income",
+            )
+            == "negative_is_income"
+        )
+
+
+class TestCoerceConfidenceTier:
+    """Re-banding a merged mapping; its predecessor was reported wrong twice."""
+
+    _BANDS = {"t_high": 0.90, "t_med": 0.70}
+
+    def test_a_flag_the_override_did_not_name_blocks_high(self) -> None:
+        """High is the tier eligible for agent self-accept."""
+        from moneybin.services.import_confirmation import coerce_confidence_tier
+
+        assert (
+            coerce_confidence_tier(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Blurb",
+                },
+                detected_flagged=["description"],
+                override_keys={"amount"},
+                date_format="%Y-%m-%d",
+                structural_red_flag=False,
+                **self._BANDS,
+            )
+            == "medium"
+        )
+
+    def test_an_override_covering_every_flag_reaches_high(self) -> None:
+        from moneybin.services.import_confirmation import coerce_confidence_tier
+
+        assert (
+            coerce_confidence_tier(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Blurb",
+                },
+                detected_flagged=["description"],
+                override_keys={"description"},
+                date_format="%Y-%m-%d",
+                structural_red_flag=False,
+                **self._BANDS,
+            )
+            == "high"
+        )
+
+    def test_a_structural_red_flag_pins_low_whatever_the_score(self) -> None:
+        from moneybin.services.import_confirmation import coerce_confidence_tier
+
+        assert (
+            coerce_confidence_tier(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Memo",
+                },
+                detected_flagged=[],
+                override_keys=set(),
+                date_format="%Y-%m-%d",
+                structural_red_flag=True,
+                **self._BANDS,
+            )
+            == "low"
+        )
+
+    def test_an_unread_date_bands_below_high(self) -> None:
+        from moneybin.services.import_confirmation import coerce_confidence_tier
+
+        assert (
+            coerce_confidence_tier(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Memo",
+                },
+                detected_flagged=[],
+                override_keys=set(),
+                date_format=None,
+                structural_red_flag=False,
+                **self._BANDS,
+            )
+            == "medium"
+        )
+
+
 class TestCoerceNumberFormat:
     """Keeping number_format in step with the amount shape actually mapped."""
 

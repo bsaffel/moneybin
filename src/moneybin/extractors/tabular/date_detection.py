@@ -42,10 +42,22 @@ _DATE_FORMATS: list[str] = [
 
 _MIN_YEAR = 1970
 
-# Share of non-empty values a format must read to be considered viable. Applied
-# both to the detector's own candidates and to a caller-supplied override, so
-# an explicit --date-format clears exactly the bar a guess would have to.
+# Share of non-empty values a detected candidate must read. This is a
+# confidence bar for *guessing*: the detector picks among candidates with no
+# input from the caller, so it should only choose one that reads almost
+# everything.
 _MIN_PARSE_RATE = 0.9
+
+# The bar a caller-supplied --date-format clears instead. Deliberately lower,
+# because it answers a different question: not "am I confident enough to pick
+# this unasked" but "does this format read the column at all". The transform
+# imports valid rows and records the rest in rows_rejected, which `import
+# status` surfaces — so partial parsing is a visible outcome, and holding an
+# explicit override to the detector's bar made a file with 8 good dates in 10
+# unimportable by either route. Below a majority the format is more likely
+# wrong than the data dirty, which is the zero-row import this gate exists to
+# stop.
+_MIN_OVERRIDE_PARSE_RATE = 0.5
 
 
 def _max_year() -> int:
@@ -59,6 +71,10 @@ def format_parses(values: "Sequence[str | None]", fmt: str) -> bool:
     entry for (`%Y%m%d`) can only arrive as a caller override. Checking it here
     keeps that escape hatch from becoming a second route to a zero-row import:
     a format nothing parses is refused rather than carried into the loader.
+
+    Held to `_MIN_OVERRIDE_PARSE_RATE`, not the detector's own bar — see that
+    constant for why the two differ. A file whose date column is merely dirty
+    still imports, with the unparsed rows counted in `rows_rejected`.
     """
     clean = [value.strip() for value in values if value and value.strip()]
     if not clean:
@@ -78,7 +94,7 @@ def format_parses(values: "Sequence[str | None]", fmt: str) -> bool:
             # value can rescue the format, so stop rather than retry each one.
             return False
         parsed += 1
-    return parsed / len(clean) >= _MIN_PARSE_RATE
+    return parsed / len(clean) >= _MIN_OVERRIDE_PARSE_RATE
 
 
 def detect_date_format(

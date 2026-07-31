@@ -22,12 +22,25 @@ class TestFormatParses:
         values: list[str | None] = ["20260105", "20260212", "20260331"]
         assert format_parses(values, "%d/%m/%Y") is False
 
-    def test_holds_an_override_to_the_detector_s_own_parse_bar(self) -> None:
-        """Below 90% parsed is a reject, matching detect_date_format's threshold."""
-        # 8 of 10 parse — over half, under the bar the detector accepts at.
-        values = ["20260105"] * 8 + ["not-a-date"] * 2
-        assert format_parses(values, "%Y%m%d") is False
-        assert format_parses(["20260105"] * 9 + ["not-a-date"], "%Y%m%d") is True
+    def test_a_dirty_column_still_clears_the_override_bar(self) -> None:
+        """An explicit override answers a different question than detection.
+
+        The detector's 0.9 is a confidence bar for guessing unasked. An
+        override is the caller asserting the format, and the transform imports
+        valid rows while counting the rest in rows_rejected — which `import
+        status` shows. Holding the override to 0.9 made a file with 8 good
+        dates in 10 unimportable by either route: detection refused it for
+        falling short, and the documented --date-format recovery refused it
+        by the same number.
+        """
+        # 8 of 10 — under the detector's bar, comfortably over a majority.
+        assert format_parses(["20260105"] * 8 + ["not-a-date"] * 2, "%Y%m%d") is True
+
+    def test_a_format_reading_a_minority_is_still_refused(self) -> None:
+        """Below a majority the format is likelier wrong than the data dirty."""
+        assert format_parses(["20260105"] * 4 + ["not-a-date"] * 6, "%Y%m%d") is False
+        # Exactly half clears: the bar is inclusive.
+        assert format_parses(["20260105"] * 5 + ["not-a-date"] * 5, "%Y%m%d") is True
 
     def test_no_values_to_check_is_not_a_pass(self) -> None:
         """Fail closed: an unverifiable override must not clear the gate."""

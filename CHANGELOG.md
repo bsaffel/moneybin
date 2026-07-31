@@ -745,6 +745,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reach the model provider as-is, and there is no consent gate yet.
 
 ### Security
+- **Fixed a redaction bypass that returned a source account identifier in the
+  clear through `import_confirm`'s `confirmation_required` envelope (#372).**
+  The tool declares `dynamic_classification=True`, and the decorator skips
+  `redact_typed` for dynamic tools — so the raw-dict envelope shipped
+  `account_proposals[].source_account_key` (the native OFX/Plaid identifier,
+  `ACCOUNT_IDENTIFIER` → CRITICAL) unmasked, with no `classes_returned`
+  recorded. It is now a typed `ImportConfirmRequiredPayload` routed through the
+  redaction path, the key is masked, and `classes_returned` reports
+  `account_identifier`. A related hint in `actions[]` interpolated the same raw
+  key into prose, which the middleware never redacts; it no longer names the
+  key at all.
 - **Fixed an under-classification leak that returned a bank routing number in
   the clear through `sql_query` / `moneybin sql query` via `INTERSECT`.** The
   set-operation fix in #330 treated `INTERSECT` like `EXCEPT` — values from the
