@@ -7,13 +7,13 @@ available via the MCP server. Category taxonomy and merchant mappings live
 in the top-level `categories` and `merchants` groups respectively.
 """
 
-import dataclasses
 import logging
 from decimal import Decimal, InvalidOperation
 from typing import Literal, cast
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     output_option,
@@ -21,7 +21,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import ErrorDetail
 
 from . import auto, ml, rules
 from .commit_from_file import categorize_commit_from_file
@@ -116,6 +116,7 @@ def categorize_pending(
                 if r.get("txn_date") is not None
                 else None,
                 amount=float(r["amount"]) if r.get("amount") is not None else None,
+                currency_code=r.get("currency_code"),
                 description=r.get("description"),
                 memo=r.get("memo"),
                 account_id=r.get("account_id"),
@@ -238,17 +239,17 @@ def categorize_commit(
         sensitivity="medium",
         total_count=input_count,
         actions=[
-            "Use transactions_categorize_rules to review auto-created rules",
-            "Use transactions_categorize_pending to fetch the next batch",
+            "Use `moneybin transactions categorize rules list` to review "
+            "auto-created rules",
+            "Use `moneybin transactions categorize pending` to fetch the next batch",
         ],
     )
     if result.errors > 0:
-        envelope = dataclasses.replace(
-            envelope,
-            error=UserError(
-                f"{result.errors} item(s) failed to categorize",
-                code="categorization_errors",
-            ),
+        envelope = envelope.with_error(
+            ErrorDetail(
+                message=f"{result.errors} item(s) failed to categorize",
+                code=error_codes.TRANSACTION_CATEGORIZATION_ERRORS,
+            )
         )
     render_or_json(
         envelope, output, render_fn=_render_table, cli_actor="categorize_commit"

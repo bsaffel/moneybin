@@ -598,8 +598,11 @@ class MatchApplier:
             ).fetchone()
             if row is not None:
                 MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(int(row[0]))
-        for merchant_id in dict.fromkeys(created_merchant_ids):
-            logger.info(f"Created user merchant {merchant_id}")
+        created = list(dict.fromkeys(created_merchant_ids))
+        if created:
+            # A count, not one line per id: a categorization run creates these
+            # in bulk. Merchant names are never logged (.claude/rules/security.md).
+            logger.info(f"Created {len(created)} user merchant(s)")
 
     # -- Rule management --
 
@@ -1074,7 +1077,7 @@ class MatchApplier:
         uniqueness contract; the cross-source check happens here.
 
         Raises:
-            UserError(code="CATEGORY_ALREADY_EXISTS"): the
+            UserError(code=error_codes.TAXONOMY_CATEGORY_ALREADY_EXISTS): the
                 ``(category, subcategory)`` pair is already present in
                 ``core.dim_categories`` (either as a seeded default or a
                 prior user-created row).
@@ -1091,7 +1094,7 @@ class MatchApplier:
             sub = f" / {subcategory}" if subcategory else ""
             raise UserError(
                 f"Category already exists: {category}{sub}",
-                code="CATEGORY_ALREADY_EXISTS",
+                code=error_codes.TAXONOMY_CATEGORY_ALREADY_EXISTS,
             )
 
         # The duplicate check above and the insert below are separate statements
@@ -1183,12 +1186,12 @@ class MatchApplier:
             if default:
                 raise UserError(
                     f"Default category {category_id} cannot be deleted "
-                    "(use categories_set with is_active=False to disable)",
-                    code="CATEGORY_IS_DEFAULT",
+                    "(use taxonomy_set with is_active=False to disable)",
+                    code=error_codes.TAXONOMY_CATEGORY_IS_DEFAULT,
                 )
             raise UserError(
                 f"Category {category_id} not found",
-                code="CATEGORY_NOT_FOUND",
+                code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
             )
 
         references = tuple(
@@ -1232,7 +1235,7 @@ class MatchApplier:
                 f"Category {category_id} is referenced by "
                 + ", ".join(present)
                 + "; pass force=True to cascade-delete.",
-                code="CATEGORY_HAS_REFERENCES",
+                code=error_codes.TAXONOMY_CATEGORY_HAS_REFERENCES,
                 details={
                     "usage": plan.usage(),
                     "effective_usage": effective_usage,
@@ -1732,7 +1735,7 @@ class MatchApplier:
         row (Invariant 10).
 
         Raises:
-            UserError(code="CATEGORY_NOT_FOUND"): no category with this ID
+            UserError(code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND): no category with this ID
                 exists in either ``app.user_categories`` or the seeded defaults.
         """
         cat = self._db.execute(
@@ -1742,7 +1745,7 @@ class MatchApplier:
         if not cat:
             raise UserError(
                 f"Category {category_id} not found",
-                code="CATEGORY_NOT_FOUND",
+                code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
             )
 
         if cat[0]:  # default category — record/upsert the override
@@ -1780,10 +1783,10 @@ class MatchApplier:
                 (e.g. ``"cli"``, ``"mcp"``).
 
         Raises:
-            UserError(code="CATEGORY_NOT_FOUND"): no category with this ID.
-            UserError(code="CATEGORY_IS_DEFAULT"): seeded default categories
+            UserError(code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND): no category with this ID.
+            UserError(code=error_codes.TAXONOMY_CATEGORY_IS_DEFAULT): seeded default categories
                 cannot be hard-deleted; use ``toggle_category``.
-            UserError(code="CATEGORY_HAS_REFERENCES"): force=False and the
+            UserError(code=error_codes.TAXONOMY_CATEGORY_HAS_REFERENCES): force=False and the
                 category is referenced by at least one of the seven tracked
                 tables.
         """

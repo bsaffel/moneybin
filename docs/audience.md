@@ -98,7 +98,7 @@ These are the people MoneyBin is being built for but doesn't fully serve yet. No
 
 **Job to be done:** One queryable warehouse holding cash + investments together. FIFO lot tracking. Numbers that tie to the 1099-B at year-end.
 
-**Why MoneyBin will fit:** The core ledger is built and working: a manually-maintained securities catalog, an investment transaction ledger (buys, sells, reinvested dividends, interest, capital-gain distributions, transfers, splits, fees, return of capital), four cost-basis methods (FIFO, HIFO, specific identification, average cost), derived tax lots, and realized short-/long-term gain/loss reporting — the 1099-B surface. That math has been checked against a hand-labeled, full-tax-year fixture, not yet against a real broker's 1099-B — that reconciliation is the one gate left before this persona can trust the numbers at tax time, and partial trust is a worse outcome than none.
+**Why MoneyBin will fit:** The core ledger is built and working: a securities catalog, an investment transaction ledger (buys, sells, reinvested dividends, interest, capital-gain distributions, transfers, splits, fees, return of capital), four cost-basis methods (FIFO, HIFO, specific identification, average cost), derived tax lots, and realized short-/long-term gain/loss reporting — the 1099-B surface. That math has been checked against a hand-labeled, full-tax-year fixture, not yet against a real broker's 1099-B — that reconciliation is the one gate left before this persona can trust the numbers at tax time, and partial trust is a worse outcome than none.
 
 Plaid investment ingestion is available through `moneybin sync pull`; manual entry via `investments add` remains available. Real estate, private equity, and illiquid assets stay manual.
 

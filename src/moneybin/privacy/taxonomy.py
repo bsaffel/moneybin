@@ -156,6 +156,11 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "official_name": DataClass.INSTITUTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("app", "profile_settings"): {
+        "scope": DataClass.RECORD_ID,
+        "home_currency": DataClass.CURRENCY,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "ai_consent_grants"): {
         "grant_id": DataClass.RECORD_ID,
         "feature_category": DataClass.CATEGORY,
@@ -284,6 +289,24 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "managed_tab_prefix": DataClass.USER_NOTE,
         "name": DataClass.USER_NOTE,
         "spreadsheet_id": DataClass.RECORD_ID,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("app", "user_reports"): {
+        "class_downgrades": DataClass.DESCRIPTION,
+        "class_fingerprint": DataClass.RECORD_ID,
+        "classes": DataClass.DESCRIPTION,
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "description": DataClass.USER_NOTE,
+        "is_active": DataClass.TXN_TYPE,
+        "name": DataClass.USER_NOTE,
+        "params": DataClass.DESCRIPTION,
+        # MEDIUM is a deliberate accepted risk: a user must be able to read
+        # their own SQL back to edit it, and pattern-matching string literals
+        # to classify them would corrupt legitimate queries. R8/R9 exist so the
+        # natural way to write a filter is a parameter, not an inline literal.
+        "query_sql": DataClass.USER_NOTE,
+        "report_id": DataClass.RECORD_ID,
+        "semantics": DataClass.DESCRIPTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("app", "imports"): {
@@ -810,6 +833,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     },
     ("core", "fct_transaction_lines"): {
         "account_id": DataClass.RECORD_ID,
+        "currency_code": DataClass.CURRENCY,
         "description": DataClass.DESCRIPTION,
         "is_pending": DataClass.TXN_TYPE,
         "is_transfer": DataClass.TXN_TYPE,
@@ -893,6 +917,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_name": DataClass.USER_NOTE,
         "txn_date": DataClass.TXN_DATE,
         "amount": DataClass.TXN_AMOUNT,
+        "currency_code": DataClass.CURRENCY,
         "description": DataClass.DESCRIPTION,
         "merchant_id": DataClass.RECORD_ID,
         "merchant_normalized": DataClass.MERCHANT_NAME,

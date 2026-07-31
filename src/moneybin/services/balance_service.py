@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+import duckdb
+
 from moneybin.database import Database
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionListPayload,
@@ -20,9 +22,10 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationListPayload,
     BalanceObservationRow,
 )
+from moneybin.protocol.envelope import resolve_display_currency
 from moneybin.services.account_service import assert_account_exists
 from moneybin.services.audit_service import AuditService
-from moneybin.tables import BALANCE_ASSERTIONS, FCT_BALANCES_DAILY
+from moneybin.tables import BALANCE_ASSERTIONS, DIM_ACCOUNTS, FCT_BALANCES_DAILY
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +42,23 @@ class BalanceAssertionSnapshot:
     updated_at: str
 
 
+def balances_display_currency(payload: BalanceObservationListPayload) -> str | None:
+    """The single currency these observations share, else ``None``.
+
+    Balance rows carry their own currency and one account's can change between
+    observations, so the envelope may not fall back to ``build_envelope``'s
+    "USD" default — that would label a EUR account's money in dollars
+    (multi-currency.md Requirement 5). Shared by the MCP tools and the CLI
+    commands so both answer ``display_currency`` identically.
+    """
+    return resolve_display_currency(row.currency_code for row in payload.observations)
+
+
 def _observation_row_from_db(row: tuple[object, ...]) -> BalanceObservationRow:
     """Construct a BalanceObservationRow from a SELECT result tuple.
 
     Columns: account_id, balance_date, balance, is_observed, observation_source,
-    reconciliation_delta.
+    reconciliation_delta, currency_code.
     """
     return BalanceObservationRow(
         account_id=row[0],  # type: ignore[arg-type]
@@ -52,13 +67,15 @@ def _observation_row_from_db(row: tuple[object, ...]) -> BalanceObservationRow:
         is_observed=row[3],  # type: ignore[arg-type]
         observation_source=row[4],  # type: ignore[arg-type]
         reconciliation_delta=row[5],  # type: ignore[arg-type]
+        currency_code=row[6],  # type: ignore[arg-type]
     )
 
 
 def _assertion_row_from_db(row: tuple[object, ...]) -> BalanceAssertionRow:
     """Construct a BalanceAssertionRow from a SELECT result tuple.
 
-    Columns: account_id, assertion_date, balance, notes, created_at.
+    Columns: account_id, assertion_date, balance, notes, created_at,
+    currency_code.
     """
     return BalanceAssertionRow(
         account_id=row[0],  # type: ignore[arg-type]
@@ -66,7 +83,28 @@ def _assertion_row_from_db(row: tuple[object, ...]) -> BalanceAssertionRow:
         balance=row[2],  # type: ignore[arg-type]
         notes=row[3],  # type: ignore[arg-type]
         created_at=str(row[4]),
+        currency_code=row[5],  # type: ignore[arg-type]
     )
+
+
+def _assertion_sql(tail: str, *, with_currency: bool) -> str:
+    """The assertion SELECT, with the ``dim_accounts`` currency join optional.
+
+    ``tail`` is literal WHERE/ORDER text carrying ``?`` placeholders; every
+    value stays parameterized at the call site.
+    """
+    join = (
+        f"LEFT JOIN {DIM_ACCOUNTS.full_name} d USING (account_id)"
+        if with_currency
+        else ""
+    )
+    return f"""
+        SELECT a.account_id, a.assertion_date, a.balance, a.notes, a.created_at,
+               {"d.currency_code" if with_currency else "NULL"}
+        FROM {BALANCE_ASSERTIONS.full_name} a
+        {join}
+        {tail}
+    """  # noqa: S608  # tail is literal SQL; values bound via the params list
 
 
 def _assertion_snapshot_from_db(
@@ -189,23 +227,41 @@ class BalanceService:
             )
             return True
 
+    def _fetch_assertions(
+        self, tail: str, params: list[object]
+    ) -> list[tuple[object, ...]]:
+        """Assertion rows for ``tail``, degrading to an unknown currency.
+
+        The currency is joined from ``core.dim_accounts``, which is a SQLMesh
+        output rather than a schema-init table: a profile that has never run
+        ``transform`` does not have it. Answering without the currency is the
+        right degradation — raising would turn every assertion read on a fresh
+        profile into an unclassified catalog error the CLI renders as a
+        traceback.
+        """
+        try:
+            return self._db.execute(
+                _assertion_sql(tail, with_currency=True), params
+            ).fetchall()
+        except duckdb.CatalogException:
+            return self._db.execute(
+                _assertion_sql(tail, with_currency=False), params
+            ).fetchall()
+
     def list_assertions(
         self, account_id: str | None = None
     ) -> BalanceAssertionListPayload:
         """List assertions; optionally filter to a single account."""
-        sql = f"""
-            SELECT account_id, assertion_date, balance, notes, created_at
-            FROM {BALANCE_ASSERTIONS.full_name}
-        """
         params: list[object] = []
+        tail = ""
         if account_id is not None:
-            sql += " WHERE account_id = ?"
+            tail = "WHERE a.account_id = ?"
             params.append(account_id)
-        sql += " ORDER BY account_id, assertion_date DESC"
+        tail += " ORDER BY a.account_id, a.assertion_date DESC"
         return BalanceAssertionListPayload(
             assertions=[
                 _assertion_row_from_db(row)
-                for row in self._db.execute(sql, params).fetchall()
+                for row in self._fetch_assertions(tail, params)
             ]
         )
 
@@ -236,17 +292,11 @@ class BalanceService:
         self, account_id: str, assertion_date: date
     ) -> BalanceAssertionRow | None:
         """Return one exact assertion, or ``None`` when absent."""
-        row = self._db.execute(
-            f"""
-            SELECT account_id, assertion_date, balance, notes, created_at
-            FROM {BALANCE_ASSERTIONS.full_name}
-            WHERE account_id = ? AND assertion_date = ?
-            """,
+        rows = self._fetch_assertions(
+            "WHERE a.account_id = ? AND a.assertion_date = ?",
             [account_id, assertion_date],
-        ).fetchone()
-        if row is None:
-            return None
-        return _assertion_row_from_db(row)
+        )
+        return _assertion_row_from_db(rows[0]) if rows else None
 
     def _find_assertion_snapshot(
         self, account_id: str, assertion_date: date
@@ -288,6 +338,7 @@ class BalanceService:
                 SELECT
                     account_id, balance_date, balance,
                     is_observed, observation_source, reconciliation_delta,
+                    currency_code,
                     ROW_NUMBER() OVER (
                         PARTITION BY account_id ORDER BY balance_date DESC
                     ) AS _rn
@@ -295,7 +346,8 @@ class BalanceService:
                 {where_sql}
             )
             SELECT account_id, balance_date, balance,
-                   is_observed, observation_source, reconciliation_delta
+                   is_observed, observation_source, reconciliation_delta,
+                   currency_code
             FROM ranked WHERE _rn = 1
             ORDER BY account_id
         """  # noqa: S608  # placeholders parameterized via params list above
@@ -315,7 +367,8 @@ class BalanceService:
         """Per-account balance time series."""
         sql = f"""
             SELECT account_id, balance_date, balance,
-                   is_observed, observation_source, reconciliation_delta
+                   is_observed, observation_source, reconciliation_delta,
+                   currency_code
             FROM {FCT_BALANCES_DAILY.full_name}
             WHERE account_id = ?
         """
@@ -348,7 +401,8 @@ class BalanceService:
             params.extend(account_ids)
         sql = f"""
             SELECT account_id, balance_date, balance,
-                   is_observed, observation_source, reconciliation_delta
+                   is_observed, observation_source, reconciliation_delta,
+                   currency_code
             FROM {FCT_BALANCES_DAILY.full_name}
             WHERE reconciliation_delta IS NOT NULL
               AND ABS(reconciliation_delta) > ? {where}

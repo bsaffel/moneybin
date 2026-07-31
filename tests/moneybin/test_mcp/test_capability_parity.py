@@ -159,6 +159,12 @@ def test_every_non_exempt_capability_has_both_surfaces() -> None:
         else:
             assert row.exemption.surface in {"cli", "mcp"}, row.capability_id
             assert row.exemption.category in {
+                # The four permanent policy exceptions, plus the one temporary
+                # category: a capability whose bounded-registry admission record
+                # is outstanding has no public tool name yet, and recording that
+                # as `operator-territory` would state a reason that is not the
+                # real one. See moneybin-capabilities.md → Exemptions.
+                "admission-pending",
                 "granular-operator-debug",
                 "operator-territory",
                 "protocol-only",
@@ -522,6 +528,7 @@ def _seed_nonzero_networth(path: Path) -> None:
             CREATE OR REPLACE VIEW reports.net_worth AS
             SELECT
                 d.balance_date,
+                d.currency_code,
                 SUM(d.balance) AS net_worth,
                 COUNT(DISTINCT d.account_id) AS account_count,
                 SUM(CASE WHEN d.balance > 0 THEN d.balance ELSE 0 END) AS total_assets,
@@ -529,7 +536,7 @@ def _seed_nonzero_networth(path: Path) -> None:
             FROM core.fct_balances_daily AS d
             INNER JOIN core.dim_accounts AS a ON d.account_id = a.account_id
             WHERE a.include_in_net_worth AND NOT a.archived
-            GROUP BY d.balance_date
+            GROUP BY d.balance_date, d.currency_code
             """
         )
 

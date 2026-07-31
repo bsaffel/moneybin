@@ -1,10 +1,11 @@
-"""reports_recurring / `reports recurring` — likely-recurring subscriptions."""
+"""core:recurring / `reports recurring` — likely-recurring subscriptions."""
 
 from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -21,6 +22,7 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
     classes={
         "merchant_id": DataClass.RECORD_ID,
         "merchant_normalized": DataClass.MERCHANT_NAME,
+        "currency_code": DataClass.CURRENCY,
         "avg_amount": DataClass.TXN_AMOUNT,
         "cadence": DataClass.TXN_TYPE,
         "interval_days_avg": DataClass.AGGREGATE,
@@ -45,6 +47,11 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
             "merchant_normalized",
             "Canonical merchant label or uncategorized bucket.",
             DataClass.MERCHANT_NAME,
+        ),
+        OutputColumn(
+            "currency_code",
+            "ISO 4217 currency this row is denominated in; null means unknown.",
+            DataClass.CURRENCY,
         ),
         OutputColumn(
             "avg_amount", "Mean absolute recurring charge.", DataClass.TXN_AMOUNT
@@ -83,11 +90,11 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
     ),
     semantics=ReportSemantics(
         unit="currency",
-        currency="summary.display_currency",
+        currency="currency_code",
         sign="cost amounts are positive absolute outflows",
         kind="flow",
         valuation_basis="mean observed transaction amount annualized by inferred cadence",
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis="inclusive rolling 18-month period ending on current date",
         denominator=(
             "six occurrences and fourteen days of interval variation scale confidence"
@@ -138,8 +145,12 @@ def recurring_subscriptions(
 ) -> ReportQuery:
     """Likely-recurring subscription candidates with confidence scores.
 
-    Average and annualized costs are positive absolute outflows in the currency
-    named by summary.display_currency.
+    Average and annualized costs are positive absolute outflows in each row's
+    own currency_code.
+
+    Rows interleave the currencies, costliest first within each, so a truncated
+    result still represents every currency. Compare annualized_cost only
+    between rows sharing a currency_code.
 
     Args:
         db: Open read-only database connection.
@@ -164,19 +175,33 @@ def recurring_subscriptions(
         )
 
     sql = f"""
-        SELECT merchant_id, merchant_normalized, cadence, avg_amount,
+        SELECT merchant_id, merchant_normalized, currency_code, cadence, avg_amount,
                interval_days_avg, interval_days_stddev,
                occurrence_count, first_seen, last_seen, status,
                annualized_cost, confidence
         FROM {REPORTS_RECURRING_SUBSCRIPTIONS.full_name}
         WHERE confidence >= ?
     """  # noqa: S608  # TableRef interpolation
-    params: list[object] = [min_confidence]
+    # Each binding declares the class of the value it carries (R9).
+    params: list[Binding] = [Binding(min_confidence, DataClass.AGGREGATE)]
     if status != "all":
         sql += " AND status = ?"
-        params.append(status)
+        params.append(Binding(status, DataClass.TXN_TYPE))
     if cadence:
         sql += " AND cadence = ?"
-        params.append(cadence)
-    sql += " ORDER BY annualized_cost DESC NULLS LAST"
+        params.append(Binding(cadence, DataClass.TXN_TYPE))
+    # Interleave the currencies: rank within each, then take rank 1 of every
+    # currency before rank 2 of any. Ordering by cost alone would rank a ¥1,200
+    # subscription above a $60 one on nominal magnitude, but leading with
+    # currency_code is no better — the surface row cap truncates with
+    # `records[:max_rows]`, so it would hand the cap every JPY candidate before
+    # the first USD one and drop whole currencies out of the response. Ties
+    # break on currency_code because two rank-1 rows have no cross-currency
+    # order. A single-currency profile is unaffected: its ranks already ascend
+    # in annualized_cost order.
+    sql += """
+        ORDER BY ROW_NUMBER() OVER (
+            PARTITION BY currency_code ORDER BY annualized_cost DESC NULLS LAST
+        ), currency_code
+    """
     return ReportQuery(sql, params)

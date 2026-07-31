@@ -38,11 +38,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.write_contracts import AnnotationRequest
 from moneybin.privacy.payloads.transactions import (
     MatchesHistoryPayload,
@@ -58,6 +53,11 @@ from moneybin.privacy.payloads.transactions import (
     TransactionRow,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    build_keyset_page,
+    decode_keyset_cursor,
+)
 from moneybin.services.account_service import AccountService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.entity_reference import (
@@ -112,6 +112,7 @@ def _transaction_payload(
                 account_id=t.account_id,
                 transaction_date=t.transaction_date,
                 amount=t.amount,
+                currency_code=t.currency_code,
                 description=t.description,
                 memo=t.memo,
                 source_type=t.source_type,
@@ -176,6 +177,8 @@ def transactions_get(
     payload = _transaction_payload(result, next_cursor=result.next_cursor)
     return build_envelope(
         data=payload,
+        total_count=result.total_count,
+        returned_count=len(result.transactions),
         next_cursor=result.next_cursor,
         actions=[
             "Use transactions with the next_cursor value to fetch the next page",
@@ -196,13 +199,13 @@ def _resolve_transaction_reference(
     if isinstance(resolution, AmbiguousEntity):
         raise UserError(
             f"The {noun} reference matches multiple {noun}s.",
-            code="ENTITY_REFERENCE_AMBIGUOUS",
+            code=error_codes.ENTITY_REFERENCE_AMBIGUOUS,
             details={"candidate_ids": list(resolution.candidate_ids)},
         )
     if isinstance(resolution, MissingEntity):
         raise UserError(
             f"The {noun} reference did not match a {noun}.",
-            code="ENTITY_REFERENCE_NOT_FOUND",
+            code=error_codes.ENTITY_REFERENCE_NOT_FOUND,
             details={"candidate_ids": []},
         )
     return resolution.entity_id
@@ -269,7 +272,7 @@ def _transaction_position(
     except ValueError as exc:
         raise UserError(
             "Invalid pagination cursor.",
-            code="TRANSACTION_CURSOR_INVALID",
+            code=error_codes.TRANSACTION_CURSOR_INVALID,
         ) from exc
 
 
@@ -288,7 +291,7 @@ def _transaction_bounds(
     ):
         raise UserError(
             "Invalid pagination cursor.",
-            code="TRANSACTION_CURSOR_INVALID",
+            code=error_codes.TRANSACTION_CURSOR_INVALID,
         )
     snapshot = cast(tuple[str, str], position.snapshot)
     after = cast(tuple[str, str], position.after)
@@ -298,12 +301,12 @@ def _transaction_bounds(
     except ValueError as exc:
         raise UserError(
             "Invalid pagination cursor.",
-            code="TRANSACTION_CURSOR_INVALID",
+            code=error_codes.TRANSACTION_CURSOR_INVALID,
         ) from exc
     if not snapshot[1] or not after[1]:
         raise UserError(
             "Invalid pagination cursor.",
-            code="TRANSACTION_CURSOR_INVALID",
+            code=error_codes.TRANSACTION_CURSOR_INVALID,
         )
     return (
         snapshot,
@@ -380,12 +383,12 @@ def transactions_coarse(
     if start is not None and end is not None and start > end:
         raise UserError(
             "Transaction start must not be after end.",
-            code="TRANSACTION_DATE_RANGE_INVALID",
+            code=error_codes.TRANSACTION_DATE_RANGE_INVALID,
         )
     if min_amount is not None and max_amount is not None and min_amount > max_amount:
         raise UserError(
             "Transaction min_amount must not exceed max_amount.",
-            code="TRANSACTION_AMOUNT_RANGE_INVALID",
+            code=error_codes.TRANSACTION_AMOUNT_RANGE_INVALID,
         )
 
     filters: dict[str, object] = {
@@ -434,28 +437,15 @@ def transactions_coarse(
         )
 
     stable_total = position.total if position is not None else result.total_count
-    page_transactions = result.transactions[:limit]
-    if len(result.transactions) > limit and page_transactions:
-        snapshot_key = (
-            snapshot
-            if snapshot is not None
-            else (
-                page_transactions[0].transaction_date,
-                page_transactions[0].transaction_id,
-            )
-        )
-        next_cursor = encode_keyset_cursor(
-            namespace="transactions",
-            scope=filters,
-            snapshot=snapshot_key,
-            after=(
-                page_transactions[-1].transaction_date,
-                page_transactions[-1].transaction_id,
-            ),
-            total=stable_total,
-        )
-    else:
-        next_cursor = None
+    page_transactions, next_cursor = build_keyset_page(
+        result.transactions,
+        limit=limit,
+        key_of=lambda t: (t.transaction_date, t.transaction_id),
+        namespace="transactions",
+        scope=filters,
+        snapshot=snapshot,
+        total=stable_total,
+    )
     page_result = OperationalTransactionResult(
         transactions=page_transactions,
         total_count=stable_total,
@@ -785,8 +775,8 @@ def transactions_matches_pending(
             "Use reviews_decide with kind='match' to accept or reject a match",
             "Group rows by component_key to review all edges of one N-way dedup "
             "cluster together",
-            "For full pair context (both transactions side by side), use the CLI "
-            "`moneybin transactions review --type matches` queue",
+            "For a terminal view of this same queue, the CLI equivalent is "
+            "`moneybin transactions matches pending`",
         ],
     )
 

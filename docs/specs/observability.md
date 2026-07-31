@@ -182,6 +182,8 @@ Metric definitions live in `src/moneybin/metrics/registry.py` (single source of 
 | `moneybin_dedup_matches_total` | Counter | `match_tier`, `decided_by` |
 | `moneybin_categorization_auto_rate` | Gauge | — |
 | `moneybin_categorization_rules_fired_total` | Counter | `rule_id` |
+| `moneybin_profile_currencies` | Gauge | — |
+| `moneybin_unknown_currency_rows` | Gauge | `grain` |
 | `moneybin_mcp_tool_calls_total` | Counter | `tool_name` |
 | `moneybin_mcp_tool_duration_seconds` | Histogram | `tool_name` |
 | `moneybin_db_query_duration_seconds` | Histogram | `operation` |

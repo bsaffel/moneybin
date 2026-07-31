@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from decimal import Decimal
 from functools import cmp_to_key
@@ -14,7 +15,11 @@ from pydantic import Field, JsonValue
 from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.database import Database, get_database
-from moneybin.errors import UserError
+from moneybin.errors import (
+    UserError,
+    classify_user_error,
+    exception_origin,
+)
 from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
@@ -22,14 +27,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    KeysetScalar,
-    SortDirection,
-    compare_keyset,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.mcp.write_contracts import (
     AutoRuleDecisionRequest,
@@ -70,6 +67,7 @@ from moneybin.privacy.payloads.reviews import (
     MerchantLinkHistoryDetails,
     MerchantLinkPendingDetails,
     MerchantLinkReviewRow,
+    QueueUnavailable,
     ReviewCount,
     ReviewDecisionOutcome,
     ReviewQueueKind,
@@ -90,6 +88,14 @@ from moneybin.privacy.payloads.reviews import (
 from moneybin.privacy.payloads.transactions import MatchHistoryRow, MatchPendingRow
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    KeysetScalar,
+    SortDirection,
+    compare_keyset,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import CategorizationService
@@ -101,6 +107,8 @@ from moneybin.services.review_decisions_service import (
     ReviewDecisionsService,
 )
 from moneybin.services.security_links_service import SecurityLinksService
+
+logger = logging.getLogger(__name__)
 
 _QUEUE_KINDS: tuple[ReviewQueueKind, ...] = (
     "categorization",
@@ -135,7 +143,7 @@ def _review_position(
     except ValueError as exc:
         raise UserError(
             "Invalid review pagination cursor.",
-            code="REVIEW_CURSOR_INVALID",
+            code=error_codes.REVIEW_CURSOR_INVALID,
         ) from exc
     types, _ = _review_key_contract(kind, status)
     for key in (position.snapshot, position.after):
@@ -145,7 +153,7 @@ def _review_position(
         ):
             raise UserError(
                 "Invalid review pagination cursor.",
-                code="REVIEW_CURSOR_INVALID",
+                code=error_codes.REVIEW_CURSOR_INVALID,
             )
     return position
 
@@ -158,6 +166,8 @@ def _review_envelope[T](
     returned_count: int,
     next_cursor: str | None = None,
     actions: list[str] | None = None,
+    degraded: bool = False,
+    degraded_reason: str | None = None,
 ) -> ResponseEnvelope[T]:
     """Build and redact a dynamically classified review envelope."""
     classes = extract_data_classes(contract_type)
@@ -177,7 +187,33 @@ def _review_envelope[T](
     )
     return replace(
         envelope,
-        summary=replace(envelope.summary, has_more=next_cursor is not None),
+        summary=replace(
+            envelope.summary,
+            has_more=next_cursor is not None,
+            degraded=degraded,
+            degraded_reason=degraded_reason,
+        ),
+    )
+
+
+def _unavailable_queue(kind: ReviewQueueKind, exc: Exception) -> QueueUnavailable:
+    """Mark one review queue uncountable instead of failing the whole summary."""
+    classified = classify_user_error(exc)
+    if classified is not None:
+        return QueueUnavailable(
+            kind=kind,
+            code=classified.code,
+            reason=classified.message,
+            hint=classified.hint,
+        )
+    logger.error(
+        f"reviews summary queue {kind} raised {type(exc).__name__} "
+        f"at {exception_origin(exc)}"
+    )
+    return QueueUnavailable(
+        kind=kind,
+        code=error_codes.INFRA_UNCLASSIFIED_ERROR,
+        reason=f"Queue count failed with an unhandled {type(exc).__name__}",
     )
 
 
@@ -188,7 +224,10 @@ def _pending_categorization_rows(
     try:
         raw_rows = service.list_uncategorized_transactions(limit=None) or []
     except UserError as exc:
-        if exc.code != "schema_out_of_date" or service.count_uncategorized() != 0:
+        if (
+            exc.code != error_codes.INFRA_SCHEMA_DRIFT
+            or service.count_uncategorized() != 0
+        ):
             raise
         raw_rows = []
     ordered = sorted(
@@ -212,6 +251,7 @@ def _pending_categorization_rows(
                 if row.get("amount") is not None
                 else None
             ),
+            currency_code=cast(str | None, row.get("currency_code")),
             description=cast(str | None, row.get("description")),
             memo=cast(str | None, row.get("memo")),
             account_id=cast(str | None, row.get("account_id")),
@@ -758,7 +798,7 @@ def _review_page(
         except ValueError as exc:
             raise UserError(
                 "Invalid review pagination cursor.",
-                code="REVIEW_CURSOR_INVALID",
+                code=error_codes.REVIEW_CURSOR_INVALID,
             ) from exc
     page = eligible[:limit]
     if len(eligible) <= limit or not page:
@@ -846,32 +886,45 @@ def reviews_coarse(
         if limit != 100 or cursor is not None:
             raise UserError(
                 "Review summary does not accept pagination overrides.",
-                code="REVIEW_PAGINATION_NOT_ALLOWED",
+                code=error_codes.REVIEW_PAGINATION_NOT_ALLOWED,
             )
         if status != "pending":
             raise UserError(
                 "status is not valid for review summary.",
-                code="REVIEW_STATUS_NOT_ALLOWED",
+                code=error_codes.REVIEW_STATUS_NOT_ALLOWED,
             )
+        counts: list[ReviewCount] = []
+        unavailable: list[QueueUnavailable] = []
         with get_database(read_only=True) as db:
-            counts = [
-                ReviewCount(
-                    kind=queue_kind,
-                    status=queue_status,
-                    count=_review_count(
-                        db,
-                        kind=queue_kind,
-                        status=queue_status,
-                    ),
-                )
-                for queue_kind in _QUEUE_KINDS
-                for queue_status in cast(
-                    tuple[ReviewStatus, ...], ("pending", "history")
-                )
-            ]
+            for queue_kind in _QUEUE_KINDS:
+                # Count each queue independently: one missing view (e.g.
+                # core.uncategorized_queue) must not fail the whole summary.
+                try:
+                    queue_counts = [
+                        ReviewCount(
+                            kind=queue_kind,
+                            status=queue_status,
+                            count=_review_count(
+                                db,
+                                kind=queue_kind,
+                                status=queue_status,
+                            ),
+                        )
+                        for queue_status in cast(
+                            tuple[ReviewStatus, ...], ("pending", "history")
+                        )
+                    ]
+                except Exception as exc:  # noqa: BLE001 — degrade this queue only
+                    unavailable.append(_unavailable_queue(queue_kind, exc))
+                    continue
+                counts.extend(queue_counts)
         payload = ReviewsSummaryView(
             counts=counts,
             total=sum(count.count for count in counts),
+            unavailable=unavailable,
+        )
+        degraded_reason = (
+            " ".join(f"{entry.kind}: {entry.reason}" for entry in unavailable) or None
         )
         return _review_envelope(
             payload,
@@ -879,6 +932,8 @@ def reviews_coarse(
             total_count=len(payload.counts),
             returned_count=len(payload.counts),
             actions=_summary_actions(),
+            degraded=bool(unavailable),
+            degraded_reason=degraded_reason,
         )
 
     queue_kind = kind

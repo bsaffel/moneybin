@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 
 from moneybin.cli.output import (
+    CLI_MAX_ROWS,
     OutputFormat,
     output_option,
     quiet_option,
@@ -25,9 +26,10 @@ from moneybin.database import get_database
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.reports._framework.contract import ReportSpec
 
-# The CLI is an operator/agent surface; result size is bounded by the runner's
-# own LIMIT params (top, etc.), so the framing cap is effectively off.
-_CLI_MAX_ROWS = 1_000_000
+if TYPE_CHECKING:
+    # Type-only: importing `execute` here would pull sql_lineage → sqlglot into
+    # the CLI cold-start path, which this module exists to keep clear.
+    from moneybin.reports._framework.execute import CatalogReportResult
 
 
 def _cli_signature(spec: ReportSpec) -> inspect.Signature:
@@ -59,6 +61,67 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
     return inspect.Signature(params)
 
 
+def render_report_result(
+    result: CatalogReportResult, output: OutputFormat, *, cli_actor: str
+) -> None:
+    """Render one report result as a table or the JSON envelope.
+
+    Shared by every CLI report path — a built-in's generated command and
+    ``reports run`` alike — so a saved report's output is not merely similar to a
+    built-in's but produced by the same code.
+    """
+
+    def _render_text(_: ResponseEnvelope[Any]) -> None:
+        if result.records:
+            rows: list[tuple[object, ...]] = [
+                tuple(record.get(column) for column in result.columns)
+                for record in result.records
+            ]
+            render_rich_table(result.columns, rows)
+        # R4's verdict, on the surface that cannot see the envelope. JSON and MCP
+        # callers read `summary.degraded_reason`; `render_or_json` renders no
+        # envelope metadata on the text path, so without this a drifted report
+        # printed `*****` and said nothing — the silent masking that teaches a
+        # reader to skip the warning that matters.
+        if result.degraded and result.degraded_reason:
+            typer.echo(f"⚠️  {result.degraded_reason}")
+        # Same gap, same surface: `truncated` rides the envelope to JSON and MCP
+        # callers, so without this the text path renders a capped table that
+        # reads as the whole answer — worse here than a masked cell, because
+        # nothing about the rows themselves looks unusual.
+        #
+        # The count of what was *not* shown is deliberately absent. A truncated
+        # execution fetches `limit + 1` rows and reports that as `total_count`,
+        # so it is a lower bound — "1,000,000 of 1,000,001" would read as one
+        # row missing when millions are, which is a more confident lie than
+        # saying nothing. `mcp.md` calls this a lower-bound total for the same
+        # reason; counting the rest means running the query again without a cap.
+        if result.truncated:
+            typer.echo(
+                f"⚠️  Showing the first {len(result.records):,} rows; more exist. "
+                "Raise --limit or narrow the report to see the rest."
+            )
+        # Third instance of the same asymmetry, and the one that inverted its own
+        # intent: `inspection_hint` deliberately names a CLI command — "Run
+        # `moneybin reports explain …`" — so the surfaces that cannot run it were
+        # told to while the terminal printed `*****` and stopped. Every action is
+        # rendered, not just that hint: a runner's own `actions` are next steps for
+        # whoever called it, and the text path is a caller.
+        for action in result.actions:
+            typer.echo(f"💡 {action}")
+
+    render_or_json(
+        result.to_envelope(),
+        output,
+        render_fn=_render_text,
+        cli_actor=cli_actor,
+        # Bare-list payload + lineage-derived classes: pass them explicitly so
+        # the privacy.log audit event records the real data classes instead of an
+        # empty set (same as `sql query`).
+        classes_returned=result.classes_returned,
+    )
+
+
 def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
     """Build the Typer command callback for ``spec`` with an explicit signature."""
 
@@ -80,30 +143,16 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
             # raise typer.BadParameter would bypass that envelope (Typer prints
             # plain text, exit 2) — breaking the JSON contract for agents.
             with get_database(read_only=True) as db:
+                # No `db` to the catalog: this command resolves the one fixed
+                # built-in ID it was generated from, so the user tier would add
+                # a per-row spec build that nothing here can reach.
                 result = get_report_catalog().execute(
                     db,
                     report_id=spec.report_id,
                     parameters=kwargs,
-                    limit=_CLI_MAX_ROWS,
+                    limit=CLI_MAX_ROWS,
                 )
-
-            def _render_text(_: ResponseEnvelope[Any]) -> None:
-                if result.records:
-                    rows: list[tuple[object, ...]] = [
-                        tuple(r.get(c) for c in result.columns) for r in result.records
-                    ]
-                    render_rich_table(result.columns, rows)
-
-            render_or_json(
-                result.to_envelope(),
-                output,
-                render_fn=_render_text,
-                cli_actor=cli_actor,
-                # Bare-list payload + lineage-derived classes: pass them
-                # explicitly so the privacy.log audit event records the real
-                # data classes instead of an empty set (same as `sql query`).
-                classes_returned=result.classes_returned,
-            )
+            render_report_result(result, output, cli_actor=cli_actor)
 
     _impl.__name__ = spec.name
     _impl.__qualname__ = spec.name

@@ -8,16 +8,15 @@ import typer
 from pydantic import JsonValue
 
 from moneybin.cli.output import (
+    CLI_MAX_ROWS,
     OutputFormat,
+    currency_label,
     output_option,
     quiet_option,
     render_or_json,
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
-from moneybin.reports._framework.cli_register import (
-    _CLI_MAX_ROWS,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701 — shared report cap
-)
 
 
 def reports_networth(
@@ -46,26 +45,40 @@ def reports_networth(
                     "as_of": as_of,
                     "account_ids": cast(JsonValue, account),
                 },
-                limit=_CLI_MAX_ROWS,
+                limit=CLI_MAX_ROWS,
             )
 
     def _render_text(_: object) -> None:
         if not result.records or result.records[0]["balance_date"] is None:
             typer.echo("No net worth data available.")
             return
-        snapshot = result.records[0]
-        typer.echo(
-            f"Net worth as of {snapshot['balance_date']}: {snapshot['net_worth']}"
-        )
-        typer.echo(f"  Assets:      {snapshot['total_assets']}")
-        typer.echo(f"  Liabilities: {snapshot['total_liabilities']}")
-        typer.echo(f"  Accounts:    {snapshot['account_count']}")
+        # Rows are one per account, each carrying its own currency's totals, so
+        # printing records[0] as "the" snapshot would show one currency's
+        # subtotal labelled as the whole position. Print one headline per
+        # currency instead; a single-currency profile still gets one block.
+        by_currency: dict[object, list[dict[str, JsonValue]]] = {}
+        for row in result.records:
+            by_currency.setdefault(row["currency_code"], []).append(row)
+        balance_date = result.records[0]["balance_date"]
+        typer.echo(f"Net worth as of {balance_date}")
+        for currency, rows in by_currency.items():
+            headline = rows[0]
+            typer.echo(f"  {currency_label(currency)}: {headline['net_worth']}")
+            typer.echo(f"    Assets:      {headline['total_assets']}")
+            typer.echo(f"    Liabilities: {headline['total_liabilities']}")
+            typer.echo(f"    Accounts:    {headline['account_count']}")
+        if len(by_currency) > 1:
+            typer.echo(
+                "  (no combined total — MoneyBin does not convert between "
+                "currencies yet)"
+            )
         accounts = [row for row in result.records if row["account_id"] is not None]
         if accounts:
             typer.echo("Per-account breakdown:")
             for row in accounts:
                 typer.echo(
-                    f"  {row['account_name']!s:<40} {row['account_balance']!s:>14}  "
+                    f"  {row['account_name']!s:<40} {row['account_balance']!s:>14} "
+                    f"{currency_label(row['currency_code']):<3} "
                     f"({row['observation_source']})"
                 )
 
@@ -102,18 +115,22 @@ def reports_networth_history(
                     "to_date": to_date,
                     "interval": interval,
                 },
-                limit=_CLI_MAX_ROWS,
+                limit=CLI_MAX_ROWS,
             )
 
     def _render_text(_: object) -> None:
-        typer.echo("period      net_worth     change_abs    change_pct")
+        # Each currency is its own series, so a period appears once per
+        # currency; without the column two rows for the same month read as one
+        # position swinging wildly.
+        typer.echo("period       cur     net_worth     change_abs    change_pct")
         for point in result.records:
             change_abs = point["change_abs"] if point["change_abs"] is not None else "-"
             change_pct = (
                 f"{point['change_pct']:.2%}" if point["change_pct"] is not None else "-"
             )
+            currency = currency_label(point["currency_code"])
             typer.echo(
-                f"{point['period']!s:<12} {point['net_worth']!s:>12} "
+                f"{point['period']!s:<12} {currency:<7} {point['net_worth']!s:>12} "
                 f"{change_abs!s:>13} "
                 f"{change_pct:>10}"
             )

@@ -1,9 +1,11 @@
 # Dynamic Reports — The Ask→Save→Verify Loop
 
 > Child spec of [`reports-overview.md`](reports-overview.md) (milestone **M2P.2**).
-> Status: draft
+> Status: implemented
 > Type: Feature
-> Last updated: 2026-07-19 — initial spec.
+> Last updated: 2026-07-26 — implemented. Seven drifts fixed against the code as
+> built; R2 step 6, R4's "no DB" claim, R6's `core:networth` provenance, and R7's
+> naming of the shared path were corrected from reproduction rather than review.
 > Companions: [`reports-foundation.md`](reports-foundation.md) (M2P.1, the
 > contract this builds on), [`app-integrity-invariant.md`](app-integrity-invariant.md)
 > (Invariant 10), [`queryable-internal-schemas.md`](queryable-internal-schemas.md)
@@ -57,10 +59,22 @@ that a test rather than an intention.
 
 One field needs widening. `ReportSpec.view: TableRef` is required, and a dynamic
 report has no `reports.*` view backing it, so `view` becomes `TableRef | None`
-with `None` meaning "not graph-backed." The one reader of the field,
-`reports_class_map()`, keys on `(spec.view.schema, spec.view.name)` and must
-skip `None`. It iterates the static `ALL_REPORTS` today, so nothing breaks —
-but the skip is required before any code path feeds it a synthesized spec.
+with `None` meaning "not graph-backed." The field has **two** readers, not one:
+
+- `reports_class_map()` keys on `(spec.view.schema, spec.view.name)` and skips
+  `None`. It iterates the static `ALL_REPORTS` today, so nothing breaks — but
+  the skip is required before any code path feeds it a synthesized spec.
+- `exports/service.py` reads it into `PreparedTable.source`, which lands in the
+  on-disk artifact as `manifest.tables[].source`. That field widens to nullable
+  and emits `null` for a view-less report. The pre-existing fallback would have
+  written `reports.<name>` — a view that does not exist — into the manifest, so
+  the export path had to be decided rather than left to a default. Nothing is
+  lost: the receipt's `lineage` already carries every upstream table.
+  `export.md` §"Artifact manifest" states the reader contract.
+
+The export path becomes reachable in the same milestone: `export report <id>`
+resolves through `catalog.resolve()`, and R5 registers saved reports in that
+catalog, so a saved report is exportable by construction.
 
 ### Why `@report` still exists
 
@@ -87,9 +101,18 @@ SQLMesh view at build time, so it cannot express runtime creation.
 
 New protected `app.*` table, paired per convention across
 `src/moneybin/sql/schema/app_user_reports.sql` and
-`src/moneybin/sql/migrations/V041__create_app_user_reports.py` (`V039` and
-`V040` are taken on `main`), registered as
+`src/moneybin/sql/migrations/V045__create_app_user_reports.py`. `V045` is what
+this shipped with, taken as the next free version **at implementation time**
+after checking unmerged branches as well as `main` — which held higher
+reservations than the tip. Follow that rule rather than this number for the next
+table; a version pinned in a draft has already collided twice. Registered as
 `USER_REPORTS = TableRef("app", "user_reports", audience="interface")`.
+
+This draft prescribed `V041`, which #349 took for `app.export_destinations`
+three days after the draft merged; `V042`–`V044` are claimed by branches in
+flight. Migration discovery globs and sorts by version and rejects only
+*duplicate* versions (`migrations.py`), so the gap is safe and `V045` is the
+number that lands.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -135,6 +158,17 @@ is given). None of this asks the user for classification: the classes are still
 derived, and declaring `year: int` is inherent to writing `= $year`, not extra
 privacy work R2 pushed onto them.
 
+**Two of the six declarable types have no JSON form, and `params` is a JSON
+column.** `date` and `decimal` coerce to Python objects `json.dumps` refuses, so
+a `default` of either is stored as its ISO / decimal text and read back through
+the declared `annotation` — the declared type stays authoritative, and nothing
+hands DuckDB a `VARCHAR` where the report said `DATE`. The same asymmetry runs
+the other way at *bind* time: an MCP `parameters` object can only carry text, so
+the shared parameter validator coerces a JSON scalar to the declared type before
+type-checking it. Without both halves those two types are CLI-only — the CLI's
+own binder builds real objects from `--param` strings, which is exactly why a
+parity test exercising only `str` proves nothing here.
+
 ##### A stored `default` above LOW tier is refused; the parameter is required instead
 
 `default` is the one `ParamSpec` field that leaves the machine without a row
@@ -158,6 +192,46 @@ it there. This is the same fail-closed shape as the rest of R2: the safe state
 is enforced at the boundary where the value is declared, not audited downstream.
 The rule lives in the binder that already derives the class, so it cannot be
 skipped by a path that forgot to mask.
+
+**It is a write gate, so every read path derives with defaults stripped.** A
+default legal when it was stored can become illegal later — an upstream
+reclassification moves the class of the column its filter compares against. The
+run path already strips them (a read must not refuse over a value nobody is
+supplying; `_classed_params` drops the stale default and makes the parameter
+required instead), and the classification-downgrade path must too: it stores no
+parameters at all, so re-deriving with them attached let an unrelated filter's
+reclassification refuse a downgrade whose caller never mentioned that parameter.
+The one path that must **not** strip them is `set`: it re-stores the parameter
+list, so refusing a newly-illegal default there is the gate doing its job.
+
+**A row-count parameter is `AGGREGATE`, not `UNRESOLVED`.** `LIMIT $top` /
+`OFFSET $skip` bind how many rows come back and can echo no column's data, so
+classifying them fail-closed would mean a saved report may not carry a page-size
+default while every built-in declares exactly that value `AGGREGATE`
+(`large_transactions`, `merchant_activity`) — two report kinds disagreeing about
+one value. The exemption is **positional**: anywhere a bound value could carry a
+column's data — a function argument, one side of an arithmetic expression
+compared against a column — still fails closed. A threshold compared against an
+amount (`WHERE amount > $min`) therefore still takes that column's class and
+still may not carry a default; whether that is too strict is a separate
+question this spec does not answer by widening the rule.
+
+**A parameter the query *returns* is classified like the value it carries.** A
+projected `$placeholder` puts no column in the projection, so lineage has nothing
+to trace and answered `AGGREGATE` — passthrough. But the value is not unknown:
+`SELECT $acct AS acct … WHERE routing_number = $acct` returned the supplied
+routing number in the clear beside the parameter metadata that masked it. One
+value cannot be two classes because it appears in two positions. A placeholder is
+therefore classified as one of the values a projection is derived from, inside
+`resolve_output_classes` alongside the columns — not by a second rule over the
+finished map. That placement is what makes the answer hold for every shape a
+bound value can reach the output through: a later `UNION ALL` branch (whose local
+alias names no output column, since a set operation takes names from the first
+branch and values from every branch by position), a derived table, a CTE, or a
+nested subquery. It also survives the counting-aggregate collapse, whose "every
+column is inside a count" test passes vacuously over a projection holding no
+column at all — `COUNT(*) || $acct`. Ad-hoc `sql_query` binds no parameters, so it
+supplies no map and every placeholder there fails closed.
 
 #### `report_id` is namespaced, and the namespace is not decoration
 
@@ -226,8 +300,8 @@ contradicts R2's rule that saving requires a name and a query and nothing else.
 #### These columns must be classified
 
 `app` is inside `_ALLOWED_QUERY_SCHEMAS`, so `sql_query` — and a dynamic report
-— can `SELECT query_sql FROM app.user_reports`. V039 therefore lands with
-`CLASSIFICATION` entries or it fails
+— can `SELECT query_sql FROM app.user_reports`. `V045` therefore lands with
+`CLASSIFICATION` entries for **all twelve** columns or it fails
 `tests/privacy/test_classification_completeness.py` on the first run. A spec
 whose thesis is that classification is never skipped cannot skip its own table.
 
@@ -241,7 +315,7 @@ references:
 | `description` | `USER_NOTE` | `categorization_rules.name` |
 | `name` | `USER_NOTE` | `categorization_rules.name` — user-authored, despite also being the handle |
 | `report_id` | `RECORD_ID` | `gsheet_connections.alias` — minted opaque handle |
-| `classes`, `class_downgrades`, `params` | `DESCRIPTION` | `gsheet_connections.column_mapping` — structural JSON map |
+| `classes`, `class_downgrades`, `params`, `semantics` | `DESCRIPTION` | `gsheet_connections.column_mapping` — structural JSON map |
 | `class_fingerprint` | `RECORD_ID` | `checksum` / `content_hash` (`taxonomy.py`) — the existing class for a hash |
 | `is_active` | `TXN_TYPE` | `categorization_rules.is_active` |
 | `created_at`, `updated_at` | `TIMESTAMP_OBSERVABILITY` | Universal across `app` tables |
@@ -316,9 +390,9 @@ Save pipeline:
    count is taken from the text DuckDB executes. A saved report inherits both
    properties by calling the gate; it adds no statement check of its own.
 2. `is_data_query` — reject anything that is not a row-returning SELECT.
-   `validate_read_only_query` also admits `DESCRIBE`, `SHOW`, `PRAGMA`, and
-   `EXPLAIN` (`privacy/sql_query.py`), but step 5 below raises
-   `SqlSchemaError("Query has no SELECT projection")` on all four. Without this
+   `validate_read_only_query` also admits `DESCRIBE` and `SHOW`
+   (`privacy/sql_query.py`), but step 5 below raises
+   `SqlSchemaError("Query has no SELECT projection")` on both. Without this
    gate, "valid read-only SQL always saves" is false for statements the sole
    documented gate accepts — they would fail midway through the pipeline. The
    primitive already exists (`privacy/sql_lineage.py`) and `sql_query` already
@@ -340,11 +414,11 @@ Save pipeline:
    here costs no additional parse and keeps the user out of a classification
    decision. An unresolvable parameter lands on `UNRESOLVED`, exactly as an
    unresolvable projection does.
-6. `DESCRIBE <query_sql>` **with every declared parameter bound to NULL**, to
-   read real DuckDB result column names, then bridge through
-   `_classes_by_result_column` and persist the reconciled map **keyed by DuckDB
-   column names**. **Duplicate result column names are rejected here**, with an
-   error naming the repeated name.
+6. `DESCRIBE <query_sql>` **with every declared parameter bound to a typed
+   sentinel value**, to read real DuckDB result column names, then bridge
+   through `classes_by_result_column` and persist the reconciled map **keyed by
+   DuckDB column names**. **Duplicate result column names are rejected here**,
+   with an error naming the repeated name.
 
 Step 6 is load-bearing, not an optimization. `resolve_output_classes` returns
 names from sqlglot projections; `classify_columns` looks them up by DuckDB
@@ -365,8 +439,8 @@ downstream can address by name, so this refuses at save rather than becoming a
 named risk: the alternative is masking that is correct only by the accident of
 projection order.
 
-Two properties of step 6, both required for it to work — the first corrected by
-reproduction against DuckDB 1.5.4:
+Three properties of step 6, all required for it to work, and all three
+established by reproduction against DuckDB 1.5.4 rather than from the docs:
 
 - DuckDB raises `InvalidInputException` on `DESCRIBE` of a query with unbound
   parameters, so every placeholder must be bound before the `DESCRIBE`. A
@@ -375,28 +449,41 @@ reproduction against DuckDB 1.5.4:
   `BinderException`. `DESCRIBE SELECT date_part('year', $d)` with `$d` bound to
   `None` fails on exactly the `date_part` / `date_trunc` / `extract` family a
   filter as ordinary as `WHERE date_part('year', txn_date) = $year` uses — a
-  hard crash on a valid query, not one of R2's soft-fail paths. So step 6 binds a
-  **typed** NULL, `CAST(NULL AS <t>)`, where `<t>` is the DuckDB type of the
-  parameter's declared `annotation` (R1). The typed NULL resolves the overload —
-  the identical query bound as `CAST($d AS DATE)` describes cleanly — and column
-  names still derive from projection *structure*, not parameter *values*, so the
-  names returned match a value-bound run. A placeholder whose declared type still
-  cannot bind is the residual case, and it is a genuine authoring error, not a
-  valid query the pipeline must absorb: it means one placeholder sits in two
-  positions demanding incompatible types, so no single declared `annotation`
-  satisfies both. This branch cannot degrade per-column — a query-level
-  `BinderException` returns *no* `DESCRIBE` rows, so there are no column names to
-  mark unresolvable, and inventing them from sqlglot projections would reopen the
-  exact `COUNT(*)`-bridging gap step 6 exists to close. So the save is
-  **rejected**, with an error naming the placeholder and its conflicting
-  positions. R2's invariant is scoped by this rather than broken: a valid
-  read-only SELECT *whose every placeholder has one consistent type* always
-  saves — and a placeholder with no consistent type is not such a query. Saying
-  that plainly beats asserting a soft-fail with no mechanism behind it.
-- `DESCRIBE` returns one row per output column — that is the point of the step —
-  and executes no user rows. Its **type** column is not trustworthy under NULL
-  binding (`SELECT amount * $f` describes as `INTEGER`, not `DECIMAL`), so
-  nothing may read it. Only the name column is used.
+  hard crash on a valid query, not one of R2's soft-fail paths.
+- **The SQL is never rewritten.** Substituting `CAST(NULL AS <t>)` for the
+  placeholder resolves the overload, and was this spec's first answer, but it
+  changes the DESCRIBEd text — and for an *unaliased projection holding a
+  placeholder* that changes the result column name with it. DuckDB names
+  `SELECT $x` as `$x` and `SELECT CAST(NULL AS BIGINT)` after the cast text, so
+  the stored map would be keyed by a name no run ever produces, and
+  `classify_columns` fails closed on a name it cannot find — masking that column
+  on every future run. That is a narrower instance of the exact name divergence
+  step 6 exists to close, reintroduced by the fix. So step 6 binds a **typed
+  sentinel value** of the parameter's declared `annotation` (R1) instead: it
+  resolves the overload just as a typed NULL does, and because column names
+  derive from projection *structure* and never from parameter *values*, the names
+  returned are the same ones a value-bound run returns. The bytes DESCRIBEd are
+  the bytes that will execute. Reproduction also cleared the one risk a real
+  value carries over a NULL — DESCRIBE does not constant-fold, so a sentinel
+  cannot raise a conversion error where a NULL would not (`''` against a `DATE`
+  column, `0` as a divisor and as a `LIMIT`, `False` as a predicate all describe
+  cleanly).
+- A placeholder whose declared type still cannot bind is the residual case, and
+  it is a genuine authoring error, not a valid query the pipeline must absorb: it
+  means one placeholder sits in two positions demanding incompatible types, so no
+  single declared `annotation` satisfies both. This branch cannot degrade
+  per-column — a query-level `BinderException` returns *no* `DESCRIBE` rows, so
+  there are no column names to mark unresolvable, and inventing them from sqlglot
+  projections would reopen the same gap. So the save is **rejected**, with an
+  error naming the placeholder and its declared type. R2's invariant is scoped by
+  this rather than broken: a valid read-only SELECT *whose every placeholder has
+  one consistent type* always saves — and a placeholder with no consistent type
+  is not such a query. Saying that plainly beats asserting a soft-fail with no
+  mechanism behind it.
+
+`DESCRIBE` returns one row per output column — that is the point of the step —
+and executes no user rows. Its **type** column is not read: nothing here needs
+it, and reading it would make the persisted map depend on a value binding.
 
 #### Every SQL or parameter change re-runs this pipeline
 
@@ -420,13 +507,22 @@ is the same stale-authority failure one level down. The mutation clears the map
 and its response names the cleared columns; re-apply through the classification-
 downgrade capability.
 
+**A `params`-only change re-derives and keeps the map.** It is the same code path,
+so the distinction has to be deliberate: the SQL an approval was granted against
+is unchanged, so the approval still covers exactly the column and query a human
+read. Clearing on any re-derivation would revoke an approved floor the user never
+asked to revoke, and the reapply rule already covers the case that matters — a
+downgrade whose column now derives a different class is not reapplied (R4). State
+this wherever the rule is surfaced: `set --help` claiming otherwise would have a
+user believe a `--param` edit restored a floor that is still lowered.
+
 #### Not every savable report is graduation-eligible
 
 `sql_query` permits reading `reports.*` and permits `SELECT *`; the M2P.3
 graduation path permits neither, because `report_class_derivation` hard-rejects
-both (`_assert_acyclic` on any `reports.*` read, `_assert_no_star` on a star in
-any `SELECT`, including a CTE). A report doing either saves and runs correctly
-but can never be materialized.
+both (`assert_acyclic` on any `reports.*` read, `assert_no_star` on a star in
+any `SELECT`, including a CTE — both in `privacy/report_materialization.py`). A
+report doing either saves and runs correctly but can never be materialized.
 
 This spec keeps the wider save-time allowlist — composing on top of a built-in
 report is real value, and the umbrella's graduation promise is explicitly
@@ -450,6 +546,24 @@ everywhere else.
   carries an `actions[]` hint describing the report-inspection outcome; the
   implementing PR binds that hint only to an admitted surface. A `'*****'` with
   no explanation becomes a two-call fix.
+
+  **On every surface, including the terminal.** Carrying the hint in the
+  envelope satisfies JSON and MCP callers, and it is the CLI text path that has
+  no envelope to read — so a hint that only rides the envelope reaches every
+  caller *except* the one it names a CLI command for. The text renderer prints
+  each entry in `actions[]`, which is what makes this requirement true rather
+  than merely represented.
+- **A refusal names the problem; `details` names the author's text.** Report
+  names, output aliases, and parameter names are all user-authored, and
+  `amazon_spend` is as plausible a merchant name as a filter one — a string
+  `SanitizedLogFormatter` has no pattern for. In text mode `handle_cli_errors`
+  writes a `UserError`'s `message` and `hint` through `logger.error`, so both
+  persist; `details` reaches the caller and the JSON envelope and no durable log.
+  Every refusal on this path therefore keeps the message generic and carries the
+  names in `details` — the terminal still shows them, the log file never does.
+  Three refusals apply this rule (a reclassify's column alias, a parameter
+  carrying a sensitive default, a name declared twice); a fourth that interpolates
+  an author's string into `message` is a regression, not a new judgment call.
 
 The residual honesty: *over*-classification cannot be detected automatically —
 that is why D5 leaves the downgrade judgment to a human. A z-score correctly
@@ -493,10 +607,11 @@ consequently blind to every input above — it must not be used as the drift key
 
 Instead, `class_fingerprint` is a hash over three things: the sorted
 `(schema, table, column, DataClass)` tuples for **the tables this query reads**;
-the `(DataClass, tier, mask_strength)` triples for **every class in the map and
-in the report's `class_downgrades`**; and a **`DERIVATION_VERSION`** constant
+the `(DataClass, tier, mask_strength)` triples for **every class in play — the
+map, the report's `class_downgrades`, and the read set above**; and a
+**`DERIVATION_VERSION`** constant
 bumped whenever **any function the persisted map depends on** changes how it
-classifies — `resolve_output_classes` *and* the `_classes_by_result_column`
+classifies — `resolve_output_classes` *and* the `classes_by_result_column`
 bridging step 6 calls load-bearing. The scope is the pipeline, not one function:
 a change to how sqlglot projection names reconcile against DuckDB result names
 moves no tuple and touches no classifier, so scoping the constant to
@@ -521,6 +636,16 @@ current policy. Without them the fingerprint guards the classification of a
 `DataClass` but not what that `DataClass` means, which is the half a downgrade
 actually turns on.
 
+The read set is in that triple scope for the same reason one step earlier. A
+derived column takes the strongest class among its inputs, so an input that
+lost that contest still decides the answer the moment its own tier or transform
+rises: an expression deriving as `TXN_AMOUNT` from an amount and a description
+must re-derive when `DESCRIPTION` is made CRITICAL. That release moves no
+`(schema, table, column, DataClass)` tuple — the column's class *name* is
+unchanged — and `DESCRIPTION` appears in no stored map, so scoping the triples
+to stored classes alone would leave the fingerprint matching and the expression
+serving under the weaker stored floor.
+
 The version term is not ceremony. The tuples describe derivation's *inputs*; a
 change to the classifier itself moves no tuple, so a fix that raises a computed
 column from LOW to HIGH would leave every saved report on the `Match` branch,
@@ -533,7 +658,11 @@ classifier's tests own the reminder, the same way M2P.1's derivation check does.
 On each run the fingerprint is recomputed and compared:
 
 - **Match** → `classify_columns` against the stored map, byte-identical to how a
-  built-in runs. No lineage work; the comparison is dictionary lookups, no DB.
+  built-in runs. No lineage work: recomputing the key costs one cached sqlglot
+  parse, the live schema snapshot's two catalog queries (its expensive
+  `MappingSchema` build is memoised), and dictionary lookups. It never runs
+  `resolve_output_classes` or a scope traversal — that is the cost the match
+  branch exists to avoid.
 - **Mismatch** → re-resolve, reapply the report's approved `class_downgrades` to
   the freshly derived map, then compare. An equal map serves the run normally. A
   changed map fails closed for the affected columns and marks the response
@@ -556,6 +685,18 @@ it fails closed. Reapplying by column name alone would let an approval collected
 against a weak class silently suppress a stronger one — the inverse of what the
 downgrade was reviewed for.
 
+**And only while the pair is still one R5 would approve today.** Class identity
+is the first condition, not the whole of it: the fingerprint hashes the policy
+triples precisely so a tier or transform change forces this branch, and
+re-derivation that reapplies on identity alone spends that forced work for
+nothing. A release lifting `AGGREGATE` to `TXN_AMOUNT`'s tier turns the z-score
+approval into the equal-tier weakening `is_weaker_class` refuses outright — and
+because the stored map already holds `AGGREGATE`, the reapplied map would match
+it exactly and the run would proceed normally, undegraded. So the reapplication
+re-asks `is_weaker_class` on every re-derivation. Declining is what makes the
+change visible: the comparison against the stored map then differs, the column
+fails closed, and the report degrades like any other drift.
+
 **Re-resolution covers the stored parameter classes, not just the output
 columns.** A dynamic report's parameter classes are derived at save (R2 step 5)
 from the columns its filters compare against, so they go stale by exactly the
@@ -575,11 +716,22 @@ precisely the stale-authority hole R4 closes for the data surface.
 
 The fingerprint is a cache key, not authority: re-resolution is what decides the
 run, so a stale fingerprint costs work, never correctness. That matters because
-the read path has no writable connection — both adapters call `run_report`
-inside `get_database(read_only=True)` (`mcp/tools/reports.py:58`,
-`_framework/cli_register.py:82`), and R1 routes every
-`app.user_reports` mutation through the audited repo, which would emit an audit
-row per *read*. So a run never persists a refreshed fingerprint.
+the read path has no writable connection — both adapters reach
+`ReportCatalog.execute` inside `get_database(read_only=True)`
+(`mcp/tools/reports.py`, `cli/commands/reports/user_reports.py`), and R1 routes
+every `app.user_reports` mutation through the audited repo, which would emit an
+audit row per *read*. So a run never persists a refreshed fingerprint.
+
+**The schema snapshot is read once per catalog build, not once per report.** Its
+expensive `MappingSchema` build is memoised, but each call still issues two
+catalog queries, and both the fingerprint and the provenance list need one — so a
+per-row read is four queries per saved report on every call, including a call
+that only wants a built-in. `user_report_specs` reads it once and threads it
+through. What remains O(saved reports) is the per-row sqlglot walk, plus a full
+re-derivation for each row whose fingerprint moved. Making the user tier resolve
+lazily is future work, and it needs one thing first: `resolve` reads every
+candidate to detect a name collision between a saved report and a built-in, so a
+cheaper collision source has to exist before rows can be skipped.
 
 **Only a write that re-runs the derivation pipeline may store a fingerprint**,
 and it stores the map and the fingerprint together. A metadata-only write — a
@@ -604,6 +756,21 @@ docstring widens to cover stale classification, and `degraded_reason` must name
 which of the two applies. Two meanings on one flag with no way to tell them
 apart is not acceptable; two meanings with a mandatory discriminator is.
 
+**Degraded is a property of the response, not of an intermediate object.**
+`spec_from_row` returns a `DynamicReport` carrying the flag and the reason;
+`ReportCatalog` keys them by `report_id` and `execute` puts them on the
+`CatalogReportResult`, so `to_envelope()` and the MCP tool both emit
+`summary.degraded`. Asserting the `DynamicReport` field alone is not enough — that
+is exactly what let the flag be dropped on the way to the envelope while every
+drift test stayed green.
+
+**A row whose stored *tokens* no longer decode degrades the same way.** A
+released rename of a `DataClass`, or a retired parameter type, makes
+`DataClass(value)` and `annotation_of(token)` raise on a row that was written
+from an allowlist. That must degrade the one row (`unreadable_row`), never escape
+`user_report_specs` — an exception there takes down the catalog for all three
+tiers, so a built-in becomes unreachable because of a saved report.
+
 ### R5 — One access path, three tiers behind it
 
 Reading a report — catalog or execution — adds **no MCP tool**. The shipped
@@ -620,7 +787,7 @@ not sit a second dispatcher beside it.
 | Inspect | Unadmitted capability; MCP identity remains unnamed | `moneybin reports explain` |
 | Downgrade a class | Unadmitted capability; MCP identity remains unnamed | `moneybin reports reclassify` |
 
-**The MCP registry remains the operating 47-tool contract.** This draft does
+**The MCP registry remains the operating 49-tool contract.** This draft does
 not reserve three identities or count them against the hard maximum of 50. The
 implementing PR must first try an existing projection, method, batch, target
 state, report entry, or workflow umbrella, then complete the seven-question
@@ -651,10 +818,36 @@ explicit drop list and no shipped MCP tool carries the suffix. The CLI keeps
 capability through the same service without requiring name equality, which is
 the capability symmetry `.claude/rules/surface-design.md` asks for.
 
-The catalog excludes archived reports by default. The CLI's `--archived` view
-widens it; any equivalent MCP projection must be justified as an extension of
-the existing `reports` input schema in the implementing PR rather than assumed
-here. Each entry carries a `tier` field.
+**Visibility is the listing's decision, never the catalog's.** The catalog is
+always built over every stored row, archived included, and `ReportCatalog.list`
+filters: active by default, archived-only, or everything — the third arm serves
+both the collision check and a widened listing. `resolve` — and therefore every run, export, and
+explanation — spans both, which is what makes "archived reports stay runnable" a
+property of the resolver instead of a thing each caller must remember. It was
+built the other way first, with an `include_archived` flag on the *builder*, and
+three of its four call sites omitted it: `reports run`, the `reports` MCP tool,
+and `export report` could not reach an archived report at all.
+
+**The CLI listing widens and marks, rather than switching views.** `reports list
+--include-archived` adds the archived rows to the active catalog, and each entry
+carries `archived` beside its `tier`. The alternative — an archived-**only** view,
+which this spec specified first — avoids adding a field to an entry all three
+tiers share, and was wrong for one reason: MoneyBin already answers "show me the
+hidden ones" with `accounts list --include-archived`, so a second,
+differently-shaped answer for reports is the two-patterns rot
+`.claude/rules/design-principles.md` names. The field is the price of one
+pattern, and it earns itself — a combined listing that cannot mark an archived
+row hands the caller a runnable report with no sign the user had put it away.
+
+**MCP lists active reports only, for now.** The matching `include_archived`
+parameter is deferred, not rejected: it would change the `reports` tool's
+serialized input schema, and that byte count is pinned by ADR-016's
+carrying-weight evidence and a dated comparison record. That is a cost to spend
+deliberately with fresh evidence, not as a side effect of a listing tweak. The
+asymmetry is bounded — an archived report still runs, exports, and explains by id
+through MCP, and `archived` is already on the entry when a widened listing
+arrives. If it does, it should be named for what a report *is* (archived, not
+closed), unlike `accounts`' older `include_closed`.
 
 **Names are unique across the whole registry, not just against built-ins.**
 `reports` resolves one `report_id` across three tiers, so two reports sharing a
@@ -703,6 +896,77 @@ through elicitation. A client that cannot elicit gets a refusal, not a
 default-accept. The generic MCP consent ladder does not cover this — it gates
 what leaves the machine on one request, not a durable change to what is masked
 on all future ones.
+
+**The approval is bound to the revision it was shown for.** `import_confirm`'s
+precedent has a second half: it re-reads the file digest before loading, because
+the confirmation window is a human decision and therefore seconds-to-minutes
+wide. The same window exists here — the writer lock must not be held across an
+interactive prompt, so the CLI resolves the row read-only, prompts, and
+re-resolves to write. A `reports set --sql` landing inside that window changes
+what the approved column *is*, and the strictly-weaker rule below cannot notice,
+because it only asks that the tier drop: CRITICAL → LOW qualifies, so an approval
+given for `SUM(amount) AS spend` would durably unmask a `spend` that has become a
+routing number. Every caller therefore passes the `class_fingerprint` it read
+before asking, and a mismatch refuses with
+`report_changed_during_confirmation` — counted as `refused_revision_moved`.
+`delete` needs no equivalent: it is bound to an identity a concurrent edit does
+not move.
+
+**The prompt names the class derivation produces now, and the approval is bound
+to that too.** The fingerprint closes only half the window, because only a
+*write* refreshes it — a read never does. So an upstream reclassification (a
+taxonomy change raising the class of a column the report reads) leaves the row,
+and therefore its fingerprint, untouched: the guard above still passes, and the
+human approves a downgrade *from whatever derivation now produces*. The
+strictly-weaker rule cannot notice either — `--to aggregate` on `SUM(amount)` is
+`TXN_AMOUNT → AGGREGATE` before such a change and `ROUTING_NUMBER → AGGREGATE`
+after it, and both drop a tier. This needs no concurrent writer, so the
+single-process calibration does not excuse it. Every caller therefore derives the
+current class in the same read that takes the fingerprint, shows it in the
+confirmation, and passes it back; a mismatch refuses with the same
+`report_changed_during_confirmation` code, counted apart as
+`refused_derivation_moved` because no write explains it. The passed class is a
+**guard, never an input**: the stored `from` is still the service's own fresh
+derivation, so a caller cannot name its own floor.
+
+**An approval covers one column, so unrelated drift is refused.** The write
+persists the whole freshly derived map, so an upstream reclassification that
+moved a *different* output column rode along on the approval: no confirmation
+named that column, no audit row recorded it, and the refreshed fingerprint then
+told the read path the stale contract was current, so R4 stopped degrading it. A
+weakening reached the stored floor without passing the one gate that may lower
+one. Neither guard above sees it — the compared fingerprint is the stored one,
+which no read refreshes, and the derived-class check binds the approved column
+alone. Before writing, the service therefore reapplies the stored downgrades to a
+fresh derivation and compares that map against the stored one, exactly as R4's
+read path does; any column other than the approved one that moved refuses with
+`report_classification_stale`, counted as `refused_unrelated_drift`. The response
+names the moved columns and no class values. The remedy is to save the report
+again, which is what a drifted report already needs — R4 is degrading it
+meanwhile.
+
+**A drifted parameter refuses the approval on the same terms.** A filter-only
+parameter is never projected, so it appears in no output map and the column
+comparison above cannot see it move. That mattered because the write keys the
+fingerprint on the freshly derived parameter classes while persisting none of
+them — `set` takes no `params` — and recomputes the read-set term from the live
+schema, which is what had been carrying the drift signal. Approving an unrelated
+column therefore erased it: the row went from degraded to healthy, served the
+stale weaker parameter class, and republished a stored default that
+`_refuse_sensitive_defaults` would refuse to write. So the same comparison runs
+over the parameter maps, and any parameter that moved refuses with
+`report_classification_stale` too, naming the parameters in `details.parameters`
+beside `details.columns`. Both maps use one implementation (`drifted_names`),
+shared with R4's read path, so a parameter cannot be held to a laxer rule than a
+column. The remedy is the same re-save, which refreshes `params` and the
+fingerprint together.
+
+**A blank `reason` is refused.** The stored reason is the entire product of this
+path — the downgrade itself is permanent and invisible in every later result, so
+the reason is the only thing that distinguishes a waived over-classification from
+an unjustified disclosure read months later. Whitespace counts as blank: a
+required-option check passes `--reason " "`. Refused with
+`report_reason_required`, counted as `refused_blank_reason`.
 
 **A downgrade must lower the tier, and an equal-tier weakening is refused
 outright.** The runtime capability applies the rule `.claude/rules/reports.md`
@@ -806,7 +1070,12 @@ For any tier, report inspection returns:
 
 - the SQL in both forms defined by [R9](#r9--provenance-renders-identically-across-tiers);
 - the resolved class map, per column, with provenance — which upstream column it
-  descends from, or that it is computed or unresolved;
+  descends from, or that it is computed or unresolved. Provenance is keyed
+  **identically to the class map**: output names from the first branch, merged by
+  *position* across a set operation's branches, because that is what SQL does —
+  output column *i* receives rows from branch *i* of every branch. Merging by
+  alias instead invents one output column per branch alias and reports the first
+  branch's table as the sole upstream of a column every branch feeds;
 - the upstream tables lineage resolved;
 - freshness: `class_fingerprint`, whether drift was detected, `updated_at`;
 - graduation eligibility, with the disqualifying reason when it is unavailable
@@ -836,13 +1105,19 @@ two tiers cannot be made uniform here:
 The third kind is why R9's "provenance renders identically across tiers" is
 bounded rather than absolute, and the bound is worth stating plainly: a
 service-backed report cannot feed the brass SQL chip a query, because it has
-none. Report inspection returns its declared `semantics.provenance` — the
-`reports.*` view names the service reads (`("reports.net_worth",)` for
-`core:networth`) — and an explicit `sql_unavailable` reason naming the
-service-backed kind. A chip that renders "derived by `NetworthService` from
+none. Report inspection returns its declared `semantics.provenance` — every
+relation the service reads, which for `core:networth` is three
+(`reports.net_worth`, `core.fct_balances_daily`, `core.dim_accounts`) and for
+`core:networth_history` is one (`reports.net_worth`) — and an explicit
+`sql_unavailable` reason naming the service-backed kind. A chip that renders "derived by `NetworthService` from
 `reports.net_worth`" tells the truth; one that fabricates a plausible `SELECT`
 to fill the slot does not, and the whole point of the provenance chip is that
 it can be checked.
+
+The same bound reaches the graduation verdict, which is keyed on the spec's kind
+rather than on whether a query turned up: a service-backed report returns
+`service_backed`, not `already_materialized`, because it owns no `reports.*`
+model to have been materialized into.
 
 Everything else report inspection returns — class map, lineage, freshness,
 graduation eligibility — is parameter-independent and available for all three.
@@ -854,8 +1129,17 @@ new tool.
 ### R7 — Parity is enforced by test, not by intention
 
 A test asserts that a user-created report and a built-in report execute through
-the same `run_report` call path and produce structurally identical envelopes. A
-change that forks the execution path fails CI rather than passing review.
+the same call path and produce structurally identical envelopes. A change that
+forks the execution path fails CI rather than passing review.
+
+The path is `ReportCatalog.execute` → `execute_catalog_report` →
+`classify_columns` → `redact_catalog_execution` → `redact_records`, and the test
+pins it by name as well as asserting the two tiers agree — two tiers that forked
+the same wrong way would otherwise satisfy an equality-only assertion. (An
+earlier draft of this requirement named `run_report`. That function is the same
+composition of the last four steps and remains the way a test executes one spec
+directly, but no production caller reaches it: every surface goes through the
+catalog, which owns reference resolution and parameter validation.)
 
 Per the fail-closed lesson from M2P.1, classification tests carry **benign**
 fixtures in the same PR as the guards: unaliased `COUNT(*)`, unaliased
@@ -1026,19 +1310,40 @@ remains the only MCP identity this draft assumes.
 | `moneybin_user_report_runs_total` | Counter | `tier`, `outcome` |
 | `moneybin_user_report_unresolved_columns_total` | Counter | — |
 | `moneybin_user_report_drift_detected_total` | Counter | `resolution` (`equal`, `failed_closed`) |
-| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed`, `declined`, `refused_not_weaker`, `no_elicitation`) |
+| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed_prompt`, `confirmed_flag`, `declined`, `refused_not_weaker`, `refused_unknown_column`, `refused_revision_moved`, `refused_derivation_moved`, `refused_unrelated_drift`, `refused_blank_reason`, `refused_reason_too_long`, `no_elicitation`) |
 
 The unresolved-columns and drift counters carry the load: together they say
 whether the invisible classification is invisible in practice, or whether users
 are quietly accumulating masked columns.
 
 The reclassify counter is the one to watch for abuse rather than health. It is
-the only path that durably lowers a masking floor, so a rising `confirmed` rate
+the only path that durably lowers a masking floor, so a rising confirm rate
 against a flat `declined` rate is the signal that the confirm has become a
 formality people click through — the failure mode `design-principles.md` warns
 about when a confirm is not targeted at genuine uncertainty. `no_elicitation`
 separates clients that cannot confirm from humans who said no; conflating them
 would hide a surface that is refusing every downgrade for mechanical reasons.
+
+The two confirm outcomes are separate for the same reason one level up. `--yes`
+never increments `declined`, so a single `confirmed` label makes an assistant
+supplying the flag unasked look exactly like the rising-confirm-flat-decline
+pattern above — indistinguishable from the human it stands in for, in the one
+counter that exists to catch that. `confirmed_flag` rising on its own is the
+signal; `confirmed_prompt` against `declined` remains the click-through signal.
+
+Two more label values were added by the implementing PR, both for the same
+reason — `refused_not_weaker` is the abuse signal, and anything else counted
+under it inflates the one number here that is supposed to mean something:
+
+- **`refused_unknown_column`** — the named column is not in the report's output.
+  The comparison `refused_not_weaker` describes cannot even be evaluated, so this
+  is a reference error, not an attempted weakening.
+- **`no_elicitation` is reachable on the CLI**, not only through a future MCP
+  identity. A piped or non-TTY invocation with no `--yes` has nobody to ask, and
+  the service is handed `confirmed=None` rather than `False` so the refusal is
+  recorded as mechanical. `--yes` states a human decision; an assistant driving
+  the command must not supply it unasked, which is exactly why the surface must
+  not quietly reinterpret "could not ask" as "said no".
 
 ## Open questions
 
@@ -1051,14 +1356,69 @@ would hide a surface that is refusing every downgrade for mechanical reasons.
   leaving `ReportSemantics` closed and letting the catalog payload represent an
   absent-semantics report — keeps the built-in contract frozen at the cost of
   two shapes for one concept, which is the two-patterns rot `design-principles.md`
-  names as the largest source of decay. Decide with the implementing PR, which
-  is where the consumer list can actually be enumerated.
+  names as the largest source of decay.
+
+  **Answered — `ReportSemantics` widens.** The implementing PR enumerated the
+  consumers, and the widening is far cheaper than this draft assumed: 16
+  construction sites (8 in `src`, 8 in tests) and 49 total touch points, of
+  which **adding a `Literal` member or making a field optional breaks zero** —
+  a frozen dataclass only breaks its constructors when a *field* is added. No
+  exhaustiveness logic exists to widen against: zero `assert_never`, zero
+  `match`/`case` on `kind`, zero `kind`-keyed dicts, zero `Literal`-typed
+  parameters. The change is seven edits — `kind` gains `"unknown"` and
+  `unit` / `sign` / `time_basis` admit `None`, on `ReportSemantics` and on its
+  one mirrored type — and every consequence is a pyright-strict compile error
+  rather than a silent behaviour change.
+
+  One guard gap to know about, because it is the only thing keeping the pair in
+  sync: the mirror `ReportSemanticsPayload`
+  (`src/moneybin/privacy/payloads/reports.py`) is a Pydantic `BaseModel`, and
+  `tests/moneybin/test_privacy/test_annotated_registry_sync.py` gates on
+  `is_dataclass` — so no drift test covers it. The copy site
+  (`_semantics_to_payload`) type-erroring under pyright is the whole safety net
+  for a future field addition.
 - **Which MCP identities, if any, pass bounded-registry admission?** Lifecycle,
   inspection, and classification downgrade are distinct capability boundaries,
   not reserved tool names. Fitting `surface-design.md`'s shapes is not the
   admission test: the implementing PR must first try an existing projection,
   method, batch, target state, report entry, or workflow umbrella, then supply
   the seven-question record, serialized byte delta, and evaluation evidence for
-  every remaining identity. The registry stays at 45 until that evidence passes;
-  the fallback is an existing admitted operation or CLI-only operator control,
-  not a speculative alias or an override of ADR-016's hard maximum.
+  every remaining identity. The 49-tool standard registry does not grow until
+  that evidence passes; the fallback is an existing admitted operation or
+  CLI-only operator control, not a speculative alias or an override of
+  ADR-016's hard maximum.
+
+  **Answered — no MCP identity was admitted, and the standard registry did not
+  grow.** All seven verbs ship CLI-only.
+  No admission record was submitted, so none was needed: the shipped
+  `reports(report_id=..., parameters=...)` catalog/runner remains the only MCP
+  identity in this area, and it already spans every tier — a saved report is
+  listed, resolved, and executed through it by construction (R5), which is what
+  made execution parity exact rather than approximate.
+
+  Two capabilities are filed `admission-pending` in
+  [`moneybin-capabilities.md`](moneybin-capabilities.md) — saved-report lifecycle
+  and report verification. That category means the record is not yet written, not
+  that the capability was refused; it is deliberately not `operator-territory`,
+  because filing a registry-admission question under a permanent policy exception
+  would write a false reason into a CI-checked artifact.
+
+  One consequence worth stating plainly, because it looks like a gap: the
+  classification downgrade is the *only* verb whose CLI-only status is load-bearing
+  rather than pending. `design-principles.md` forbids agent self-accept of a
+  downgrade, and nothing at a terminal distinguishes a human from an agent — so
+  `--yes` is a claim the surface cannot verify. MCP elicitation would route the
+  confirmation to a human structurally, which is why admission would *improve*
+  that verb's trust story rather than weaken it. Until then the surface does what
+  it can: the constraint is in `--help`, `confirmed` is a required service
+  argument, and a surface with no way to ask records `no_elicitation` instead of
+  inventing an answer.
+
+  It also records *which* path answered. `confirmed_via` (`prompt` or `flag`) is
+  a second required service argument, written to the downgrade's `app.audit_log`
+  row under `context_json` and split across the counter's two confirm outcomes.
+  The surface cannot verify the `--yes` claim, but it can refuse to launder it:
+  `actor` is `cli` either way, so without this the audit row for an assistant
+  self-accepting a permanent masking downgrade is byte-identical to the row for a
+  human approving one. A rule that cannot be audited after the fact is not
+  enforced, only asserted.

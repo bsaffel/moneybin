@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 import duckdb
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.categories import (
@@ -270,34 +271,61 @@ class CategorizationQueries:
 
         ``sort`` controls the ORDER BY:
         - ``"date"``   — ``txn_date DESC`` (most recent first, default)
-        - ``"impact"`` — ``priority_score DESC`` (ABS(amount) * age_days, largest first)
+        - ``"impact"`` — ``priority_score DESC`` (ABS(amount) * age_days, largest
+          first) *within each currency*, the currencies then interleaved by rank
+          so a capped queue offers work in every one
 
         Returns ``None`` only when the underlying fact table doesn't exist
         yet (pre-first-import). When the fact table exists but the queue
         view is missing — schema drift or unapplied refresh — raises
-        ``UserError(code="schema_out_of_date")`` so callers surface a
+        ``UserError(code=error_codes.INFRA_SCHEMA_DRIFT)`` so callers surface a
         ``refresh_run`` remediation rather than misreporting "no data".
         """
         if sort not in {"date", "impact"}:
             raise ValueError(f"Unknown sort: {sort!r}; expected 'date' or 'impact'")
 
-        order = (
-            "priority_score DESC, transaction_id ASC"
-            if sort == "impact"
-            else "txn_date DESC, transaction_id ASC"
+        columns = (
+            "transaction_id, account_id, account_name, txn_date, amount, "
+            "currency_code, description, merchant_id, merchant_normalized, "
+            "age_days, priority_score, source_type, source_id"
         )
         sql = f"""
-            SELECT transaction_id, account_id, account_name, txn_date, amount,
-                   description, merchant_id, merchant_normalized, age_days,
-                   priority_score, source_type, source_id
+            SELECT {columns}
             FROM {CORE_UNCATEGORIZED_QUEUE.full_name}
             WHERE ABS(amount) >= ?
-        """  # noqa: S608  # TableRef constant + allowlisted sort literal
+        """  # noqa: S608  # TableRef constant + fixed column list
         params: list[object] = [min_amount]
         if account_id is not None:
             sql += " AND account_id = ?"
             params.append(account_id)
-        sql += f" ORDER BY {order}"  # noqa: S608  # order from allowlisted set
+
+        if sort == "impact":
+            # priority_score is ABS(amount) * age_days — a nominal magnitude
+            # that core.uncategorized_queue's own column comment calls
+            # meaningful only within one currency. Ranked across currencies
+            # ahead of LIMIT, the highest-denomination unit takes every slot
+            # and the other currencies' pending work is absent from the queue
+            # rather than lower in it. Ranking within each currency and sorting
+            # on that rank interleaves them (multi-currency.md Requirement 5).
+            sql = f"""
+                SELECT {columns}
+                FROM (
+                    SELECT {columns},
+                           ROW_NUMBER() OVER (
+                               PARTITION BY currency_code
+                               ORDER BY priority_score DESC, transaction_id ASC
+                           ) AS rank_in_currency
+                    FROM ({sql})
+                )
+                ORDER BY rank_in_currency, currency_code
+            """  # noqa: S608  # fixed column list over the query built above
+        else:
+            # txn_date is currency-agnostic, so a cap drops the oldest rows
+            # across every currency alike rather than one currency's in full.
+            # Interleaving here would only break the "most recent first"
+            # contract the sort exists to provide.
+            sql += " ORDER BY txn_date DESC, transaction_id ASC"
+
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)
@@ -313,7 +341,7 @@ class CategorizationQueries:
                 "Uncategorized-queue view is missing. The schema is out of "
                 "date — run `refresh_run` (MCP) or `moneybin refresh` (CLI) "
                 "to rebuild derived views.",
-                code="schema_out_of_date",
+                code=error_codes.INFRA_SCHEMA_DRIFT,
                 hint="refresh_run",
                 details={"missing_object": CORE_UNCATEGORIZED_QUEUE.full_name},
             ) from e

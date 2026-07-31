@@ -196,17 +196,20 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--output json] [-q]
 |
 +-- review                         -- What needs my attention? Pending counts across all review queues.
-|     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all; walks matches first then categorize
-|     [--status]                        Counts only, no interactive loop
+|     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all
+|     [--status]                        Counts — the default; the flag states it explicitly
+|     [--interactive]                   Walk the queue item by item (not yet built)
 |     [--confirm <id>]                  Non-interactive: confirm one match by ID
 |     [--reject <id>]                   Non-interactive: reject one match by ID
 |     [--confirm-all]                   Non-interactive: confirm all items in scope
-|     [--limit N]                       Cap items per session
+|     [--limit N]                       Cap items per session (applies to --interactive)
 |     [--output text|json] [-q]
 |   Aggregates matches_pending + categorize_pending + account_links_pending + merchant_links_pending
-|   + security_links_pending in one sweep. Use `--status` for counts only; drill into
+|   + security_links_pending in one sweep. Counts are what a bare invocation prints; drill into
 |   `accounts links pending`, `merchants links pending`, `investments securities links pending`,
-|   `transactions matches list`, or `transactions categorize pending` for queue contents.
+|   `transactions matches pending`, or `transactions categorize pending` for queue contents.
+|   `--status`, `--interactive`, and the decision flags are mutually exclusive; passing two is a
+|   usage error (exit 2) rather than a silent pick.
 |
 +-- accounts
 |   +-- list                       -- List accounts [--include-archived] [--type TYPE]
@@ -298,8 +301,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- audit                      -- Audit one transaction's curation history (notes, tags, splits)
 |   +-- review                     -- DEPRECATED: use `moneybin review` (removed after one minor release)
 |   |                                  Unified review queue (matches + categorize + account-links + merchant-links + security-links)
-|   |     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all; walks matches first then categorize
-|   |     [--status]                        Counts only, no interactive loop
+|   |     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all
+|   |     [--status]                        Counts — the default; the flag states it explicitly
+|   |     [--interactive]                   Walk the queue item by item (not yet built)
 |   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID
 |   |     [--reject <id>]                   Non-interactive: reject one match by ID
 |   |     [--confirm-all]                   Non-interactive: confirm all items in scope
@@ -307,7 +311,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   Note: --confirm/--reject/--confirm-all are fully implemented for --type matches.
 |   |         --type categorize review is not yet wired (stub); categorize items use
 |   |         transactions categorize commit instead.
-|   +-- matches                    -- Transfer detection + dedup workflow (no review — see transactions review)
+|   +-- matches                    -- Transfer detection + dedup workflow (no review — see the top-level `review`)
 |   |   +-- list [--type dedup|transfer] [--limit N] [-o json|text]
 |   |   |         Pending proposals grouped by component_key (N-way dedup clusters appear
 |   |   |         as one block each). --output json returns rows incl. component_key.
@@ -316,7 +320,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   +-- history [--type dedup|transfer] [--limit N]
 |   |   +-- undo <match_id> [--yes]
 |   |   +-- backfill [--skip-transform] [--auto-accept-transfers]
-|   +-- categorize                 -- Categorization workflow + rules (taxonomy/merchants live in top-level groups; review lives at transactions review)
+|   +-- categorize                 -- Categorization workflow + rules (taxonomy/merchants live in top-level groups; review lives at the top-level `review`)
 |   |   +-- commit                  -- Commit externally-decided categorizations (--input <path> or stdin '-')
 |   |   +-- commit-from-file <path> -- Commit from a JSON file (convenience wrapper)
 |   |   +-- run                     -- Run engine cascade (--methods rules,merchants)
@@ -380,6 +384,64 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   # the runner's parameter name (e.g. `from_month` -> `--from-month`), and
 |   |   # every generated command also carries `--output` / `--quiet`. `networth`
 |   |   # and `networth-history` stay hand-written.
+|   |
+|   |   # The seven verbs below span every report tier — built-in, extension, and
+|   |   # user-created (reports-dynamic.md). `list` / `run` / `explain` serve all
+|   |   # three; `create` / `set` / `delete` / `reclassify` own only the user tier,
+|   |   # because a built-in is a file in the repo. All seven are CLI-only: no MCP
+|   |   # identity is named for a lifecycle or inspection verb, and the shipped
+|   |   # `reports(report_id=..., parameters=...)` tool remains the only MCP
+|   |   # identity. HANDLE is a report_id or a name, resolved in that order.
+|   +-- list                       -- Every registered report, any tier
+|   |     [--include-archived]       Adds archived saved reports, marked archived
+|   |     [--tier builtin|extension|user]
+|   |     [--output json] [--quiet]
+|   +-- run <handle>               -- Run one report by ID or name
+|   |     [--param key=value]        Repeatable; coerced to the declared type
+|   |     [--limit N]                Default: 1,000,000; text output says when it bites
+|   |     [--output json] [--quiet]
+|   +-- explain <handle>           -- Query, class map, lineage, freshness, portability
+|   |     [--param key=value]        Values render the executed SQL form; runs nothing
+|   |     [--output json] [--quiet]
+|   |     # Returns both SQL forms (executed / stored template), each output
+|   |     # column's class with its provenance, upstream lineage, the drift
+|   |     # fingerprint, and graduation eligibility with blockers. A parameter
+|   |     # classed above the lowest tier keeps its placeholder in the executed
+|   |     # form — rendering is not execution and gets no redaction pass.
+|   +-- create <name>              -- Save a query as a durable report (user tier)
+|   |     --sql TEXT | --sql-file PATH   Exactly one required
+|   |     [--description TEXT]
+|   |     [--param name[:type][=default]]  Repeatable; str|int|float|bool|date|decimal
+|   |     [--output json]
+|   |     # Classification is derived from the SQL and stored; never declared.
+|   +-- set <handle>               -- Rename, re-describe, re-query, archive, restore
+|   |     [--name TEXT] [--description TEXT]
+|   |     [--sql TEXT | --sql-file PATH] [--param ...] [--clear-params]
+|   |     [--archive] [--restore]
+|   |     [--output json]
+|   |     # --clear-params drops every declaration; --param and it are opposites.
+|   |     # Changing SQL or parameters re-derives the privacy contract; only new
+|   |     # SQL drops an approved downgrade — a re-declared parameter leaves the
+|   |     # column and the query an approval covers exactly as approved.
+|   +-- delete <handle>            -- Delete one saved report permanently
+|   |     [--yes] [--output json]
+|   |     # `system audit undo` restores it; `set --archive` hides without deleting.
+|   +-- reclassify <handle>        -- Lower one column's masking floor, permanently
+|   |     --column TEXT --to CLASS --reason TEXT   All required
+|   |     [--yes] [--output json]
+|   |     # The only path that durably lowers what is masked. The downgrade must
+|   |     # drop the sensitivity tier; a same-tier weakening is refused whatever
+|   |     # the reason. `--yes` states a human decision — an assistant driving
+|   |     # this command must not supply it unasked. With no prompt available and
+|   |     # no `--yes`, the command refuses and records that it could not ask.
+|   |     # The audit row's `confirmed_via` names the path that confirmed
+|   |     # (`prompt` or `flag`); `actor` is `cli` on both, so nothing else can
+|   |     # tell an assistant's `--yes` from a human at the prompt.
+|   |     # The prompt names the class derivation produces *now*, not the stored
+|   |     # one, and the approval is bound to it: an upstream reclassification
+|   |     # writes nothing, so the revision guard alone cannot see it.
+|   |     # A blank or whitespace `--reason` is a usage error — it is the only
+|   |     # durable record of why the floor was lowered.
 |   +-- networth                   -- Cross-domain net worth aggregation (accounts + assets) [--as-of DATE]
 |   +-- networth-history           -- Net worth time series [--from DATE] [--to DATE]
 |   +-- cashflow                   -- Inflow / outflow over a window [--from-month YYYY-MM] [--to-month YYYY-MM] [--by]
@@ -542,7 +604,7 @@ Naming follows [`extension-contracts.md`](extension-contracts.md) §"Naming and 
 ```
 Entity groups:  accounts (+ balance), transactions (+ matches, categorize, notes, tags, splits), assets
 Reference data: categories, merchants (taxonomies that transactions reference)
-Reports:        reports (networth, networth-history, spending, cashflow, recurring, merchants, uncategorized, large-transactions, balance-drift; budget read command de-registered pending the reports.budget view)
+Reports:        reports — per-report commands (networth, networth-history, spending, cashflow, recurring, merchants, uncategorized, large-transactions, balance-drift; budget read command de-registered pending the reports.budget view) plus seven verbs: list, run, explain span all three tiers; create, set, delete, reclassify own the user tier
 System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
@@ -732,7 +794,7 @@ $ moneybin import files march-statement.csv
   Categorized: 38 auto-classified, 4 need review
 ✅ Imported 44 new transactions
 👀 4 uncategorized transactions and 2 transfers need review
-💡 Run 'moneybin transactions categorize auto review' or 'moneybin transactions review --type matches'
+💡 Run 'moneybin transactions categorize auto review' or 'moneybin transactions matches pending'
 ```
 
 Error handling: if any pipeline stage fails, prior stages' data is preserved (raw data is already loaded). The error message identifies which stage failed and how to retry just that stage.
@@ -1057,6 +1119,7 @@ These were identified during design and should be added to the spec index:
 
 | Date | Version | Summary |
 |---|---|---|
+| 2026-07-26 | v2 audit | Added seven tier-spanning `reports` verbs for user-created reports ([`reports-dynamic.md`](reports-dynamic.md) R5/R6): `list`, `run`, and `explain` serve built-in, extension, and user tiers; `create`, `set`, `delete`, and `reclassify` own the user tier. All seven are CLI-only — no MCP identity is named for a lifecycle or inspection verb, and `reports(report_id=..., parameters=...)` remains the only MCP identity in this area. `HANDLE` resolves a `report_id` first, then a name, on every verb that takes one. |
 | 2026-07-19 | v2 audit | Executable capability/outcome parity replaces canonical-name parity. Added `accounts summary`; implemented the formerly-placeholder `categories list/create/set` and `merchants list/create` routes through `CategorizationService`; `sync logout` now clears both credentials and pending profile-scoped device-auth sessions. The MCP peers consolidate under `accounts`, `taxonomy`/`taxonomy_set`, and the existing sync quartet. |
 | 2026-07-04 | v2 audit | Added `transactions categorize improve-ai` — upgrades AI-guessed (`categorized_by='ai'`) transactions to confident Plaid `provider_native` categories via the category-source bridge (`>=MEDIUM` confidence gate); never overrides user, rule, or merchant categorizations. Its MCP sibling is `transactions_categorize_run(operation="improve_ai")`. |
 | 2026-05-23 | v2 audit | Report auto-generation shipped: the six view-backed report commands (`cashflow`, `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`) are now framework-generated from `@report` runners in `src/moneybin/reports/definitions/` (names + result shapes unchanged; flags auto-derive from runner param names, plus `--output`/`--quiet`). `cashflow`/`spending` bespoke `--from`/`--to` became `--from-month`/`--to-month`. `reports budget` (BudgetService-synthesized, no backing view) and `reports health` (unimplemented stub) were removed; `reports budget` returns when the `reports.budget` view lands. `networth`/`networth-history` stay hand-written. |

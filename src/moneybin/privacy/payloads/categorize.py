@@ -185,6 +185,9 @@ class PendingTxnRow:
     transaction_id: Annotated[str, DataClass.RECORD_ID]
     transaction_date: Annotated[str | None, DataClass.TXN_DATE]
     amount: Annotated[float | None, DataClass.TXN_AMOUNT]
+    # The queue asks the caller to act on `amount`; without its denomination a
+    # EUR and a USD charge are the same bare number.
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
     description: Annotated[str | None, DataClass.DESCRIPTION]
     memo: Annotated[str | None, DataClass.DESCRIPTION]
     # RECORD_ID (spec D6): opaque canonical surrogate, not PII; passes through.

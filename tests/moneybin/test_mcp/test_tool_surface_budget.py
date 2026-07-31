@@ -34,7 +34,7 @@ from moneybin.mcp.surface_inventory import SurfaceInventory
 
 FIXTURES_PATH = Path(__file__).parents[2] / "fixtures/mcp_surface"
 BASELINE_PATH = FIXTURES_PATH / "baseline-2026-07-17.json"
-STANDARD_PATH = FIXTURES_PATH / "standard-47.json"
+STANDARD_PATH = FIXTURES_PATH / "standard.json"
 
 _REPLACED_TOOL_NAME_COHORTS = {
     "system_status": frozenset({
@@ -152,6 +152,8 @@ _STANDARD_CALLBACK_NAMES = {
     "system_status": "system_status_coarse",
     "system_audit": "system_audit_coarse",
     "system_audit_undo": "system_audit_undo",
+    "profile": "profile",
+    "profile_set": "profile_set",
     "reports": "reports",
     "accounts": "accounts_coarse",
     "accounts_set": "accounts_set",
@@ -389,7 +391,7 @@ def test_standard_surface_is_smaller_than_baseline() -> None:
     standard = _inventory_server_sync()
 
     assert baseline.total_bytes == 90_734
-    assert standard.tool_count == 47
+    assert standard.tool_count == 49
     assert standard.total_bytes < baseline.total_bytes
     assert {
         row.name for row in standard.tools if row.output_schema_bytes > 0
@@ -398,10 +400,10 @@ def test_standard_surface_is_smaller_than_baseline() -> None:
 
 def test_current_registry_respects_hard_limit_without_report_reservations() -> None:
     """Reports extend the catalog runner and never reserve MCP tool slots."""
-    assert STANDARD_TOOL_COUNT == 47
+    assert STANDARD_TOOL_COUNT == 49
     assert {"export_run", "exports_set"} <= STANDARD_TOOL_NAMES
     assert STANDARD_TOOL_COUNT < HARD_TOOL_LIMIT
-    assert HARD_TOOL_LIMIT - STANDARD_TOOL_COUNT == 3
+    assert HARD_TOOL_LIMIT - STANDARD_TOOL_COUNT == 1
 
 
 @pytest.mark.integration

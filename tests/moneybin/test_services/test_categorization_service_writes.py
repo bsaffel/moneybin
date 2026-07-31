@@ -8,6 +8,10 @@ service-layer behavior independently.
 
 from __future__ import annotations
 
+import logging
+from typing import cast
+from unittest.mock import MagicMock
+
 import pytest
 
 from moneybin import error_codes
@@ -709,7 +713,7 @@ class TestCreateCategory:
         with pytest.raises(UserError) as exc_info:
             svc.create_category("Childcare", subcategory="Daycare")
 
-        assert exc_info.value.code == "CATEGORY_ALREADY_EXISTS"
+        assert exc_info.value.code == "taxonomy_category_already_exists"
         assert "Childcare" in exc_info.value.message
         assert "Daycare" in exc_info.value.message
 
@@ -721,7 +725,7 @@ class TestCreateCategory:
         with pytest.raises(UserError) as exc_info:
             svc.create_category("Hobbies")
 
-        assert exc_info.value.code == "CATEGORY_ALREADY_EXISTS"
+        assert exc_info.value.code == "taxonomy_category_already_exists"
         assert "Hobbies" in exc_info.value.message
 
 
@@ -776,7 +780,7 @@ class TestToggleCategory:
         seed_categories_view(db)
         with pytest.raises(UserError) as exc_info:
             CategorizationService(db).toggle_category("NOPE", is_active=False)
-        assert exc_info.value.code == "CATEGORY_NOT_FOUND"
+        assert exc_info.value.code == "taxonomy_category_not_found"
 
 
 class TestResolveCategoryId:
@@ -1053,7 +1057,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "transactions" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1068,7 +1072,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "budgets" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1084,7 +1088,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "merchants" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1099,7 +1103,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "splits" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1115,7 +1119,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "rules" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1131,7 +1135,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "proposed rules" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1146,7 +1150,7 @@ class TestDeleteCategory:
         )
         with pytest.raises(UserError) as exc_info:
             svc.delete_category(cat_id)
-        assert exc_info.value.code == "CATEGORY_HAS_REFERENCES"
+        assert exc_info.value.code == "taxonomy_category_has_references"
         assert "source mappings" in str(exc_info.value)
 
     @pytest.mark.unit
@@ -1352,13 +1356,13 @@ class TestDeleteCategory:
         seed_categories_view(db)
         with pytest.raises(UserError) as exc_info:
             CategorizationService(db).delete_category("FND")
-        assert exc_info.value.code == "CATEGORY_IS_DEFAULT"
+        assert exc_info.value.code == "taxonomy_category_is_default"
 
     @pytest.mark.unit
     def test_raises_for_unknown_category(self, db: Database) -> None:
         with pytest.raises(UserError) as exc_info:
             CategorizationService(db).delete_category("does-not-exist")
-        assert exc_info.value.code == "CATEGORY_NOT_FOUND"
+        assert exc_info.value.code == "taxonomy_category_not_found"
 
     @pytest.mark.unit
     def test_unforced_delete_does_not_touch_refs(self, db: Database) -> None:
@@ -1661,3 +1665,27 @@ def test_taxonomy_target_plan_rejects_ambiguous_merchant_natural_key(
 
     assert exc_info.value.code == error_codes.MUTATION_AMBIGUOUS
     assert exc_info.value.details == {"candidate_ids": sorted(merchant_ids)}
+
+
+@pytest.mark.unit
+def test_committed_review_merchants_log_once_for_the_batch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A batch of created merchants emits one record, not one per merchant.
+
+    A sync that creates nine merchants used to write nine near-identical
+    lines whose only payload was an opaque id. The count is the part a
+    reader can act on; the ids stay available at debug. Merchant names are
+    never logged (`.claude/rules/security.md`).
+    """
+    applier = MatchApplier(cast("Database", MagicMock()), audit=MagicMock())
+
+    with caplog.at_level(logging.INFO, logger="moneybin.services.categorization"):
+        applier.record_committed_review_merchants(
+            created_merchant_ids=("a1b2c3d4e5f6", "b2c3d4e5f6a1", "c3d4e5f6a1b2"),
+            touched_merchant_ids=(),
+        )
+
+    info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(info_records) == 1
+    assert "3" in info_records[0].getMessage()

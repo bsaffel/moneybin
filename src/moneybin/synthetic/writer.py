@@ -35,6 +35,17 @@ _GROUND_TRUTH_DDL_PATH = (
 )
 _ground_truth_ddl: str | None = None
 
+# Every persona banks in the US, so the generated data genuinely is USD — this
+# states that fact rather than leaving it to be inferred. It is written at the
+# account grain (OFX balance CURDEF, tabular account column) and deliberately
+# not onto individual transactions: a real OFX file omits per-transaction
+# <CURRENCY> when it matches the statement default, so omitting it here keeps
+# the fixture faithful and exercises the account-inheritance path in
+# core.fct_transactions. Before M1K.1 removed dim_accounts' blind 'USD' default,
+# the generator could omit currency entirely and the default covered for it;
+# `moneybin demo` then failed its own doctor check on 331 unknown-currency rows.
+_SYNTHETIC_CURRENCY = "USD"
+
 
 def _source_file(result: GenerationResult, suffix: str | int) -> str:
     return f"synthetic://{result.persona}/{result.seed}/{suffix}"
@@ -153,6 +164,7 @@ class SyntheticWriter:
                 "ledger_balance": Decimal(str(round(acct.opening_balance, 2))),
                 "ledger_balance_date": start_dt,
                 "available_balance": None,
+                "currency_code": _SYNTHETIC_CURRENCY,
                 "source_file": _source_file(result, slugify(acct.name)),
                 "extracted_at": now,
             })
@@ -200,6 +212,7 @@ class SyntheticWriter:
                 "account_name": acct.name,
                 "account_type": acct.account_type,
                 "institution_name": acct.institution,
+                "currency": _SYNTHETIC_CURRENCY,
                 "source_file": _source_file(result, slugify(acct.name)),
                 "source_type": "csv",
                 "source_origin": f"synthetic_{result.persona}",

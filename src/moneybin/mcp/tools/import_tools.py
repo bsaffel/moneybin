@@ -43,12 +43,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import internal_envelope_adapter, mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    compare_keyset,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.imports import (
@@ -86,6 +80,12 @@ from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
     build_error_envelope,
+)
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    compare_keyset,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
 )
 from moneybin.services.import_confirmation import sign_convention_effect
 
@@ -141,7 +141,7 @@ def _validate_file_path(file_path: str) -> Path:
             "file_path must be within the user's home directory. "
             "Path traversal and symlinks that escape the home directory "
             "are not allowed.",
-            code="invalid_file_path",
+            code=error_codes.IMPORT_INVALID_FILE_PATH,
         )
     return resolved
 
@@ -304,7 +304,7 @@ async def _reject_if_changed_during_confirmation(
         "This file changed while the confirmation was open, so the approval no "
         "longer applies to it — nothing was imported. Re-run the import to see "
         "a proposal for the current contents.",
-        code="file_changed_during_confirmation",
+        code=error_codes.IMPORT_FILE_CHANGED_DURING_CONFIRMATION,
         details={"file_path": str(path)},
     )
 
@@ -346,7 +346,7 @@ def _reject_unsupported_pdf_account_signals(
         f"{unsupported} is not supported for a PDF — PDF rows resolve the "
         "account from the statement; pass account_id to pin rows to an existing "
         "account when there is no anchor.",
-        code="pdf_account_signal_unsupported",
+        code=error_codes.IMPORT_PDF_ACCOUNT_SIGNAL_UNSUPPORTED,
     )
 
 
@@ -458,6 +458,7 @@ def import_files(
         positive=income; transfers exempt. Display currency is set
         in summary.display_currency.
     """
+    from moneybin.protocol.import_envelope import mark_total_failure
     from moneybin.services.import_confirmation import ImportConfirmationRequiredError
     from moneybin.services.import_service import ImportService
 
@@ -568,10 +569,22 @@ def import_files(
             from moneybin.services.import_service import (
                 BatchImportResult,
                 PerFileResult,
+                per_file_failure,
             )
 
-            error_type = type(e).__name__
-            logger.warning(f"Import failed for {validated[0]}: {error_type}")
+            error_message, error_code, error_hint, error_details = per_file_failure(e)
+            if error_code is None and loaded_import_id is not None:
+                # The rows landed, so nothing here was a parse failure — the
+                # only work after the load is the refresh block above. Left
+                # unclassified, `mark_total_failure` falls back to
+                # IMPORT_PARSE_ERROR at the envelope level, which tells an
+                # agent to fix the file and re-import when the actual
+                # recoveries are retry-refresh or `import_revert` on the
+                # orphaned load (the `import_id` kept on the row below).
+                error_code = error_codes.REFRESH_MODEL_FAILED
+            # Log the class name, never the message: a classified message is
+            # user-safe but still names the path, and logs stay PII-free.
+            logger.warning(f"Import failed for {validated[0]}: {type(e).__name__}")
             batch = BatchImportResult(
                 per_file=[
                     PerFileResult(
@@ -580,7 +593,10 @@ def import_files(
                         source_type=None,
                         rows_loaded=0,
                         import_id=loaded_import_id,
-                        error=error_type,
+                        error=error_message,
+                        error_code=error_code,
+                        hint=error_hint,
+                        details=error_details,
                     )
                 ],
                 transforms_applied=False,
@@ -630,6 +646,9 @@ def import_files(
             rows_loaded=r.rows_loaded,
             import_id=r.import_id,
             error=r.error,
+            error_code=r.error_code,
+            hint=r.hint,
+            details=r.details,
             sign_correction_suggested=r.sign_correction_suggested,
             sign_override_replayed=r.sign_override_replayed,
             confirmation_payload=cast(
@@ -739,7 +758,7 @@ def import_files(
         actions.append("Refresh failed after import — call refresh_run to retry")
     actions.append("Use system_status to confirm refreshed counts")
 
-    return build_envelope(
+    envelope = build_envelope(
         data=ImportFilesPayload(
             imported_count=batch.imported_count,
             failed_count=batch.failed_count,
@@ -753,9 +772,17 @@ def import_files(
         # (DataClass.DESCRIPTION, MEDIUM). Per moneybin-mcp.md the envelope's
         # summary.sensitivity must reflect that — agents read summary.sensitivity
         # to drive consent prompts, not the per-field annotations directly.
-        sensitivity="medium" if pending_files else "low",
+        # A failed row's `error`/`hint` are DESCRIPTION-tier for the same reason
+        # (`ImportPerFileRow`), so they raise the tier too; deriving from
+        # `pending_files` alone under-declared every failed-file batch.
+        sensitivity=(
+            "medium"
+            if pending_files or any(r.error or r.hint for r in files)
+            else "low"
+        ),
         actions=actions,
     )
+    return mark_total_failure(envelope, batch)
 
 
 def _import_preview_pdf(
@@ -920,7 +947,7 @@ def _import_preview_tabular(
             structural_red_flag=read_result.header_row_looks_like_data,
         )
     except ValueError as e:
-        raise UserError(str(e), code="preview_error") from e
+        raise UserError(str(e), code=error_codes.IMPORT_PREVIEW_ERROR) from e
 
     return build_envelope(
         data=ImportPreviewPayload(
@@ -978,14 +1005,14 @@ def _read_tabular_preview_bytes(path: Path) -> bytes:
     try:
         format_info = detect_format(path)
     except ValueError as exc:
-        raise UserError(str(exc), code="preview_error") from exc
+        raise UserError(str(exc), code=error_codes.IMPORT_PREVIEW_ERROR) from exc
 
     with path.open("rb") as handle:
         source_bytes = handle.read(format_info.file_size + 1)
     if len(source_bytes) != format_info.file_size:
         raise UserError(
             "The file changed while MoneyBin was preparing its preview. Retry.",
-            code="IMPORT_PREVIEW_CHANGED",
+            code=error_codes.IMPORT_PREVIEW_CHANGED,
         )
     return source_bytes
 
@@ -1001,7 +1028,7 @@ def _read_pdf_preview_bytes(path: Path) -> bytes:
         raise UserError(
             f"PDF is {size_mb:.1f} MB, exceeding the configured "
             f"{limit_mb} MB preview limit.",
-            code="preview_error",
+            code=error_codes.IMPORT_PREVIEW_ERROR,
         )
 
     with path.open("rb") as handle:
@@ -1009,7 +1036,7 @@ def _read_pdf_preview_bytes(path: Path) -> bytes:
     if len(source_bytes) != file_size:
         raise UserError(
             "The file changed while MoneyBin was preparing its preview. Retry.",
-            code="IMPORT_PREVIEW_CHANGED",
+            code=error_codes.IMPORT_PREVIEW_CHANGED,
         )
     return source_bytes
 
@@ -1049,7 +1076,7 @@ def import_preview_coarse(
         raise UserError(
             "OFX/QFX/QBO files import directly with import_files; their "
             "structured financial format has no column-mapping preview.",
-            code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
+            code=error_codes.IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED,
         )
     response: ResponseEnvelope[ImportPreviewPayload] | ResponseEnvelope[dict[str, Any]]
     if path.suffix.lower() == ".pdf":
@@ -1212,6 +1239,18 @@ def import_status(
     )
 
 
+# Why a table and not f"revert_{status}": a code built from a runtime value is
+# invisible to TestWireCodes (an f-string is an ast.JoinedStr, not a literal),
+# so four undeclared codes reached agents unnoticed. An unknown status falls
+# back to a declared code rather than minting one.
+_REVERT_FAILURE_CODES = {
+    "not_found": error_codes.IMPORT_REVERT_NOT_FOUND,
+    "already_reverted": error_codes.IMPORT_REVERT_ALREADY_REVERTED,
+    "unsupported": error_codes.IMPORT_REVERT_UNSUPPORTED,
+    "superseded": error_codes.IMPORT_REVERT_SUPERSEDED,
+}
+
+
 def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
     """Undo an import batch by deleting all rows it produced.
 
@@ -1245,7 +1284,9 @@ def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
     return build_error_envelope(
         error=UserError(
             str(result.get("reason") or f"Cannot revert (status={status})"),
-            code=f"revert_{status}",
+            code=_REVERT_FAILURE_CODES.get(
+                str(status), error_codes.IMPORT_REVERT_UNSUPPORTED
+            ),
         )
     )
 
@@ -1425,7 +1466,7 @@ def _import_status_position(
     except ValueError as exc:
         raise UserError(
             "Invalid import pagination cursor.",
-            code="IMPORT_CURSOR_INVALID",
+            code=error_codes.IMPORT_CURSOR_INVALID,
         ) from exc
 
 
@@ -1478,12 +1519,12 @@ def import_status_coarse(
     if not supplied:
         raise UserError(
             "At least one import status section is required.",
-            code="IMPORT_SECTIONS_REQUIRED",
+            code=error_codes.IMPORT_SECTIONS_REQUIRED,
         )
     if len(set(supplied)) != len(supplied):
         raise UserError(
             "Import status sections must not contain duplicates.",
-            code="IMPORT_SECTIONS_DUPLICATE",
+            code=error_codes.IMPORT_SECTIONS_DUPLICATE,
         )
     requested: list[Literal["imports", "formats", "inbox"]] = [
         section for section in _IMPORT_STATUS_SECTION_ORDER if section in supplied
@@ -1491,17 +1532,17 @@ def import_status_coarse(
     if import_id is not None and requested != ["imports"]:
         raise UserError(
             "import_id is valid only when imports is the sole section.",
-            code="IMPORT_ID_NOT_ALLOWED",
+            code=error_codes.IMPORT_ID_NOT_ALLOWED,
         )
     if import_id is not None and (limit != 100 or cursor is not None):
         raise UserError(
             "A single import lookup does not accept pagination overrides.",
-            code="IMPORT_PAGINATION_NOT_ALLOWED",
+            code=error_codes.IMPORT_PAGINATION_NOT_ALLOWED,
         )
     if "imports" not in requested and (limit != 100 or cursor is not None):
         raise UserError(
             "Pagination is valid only when imports is selected.",
-            code="IMPORT_PAGINATION_NOT_ALLOWED",
+            code=error_codes.IMPORT_PAGINATION_NOT_ALLOWED,
         )
 
     position = (
@@ -1682,7 +1723,7 @@ def _import_confirm_bridge(
         # Only a bad response shape / out-of-bounds recipe is bridge_response_
         # invalid. A ValueError raised later (PDF extraction, load) is NOT
         # caught here so it isn't mislabeled — it surfaces as a generic error.
-        raise UserError(str(e), code="bridge_response_invalid") from e
+        raise UserError(str(e), code=error_codes.IMPORT_BRIDGE_RESPONSE_INVALID) from e
     except ImportConfirmationRequiredError as e:
         return build_envelope(
             sensitivity="medium",
@@ -1974,7 +2015,7 @@ async def _confirm_pdf_sign_with_human(
             "the file may have changed since it was flagged — re-run "
             f"import_preview(file_path='{path}') to see its current state "
             f"(terminal equivalent: moneybin import files {quoted_path}).",
-            code="sign_confirmation_not_pending",
+            code=error_codes.IMPORT_SIGN_CONFIRMATION_NOT_PENDING,
         )
 
     from moneybin.services.inbox_service import InboxService
@@ -2114,7 +2155,7 @@ async def import_confirm(
             raise UserError(
                 "bridge_response cannot be combined with accept= or mapping= "
                 "(those are the tabular column-mapping channel).",
-                code="confirm_channel_conflict",
+                code=error_codes.IMPORT_CONFIRM_CHANNEL_CONFLICT,
             )
         if confirm_pdf_sign:
             # A bridge recipe's own inversion is elicited below, on the bridge
@@ -2125,7 +2166,7 @@ async def import_confirm(
                 "recipe that inverts amounts raises its own human confirmation "
                 "when applied. Call import_confirm(file_path=..., "
                 "bridge_response=...) on its own.",
-                code="confirm_channel_conflict",
+                code=error_codes.IMPORT_CONFIRM_CHANNEL_CONFLICT,
             )
         _reject_unsupported_pdf_account_signals(
             account_name=account_name,
@@ -2177,7 +2218,7 @@ async def import_confirm(
                     "confirm_pdf_sign cannot be combined with accept= or mapping= "
                     "(those are the tabular column-mapping channel). A PDF's sign "
                     "confirmation takes no column mapping.",
-                    code="confirm_channel_conflict",
+                    code=error_codes.IMPORT_CONFIRM_CHANNEL_CONFLICT,
                 )
             _reject_unsupported_pdf_account_signals(
                 account_name=account_name,
@@ -2213,7 +2254,7 @@ async def import_confirm(
             f"import files {quoted} --sign negative_is_expense` records amounts "
             "exactly as printed. The proposal's sign_convention / "
             "sign_prior_convention name the direction actually on offer.",
-            code="confirm_channel_conflict",
+            code=error_codes.IMPORT_CONFIRM_CHANNEL_CONFLICT,
         )
 
     if confirm_pdf_sign:
@@ -2222,14 +2263,14 @@ async def import_confirm(
             "file's sign inversion is confirmed through its mapping ratification: "
             "call import_confirm(file_path=..., accept=True) and MoneyBin will ask "
             "the human to approve the inversion.",
-            code="confirm_channel_conflict",
+            code=error_codes.IMPORT_CONFIRM_CHANNEL_CONFLICT,
         )
 
     if not accept and not mapping:
         raise UserError(
             "import_confirm requires accept=True to ratify the proposed mapping, "
             "or mapping={'<dest_field>': '<source_column>'} to override specific fields.",
-            code="confirm_requires_signal",
+            code=error_codes.IMPORT_CONFIRM_REQUIRES_SIGNAL,
         )
 
     digest_at_proposal = await asyncio.to_thread(_content_digest, path)
@@ -2404,14 +2445,14 @@ def _load_import_confirm_preview(
         if preview is None:
             raise UserError(
                 "Import preview was not found.",
-                code="IMPORT_PREVIEW_NOT_FOUND",
+                code=error_codes.IMPORT_PREVIEW_NOT_FOUND,
             )
         path = _validate_file_path(preview["file_path"])
         source_bytes = repo.get_source_bytes(preview_id)
         if source_bytes is None:
             raise UserError(
                 "The immutable import preview snapshot is unavailable.",
-                code="IMPORT_PREVIEW_SNAPSHOT_MISSING",
+                code=error_codes.IMPORT_PREVIEW_SNAPSHOT_MISSING,
             )
     return preview, path, source_bytes
 
@@ -2524,7 +2565,7 @@ def _run_import_confirm_attempt(
                 if not isinstance(plan_value, dict):
                     raise UserError(
                         "The persisted preview lacks its normalized import plan.",
-                        code="IMPORT_PREVIEW_PLAN_MISSING",
+                        code=error_codes.IMPORT_PREVIEW_PLAN_MISSING,
                     )
                 reviewed_plan = ReviewedTabularPlan.from_dict(
                     cast(dict[str, Any], plan_value)
@@ -2604,13 +2645,13 @@ def _run_import_confirm_attempt(
                         raise UserError(
                             "The sign proposal changed after approval; re-run the "
                             "preview and review the current proposal.",
-                            code="IMPORT_SIGN_PROPOSAL_CHANGED",
+                            code=error_codes.IMPORT_SIGN_PROPOSAL_CHANGED,
                         ) from current_confirmation
                 else:
                     raise UserError(
                         "The approved sign proposal is no longer pending; re-run the "
                         "preview before importing.",
-                        code="IMPORT_SIGN_PROPOSAL_CHANGED",
+                        code=error_codes.IMPORT_SIGN_PROPOSAL_CHANGED,
                     )
                 confirmation_grant.verify(
                     _import_sign_confirmation_binding(
@@ -2746,7 +2787,7 @@ async def import_confirm_coarse(
     if channel == "ofx":
         raise UserError(
             "OFX/QFX/QBO files import directly with import_files.",
-            code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
+            code=error_codes.IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED,
         )
     pdf_sign = channel == "pdf" and snapshot_data.get("reason") == "sign_convention"
     if channel == "pdf":
@@ -2759,7 +2800,7 @@ async def import_confirm_coarse(
             if bridge_response is not None:
                 raise UserError(
                     "A PDF sign preview does not accept bridge_response.",
-                    code="IMPORT_PREVIEW_CHANNEL_CONFLICT",
+                    code=error_codes.IMPORT_PREVIEW_CHANNEL_CONFLICT,
                 )
         elif (
             snapshot_data.get("status") != "confirmation_required"
@@ -2768,17 +2809,17 @@ async def import_confirm_coarse(
             raise UserError(
                 "This PDF preview does not require a bridge response; use "
                 "import_files to run its deterministic or seed path.",
-                code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
+                code=error_codes.IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED,
             )
         elif bridge_response is None:
             raise UserError(
                 "A PDF bridge preview requires bridge_response={recipe, rows}.",
-                code="IMPORT_PREVIEW_BRIDGE_RESPONSE_REQUIRED",
+                code=error_codes.IMPORT_PREVIEW_BRIDGE_RESPONSE_REQUIRED,
             )
     elif bridge_response is not None:
         raise UserError(
             "bridge_response is valid only for a PDF bridge preview.",
-            code="IMPORT_PREVIEW_CHANNEL_CONFLICT",
+            code=error_codes.IMPORT_PREVIEW_CHANNEL_CONFLICT,
         )
 
     bridge_result: Any | None = None
@@ -2975,12 +3016,12 @@ async def import_revert_coarse(
             raise UserError(
                 "operation='revert_import' requires exactly import_id and does "
                 "not accept confirmation_token.",
-                code="import_revert_invalid_target",
+                code=error_codes.IMPORT_REVERT_INVALID_TARGET,
             )
     elif import_id is not None or not format_name:
         raise UserError(
             "operation='delete_saved_format' requires exactly format_name.",
-            code="import_revert_invalid_target",
+            code=error_codes.IMPORT_REVERT_INVALID_TARGET,
         )
 
     if operation == "delete_saved_format":

@@ -194,7 +194,7 @@ class TestAnnotationBatches:
                 operation_id="op_orphan_create",
             )
 
-        assert exc.value.code == "TRANSACTION_REFERENCE_NOT_FOUND"
+        assert exc.value.code == "transaction_reference_not_found"
 
     @pytest.mark.unit
     def test_apply_annotations_rejects_unknown_note_delete(
@@ -207,7 +207,7 @@ class TestAnnotationBatches:
                 operation_id="op_orphan_missing",
             )
 
-        assert exc.value.code == "NOTE_REFERENCE_NOT_FOUND"
+        assert exc.value.code == "transaction_note_not_found"
 
     @pytest.mark.unit
     def test_note_add_preserves_thread_and_returns_created_note_id(
@@ -1391,6 +1391,35 @@ class TestManualEntry:
             r.source_transaction_id for r in result.results
         }
         assert {r[1] for r in manual_rows} == {result.import_id}
+
+    @pytest.mark.unit
+    def test_create_manual_batch_finalizes_the_batch_on_the_success_path(
+        self, transaction_db: Database
+    ) -> None:
+        """A committed manual batch must reach the terminal ``complete`` status.
+
+        ``finalize_import`` was reachable only from the ``except`` branch, so a
+        *successful* write left the batch at ``importing`` forever — which
+        ``find_existing_import`` cannot distinguish from a genuinely crashed
+        write, the exact distinction it exists to draw.
+        """
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        result = service.create_manual_batch(
+            [self._entry(), self._entry(amount=Decimal("99.00"))], actor="cli"
+        )
+
+        row = transaction_db.conn.execute(
+            "SELECT status, rows_total, rows_imported, completed_at "
+            "FROM raw.import_log WHERE import_id = ?",
+            [result.import_id],
+        ).fetchone()
+        assert row is not None
+        status, rows_total, rows_imported, completed_at = row
+        assert status == "complete"
+        assert rows_total == 2
+        assert rows_imported == 2
+        assert completed_at is not None
 
     @pytest.mark.unit
     def test_create_manual_batch_emits_one_manual_create_audit(

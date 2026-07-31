@@ -189,14 +189,27 @@ class TestImportFilesCommand:
         mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """import_file raising ValueError surfaces as a failed-file envelope."""
+        """import_file raising ValueError surfaces as a classified error envelope.
+
+        The classification happens in handle_cli_errors, which owns every
+        exception it recognizes on this path — hence a real `error.code` rather
+        than the bare exception class name.
+        """
+        import json
+
         test_file = tmp_path / "test.ofx"
         test_file.touch()
         mock_import_file.side_effect = ValueError("already imported")
 
         result = runner.invoke(app, ["files", str(test_file)])
-        # ValueError surfaces as exit code 1 on the single-file path.
         assert result.exit_code == 1
+
+        result = runner.invoke(app, ["files", str(test_file), "--output", "json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "infra_invalid_input"
+        assert payload["error"]["message"] == "already imported"
 
     def test_import_files_not_found(
         self,
@@ -205,6 +218,54 @@ class TestImportFilesCommand:
         """Exit code 1 when a single missing file is passed (typo detection)."""
         result = runner.invoke(app, ["files", "/nonexistent/file.ofx"])
         assert result.exit_code == 1
+
+    def test_single_file_tcc_denial_is_classified_not_a_traceback(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The headline scenario: a TCC-blocked single-file import.
+
+        `Path.exists()` is itself a raising call — pathlib only swallows
+        ENOENT/ENOTDIR/EBADF/ELOOP, so a macOS TCC denial (EPERM) propagates
+        out of the preflight check. When that check sat outside
+        `handle_cli_errors`, this exact invocation produced an unhandled
+        traceback instead of the Full Disk Access guidance the affordance
+        exists to give.
+
+        The path sits under `~/Documents` and the platform is pinned to Darwin
+        because together those select the Full-Disk-Access branch of
+        `permission_advice` — an EPERM on another platform, or elsewhere on
+        macOS, correctly gets generic advice instead. Pinning rather than
+        skipping keeps this running on Linux CI: like
+        `test_permission_advice.py`, it asserts OUR branching for a given
+        platform, not the host's actual behavior.
+        """
+        monkeypatch.setattr("moneybin.errors.platform.system", lambda: "Darwin")
+        target = Path.home() / "Documents" / "statement.qfx"
+        real_exists = Path.exists
+
+        def _deny(self: Path, **kwargs: Any) -> bool:
+            # Scoped to the target so the privacy-log writer's own path checks
+            # keep working — a blanket denial makes this test log write failures.
+            if self == target:
+                raise PermissionError(1, "Operation not permitted", str(target))
+            return real_exists(self, **kwargs)
+
+        monkeypatch.setattr(Path, "exists", _deny)
+
+        result = runner.invoke(app, ["files", str(target), "--output", "json"])
+
+        assert result.exit_code == 1, result.output
+        assert result.exception is None or isinstance(result.exception, SystemExit), (
+            f"unhandled exception leaked: {result.exception!r}"
+        )
+        import json
+
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "infra_permission_denied"
+        assert "Full Disk Access" in payload["error"]["hint"]
 
     def test_import_files_batch_continues_past_missing_file(
         self,
@@ -429,6 +490,534 @@ class TestImportFilesCommand:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["summary"]["sensitivity"] == "medium"
+
+    def test_failed_file_json_carries_error_code_and_hint(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A failed file's JSON row carries error, error_code, and hint.
+
+        The batch stays "ok" here on purpose: one file imported, so this
+        isolates the per-file projection from the all-failed gate below.
+        `error_code` is what a scripted caller branches on and `hint` is the
+        only thing that tells it how to recover — the classified message alone
+        names the problem without naming the fix.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: a.csv",
+                    error_code="infra_permission_denied",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+                PerFileResult(
+                    path=str(b),
+                    status="imported",
+                    source_type="csv",
+                    rows_loaded=3,
+                    import_id="x",
+                ),
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=None,
+        )
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "ok"
+        failed_row = payload["data"]["files"][0]
+        assert failed_row["error"] == "Operation not permitted: a.csv"
+        assert failed_row["error_code"] == "infra_permission_denied"
+        assert failed_row["hint"] == "💡 Grant Full Disk Access, then restart."
+        # The imported row must not sprout empty error keys — a scripted caller
+        # tests for the key's presence, not its truthiness.
+        imported_row = payload["data"]["files"][1]
+        assert "error" not in imported_row
+        assert "error_code" not in imported_row
+        assert "hint" not in imported_row
+
+    def test_unclassified_failure_json_omits_error_code_and_hint(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """An unclassified failure reports the class name with no code or hint.
+
+        The privacy invariant: raw ``str(e)`` can embed file contents, so an
+        exception MoneyBin doesn't recognize surfaces only its type name — and
+        must not acquire a code or a hint it was never classified with.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="RuntimeError",
+                ),
+                PerFileResult(
+                    path=str(b),
+                    status="imported",
+                    source_type="csv",
+                    rows_loaded=3,
+                    import_id="x",
+                ),
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=None,
+        )
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+        assert result.exit_code == 0, result.output
+        failed_row = json.loads(result.stdout)["data"]["files"][0]
+        assert failed_row["error"] == "RuntimeError"
+        assert "error_code" not in failed_row
+        assert "hint" not in failed_row
+
+    def test_all_failed_batch_reports_error_status_and_exits_nonzero(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A batch where every file failed is a failure on the CLI too.
+
+        Parity with the MCP ``import_files`` tool: a nightly script running
+        ``moneybin import files *.csv --output json`` must not read ``ok`` and
+        exit 0 when nothing landed.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: a.csv",
+                    error_code="infra_permission_denied",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+                PerFileResult(
+                    path=str(b),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: b.csv",
+                    error_code="infra_permission_denied",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "infra_permission_denied"
+        # The batch message counts rather than hoisting one file's reason; the
+        # per-file detail stays in data.files[].
+        assert "all 2 file(s)" in payload["error"]["message"]
+        assert len(payload["data"]["files"]) == 2
+
+    def test_all_failed_batch_exits_nonzero_in_text_mode(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """The non-zero exit is not conditional on --output json.
+
+        A shell pipeline checking ``$?`` gets the same verdict as an agent
+        parsing the envelope.
+        """
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(path=str(a), status="failed", source_type=None),
+                PerFileResult(path=str(b), status="failed", source_type=None),
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+        result = runner.invoke(app, ["files", str(a), str(b)])
+        assert result.exit_code == 1, result.output
+
+    def test_text_mode_batch_shows_why_a_file_failed(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Text mode is the CLI default, so it cannot be the silent one.
+
+        The batch renderer printed only `❌ <path> [?] — 0 rows`, dropping the
+        per-file `error` and `hint` the rest of this change adds. That made the
+        recovery advice reachable only via `--output json` — the headline
+        scenario said nothing useful to a human running the bare command.
+        """
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: a.csv",
+                    error_code="infra_permission_denied",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+                PerFileResult(
+                    path=str(b), status="imported", source_type="tabular", rows_loaded=3
+                ),
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+
+        with caplog.at_level("INFO"):
+            result = runner.invoke(app, ["files", str(a), str(b)])
+
+        assert result.exit_code == 0, result.output  # partial success
+        assert "Operation not permitted" in caplog.text
+        assert "Grant Full Disk Access" in caplog.text
+
+    def test_batch_with_a_failed_file_declares_medium_sensitivity(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`error`/`hint` are DESCRIPTION-tier prose, so the batch is medium.
+
+        `ImportPerFileRow` annotates both as `DataClass.DESCRIPTION`, which the
+        MCP path derives MEDIUM from. The CLI derives its tier inline and only
+        looked at `confirmation_payload`, so once this change started putting
+        `error`/`hint` on the wire the CLI under-declared the same data as
+        `low` — and the paired privacy-audit row inherited that.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: a.csv",
+                    error_code="infra_permission_denied",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+                PerFileResult(
+                    path=str(a), status="imported", source_type="tabular", rows_loaded=1
+                ),
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["sensitivity"] == "medium"
+
+    def test_single_file_failure_keeps_the_batch_payload(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """One unreadable file reports like a one-file batch, not like a bare error.
+
+        A file-attributable failure is part of the import contract: the batch
+        path and the MCP `import_files` tool both answer with counts plus a
+        `data.files[]` row. Routing the single-file path to `handle_cli_errors`
+        instead answers `data: []`, so a script reading `data.files[0].hint`
+        works for two paths and breaks for one — the same recovery advice this
+        change exists to deliver, missing on the most common invocation.
+        """
+        import json
+
+        test_file = tmp_path / "statement.csv"
+        test_file.touch()
+        mock_import_file.side_effect = PermissionError(
+            1, "Operation not permitted", str(test_file)
+        )
+
+        result = runner.invoke(app, ["files", str(test_file), "--output", "json"])
+
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["data"]["imported_count"] == 0
+        assert payload["data"]["failed_count"] == 1
+        assert payload["data"]["total_count"] == 1
+        files = payload["data"]["files"]
+        assert len(files) == 1
+        assert files[0]["path"] == str(test_file)
+        assert files[0]["status"] == "failed"
+        assert files[0]["error"] == f"Operation not permitted: {test_file}"
+        assert files[0]["error_code"] == "infra_permission_denied"
+        # The hint text is platform-specific (Full Disk Access on macOS, chmod
+        # advice elsewhere), so pin its presence, not its wording.
+        assert files[0]["hint"]
+        assert payload["error"]["code"] == "infra_permission_denied"
+        # Same DESCRIPTION-tier prose as the batch path, so the same tier.
+        assert payload["summary"]["sensitivity"] == "medium"
+
+    def test_single_file_failure_carries_the_structured_permission_details(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`details` is what an agent branches on, so it must reach the wire.
+
+        `data-recovery-contract.md` promises `errno` and `platform` on every
+        permission failure plus `protected_root` when the macOS branch fires.
+        Routing this path through `per_file_failure` is what made it a per-file
+        row, and the 3-tuple it used to return dropped `details` at the source
+        — leaving an agent to grep the `hint` prose for "Full Disk Access" to
+        learn what `protected_root` already states.
+
+        Darwin is pinned so the conjunction under test is the code's, not the
+        runner's; CI is Linux.
+        """
+        import json
+
+        monkeypatch.setattr("moneybin.errors.platform.system", lambda: "Darwin")
+        blocked = Path.home() / "Documents" / "statement.csv"
+        test_file = tmp_path / "statement.csv"
+        test_file.touch()
+        mock_import_file.side_effect = PermissionError(
+            1, "Operation not permitted", str(blocked)
+        )
+
+        result = runner.invoke(app, ["files", str(test_file), "--output", "json"])
+
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout)
+        details = payload["data"]["files"][0]["details"]
+        assert details["errno"] == 1
+        assert details["platform"] == "Darwin"
+        assert details["protected_root"] == "~/Documents"
+        # One failed file is trivially unanimous, so the batch level carries it
+        # too — that is the level a caller checking `.error` reads first.
+        assert payload["error"]["details"]["protected_root"] == "~/Documents"
+
+    def test_preflight_denial_keeps_the_batch_payload(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The headline TCC case fails at the preflight, not inside import_file.
+
+        `pathlib` only swallows ENOENT/ENOTDIR/EBADF/ELOOP, so an EPERM denial
+        propagates out of `Path.exists()` before any import runs — which makes
+        the preflight, not `svc.import_file`, where a blocked
+        `~/Documents/statement.csv` actually lands. Letting
+        `handle_cli_errors` claim it there answered `data: []` for the one
+        scenario this affordance exists for, while every sibling path (a denial
+        inside `import_file`, the batch loop, MCP) answered `data.files[]`.
+        """
+        import json
+
+        target = tmp_path / "statement.csv"
+        target.touch()
+        real_exists = Path.exists
+
+        def _exists(self: Path) -> bool:
+            # Scoped to the target so settings/profile lookups still resolve.
+            if self == target:
+                raise PermissionError(1, "Operation not permitted", str(target))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", _exists)
+
+        result = runner.invoke(app, ["files", str(target), "--output", "json"])
+
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["data"]["failed_count"] == 1
+        assert payload["data"]["total_count"] == 1
+        row = payload["data"]["files"][0]
+        assert row["status"] == "failed"
+        assert row["error_code"] == "infra_permission_denied"
+        assert row["hint"]
+        # The import must never have been attempted — the preflight is the
+        # whole point of failing before the database is opened.
+        mock_import_file.assert_not_called()
+
+    def test_command_level_failure_keeps_the_bare_error_envelope(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A locked database is not a failed file, and must not be dressed as one.
+
+        The isolating half of the test above: only file-attributable failures
+        become a `data.files[]` row. Reporting a locked database as
+        ``failed_count: 1`` would tell a script the file is bad when the file
+        was never read — the honest answer is the classified error envelope.
+        """
+        import json
+
+        from moneybin.database import DatabaseLockError
+
+        test_file = tmp_path / "statement.csv"
+        test_file.touch()
+        mock_import_file.side_effect = DatabaseLockError("locked by pid 123")
+
+        result = runner.invoke(app, ["files", str(test_file), "--output", "json"])
+
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "infra_database_locked"
+        assert payload["data"] == []
+
+    def test_text_mode_single_file_shows_why_it_failed(
+        self,
+        runner: CliRunner,
+        mock_import_file: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The single-file failure reaches the shared renderer, hint included.
+
+        Text is the CLI default. Falling through to the batch renderer is what
+        keeps one code path printing the error and hint for both invocations —
+        a second renderer here is how the batch path went silent in the first
+        place.
+        """
+        test_file = tmp_path / "statement.csv"
+        test_file.touch()
+        mock_import_file.side_effect = PermissionError(
+            1, "Operation not permitted", str(test_file)
+        )
+
+        with caplog.at_level("INFO"):
+            result = runner.invoke(app, ["files", str(test_file)])
+
+        assert result.exit_code == 1, result.output
+        assert "Operation not permitted" in caplog.text
+        assert "💡" in caplog.text
+
+    def test_clean_batch_stays_low_sensitivity(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """The bump is conditional — an all-imported batch carries no prose.
+
+        Pairs with the test above so the fix can't be satisfied by declaring
+        everything medium, which would over-gate every successful import.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a), status="imported", source_type="tabular", rows_loaded=1
+                )
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["sensitivity"] == "low"
+
+    def test_text_mode_batch_stays_quiet_under_quiet_flag(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """`-q` suppresses the per-file block, error lines included."""
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: a.csv",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+                PerFileResult(
+                    path=str(a), status="imported", source_type="tabular", rows_loaded=1
+                ),
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+
+        with caplog.at_level("INFO"):
+            runner.invoke(app, ["files", str(a), str(b), "--quiet"])
+
+        assert "Grant Full Disk Access" not in caplog.text
 
 
 class TestImportStatusCommand:

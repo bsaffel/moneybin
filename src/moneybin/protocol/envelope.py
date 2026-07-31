@@ -11,15 +11,16 @@ See ``mcp-architecture.md`` section 4 for design rationale.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, is_dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel
 
-from moneybin.errors import RecoveryAction, UserError
+from moneybin import error_codes
+from moneybin.errors import ErrorDetail, RecoveryAction, UserError
 
 
 def _serialize_payload(value: Any) -> Any:
@@ -56,6 +57,46 @@ class DetailLevel(StrEnum):
     FULL = "full"
 
 
+def resolve_display_currency(codes: Iterable[str | None]) -> str | None:
+    """The one currency every row is denominated in, else ``None``.
+
+    Rows are segmented per currency (multi-currency.md Requirement 5), so the
+    envelope may only name a display currency when they agree on exactly one
+    known one. An unknown (NULL) currency is its own segment and never resolves
+    to whichever currency the other rows happen to carry — that would be the
+    Requirement 5 blend, relabelled. No rows at all names nothing.
+
+    Lives here rather than beside any one caller because ``display_currency`` is
+    an envelope field: reports and the balance reads must answer it the same
+    way, or the same data reads as two different currencies across surfaces.
+    """
+    seen = set(codes)
+    if len(seen) != 1:
+        return None
+    only = next(iter(seen))
+    return str(only) if only else None
+
+
+class Unset:
+    """Sentinel type distinguishing "caller said nothing" from "caller said None".
+
+    ``None`` is a real answer for ``display_currency`` — it means the rows span
+    more than one currency, or none is known. A caller that resolved that over a
+    wider set than the returned page (the reports framework, which sees every
+    matching row before truncation) must be able to state it and keep it, so
+    silence needs its own value.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        """Render as ``<unset>`` so a stray sentinel is obvious in a traceback."""
+        return "<unset>"
+
+
+UNSET = Unset()
+
+
 @dataclass(frozen=True, slots=True)
 class SummaryMeta:
     """Metadata section of the response envelope.
@@ -69,12 +110,25 @@ class SummaryMeta:
     has_more: bool = False
     period: str | None = None
     sensitivity: Literal["low", "medium", "high", "critical"] = "low"
-    display_currency: str = "USD"
+    # Nullable: a response whose rows span more than one currency — or whose
+    # currency is unknown — has no single display currency, and naming one
+    # would contradict the rows (multi-currency.md Requirement 5). Null means
+    # "read each row's currency_code", not "unset". The claim is scoped to the
+    # rows in THIS response; when has_more is true, later pages may carry other
+    # currencies. Defaults to unknown, never USD: a summary built without one
+    # has not been told a currency, and inventing the author's home currency is
+    # what mislabelled every non-USD balance before M1K.1.
+    display_currency: str | None = None
     degraded: bool = False
     degraded_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dict, omitting None fields and False degraded."""
+        """Convert to dict, omitting a null ``period`` and a false ``degraded``.
+
+        ``display_currency`` is emitted unconditionally, null included: null is
+        the answer "not one known currency", and a consumer that finds no key
+        cannot tell that answer from a tool that never set one.
+        """
         d: dict[str, Any] = {
             "total_count": self.total_count,
             "returned_count": self.returned_count,
@@ -144,8 +198,12 @@ class ResponseEnvelope[T]:
     - ``summary``: metadata for the AI (counts, truncation, sensitivity)
     - ``data``: the payload — typed object or bare dict/list
     - ``actions``: contextual next-step hints
-    - ``error``: populated when the tool failed with a classified user error;
-      ``data`` is empty in this case
+    - ``error``: populated when the tool failed; this field (mirrored by
+      ``status``) is the canonical failure signal. Envelopes built by
+      ``build_error_envelope`` carry an empty ``data``, but a tool MAY attach
+      ``error`` to a payload-carrying envelope when the payload itself explains
+      the failure — ``import_files`` keeps its per-file ``files[]`` results on
+      an all-failed batch. Never infer "``data`` is empty" from ``error``.
     - ``next_cursor``: opaque pagination token when more results are available
     - ``recovery_actions``: structured actions an agent can execute to fix
       a failure; carried from the UserError when present
@@ -154,13 +212,39 @@ class ResponseEnvelope[T]:
     summary: SummaryMeta
     data: T
     actions: list[str] = field(default_factory=list)
-    error: UserError | None = None
+    error: ErrorDetail | None = None
     next_cursor: str | None = None
     recovery_actions: list[RecoveryAction] | None = None
-    # Internal observability only: per-call DataClass names for dynamic-SQL tools,
-    # read by the @mcp_tool decorator to log accurate classes_returned.
-    # NOT part of the wire contract — never emitted by to_dict().
+    # Derived in __post_init__, never caller-supplied — see the method's docstring.
+    status: Literal["ok", "error"] = "ok"
+    # Internal observability only: per-call DataClass names for dynamic-SQL
+    # tools, read by the @mcp_tool decorator to log accurate classes_returned.
+    # NOT part of the wire contract — `to_dict()` omits it, and `to_dict()` is
+    # what `_wire_result_adapter` sends, so it never reaches the MCP wire.
     classes_returned: list[str] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        """Derive `status` from `error` so the two can never disagree.
+
+        `status` is a real field rather than a `to_dict()` computation so that
+        every consumer of the envelope — the wire, direct dataclass readers,
+        and tests — sees one value from one source. Any caller-supplied value
+        is overwritten on purpose.
+        """
+        self.status = "error" if self.error is not None else "ok"
+
+    def with_error(self, error: ErrorDetail) -> ResponseEnvelope[T]:
+        """Return a copy carrying `error`, with `status` re-derived.
+
+        Use this instead of `dataclasses.replace(envelope, error=...)`.
+        `replace` is typed `**changes: Any`, so it silently accepts a
+        `UserError` — which then raises `AttributeError` inside `to_dict()`
+        at serialization time, turning a structured partial-failure response
+        into an empty one. This signature makes pyright reject that at the
+        call site instead. Rebuilding (rather than assigning) is required
+        regardless: `status` is derived in `__post_init__`.
+        """
+        return replace(self, error=error)  # pyright: ignore[reportUnknownArgumentType]
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization.
@@ -170,42 +254,16 @@ class ResponseEnvelope[T]:
         """
         data_serialized = _serialize_payload(self.data)
         d: dict[str, Any] = {
-            "status": "error" if self.error is not None else "ok",
+            "status": self.status,
             "summary": self.summary.to_dict(),
             "data": data_serialized,
             "actions": self.actions,
         }
-        # Effective recovery_actions: the envelope-level field is the canonical
-        # wire location, but fall back to the error's own list when the
-        # envelope field wasn't populated — e.g. a caller building
-        # ResponseEnvelope(error=UserError(..., recovery_actions=[...]))
-        # directly, bypassing build_error_envelope. Without this fallback the
-        # actions would vanish (nested error copy is stripped below, top-level
-        # not emitted). An explicit suppression via recovery_actions=[] is a
-        # non-None empty list, so it is honored — not overridden by the error.
-        effective_recovery = self.recovery_actions
-        if (
-            effective_recovery is None
-            and self.error is not None
-            and self.error.recovery_actions is not None
-        ):
-            effective_recovery = self.error.recovery_actions
-
         if self.error is not None:
-            # Strip recovery_actions from the nested error dict: the envelope
-            # top-level field (emitted below from effective_recovery) is the
-            # single canonical wire location. Without this strip, an explicit
-            # suppression via recovery_actions=[] would still leak the
-            # original actions through error.to_dict() — defeating the
-            # redaction use case. Direct UserError.to_dict() callers (logging,
-            # debugging) still see recovery_actions; only the envelope-nested
-            # form drops the field.
-            err_dict = self.error.to_dict()
-            err_dict.pop("recovery_actions", None)
-            d["error"] = err_dict
+            d["error"] = self.error.model_dump(exclude_none=True)
         if self.next_cursor is not None:
             d["next_cursor"] = self.next_cursor
-        if effective_recovery is not None:
+        if self.recovery_actions is not None:
             # Coerce plain dicts defensively: callers SHOULD pass
             # RecoveryAction instances (the type annotation says so), but a
             # dict slipping in (e.g., from deserialized JSON) would otherwise
@@ -213,7 +271,7 @@ class ResponseEnvelope[T]:
             # internal failure at the wire boundary.
             d["recovery_actions"] = [
                 ra if isinstance(ra, dict) else ra.model_dump()
-                for ra in effective_recovery
+                for ra in self.recovery_actions
             ]
         return d
 
@@ -237,7 +295,7 @@ def build_envelope(
     returned_count: int | None = None,
     next_cursor: str | None = None,
     period: str | None = None,
-    display_currency: str = "USD",
+    display_currency: str | None | Unset = UNSET,
     actions: list[str] | None = None,
     degraded: bool = False,
     degraded_reason: str | None = None,
@@ -267,10 +325,21 @@ def build_envelope(
         next_cursor: Opaque pagination token. When provided, ``summary.has_more``
             is forced to ``True`` regardless of count comparison.
         period: Human-readable period string (e.g., ``"2026-01 to 2026-04"``).
-        display_currency: Currency for all amounts in the response.
+        display_currency: Currency for all amounts in this response; None when
+            they span more than one currency, or the currency is unknown.
+            Scoped to the returned rows — later pages may differ when
+            has_more is true. Omit it and the payload's own ``currency_code``
+            answers; pass it only to state a currency the payload cannot show
+            — resolved over a wider set than the returned page, or held
+            somewhere other than a ``currency_code`` field. Passing ``None``
+            explicitly states "not one currency" and is preserved.
         actions: Contextual next-step hints.
-        degraded: Whether this is a degraded (no-consent) response.
-        degraded_reason: Why the response is degraded.
+        degraded: Whether the response is less than the caller asked for —
+            aggregates in place of rows without consent, a section that could
+            not be read, or a report whose stored classification is stale.
+        degraded_reason: Which of those applies. Set it whenever ``degraded``
+            is set: one flag carrying several meanings is only usable if the
+            response says which one it means.
         recovery_actions: Structured actions an agent can execute to fix a
             partial-success failure (e.g. a best-effort step that crashed).
             The navigational ``actions`` field stays distinct — it answers
@@ -312,13 +381,19 @@ def build_envelope(
             returned = actual_total
     has_more = next_cursor is not None or actual_total > returned
 
+    resolved_currency = (
+        _derive_display_currency(data_any)
+        if isinstance(display_currency, Unset)
+        else display_currency
+    )
+
     summary = SummaryMeta(
         total_count=actual_total,
         returned_count=returned,
         has_more=has_more,
         period=period,
         sensitivity=sensitivity,
-        display_currency=display_currency,
+        display_currency=resolved_currency,
         degraded=degraded,
         degraded_reason=degraded_reason,
     )
@@ -345,6 +420,92 @@ _AUXILIARY_LIST_FIELDS = frozenset({
     "unmapped_columns",
     "flagged_fields",
 })
+
+
+_CURRENCY_FIELD = "currency_code"
+
+
+def _derive_display_currency(data: Any) -> str | None:
+    """Read the currency off the payload; ``None`` when it doesn't state one.
+
+    Called only when the caller passed nothing. A payload that carries its own
+    ``currency_code`` — every ``investments.*`` row, ``AccountSummary``,
+    ``AccountDetail``, ``AccountSettingsPayload``, ``BalanceObservationRow`` —
+    already holds the single correct answer, so reading it is the opposite of
+    guessing. The former ``"USD"`` default guessed, and guessed wrong for every
+    non-USD profile on the nine money-bearing tools that never overrode it.
+
+    Not inference: ``resolve_display_currency`` collapses the rows to one code
+    or declines. A payload with no currency field anywhere stays unknown rather
+    than borrowing a neighbour's.
+    """
+    if isinstance(data, dict):
+        return None
+    if isinstance(data, list):
+        rows = cast(list[Any], data)
+        return _currency_of_rows(rows)
+    if _has_currency_field(data):
+        return resolve_display_currency([getattr(data, _CURRENCY_FIELD)])
+    rows = _primary_rows(data)
+    return _currency_of_rows(rows) if rows is not None else None
+
+
+def _has_currency_field(data: Any) -> bool:
+    """True when ``data`` is a record carrying a currency_code field.
+
+    Mapping rows count. ``sql_query`` returns ``list[dict[str, Any]]``
+    (``SqlQueryResult.records``), so a dataclass/``BaseModel``-only test made
+    every ad-hoc query report an unknown currency — even one projecting
+    ``currency_code`` with every row in agreement.
+    """
+    if isinstance(data, type):
+        return False
+    if isinstance(data, Mapping):
+        return _CURRENCY_FIELD in data
+    if is_dataclass(data):
+        return any(item.name == _CURRENCY_FIELD for item in fields(data))
+    if isinstance(data, BaseModel):
+        return _CURRENCY_FIELD in type(data).model_fields
+    return False
+
+
+def _currency_value(row: Any) -> str | None:
+    """The row's currency_code, however that row carries it."""
+    if isinstance(row, Mapping):
+        code = cast(Mapping[str, Any], row)[_CURRENCY_FIELD]
+        return None if code is None else str(code)
+    return cast("str | None", getattr(row, _CURRENCY_FIELD))
+
+
+def _currency_of_rows(rows: list[Any]) -> str | None:
+    """Resolve the one currency a row list agrees on, else ``None``."""
+    if not rows or not all(_has_currency_field(row) for row in rows):
+        return None
+    return resolve_display_currency(_currency_value(row) for row in rows)
+
+
+def _primary_rows(data: Any) -> list[Any] | None:
+    """The payload's sole non-auxiliary list field, if it has exactly one.
+
+    Mirrors ``_count_primary_lists``' choice of "the" row collection so the
+    derived currency describes the same rows that ``returned_count`` counts.
+    """
+    if isinstance(data, type):
+        return None
+    if is_dataclass(data):
+        names = [item.name for item in fields(data)]
+    elif isinstance(data, BaseModel):
+        names = list(type(data).model_fields)
+    else:
+        return None
+    primary: list[list[Any]] = []
+    for name in names:
+        if name in _AUXILIARY_LIST_FIELDS:
+            continue
+        value: Any = getattr(data, name)
+        if isinstance(value, list):
+            primary.append(cast(list[Any], value))
+    return primary[0] if len(primary) == 1 else None
 
 
 def _count_typed_payload(data: Any) -> int:
@@ -403,13 +564,13 @@ def not_implemented_envelope(
 
     Used by tool surfaces (e.g., sync_*, transform_*) that exist for v2
     discoverability but whose business logic is owned by a downstream spec.
-    Returns status="error" with code="not_implemented" so agents can branch
+    Returns status="error" with code=error_codes.INFRA_NOT_IMPLEMENTED so agents can branch
     on the top-level status field consistently.
     """
     return build_error_envelope(
         error=UserError(
             f"{action} is not yet implemented",
-            code="not_implemented",
+            code=error_codes.INFRA_NOT_IMPLEMENTED,
             hint=f"See {spec} for the design",
             details={"spec": spec},
         ),
@@ -430,10 +591,15 @@ def build_error_envelope(
     error early-return unifies with any ``-> ResponseEnvelope[T]`` tool
     signature without a per-call-site ``# type: ignore[return-value]``.
 
-    ``data`` is an empty list — the ``error`` field is the canonical signal
-    that the tool failed. Sensitivity defaults to ``low`` because error
-    messages must not leak row-level data. ``actions`` preserves any
-    caller-provided next-step hints (e.g. CLI fallbacks on stub tools).
+    ``data`` is an empty list for every envelope built here — the ``error``
+    field is the canonical signal that the tool failed. The converse does not
+    hold: ``error`` on an envelope does NOT imply empty ``data``, because a
+    tool may attach ``error`` to a payload-carrying envelope when the payload
+    explains the failure (see ``ResponseEnvelope.error``). Use this builder
+    when there is no payload worth returning; attach ``error`` directly when
+    there is. Sensitivity defaults to ``low`` because error messages must not
+    leak row-level data. ``actions`` preserves any caller-provided next-step
+    hints (e.g. CLI fallbacks on stub tools).
 
     ``recovery_actions`` precedence:
 
@@ -462,6 +628,6 @@ def build_error_envelope(
         summary=summary,
         data=[],
         actions=actions or [],
-        error=error,
+        error=ErrorDetail.from_user_error(error),
         recovery_actions=recovery_actions,
     )

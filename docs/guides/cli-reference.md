@@ -105,7 +105,7 @@ Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipe
 
 `sync pull`, `refresh`, and `transform apply` can run for several seconds to minutes. Progress and status lines stream to **stderr** by default (visible interactively, hidden when redirected); `--output json` returns a single envelope at completion. There is no incremental JSON progress stream today — agents that need progress should poll `sync status` / `transform status` from a separate invocation.
 
-Concurrent **writes** against the same profile serialize on the database lock; a cron-driven `sync pull` overlapping with an interactive write retries briefly (up to 5 s) and then exits `1` rather than blocking indefinitely. Reads rarely contend with writes — write windows are per-operation rather than per-session — but a read overlapping a long write retries on the same backoff before failing. Use `db ps` to see who's holding the file and `db kill` if needed.
+Concurrent **writes** against the same profile serialize on the database lock; a cron-driven `sync pull` overlapping with an interactive write retries briefly (up to 10 s) and then exits `1` rather than blocking indefinitely. Reads rarely contend with writes — write windows are per-operation rather than per-session — but a read overlapping a long write retries on the same backoff before failing. Use `db ps` to see who's holding the file and `db kill` if needed.
 
 ## Which command for which task?
 
@@ -115,7 +115,7 @@ The CLI has a few task-shaped overlaps; this section disambiguates the common on
 
 - **`transactions list`** — filtered scanning ("show me April groceries"). Supports `--account-id`, `--from`/`--to`, `--category`, `--uncategorized`, `--limit`. Returns raw rows; no workflow.
 - **`transactions categorize pending`** — specifically hunting uncategorized rows for a categorization pass. Supports `--sort {date,impact}`, `--min-amount`, and `--account`.
-- **`transactions review`** — the interactive curator queue: pending dedup/transfer matches plus uncategorized rows in one stream. Use `--type {matches,categorize,all}` and `--confirm`/`--reject` to drive it from a script.
+- **`review`** — the curator queue across every pending decision: dedup/transfer matches, uncategorized rows, and account/merchant/security links. A bare `moneybin review` prints the counts; `--type` narrows to one queue and `--confirm`/`--reject` drive matches from a script.
 
 **"Refresh / transform / categorize run — which?"**
 
@@ -157,6 +157,22 @@ Top-level orientation: where the data lives, whether it's healthy, what the audi
 | `system audit show <audit-id>` | Show one audit event plus any chained children. |
 
 **Related guides:** [`profiles.md`](profiles.md).
+
+### `review`
+
+What needs your attention, across every queue that holds a pending decision.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `review` | Pending counts for all five queues: matches, uncategorized, account-links, merchant-links, security-links. | `--type {all,matches,categorize,account-links,merchant-links,security-links}`, `--status`, `--interactive`, `-o/--output`, `-q` |
+| `review --confirm <id>` / `--reject <id>` | Decide one pending match without opening a queue command. Requires `--type matches`. | `--confirm-all` to accept the whole match queue |
+
+Counts are what a bare `moneybin review` prints. To see the rows behind a
+count, use that queue's own command — `transactions matches pending`,
+`transactions categorize pending`, `accounts links pending`, `merchants links
+pending`, `investments securities links pending`. The item-by-item walk
+(`--interactive`) is not built yet; the decision flags cover the same ground
+non-interactively for matches.
 
 ## Ingestion
 
@@ -233,10 +249,10 @@ Browsing transactions and per-transaction state (notes, tags, splits, manual ent
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `transactions list` | List transactions with filters. | `--account-id`, `--from`, `--to`, `--limit`, `--category`, `--uncategorized` |
+| `transactions list` | List transactions with filters. `--cursor` takes the `next_cursor` from a previous `--output json` response; treat it as opaque and restart from page one if it is rejected. | `--account`, `--from`, `--to`, `--limit`, `--category`, `--uncategorized`, `--cursor` |
 | `transactions create` | Create a manual transaction (no upstream source). | `--account-id`, `--date`, `--amount`, `--description`, `--category` |
 | `transactions audit <transaction-id>` | Show the audit chain for one transaction. | — |
-| `transactions review` | Unified review queue: pending matches and uncategorized rows. | `--status`, `--type {matches,categorize,all}`, `--confirm <id>`, `--reject <id>`, `--confirm-all`, `--limit` |
+| `transactions review` | Deprecated alias for the top-level `review`; removed after one minor release. | Same flags as `review` |
 
 ### `transactions notes`
 
@@ -357,7 +373,7 @@ Physical assets (real estate, vehicles, valuables). Group is reserved; commands 
 
 ### `investments`
 
-Investment ledger, positions, tax lots, realized gains, and the manually-maintained securities catalog. Promotes the former `accounts investments` placeholder to a top-level group. All commands support `--output json`.
+Investment ledger, positions, tax lots, realized gains, and the securities catalog (user-created entries plus those minted during a Plaid sync). Promotes the former `accounts investments` placeholder to a top-level group. All commands support `--output json`.
 
 | Command | Purpose | Key flags |
 |---|---|---|
@@ -366,7 +382,7 @@ Investment ledger, positions, tax lots, realized gains, and the manually-maintai
 | `investments holdings` | Current positions: quantity, cost basis, average cost, market value, unrealized gain, and the date and age of the close used. A position with no usable price shows `-`, never a zero. | `--account` |
 | `investments gains` | Realized gain/loss (the 1099-B surface) from `core.fct_realized_gains`. | `--account`, `--security`, `--from`, `--to`, `--term {short,long}` |
 | `investments lots list` | Tax lots with remaining quantity and basis. Open lots only by default. | `--account`, `--security`, `--open/--all` |
-| `investments lots select <disposal-txn-id>` | Set the full specific-identification lot selection for a disposal (declarative replace). `--clear` reverts to FIFO. | `--lot LOT_ID:QTY` (repeatable), `--clear` |
+| `investments lots select <disposal-txn-id>` | Set the full specific-identification lot selection for a disposal (declarative replace). Requires the security to resolve to `specific` cost basis; `--clear` reverts to FIFO and needs no election. | `--lot LOT_ID:QTY` (repeatable), `--clear` |
 | `investments securities list` | List the securities catalog. | `--type` |
 | `investments securities add` | Add one security to the catalog. | `--name`, `--type`, `--ticker`, `--exchange`, `--cusip`, `--isin`, `--figi`, `--coingecko-id`, `--cash-equivalent`, `--method`, `--currency` |
 | `investments securities set <security-id>` | Partial update of one security. At least one field flag required. | `--name`, `--ticker`, `--exchange`, `--cusip`, `--isin`, `--figi`, `--coingecko-id`, `--method`, `--currency` |
@@ -392,6 +408,70 @@ Cross-domain analytical views. All commands support `--output json` and return t
 | `reports merchants` | Merchant activity rollup. | `--top`, `--sort {spend,count,recent}` |
 | `reports large-transactions` | Large transactions, optionally anomaly-filtered. | `--top`, `--anomaly {none,account,category}` |
 | `reports balance-drift` | Where computed balance diverges from asserted balance. | `--account`, `--status {drift,warning,clean,no-data,all}`, `--since` |
+
+### Any report, any tier
+
+These seven work on built-in, extension, and your own saved reports alike.
+`HANDLE` is a report ID or a name, resolved in that order — so a name contested
+across tiers still has an ID that resolves.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `reports list` | Every registered report and its tier. `--include-archived` adds the saved reports you have archived, marked `[archived]` in the tier column. | `--include-archived`, `--tier {builtin,extension,user}` |
+| `reports run HANDLE` | Run one report by ID or name. | `--param key=value` (repeatable), `--limit` |
+| `reports explain HANDLE` | The report's query in both forms, each column's privacy class and where it came from, its lineage, freshness, and whether it can be materialized. Runs nothing. | `--param key=value` |
+
+### Your own reports
+
+`create` / `set` / `delete` / `reclassify` act only on saved reports — a built-in
+is a file in the repo. Privacy classes are derived from the SQL and stored; you
+never declare them.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `reports create NAME` | Save a read-only SELECT as a durable report. | `--sql` or `--sql-file` (exactly one), `--description`, `--param name[:type][=default]` |
+| `reports set HANDLE` | Rename, re-describe, re-query, archive, or restore. Changing SQL or parameters re-derives the privacy contract. `--clear-params` is the only way to drop every declaration. | `--name`, `--description`, `--sql`/`--sql-file`, `--param`, `--clear-params`, `--archive`, `--restore` |
+| `reports delete HANDLE` | Delete permanently; `system audit undo` restores it. | `--yes` |
+| `reports reclassify HANDLE` | Lower one column's masking floor. Audited, and the only path that does so. | `--column`, `--to`, `--reason` (all required), `--yes` |
+
+```bash
+uv run moneybin reports create coffee \
+  --sql "SELECT merchant_name, SUM(amount) AS spend
+           FROM core.fct_transactions
+          WHERE category = \$category
+          GROUP BY merchant_name" \
+  --param category:str \
+  --description "Spend per merchant in one category"
+
+uv run moneybin reports run coffee --param category=Dining
+uv run moneybin reports explain coffee --param category=Dining
+```
+
+Parameter types are `str` (default), `int`, `float`, `bool`, `date`, and
+`decimal`; a parameter is required unless it declares a default. Queries may read
+`core.*`, `app.*`, and `reports.*`, and must be row-returning and read-only.
+
+Two behaviours worth knowing before they surprise you:
+
+- **`reports explain` withholds a sensitive parameter's value.** The executed SQL
+  form renders a literal only for parameters classed at the lowest tier;
+  everything above keeps its `$name`. Rendering is not execution, so it never
+  passes through the redaction the report's own rows do — printing the value
+  there would publish what every result row masks.
+- **`reclassify --yes` states a human decision, and the audit row says it was a
+  flag.** Nothing at a terminal can tell a person from an assistant, so the flag
+  is taken at its word — but never recorded as a prompt. `system audit list
+  --action user_report.set` shows `confirmed_via` as `prompt` or `flag`, so a
+  downgrade an assistant confirmed on your behalf is distinguishable after the
+  fact from one you approved. An assistant driving this command must not supply
+  the flag unasked. With no prompt available and no `--yes`, the command refuses
+  rather than assuming either answer.
+- **Archiving hides a report; it does not retire it.** An archived report stays
+  runnable, exportable, and explainable by ID or name — `--archive` suppresses
+  catalog noise, and only the listing honours it. To retire one for good, delete
+  it (`system audit undo` still brings it back). `reports list
+  --include-archived` shows the hidden ones alongside the active catalog, so
+  nothing is reachable-but-invisible.
 
 **Related guides:** [`../features.md`](../features.md#reports).
 
@@ -525,7 +605,7 @@ moneybin sync pull                          # latest from connected banks
 moneybin import files ~/Downloads/*.ofx     # any OFX files you downloaded
 moneybin refresh                            # run the post-load pipeline
 moneybin transactions categorize pending    # see what's still uncategorized
-# ... categorize via transactions review or transactions categorize rules ...
+# ... categorize via review or transactions categorize rules ...
 moneybin reports networth                   # this month's net worth
 moneybin reports cashflow                   # this month's income vs spending
 ```

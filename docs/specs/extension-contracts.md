@@ -15,7 +15,7 @@ surface designed with the same rigor as the MCP and CLI surfaces.
 
 This spec defines that contributor-facing surface: three extension types, their trust postures, their registration mechanisms, their quality progression, and the guided-contribution skills shipped alongside. Together they answer: *how does someone who wants to extend MoneyBin do so, cleanly and predictably?*
 
-The operating MCP surface is one 47-tool standard registry. Generic clients
+The operating MCP surface is one 49-tool standard registry. Generic clients
 receive the full registry; capable hosts may optionally defer schemas from that
 same registry; reports never consume tool slots because they extend the
 `reports` catalog instead. Any
@@ -325,7 +325,7 @@ A Report is a single decorated **Python runner** over a `reports.*` view. The ru
 > SQL-backed and service-backed reports share one internal catalog and result
 > contract. Core and explicitly installed extension reports receive ergonomic
 > CLI commands that execute by stable catalog ID. The active generic `reports`
-> MCP contract consumes that same union in the 47-tool standard registry. The
+> MCP contract consumes that same union in the 49-tool standard registry. The
 > invariant is permanent: adding a report changes catalog and CLI surfaces,
 > never MCP tool count.
 
@@ -384,6 +384,12 @@ such as `accounts` keep their domain tool. For example, cash flow runs through
 `reports(report_id="core:cashflow", parameters={"by": "account"})`.
 Report IDs are public contracts and must not collide. Registration may expose a
 short alias only when it resolves to exactly one stable ID.
+
+The `user:` namespace is reserved and `register_extension_reports` refuses it.
+`report_tier` reads the namespace to identify the one tier whose class map is
+*derived* from stored SQL rather than declared by an author, so an extension
+holding a `user:` ID would present its own declared `classes={...}` as a derived
+masking floor.
 
 ### Report semantic metadata
 
@@ -457,6 +463,8 @@ def cash_flow(
     if by not in CASHFLOW_GROUPINGS:
         raise ValueError(f"Unknown by: {by}")
     ...  # build parameterized SELECT
+    # Each binding declares the class of the value it carries.
+    params: list[Binding] = [Binding(from_month, DataClass.TXN_DATE)]
     return ReportQuery(sql, params, actions=[...], period=period)
 ```
 
@@ -468,6 +476,17 @@ How the parts map (introspection rules, `src/moneybin/reports/_framework/introsp
 - `parameter_classes` is required and must cover the runner's non-`db`
   parameters exactly. The class is stored on each `ParamSpec`; missing and
   extra declarations fail registration.
+- Each value the runner *binds* into its `ReportQuery` carries its own class:
+  `params.append(Binding(value, DataClass.TXN_DATE))`. This is a different
+  question from `parameter_classes`, which classifies what the **user passes**.
+  `balance_drift` declares `account: str` (free text, classified as the account
+  name it is) and binds `AccountService.resolve_strict(account)` — a minted
+  opaque `account_id`, `RECORD_ID`. The report-inspection surface renders only
+  LOW-classed bindings as literals, so it reads the class off the binding rather
+  than the signature; recovering it by position cannot work either, because
+  runners append conditionally. A bare value binds as `UNRESOLVED` and keeps its
+  placeholder — an extension outside this repo keeps working and fails closed,
+  while in-repo runners are held to declaring by pyright.
 
 From the `ReportSpec`, the framework generates:
 

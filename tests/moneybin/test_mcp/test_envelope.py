@@ -51,7 +51,9 @@ class TestSummaryMeta:
         meta = SummaryMeta(total_count=10, returned_count=10)
         assert meta.has_more is False
         assert meta.sensitivity == "low"
-        assert meta.display_currency == "USD"
+        # A summary nobody told a currency does not have one. The former "USD"
+        # default is what labelled every non-USD profile's money in dollars.
+        assert meta.display_currency is None
         assert meta.degraded is False
         assert meta.degraded_reason is None
         assert meta.period is None
@@ -182,9 +184,9 @@ class TestResponseEnvelope:
 
     @pytest.mark.unit
     def test_to_dict_status_error_when_error_set(self) -> None:
-        from moneybin.errors import UserError
+        from moneybin.errors import ErrorDetail
 
-        err = UserError("DB locked", code=error_codes.INFRA_DATABASE_LOCKED)
+        err = ErrorDetail(message="DB locked", code=error_codes.INFRA_DATABASE_LOCKED)
         envelope = ResponseEnvelope(
             summary=SummaryMeta(total_count=0, returned_count=0),
             data=[],
@@ -192,7 +194,7 @@ class TestResponseEnvelope:
         )
         d = envelope.to_dict()
         assert d["status"] == "error"
-        assert "error" in d
+        assert d["error"]["code"] == error_codes.INFRA_DATABASE_LOCKED
 
     @pytest.mark.unit
     def test_to_json_includes_status(self) -> None:

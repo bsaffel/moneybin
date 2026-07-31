@@ -8,7 +8,7 @@ that ``refresh()``:
 - Runs only the requested subset when ``steps`` is a list.
 - Executes steps in canonical order (gsheet → match → transform → categorize)
   regardless of input-list order.
-- Raises ``UserError(code="UNKNOWN_REFRESH_STEP")`` on unknown step names.
+- Raises ``UserError(code="refresh_unknown_step")`` on unknown step names.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.services import matching_service
+from moneybin.services.merchant_resolver import HarvestResult
 from moneybin.services.refresh import RefreshResult, refresh
 from moneybin.services.transform_service import ApplyResult
 
@@ -304,8 +305,12 @@ def test_identity_failure_does_not_prevent_other_domain(
         calls.append("accounts")
         raise RuntimeError(sensitive_error)
 
-    def _merchants_run() -> None:
+    def _merchants_run() -> HarvestResult:
         calls.append("merchants")
+        # Mirrors the real return type: refresh reads `.conflicts` to decide
+        # whether to surface a review notice, so a bare None here would only
+        # pass by accident.
+        return HarvestResult(bound=0, conflicts=0)
 
     accounts_run = MagicMock(side_effect=_accounts_run)
     merchants_run = MagicMock(side_effect=_merchants_run)
@@ -417,7 +422,7 @@ def test_refresh_unknown_step_raises_user_error(
     """Unknown step name raises UserError with hint enumerating valid steps."""
     with pytest.raises(UserError) as excinfo:
         refresh(MagicMock(), steps=["transform", "bogus"])
-    assert excinfo.value.code == "UNKNOWN_REFRESH_STEP"
+    assert excinfo.value.code == "refresh_unknown_step"
     assert "gsheet" in (excinfo.value.hint or "")
     assert "match" in (excinfo.value.hint or "")
     assert "transform" in (excinfo.value.hint or "")

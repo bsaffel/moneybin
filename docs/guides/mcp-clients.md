@@ -76,8 +76,8 @@ Explicit connector calls are the exception to the local default.
 
 ## Bounded tool surface
 
-MoneyBin exposes one **47-tool standard registry**. Generic clients receive all
-47 tools. A capable host may optionally defer schemas from that same registry
+MoneyBin exposes one **49-tool standard registry**. Generic clients receive all
+49 tools. A capable host may optionally defer schemas from that same registry
 to reduce prompt cost, without reconnect, packs, or profiles; tool names,
 approvals, allowlists, annotations, and audit identity do not change. Observed
 host-native deferral evidence remains absent. Reports are catalog entries behind
@@ -164,9 +164,9 @@ moneybin mcp install --client windsurf -y
 - **Server lifecycle:** One server process per Windsurf instance.
 - **Confirmation UI:** Tool-call approval is shown in the Cascade chat panel. Like Cursor, Windsurf reads `readOnlyHint` but doesn't currently distinguish `destructiveHint` in its UI.
 
-> **MoneyBin’s 47-tool registry fits Windsurf’s limit.** Cascade holds a maximum
+> **MoneyBin’s 49-tool registry fits Windsurf’s limit.** Cascade holds a maximum
 > of **100 tools at any one time**, across *all* connected MCP servers. MoneyBin
-> uses 47 slots and leaves 53 slots for other servers.
+> uses 49 slots and leaves 51 slots for other servers.
 > Windsurf gives no warning when the combined total crosses the limit; disable
 > unused servers in **Settings → MCP Servers** if your overall configuration
 > exceeds 100.
@@ -242,7 +242,7 @@ moneybin mcp install --client chatgpt-desktop -y
 
 ## Concurrency: which clients share a server
 
-MoneyBin stores each profile's data in a single-writer DuckDB file, but each MoneyBin process opens **short-lived, per-operation connections** rather than holding the file open for its whole lifetime. As a result, **multiple MoneyBin processes (MCP servers and CLI commands) can run against the same profile at once:** reads attach in shared mode and coexist with other reads; writes take the exclusive lock one at a time, retrying briefly (up to 5 s) on contention. Read and write opens that cross each other retry on the same backoff in both directions. A call fails only when whichever operation holds the conflicting lock — a long write (large import or transform) or a long-running read (a slow `sql_query` or large `reports` call) — exceeds the retry window. Only that one operation fails, not the whole session.
+MoneyBin stores each profile's data in a single-writer DuckDB file, but each MoneyBin process opens **short-lived, per-operation connections** rather than holding the file open for its whole lifetime. As a result, **multiple MoneyBin processes (MCP servers and CLI commands) can run against the same profile at once:** reads attach in shared mode and coexist with other reads; writes take the exclusive lock one at a time, retrying briefly (up to 10 s) on contention. Read and write opens that cross each other retry on the same backoff in both directions. A call fails only when whichever operation holds the conflicting lock — a long write (large import or transform) or a long-running read (a slow `sql_query` or large `reports` call) — exceeds the retry window. Only that one operation fails, not the whole session.
 
 | Pattern | Clients | Behavior |
 |---|---|---|
@@ -360,7 +360,7 @@ What does not work today: running `moneybin mcp serve` as a systemd unit or Dock
 
 **Tools error with "no profile" or similar.** The install snippet embeds whichever profile was active when you ran `mcp install`. To change it, re-run with `--profile <name>` (see [Switching profiles](#switching-profiles)).
 
-**"Database is locked" (server fails to start, or a tool call errors).** Another process is holding a conflicting lock on the same profile past the ~5 s retry window — typically a long operation in progress: (a) a `moneybin transform apply` or large `import` running in another terminal; (b) a desktop client mid-import or mid-transform on the same profile; (c) a long-running read (a slow `sql_query` or large `reports` call) holding the read lock — only blocks writers, not other readers; (d) a stuck process that never released the lock. If a read fails with a lock error, only a long write is the cause; if a write fails, either a long write or a long read can be. Run `moneybin db ps` to see who holds the file and `moneybin db kill` to clear stuck processes, or switch profiles.
+**"Database is locked" (server fails to start, or a tool call errors).** Another process is holding a conflicting lock on the same profile past the ~10 s retry window — typically a long operation in progress: (a) a `moneybin transform apply` or large `import` running in another terminal; (b) a desktop client mid-import or mid-transform on the same profile; (c) a long-running read (a slow `sql_query` or large `reports` call) holding the read lock — only blocks writers, not other readers; (d) a stuck process that never released the lock. If a read fails with a lock error, only a long write is the cause; if a write fails, either a long write or a long read can be. Run `moneybin db ps` to see who holds the file and `moneybin db kill` to clear stuck processes, or switch profiles.
 
 **"Cannot parse existing config" on install.** The target file has invalid JSON or TOML. Fix the syntax in your editor and re-run, or use the `<name>.bak` recovery path in [Uninstall and reset](#uninstall-and-reset).
 

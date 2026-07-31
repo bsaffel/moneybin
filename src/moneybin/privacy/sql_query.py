@@ -24,13 +24,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import duckdb
+from sqlglot import exp
 
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.log_sanitizer import sql_digest
 from moneybin.privacy.redaction import redact_records
 from moneybin.privacy.sql_lineage import (
     FAIL_CLOSED_CLASS,
+    SchemaSnapshot,
     SqlParseError,
     SqlSchemaError,
     derive_query_tier,
@@ -90,9 +93,27 @@ _QUOTED_TABLE_SCAN = re.compile(
     re.IGNORECASE,
 )
 
-# Patterns that indicate read-only SQL statements
+# Patterns that indicate read-only SQL statements.
+#
+# The rule behind this list is one line: a statement is executable only if the
+# schema gate can resolve every table it names. SELECT/WITH and DESCRIBE expose
+# real `exp.Table` nodes and qualify; SHOW names no table at all, so there is
+# nothing to resolve.
+#
+# PRAGMA and EXPLAIN are deliberately absent because they fail that test in the
+# most dangerous way — they reference tables while hiding them from the gate. A
+# PRAGMA's target is a string literal inside an `exp.Anonymous` call; an
+# EXPLAIN's entire payload stays unparsed inside an `exp.Command` (sqlglot has
+# no DuckDB EXPLAIN node). `find_all(exp.Table)` returns nothing for either, so
+# both sail through a check that never examined anything.
+#
+# Both were live: `PRAGMA storage_info('<table>')` reports per-segment `stats`
+# that are a cleartext PREFIX of the stored values, returning a CRITICAL routing
+# number's first eight digits unmasked at LOW; and `EXPLAIN ANALYZE` EXECUTES
+# its inner query, reaching `raw`/`prep` and reporting their column names and
+# row counts from a path meant to return schema text.
 _READ_ONLY_PREFIXES = re.compile(
-    r"^\s*(SELECT|WITH|DESCRIBE|SHOW|PRAGMA|EXPLAIN)\b",
+    r"^\s*(SELECT|WITH|DESCRIBE|SHOW)\b",
     re.IGNORECASE,
 )
 
@@ -120,7 +141,9 @@ def validate_read_only_query(sql: str) -> str | None:
     if not _READ_ONLY_PREFIXES.match(stripped):
         return (
             "Only read-only queries are allowed. "
-            "Queries must start with SELECT, WITH, DESCRIBE, SHOW, PRAGMA, or EXPLAIN."
+            "Queries must start with SELECT, WITH, DESCRIBE, or SHOW. "
+            "PRAGMA and EXPLAIN are not supported; use DESCRIBE <table> or "
+            "SHOW ALL TABLES to inspect schema."
         )
 
     if _FILE_ACCESS_FUNCTIONS.search(stripped):
@@ -167,8 +190,8 @@ class SqlQueryResult:
 
     ``records`` are already redacted (CRITICAL columns masked); both adapters
     consume them as-is. ``output_classes`` maps each result column to its
-    resolved data class — empty for metadata (DESCRIBE/SHOW/PRAGMA/EXPLAIN)
-    queries, which carry no row-data classification.
+    resolved data class — empty for metadata (DESCRIBE/SHOW) queries, which
+    carry no row-data classification.
     """
 
     records: list[dict[str, Any]]
@@ -205,7 +228,7 @@ def _fetch(
     return columns, rows[:max_rows], truncated
 
 
-def _classes_by_result_column(
+def classes_by_result_column(
     columns: list[str],
     output_classes: dict[str, DataClass],
     query: str,
@@ -285,7 +308,7 @@ def _classes_by_result_column(
 
 
 def _fail_closed(column: str, query: str) -> DataClass:
-    sql_hash = hashlib.sha256(query.encode()).hexdigest()[:12]
+    sql_hash = sql_digest(query)
     column_hash = hashlib.sha256(column.encode()).hexdigest()[:12]
     # For an ordinary named/expanded projection the column NAME is an
     # identifier DuckDB derives from the query text. But the opaque-projection
@@ -301,12 +324,73 @@ def _fail_closed(column: str, query: str) -> DataClass:
     return FAIL_CLOSED_CLASS
 
 
+def _shown_schema(tree: exp.Expr) -> str | None:
+    """The schema a ``SHOW ... FROM <schema>`` is scoped to, if it names one.
+
+    sqlglot parses that identifier into a ``Table`` node's NAME slot with no
+    ``db``, so the generic table walk reads it as a *table* called ``core`` —
+    finds no such table, and refuses ``SHOW TABLES FROM core`` for naming an
+    unknown one, with a message that lists ``core`` among the allowed schemas.
+    It is a schema; check it as one. (``SHOW TABLES FROM raw`` was refused
+    before this, but by that same accident rather than by the schema rule.)
+
+    A catalog-qualified form (``SHOW TABLES FROM cat.sch``) fills ``db`` and
+    returns None here, falling through to the generic walk, which refuses it —
+    the conservative answer for a shape this gate cannot resolve.
+    """
+    if not isinstance(tree, exp.Show):
+        return None
+    source = tree.args.get("from_")
+    if isinstance(source, exp.Table) and not source.db:
+        return source.name.lower()
+    return None
+
+
+def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None:
+    """Raise unless every schema ``tree`` reaches is an allowed one.
+
+    Shared by the data and metadata paths so both refuse the same targets with
+    the same code and message — a caller must not be able to learn which
+    spelling the gate forgot about.
+    """
+    shown = _shown_schema(tree)
+    if shown is not None:
+        disallowed = [] if shown in _ALLOWED_QUERY_SCHEMAS else [shown]
+    else:
+        disallowed = tables_outside_schemas(tree, snapshot, _ALLOWED_QUERY_SCHEMAS)
+    if disallowed:
+        raise UserError(
+            "Queries are limited to these schemas: "
+            f"{', '.join(sorted(_ALLOWED_QUERY_SCHEMAS))}.",
+            code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
+            # State the RULE, not a sample of the complement. The old hint named
+            # raw/prep/meta — three of roughly ten refused schemas — which reads
+            # as an exhaustive list and leaves an agent no reason to expect
+            # `sqlmesh__core.…`, `seeds`, or `main` to be refused. Physical
+            # table names are discoverable via SHOW ALL TABLES, so that gap was
+            # reachable in practice.
+            #
+            # Name only SQL both surfaces can run. This primitive backs the MCP
+            # tool and `moneybin sql query` alike, and there is no CLI
+            # counterpart to `sql_schema` — pointing at it would hand a CLI
+            # caller a tool it cannot invoke.
+            hint=(
+                "Those three carry per-column privacy classifications, which is "
+                "what makes masking sound; every other schema (raw, prep, meta, "
+                "seeds, sqlmesh__*, main) is internal and has none. "
+                "SHOW ALL TABLES lists what exists."
+            ),
+            details={"disallowed": sorted(set(disallowed))},
+        )
+
+
 def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryResult:
     """Run a read-only SQL query with full privacy enforcement.
 
-    Pipeline: read-only gate → parse → metadata-or-data routing → (data:
-    allowlisted schema gate → sqlglot lineage → execute → CRITICAL masking).
-    Returns redacted rows plus the resolved tier and per-column classes.
+    Pipeline: read-only gate → parse → metadata-or-data routing → allowlisted
+    schema gate (BOTH branches) → (data only: sqlglot lineage → execute →
+    CRITICAL masking). Returns redacted rows plus the resolved tier and
+    per-column classes.
 
     Args:
         db: An open (read-only) database connection.
@@ -331,43 +415,47 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
             details={"detail": str(e)},
         ) from e
 
-    # DESCRIBE/SHOW/PRAGMA/EXPLAIN return schema/plan text, not row data — run
-    # them directly at LOW; the lineage gate applies only to data queries.
-    # Route on the positive metadata test, never on `not is_data_query`: this
-    # branch executes its string unclassified, so anything neither recognizably
-    # data nor recognizably metadata must be refused rather than run.
-    if not is_data_query(tree):
-        if not is_metadata_query(tree):
-            raise UserError(
-                "Only SELECT queries and DESCRIBE/SHOW/PRAGMA/EXPLAIN are supported.",
-                code=error_codes.SQL_INVALID_QUERY,
-            )
-        columns, rows, truncated = _fetch_metadata(db, query, max_rows)
-        records = [dict(zip(columns, row, strict=False)) for row in rows]
-        return SqlQueryResult(
-            records=records,
-            columns=columns,
-            output_classes={},
-            tier=Tier.LOW,
-            total_count=max_rows + 1 if truncated else len(records),
-            truncated=truncated,
-            is_metadata=True,
-        )
-
+    # Everything below stays inside this handler, including the snapshot fetch
+    # and the whole metadata branch. A raw duckdb.Error escaping here would
+    # reach the CLI as an unhandled traceback (handle_cli_errors passes types it
+    # doesn't recognize straight through) carrying DuckDB's message, which can
+    # quote the query verbatim — the exact leak the `str(e)` note below guards.
     try:
         snapshot = get_current_schema_snapshot(db)
-        qtree = expand_star(tree, snapshot)
-        disallowed = tables_outside_schemas(qtree, snapshot, _ALLOWED_QUERY_SCHEMAS)
-        if disallowed:
-            raise UserError(
-                "Queries are limited to these schemas: "
-                f"{', '.join(sorted(_ALLOWED_QUERY_SCHEMAS))}.",
-                code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
-                hint=(
-                    "reports is directly queryable; raw/prep/meta are internal schemas."
-                ),
-                details={"disallowed": sorted(set(disallowed))},
+
+        # DESCRIBE/SHOW return schema text, not row data — run them directly at
+        # LOW; the lineage gate applies only to data queries.
+        # Route on the positive metadata test, never on `not is_data_query`:
+        # this branch executes its string unclassified, so anything neither
+        # recognizably data nor recognizably metadata must be refused, not run.
+        if not is_data_query(tree):
+            if not is_metadata_query(tree):
+                raise UserError(
+                    "Only SELECT queries and DESCRIBE/SHOW are supported.",
+                    code=error_codes.SQL_INVALID_QUERY,
+                )
+            # The SCHEMA gate binds this path too. Lineage does not — metadata
+            # rows carry no classified column — but "which schemas may I be
+            # asked about" is a question about the TARGET, not about the
+            # answer's shape, and DESCRIBE names its target as an ordinary
+            # table node. Skipping the gate here let `DESCRIBE raw.x` describe
+            # a table `SELECT ... FROM raw.x` refuses, so the same secret had a
+            # gated spelling and an ungated one.
+            _refuse_disallowed_schemas(tree, snapshot)
+            columns, rows, truncated = _fetch_metadata(db, query, max_rows)
+            records = [dict(zip(columns, row, strict=False)) for row in rows]
+            return SqlQueryResult(
+                records=records,
+                columns=columns,
+                output_classes={},
+                tier=Tier.LOW,
+                total_count=max_rows + 1 if truncated else len(records),
+                truncated=truncated,
+                is_metadata=True,
             )
+
+        qtree = expand_star(tree, snapshot)
+        _refuse_disallowed_schemas(qtree, snapshot)
         output_classes = resolve_output_classes(qtree, snapshot, query)
         columns, rows, truncated = _fetch(db, query, max_rows)
     # SqlSchemaError comes from the lineage qualify step; CatalogException from
@@ -375,23 +463,30 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     # happens above at parse_cached, outside this block, so SqlParseError can't
     # surface here.)
     except (SqlSchemaError, duckdb.CatalogException) as e:
-        # Don't echo str(e) to the client: a DuckDB/lineage message can quote
-        # the query verbatim (including literal values). Log it server-side
-        # (SanitizedLogFormatter masks PII) — the code + message classify it.
-        logger.warning(f"sql_query unknown table/column: {e}")
+        # str(e) reaches neither the client nor the log: a DuckDB or lineage
+        # message can quote the query verbatim, literal values included, and the
+        # log file is the more durable of the two boundaries. `sql_digest` says
+        # why the formatter cannot be relied on to catch it.
+        logger.warning(
+            f"sql_query unknown table/column: {type(e).__name__} "
+            f"(sql sha256={sql_digest(query)})"
+        )
         raise UserError(
             "Unknown table or column.",
             code=error_codes.SQL_UNKNOWN_TABLE,
         ) from e
     except duckdb.Error as e:
-        logger.warning(f"sql_query execution error: {e}")
+        logger.warning(
+            f"sql_query execution error: {type(e).__name__} "
+            f"(sql sha256={sql_digest(query)})"
+        )
         raise UserError(
             "Query execution failed.",
             code=error_codes.SQL_QUERY_ERROR,
         ) from e
 
     records = [dict(zip(columns, row, strict=False)) for row in rows]
-    col_classes = _classes_by_result_column(columns, output_classes, query)
+    col_classes = classes_by_result_column(columns, output_classes, query)
     redacted = redact_records(records, col_classes, consent=None)
 
     return SqlQueryResult(
@@ -414,7 +509,7 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
 def _fetch_metadata(
     db: Database, query: str, max_rows: int
 ) -> tuple[list[str], list[Any], bool]:
-    """Execute a metadata statement (DESCRIBE/SHOW/PRAGMA/EXPLAIN) at LOW.
+    """Execute a metadata statement (DESCRIBE/SHOW) at LOW.
 
     Wraps DuckDB errors in a UserError so the metadata path classifies
     failures the same way the data path does.
@@ -422,8 +517,11 @@ def _fetch_metadata(
     try:
         return _fetch(db, query, max_rows)
     except duckdb.Error as e:
-        # See execute_sql_query: keep str(e) out of the client envelope.
-        logger.warning(f"sql_query metadata error: {e}")
+        # See execute_sql_query: keep str(e) out of both the envelope and the log.
+        logger.warning(
+            f"sql_query metadata error: {type(e).__name__} "
+            f"(sql sha256={sql_digest(query)})"
+        )
         raise UserError(
             "Query execution failed.",
             code=error_codes.SQL_QUERY_ERROR,

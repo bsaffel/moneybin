@@ -253,7 +253,7 @@ class AccountNotFoundError(UserError):
         message = f"No account matches {query!r}. Known accounts: {names}{suffix}"
         super().__init__(
             message,
-            code="account_not_found",
+            code=error_codes.ACCOUNT_NOT_FOUND,
             hint="💡 Run 'moneybin accounts list' to see available accounts",
         )
         self.query = query
@@ -281,7 +281,7 @@ class AmbiguousAccountError(UserError):
             f"{query!r} matches {len(account_ids)} accounts: {pairs}. "
             "Use the account_id directly to disambiguate."
         )
-        super().__init__(message, code="account_ambiguous")
+        super().__init__(message, code=error_codes.ACCOUNT_AMBIGUOUS)
         self.query = query
         self.account_ids = account_ids
         self.display_names = display_names
@@ -323,7 +323,9 @@ def assert_account_exists(db: Database, account_id: str) -> None:
         [account_id],
     ).fetchone()
     if row is None:
-        raise UserError(f"Account not found: {account_id}", code="not_found")
+        raise UserError(
+            f"Account not found: {account_id}", code=error_codes.ACCOUNT_NOT_FOUND
+        )
 
 
 class AccountService:
@@ -440,7 +442,7 @@ class AccountService:
                 account_type=row[3],
                 account_subtype=row[4],
                 holder_category=row[5],
-                currency_code=str(row[6]),
+                currency_code=row[6],
                 archived=bool(row[7]),
                 include_in_net_worth=bool(row[8]),
                 last_four=row[9],
@@ -494,7 +496,7 @@ class AccountService:
             account_type=r["account_type"],  # type: ignore[arg-type]
             account_subtype=r["account_subtype"],  # type: ignore[arg-type]
             holder_category=r["holder_category"],  # type: ignore[arg-type]
-            currency_code=str(r["currency_code"]),
+            currency_code=r["currency_code"],  # type: ignore[arg-type]
             last_four=r["last_four"],  # type: ignore[arg-type]
             routing_number=r["routing_number"],  # type: ignore[arg-type]
             credit_limit=r["credit_limit"],  # type: ignore[arg-type]

@@ -6,9 +6,41 @@ need to INSERT test data directly require concrete tables, so we define
 minimal CREATE TABLE statements here.
 """
 
+from datetime import datetime
+
 import duckdb
 
 from moneybin.database import Database
+
+
+def record_sqlmesh_apply(db: Database, when: datetime) -> None:
+    """Stamp every model as executed at ``when``, read as UTC.
+
+    ``TransformService.freshness()`` decides ``pending`` by comparing raw
+    landing times against the *oldest* model execution, so any fixture that
+    means "the warehouse has been refreshed" must write it — seeding
+    ``core.dim_accounts`` no longer says that. Stands in for the
+    ``meta.model_freshness`` view SQLMesh materializes over its own
+    ``_snapshots`` / ``_intervals`` state; the view's derivation is covered by
+    the scenario and integration suites, so this keeps only the columns
+    ``freshness()`` reads plus enough shape to stay honest about the contract.
+
+    Callers pass a naive ``when`` and get UTC. Pin the session zone to UTC
+    too if the fixture's raw landing literals are naive, so both sides
+    describe the same instants on any machine.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS meta")
+    db.execute(
+        "CREATE OR REPLACE TABLE meta.model_freshness "
+        "(model_name VARCHAR, last_changed_at TIMESTAMP, "
+        "last_applied_at TIMESTAMP, last_executed_at TIMESTAMP, "
+        "model_kind VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO meta.model_freshness VALUES ('core.dim_accounts', ?, ?, ?, 'FULL')",
+        [when, when, when],
+    )
+
 
 # ---------------------------------------------------------------------------
 # Core table DDL — keep in sync with the SQLMesh model output columns.
@@ -31,7 +63,7 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     last_four VARCHAR,
     account_subtype VARCHAR,
     holder_category VARCHAR,
-    currency_code VARCHAR DEFAULT 'USD',
+    currency_code VARCHAR,
     credit_limit DECIMAL(18, 2),
     archived BOOLEAN DEFAULT FALSE,
     include_in_net_worth BOOLEAN DEFAULT TRUE
@@ -115,6 +147,7 @@ SELECT
     s.note AS line_note,
     CASE WHEN s.split_id IS NULL THEN 'whole' ELSE 'split' END AS line_kind,
     t.account_id,
+    t.currency_code,
     t.transaction_date,
     t.merchant_name,
     t.description,
@@ -162,6 +195,7 @@ REPORTS_NET_WORTH_DDL = """\
 CREATE VIEW IF NOT EXISTS reports.net_worth AS
 SELECT
     CURRENT_DATE AS balance_date,
+    CAST(NULL AS VARCHAR) AS currency_code,
     0.00::DECIMAL(18, 2) AS net_worth,
     0 AS account_count,
     0.00::DECIMAL(18, 2) AS total_assets,
@@ -364,6 +398,7 @@ SELECT CAST(NULL AS VARCHAR) AS transaction_id,
        CAST(NULL AS VARCHAR) AS account_name,
        CAST(NULL AS DATE) AS txn_date,
        CAST(NULL AS DECIMAL(18, 2)) AS amount,
+       CAST(NULL AS VARCHAR) AS currency_code,
        CAST(NULL AS VARCHAR) AS description,
        CAST(NULL AS VARCHAR) AS merchant_id,
        CAST(NULL AS VARCHAR) AS merchant_normalized,

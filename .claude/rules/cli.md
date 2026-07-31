@@ -128,6 +128,52 @@ Diagnostic output (errors, warnings, progress, status) goes to **stderr** (fd 2)
 
 Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `StreamHandler` already targets `sys.stderr` (see `src/moneybin/logging/config.py`). `logger.error()` and `logger.warning()` reach fd 2; `logger.info()` may reach either as long as it doesn't pollute scripts capturing stdout. Locked by `tests/moneybin/test_cli/test_error_routing.py`.
 
+### Keeping the console readable
+
+WARNING and above always reach the console. Below that, a record is hidden only
+if its logger matches `_CONSOLE_SUPPRESSED_PREFIXES` in `logging/config.py`.
+Everything else prints. That list holds two kinds of entry — third-party
+libraries that narrate every call (`sqlmesh`, `httpx`, …) and MoneyBin modules
+whose INFO is per-run bookkeeping the log file should keep and the terminal
+should not. Read the constant for the current membership; each entry carries
+the reason it earned a place.
+
+**`logger.debug` is not "hide from console" — it is "drop everywhere."** The
+root logger sits at INFO, so a DEBUG record is never emitted and never reaches
+the log file either. That distinction decides which of two tools to reach for:
+
+| The line is… | Use | Why |
+|---|---|---|
+| Already said by a `typer.echo` or another surviving INFO line | `logger.debug` | The file keeps the other copy. `sync pull` reported its categorization total three times from three layers. |
+| Detail worth keeping in the file, but in the subsystem's vocabulary rather than the user's | denylist prefix | The file keeps it; the console does not. "Tier 4: 5 potential transfers found" — the user has no tiers; "Loaded 5 Plaid accounts" — their Chase card is not a Plaid account. |
+
+Getting this backwards is easy and quiet: demoting the per-tier match counts to
+debug looked like console cleanup, but `MatchResult.summary()` reports only
+run-wide totals, so the per-tier split left the log file entirely. Before
+demoting, name the other place the information survives.
+
+**`typer.echo` does not reach the log file.** It writes to stderr directly. A
+count that exists only in a `typer.echo` is absent from the log, which is why
+the Plaid row counts stay at INFO behind a denylist prefix instead.
+
+**A denylist is the deliberate choice here.** An allowlist would be quieter as
+new dependencies arrive, but it inverts the default for ~168 `logger.info` sites
+and turns every one whose output a user needs into a silent regression — MCP's
+host stderr, `log_to_file: false`, schema-migration progress, and "your
+`--institution` flag was ignored" each broke that way when it was tried in #356.
+What must be hidden is enumerable; what must stay visible is not.
+
+**Adding a prefix hides it from every stream at every level**, including
+`--verbose` — but only while a log file exists to hold the copy. Under
+`log_to_file: false`, or when the log directory is missing, stderr is the only
+sink and the filter stands down entirely, because
+`docs/guides/observability.md` and `threat-model.md` both promise stderr is
+unaffected by that setting.
+
+Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilter`, which
+checks both directions — denylisted prefixes are hidden, an unnamed logger still
+prints — and by `TestMcpStreamKeepsInfoOnStderr` for the host channel.
+
 ## Standard Flags on Read-Only Commands
 
 Every command that **reads but does not mutate** state MUST accept:
@@ -137,6 +183,12 @@ Every command that **reads but does not mutate** state MUST accept:
 - `--json-fields` — comma-separated field projection for `--output json` (e.g. `--json-fields id,date,amount`). Only applies when `--output json` is active; silently ignored otherwise. Added progressively as each read-only command is extended — declare as `json_fields: str | None = json_fields_option` and pass to `render_or_json(json_fields=json_fields)`. Commands that implement it MUST enumerate available field names in their `--help` text (e.g. `"Available fields: id, date, amount, description, category, account_id"`).
 
 `db query` extends `--output` to `text|json|csv|markdown|box` since DuckDB's CLI supports all five natively.
+
+A read-only command that pages MUST expose `--cursor` carrying the shared keyset
+envelope from `moneybin.protocol.pagination` — never an offset. Offset paging
+skips a row when anything above the boundary is deleted and repeats one when
+anything prepends, and on a ledger both are silent. See `mcp.md` → Pagination
+for the binding rules; they are cross-surface, not MCP-specific.
 
 **Operator-bypass banner on direct-DB commands.** `db query`, `db shell`, and `db ui` are direct database access with no privacy middleware — CRITICAL-tier fields (account/routing numbers) are NOT masked. Each command emits a banner on stderr at invocation and includes the banner text in its `--help` output, directing operators to `moneybin sql query` for the privacy-safe MCP-backed path. Agents should use the `sql_query` MCP tool or `moneybin sql query` CLI command, not `moneybin db query`, when privacy enforcement is required.
 

@@ -17,6 +17,7 @@ import pytest
 from pytest import MonkeyPatch
 
 import moneybin.mcp.tools.import_tools as import_tools_module
+from moneybin import error_codes
 from moneybin.errors import RecoveryAction, UserError
 from moneybin.extractors.confidence import Confidence
 from moneybin.mcp.tools.import_tools import (
@@ -41,7 +42,7 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
 )
-from moneybin.services.import_service import ReviewedTabularPlan
+from moneybin.services.import_service import ImportResult, ReviewedTabularPlan
 from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
 from tests.moneybin.test_mcp.schema_assertions import isolated_server
 
@@ -347,7 +348,7 @@ async def test_import_revert_refuses_builtin_format_deletion(mcp_db: Path) -> No
         )
     ).to_dict()
 
-    assert result["error"]["code"] == "saved_format_builtin_immutable"
+    assert result["error"]["code"] == "import_saved_format_builtin_immutable"
 
 
 def _issue_coarse_preview(
@@ -538,7 +539,7 @@ async def test_import_preview_rejects_oversized_tabular_before_full_read(
         response = await import_preview_coarse(file_path=str(source))
 
     assert response.error is not None
-    assert response.error.code == "preview_error"
+    assert response.error.code == "import_preview_error"
     full_open.assert_not_called()
 
 
@@ -567,7 +568,7 @@ async def test_import_preview_rejects_oversized_pdf_before_full_read(
         response = await import_preview_coarse(file_path=str(source))
 
     assert response.error is not None
-    assert response.error.code == "preview_error"
+    assert response.error.code == "import_preview_error"
     full_open.assert_not_called()
 
 
@@ -597,7 +598,7 @@ async def test_import_preview_rejects_pdf_growth_during_bounded_capture(
         response = await import_preview_coarse(file_path=str(source))
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_PREVIEW_CHANGED"
+    assert response.error.code == "import_preview_changed"
     bounded_open.assert_called_once()
     assert read_sizes == [len(expected) + 1]
 
@@ -638,7 +639,7 @@ async def test_import_preview_rejects_file_growth_during_bounded_capture(
         response = await import_preview_coarse(file_path=str(source))
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_PREVIEW_CHANGED"
+    assert response.error.code == "import_preview_changed"
     bounded_open.assert_called_once()
     assert read_sizes == [5]
 
@@ -958,7 +959,7 @@ async def test_import_confirm_coarse_refuses_changed_pdf_sign_proposal(
     response = await import_confirm_coarse(preview_id=preview_id)
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_SIGN_PROPOSAL_CHANGED"
+    assert response.error.code == "import_sign_proposal_changed"
     confirm.assert_awaited_once()
     assert [call.kwargs["confirm"] for call in apply.call_args_list] == [False, False]
     from moneybin.database import get_database
@@ -1010,7 +1011,7 @@ async def test_import_confirm_coarse_refuses_disappeared_pdf_sign_proposal(
     response = await import_confirm_coarse(preview_id=preview_id)
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_SIGN_PROPOSAL_CHANGED"
+    assert response.error.code == "import_sign_proposal_changed"
     assert [call.kwargs["confirm"] for call in apply.call_args_list] == [False, False]
     from moneybin.database import get_database
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
@@ -1133,7 +1134,7 @@ async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
     )
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_SIGN_PROPOSAL_CHANGED"
+    assert response.error.code == "import_sign_proposal_changed"
     assert calls == 2
     from moneybin.database import get_database
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
@@ -1788,11 +1789,14 @@ async def test_import_confirm_late_failure_discards_success_observations(
         MagicMock(side_effect=RuntimeError("late failure")),
     )
 
-    with pytest.raises(RuntimeError, match="late failure"):
-        await import_confirm_coarse(
-            preview_id=preview.data.preview_id,
-            account_name="Checking",
-        )
+    from moneybin import error_codes
+
+    result = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+    assert result.error is not None
+    assert result.error.code == error_codes.INFRA_UNCLASSIFIED_ERROR
 
     metric.labels.assert_not_called()
 
@@ -2016,7 +2020,7 @@ async def test_import_confirm_coarse_rejects_pdf_without_confirmation_gate(
     response = await import_confirm_coarse(preview_id=preview_id)
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED"
+    assert response.error.code == "import_preview_direct_import_required"
 
 
 async def test_import_preview_coarse_keeps_ofx_on_direct_import_surface(
@@ -2030,7 +2034,7 @@ async def test_import_preview_coarse_keeps_ofx_on_direct_import_surface(
     response = await import_preview_coarse(file_path=str(ofx))
 
     assert response.error is not None
-    assert response.error.code == "IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED"
+    assert response.error.code == "import_preview_direct_import_required"
 
 
 async def test_import_preview_confirm_status_coarse_workflow(
@@ -2110,35 +2114,35 @@ async def test_import_status_coarse_preserves_legacy_section_data(
 @pytest.mark.parametrize(
     ("sections", "import_id", "limit", "cursor", "code"),
     [
-        ([], None, 100, None, "IMPORT_SECTIONS_REQUIRED"),
+        ([], None, 100, None, "import_sections_required"),
         (
             ["imports", "imports"],
             None,
             100,
             None,
-            "IMPORT_SECTIONS_DUPLICATE",
+            "import_sections_duplicate",
         ),
         (
             ["imports", "formats"],
             "imp_1",
             100,
             None,
-            "IMPORT_ID_NOT_ALLOWED",
+            "import_id_not_allowed",
         ),
-        (None, "imp_1", 100, None, "IMPORT_ID_NOT_ALLOWED"),
+        (None, "imp_1", 100, None, "import_id_not_allowed"),
         (
             ["formats"],
             None,
             10,
             None,
-            "IMPORT_PAGINATION_NOT_ALLOWED",
+            "import_pagination_not_allowed",
         ),
         (
             ["inbox"],
             None,
             100,
             "opaque",
-            "IMPORT_PAGINATION_NOT_ALLOWED",
+            "import_pagination_not_allowed",
         ),
     ],
 )
@@ -2227,14 +2231,14 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
         cursor=first.next_cursor,
     )
     assert wrong_filter.error is not None
-    assert wrong_filter.error.code == "IMPORT_CURSOR_INVALID"
+    assert wrong_filter.error.code == "import_cursor_invalid"
 
 
 async def test_import_status_mixed_cursor_carries_full_initial_total(
     mcp_db: object,
 ) -> None:
     from moneybin.database import get_database
-    from moneybin.mcp.pagination import decode_keyset_cursor
+    from moneybin.protocol.pagination import decode_keyset_cursor
 
     with get_database(read_only=False) as db:
         for import_id in ("imp_a", "imp_b"):
@@ -2467,7 +2471,7 @@ async def test_import_status_coarse_rejects_invalid_key_types_before_data_access
     mcp_db: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from moneybin.mcp.pagination import encode_keyset_cursor
+    from moneybin.protocol.pagination import encode_keyset_cursor
 
     invalid_cursor = encode_keyset_cursor(
         namespace="import_status.imports",
@@ -2492,7 +2496,7 @@ async def test_import_status_coarse_rejects_invalid_key_types_before_data_access
         sections=["imports"], limit=1, cursor=invalid_cursor
     )
     assert response.error is not None
-    assert response.error.code == "IMPORT_CURSOR_INVALID"
+    assert response.error.code == "import_cursor_invalid"
     assert accessed is False
 
 
@@ -2542,7 +2546,7 @@ def test_path_outside_home_raises_user_error(
     with pytest.raises(UserError) as excinfo:
         _validate_file_path("/etc/passwd")
 
-    assert excinfo.value.code == "invalid_file_path"
+    assert excinfo.value.code == "import_invalid_file_path"
 
 
 def test_symlink_escaping_home_raises_user_error(
@@ -2563,7 +2567,7 @@ def test_symlink_escaping_home_raises_user_error(
     with pytest.raises(UserError) as excinfo:
         _validate_file_path(str(link))
 
-    assert excinfo.value.code == "invalid_file_path"
+    assert excinfo.value.code == "import_invalid_file_path"
 
 
 def test_bridge_confirm_action_quotes_path_with_apostrophe() -> None:
@@ -2894,7 +2898,7 @@ class TestImportConfirmTool:
 
         result = await import_confirm(file_path=str(csv_file))
         assert result.error is not None
-        assert result.error.code == "confirm_requires_signal"
+        assert result.error.code == "import_confirm_requires_signal"
 
     async def test_accept_loads_data(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -3973,7 +3977,7 @@ class TestImportConfirmBridge:
             bridge_response={"recipe": {}, "rows": []},
         )
         assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        assert result.error.code == "import_confirm_channel_conflict"
 
     async def test_malformed_response_maps_to_user_error(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -3995,7 +3999,7 @@ class TestImportConfirmBridge:
                 bridge_response={"rows": []},
             )
         assert result.error is not None
-        assert result.error.code == "bridge_response_invalid"
+        assert result.error.code == "import_bridge_response_invalid"
 
     async def test_inverted_bridge_recipe_requires_human_elicitation(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4069,7 +4073,7 @@ class TestImportConfirmBridge:
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
         # A plain ValueError raised after parsing (e.g. malformed PDF in
-        # extract, or the load) must NOT be mislabeled bridge_response_invalid —
+        # extract, or the load) must NOT be mislabeled import_bridge_response_invalid —
         # the narrowed catch lets it propagate to the generic error boundary.
         pdf = self._patch(monkeypatch, tmp_path)
         mock_service = MagicMock()
@@ -4085,7 +4089,7 @@ class TestImportConfirmBridge:
                 bridge_response={"recipe": {}, "rows": []},
             )
         assert result.error is not None
-        assert result.error.code != "bridge_response_invalid"
+        assert result.error.code != "import_bridge_response_invalid"
 
     async def test_account_name_with_bridge_raises(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4100,7 +4104,7 @@ class TestImportConfirmBridge:
             account_name="Chase Checking",
         )
         assert result.error is not None
-        assert result.error.code == "pdf_account_signal_unsupported"
+        assert result.error.code == "import_pdf_account_signal_unsupported"
 
     async def test_invalid_path_precedes_account_name_guard(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4115,7 +4119,7 @@ class TestImportConfirmBridge:
             account_name="Chase Checking",
         )
         assert result.error is not None
-        assert result.error.code == "invalid_file_path"
+        assert result.error.code == "import_invalid_file_path"
 
     async def test_pdf_with_accept_rejected_not_looped(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4127,7 +4131,7 @@ class TestImportConfirmBridge:
         pdf = self._patch(monkeypatch, tmp_path)
         result = await import_confirm(file_path=str(pdf), accept=True)
         assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        assert result.error.code == "import_confirm_channel_conflict"
 
     async def test_card_sign_confirm_directs_to_the_sign_channel_and_loads_nothing(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4155,7 +4159,7 @@ class TestImportConfirmBridge:
 
         # A clean UserError envelope — not a crash / TypeError.
         assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        assert result.error.code == "import_confirm_channel_conflict"
         message = result.error.message
         # The live in-MCP channel, plus the terminal fallback, both branches named.
         assert "confirm_pdf_sign=True" in message
@@ -4397,7 +4401,7 @@ class TestImportConfirmPdfSign:
             confirm_pdf_sign=True,
         )
         assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        assert result.error.code == "import_confirm_channel_conflict"
 
     async def test_confirm_pdf_sign_rejected_on_tabular_file(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -4410,7 +4414,7 @@ class TestImportConfirmPdfSign:
 
         result = await import_confirm(file_path=str(csv_file), confirm_pdf_sign=True)
         assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        assert result.error.code == "import_confirm_channel_conflict"
 
 
 def test_pdf_sign_actions_lead_with_the_mcp_confirm_path() -> None:
@@ -4496,7 +4500,7 @@ async def test_confirm_pdf_sign_rejects_account_name_instead_of_dropping_it(
         )
 
     assert result.error is not None
-    assert result.error.code == "pdf_account_signal_unsupported"
+    assert result.error.code == "import_pdf_account_signal_unsupported"
     assert "account_id" in result.error.message
     # Refused before any import ran — no rows bound to the wrong account.
     mock_service.import_file.assert_not_called()
@@ -4545,7 +4549,7 @@ async def test_pdf_channels_reject_every_tabular_account_signal(
         result = await import_confirm(file_path=str(pdf), **channel, **signal)  # pyright: ignore[reportArgumentType]
 
     assert result.error is not None
-    assert result.error.code == "pdf_account_signal_unsupported"
+    assert result.error.code == "import_pdf_account_signal_unsupported"
     # The message must name the offending parameter and the supported one.
     assert next(iter(signal)) in result.error.message
     assert "account_id" in result.error.message
@@ -4594,7 +4598,7 @@ async def test_confirm_pdf_sign_without_a_pending_proposal_imports_nothing(
         result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
 
     assert result.error is not None
-    assert result.error.code == "sign_confirmation_not_pending"
+    assert result.error.code == "import_sign_confirmation_not_pending"
     # Nothing was written and nobody was asked — the premise failed first.
     mock_service.import_file.assert_not_called()
     confirm.assert_not_awaited()
@@ -4656,7 +4660,7 @@ class TestConfirmationBindsToTheApprovedBytes:
             result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
 
         assert result.error is not None
-        assert result.error.code == "file_changed_during_confirmation"
+        assert result.error.code == "import_file_changed_during_confirmation"
         # The approval never reached the replacement.
         mock_service.import_file.assert_not_called()
 
@@ -4694,7 +4698,7 @@ class TestConfirmationBindsToTheApprovedBytes:
             result = await import_confirm(file_path=str(csv_file), accept=True)
 
         assert result.error is not None
-        assert result.error.code == "file_changed_during_confirmation"
+        assert result.error.code == "import_file_changed_during_confirmation"
         # Only the gating attempt ran — the ratified retry never did.
         assert mock_service.import_file.call_count == 1
 
@@ -4730,7 +4734,7 @@ class TestConfirmationBindsToTheApprovedBytes:
             )
 
         assert result.error is not None
-        assert result.error.code == "file_changed_during_confirmation"
+        assert result.error.code == "import_file_changed_during_confirmation"
         # Only the gating attempt ran — the ratified retry never did.
         assert mock_service.apply_pdf_bridge_response.call_count == 1
 
@@ -4765,9 +4769,207 @@ async def test_confirm_pdf_sign_rejects_tabular_mapping_signals(
         )
 
     assert result.error is not None
-    assert result.error.code == "confirm_channel_conflict"
+    assert result.error.code == "import_confirm_channel_conflict"
     # Names both the offending signal class and the channel that owns it.
     assert "mapping" in result.error.message
     # Refused before any probe or import ran.
     mock_service.pdf_preview.assert_not_called()
     mock_service.import_file.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Per-file failure detail: classified message + code, and total-failure status
+# ---------------------------------------------------------------------------
+
+
+class TestImportFilesFailureDetail:
+    """A failed file reports WHY it failed, and a total failure isn't 'ok'."""
+
+    @staticmethod
+    def _locked_csv(tmp_path: Path, name: str = "locked.csv") -> Path:
+        target = tmp_path / name
+        target.write_text("date,amount\n2026-01-01,1.00\n")
+        target.chmod(0o000)
+        return target
+
+    def test_failure_carries_classified_message_and_code(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A failed file reports WHY, not just the exception class name."""
+        target = self._locked_csv(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        try:
+            envelope = import_files(paths=[str(target)])
+        finally:
+            target.chmod(0o644)
+
+        entry = envelope.data.files[0]
+        assert entry.status == "failed"
+        assert entry.error_code == error_codes.INFRA_PERMISSION_DENIED
+        assert entry.error != "PermissionError"
+        assert entry.error is not None
+        assert "chmod" in entry.error or "permission" in entry.error.lower()
+
+    def test_failure_carries_actionable_hint(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The classified hint reaches the agent — the fix, not just the code."""
+        target = self._locked_csv(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        try:
+            envelope = import_files(paths=[str(target)])
+        finally:
+            target.chmod(0o644)
+
+        entry = envelope.data.files[0]
+        assert entry.hint is not None
+        assert "chmod" in entry.hint
+        # The batch-level error carries it too, so an agent reading only the
+        # envelope's error still gets the recovery step.
+        assert envelope.error is not None
+        assert envelope.error.hint == entry.hint
+
+    def test_unclassified_failure_carries_no_hint(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """No classification means no advice — never invent one from str(e)."""
+        target = tmp_path / "boom.csv"
+        target.write_text("x")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=RuntimeError("account 1234567890 balance $50"),
+        ):
+            envelope = import_files(paths=[str(target)])
+
+        entry = envelope.data.files[0]
+        assert entry.hint is None
+        assert envelope.error is not None
+        assert envelope.error.hint is None
+        # The unclassified batch falls back to the domain code, per spec.
+        assert envelope.error.code == error_codes.IMPORT_PARSE_ERROR
+        assert "1234567890" not in str(envelope.to_dict())
+
+    def test_all_failed_names_count_and_keeps_distinct_codes(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Two files, two causes: the batch counts, the rows keep their own."""
+        locked = self._locked_csv(tmp_path)
+        missing = tmp_path / "nope.csv"  # never created — FileNotFoundError
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        try:
+            envelope = import_files(paths=[str(locked), str(missing)], refresh=False)
+        finally:
+            locked.chmod(0o644)
+
+        assert envelope.to_dict()["status"] == "error"
+        assert envelope.error is not None
+        # Names the count rather than hoisting one file's cause over both.
+        assert "all 2 file(s)" in envelope.error.message
+        by_path = {f.path: f for f in envelope.data.files}
+        locked_row = by_path[str(locked)]
+        missing_row = by_path[str(missing)]
+        assert locked_row.error_code == error_codes.INFRA_PERMISSION_DENIED
+        assert missing_row.error_code == error_codes.INFRA_FILE_NOT_FOUND
+        # Each row keeps its own advice: the mode denial is fixable, the
+        # missing file has no recovery step to offer.
+        assert locked_row.hint is not None
+        assert "chmod" in locked_row.hint
+        assert missing_row.hint is None
+
+    def test_unclassified_failure_keeps_class_name_only(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Unclassified exceptions stay opaque on purpose — str(e) may embed PII."""
+        target = tmp_path / "boom.csv"
+        target.write_text("x")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=RuntimeError("account 1234567890 balance $50"),
+        ):
+            envelope = import_files(paths=[str(target)])
+
+        entry = envelope.data.files[0]
+        assert entry.error == "RuntimeError"
+        assert entry.error_code is None
+        assert "1234567890" not in str(envelope.to_dict())
+
+    def test_reports_error_status_when_no_file_succeeds(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Zero successes is a failure, not an 'ok' envelope with sad contents."""
+        target = self._locked_csv(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        try:
+            envelope = import_files(paths=[str(target)])
+        finally:
+            target.chmod(0o644)
+
+        assert envelope.to_dict()["status"] == "error"
+        assert envelope.error is not None
+        assert envelope.error.code == error_codes.INFRA_PERMISSION_DENIED
+
+    def test_partial_success_stays_ok(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """One bad file among good ones is partial success, not total failure."""
+        good = tmp_path / "good.csv"
+        good.write_text("date,amount\n2026-01-01,1.00\n")
+        bad = self._locked_csv(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        def _one(path: Path, **_kw: object) -> ImportResult:
+            # The locked file raises the real OS error the batch loop sees;
+            # only the *successful* half is stubbed, so the failure path
+            # under test stays genuine.
+            if Path(path) == bad:
+                raise PermissionError(13, "Permission denied", str(bad))
+            return ImportResult(file_path=str(path), file_type="tabular")
+
+        try:
+            with patch(
+                "moneybin.services.import_service.ImportService._import_one",
+                side_effect=_one,
+            ):
+                envelope = import_files(paths=[str(good), str(bad)], refresh=False)
+        finally:
+            bad.chmod(0o644)
+
+        assert envelope.to_dict()["status"] == "ok"
+        statuses = {f.status for f in envelope.data.files}
+        assert statuses == {"imported", "failed"}
+        # The service's own batch loop — not the MCP single-file path — built
+        # this failure row, so assert its content, not just its status.
+        failed_row = next(f for f in envelope.data.files if f.status == "failed")
+        assert failed_row.error_code == error_codes.INFRA_PERMISSION_DENIED
+        assert failed_row.error is not None
+        assert failed_row.error != "PermissionError"
+        assert "Permission denied" in failed_row.error
+        assert failed_row.hint is not None
+        assert "chmod" in failed_row.hint
+        # Partial success stays a success envelope — no batch-level error.
+        assert envelope.error is None

@@ -1,10 +1,11 @@
-"""reports_merchants / `reports merchants` — per-merchant lifetime totals."""
+"""core:merchants / `reports merchants` — per-merchant lifetime totals."""
 
 from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -21,6 +22,7 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
     classes={
         "merchant_id": DataClass.RECORD_ID,
         "merchant_normalized": DataClass.MERCHANT_NAME,
+        "currency_code": DataClass.CURRENCY,
         "total_spend": DataClass.TXN_AMOUNT,
         "total_inflow": DataClass.TXN_AMOUNT,
         "total_outflow": DataClass.TXN_AMOUNT,
@@ -46,6 +48,11 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
             "Canonical merchant label or uncategorized bucket.",
             DataClass.MERCHANT_NAME,
         ),
+        OutputColumn(
+            "currency_code",
+            "ISO 4217 currency this row is denominated in; null means unknown.",
+            DataClass.CURRENCY,
+        ),
         OutputColumn("total_spend", "Lifetime absolute outflow.", DataClass.TXN_AMOUNT),
         OutputColumn(
             "total_inflow", "Lifetime sum of positive amounts.", DataClass.TXN_AMOUNT
@@ -70,14 +77,14 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
     ),
     semantics=ReportSemantics(
         unit="currency",
-        currency="summary.display_currency",
+        currency="currency_code",
         sign=(
             "spend is positive absolute outflow; outflow is negative; inflow is "
             "positive; average and median are signed"
         ),
         kind="flow",
         valuation_basis="transaction amount",
-        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        fx_basis="no FX conversion in v1; rows are segmented per currency_code, never blended",
         time_basis=(
             "inclusive full observed transaction period from first_seen through "
             "last_seen"
@@ -98,12 +105,19 @@ def merchant_activity(
 
     total_spend is positive absolute outflow; total_outflow is negative;
     total_inflow is positive; avg_amount and median_amount are signed. Monetary
-    values use the currency named by summary.display_currency.
+    values are denominated in each row's own currency_code.
+
+    Rows interleave the currencies, highest-ranked first within each, so a
+    truncated result still represents every currency. Compare monetary values
+    only between rows sharing a currency_code.
 
     Args:
         db: Open read-only database connection.
-        top: Limit rows (>= 1). On MCP the result is additionally capped at the
-            session max_rows; the CLI is uncapped.
+        top: Limit rows **within each currency** (>= 1). A spend-sorted ranking
+            across currencies compares unlike units, so one high-denomination
+            currency could take every slot. A single-currency profile gets the
+            same N rows it always did. On MCP the result is additionally capped
+            at the session max_rows; the CLI is uncapped.
         sort: spend | count | recent.
 
     Examples:
@@ -114,12 +128,21 @@ def merchant_activity(
     if top < 1:
         raise ValueError(f"top must be >= 1, got {top!r}")
     sql = f"""
-        SELECT merchant_id, merchant_normalized, total_spend, total_inflow,
+        SELECT merchant_id, merchant_normalized, currency_code, total_spend, total_inflow,
                total_outflow, txn_count, avg_amount, median_amount,
                first_seen, last_seen, active_months, top_category,
                account_count
-        FROM {REPORTS_MERCHANT_ACTIVITY.full_name}
-        ORDER BY {MERCHANTS_SORTS[sort]}
-        LIMIT ?
+        FROM (
+            SELECT merchant_id, merchant_normalized, currency_code, total_spend,
+                   total_inflow, total_outflow, txn_count, avg_amount,
+                   median_amount, first_seen, last_seen, active_months,
+                   top_category, account_count,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY currency_code ORDER BY {MERCHANTS_SORTS[sort]}
+                   ) AS rank_in_currency
+            FROM {REPORTS_MERCHANT_ACTIVITY.full_name}
+        )
+        WHERE rank_in_currency <= ?
+        ORDER BY rank_in_currency, currency_code
     """  # noqa: S608  # TableRef + MERCHANTS_SORTS allowlists
-    return ReportQuery(sql, [top])
+    return ReportQuery(sql, [Binding(top, DataClass.AGGREGATE)])

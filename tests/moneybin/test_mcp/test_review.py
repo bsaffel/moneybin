@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import duckdb
 import pytest
 
 from moneybin import error_codes
@@ -333,6 +334,37 @@ async def test_review_summary_returns_exact_kind_status_matrix() -> None:
     assert response.data.total == sum(observed.values())
 
 
+async def test_review_summary_degrades_when_one_queue_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One broken queue is marked unavailable; the other six still report counts.
+
+    A missing view (core.uncategorized_queue after #340 moved it) previously
+    failed the whole aggregate, so the default reviews() call was a dead end
+    while six of seven queues were healthy.
+    """
+    real_count = reviews_module._review_count  # pyright: ignore[reportPrivateUsage]
+
+    def count_or_fail(db: object, *, kind: str, status: str) -> int:
+        if kind == "categorization":
+            raise duckdb.CatalogException("Table with name uncategorized_queue does")
+        return real_count(db, kind=kind, status=status)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(reviews_module, "_review_count", count_or_fail)
+
+    response = await reviews_coarse(kind="summary")
+
+    assert response.error is None
+    healthy = {count.kind for count in response.data.counts}
+    assert "categorization" not in healthy
+    assert "matches" in healthy
+    assert "auto_rules" in healthy
+    unavailable = {entry.kind for entry in response.data.unavailable}
+    assert unavailable == {"categorization"}
+    assert response.data.unavailable[0].code
+    assert response.summary.degraded is True
+
+
 async def test_review_summary_counts_auto_rules_without_blast_radius_scan() -> None:
     with (
         patch.object(AutoRuleService, "count_pending_proposals", return_value=2),
@@ -362,12 +394,12 @@ async def test_review_summary_counts_auto_rules_without_blast_radius_scan() -> N
 @pytest.mark.parametrize(
     ("kwargs", "code"),
     [
-        ({"kind": "summary", "limit": 1}, "REVIEW_PAGINATION_NOT_ALLOWED"),
+        ({"kind": "summary", "limit": 1}, "review_pagination_not_allowed"),
         (
             {"kind": "summary", "cursor": "anything"},
-            "REVIEW_PAGINATION_NOT_ALLOWED",
+            "review_pagination_not_allowed",
         ),
-        ({"kind": "summary", "status": "history"}, "REVIEW_STATUS_NOT_ALLOWED"),
+        ({"kind": "summary", "status": "history"}, "review_status_not_allowed"),
     ],
 )
 async def test_review_summary_rejects_incompatible_arguments(
@@ -530,7 +562,7 @@ async def test_review_pagination_is_stable_filter_bound_and_executable() -> None
             cursor=first.next_cursor,
         )
         assert incompatible.error is not None
-        assert incompatible.error.code == "REVIEW_CURSOR_INVALID"
+        assert incompatible.error.code == "review_cursor_invalid"
 
 
 async def test_review_pending_continuation_does_not_skip_after_first_row_removed() -> (
@@ -577,7 +609,7 @@ async def test_review_cursor_snapshot_excludes_prepends_and_preserves_total() ->
 
 
 async def test_review_cursor_validates_key_shape_when_queue_is_empty() -> None:
-    from moneybin.mcp.pagination import encode_keyset_cursor
+    from moneybin.protocol.pagination import encode_keyset_cursor
 
     cursor = encode_keyset_cursor(
         namespace="reviews",
@@ -597,7 +629,7 @@ async def test_review_cursor_validates_key_shape_when_queue_is_empty() -> None:
         )
 
     assert response.error is not None
-    assert response.error.code == "REVIEW_CURSOR_INVALID"
+    assert response.error.code == "review_cursor_invalid"
 
 
 async def test_review_standard_registrar_renders_closed_contract() -> None:
@@ -630,7 +662,14 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
 @pytest.mark.parametrize(
     ("kind", "expected_sensitivity", "expected_classes"),
     [
-        ("summary", "low", ["aggregate", "txn_type"]),
+        # `description`/medium even on a summary where every queue reported:
+        # `ReviewsSummaryView` statically declares `unavailable:
+        # list[QueueUnavailable]`, whose `reason`/`hint` carry exception-derived
+        # text, and this path classifies the declared container rather than the
+        # variants a given call actually returned (`system_status` does the
+        # latter, so it stays low until it degrades). Over-reporting is the safe
+        # direction; narrowing it needs an instance-walking classifier.
+        ("summary", "medium", ["aggregate", "description", "txn_type"]),
         (
             "auto_rules",
             "medium",
@@ -649,6 +688,9 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
             [
                 "aggregate",
                 "category",
+                # M1K.1: PendingTxnRow carries the currency its txn_amount is
+                # denominated in, so the queue no longer shows a bare number.
+                "currency",
                 "description",
                 "record_id",
                 "timestamp_observability",
@@ -737,7 +779,7 @@ async def test_review_cursor_error_is_canonical_and_sanitized() -> None:
     assert hasattr(text, "text")
     assert response.structuredContent is not None
     assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
-    assert response.structuredContent["error"]["code"] == "REVIEW_CURSOR_INVALID"
+    assert response.structuredContent["error"]["code"] == "review_cursor_invalid"
     assert invalid_cursor not in text.text  # type: ignore[union-attr]
 
 
@@ -793,6 +835,7 @@ def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
                 CAST(NULL AS VARCHAR) AS account_name,
                 transaction_date AS txn_date,
                 amount,
+                currency_code,
                 description,
                 CAST(NULL AS VARCHAR) AS merchant_id,
                 CAST(NULL AS VARCHAR) AS merchant_normalized,
@@ -1236,7 +1279,11 @@ def test_ordinary_late_failure_rolls_back_state_audit_and_observability(
             ReviewDecisionsService(db, actor="mcp").apply_ordinary(requests)
 
     metric_labels.assert_not_called()
-    assert "Created user merchant" not in caplog.text
+    # "user merchant" — not the full sentence. Both applier log sites (the
+    # per-merchant create and the post-commit batch) contain it, so this
+    # catches either firing and survives a reword of the count line, which
+    # silently voided the old `"Created user merchant"` match in #356.
+    assert "user merchant" not in caplog.text
     with get_database(read_only=True) as db:
         assert (
             db.execute(
@@ -1714,8 +1761,9 @@ async def test_identity_mixed_late_failure_rolls_back_then_shares_operation_id()
         "set",
         side_effect=RuntimeError("injected late failure"),
     ):
-        with pytest.raises(RuntimeError, match="injected late failure"):
-            await identity_links_decide_coarse(decisions=decisions)
+        failed = await identity_links_decide_coarse(decisions=decisions)
+        assert failed.error is not None
+        assert failed.error.code == error_codes.INFRA_UNCLASSIFIED_ERROR
 
     assert _identity_decision_status("account_link", account["decision_id"]) == (
         "pending"

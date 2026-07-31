@@ -15,7 +15,11 @@ import pytest
 from fastmcp import Client
 from fastmcp.tools import FunctionTool
 
-from moneybin.mcp.surface import STANDARD_TOOL_COUNT, STANDARD_TOOL_NAMES
+from moneybin.mcp.surface import (
+    STANDARD_TOOL_COUNT,
+    STANDARD_TOOL_NAMES,
+    WINDSURF_ACTIVE_TOOL_CAP,
+)
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.tables import INTERFACE_TABLES
 
@@ -39,7 +43,7 @@ CLIENT_GUIDE = ROOT / "docs/guides/mcp-clients.md"
 MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
 WHAT_AI_SEES_GUIDE = ROOT / "docs/guides/what-the-ai-sees.md"
 AI_CLIENT_SPEC = ROOT / "docs/specs/ai-client-compatibility.md"
-STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-47.json"
+STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard.json"
 FEATURES = ROOT / "docs/features.md"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 REPORT_RECIPE_SPEC = ROOT / "docs/specs/reports-recipe-library.md"
@@ -83,6 +87,13 @@ CURRENT_REGISTRY_TOOL_COUNT_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(r"\b(?P<count>\d+)\s+MoneyBin\s+tools?\b", re.IGNORECASE),
+    # Count-after-noun phrasing ("registry of 47 intent-shaped tools"). The
+    # patterns above only match count-before-noun, so docs written this way
+    # extracted nothing and passed the currency check vacuously.
+    re.compile(
+        r"\bregistr(?:y|ies)\s+of\s+(?P<count>\d+)(?:\s+[a-z-]+){0,3}\s+tools?\b",
+        re.IGNORECASE,
+    ),
 )
 INLINE_CODE_SPAN_PATTERN = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 MCP_RESOURCE_URI_PATTERN = re.compile(
@@ -1410,9 +1421,11 @@ def test_client_compatibility_records_current_windsurf_headroom() -> None:
     )
 
     for current_fact in (
-        "47 MoneyBin tools",
-        "100-active-tool",
-        "53 tool slots",
+        f"{STANDARD_TOOL_COUNT} MoneyBin tools",
+        f"{WINDSURF_ACTIVE_TOOL_CAP}-active-tool",
+        # Windsurf's cap minus our registry: an arithmetic consequence of
+        # the count, so it must not be a literal either.
+        f"{WINDSURF_ACTIVE_TOOL_CAP - STANDARD_TOOL_COUNT} tool slots",
     ):
         assert current_fact in text
         assert current_fact in index_row
@@ -1605,6 +1618,19 @@ def test_current_registry_tool_count_patterns_identify_registry_claims() -> None
     assert _current_registry_tool_counts(text) == {44}
 
 
+def test_count_after_noun_registry_claims_are_extracted() -> None:
+    """Count-after-noun phrasing must extract on its own fixture.
+
+    Deliberately isolated from the count-before-noun case above rather than
+    appended to it: that text still yields 44 from the older patterns, so a
+    shared fixture would stay green with this pattern deleted — reinstating the
+    exact vacuous pass the pattern was added to close. These counts appear in no
+    other fixture, so only this pattern can produce them.
+    """
+    assert _current_registry_tool_counts("a registry of 43 intent-shaped tools") == {43}
+    assert _current_registry_tool_counts("registries of 41 tools") == {41}
+
+
 def test_current_mcp_guidance_uses_only_standard_tool_names() -> None:
     prompt_text = PROMPTS.read_text()
     resource_text = RESOURCES.read_text()
@@ -1631,7 +1657,7 @@ def test_changelog_records_prelaunch_surface_cutover() -> None:
 
     text = CHANGELOG.read_text()
 
-    assert "47-tool standard registry" in text
+    assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in text
     assert "pre-launch" in text
     assert "reports" in text
 
@@ -2848,7 +2874,7 @@ def test_final_review_architecture_and_current_prose_match_runtime() -> None:
     extensions = (ROOT / "docs/specs/extension-contracts.md").read_text()
 
     assert "observable outcomes" in architecture
-    assert "47-tool standard registry" in architecture
+    assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in architecture
     assert "domain metadata does not control disclosure" in architecture
     assert "refresh_run()" in recovery
     assert '`system_audit(view="history"' in account_identity
@@ -2878,7 +2904,7 @@ def test_final_review_host_and_report_wording_is_current() -> None:
         "and observed host-native-deferral evidence exist."
     ) in server_guide
     assert "The current registry advertises zero output schemas" in client_guide
-    assert "registry of 45 intent-shaped tools" in roadmap
+    assert f"registry of {STANDARD_TOOL_COUNT} intent-shaped tools" in roadmap
 
 
 def test_final_review_refresh_and_report_counts_match_runtime() -> None:

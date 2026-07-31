@@ -6,12 +6,14 @@ import dataclasses
 import re
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Final
 from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import SQLMESH_ROOT, Database
+from moneybin.metrics.registry import PROFILE_CURRENCIES, UNKNOWN_CURRENCY_ROWS
+from moneybin.repositories import concrete_repo_classes
 from moneybin.services.doctor_service import (
     DoctorReport,
     DoctorService,
@@ -19,6 +21,9 @@ from moneybin.services.doctor_service import (
 )
 from moneybin.services.transform_service import TransformService
 from tests.moneybin.db_helpers import create_core_tables
+
+_COVERAGE_PREFIX: Final = "app_audit_coverage_"
+"""Name prefix `_run_app_audit_coverage` builds from a table's bare name."""
 
 
 @pytest.mark.unit
@@ -749,14 +754,20 @@ def test_run_all_returns_expected_invariants(
     # rejects, opening-lot review, unmodeled legs, holdings divergence,
     # source overlap, unresolved securities, conflicting security refs,
     # unreported holdings, phantom holdings) + 3 investment price checks
-    # (M1J.3 C.2: price disagreement, unpriced holdings, unmapped price source).
-    assert len(report.invariants) == 50
+    # (M1J.3 C.2: price disagreement, unpriced holdings, unmapped price source)
+    # + sqlmesh_model_presence (registered-but-unbuilt models) +
+    # currency_integrity (M1K.1 Req 6: unknown-currency rows, then merely-mixed
+    # currency) + profile_settings audit coverage (M1K.1 Req 4) + user_reports
+    # audit coverage (M2P.2).
+    assert len(report.invariants) == 54
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
     assert "bridge_transfers_balanced" in names
+    assert "sqlmesh_model_presence" in names
     assert "dedup_reconciliation" in names
     assert "categorization_coverage" in names
+    assert "currency_integrity" in names
     assert "app_audit_coverage_user_categories" in names
     assert "app_audit_coverage_category_overrides" in names
     assert "app_audit_coverage_gsheet_connections" in names
@@ -769,12 +780,80 @@ def test_run_all_returns_expected_invariants(
     assert "app_audit_coverage_import_previews" in names
     assert "app_audit_coverage_securities" in names
     assert "app_audit_coverage_lot_selections" in names
+    assert "app_audit_coverage_user_reports" in names
     assert "app_user_categories_uniqueness" in names
     assert "app_account_settings_account_fk" in names
     assert "app_balance_assertions_account_fk" in names
     assert "app_budgets_category_fk" in names
     assert "app_match_decisions_account_fk" in names
     assert "orphan_app_state" in names
+
+
+_UNCOVERED_REPO_TABLES: Final = {
+    "app.ai_consent_grants": "watermark is GREATEST(granted_at, revoked_at)",
+    "app.categorization_decisions": (
+        "watermark spans proposed_at / decided_at / reversed_at"
+    ),
+    "app.category_source_map": "has updated_at; composite PK needs a pk_expr",
+    "app.export_destinations": "has updated_at",
+    "app.merchant_link_decisions": "watermark is GREATEST(decided_at, reversed_at)",
+    "app.merchant_links": "watermark is GREATEST(decided_at, reversed_at)",
+    "app.security_link_decisions": "watermark is GREATEST(decided_at, reversed_at)",
+    "app.security_links": "watermark is GREATEST(decided_at, reversed_at)",
+    "app.transaction_notes": "insert-shaped: created_at is the only timestamp",
+    "app.transaction_splits": "insert-shaped: created_at is the only timestamp",
+    "app.transaction_tags": "applied_at watermark; composite PK needs a pk_expr",
+    "raw.manual_investment_transactions": (
+        "raw.*, so the app_audit_coverage_* check name does not fit"
+    ),
+}
+"""Repos with no ``app_audit_coverage_*`` invariant — known gaps, not exemptions.
+
+Each reason names what closing it needs: 10 of the 12 lack the default
+``updated_at`` watermark, 5 need a new ``_ALLOWED_UPDATED_EXPRS`` entry, and the
+composite-PK ones need a ``pk_expr`` reconstructing exactly the ``target_id``
+their repo emits. That is a dozen independent correctness decisions, tracked as
+a follow-up rather than smuggled into an unrelated PR.
+"""
+
+
+@pytest.mark.unit
+def test_doctor_audit_coverage_matches_the_repo_registry(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every repo either has an audit-coverage invariant or an explicit reason.
+
+    The ``len(report.invariants) == 48`` assertion above is one-sided: it fires
+    when you *add* an invariant and never when you *forget* one, so a new repo
+    could ship with its writes unverified and the suite would stay green. This
+    compares the live discovered repo set against the live invariant names.
+
+    Asserting set *equality* (not a subset) is what keeps
+    ``_UNCOVERED_REPO_TABLES`` from decaying into a permanent allowlist: wiring
+    a doctor call without deleting its entry fails here, and so does an entry
+    naming a repo that was renamed or removed.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    report = DoctorService(doctor_db).run_all()
+
+    covered = {r.name for r in report.invariants if r.name.startswith(_COVERAGE_PREFIX)}
+    uncovered = {
+        cls.table_ref.full_name
+        for cls in concrete_repo_classes()
+        if f"{_COVERAGE_PREFIX}{cls.table_ref.name}" not in covered
+    }
+
+    expected = set(_UNCOVERED_REPO_TABLES)
+    assert uncovered == expected, (
+        f"repos newly missing audit coverage: {sorted(uncovered - expected)}; "
+        f"stale _UNCOVERED_REPO_TABLES entries to delete: {sorted(expected - uncovered)}"
+    )
 
 
 @pytest.mark.unit
@@ -2207,3 +2286,398 @@ def test_unmapped_price_source_ignores_a_row_with_no_accepted_binding(
     result = _investment_result(db, monkeypatch, "investment_unmapped_price_source")
 
     assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_missing_registered_model_fails_an_invariant(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model the project declares but never built must fail the doctor.
+
+    Every other health signal is derived from what IS built, so a model that
+    was never materialised leaves nothing to notice. Breaks if the invariant
+    compares against the catalog instead of the registered set.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    # `doctor_db` already builds `core.fct_transactions`, which no `db init`
+    # creates — that alone marks the warehouse as built, staging layer or not.
+    svc = DoctorService(doctor_db)
+
+    report = svc.run_all()
+    result = next(r for r in report.invariants if r.name == "sqlmesh_model_presence")
+
+    assert result.status == "fail"
+    # The fixture DB builds only a handful of core tables, so most of the
+    # registered set is absent — the point is that it says *which*.
+    assert result.affected_ids
+    assert all("." in name for name in result.affected_ids)
+    assert result.detail is not None
+
+
+@pytest.mark.unit
+def test_unreadable_catalog_reports_unavailable_not_a_fresh_profile(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catalog read that fails must not hand back the first-run remedy.
+
+    "no SQLMesh models built yet; run refresh_run" is an actively wrong
+    instruction for a database whose catalog cannot be read — it names a
+    healthy state and a remedy that will not help. The invariant catches its
+    own failure and says so, matching every other `_run_*` method.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    def _raise(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("catalog unreadable")
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    monkeypatch.setattr("moneybin.services.doctor_service.model_presence", _raise)
+
+    report = DoctorService(doctor_db).run_all()
+    result = next(r for r in report.invariants if r.name == "sqlmesh_model_presence")
+
+    assert result.status == "skipped"
+    assert result.detail is not None
+    assert "refresh_run" not in result.detail
+    assert "catalog unreadable" in result.detail
+
+
+@pytest.mark.unit
+def test_model_presence_passes_when_every_registered_model_exists(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The invariant must be able to PASS, not just always fail.
+
+    Its sibling test proves it fails on an incomplete catalog — which a
+    permanently-broken check (a normalization regression on either side of the
+    set difference) would also satisfy. This pins the other direction, so the
+    invariant cannot ship green while flipping `moneybin system doctor` to
+    exit 1 on every warehouse.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    # Declare only models this fixture genuinely builds, so a pass is real
+    # rather than an artifact of an empty registered set.
+    monkeypatch.setattr(
+        "moneybin.sqlmesh_registry.registered_model_names",
+        lambda: frozenset({"prep.stg_probe", "core.dim_accounts"}),
+    )
+    doctor_db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    doctor_db.execute("CREATE VIEW prep.stg_probe AS SELECT 1 AS x")
+    svc = DoctorService(doctor_db)
+
+    result = next(
+        r for r in svc.run_all().invariants if r.name == "sqlmesh_model_presence"
+    )
+
+    assert result.status == "pass"
+    assert result.affected_ids == []
+    assert result.detail is None
+
+
+def _currency_result(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> InvariantResult:
+    """Run the doctor and return the currency_integrity invariant."""
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    report = DoctorService(doctor_db).run_all()
+    return next(r for r in report.invariants if r.name == "currency_integrity")
+
+
+@pytest.mark.unit
+def test_currency_integrity_passes_on_a_single_currency_profile(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The common case stays silent — the fixture is USD throughout."""
+    result = _currency_result(doctor_db, monkeypatch)
+    assert result.status == "pass"
+    assert result.detail is None
+
+
+@pytest.mark.unit
+def test_currency_integrity_warns_when_a_profile_holds_two_currencies(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mixed currency is legal but withholds every cross-currency total."""
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    detail = result.detail or ""
+    assert "EUR" in detail
+    assert "USD" in detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_counts_and_names_a_third_currency(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three currencies, drawn from two different tables.
+
+    The two-currency case is satisfied by a check that only asks "is there more
+    than one?" — a hardcoded count, or a list that dedups to a pair, reads the
+    same. Sourcing the third from `dim_accounts` rather than a third transaction
+    also proves the UNION reaches every table it claims to, not just the one the
+    other tests mutate.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+    doctor_db.execute("""
+        UPDATE core.dim_accounts SET currency_code = 'GBP'
+        WHERE account_id = 'ACC1'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    detail = result.detail or ""
+    assert "3 currencies" in detail
+    assert "EUR, GBP, USD" in detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_warn_explains_the_withheld_balance_adjustment(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mixed currency also shrinks a carried balance — the warn has to say so.
+
+    core.fct_balances_daily leaves a transaction denominated in another currency
+    out of the account's carry, because no FX rate exists until M1K.2. The
+    amount resurfaces as reconciliation drift, but a user who is never told
+    where it went cannot read that drift as anything but a bug.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    detail = result.detail or ""
+    assert "carried" in detail
+    assert "balance_drift" in detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_fail_names_the_transform_that_applies_the_fix(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`accounts set --currency` writes app state; core.* is a table, not a view.
+
+    Follows dedup_reconciliation's convention in this same file: a remedy that
+    only takes effect after `moneybin transform` must say so, or the user
+    applies it, re-runs the doctor, sees the identical failure, and concludes
+    the documented fix does not work.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = NULL
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "transform" in (result.detail or "")
+
+
+@pytest.mark.unit
+def test_currency_integrity_fails_on_a_transaction_with_unknown_currency(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A NULL currency is an amount whose unit nobody knows — segment and flag."""
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = NULL
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "unknown" in (result.detail or "").lower()
+    assert result.affected_ids == ["transaction:T2"]
+
+
+@pytest.mark.unit
+def test_currency_integrity_prefixes_each_affected_id_with_its_grain(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Account and transaction ids must be distinguishable in one list.
+
+    ``affected_ids`` mixes two grains, and a bare id says nothing about which
+    tool fixes it — an account needs `accounts set --currency`, a transaction
+    needs its own path. ``orphan_app_state`` established the ``note:``/``tag:``
+    prefix convention in this same file for exactly that reason; a recipe
+    written against an unprefixed list would have to re-query to tell them
+    apart.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = NULL
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+    doctor_db.execute("""
+        UPDATE core.dim_accounts SET currency_code = NULL
+        WHERE account_id = 'ACC1'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert result.affected_ids == ["account:ACC1", "transaction:T2"]
+
+
+@pytest.mark.unit
+def test_currency_integrity_fails_on_a_balance_with_unknown_currency(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Balances are a third grain with its own count, message, and metric label.
+
+    A balance is where net worth comes from, so an unknown-currency balance is
+    the one most likely to be read as a number in the reader's own currency.
+    Every other currency_integrity test seeds NULL into transactions or
+    accounts, which leaves this branch's SQL, its "balance observation(s)"
+    wording, and its balances metric label unexercised.
+    """
+    # create_core_tables() installs fct_balances as an always-empty placeholder
+    # view (`WHERE FALSE`), which is why nothing has reached this branch: there
+    # is no base table to UPDATE. Replacing the view is the only way to put a
+    # row in front of the doctor at unit level.
+    doctor_db.execute("""
+        CREATE OR REPLACE VIEW core.fct_balances AS
+        SELECT 'ACC1'::VARCHAR AS account_id,
+               CURRENT_DATE AS balance_date,
+               100.00::DECIMAL(18, 2) AS balance,
+               'ofx'::VARCHAR AS source_type,
+               'b.qfx'::VARCHAR AS source_ref,
+               CURRENT_TIMESTAMP AS updated_at,
+               NULL::VARCHAR AS currency_code
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "1 balance observation(s)" in (result.detail or "")
+
+
+@pytest.mark.unit
+def test_currency_integrity_fails_on_an_account_with_unknown_currency(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accounts are flagged too — that is where the user assigns the fix."""
+    doctor_db.execute("""
+        UPDATE core.dim_accounts SET currency_code = NULL
+        WHERE account_id = 'ACC1'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "account:ACC1" in result.affected_ids
+
+
+@pytest.mark.unit
+def test_currency_integrity_reports_unknown_currency_over_mere_mixing(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile that is both mixed and incomplete surfaces the fixable half."""
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T1'
+    """)  # noqa: S608 — test input, not user data
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = NULL
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "unknown" in (result.detail or "").lower()
+
+
+@pytest.mark.unit
+def test_currency_integrity_records_what_it_observed(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check publishes the two numbers a operator would page on."""
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T1'
+    """)  # noqa: S608 — test input, not user data
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = NULL
+        WHERE transaction_id = 'T2'
+    """)  # noqa: S608 — test input, not user data
+
+    _currency_result(doctor_db, monkeypatch)
+
+    # EUR from T1 plus USD from the account row = 2 known currencies; T2 is the
+    # one unknown-currency row.
+    assert PROFILE_CURRENCIES._value.get() == 2  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert (
+        UNKNOWN_CURRENCY_ROWS.labels(grain="transactions")._value.get() == 1  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    )
+    assert UNKNOWN_CURRENCY_ROWS.labels(grain="accounts")._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
+@pytest.mark.unit
+def test_currency_integrity_counts_past_the_reported_id_cap(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The count is a real COUNT(*), not the length of the capped id list.
+
+    affected_ids is bounded so the envelope stays small; deriving the count
+    from it would saturate at the cap and show the user the same number every
+    run no matter how many rows they fixed.
+    """
+    doctor_db.execute("""
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            amount_absolute, transaction_direction, description,
+            transaction_type, is_pending, currency_code, source_type,
+            source_extracted_at, loaded_at,
+            transaction_year, transaction_month, transaction_day,
+            transaction_day_of_week, transaction_year_month,
+            transaction_year_quarter
+        )
+        SELECT 'N' || i, 'ACC1', DATE '2026-01-03', -1.00, 1.00, 'expense',
+               'no currency', 'DEBIT', false, NULL, 'ofx',
+               CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+               2026, 1, 3, 5, '2026-01', '2026-Q1'
+        FROM GENERATE_SERIES(1, 150) AS t(i)
+    """)  # noqa: S608 — test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert "150 transaction(s)" in (result.detail or "")
+    # The id list stays capped so the envelope does not carry 150 ids.
+    assert len(result.affected_ids) == 100
+    assert UNKNOWN_CURRENCY_ROWS.labels(grain="transactions")._value.get() == 150  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals

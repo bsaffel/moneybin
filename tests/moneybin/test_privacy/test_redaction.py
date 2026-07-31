@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal, TypedDict
 
@@ -11,7 +12,10 @@ from pydantic import BaseModel
 
 from moneybin.privacy.redaction import (
     ConsentSet,
+    MaskStrength,
     _scrub_embedded_pii,  # pyright: ignore[reportPrivateUsage]
+    mask_strength,
+    redact_records,
     redact_typed,
 )
 from moneybin.privacy.taxonomy import DataClass
@@ -94,6 +98,58 @@ def test_routing_number_none_passes_through() -> None:
 def test_institution_account_number_uses_last_four_pattern() -> None:
     out = redact_typed(_sample_row(), consent=None)
     assert out.last_four == "****4242"
+
+
+@pytest.mark.parametrize(
+    "value", [4, Decimal("4"), True, b"4021", ("4", "0"), Decimal("40.21")]
+)
+def test_a_partial_mask_masks_a_non_string_whole_instead_of_raising(
+    value: object,
+) -> None:
+    """A transform that raises is not a weaker mask; it is no answer at all.
+
+    This is the only transform that measures its input, so the only one that can
+    fail on a value's shape — and lineage hands a class down through an expression
+    without its type. An ``INSTITUTION_ACCOUNT_NUMBER`` column wrapped in
+    ``length()`` arrives here as an ``int``, where ``len()`` raised ``TypeError``
+    out of ``redact_records``. Every consumer of the shared table saw it:
+    ``sql_query`` answered ``infra_unclassified_error`` ("This is a MoneyBin bug"),
+    and a saved report could be created and then never run on any surface.
+
+    The ``Sized`` non-strings are the sharper half — a 2-tuple measured shorter
+    than four and returned ``"****"``, a partial mask's output for a value it
+    never partially masked.
+    """
+    (masked,) = redact_records(
+        [{"n": value}], {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}, consent=None
+    )
+
+    assert masked["n"] == "*****"
+
+
+def test_a_partial_mask_still_keeps_the_last_four_of_a_string() -> None:
+    """The benign twin: whole-masking a non-string must not widen to strings.
+
+    Without this, replacing the partial mask outright would pass the test above
+    and silently destroy the last four digits every consumer relies on.
+    """
+    (masked,) = redact_records(
+        [{"n": "1234567890"}], {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}, consent=None
+    )
+
+    assert masked["n"] == "****7890"
+
+
+def test_the_non_string_fallback_does_not_move_the_measured_mask_strength() -> None:
+    """``mask_strength`` probes with strings, and the ordering it feeds must hold.
+
+    Guards across the privacy surface rank classes by this value; a partial mask
+    that measured WHOLE would let one stand in for a genuinely whole-masked class
+    at the same tier — the substitution ``MaskStrength``'s own docstring exists to
+    prevent.
+    """
+    assert mask_strength(DataClass.INSTITUTION_ACCOUNT_NUMBER) is MaskStrength.PARTIAL
+    assert mask_strength(DataClass.ACCOUNT_IDENTIFIER) is MaskStrength.PARTIAL
 
 
 def test_high_tier_balance_passes_through_in_pr2() -> None:
@@ -339,6 +395,50 @@ def test_transforms_covers_every_data_class() -> None:
     missing = set(DataClass) - set(_TRANSFORMS)
     assert not missing, (
         f"DataClass values missing from _TRANSFORMS: {sorted(m.name for m in missing)}"
+    )
+
+
+def test_every_masking_transform_returns_text_whatever_it_is_given() -> None:
+    """The one fact ``apply_export_redaction`` retypes a masked column on.
+
+    A redacted export declares ``VARCHAR`` for every masked column, because every
+    masking transform today answers with a string. That is a property of
+    ``_TRANSFORMS``, not a second list beside it — the same reason
+    ``mask_strength`` measures rather than restates. PR 3's amount bucketing is
+    the live case: a bucket returned as a ``Decimal`` or a range tuple would keep
+    masking correctly while making ``VARCHAR`` a lie, and the export would fail on
+    the typed channel only. This turns that into a red test at the transform.
+    """
+    from moneybin.privacy.redaction import (  # noqa: PLC0415
+        _TRANSFORMS,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    probes: tuple[object, ...] = (
+        "1234567890",
+        4,
+        Decimal("40.21"),
+        True,
+        b"4021",
+        date(2026, 7, 28),
+        ("4", "0"),
+    )
+    offenders = {
+        data_class.name: type(masked).__name__
+        for data_class in _TRANSFORMS
+        if mask_strength(data_class) is not MaskStrength.PASSTHROUGH
+        for probe in probes
+        if not isinstance(masked := _TRANSFORMS[data_class](probe, None), str)
+    }
+
+    assert not offenders, (
+        "a masked column is exported as VARCHAR, so every masking transform must "
+        f"return text; these returned something else: {offenders}"
+    )
+    # None survives as None — a masked column stays nullable, and VARCHAR is.
+    assert all(
+        _TRANSFORMS[data_class](None, None) is None
+        for data_class in _TRANSFORMS
+        if mask_strength(data_class) is not MaskStrength.PASSTHROUGH
     )
 
 

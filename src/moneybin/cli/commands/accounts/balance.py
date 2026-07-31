@@ -14,6 +14,7 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    currency_label,
     output_option,
     quiet_option,
     render_or_json,
@@ -25,7 +26,10 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationListPayload,
 )
 from moneybin.protocol.envelope import build_envelope
-from moneybin.services.balance_service import BalanceService
+from moneybin.services.balance_service import (
+    BalanceService,
+    balances_display_currency,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +64,14 @@ def accounts_balance_show(
     def _render_text(_: object) -> None:
         for obs in result.observations:
             typer.echo(
-                f"  {obs.account_id}  {obs.balance_date}  {obs.balance}"
+                f"  {obs.account_id}  {obs.balance_date}"
+                f"  {obs.balance} {currency_label(obs.currency_code)}"
                 f"  observed={obs.is_observed}  source={obs.observation_source}"
                 f"  delta={obs.reconciliation_delta}"
             )
 
     render_or_json(
-        build_envelope(data=result),
+        build_envelope(data=result, display_currency=balances_display_currency(result)),
         output,
         render_fn=_render_text,
         cli_actor="accounts_balance_show",
@@ -94,13 +99,13 @@ def accounts_balance_history(
     def _render_text(_: object) -> None:
         for obs in result.observations:
             typer.echo(
-                f"  {obs.balance_date}  {obs.balance}"
+                f"  {obs.balance_date}  {obs.balance} {currency_label(obs.currency_code)}"
                 f"  observed={obs.is_observed}  source={obs.observation_source}"
                 f"  delta={obs.reconciliation_delta}"
             )
 
     render_or_json(
-        build_envelope(data=result),
+        build_envelope(data=result, display_currency=balances_display_currency(result)),
         output,
         render_fn=_render_text,
         cli_actor="accounts_balance_history",
@@ -129,7 +134,8 @@ def accounts_balance_assert(
                 actor="cli",
             )
     typer.echo(
-        f"✅ Asserted balance for {account_id} on {parsed_date}: {result.assertion.balance}",
+        f"✅ Asserted balance for {account_id} on {parsed_date}: "
+        f"{result.assertion.balance} {currency_label(result.assertion.currency_code)}",
         err=True,
     )
 
@@ -155,7 +161,9 @@ def accounts_balance_list(
         return
     for assertion in result.assertions:
         typer.echo(
-            f"  {assertion.account_id}  {assertion.assertion_date}  {assertion.balance}  notes={assertion.notes}"
+            f"  {assertion.account_id}  {assertion.assertion_date}  "
+            f"{assertion.balance} {currency_label(assertion.currency_code)}  "
+            f"notes={assertion.notes}"
         )
 
 
@@ -197,13 +205,16 @@ def accounts_balance_reconcile(
             )
     if output == OutputFormat.JSON:
         render_or_json(
-            build_envelope(data=result),
+            build_envelope(
+                data=result, display_currency=balances_display_currency(result)
+            ),
             output,
             cli_actor="accounts_balance_reconcile",
         )
         return
     for obs in result.observations:
         typer.echo(
-            f"  {obs.account_id}  {obs.balance_date}  {obs.balance}"
+            f"  {obs.account_id}  {obs.balance_date}"
+            f"  {obs.balance} {currency_label(obs.currency_code)}"
             f"  source={obs.observation_source}  delta={obs.reconciliation_delta}"
         )

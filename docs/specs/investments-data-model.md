@@ -441,15 +441,50 @@ remainder falls back to FIFO. This unlocks tax-loss harvesting and ST/LT control
 Shares the FIFO consumption machinery — it is an override on consumption order, not a
 separate engine.
 
-> **Known gap (v1).** `select_lots` (the service method backing both
-> `investments lots select` and `investments_lots_select`) does not verify
-> that the disposal's resolved cost-basis method is `specific` before
-> accepting the write — a selection saved against a FIFO/HIFO/average-elected
-> position is silently ignored at the next `sqlmesh run`, since
-> `_consumption_plan` only reads `app.lot_selections` under `specific`.
-> Tracked as a follow-up: reject the write when the resolved method isn't
-> `specific`, pointing the caller at `investments securities set --method
-> specific` (or the account default).
+**Election precondition.** `select_lots` (the service method backing both
+`investments lots select` and `investments_lots_select`) resolves the
+disposal's cost-basis method before accepting a non-empty selection and raises
+`investment_method_not_specific` unless it is `specific`. `_consumption_plan`
+reads `app.lot_selections` only under `specific`, so accepting the write under
+any other method would persist rows the next `sqlmesh run` discards while
+reporting success. The error carries a `RecoveryAction` for
+`investments_securities_set(cost_basis_method="specific")` on the disposal's
+security; the CLI equivalent is
+`investments securities set <security-id> --method specific`.
+
+Two related failures carry their own codes. Neither disposal replays under a
+resolvable election, so reporting a method problem would send the caller
+somewhere that cannot help.
+
+`investment_security_not_in_catalog` — the disposal names a `security_id` with
+no `app.securities` row, which an accepted merge produces by deleting the losing
+security while the materialized ledger still names it until the next refresh.
+The selection is refused *before* the account default is consulted: resolving it
+would return `specific` for an account defaulting to `specific` and admit a write
+against lot ids the refresh is about to re-key under the survivor, leaving a
+selection that no longer matches and is silently discarded. It carries no
+`RecoveryAction` — `investments_securities_set` on a deleted id raises
+`mutation_not_found` — and its hint points at `refresh` instead.
+
+`investment_security_not_bound` — the disposal's `security_id` is NULL. The
+engine skips security-NULL events entirely, so the disposal replays under no
+method at all. Its hint points at the pending security link (accept, refresh,
+retry) and carries no `RecoveryAction` — `RecoveryAction` forbids placeholder
+arguments, and there is no id to name.
+
+Clearing (`selections=[]`) is exempt. It deletes rather than writes, and gating
+it would strand selections made while the election was `specific` — removable
+only by first flipping the election back.
+
+The election chain itself lives in one place,
+`cost_basis.resolve_cost_basis_method` (security election → account default →
+`fifo`, with an account-level `average` restricted to
+`mutual_fund`/`etf`). Both the SQLMesh loader and this write path resolve
+through it, so the method a selection is validated against is the method the
+disposal replays under. The write path reads `app.securities` and
+`app.account_settings` live — never `core.fct_realized_gains.cost_basis_method`,
+which reflects the last refresh and would wrongly refuse a user who elected
+`specific` and has not refreshed yet.
 
 ### Method: Average cost
 
@@ -702,7 +737,9 @@ moneybin investments lots select <disposal_txn_id> --clear
   `--clear` submits the empty set, removing all overrides for the disposal and
   reverting it to FIFO (the CLI equivalent of the MCP tool's empty `selections=[]`).
   Unselected remainder falls back to FIFO. (Both surfaces are declarative-set here —
-  there is no additive variant, to keep CLI and MCP outcomes identical.)
+  there is no additive variant, to keep CLI and MCP outcomes identical.) A
+  non-empty selection requires the security to resolve to `specific`; `--clear`
+  does not (see "Method: Specific identification").
 
 ### Gains
 
@@ -835,7 +872,9 @@ existing row uses `security_id` and forbids changing `security_type`.
 Registered top-level schema:
 `investments_lots_select(disposal_txn_id=..., selections=[...])`. Both fields
 are required and no other top-level fields are accepted. Each selection is a
-`{"lot_id": ..., "quantity": "..."}` object.
+`{"lot_id": ..., "quantity": "..."}` object. A non-empty selection requires the
+security to resolve to `specific` cost basis (see "Method: Specific
+identification"); clearing does not.
 
 The **per-account default** cost-basis method is a field on `accounts_set`
 (`default_cost_basis_method`), not a separate tool — same reasoning as the CLI.
@@ -931,7 +970,7 @@ output schema, so this spec does not freeze a JSON response object.
 - `src/moneybin/sqlmesh/models/core/dim_securities.sql` — securities VIEW
 - `src/moneybin/sqlmesh/models/prep/stg_manual__investment_transactions.sql` — staging VIEW (per-provider naming convention)
 - `src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql` — canonical ledger
-- `src/moneybin/investments/cost_basis.py` — the pure cost-basis engine (FIFO/HIFO/specific/average consumption, corporate actions, oversold handling)
+- `src/moneybin/investments/cost_basis.py` — the pure cost-basis engine (FIFO/HIFO/specific/average consumption, corporate actions, oversold handling) plus `resolve_cost_basis_method`, the one definition of the election chain
 - `src/moneybin/investments/sqlmesh_loader.py` — loads ledger events + method/selection resolvers from the SQLMesh `ExecutionContext` for the engine
 - `src/moneybin/sqlmesh/models/core/fct_investment_lots.py` — thin SQLMesh wrapper running the engine; derived lots
 - `src/moneybin/sqlmesh/models/core/fct_realized_gains.py` — thin SQLMesh wrapper; derived realized gains
@@ -1008,7 +1047,8 @@ output schema, so this spec does not freeze a JSON response object.
 13. **Engine decisions confirmed 2026-07-04, no ADRs**: the cost-basis engine
     is a Python SQLMesh model (applies the `fct_balances_daily.py` precedent)
     and the ledger is a new fact table (applies ADR-001's dim/fact pattern) —
-    both recorded here and in the PR per `design-principles.md`'s ADR bar.
+    both recorded here and in the PR per the ADR bar in
+    `.claude/references/design-principles-depth.md`.
 14. **Four methods in v1 (FIFO, HIFO, specific-ID, average), LIFO on demand.**
     HIFO is a sort-key variant of the FIFO machinery with a real demand signal;
     average cost is 1099-B-motivated and implemented as a running pool (never

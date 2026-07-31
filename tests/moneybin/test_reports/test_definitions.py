@@ -7,15 +7,22 @@ and the enum-allowlist ValueError branches the surfaces rely on.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 import pytest
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportSemantics, Runner
+from moneybin.reports._framework.contract import (
+    Binding,
+    ReportSemantics,
+    Runner,
+    bound_value,
+)
 from moneybin.reports._framework.registry import spec_of
 from moneybin.reports.definitions import ALL_REPORTS
+from moneybin.reports.definitions._shared import CASHFLOW_GROUPINGS
 from moneybin.reports.definitions.balance_drift import balance_drift
 from moneybin.reports.definitions.cash_flow import cash_flow
 from moneybin.reports.definitions.large_transactions import large_transactions
@@ -34,15 +41,17 @@ _CORE_REPORT_IDS = {
     "balance_drift": "core:balance_drift",
 }
 _FLOW_REPORTS = frozenset(_CORE_REPORT_IDS) - {"balance_drift"}
-_NO_FX_V1 = "no FX conversion in v1; assumes single-currency inputs"
+_NO_FX_V1 = (
+    "no FX conversion in v1; rows are segmented per currency_code, never blended"
+)
 _EXPECTED_DESCRIPTIONS = {
     "spending": (
         "Spending amounts are positive absolute outflows; comparison deltas "
         "are current spend minus comparison-period spend."
     ),
     "recurring": (
-        "Average and annualized costs are positive absolute outflows in the "
-        "currency named by summary.display_currency."
+        "Average and annualized costs are positive absolute outflows in each "
+        "row's own currency_code."
     ),
     "merchants": (
         "total_spend is positive absolute outflow; total_outflow is negative; "
@@ -57,7 +66,10 @@ _EXPECTED_DESCRIPTIONS = {
 
 def _rows(db: Database, runner: Runner, **params: Any) -> list[dict[str, Any]]:
     rq = runner(db, **params)
-    cur = db.execute(rq.sql, list(rq.params))
+    # Unwrapped through the same accessor `execute_catalog_report` uses: the
+    # class travels with the value for the provenance renderer, and DuckDB is
+    # handed the value alone.
+    cur = db.execute(rq.sql, [bound_value(item) for item in rq.params])
     cols = [d[0] for d in cur.description] if cur.description else []
     return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
@@ -81,12 +93,16 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         assert semantics.fx_basis
         assert semantics.time_basis
         assert semantics.exclusions
+        # Decorated reports are graph-backed; only a dynamic report has no view.
+        assert spec.view is not None
         assert semantics.provenance == (spec.view.full_name,)
 
         monetary_classes = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
         assert monetary_classes.intersection(spec.classes.values())
         assert semantics.unit == "currency"
-        assert semantics.currency == "summary.display_currency"
+        # Rows are segmented, so the per-row column is the authority for
+        # which currency an amount is in — not one envelope-level field.
+        assert semantics.currency == "currency_code"
         assert semantics.fx_basis == _NO_FX_V1
 
         if name in _FLOW_REPORTS:
@@ -142,10 +158,17 @@ def _install_cash_flow_view(db: Database) -> None:
     db.execute("""
         CREATE OR REPLACE VIEW reports.cash_flow AS
         SELECT * FROM (VALUES
-            ('2026-01', 'A1', 'Alpha', 'Food', 100.0, -30.0, 70.0, 5),
-            ('2026-01', 'A1', 'Alpha', 'Travel', 0.0, -50.0, -50.0, 2),
-            ('2026-01', 'A2', 'Alpha', 'Food', 50.0, -10.0, 40.0, 3)
-        ) AS t(year_month, account_id, account_name, category, inflow, outflow, net, txn_count)
+            ('2026-01', 'A1', 'Alpha', 'Food', 'USD', 100.0, -30.0, 70.0, 5),
+            ('2026-01', 'A1', 'Alpha', 'Travel', 'USD', 0.0, -50.0, -50.0, 2),
+            ('2026-01', 'A2', 'Alpha', 'Food', 'USD', 50.0, -10.0, 40.0, 3),
+            -- A1/Food again in EUR: the only row that can tell a runner
+            -- grouping by currency_code from one that drops it. Every `by`
+            -- branch collapses this into the USD row above if the column
+            -- leaves the GROUP BY, and the account/category assertions below
+            -- cannot see that happen.
+            ('2026-01', 'A1', 'Alpha', 'Food', 'EUR', 20.0, -8.0, 12.0, 1)
+        ) AS t(year_month, account_id, account_name, category, currency_code,
+               inflow, outflow, net, txn_count)
     """)
 
 
@@ -175,6 +198,30 @@ def test_cashflow_default_groups_by_account_and_category(db: Database) -> None:
         ("A1", "Travel"),
         ("A2", "Food"),
     }
+
+
+@pytest.mark.parametrize("by", sorted(CASHFLOW_GROUPINGS))
+def test_cashflow_never_blends_currencies_whichever_by_is_chosen(
+    db: Database, by: str
+) -> None:
+    """`currency_code` is in the GROUP BY for every `by` value, not just the default.
+
+    The runner assembles `group_cols` per branch, so each one is a separate
+    chance to drop the column — and dropping it re-blends the very rows the
+    view segmented. Parametrized across all four branches because a fix applied
+    to one is not a fix applied to the others. Parametrized over
+    CASHFLOW_GROUPINGS itself so a new grouping is covered on the commit that
+    adds it, rather than whenever someone remembers this list exists.
+    """
+    _install_cash_flow_view(db)
+
+    rows = _rows(db, cash_flow, by=by, from_month="2026-01", to_month="2026-12")
+
+    assert {r["currency_code"] for r in rows} == {"USD", "EUR"}
+    eur = [r for r in rows if r["currency_code"] == "EUR"]
+    assert len(eur) == 1
+    # 12.0 is the EUR row alone; 82.0 would be it summed into A1/Food's USD net.
+    assert eur[0]["net"] == 12.0
 
 
 def test_cashflow_defaults_to_12_month_window() -> None:
@@ -237,14 +284,62 @@ def _install_balance_drift(db: Database) -> None:
     db.execute("""
         CREATE OR REPLACE VIEW reports.balance_drift AS
         SELECT * FROM (VALUES
-            ('A1', 'Alpha', DATE '2026-04-01', 1000.00, 1010.00, 10.00, 10.00,
-             1.0, 5, 'drift'),
-            ('A2', 'Beta', DATE '2026-04-01', 500.00, 500.00, 0.00, 0.00,
+            ('A1', 'Alpha', 'USD', DATE '2026-04-01', 1000.00, 1010.00, 10.00,
+             10.00, 1.0, 5, 'drift'),
+            ('A2', 'Beta', 'USD', DATE '2026-04-01', 500.00, 500.00, 0.00, 0.00,
              0.0, 5, 'clean')
-        ) AS t(account_id, account_name, assertion_date, asserted_balance,
-               computed_balance, drift, drift_abs, drift_pct,
+        ) AS t(account_id, account_name, currency_code, assertion_date,
+               asserted_balance, computed_balance, drift, drift_abs, drift_pct,
                days_since_assertion, status)
     """)
+
+
+def _install_mixed_currency_drift(db: Database) -> None:
+    """A JPY account whose nominal drift dwarfs a USD account's.
+
+    ¥120,000 of drift is roughly $800 — the same order of magnitude — but
+    ranked on raw `drift_abs` the JPY rows occupy every leading slot.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.balance_drift AS
+        SELECT * FROM (VALUES
+            ('J1', 'Tokyo', 'JPY', DATE '2026-04-01', 900000.00, 1020000.00,
+             120000.00, 120000.00, 13.3, 5, 'drift'),
+            ('J2', 'Osaka', 'JPY', DATE '2026-04-01', 800000.00, 910000.00,
+             110000.00, 110000.00, 13.8, 5, 'drift'),
+            ('J3', 'Kyoto', 'JPY', DATE '2026-04-01', 700000.00, 800000.00,
+             100000.00, 100000.00, 14.3, 5, 'drift'),
+            ('U1', 'Checking', 'USD', DATE '2026-04-01', 1000.00, 1800.00,
+             800.00, 800.00, 80.0, 5, 'drift'),
+            ('U2', 'Savings', 'USD', DATE '2026-04-01', 500.00, 1200.00,
+             700.00, 700.00, 140.0, 5, 'drift')
+        ) AS t(account_id, account_name, currency_code, assertion_date,
+               asserted_balance, computed_balance, drift, drift_abs, drift_pct,
+               days_since_assertion, status)
+    """)
+
+
+def test_balance_drift_ranks_within_currency_not_across(db: Database) -> None:
+    """The row cap must not be able to starve a currency.
+
+    `execute.py` truncates with `records[:max_rows]`, so a global
+    `ORDER BY drift_abs DESC` lets one high-denomination currency fill the cap
+    and drop every other currency out of the response entirely — not merely
+    mis-ranked, absent, with nothing in the payload saying so. This is the same
+    reason `top` became per-currency (`multi-currency.md` Requirement 5).
+
+    Asserted on the leading three rows because three is where the starvation
+    shows: JPY has exactly three rows, so a global ordering returns JPY, JPY,
+    JPY and no USD at all.
+    """
+    _install_mixed_currency_drift(db)
+
+    leading = [r["currency_code"] for r in _rows(db, balance_drift)[:3]]
+
+    assert set(leading) == {"JPY", "USD"}, (
+        f"first three rows are {leading}; a cap here would hide a whole currency"
+    )
 
 
 def test_balance_drift_resolves_account_id(db: Database) -> None:
@@ -267,16 +362,83 @@ def test_balance_drift_ambiguous_account_raises(db: Database) -> None:
         balance_drift(db, account="Joint")
 
 
+#: Every binding site in every shipped runner, with the class each declares.
+#: The kwargs fire every conditional append, so ``isinstance`` over the result is
+#: a completeness check rather than a spot check — R9's requirement that every
+#: binding site declare a class, made executable.
+#:
+#: Classes are pinned exactly, not counted, because the failure this guards is a
+#: *wrong* class as much as a missing one. ``balance_drift``'s first entry is
+#: R9's worked example: the parameter is declared ACCOUNT_IDENTIFIER (CRITICAL
+#: free text), the binding is a resolved opaque ``account_id`` (RECORD_ID, LOW),
+#: and reading the class off the signature would render one under the other.
+_BINDING_CLASSES: list[tuple[str, Runner, dict[str, Any], tuple[str, ...]]] = [
+    (
+        "cashflow",
+        cash_flow,
+        {"by": "account", "from_month": "2026-01", "to_month": "2026-12"},
+        ("txn_date", "txn_date"),
+    ),
+    (
+        "spending",
+        spending_trend,
+        {"from_month": "2026-01", "to_month": "2026-12", "category": "Food"},
+        ("txn_date", "txn_date", "category"),
+    ),
+    (
+        "recurring",
+        recurring_subscriptions,
+        {"min_confidence": 0.5, "status": "active", "cadence": "monthly"},
+        ("aggregate", "txn_type", "txn_type"),
+    ),
+    ("merchants", merchant_activity, {"top": 5}, ("aggregate",)),
+    ("large_transactions", large_transactions, {"top": 5}, ("aggregate",)),
+    (
+        "balance_drift",
+        balance_drift,
+        {"account": "A1", "status": "drift", "since": "2026-01-01"},
+        ("record_id", "txn_type", "txn_date"),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "runner", "kwargs", "expected"),
+    _BINDING_CLASSES,
+    ids=[case[0] for case in _BINDING_CLASSES],
+)
+def test_every_binding_a_shipped_runner_returns_declares_its_class(
+    db: Database,
+    name: str,  # noqa: ARG001  # parametrize id only
+    runner: Runner,
+    kwargs: dict[str, Any],
+    expected: tuple[str, ...],
+) -> None:
+    """A bare value would fail closed at render time; none should reach there."""
+    _install_balance_drift(db)  # supplies core.dim_accounts for resolve_strict
+
+    rq = runner(db, **kwargs)
+
+    assert all(isinstance(item, Binding) for item in rq.params), (
+        f"an unwrapped binding would render as UNRESOLVED: {rq.params}"
+    )
+    assert (
+        tuple(item.data_class.value for item in rq.params if isinstance(item, Binding))
+        == expected
+    )
+
+
 def _install_recurring(db: Database) -> None:
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute("""
         CREATE OR REPLACE VIEW reports.recurring_subscriptions AS
         SELECT * FROM (VALUES
-            ('m1', 'Netflix', -15.99, 'monthly', 30.0, 1.5, 12,
+            ('m1', 'Netflix', 'USD', -15.99, 'monthly', 30.0, 1.5, 12,
              DATE '2025-01-01', DATE '2025-12-01', 'active', -191.88, 0.95)
-        ) AS t(merchant_id, merchant_normalized, avg_amount, cadence,
-               interval_days_avg, interval_days_stddev, occurrence_count,
-               first_seen, last_seen, status, annualized_cost, confidence)
+        ) AS t(merchant_id, merchant_normalized, currency_code, avg_amount,
+               cadence, interval_days_avg, interval_days_stddev,
+               occurrence_count, first_seen, last_seen, status,
+               annualized_cost, confidence)
     """)
 
 
@@ -289,3 +451,244 @@ def test_recurring_projects_all_declared_interval_columns(db: Database) -> None:
     rows = _rows(db, recurring_subscriptions)
     assert "interval_days_avg" in rows[0]
     assert "interval_days_stddev" in rows[0]
+
+
+# --------------------------------------------------------------------------
+# Runner-level ranking is per currency (multi-currency.md Requirements 5 and 7).
+#
+# Segmenting the model is not enough: a runner that ranks the segmented rows
+# with one cross-currency ORDER BY ... LIMIT compares unlike units, and at the
+# default `top` it can drop an entire currency out of the result. Each fixture
+# below pairs one small-denomination row against enough large-denomination
+# rows to fill the limit on its own.
+# --------------------------------------------------------------------------
+
+
+def _install_large_transactions_view(db: Database, *, jpy_rows: int) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute(
+        """
+        CREATE OR REPLACE VIEW reports.large_transactions AS
+        SELECT 'usd1' AS transaction_id, 'A1' AS account_id, 'Alpha' AS account_name,
+               DATE '2026-01-01' AS txn_date, -40.00 AS amount, 'small' AS description,
+               'm1' AS merchant_id, 'Corner Store' AS merchant_normalized,
+               'Food' AS category, 'USD' AS currency_code,
+               3.0 AS amount_zscore_account, 3.0 AS amount_zscore_category,
+               TRUE AS is_top_100
+        UNION ALL
+        SELECT 'jpy' || i, 'A2', 'Beta', DATE '2026-01-01', -(8000.0 + i), 'big',
+               'm2', 'Depato', 'Food', 'JPY', 3.0, 3.0, TRUE
+        FROM GENERATE_SERIES(1, ?) AS t(i)
+    """.replace("?", str(jpy_rows))
+    )  # noqa: S608  # test-controlled row count
+
+
+def test_large_transactions_keeps_each_currency_inside_the_top_n(
+    db: Database,
+) -> None:
+    """A ¥8,001 charge must not outrank a $40 one out of the result."""
+    _install_large_transactions_view(db, jpy_rows=30)
+
+    rows = _rows(db, large_transactions, top=25)
+
+    assert "usd1" in {row["transaction_id"] for row in rows}
+    per_currency = Counter(str(row["currency_code"]) for row in rows)
+    assert per_currency == Counter({"JPY": 25, "USD": 1})
+
+
+def _install_merchant_activity_view(db: Database, *, jpy_rows: int) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute(
+        """
+        CREATE OR REPLACE VIEW reports.merchant_activity AS
+        SELECT 'm_usd' AS merchant_id, 'Corner Store' AS merchant_normalized,
+               'USD' AS currency_code, 40.00 AS total_spend, 0.00 AS total_inflow,
+               -40.00 AS total_outflow, 2 AS txn_count, -20.00 AS avg_amount,
+               -20.00 AS median_amount, DATE '2026-01-01' AS first_seen,
+               DATE '2026-01-02' AS last_seen, 1 AS active_months,
+               'Food' AS top_category, 1 AS account_count
+        UNION ALL
+        SELECT 'm_jpy' || i, 'Depato' || i, 'JPY', 8000.0 + i, 0.00, -(8000.0 + i),
+               2, -4000.0, -4000.0, DATE '2026-01-01', DATE '2026-01-02', 1,
+               'Food', 1
+        FROM GENERATE_SERIES(1, ?) AS t(i)
+    """.replace("?", str(jpy_rows))
+    )  # noqa: S608  # test-controlled row count
+
+
+def test_merchants_keeps_each_currency_inside_the_top_n(db: Database) -> None:
+    """A ¥-billed merchant list must not evict every $-billed merchant."""
+    _install_merchant_activity_view(db, jpy_rows=30)
+
+    rows = _rows(db, merchant_activity, top=25, sort="spend")
+
+    assert "m_usd" in {row["merchant_id"] for row in rows}
+    assert sum(1 for row in rows if row["currency_code"] == "JPY") == 25
+
+
+def test_recurring_groups_candidates_by_the_currency_they_are_billed_in(
+    db: Database,
+) -> None:
+    """Ordering by cost alone would interleave ¥ and $ candidates."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.recurring_subscriptions AS
+        SELECT * FROM (VALUES
+            ('m1', 'Netflix', 'USD', 15.99, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 191.88, 0.95),
+            ('m2', 'Depato', 'JPY', 1200.0, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 14400.0, 0.95),
+            ('m3', 'Spotify', 'USD', 11.99, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 143.88, 0.95)
+        ) AS t(merchant_id, merchant_normalized, currency_code, avg_amount,
+               cadence, interval_days_avg, interval_days_stddev,
+               occurrence_count, first_seen, last_seen, status,
+               annualized_cost, confidence)
+    """)
+
+    rows = _rows(db, recurring_subscriptions, min_confidence=0.5, status="active")
+
+    # Cost-ordered within each currency — not one ¥14,400 row sitting above both
+    # dollar subscriptions on nominal magnitude. Interleaving by rank puts the
+    # two rank-1 rows first, so this order also holds under the fixed ordering.
+    assert [row["merchant_id"] for row in rows] == ["m2", "m1", "m3"]
+
+
+# --------------------------------------------------------------------------
+# Interleaving: ranking within a currency is not enough on its own.
+#
+# `execute.py` truncates the finished row list with `records[:max_rows]`. A
+# runner that ranks per currency but then emits `ORDER BY currency_code, ...`
+# hands the cap one currency's rows in full before the next one starts, so the
+# lexicographically-later currency can be absent from the response entirely —
+# not mis-ranked, missing, with nothing in the payload saying so. Ordering on
+# `rank_in_currency` first interleaves the segments, so any prefix of the
+# result still represents every currency.
+#
+# Each fixture below is built so the two orderings genuinely differ: asserting
+# on the leading rows is what separates "grouped by currency" from
+# "interleaved by rank". A fixture where both produce the same sequence would
+# pass against the bug.
+# --------------------------------------------------------------------------
+
+
+# The source scan that sweeps for this across every report channel lives in
+# `test_currency_truncation.py`. It replaced a literal `"ORDER BY
+# currency_code"` scan kept here, which could not see `ORDER BY year_month,
+# currency_code` and had exempted `cash_flow` / `spending_trend` outright.
+
+
+def test_large_transactions_interleaves_currencies_before_truncation(
+    db: Database,
+) -> None:
+    """A cap of two must not return two JPY rows and no USD row."""
+    _install_large_transactions_view(db, jpy_rows=30)
+
+    leading = [
+        row["currency_code"] for row in _rows(db, large_transactions, top=25)[:2]
+    ]
+
+    assert set(leading) == {"JPY", "USD"}, (
+        f"first two rows are {leading}; a cap here would hide a whole currency"
+    )
+
+
+def test_merchants_interleave_currencies_before_truncation(db: Database) -> None:
+    """A cap of two must not return two JPY merchants and no USD merchant."""
+    _install_merchant_activity_view(db, jpy_rows=30)
+
+    rows = _rows(db, merchant_activity, top=25, sort="spend")
+    leading = [row["currency_code"] for row in rows[:2]]
+
+    assert set(leading) == {"JPY", "USD"}, (
+        f"first two rows are {leading}; a cap here would hide a whole currency"
+    )
+
+
+def test_recurring_interleaves_currencies_before_truncation(db: Database) -> None:
+    """A cap of two must not return two JPY subscriptions and no USD one.
+
+    Two candidates per currency, so grouping and interleaving disagree:
+    grouped gives JPY, JPY, USD, USD; interleaved gives JPY, USD, JPY, USD.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.recurring_subscriptions AS
+        SELECT * FROM (VALUES
+            ('m1', 'Netflix', 'USD', 15.99, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 191.88, 0.95),
+            ('m2', 'Depato', 'JPY', 1200.0, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 14400.0, 0.95),
+            ('m3', 'Spotify', 'USD', 11.99, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 143.88, 0.95),
+            ('m4', 'Konbini', 'JPY', 1000.0, 'monthly', 30.0, 1.5, 12,
+             DATE '2025-01-01', DATE '2025-12-01', 'active', 12000.0, 0.95)
+        ) AS t(merchant_id, merchant_normalized, currency_code, avg_amount,
+               cadence, interval_days_avg, interval_days_stddev,
+               occurrence_count, first_seen, last_seen, status,
+               annualized_cost, confidence)
+    """)
+
+    rows = _rows(db, recurring_subscriptions, min_confidence=0.5, status="active")
+    leading = [row["currency_code"] for row in rows[:2]]
+
+    assert set(leading) == {"JPY", "USD"}, (
+        f"first two rows are {leading}; a cap here would hide a whole currency"
+    )
+
+
+def test_cashflow_interleaves_currencies_within_a_month(db: Database) -> None:
+    """A cap of two must not return two EUR categories and no USD one.
+
+    `by="category"` is what makes the two orderings disagree: it puts several
+    rows in one month per currency, so currency-major yields EUR, EUR, EUR, USD
+    while interleaving by rank yields EUR, USD, EUR, EUR. The default
+    `by="none"` is one row per (month, currency) and would pass against the bug.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.cash_flow AS
+        SELECT * FROM (VALUES
+            ('2026-01', 'A1', 'Alpha', 'Food',   'EUR', 100.0, -30.0,  70.0, 5),
+            ('2026-01', 'A1', 'Alpha', 'Travel', 'EUR',   0.0, -50.0, -50.0, 2),
+            ('2026-01', 'A1', 'Alpha', 'Rent',   'EUR',   0.0, -40.0, -40.0, 1),
+            ('2026-01', 'A2', 'Beta',  'Food',   'USD',  20.0,  -8.0,  12.0, 1)
+        ) AS t(year_month, account_id, account_name, category, currency_code,
+               inflow, outflow, net, txn_count)
+    """)
+
+    rows = _rows(db, cash_flow, by="category", from_month="2026-01", to_month="2026-12")
+    leading = [row["currency_code"] for row in rows[:2]]
+
+    assert set(leading) == {"EUR", "USD"}, (
+        f"first two rows are {leading}; a cap here would hide a whole currency"
+    )
+
+
+def test_spending_trend_interleaves_currencies_within_a_month(db: Database) -> None:
+    """A cap of two must not return two EUR categories and no USD one.
+
+    Three EUR categories against one USD category in the same month, so
+    currency-major ordering fills the cap with EUR before USD's row is
+    reached — the response then reports one currency's spending as if it were
+    the month's.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute("""
+        CREATE OR REPLACE VIEW reports.spending_trend AS
+        SELECT * FROM (VALUES
+            ('2026-01', 'Food',   'EUR', 300.0, 9, 280.0, 20.0, 0.07, 250.0, 50.0, 0.20, 290.0),
+            ('2026-01', 'Travel', 'EUR', 200.0, 4, 180.0, 20.0, 0.11, 150.0, 50.0, 0.33, 190.0),
+            ('2026-01', 'Rent',   'EUR', 100.0, 1,  90.0, 10.0, 0.11,  80.0, 20.0, 0.25,  95.0),
+            ('2026-01', 'Food',   'USD',  50.0, 3,  45.0,  5.0, 0.11,  40.0, 10.0, 0.25,  47.0)
+        ) AS t(year_month, category, currency_code, total_spend, txn_count,
+               prev_month_spend, mom_delta, mom_pct,
+               prev_year_spend, yoy_delta, yoy_pct, trailing_3mo_avg)
+    """)
+
+    rows = _rows(db, spending_trend, from_month="2026-01", to_month="2026-12")
+    leading = [row["currency_code"] for row in rows[:2]]
+
+    assert set(leading) == {"EUR", "USD"}, (
+        f"first two rows are {leading}; a cap here would hide a whole currency"
+    )

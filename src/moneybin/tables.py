@@ -59,6 +59,7 @@ PDF_SEEDS = TableRef("raw", "pdf_seeds")
 # -- App tables (application-managed data) --
 PDF_FORMATS = TableRef("app", "pdf_formats")
 ACCOUNT_SETTINGS = TableRef("app", "account_settings", audience="interface")
+PROFILE_SETTINGS = TableRef("app", "profile_settings", audience="interface")
 BALANCE_ASSERTIONS = TableRef("app", "balance_assertions", audience="interface")
 TRANSACTION_CATEGORIES = TableRef("app", "transaction_categories", audience="interface")
 CATEGORIZATION_DECISIONS = TableRef("app", "categorization_decisions")
@@ -86,6 +87,7 @@ VERSIONS = TableRef("app", "versions")
 GSHEET_CONNECTIONS = TableRef("app", "gsheet_connections")
 EXPORT_DESTINATIONS = TableRef("app", "export_destinations")
 AI_CONSENT_GRANTS = TableRef("app", "ai_consent_grants")
+USER_REPORTS = TableRef("app", "user_reports", audience="interface")
 
 # -- App tabular tables --
 TABULAR_FORMATS = TableRef("app", "tabular_formats")

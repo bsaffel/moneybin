@@ -20,6 +20,7 @@ SELECT
   s.note AS line_note, /* NULL on unsplit rows; per-split note when present */
   CASE WHEN s.split_id IS NULL THEN 'whole' ELSE 'split' END AS line_kind, /* 'whole' for unsplit transactions, 'split' for split children */
   t.account_id, /* Foreign key to core.dim_accounts */
+  t.currency_code, /* ISO 4217 currency code inherited from the parent fact row; every line of a transaction is denominated in that transaction's currency */
   t.transaction_date, /* Date the transaction posted or settled */
   t.merchant_name, /* Normalized merchant name from the parent fact row */
   t.description, /* Payee or merchant description from the parent fact row */

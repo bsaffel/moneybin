@@ -51,11 +51,6 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.pagination import (
-    KeysetPosition,
-    decode_keyset_cursor,
-    encode_keyset_cursor,
-)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.investments import (
@@ -80,6 +75,11 @@ from moneybin.privacy.payloads.investments import (
 )
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.services.account_service import AccountService
 from moneybin.services.entity_reference import (
     AmbiguousEntity,
@@ -514,6 +514,17 @@ def investments_lots_select(
     REPLACE any prior selection for this disposal in full — an omitted lot
     is dropped, not left in place. Pass `selections=[]` to clear all
     overrides and revert the disposal to FIFO.
+
+    Precondition: the security must resolve to `specific` cost basis (its own
+    election, else the account default, else FIFO). Only specific
+    identification consumes lot selections, so a non-empty selection under any
+    other method raises investment_method_not_specific rather than persisting a
+    write that the next refresh would discard — elect it with
+    `investments_securities_set(cost_basis_method="specific")` first. A disposal
+    whose security is unbound (NULL) or absent from app.securities is refused
+    under its own code instead — investment_security_not_bound or
+    investment_security_not_in_catalog — because neither replays under an
+    election that can be resolved. Clearing is always allowed.
 
     Args:
         disposal_txn_id: investment_transaction_id of the disposal (must be
@@ -956,13 +967,13 @@ def _resolve_coarse_reference(
     if isinstance(resolution, AmbiguousEntity):
         raise UserError(
             f"The {noun} reference matches multiple {noun}s.",
-            code="ENTITY_REFERENCE_AMBIGUOUS",
+            code=error_codes.ENTITY_REFERENCE_AMBIGUOUS,
             details={"candidate_ids": list(resolution.candidate_ids)},
         )
     if isinstance(resolution, MissingEntity):
         raise UserError(
             f"The {noun} reference did not match a {noun}.",
-            code="ENTITY_REFERENCE_NOT_FOUND",
+            code=error_codes.ENTITY_REFERENCE_NOT_FOUND,
             details={"candidate_ids": []},
         )
     return resolution.entity_id
@@ -1058,7 +1069,7 @@ def _investment_position(
     except ValueError as exc:
         raise UserError(
             "Invalid pagination cursor.",
-            code="INVESTMENT_CURSOR_INVALID",
+            code=error_codes.INVESTMENT_CURSOR_INVALID,
         ) from exc
 
 
@@ -1221,22 +1232,22 @@ def investments_coarse(
     if view not in ("events", "gains") and (start is not None or end is not None):
         raise UserError(
             "start and end are only valid for investment events and gains.",
-            code="INVESTMENT_DATES_NOT_ALLOWED",
+            code=error_codes.INVESTMENT_DATES_NOT_ALLOWED,
         )
     if view != "lots" and open_only is not None:
         raise UserError(
             "open_only is only valid for investment lots.",
-            code="INVESTMENT_OPEN_ONLY_NOT_ALLOWED",
+            code=error_codes.INVESTMENT_OPEN_ONLY_NOT_ALLOWED,
         )
     if view == "securities" and account is not None:
         raise UserError(
             "account is not valid for the securities catalog.",
-            code="INVESTMENT_ACCOUNT_NOT_ALLOWED",
+            code=error_codes.INVESTMENT_ACCOUNT_NOT_ALLOWED,
         )
     if start is not None and end is not None and start > end:
         raise UserError(
             "Investment start must not be after end.",
-            code="INVESTMENT_DATE_RANGE_INVALID",
+            code=error_codes.INVESTMENT_DATE_RANGE_INVALID,
         )
 
     filters: dict[str, object] = {
@@ -1422,6 +1433,7 @@ def register_investments_tools(mcp: FastMCP) -> None:
         mcp,
         investments_lots_select,
         "investments_lots_select",
-        "Select specific acquisition lots for one disposal. Writes "
+        "Select specific acquisition lots for one disposal. Requires the "
+        "security to resolve to 'specific' cost basis. Writes "
         "app.lot_selections; replace the selection to revert.",
     )

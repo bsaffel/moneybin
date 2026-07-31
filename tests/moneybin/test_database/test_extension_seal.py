@@ -44,9 +44,14 @@ REMOTE_URLS = [
 # The ways a session could try to lift the seal. `SET GLOBAL` and `RESET` are
 # separate code paths in DuckDB from a plain `SET` — all must be refused.
 #
-# The PRAGMA forms are not decoration: `sql_query`'s validator allows queries
-# beginning with PRAGMA, so they are literally reachable by an MCP agent. And
-# re-enabling extension autoinstall is the live exfiltration path — it lets a
+# The PRAGMA forms stay even though `sql_query`'s validator no longer admits
+# PRAGMA (it was dropped when `PRAGMA storage_info` proved ungateable — see
+# `privacy/sql_query.py`). This suite tests the SEAL, not the validator: the
+# seal is the hard boundary that must hold on its own, so it has to keep
+# refusing the statements the validator happens to filter today. Deleting them
+# here would make the seal's coverage depend on a guard one layer up.
+#
+# Re-enabling extension autoinstall is the live exfiltration path — it lets a
 # session load an extension whose filesystem is NOT in `_DISABLED_FILESYSTEMS`
 # (azure) and then read `az://`.
 UNDO_ATTEMPTS = [

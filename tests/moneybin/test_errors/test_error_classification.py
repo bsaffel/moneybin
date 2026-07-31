@@ -51,6 +51,75 @@ def test_classify_file_not_found_returns_user_error() -> None:
     assert result.hint is None
 
 
+def test_classify_permission_error_real_eacces(tmp_path: Path) -> None:
+    """A genuine chmod-000 file — real OS behavior, runs on any platform."""
+    target = tmp_path / "locked.csv"
+    target.write_text("x")
+    target.chmod(0o000)
+    try:
+        with pytest.raises(PermissionError) as exc_info:
+            target.read_bytes()
+        result = classify_user_error(exc_info.value)
+    finally:
+        target.chmod(0o644)
+
+    assert result is not None
+    assert result.code == error_codes.INFRA_PERMISSION_DENIED
+    assert result.hint is not None
+    assert "chmod" in result.hint
+
+
+def test_classify_permission_error_eperm_under_documents() -> None:
+    """EPERM + Darwin + protected root gets the Full-Disk-Access hint.
+
+    The PermissionError is CONSTRUCTED, not provoked: a TCC denial cannot be
+    reproduced in CI. This asserts our branching, not macOS's behavior — that a
+    TCC denial reports errno 1 EPERM (vs. errno 13 EACCES for a mode denial) is
+    an observed fact, verified by hand probe 2026-07-18.
+    """
+    path = Path.home() / "Documents" / "statement.pdf"
+    exc = PermissionError(1, "Operation not permitted", str(path))
+    with patch("moneybin.errors.platform.system", return_value="Darwin"):
+        result = classify_user_error(exc)
+
+    assert result is not None
+    assert result.code == error_codes.INFRA_PERMISSION_DENIED
+    assert result.hint is not None
+    assert "Full Disk Access" in result.hint
+    assert result.details is not None
+    assert result.details["protected_root"] == "~/Documents"
+
+
+def test_classify_permission_error_without_filename_ignores_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A filename-less EPERM must not be judged by the working directory.
+
+    Reproduces the cwd fallback deterministically: home is redirected to
+    tmp_path and the process runs inside its Documents/, so classifying the
+    exception against `Path()` would land in a protected root and mis-fire the
+    macOS advice for a path that never failed.
+    """
+    home = tmp_path.resolve()
+    docs = home / "Documents"
+    docs.mkdir()
+    monkeypatch.chdir(docs)
+    exc = PermissionError(1, "Operation not permitted")  # no filename
+
+    with (
+        patch("moneybin.errors.platform.system", return_value="Darwin"),
+        patch("moneybin.errors.Path.home", return_value=home),
+    ):
+        result = classify_user_error(exc)
+
+    assert result is not None
+    assert result.code == error_codes.INFRA_PERMISSION_DENIED
+    assert result.hint is not None
+    assert "Full Disk Access" not in result.hint
+    assert result.details is not None
+    assert result.details.get("protected_root") is None
+
+
 def test_classify_lookup_error_returns_not_found() -> None:
     """Plain LookupError maps to a UserError with code infra_not_found.
 

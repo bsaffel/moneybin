@@ -22,6 +22,7 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import ToolResult
 from pydantic import ValidationError
 
+from moneybin import error_codes
 from moneybin.errors import UserError
 from moneybin.protocol.envelope import build_error_envelope
 
@@ -120,7 +121,7 @@ def _build_validation_envelope(
     return build_error_envelope(
         error=UserError(
             message,
-            code="invalid_arguments",
+            code=error_codes.INFRA_INVALID_ARGUMENTS,
             hint="; ".join(hint_parts) if hint_parts else None,
             details=details,
         ),

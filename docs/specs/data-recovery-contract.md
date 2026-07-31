@@ -49,7 +49,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 2. **No general undo for `app.*` mutations.** Invariant 10 Phase 1 captures the data; Phase 2 builds the consumer. Without it, "I miscategorized 30 transactions, undo that" requires manual re-edits or reaching for `sql_query` — exactly the SQL surgery this spec rules out.
 3. **Doctor failures don't point at recoveries.** "FK integrity failed on these 5 transaction IDs" leaves the agent guessing whether to revert an import, edit the account_id, or treat the orphan as intentional.
 4. **Self-healing is absent.** When `import_revert` cascades and leaves orphan `app.transaction_categories` rows, those accumulate forever. No refresh-time cleanup.
-5. **Refresh crashes silently.** Matcher and categorizer failures log at DEBUG (`followups.md:71`); the import looks healthy while dupes silently accumulate. No surface to detect partial-pipeline failure.
+5. **Refresh crashes silently.** Matcher and categorizer failures log at DEBUG; the import looks healthy while dupes silently accumulate. No surface to detect partial-pipeline failure.
 6. **Matching unreachable from MCP.** This pre-cutover gap is closed by
    `reviews(kind="matches", status="pending")` and
    `reviews_decide(decisions=[...])`.
@@ -111,6 +111,35 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     Every existing `UserError` code is audited and migrated to this taxonomy in the rollout PR sequence. The `code` field becomes load-bearing — agents may branch on it. CHANGELOG entry under `Changed` for any pre-existing code that changes shape.
 
     **Implementation note (PR 2):** the taxonomy module (`src/moneybin/error_codes.py`) also declares `infra_*`, `sync_*`, `gsheet_*`, and `price_feed_*` prefixes to absorb existing non-recovery error codes (`infra_database_locked`, `infra_io_error`, `sync_error`, `gsheet_error`, `price_feed_error`, etc.) without leaving them unprefixed. `sync_*` (mediated providers) and `gsheet_*` (user-controlled storage) are distinct connector domains per the `_connect`/`_link` verb split in `surface-design.md`. `price_feed_*` (market-data providers, `investments-price-feeds.md`) is a third: it attaches by neither verb — there is no account to link and no document to connect — and it carries no account credential and no PII, only public market data. Keeping it out of `sync_*` matters for what an agent does next: a `sync_*` failure means a bank connection is broken and should be re-linked, while a price-feed failure means valuation continues from the last stored close with staleness rising. These prefixes are *not* part of the recovery contract — they exist purely for taxonomy completeness so `test_error_codes::test_every_code_uses_valid_prefix` can be enforced repo-wide. New recovery codes must use one of the six prefixes in the table above.
+
+    **Taxonomy-completeness prefixes (2026-07-24).** The audit above checked
+    `vars(error_codes)`, which only sees codes that reached the module. Walking
+    the *wire* surface instead — every `code=` literal and every comparison
+    against a `.code` attribute, found by AST — surfaced 104 codes raised from
+    tool paths that were never declared here. They are now declared, one prefix
+    per MCP tool namespace: `account_*`, `entity_*`, `investment_*`,
+    `privacy_*`, `report_*`, `review_*`, `taxonomy_*`, `transaction_*`. Like
+    `infra_*` / `sync_*` / `gsheet_*` these carry no recovery contract; they
+    keep a raise site's meaning intact rather than collapsing sixty distinct
+    request-validation failures into `mutation_invalid_input`. Enforced by
+    `test_error_codes::TestWireCodes`, which checks both sides — an emitted
+    code and a branch reading one — because renaming a code while a comparison
+    holds the old string fails silently.
+    **`infra_permission_denied`.** Fires when the OS refuses access to a file the user named — distinct from `infra_file_not_found`, which means the path does not exist. The three failures it separates are not interchangeable, so the code alone is not the whole answer; `permission_advice()` (`src/moneybin/errors.py`) classifies the `OSError`'s `errno` and returns the matching `hint`:
+
+    | Condition | `hint` |
+    |---|---|
+    | `EACCES` (errno 13) | Check the file's ownership and mode. |
+    | `EPERM` (errno 1) + Darwin + path under `~/Documents`, `~/Desktop`, or `~/Downloads` | Grant the app running MoneyBin Full Disk Access in System Settings → Privacy & Security, restart it, retry. |
+    | anything else | Honest generic: something outside the file's own permissions is blocking access (security policy, sandbox, immutable flag). |
+
+    The macOS branch requires the full conjunction. `EPERM` alone is not proof of a TCC denial — immutable (`uchg`) flags and sandbox denials raise it too — and sending someone to System Settings for one of those is a confidently wrong answer, which is worse than an honest vague one.
+
+    `details` carries `errno` and `platform` on every permission failure, plus `protected_root` (`~/Documents` / `~/Desktop` / `~/Downloads` — the `~/` prefix is on the wire) when the macOS branch fires. Those are the fields an agent branches on.
+
+    This holds on the batch path too, not just single-exception envelopes: `import_files` (MCP and `--output json`) carries `details` on each `data.files[]` row, and hoists it to the envelope's `error.details` when every failed file agrees on it — the same unanimity rule `error_code` and `hint` use. A batch whose files failed for different reasons omits the batch-level `details` rather than claiming one file's errno for all of them.
+
+    The macOS remedy is delivered via `hint`, **not** `recovery_actions`: a `RecoveryAction` requires a `tool` naming an MCP tool (`min_length=1`, `extra="forbid"`), so the type cannot express an action the user must take outside the app. Extending it to do so is explicitly out of scope — smuggling human instructions into `rationale` while naming an unrelated tool is a strained one-off, not a convention to promote.
 
 4. **`operation_id` schema addition.** `app.audit_log` gains three columns:
 
@@ -220,7 +249,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
         timestamp: str
     ```
 
-    Behavior change: a *real* crash in the matcher/categorizer moves from `logger.debug(...)` to `logger.error(...)` and populates the `*_error` field. A missing-view precondition (`duckdb.CatalogException` / `BinderException` — e.g. first load before SQLMesh apply built the views) is NOT a crash: it stays a quiet `logger.debug(...)` and leaves `*_error` `None`, so a fresh database's first refresh never reports a false failure. (This precondition discrimination is what genuinely closes `followups.md:71`; a blind DEBUG→ERROR would trade silent failure for false-positive noise.) Refresh continues — one stage's failure doesn't abort the pipeline (same partial-failure-isolation pattern import already uses). If any `*_error` is set, the response envelope's `recovery_actions` includes:
+    Behavior change: a *real* crash in the matcher/categorizer moves from `logger.debug(...)` to `logger.error(...)` and populates the `*_error` field. A missing-view precondition (`duckdb.CatalogException` / `BinderException` — e.g. first load before SQLMesh apply built the views) is NOT a crash: it stays a quiet `logger.debug(...)` and leaves `*_error` `None`, so a fresh database's first refresh never reports a false failure. (This precondition discrimination is what genuinely closes the silent-refresh-crash gap 5 above; a blind DEBUG→ERROR would trade silent failure for false-positive noise.) Refresh continues — one stage's failure doesn't abort the pipeline (same partial-failure-isolation pattern import already uses). If any `*_error` is set, the response envelope's `recovery_actions` includes:
 
     - `refresh_run(steps=["match"])` for a matching-only retry, or `refresh_run(steps=["categorize"])` for a categorization-only retry, `confidence=suggested`.
     - `system_status(sections=["doctor"], detail="full")` for diagnosis, `confidence=suggested`.
@@ -233,7 +262,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     | MCP tool | Shape | CLI equivalent |
     |----------|-------|----------------|
     | `refresh_run(steps=["match"])` | 3 (discrete-verb batch) | `moneybin transactions matches run` |
-    | `reviews(kind="matches", status="pending")` | 5 (collection projection) | `moneybin transactions review --type matches` |
+    | `reviews(kind="matches", status="pending")` | 5 (collection projection) | `moneybin transactions matches pending` |
     | `reviews_decide(decisions=[...])` | 1b (accept/reject one decision) | `moneybin transactions matches set` |
     | `reviews(kind="matches", status="history")` | 5 (time-series) | `moneybin transactions matches history` |
 
@@ -696,4 +725,4 @@ Resolved during the 2026-05-19/2026-05-20 brainstorm. Captured so future readers
 - Prerequisite: `app-integrity-invariant.md` (Phase 1 — audit_log pre-image capture, repository routing, lint rule). This spec supersedes the Phase 2 description in that spec's Out of Scope section.
 - Adjacent: `data-reconciliation.md` (draft) — broader ETL invariant work; this spec lands the agent-recovery contract that draft references.
 - Companion rule: `.claude/rules/data-recovery.md` (new, lands in PR 10) — codifies the contract for future specs and tools.
-- Followup items rolled into this spec: `followups.md:71` (silent refresh crashes) — covered by Req 9.
+- Prior gaps rolled into this spec: silent refresh crashes (gap 5) — covered by Req 9.

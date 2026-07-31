@@ -55,8 +55,9 @@ class SpendingSummary:
             sensitivity="low",
             period=self.period_label,
             actions=[
-                "Use reports_spending for category breakdown with MoM/YoY deltas",
-                "Use reports_spending_compare to compare periods",
+                "Run reports(report_id='core:spending') for the category "
+                "breakdown with MoM/YoY deltas",
+                "Run reports(report_id='core:cashflow') for inflow, outflow, and net",
             ],
         )
 
@@ -98,8 +99,10 @@ class CategoryBreakdown:
             sensitivity="low",
             period=self.period_label,
             actions=[
-                "Use reports_spending_merchants for merchant-level breakdown",
-                "Use transactions_get to see individual transactions in a category",
+                "Run reports(report_id='core:merchants') for the merchant-level "
+                "breakdown",
+                "Use transactions(category=...) to see individual transactions "
+                "in a category",
             ],
         )
 

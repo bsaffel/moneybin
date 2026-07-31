@@ -36,6 +36,7 @@ from moneybin.tables import (
     PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
     PLAID_INVESTMENT_TRANSACTIONS,
     PLAID_SECURITIES,
+    PROFILE_SETTINGS,
     REPORTS_BALANCE_DRIFT,
     REPORTS_CASH_FLOW,
     REPORTS_LARGE_TRANSACTIONS,
@@ -51,6 +52,7 @@ from moneybin.tables import (
     TRANSACTION_NOTES,
     TRANSACTION_SPLITS,
     TRANSACTION_TAGS,
+    USER_REPORTS,
     TableRef,
 )
 
@@ -72,6 +74,7 @@ EXPECTED_INTERFACE = {
     FCT_BALANCES.full_name,
     FCT_BALANCES_DAILY.full_name,
     ACCOUNT_SETTINGS.full_name,
+    PROFILE_SETTINGS.full_name,
     BALANCE_ASSERTIONS.full_name,
     TRANSACTION_TAGS.full_name,
     TRANSACTION_SPLITS.full_name,
@@ -90,6 +93,7 @@ EXPECTED_INTERFACE = {
     FCT_REALIZED_GAINS.full_name,
     DIM_HOLDINGS.full_name,
     FCT_SECURITY_PRICES.full_name,
+    USER_REPORTS.full_name,
 }
 
 

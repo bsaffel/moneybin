@@ -44,6 +44,9 @@ class TransactionRow:
     account_id: Annotated[str, DataClass.RECORD_ID]
     transaction_date: Annotated[str, DataClass.TXN_DATE]
     amount: Annotated[Decimal, DataClass.TXN_AMOUNT]
+    # A mixed-currency page reports display_currency=None, so without this the
+    # amount above has no denomination anywhere in the response.
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
     description: Annotated[str, DataClass.DESCRIPTION]
     memo: Annotated[str | None, DataClass.DESCRIPTION]
     source_type: Annotated[str, DataClass.TXN_TYPE]
@@ -267,8 +270,7 @@ class MatchPendingRow:
 
     app.match_decisions carries no description/amount columns — only IDs,
     source types, and a confidence score — so this row is low-sensitivity.
-    For full pair context (both transactions side by side), use the CLI
-    `moneybin transactions review --type matches` queue.
+    The CLI renders the same queue via `moneybin transactions matches pending`.
 
     ``component_key`` groups edges that belong to the same N-way dedup
     cluster. All pending edges sharing a cluster have the same

@@ -5,14 +5,35 @@ paths: ["src/moneybin/reports/**", "src/moneybin/sqlmesh/models/reports/**"]
 
 # Report Authoring
 
-A complete SQL-backed report has three parts, all required:
+**A report is a `ReportSpec` in the one catalog.** That is the whole contract:
+an id, a name, declared parameters, declared output columns, a `DataClass` per
+column, financial semantics, and something that produces rows. Every consumer —
+the `reports` MCP tool, the CLI, `export report`, `reports explain` — reads that
+spec and nothing else. What varies between report *kinds* is only where the spec
+comes from.
+
+Four kinds ship today. Pick the row you are writing, then read its section.
+
+| Kind | Where the spec comes from | Who declares the classes |
+|---|---|---|
+| **Materialized** SQL-backed | An `@report` runner in the repo | The author, verified against derivation in CI |
+| **Runner-less view** | The generated `_derived_classes.py` | Derivation, checked in |
+| **Service-backed** | A hand-written `ServiceReportSpec` | The author, against an independently reviewed map |
+| **User-created** (dynamic) | A row in `app.user_reports`, via `spec_from_row` | Derivation, at save time — the user never declares one |
+
+## Materialized reports need three parts, all required
+
+"Materialized" means the report is a relation in the graph, refreshed by
+SQLMesh, and therefore a thing the rest of the platform can schedule, export,
+and depend on. That is what the three parts buy — a dynamic report has none of
+them and still runs:
 
 1. A SQLMesh model at `src/moneybin/sqlmesh/models/reports/<name>.sql`.
 2. An `@report`-decorated runner in `src/moneybin/reports/definitions/<name>.py`
    (`ReportQuery`, `report` from `reports/_framework/contract.py`) that returns
    the parameterized SELECT. The framework introspects the runner's signature
-   and docstring into a `ReportSpec` and generates the MCP tool, CLI command,
-   and `TableRef` wiring from that one definition — see
+   and docstring into a `ReportSpec` and generates the CLI command and `TableRef`
+   wiring from that one definition — see
    `docs/specs/extension-contracts.md` §"Report contract".
 3. A declared `classes={...}` map on `@report` naming every output column's
    `DataClass`, plus a `class_downgrades={...}` entry (with a real reason) for
@@ -28,7 +49,34 @@ parameter and output class maps must also be added to
 A SQL view with no runner instead gets its classes from the generated module —
 see "Runner-less views" below.
 
+## User-created reports declare nothing, and that is the point
+
+A user-created report is a row: name, SQL, declared parameters. Its privacy
+contract is **derived from the SQL at save time** and stored
+(`reports/_framework/derive.py`), and `spec_from_row` rebuilds a `ReportSpec`
+from that row on every read. Nothing about authoring one belongs in this file —
+there is no file to author. What a contributor touching that path must know:
+
+- **Never let a user-supplied class into the map.** A parameter's class comes
+  from the column it is compared against; an output column's from lineage. A
+  declared class would be a user widening their own masking floor.
+- **The stored map is authoritative at run time, and drift-checked.** A
+  `class_fingerprint` over derivation's inputs decides whether the stored map is
+  still current; a mismatch re-derives and fails closed on any column that moved
+  upward (`docs/specs/reports-dynamic.md` R4).
+- **`reports reclassify` is the only path that lowers a stored floor**, it
+  requires a human confirmation, and it is audited. Do not add a second one.
+- **Not every saved report can graduate** into the materialized form above:
+  `report_materialization.py::materialization_blockers` answers why not, and
+  `reports explain` reports it.
+
+Full contract: [`reports-dynamic.md`](../../docs/specs/reports-dynamic.md).
+
 ## Classes are declared, then mechanically verified — never hand-waved
+
+Everything in this section is about the two kinds where a human writes the class
+map. The user tier inverts it — derivation *is* the author there, so there is no
+declaration to verify against, and the equivalent guard is the drift fingerprint.
 
 The declaration is the **runtime authority** (ADR-013:
 [`013-report-classification-declared.md`](../../docs/decisions/013-report-classification-declared.md)
@@ -114,12 +162,15 @@ curator queue) moved out of `reports.*` because its only reader is
 Derivation builds its upstream schema snapshot from the `CLASSIFICATION`
 registry, which covers `core`/`app` only. A `reports.*` model that reads
 another `reports.*` table would make the derived class map self-referential —
-`report_class_derivation.py::_assert_acyclic` rejects any such model outright
-(`ReportDerivationError`), rather than silently deriving a wrong answer.
+`report_materialization.py::assert_acyclic` rejects any such model outright
+(`ReportDerivationError`), rather than silently deriving a wrong answer. The
+same function answers a *saved* report's graduation eligibility, so a dynamic
+report reading `reports.*` runs correctly and reports itself unmaterializable
+for exactly this reason — one rule, two callers.
 
 ## No `SELECT *`, anywhere in the model
 
-`report_class_derivation.py::_assert_no_star` rejects a bare `*` or `t.*`
+`report_materialization.py::assert_no_star` rejects a bare `*` or `t.*`
 projection in **any** `SELECT` in the model — including inside a CTE, not just
 the final projection. Nothing expands a star for a connectionless deriver, so
 an unresolved star would silently degrade a column's class instead of failing

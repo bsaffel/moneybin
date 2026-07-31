@@ -2,27 +2,40 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import logging
 import typing
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
-from typing import cast
-from unittest.mock import MagicMock
+from functools import partial
+from typing import Literal, cast
+from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
 from pydantic import JsonValue
 from pytest_mock import MockerFixture
 
-from moneybin.database import Database
+from moneybin.database import (
+    Database,
+    DatabaseKeyError,
+    DatabaseNotInitializedError,
+)
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.networth import (
     NetWorthAccountRow,
+    NetWorthCurrencySegment,
     NetWorthHistoryPayload,
     NetWorthHistoryPoint,
     NetWorthSnapshotPayload,
+)
+from moneybin.privacy.payloads.reports import (
+    ReportCatalogEntry,
+    ReportOutputColumn,
+    ReportSemanticsPayload,
 )
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import PayloadEncoder
@@ -30,9 +43,14 @@ from moneybin.reports._framework import registry
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
     ServiceReportSpec,
+    catalog_classes_returned,
+    catalog_sensitivity,
     get_report_catalog,
+    open_report_catalog,
 )
 from moneybin.reports._framework.contract import (
+    USER_NAMESPACE,
+    Binding,
     OutputColumn,
     ParamSpec,
     ReportQuery,
@@ -42,6 +60,7 @@ from moneybin.reports._framework.contract import (
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     CatalogReportResult,
+    ReportResult,
     build_catalog_execution,
     build_catalog_result,
 )
@@ -83,7 +102,7 @@ def _sql_runner(
     """Test SQL report."""
     return ReportQuery(
         "SELECT ? AS value",
-        [count],
+        [Binding(count, DataClass.AGGREGATE)],
         actions=[f"Label present: {label is not None}"],
         period="test period",
     )
@@ -191,12 +210,34 @@ def test_registered_account_id_metadata_uses_opaque_record_id_class() -> None:
     assert problems == []
 
 
+def test_every_money_bearing_report_projects_the_currency_it_is_denominated_in() -> (
+    None
+):
+    """No registered report emits an amount without naming its currency.
+
+    multi-currency.md Requirements 5 and 6 — the report path that "would
+    violate Requirement 5" is one that sums money and cannot tell two
+    currencies apart. Enumerating the live catalog (rather than a hand-kept
+    list) is what makes a future report unable to ship unsegmented.
+    """
+    monetary = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
+    unsegmented = [
+        report.report_id
+        for report in get_report_catalog().list()
+        if monetary.intersection(report.classes.values())
+        and report.classes.get("currency_code") is not DataClass.CURRENCY
+    ]
+
+    assert unsegmented == []
+
+
 def test_service_report_privacy_maps_match_independent_contract() -> None:
     """Every service-backed report has an explicit, independently reviewed map."""
     expected = {
         "core:networth": {
             "columns": {
                 "balance_date": DataClass.TXN_DATE,
+                "currency_code": DataClass.CURRENCY,
                 "net_worth": DataClass.BALANCE,
                 "total_assets": DataClass.BALANCE,
                 "total_liabilities": DataClass.BALANCE,
@@ -214,6 +255,7 @@ def test_service_report_privacy_maps_match_independent_contract() -> None:
         "core:networth_history": {
             "columns": {
                 "period": DataClass.TXN_DATE,
+                "currency_code": DataClass.CURRENCY,
                 "net_worth": DataClass.BALANCE,
                 "change_abs": DataClass.BALANCE,
                 "change_pct": DataClass.AGGREGATE,
@@ -259,6 +301,27 @@ def test_exact_namespaced_id_wins_over_matching_short_name() -> None:
     assert catalog.resolve("core:summary") is exact
 
 
+def test_the_collision_warning_names_the_reports_and_not_the_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A colliding report name may be a merchant name, so it cannot be logged.
+
+    A saved report is named by its user, and ``amazon-spend`` is both a
+    plausible name and a merchant name ``.claude/rules/security.md`` forbids in
+    a log file — ``SanitizedLogFormatter`` masks digit runs and dollar amounts,
+    never free text. The report IDs carry everything an operator can act on.
+    """
+    with caplog.at_level(logging.WARNING, logger="moneybin.reports._framework.catalog"):
+        ReportCatalog((
+            _sql_report(report_id="core:summary", name="amazon-spend"),
+            _sql_report(report_id="user:rab12cd34ef56", name="amazon-spend"),
+        ))
+
+    assert "amazon-spend" not in caplog.text
+    assert "core:summary" in caplog.text
+    assert "user:rab12cd34ef56" in caplog.text
+
+
 def test_ambiguous_short_id_lists_sorted_namespaced_candidates() -> None:
     executor = MagicMock()
     catalog = ReportCatalog((_sql_report(), _service_report(executor)))
@@ -266,7 +329,7 @@ def test_ambiguous_short_id_lists_sorted_namespaced_candidates() -> None:
     with pytest.raises(UserError) as raised:
         catalog.resolve("summary")
 
-    assert raised.value.code == "REPORT_ID_AMBIGUOUS"
+    assert raised.value.code == "report_id_ambiguous"
     assert raised.value.details == {
         "report_id": "summary",
         "candidates": ["core:summary", "retirement:summary"],
@@ -279,7 +342,7 @@ def test_missing_report_id_is_structured_and_sanitized() -> None:
     with pytest.raises(UserError) as raised:
         catalog.resolve("missing")
 
-    assert raised.value.code == "REPORT_ID_NOT_FOUND"
+    assert raised.value.code == "report_id_not_found"
     assert raised.value.details == {"report_id": "missing"}
     assert "missing" not in raised.value.message
 
@@ -294,7 +357,7 @@ def test_duplicate_full_report_ids_are_rejected() -> None:
     [
         (
             {"year": 2026, "account_number": "sensitive"},
-            "REPORT_PARAMETER_UNKNOWN",
+            "report_parameter_unknown",
             {
                 "report_id": "retirement:summary",
                 "parameters": ["account_number"],
@@ -302,12 +365,12 @@ def test_duplicate_full_report_ids_are_rejected() -> None:
         ),
         (
             {},
-            "REPORT_PARAMETER_MISSING",
+            "report_parameter_missing",
             {"report_id": "retirement:summary", "parameters": ["year"]},
         ),
         (
             {"year": "2026"},
-            "REPORT_PARAMETER_INVALID_TYPE",
+            "report_parameter_invalid_type",
             {
                 "report_id": "retirement:summary",
                 "parameter": "year",
@@ -352,7 +415,7 @@ def test_sql_parameters_are_rejected_before_query_dispatch() -> None:
             limit=100,
         )
 
-    assert raised.value.code == "REPORT_PARAMETER_INVALID_TYPE"
+    assert raised.value.code == "report_parameter_invalid_type"
     db.execute.assert_not_called()
 
 
@@ -417,6 +480,98 @@ def test_sql_report_dispatch_returns_catalog_result_with_defaults() -> None:
         "SELECT ? AS value",
         [7],
     )
+
+
+def test_display_currency_sees_every_row_not_just_the_returned_page() -> None:
+    """Truncation must not turn a mixed-currency result into a confident one.
+
+    The page returned here is entirely USD; the rows past `max_rows` are EUR.
+    Resolving over the truncated slice would advertise display_currency "USD"
+    for a result that is not USD — the Requirement 5 blend re-entering at the
+    pagination boundary, where it is hardest to notice.
+    """
+    execution = build_catalog_execution(
+        _sql_report(),
+        parameters={"count": 3},
+        records=[
+            {"value": 1, "currency_code": "USD"},
+            {"value": 2, "currency_code": "USD"},
+            {"value": 3, "currency_code": "EUR"},
+        ],
+        columns=["value", "currency_code"],
+        column_types=["BIGINT", "VARCHAR"],
+        max_rows=2,
+        sql=None,
+    )
+
+    assert execution.truncated
+    assert [row["currency_code"] for row in execution.records] == ["USD", "USD"]
+    assert execution.display_currency is None
+
+
+def test_display_currency_describes_the_returned_page_when_truncated() -> None:
+    """A truncated but uniform result still names its currency, correctly.
+
+    The field describes the rows in this response — `has_more` is what says
+    more exist. `records` is what the cursor fetched, max_rows + 1, so
+    agreement across it is always true of the returned rows. Withholding here
+    would cost every large single-currency report a correct label and buy no
+    safety, because the page-scoped claim was never wrong.
+    """
+    execution = build_catalog_execution(
+        _sql_report(),
+        parameters={"count": 3},
+        records=[{"value": n, "currency_code": "USD"} for n in range(3)],
+        columns=["value", "currency_code"],
+        column_types=["BIGINT", "VARCHAR"],
+        max_rows=2,
+        sql=None,
+    )
+
+    assert execution.truncated
+    assert execution.display_currency == "USD"
+
+
+def test_report_without_a_currency_column_states_no_currency() -> None:
+    """A report that never mentions currency has not been told one.
+
+    ``build_catalog_execution`` only resolves a currency when the result
+    declares a ``currency_code`` column; everything else falls through to the
+    dataclass default. Every report that counts, ranks, or ratios — no currency
+    column anywhere — therefore shipped a confident label its rows never
+    supported.
+    """
+    execution = build_catalog_execution(
+        _sql_report(),
+        parameters={"count": 1},
+        records=[{"value": 1}],
+        columns=["value"],
+        column_types=["BIGINT"],
+        max_rows=None,
+        sql=None,
+    )
+
+    assert "currency_code" not in execution.columns
+    assert execution.display_currency is None
+
+
+@pytest.mark.parametrize("cls", [ReportResult, CatalogReportExecution])
+def test_report_result_currency_default_is_not_a_currency_literal(
+    cls: type,
+) -> None:
+    """Pin both defaults: no future edit may restore a hardcoded currency.
+
+    The behavioural test above passes just as well if someone re-adds ``"USD"``
+    and updates that one assertion, and it only reaches one of the two classes.
+    ``build_envelope`` carries the same pin
+    (``test_build_envelope_default_is_not_a_currency_literal``) — these are the
+    remaining places one default speaks for every caller at once.
+    """
+    default = next(
+        f for f in dataclasses.fields(cls) if f.name == "display_currency"
+    ).default
+
+    assert default is None
 
 
 def test_service_report_dispatch_uses_same_result_contract() -> None:
@@ -612,22 +767,34 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
         "moneybin.reports.service_reports.NetworthService.current",
         return_value=NetWorthSnapshotPayload(
             balance_date=date(2026, 7, 1),
+            currency_code="USD",
             net_worth=Decimal("1234.56000000"),
             total_assets=Decimal("1500.12000000"),
             total_liabilities=Decimal("-265.56000000"),
             account_count=2,
+            per_currency=[
+                NetWorthCurrencySegment(
+                    currency_code="USD",
+                    net_worth=Decimal("1234.56000000"),
+                    total_assets=Decimal("1500.12000000"),
+                    total_liabilities=Decimal("-265.56000000"),
+                    account_count=2,
+                ),
+            ],
             per_account=[
                 NetWorthAccountRow(
                     account_id="acct_11112222",
                     display_name="Checking",
                     balance=Decimal("500.12000000"),
                     observation_source="asserted",
+                    currency_code="USD",
                 ),
                 NetWorthAccountRow(
                     account_id="acct_99998888",
                     display_name="Brokerage",
                     balance=Decimal("1000.00000000"),
                     observation_source="derived",
+                    currency_code="USD",
                 ),
             ],
         ),
@@ -652,12 +819,13 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
         "resolved balance_date"
     )
     assert result.semantics.fx_basis == (
-        "no FX conversion in v1; assumes single-currency inputs"
+        "no FX conversion in v1; rows are segmented per currency_code, never blended"
     )
     assert result.parameters == {"as_of": "2026-07-02", "account_ids": None}
     assert result.records == [
         {
             "balance_date": date(2026, 7, 1),
+            "currency_code": "USD",
             "net_worth": Decimal("1234.56000000"),
             "total_assets": Decimal("1500.12000000"),
             "total_liabilities": Decimal("-265.56000000"),
@@ -684,10 +852,12 @@ def test_networth_account_id_parameter_metadata_preserves_opaque_ids(
         "moneybin.reports.service_reports.NetworthService.current",
         return_value=NetWorthSnapshotPayload(
             balance_date=None,
+            currency_code=None,
             net_worth=None,
             total_assets=None,
             total_liabilities=None,
             account_count=0,
+            per_currency=[],
             per_account=[],
         ),
     )
@@ -716,10 +886,12 @@ def test_networth_service_report_preserves_explicit_no_data(
         "moneybin.reports.service_reports.NetworthService.current",
         return_value=NetWorthSnapshotPayload(
             balance_date=None,
+            currency_code=None,
             net_worth=None,
             total_assets=None,
             total_liabilities=None,
             account_count=0,
+            per_currency=[],
             per_account=[],
         ),
     )
@@ -751,12 +923,14 @@ def test_networth_history_service_report_preserves_numeric_fidelity(
             points=[
                 NetWorthHistoryPoint(
                     period="2026-06-01",
+                    currency_code="USD",
                     net_worth=Decimal("1000.12345678"),
                     change_abs=None,
                     change_pct=None,
                 ),
                 NetWorthHistoryPoint(
                     period="2026-07-01",
+                    currency_code="USD",
                     net_worth=Decimal("1100.87654321"),
                     change_abs=Decimal("100.75308643"),
                     change_pct=Decimal("0.10074065"),
@@ -787,11 +961,12 @@ def test_networth_history_service_report_preserves_numeric_fidelity(
     )
     columns = {column.name: column for column in NETWORTH_HISTORY_REPORT.columns}
     assert columns["net_worth"].description == (
-        "Resolved transaction-adjusted period-end position."
+        "Resolved transaction-adjusted period-end position in currency_code."
     )
     assert result.records == [
         {
             "period": "2026-06-01",
+            "currency_code": "USD",
             "net_worth": Decimal("1000.12345678"),
             "change_abs": None,
             "change_pct": None,
@@ -818,7 +993,7 @@ def test_negative_limit_is_rejected_before_dispatch(kind: str) -> None:
             limit=-1,
         )
 
-    assert raised.value.code == "REPORT_LIMIT_INVALID"
+    assert raised.value.code == "report_limit_invalid"
     assert raised.value.details == {"minimum": 0}
     executor.assert_not_called()
     db.execute.assert_not_called()
@@ -843,7 +1018,7 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
         (
             NETWORTH_REPORT,
             {"as_of": "not-a-date"},
-            "REPORT_PARAMETER_INVALID_VALUE",
+            "report_parameter_invalid_value",
             {
                 "report_id": "core:networth",
                 "parameter": "as_of",
@@ -853,7 +1028,7 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
         (
             NETWORTH_REPORT,
             {"as_of": "20260702"},
-            "REPORT_PARAMETER_INVALID_VALUE",
+            "report_parameter_invalid_value",
             {
                 "report_id": "core:networth",
                 "parameter": "as_of",
@@ -863,7 +1038,7 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
         (
             NETWORTH_REPORT,
             {"as_of": "2026-W27-4"},
-            "REPORT_PARAMETER_INVALID_VALUE",
+            "report_parameter_invalid_value",
             {
                 "report_id": "core:networth",
                 "parameter": "as_of",
@@ -873,7 +1048,7 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
         (
             NETWORTH_REPORT,
             {"as_of": "2026-02-30"},
-            "REPORT_PARAMETER_INVALID_VALUE",
+            "report_parameter_invalid_value",
             {
                 "report_id": "core:networth",
                 "parameter": "as_of",
@@ -886,7 +1061,7 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
                 "from_date": "2026-07-02",
                 "to_date": "2026-07-01",
             },
-            "REPORT_PARAMETER_INVALID_RANGE",
+            "report_parameter_invalid_range",
             {
                 "report_id": "core:networth_history",
                 "parameters": ["from_date", "to_date"],
@@ -944,7 +1119,7 @@ def test_extension_reports_join_fresh_catalog_without_surface_side_effects(
 
     with pytest.raises(UserError) as raised:
         before.resolve("retirement_summary")
-    assert raised.value.code == "REPORT_ID_NOT_FOUND"
+    assert raised.value.code == "report_id_not_found"
     assert after.resolve("retirement_summary") is extension
     assert extension_report_specs() == (extension,)
 
@@ -968,3 +1143,385 @@ def test_duplicate_extension_report_id_is_rejected(
 
     with pytest.raises(ValueError, match="duplicate extension report_id"):
         register_extension_report(_sql_report(report_id="retirement:summary"))
+
+
+def test_an_extension_may_not_claim_the_user_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``user:`` means "derived at save time from a row", and code cannot be that.
+
+    ``report_tier`` reads the namespace, so an extension shipping ``user:x``
+    would be presented on every surface as the caller's own saved report: listed
+    under ``--tier user``, explained at MEDIUM as user-authored text, and — the
+    part that matters — believed to carry a class map *derived* from its SQL. Its
+    ``classes={...}`` is declared by the package author instead, which is exactly
+    the "user-supplied class in the map" that `.claude/rules/reports.md` forbids.
+    """
+    monkeypatch.setattr(registry, "_extension_reports", {})
+
+    with pytest.raises(ValueError, match=f"{USER_NAMESPACE}:"):
+        register_extension_report(
+            _sql_report(report_id=f"{USER_NAMESPACE}:retirement", name="retirement")
+        )
+
+    assert extension_report_specs() == ()
+
+
+def test_an_extension_namespace_that_merely_begins_with_user_registers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reserved thing is the namespace, not the four characters.
+
+    ``user_notes`` is a package name a real extension could pick, and a check
+    written as "starts with ``user``" would lock it out. The refusal above must
+    fail closed on the namespace and stay open here.
+    """
+    monkeypatch.setattr(registry, "_extension_reports", {})
+    report = _sql_report(report_id="user_notes:summary", name="user_notes_summary")
+
+    register_extension_report(report)
+
+    assert extension_report_specs() == (report,)
+
+
+# ---------------------------------------------------------------------------
+# Browsing without a database
+# ---------------------------------------------------------------------------
+
+
+def test_the_catalog_serves_the_packaged_tiers_when_no_database_exists() -> None:
+    """Browsing must not require ``db init``: two of three tiers are repo files.
+
+    An agent calling ``reports()`` with no arguments to orient itself used to
+    receive the built-in catalog with no database touched. Adding the user tier
+    turned that into a database-not-initialized error on a fresh profile, and
+    turned a mistyped ``export report`` id into advice to run ``db unlock``.
+    """
+    with patch(
+        "moneybin.reports._framework.catalog.get_database",
+        side_effect=DatabaseNotInitializedError("no database yet"),
+    ):
+        with open_report_catalog() as (catalog, db):
+            report_ids = {report.report_id for report in catalog.list()}
+
+    assert db is None
+    assert "core:networth" in report_ids
+
+
+def test_a_locked_database_is_still_an_error_when_browsing() -> None:
+    """The benign twin: only "never initialized" degrades.
+
+    A locked or wrong-key database is a real failure with a real fix. Swallowing
+    it would hand back a catalog silently missing the user's own reports.
+    """
+    with patch(
+        "moneybin.reports._framework.catalog.get_database",
+        side_effect=DatabaseKeyError("wrong key"),
+    ):
+        with pytest.raises(DatabaseKeyError):
+            with open_report_catalog():
+                pass  # pragma: no cover — the open raises before the body runs
+
+
+def _listing_entry(
+    *, tier: Literal["builtin", "extension", "user"], report_id: str = "core:spending"
+) -> ReportCatalogEntry:
+    """One catalog listing row, varying only the field ``catalog_sensitivity`` reads."""
+    return ReportCatalogEntry(
+        report_id=report_id,
+        name=report_id.split(":")[-1],
+        tier=tier,
+        description="A listing row.",
+        parameter_schema={},
+        parameter_classes={},
+        examples=[],
+        columns=[ReportOutputColumn(name="total", data_class="aggregate")],
+        output_classes={"total": "aggregate"},
+        semantics=ReportSemanticsPayload(
+            unit=None,
+            currency=None,
+            sign=None,
+            kind="unknown",
+            valuation_basis=None,
+            fx_basis=None,
+            time_basis=None,
+            denominator=None,
+            comparison_window=None,
+            exclusions=(),
+            provenance=(),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("tiers", "expected"),
+    [
+        (("builtin",), "low"),
+        (("builtin", "extension"), "low"),
+        (("user",), "medium"),
+        (("builtin", "user"), "medium"),
+        (("builtin", "extension", "user"), "medium"),
+        ((), "low"),
+    ],
+)
+def test_catalog_sensitivity_elevates_on_any_user_tier_row(
+    tiers: tuple[Literal["builtin", "extension", "user"], ...],
+    expected: Literal["low", "medium"],
+) -> None:
+    """A listing holding one user-authored name is a MEDIUM response.
+
+    Tested directly on the mixed-tier rows rather than through a surface that
+    opens a database. Every caller-side test reached this via
+    ``open_report_catalog()``, which degrades to the packaged tiers alone on a
+    profile with no database — so the user arm was never actually taken and the
+    ``low`` assertions passed for the wrong reason.
+    """
+    entries = [
+        _listing_entry(tier=tier, report_id=f"{tier}:r{index}")
+        for index, tier in enumerate(tiers)
+    ]
+
+    assert catalog_sensitivity(entries) == expected
+
+
+def test_catalog_classes_returned_follows_the_elevated_sensitivity() -> None:
+    """The audit event's class list is the envelope tier's other half.
+
+    Pinned beside ``catalog_sensitivity`` because the privacy event and the
+    envelope must never disagree about what a listing published.
+    """
+    assert catalog_classes_returned(catalog_sensitivity([])) == ["aggregate"]
+    assert catalog_classes_returned(
+        catalog_sensitivity([_listing_entry(tier="user")])
+    ) == ["aggregate", "user_note"]
+
+
+def test_report_envelope_names_the_currency_its_rows_are_denominated_in(
+    mocker: MockerFixture,
+) -> None:
+    """summary.display_currency follows the rows, instead of asserting USD."""
+    mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.current",
+        return_value=NetWorthSnapshotPayload(
+            balance_date=date(2026, 7, 1),
+            currency_code="GBP",
+            net_worth=Decimal("1000.00"),
+            total_assets=Decimal("1000.00"),
+            total_liabilities=Decimal("0.00"),
+            account_count=1,
+            per_currency=[
+                NetWorthCurrencySegment(
+                    currency_code="GBP",
+                    net_worth=Decimal("1000.00"),
+                    total_assets=Decimal("1000.00"),
+                    total_liabilities=Decimal("0.00"),
+                    account_count=1,
+                ),
+            ],
+            per_account=[
+                NetWorthAccountRow(
+                    account_id="acct_11112222",
+                    display_name="Current",
+                    balance=Decimal("1000.00"),
+                    observation_source="asserted",
+                    currency_code="GBP",
+                ),
+            ],
+        ),
+    )
+
+    result = ReportCatalog((NETWORTH_REPORT,)).execute(
+        cast(Database, MagicMock(spec=Database)),
+        report_id="core:networth",
+        parameters={},
+        limit=100,
+    )
+
+    assert result.to_envelope().to_dict()["summary"]["display_currency"] == "GBP"
+
+
+@pytest.mark.parametrize(
+    ("second_currency", "case"),
+    [
+        ("USD", "two known currencies"),
+        (None, "one known currency plus an unknown one"),
+    ],
+)
+def test_report_envelope_names_no_currency_when_its_rows_disagree(
+    mocker: MockerFixture, second_currency: str | None, case: str
+) -> None:
+    """Rows in more than one currency leave summary.display_currency null.
+
+    The envelope default is "USD", so a resolver that declines to answer here
+    silently labels the whole response USD — the same blend Requirement 5
+    forbids in the rows, moved up into the summary. The unknown-currency case
+    is the sharper one: it must not resolve to the one currency it *does* know.
+    """
+    segment = partial(
+        NetWorthCurrencySegment,
+        net_worth=Decimal("1000.00"),
+        total_assets=Decimal("1000.00"),
+        total_liabilities=Decimal("0.00"),
+        account_count=1,
+    )
+    mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.current",
+        return_value=NetWorthSnapshotPayload(
+            balance_date=date(2026, 7, 1),
+            currency_code=None,
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            account_count=2,
+            per_currency=[
+                segment(currency_code="GBP"),
+                segment(currency_code=second_currency),
+            ],
+            per_account=[
+                NetWorthAccountRow(
+                    account_id="acct_11112222",
+                    display_name="Current",
+                    balance=Decimal("1000.00"),
+                    observation_source="asserted",
+                    currency_code="GBP",
+                ),
+                NetWorthAccountRow(
+                    account_id="acct_33334444",
+                    display_name="Other",
+                    balance=Decimal("1000.00"),
+                    observation_source="asserted",
+                    currency_code=second_currency,
+                ),
+            ],
+        ),
+    )
+
+    result = ReportCatalog((NETWORTH_REPORT,)).execute(
+        cast(Database, MagicMock(spec=Database)),
+        report_id="core:networth",
+        parameters={},
+        limit=100,
+    )
+
+    assert result.to_envelope().to_dict()["summary"]["display_currency"] is None, case
+
+
+def test_networth_keeps_every_currency_within_the_returned_page(
+    mocker: MockerFixture,
+) -> None:
+    """Truncation must not be able to drop a whole currency.
+
+    Rows are one per account, so a profile with two dollar accounts and one
+    euro account pushes the euro row third. Any limit below that returns a
+    response that looks single-currency — blend by omission, the same failure
+    the segmentation prevents inside a row. Ordering one representative per
+    currency first makes the guarantee "every currency survives any limit at
+    least as large as the currency count."
+    """
+    segment = partial(
+        NetWorthCurrencySegment,
+        total_assets=Decimal("1000.00"),
+        total_liabilities=Decimal("0.00"),
+        account_count=1,
+    )
+    account = partial(
+        NetWorthAccountRow,
+        balance=Decimal("1000.00"),
+        observation_source="asserted",
+    )
+    mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.current",
+        return_value=NetWorthSnapshotPayload(
+            balance_date=date(2026, 7, 1),
+            currency_code=None,
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            account_count=3,
+            per_currency=[
+                segment(currency_code="USD", net_worth=Decimal("2000.00")),
+                segment(currency_code="EUR", net_worth=Decimal("1000.00")),
+            ],
+            per_account=[
+                account(
+                    account_id="acct_usd00001",
+                    display_name="Checking",
+                    currency_code="USD",
+                ),
+                account(
+                    account_id="acct_usd00002",
+                    display_name="Savings",
+                    currency_code="USD",
+                ),
+                account(
+                    account_id="acct_eur00001",
+                    display_name="Euro",
+                    currency_code="EUR",
+                ),
+            ],
+        ),
+    )
+
+    result = ReportCatalog((NETWORTH_REPORT,)).execute(
+        cast(Database, MagicMock(spec=Database)),
+        report_id="core:networth",
+        parameters={},
+        limit=2,
+    )
+
+    assert {row["currency_code"] for row in result.records} == {"USD", "EUR"}
+
+
+def test_networth_keeps_every_currency_when_the_breakdown_is_filtered(
+    mocker: MockerFixture,
+) -> None:
+    """An account_ids filter narrows the breakdown, not the reported position."""
+    mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.current",
+        return_value=NetWorthSnapshotPayload(
+            balance_date=date(2026, 7, 1),
+            currency_code=None,
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            account_count=2,
+            per_currency=[
+                NetWorthCurrencySegment(
+                    currency_code="EUR",
+                    net_worth=Decimal("800.00"),
+                    total_assets=Decimal("800.00"),
+                    total_liabilities=Decimal("0.00"),
+                    account_count=1,
+                ),
+                NetWorthCurrencySegment(
+                    currency_code="USD",
+                    net_worth=Decimal("500.00"),
+                    total_assets=Decimal("500.00"),
+                    total_liabilities=Decimal("0.00"),
+                    account_count=1,
+                ),
+            ],
+            # Only the USD account survived the filter.
+            per_account=[
+                NetWorthAccountRow(
+                    account_id="acct_usd",
+                    display_name="Checking",
+                    balance=Decimal("500.00"),
+                    observation_source="asserted",
+                    currency_code="USD",
+                ),
+            ],
+        ),
+    )
+
+    result = ReportCatalog((NETWORTH_REPORT,)).execute(
+        cast(Database, MagicMock(spec=Database)),
+        report_id="core:networth",
+        parameters={"account_ids": ["acct_usd"]},
+        limit=100,
+    )
+
+    by_currency = {
+        record["currency_code"]: record["net_worth"] for record in result.records
+    }
+    assert by_currency == {"USD": Decimal("500.00"), "EUR": Decimal("800.00")}

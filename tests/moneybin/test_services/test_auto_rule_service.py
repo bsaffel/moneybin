@@ -575,7 +575,7 @@ def test_review_caps_at_limit_and_reports_total(real_db: Database) -> None:
     result = svc.review(limit=2)
     assert len(result.proposals) == 2
     assert result.total_count == 5
-    envelope = auto_review_envelope(result)
+    envelope = auto_review_envelope(result, accept_action="Use x to accept")
     assert envelope.summary.has_more is True
     assert envelope.summary.total_count == 5
 
@@ -591,7 +591,10 @@ def test_review_uses_configured_default_when_limit_omitted(real_db: Database) ->
     result = svc.review()
     assert len(result.proposals) == 3
     assert result.total_count == 3
-    assert auto_review_envelope(result).summary.has_more is False
+    assert (
+        auto_review_envelope(result, accept_action="Use x to accept").summary.has_more
+        is False
+    )
 
 
 def test_review_broad_gauge_is_queue_wide_not_page_scoped(real_db: Database) -> None:

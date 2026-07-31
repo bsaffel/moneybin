@@ -21,7 +21,8 @@ WITH eligible AS (
     END AS merchant_normalized,
     ROUND(t.amount, 0) AS amount_bucket,
     t.amount,
-    t.transaction_date
+    t.transaction_date,
+    t.currency_code
   FROM core.fct_transactions AS t
   INNER JOIN core.dim_accounts AS a
     ON t.account_id = a.account_id
@@ -39,7 +40,10 @@ WITH eligible AS (
      the user can dedupe downstream. PARTITION BY uses merchant_id (FK)
      so two distinct merchants sharing a canonical_name don't accidentally
      merge into one cadence cluster; the '(uncategorized)' bucket stays
-     keyed on the NULL merchant_id, treated as equal by GROUP/PARTITION. */
+     keyed on the NULL merchant_id, treated as equal by GROUP/PARTITION.
+     currency_code partitions too: two same-priced streams billed in
+     different currencies would otherwise interleave, halving the inferred
+     interval and reporting two monthly charges as one biweekly one. */
   SELECT
     account_id,
     merchant_id,
@@ -47,13 +51,18 @@ WITH eligible AS (
     amount_bucket,
     amount,
     transaction_date,
-    transaction_date - LAG(transaction_date) OVER (PARTITION BY account_id, merchant_id, amount_bucket ORDER BY transaction_date) AS interval_days
+    currency_code,
+    transaction_date - LAG(transaction_date) OVER (
+      PARTITION BY account_id, merchant_id, amount_bucket, currency_code
+      ORDER BY transaction_date
+    ) AS interval_days
   FROM eligible
 ), grouped AS (
   SELECT
     merchant_id,
     ANY_VALUE(merchant_normalized) AS merchant_normalized,
     amount_bucket,
+    currency_code,
     AVG(ABS(amount)) AS avg_amount,
     AVG(interval_days) AS interval_days_avg,
     STDDEV(interval_days) AS interval_days_stddev,
@@ -64,13 +73,15 @@ WITH eligible AS (
   GROUP BY
     account_id,
     merchant_id,
-    amount_bucket
+    amount_bucket,
+    currency_code
   HAVING
     COUNT(*) >= 3
 )
 SELECT
   merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL for the '(uncategorized)' bucket */
   merchant_normalized, /* Display label: dim_merchants.canonical_name for resolved merchants; '(uncategorized)' when merchant_id IS NULL */
+  currency_code, /* ISO 4217 currency this candidate is billed in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5) */
   avg_amount, /* Mean absolute charge */
   CASE
     WHEN interval_days_avg BETWEEN 5 AND 9 AND interval_days_stddev < 2

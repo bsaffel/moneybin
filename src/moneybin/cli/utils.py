@@ -24,6 +24,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Profile-resolution provenance: kept in the log file, kept off the console.
+# Named so `_CONSOLE_SUPPRESSED_PREFIXES` can target it without silencing the
+# rest of `moneybin.cli`, which is ordinary user-facing output.
+_profile_source_logger = logger.getChild("profile_source")
+
 
 def _error_audit_classification(payload_type: type | None) -> tuple[str, list[str]]:
     """Audit (sensitivity, classes) for a JSON-mode error row.
@@ -146,7 +151,12 @@ def render_rich_table(cols: list[str], rows: list[tuple[object, ...]]) -> None:
     from rich.console import Console  # noqa: PLC0415 — defer heavy import
     from rich.table import Table  # noqa: PLC0415 — defer heavy import
 
-    console = Console()
+    # markup=False because every cell here is data, and much of it is
+    # user-authored — a report description, a merchant name, a transaction
+    # description. Rich reads `[...]` as a style tag, so a default console drops
+    # "spend [excluding rent]" down to "spend " and lets stored text steer the
+    # terminal's styling. No caller passes style tags in a cell.
+    console = Console(markup=False)
     table = Table(*cols)
     for row in rows:
         table.add_row(*[str(v) if v is not None else "" for v in row])
@@ -270,7 +280,11 @@ def resolve_profile() -> None:
         raise typer.Exit(1)
 
     setup_observability(stream="cli", verbose=_flags.verbose, profile=profile_name)
+    logger.info(f"Using profile: {profile_name}")
     if source:
-        logger.info(f"Using profile: {profile_name} (from {source})")
-    else:
-        logger.info(f"Using profile: {profile_name}")
+        # INFO, on a child logger the console denylist covers: which of
+        # --profile, MONEYBIN_PROFILE, or config.yaml chose this profile is
+        # trivia on every command but the only evidence when an unexpected one
+        # is selected. `logger.debug` would drop it from the log file too —
+        # the root logger sits at INFO and never emits DEBUG records.
+        _profile_source_logger.info(f"Profile resolved from {source}")

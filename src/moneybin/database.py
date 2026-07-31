@@ -24,7 +24,7 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -66,6 +66,11 @@ _active_write_lock: threading.Lock = threading.Lock()
 # interrupt the specific connection opened for *this* tool call rather than
 # whatever is currently in the process-global slot.
 #
+# Holds read AND write connections. It was write-only until a timed-out
+# read (sql_query) was found to leave the handler with nothing to reset,
+# stranding the abandoned query and wedging later calls until restart — so
+# do not narrow this back to writes.
+#
 # A ContextVar, not a threading.local: an async tool body dispatches its write
 # through its own asyncio.to_thread, which runs on a fresh worker thread. A
 # thread-local set by the decorator is invisible there, so the connection never
@@ -73,8 +78,8 @@ _active_write_lock: threading.Lock = threading.Lock()
 # caller already got a timed_out envelope. asyncio.to_thread copies the calling
 # context, so a ContextVar reaches the worker thread (and any thread nested
 # below it), which is what makes the async write tools interruptible at all.
-_write_conn_holder: ContextVar[list[Any] | None] = ContextVar(
-    "_write_conn_holder", default=None
+_call_conn_holder: ContextVar[list[Any] | None] = ContextVar(
+    "_call_conn_holder", default=None
 )
 
 _migration_check_done: set[Path] = set()
@@ -95,12 +100,19 @@ _database_written: bool = False
 #
 # `disabled_filesystems` is one-way by DuckDB's own semantics — it refuses to be
 # shrunk ("has been disabled previously, it cannot be re-enabled"), locked or
-# not. `lock_configuration` closes the *other* door: without it an agent can
+# not. `lock_configuration` closes the *other* door: without it a session can
 # re-enable `autoinstall_known_extensions` and load an extension whose
-# filesystem ISN'T in our disable list (azure), then read `az://`. That is
-# reachable from `sql_query`, whose validator permits `PRAGMA` — and `PRAGMA
-# autoinstall_known_extensions=true` is a config write. So the lock is what
-# makes the agent-facing handle a boundary rather than a suggestion.
+# filesystem ISN'T in our disable list (azure), then read `az://` — and `PRAGMA
+# autoinstall_known_extensions=true` is exactly that config write.
+#
+# `sql_query`'s validator no longer admits PRAGMA at all, so that specific
+# statement can't be reached through the agent surface today. The lock stays
+# regardless: it and the validator are deliberate defense-in-depth for each
+# other, the same pairing `_URL_SCHEME_PATTERNS` documents in
+# `privacy/sql_query.py`. The lock is the hard boundary — DuckDB refuses the
+# config write even if a future surface, extension, or parser gap lets a PRAGMA
+# through — and it is what makes the agent-facing handle a boundary rather than
+# a suggestion.
 #
 # The lock therefore goes on READ-ONLY connections only — the ones that execute
 # agent-supplied SQL. It cannot go on write connections: DuckDB itself issues
@@ -920,13 +932,14 @@ class Database:
         return self._db_path
 
     def execute(
-        self, query: str, params: list[Any] | None = None
+        self, query: str, params: list[Any] | Mapping[str, Any] | None = None
     ) -> duckdb.DuckDBPyConnection:
         """Execute a parameterized SQL query.
 
         Args:
-            query: SQL query string with ? placeholders.
-            params: Parameter values for placeholders.
+            query: SQL query string with ``?`` or ``$name`` placeholders.
+            params: Positional values for ``?`` placeholders, or a name→value
+                mapping for ``$name`` ones.
 
         Returns:
             DuckDB connection with query results (call .fetchone(), .fetchall(), etc.).
@@ -1183,13 +1196,22 @@ def get_database(
     )
 
     if read_only:
-        return _open_with_attach_retry(
+        db = _open_with_attach_retry(
             db_path=db_path,
             read_only=True,
             skip_upgrade=skip_upgrade,
             deadline=deadline,
             max_wait=max_wait,
         )
+        # Read opens register in the per-call holder too. Without this a
+        # long-running read (sql_query) that hits the MCP timeout left the
+        # handler on its "no connection acquired, nothing to reset" arm, so
+        # the abandoned query was never interrupted — which wedged later
+        # connection-hungry calls until the server restarted.
+        _holder = _call_conn_holder.get()
+        if _holder is not None:
+            _holder[0] = db
+        return db
 
     # write_lock places its lock file at <db_path>.write.lock inside the
     # profile directory, so that directory must exist before it runs. Pre-PR-B
@@ -1240,7 +1262,7 @@ def get_database(
         # holder to interrupt the *specific* connection it dispatched rather
         # than whatever is currently in the global slot (which may belong to a
         # different concurrent tool call).
-        _holder = _write_conn_holder.get()
+        _holder = _call_conn_holder.get()
         if _holder is not None:
             _holder[0] = db
         return db

@@ -50,14 +50,39 @@ class ReviewCount(BaseModel):
     count: Annotated[int, DataClass.AGGREGATE]
 
 
+class QueueUnavailable(BaseModel):
+    """One review queue that could not be counted, and why.
+
+    A queue whose backing view is missing must not fail the whole summary:
+    the healthy queues still report exact counts and this names the one that
+    did not. ``reason`` carries whatever ``classify_user_error`` produced —
+    see ``SectionUnavailable`` for what that does and does not guarantee.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[ReviewQueueKind, DataClass.TXN_TYPE]
+    code: Annotated[str, DataClass.TXN_TYPE]
+    # Free text carrying exception-derived content — classified as such, not as
+    # the low-tier label `code` is. See ``SectionUnavailable``.
+    reason: Annotated[str, DataClass.DESCRIPTION]
+    hint: Annotated[str | None, DataClass.DESCRIPTION] = None
+
+
 class ReviewsSummaryView(BaseModel):
-    """Exact counts for every normalized review collection."""
+    """Exact counts for every normalized review collection.
+
+    ``total`` sums only the queues that reported. When ``unavailable`` is
+    non-empty the envelope is marked degraded, so a caller never reads the
+    total as complete.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     kind: Annotated[Literal["summary"], DataClass.TXN_TYPE] = "summary"
     counts: list[ReviewCount]
     total: Annotated[int, DataClass.AGGREGATE]
+    unavailable: list[QueueUnavailable] = []
 
 
 class CategorizationPendingDetails(BaseModel):

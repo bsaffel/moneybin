@@ -82,7 +82,7 @@ Un-merge restores the previously separate gold rows and their individual provena
 
 ### Match review UX
 
-- **CLI** (v1, non-negotiable): `moneybin transactions review --type matches` — shows pending matches one at a time: `[a]ccept / [r]eject / [s]kip / [q]uit`. `moneybin transactions matches history` — shows recent decisions.
+- **CLI** (v1, non-negotiable): `moneybin review --interactive --type matches` — shows pending matches one at a time: `[a]ccept / [r]eject / [s]kip / [q]uit`. `moneybin transactions matches history` — shows recent decisions.
 - **MCP:** `reviews(kind="matches", status="pending")` reads the queue and `reviews_decide(decisions=[...])` records accept or reject decisions. It lets the AI surface review items conversationally without a separate match namespace.
 - **Match log for audit** (v1, non-negotiable): `app.match_decisions` records every auto-merge and user decision with reasoning. Foundation of the "reversible" promise.
 
@@ -139,7 +139,7 @@ v2 (deferred): **learned promotions.** After the user confirms N matches of the 
 **Hybrid: deterministic sync, fuzzy batch.**
 
 - **Deterministic matches** — same-source re-import (identical `transaction_id`), Plaid retro-mutation (Plaid-provided `transaction_id`) — apply synchronously during the import that produced them. No queue, no review, because these are not decisions — they're mechanical identity matches.
-- **Fuzzy matches** — cross-source dedup, transfer pairs — run automatically after import completes. Results go to the match log: auto-merges above threshold are applied and logged; medium-confidence proposals queue for review. Import output reads: *"Import complete: 1,240 rows. Matching: 3 auto-merged, 5 pending review. Run `moneybin transactions review --type matches` when ready."*
+- **Fuzzy matches** — cross-source dedup, transfer pairs — run automatically after import completes. Results go to the match log: auto-merges above threshold are applied and logged; medium-confidence proposals queue for review. Import output reads: *"Import complete: 1,240 rows. Matching: 3 auto-merged, 5 pending review. Run 'moneybin transactions matches pending' to see them, then 'moneybin review --type matches --confirm <match-id>' to decide."*
 - **Manual trigger** — `moneybin transactions matches run` is always available for running the matcher on-demand, independent of import.
 
 ## Adjacent initiatives

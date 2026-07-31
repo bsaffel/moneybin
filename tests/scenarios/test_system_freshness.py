@@ -34,6 +34,13 @@ def test_returns_freshness_for_known_model() -> None:
     assert result.model_name == "core.dim_accounts"
     assert isinstance(result.last_changed_at, datetime)
     assert isinstance(result.last_applied_at, datetime)
+    # The step above ran a full apply, and dim_accounts.sql declares `kind FULL`
+    # — a kind every refresh re-executes — so its current version must carry an
+    # interval. Asserting the kind too pins the ordinal mapping from the SELECT
+    # in `model_freshness()` onto the dataclass: swap the last two columns and
+    # only a type-bearing assertion on both notices.
+    assert isinstance(result.last_executed_at, datetime)
+    assert result.model_kind == "FULL"
 
 
 @pytest.mark.scenarios

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import UserError, classify_user_error
 from moneybin.extractors.confidence import Confidence
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
 from moneybin.extractors.tabular.account_label import parse_account_label
@@ -178,6 +178,31 @@ class PerFileResult:
     rows_skipped: int = 0
     import_id: str | None = None
     error: str | None = None
+    error_code: str | None = None
+    """Stable error code from `classify_user_error`; None when unclassified.
+
+    Paired with `error`: when this is set, `error` holds the classified
+    (sanitized) message. When None, `error` holds only the exception class
+    name — raw str(e) may embed PII, so unclassified failures stay opaque.
+    """
+    hint: str | None = None
+    """Actionable recovery advice from the classified `UserError`; None when
+    unclassified.
+
+    Set together with `error_code` and from the same source. This is what makes
+    a permission failure fixable — the chmod/chown advice on EACCES, the macOS
+    Full-Disk-Access walkthrough on a TCC block. Like `error`, it never comes
+    from raw str(e).
+    """
+    details: dict[str, Any] | None = None
+    """Structured facts behind `error_code`, for branching instead of parsing.
+
+    A permission failure carries `errno`, `platform`, and — when the macOS
+    branch fires — `protected_root`. `hint` says the same thing in prose, but
+    prose is not a contract: an agent that wants to know whether this was a TCC
+    denial should read `details["protected_root"]`, not grep the hint. Travels
+    with `error_code` and `hint`; None whenever they are.
+    """
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     sign_override_replayed: bool = False
@@ -394,7 +419,7 @@ def _validate_explicit_tabular_sign_shape(
             "convention does not read. Re-run with --sign negative_is_expense "
             "or --sign negative_is_income, or map both debit_amount and "
             "credit_amount; nothing was imported.",
-            code="invalid_sign_convention",
+            code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
         )
     if sign != "split_debit_credit" and has_split_amount:
         raise UserError(
@@ -402,8 +427,33 @@ def _validate_explicit_tabular_sign_shape(
             "mapping resolves a debit/credit pair, which this convention does "
             "not read. Re-run with --sign split_debit_credit, or map one amount "
             "column; nothing was imported.",
-            code="invalid_sign_convention",
+            code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
         )
+
+
+def per_file_failure(
+    exc: Exception,
+) -> tuple[str, str | None, str | None, dict[str, Any] | None]:
+    """Return (error_message, error_code, hint, details) for a PerFileResult.
+
+    Public because the single-file MCP path builds its own PerFileResult and
+    must reach the same verdict this module's batch loop does.
+
+    Classified errors carry their sanitized message, code, recovery hint, and
+    structured `details`. Unclassified ones fall back to the class name with
+    nothing else — raw str(e) may embed PII (see extractors/ofx/extractor.py),
+    and there is no advice to give for an exception we didn't recognize.
+
+    `details` is the fourth element rather than dropped because it is what an
+    agent branches on: a permission failure carries `errno`, `platform`, and
+    (on the macOS branch) `protected_root`. Returning only the hint would force
+    callers to string-match prose to recover facts the classifier already knew
+    — the exact pattern `error_code` exists to replace.
+    """
+    classified = classify_user_error(exc)
+    if classified is None:
+        return type(exc).__name__, None, None, None
+    return classified.message, classified.code, classified.hint, classified.details
 
 
 def _display_label(file_type: str, file_path: Path) -> str:
@@ -506,9 +556,6 @@ def _pdf_format_name(fp: dict[str, Any]) -> str:
     return f"{issuer_slug}_{digest}"
 
 
-_ACCOUNT_MASK_PREFIXES: tuple[str, ...] = ("****", "xxxx", "XXXX")
-
-
 def _to_account_number_mask(raw: str | None) -> str | None:
     """Reduce a captured PDF account identifier to a last-4 display mask.
 
@@ -524,18 +571,25 @@ def _to_account_number_mask(raw: str | None) -> str | None:
     consumers treat as already masked. Apply the reduction at the import
     boundary so the raw schema's privacy contract is preserved.
 
-    Returns the original string when no digits are present (e.g. an
-    institution-specific token) so we never silently drop a captured value.
+    Normalisation is load-bearing for account identity, not cosmetic. The
+    output feeds the source-native account key, so every rendering of ONE card
+    must reduce to one value: "****1234", "xxxx1234" and "XXXX XXXX XXXX 1234"
+    are the same account and must not key three different ways. Returning the
+    captured token verbatim for mask-prefixed values did exactly that, so
+    consecutive statements of one card never matched each other.
+
+    Returns the original string when fewer than 4 digits are present (e.g. an
+    institution-specific token, or a fully-masked "xxxx") so we never silently
+    drop a captured value — and never fabricate a short "last 4" that would
+    look authoritative to the institution+last4 merge signal.
     """
     if raw is None:
         return None
     stripped = raw.strip()
     if not stripped:
         return None
-    if any(stripped.startswith(prefix) for prefix in _ACCOUNT_MASK_PREFIXES):
-        return stripped
     digits = "".join(c for c in stripped if c.isdigit())
-    if not digits:
+    if len(digits) < 4:
         return stripped
     return f"****{digits[-4:]}"
 
@@ -610,6 +664,13 @@ def _sniff_ofx_content(file_path: Path) -> bool:
     try:
         with open(file_path, "rb") as f:
             head = f.read(1024)
+    except PermissionError:
+        # "Could not look" is not "is not OFX". Returning False here sends an
+        # unreadable file on to the extension checks, where a missing or unknown
+        # suffix reports "Unsupported file type" — blaming the file for a
+        # permission problem the caller can actually fix. Let it propagate so
+        # `classify_user_error` produces the permission code and its hint.
+        raise
     except OSError:
         return False
     head_lstripped = head.lstrip()
@@ -877,10 +938,18 @@ class ImportService:
         # internally. These files are small — the duplicate parse is fine and
         # avoids leaking a parser-internal type into the extractor signature.
         # Wrap read+parse failures as ValueError so MCP's error envelope catches
-        # them; otherwise PermissionError/OSError leak as internal tool errors.
+        # them; otherwise OSError leaks as an internal tool error.
+        # PermissionError is deliberately re-raised intact: `classify_user_error`
+        # keys the `infra_permission_denied` code and its Full-Disk-Access hint
+        # off the exception type, so flattening it to ValueError here would
+        # downgrade a TCC/chmod denial to `infra_invalid_input` with no recovery
+        # advice — the affordance would work for tabular files but not OFX.
         try:
             with open(canonical_path, "rb") as f:
                 content = f.read().decode("utf-8", errors="replace")
+        except PermissionError:
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
+            raise
         except OSError as e:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
             raise ValueError(f"Could not read OFX file: {e}") from e
@@ -896,7 +965,14 @@ class ImportService:
             )
         except Exception as e:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="parse").inc()
-            raise ValueError(f"Invalid OFX file format: {e}") from e
+            # Type name, never `e`: ofxparse exception strings can embed
+            # payee/amount/memo content from the statement, and this message is
+            # no longer log-only — `per_file_failure` puts the classified
+            # message on the wire in `PerFileResult.error`, so interpolating
+            # `e` here publishes statement contents. Matches the identical
+            # guard in extractors/ofx/extractor.py. The `from e` chain keeps
+            # the full detail available in a local traceback.
+            raise ValueError(f"Invalid OFX file format: {type(e).__name__}") from e
 
         # Resolve institution (raises InstitutionResolutionError on non-interactive failure)
         try:
@@ -1326,13 +1402,13 @@ class ImportService:
                 raise UserError(
                     "The stored import snapshot no longer matches its reviewed "
                     "header signature.",
-                    code="IMPORT_PREVIEW_PLAN_MISMATCH",
+                    code=error_codes.IMPORT_PREVIEW_PLAN_MISMATCH,
                 )
             if read_result.rows_in_file != reviewed_plan.rows_in_file:
                 raise UserError(
                     "The stored import snapshot no longer matches its reviewed "
                     "row accounting.",
-                    code="IMPORT_PREVIEW_PLAN_MISMATCH",
+                    code=error_codes.IMPORT_PREVIEW_PLAN_MISMATCH,
                 )
             missing_columns = sorted(
                 set(reviewed_plan.field_mapping.values()).difference(df.columns)
@@ -1340,7 +1416,7 @@ class ImportService:
             if missing_columns:
                 raise UserError(
                     "The reviewed import mapping references unavailable columns.",
-                    code="IMPORT_PREVIEW_PLAN_MISMATCH",
+                    code=error_codes.IMPORT_PREVIEW_PLAN_MISMATCH,
                 )
             resolved = ResolvedMapping(
                 field_mapping=dict(reviewed_plan.field_mapping),
@@ -1574,7 +1650,7 @@ class ImportService:
             raise UserError(
                 f"Invalid sign convention: {sign!r}. "
                 f"Valid values: {list(get_args(SignConventionType))}.",
-                code="invalid_sign_convention",
+                code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
             )
         if number_format_override and number_format_override not in get_args(
             NumberFormatType
@@ -1582,7 +1658,7 @@ class ImportService:
             raise UserError(
                 f"Invalid number format: {number_format_override!r}. "
                 f"Valid values: {list(get_args(NumberFormatType))}.",
-                code="invalid_number_format",
+                code=error_codes.IMPORT_INVALID_NUMBER_FORMAT,
             )
         if sign:
             _validate_explicit_tabular_sign_shape(
@@ -1943,7 +2019,12 @@ class ImportService:
                 observations=observations,
                 disposition="rollback",
             )
-            raise ValueError(f"Transform failed: {e}") from e
+            # Type name only, same reason as the OFX parse guard above: Polars
+            # conversion errors quote the offending cell ("could not convert
+            # 'SAFEWAY #123'"), and this message now reaches the wire through
+            # `per_file_failure`. The rejection row recorded above keeps the
+            # diagnostic detail on the operator's side of the boundary.
+            raise ValueError(f"Transform failed: {type(e).__name__}") from e
 
         # Stage 5: Load — one account record per unique account
         institution = matched_format.institution_name if matched_format else None
@@ -2567,7 +2648,7 @@ class ImportService:
                 raise UserError(
                     f"Invalid sign convention: {sign!r}. "
                     f"Valid values: {list(get_args(SignConventionType))}.",
-                    code="invalid_sign_convention",
+                    code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
                 )
             # The loader reads convention-specific row keys: `amount` for the
             # single-column conventions, `debit`/`credit` for the split. An
@@ -2588,7 +2669,7 @@ class ImportService:
                     f"Sign convention {sign!r} does not fit this statement's "
                     f"columns — its recipe extracts a {actual_shape} the "
                     f"convention does not read.",
-                    code="invalid_sign_convention",
+                    code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
                 )
             record_counter(
                 PDF_SIGN_GATE_TOTAL,
@@ -3251,6 +3332,22 @@ class ImportService:
             )
         fp = decision.fp
         issuer_slug = slugify(fp.get("issuer", "unknown"))
+        # Identity scope for the source-native key. It must be IDENTICAL across
+        # every statement of one card, because the strong-ref lookup and the
+        # staging JOINs both key on (source_type, source_origin, ref_value) — a
+        # per-file value makes each statement miss its own prior link and mint a
+        # fresh account every month. This is the same exporter/format-identity
+        # rule the tabular path applies (see the derivation comment there); do
+        # NOT swap it back to the filename alias.
+        #
+        # Deliberately NOT matched_format_name: that is None on first contact and
+        # populated from the second statement on, so it would differ across
+        # exactly the two imports this needs to unify.
+        #
+        # `resolved_alias` stays the per-file scope for raw.import_log and the
+        # raw.pdf_<alias> view — those are genuinely per-document and revert
+        # depends on them.
+        identity_origin = issuer_slug
         account_id: str
         # Explicit account override takes precedence — agents/users can
         # pin a PDF whose statement omits an account anchor to an existing
@@ -3258,16 +3355,14 @@ class ImportService:
         # and creating a fresh dim_accounts entry.
         if account_id_override:
             account_id = account_id_override
+            masked_acct = None
         else:
             # Mask the captured account identifier BEFORE slugifying it into
-            # the account_id PK. The captured value may be a full unmasked
-            # institution account number ("Account Number: 123456789"), and
-            # storing that verbatim into raw.tabular_transactions.account_id
+            # the source-native account key. The captured value may be a full
+            # unmasked institution account number ("Account Number: 123456789"),
+            # and storing that verbatim into raw.tabular_transactions.account_id
             # / raw.tabular_accounts.account_id leaks it through every
             # downstream surface that treats account_id as an opaque identifier.
-            # `_to_account_number_mask` reduces it to a last-4 mask; slugify
-            # then strips the asterisks, yielding a stable digits-only suffix
-            # ("chase_6789") that is safe to flow through raw/core/app.
             masked_acct = _to_account_number_mask(decision.metadata.account_id)
             if masked_acct:
                 account_id = f"{issuer_slug}_{slugify(masked_acct)}"
@@ -3275,6 +3370,64 @@ class ImportService:
                 # Fallback: routing requires metadata for reconciliation, but
                 # guard against a future path that relaxes that constraint.
                 account_id = resolved_alias
+
+        # The value above is a source-NATIVE key (DP-1), exactly like the
+        # tabular path's — never a canonical account id. Registering it with
+        # AccountResolver is what writes the native->canonical mapping staging
+        # joins on. Skipping that step let the raw key flow into dim_accounts as
+        # an account in its own right, so the same card arriving from a second
+        # source had nothing to be proposed against and both halves loaded.
+        # last_four is None for a digits-free token ("xxxx"), which correctly
+        # denies the institution+last4 signal and routes to name review rather
+        # than inventing a strong match.
+        # Guarded like the OFX resolver loop: this runs after begin_import() but
+        # outside the ingestion try below, so an unhandled raise here (e.g.
+        # _write_native_mapping's conflict guard) would strand import_log at
+        # status="importing" forever and never emit the failure metric.
+        try:
+            resolved_account = AccountResolver(
+                self._db,
+                actor="system",
+                emit_metrics=emit_metrics,
+                observations=observations,
+            ).resolve(
+                SourceAccount(
+                    source_type="pdf",
+                    source_origin=identity_origin,
+                    source_account_key=account_id,
+                    account_name=resolved_alias,
+                    institution=fp.get("issuer") or None,
+                    last_four=_last4_from_account_number(masked_acct),
+                    explicit_account_id=account_id_override,
+                ),
+                in_outer_txn=in_outer_txn,
+            )
+        except Exception:
+            try:
+                import_log.finalize_import(
+                    self._db, import_id, status="failed", rows_total=0, rows_imported=0
+                )
+            except Exception:  # noqa: BLE001 — failure-path finalize is best-effort
+                logger.warning(
+                    f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
+                    exc_info=True,
+                )
+            record_counter(
+                PDF_IMPORT_TOTAL,
+                labels={"outcome": "failed", "rung": rung},
+                emit_metrics=emit_metrics,
+                observations=observations,
+                disposition="rollback",
+            )
+            raise
+        # Every other resolve() call site records this; the spec's observability
+        # section requires it for each AccountResolver outcome.
+        record_counter(
+            ACCOUNT_LINK_OUTCOMES_TOTAL,
+            labels={"result": resolved_account.outcome},
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
 
         sign_conv: str = decision.recipe.sign_convention
 
@@ -3372,7 +3525,9 @@ class ImportService:
                 "description": str(desc) if desc is not None else None,
                 "source_file": str(canonical),
                 "source_type": "pdf",
-                "source_origin": resolved_alias,
+                # Must equal the account_links.source_origin written above —
+                # prep.stg_tabular__transactions JOINs on the exact triple.
+                "source_origin": identity_origin,
                 "import_id": import_id,
                 "row_number": idx,
             })
@@ -3459,7 +3614,9 @@ class ImportService:
                 "currency": [None],
                 "source_file": [str(canonical)],
                 "source_type": ["pdf"],
-                "source_origin": [resolved_alias],
+                # Matches the transactions rows and the account_links row —
+                # prep.stg_tabular__accounts JOINs on the same triple.
+                "source_origin": [identity_origin],
                 "import_id": [import_id],
             })
             self._db.ingest_dataframe(
@@ -4028,15 +4185,21 @@ class ImportService:
                     )
                 )
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
-                # error_type only; raw str(e) may embed PII per extractors/ofx/extractor.py
-                error_type = type(e).__name__
-                logger.warning(f"Import failed for {path}: {error_type}")
+                error_message, error_code, error_hint, error_details = per_file_failure(
+                    e
+                )
+                # Log the class name, never the message: a classified message is
+                # user-safe but still names the path, and logs stay PII-free.
+                logger.warning(f"Import failed for {path}: {type(e).__name__}")
                 per_file.append(
                     PerFileResult(
                         path=str(path),
                         status="failed",
                         source_type=None,
-                        error=error_type,
+                        error=error_message,
+                        error_code=error_code,
+                        hint=error_hint,
+                        details=error_details,
                     )
                 )
 
@@ -4091,13 +4254,13 @@ class ImportService:
         if format_name in load_builtin_formats():
             raise UserError(
                 f"Built-in format {format_name!r} cannot be deleted.",
-                code="saved_format_builtin_immutable",
+                code=error_codes.IMPORT_SAVED_FORMAT_BUILTIN_IMMUTABLE,
             )
         row = TabularFormatsRepo(self._db).get(format_name)
         if row is None:
             raise UserError(
                 f"Saved format {format_name!r} was not found.",
-                code="saved_format_not_found",
+                code=error_codes.IMPORT_SAVED_FORMAT_NOT_FOUND,
             )
         canonical = json.dumps(
             row,

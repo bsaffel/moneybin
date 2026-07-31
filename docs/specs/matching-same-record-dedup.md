@@ -271,7 +271,7 @@ Standard import commands gain matching output:
 ```
 ✅ Imported 142 transactions from chase_checking_2026-03.csv
 ⚙️  Matching: 8 auto-merged, 3 pending review
-👀 Run 'moneybin transactions review --type matches' when ready
+👀 Run 'moneybin transactions matches pending' to see them, then 'moneybin review --type matches --confirm <match-id>' to decide
 ```
 
 ### Match commands
@@ -279,7 +279,7 @@ Standard import commands gain matching output:
 | Command | Description |
 |---|---|
 | `moneybin transactions matches run` | Run matcher + SQLMesh without importing. For re-running after config changes or reviews. |
-| `moneybin transactions review --type matches` | Interactive review of pending matches. `[a]ccept / [r]eject / [s]kip / [q]uit` (interactive loop pending per `moneybin-cli.md` v2; `--status` works end-to-end). |
+| `moneybin review --interactive --type matches` | Interactive review of pending matches. `[a]ccept / [r]eject / [s]kip / [q]uit` (interactive loop pending per `moneybin-cli.md` v2; counts and `--confirm`/`--reject` work end-to-end). |
 | `moneybin transactions matches history` | Show recent match decisions (auto and user). |
 | `moneybin transactions matches undo <match_id>` | Reverse a match decision. Sets `reversed_at`/`reversed_by`. |
 | `moneybin transactions matches backfill` | One-time scan of all existing transactions for latent duplicates. |
@@ -291,7 +291,7 @@ Standard import commands gain matching output:
 ```
 ⚙️  Scanning 4,230 existing transactions for duplicates...
 ✅ Backfill complete: 47 auto-merged, 12 pending review
-👀 Run 'moneybin transactions review --type matches' when ready
+👀 Run 'moneybin transactions matches pending' to see them, then 'moneybin review --type matches --confirm <match-id>' to decide
 ```
 
 ## MCP Interface

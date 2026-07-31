@@ -81,10 +81,16 @@ Closing this gap requires either (a) adding an `updated_at` column to each curat
 -- meta.model_freshness columns
 model_name        VARCHAR   -- fully-qualified name, e.g. 'core.dim_accounts', 'seeds.categories'
 last_changed_at   TIMESTAMP -- when SQLMesh last created a new snapshot for this model (i.e., the model's content or definition changed)
-last_applied_at   TIMESTAMP -- when SQLMesh last applied (refreshed/materialized) this model, regardless of whether its content changed
+last_applied_at   TIMESTAMP -- when SQLMesh last wrote to any snapshot row for this model; advances on metadata-only touches too, including environment promotion
+last_executed_at  TIMESTAMP -- when SQLMesh last actually backfilled this model; NULL if it has never run, or if its kind is symbolic
+model_kind        VARCHAR   -- SQLMesh model kind: 'FULL', 'VIEW', 'SEED', 'EXTERNAL', 'EMBEDDED', an INCREMENTAL_* variant, …
 ```
 
-The view reads from SQLMesh's `_snapshots` (and, if needed, `_intervals`) tables. The exact source-column mapping is determined at implementation time by inspecting a SQLMesh-applied database — this spec commits only to the public column shape so the view can absorb upstream renames without breaking consumers.
+The view reads from SQLMesh's `_snapshots` (`last_changed_at`, `last_applied_at`, `model_kind`) and `_intervals` (`last_executed_at`) tables. The exact source-column mapping is determined at implementation time by inspecting a SQLMesh-applied database — this spec commits only to the public column shape so the view can absorb upstream renames without breaking consumers.
+
+**`last_applied_at` vs `last_executed_at`.** They answer different questions and a consumer that picks the wrong one fails silently. `last_applied_at` tracks snapshot-record writes, so a plan that merely promotes `prod` advances it for every model — including ones it did not touch. `last_executed_at` tracks intervals, which move only on a real backfill. Any check of the form "is this model's data older than X?" wants `last_executed_at`; `TransformService.freshness()` uses it for exactly that reason.
+
+**Symbolic kinds never execute.** SQLMesh calls EXTERNAL and EMBEDDED models symbolic: they are registered and versioned but never run, so `last_executed_at` is permanently NULL for them. Every table `external_models.yaml` declares is EXTERNAL — the `raw.*` sources the transforms read among them. A consumer aggregating `last_executed_at` across models must exclude symbolic kinds, or every read sees NULLs that mean "not applicable," not "stale." VIEW and SEED models need excluding for the adjacent reason: they *do* execute, but only on the first apply — SQLMesh re-runs nothing whose interval is already complete — so their stamp freezes and reads as permanent staleness.
 
 ### Schema placement: why `meta`, not `reports`
 
@@ -103,6 +109,8 @@ class ModelFreshness:
     model_name: str
     last_changed_at: datetime | None
     last_applied_at: datetime | None
+    last_executed_at: datetime | None = None
+    model_kind: str | None = None
 
 
 class SystemService:

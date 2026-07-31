@@ -47,50 +47,51 @@ pytestmark = pytest.mark.e2e
 _STUB_VIEWS = (
     """
     CREATE OR REPLACE VIEW reports.cash_flow AS SELECT * FROM (VALUES
-        (strftime(current_date, '%Y-%m'), 'A1', 'Checking', 'Food',
+        (strftime(current_date, '%Y-%m'), 'A1', 'Checking', 'Food', 'USD',
          100.0, -30.0, 70.0, 5)
-    ) AS t(year_month, account_id, account_name, category, inflow, outflow, net,
-           txn_count)
+    ) AS t(year_month, account_id, account_name, category, currency_code,
+           inflow, outflow, net, txn_count)
     """,
     """
     CREATE OR REPLACE VIEW reports.spending_trend AS SELECT * FROM (VALUES
-        (strftime(current_date, '%Y-%m'), 'Food', -120.0, 8, -100.0, -20.0, 0.2,
-         -110.0, -10.0, 0.09, -115.0)
-    ) AS t(year_month, category, total_spend, txn_count, prev_month_spend,
-           mom_delta, mom_pct, prev_year_spend, yoy_delta, yoy_pct,
-           trailing_3mo_avg)
+        (strftime(current_date, '%Y-%m'), 'Food', 'USD', -120.0, 8, -100.0,
+         -20.0, 0.2, -110.0, -10.0, 0.09, -115.0)
+    ) AS t(year_month, category, currency_code, total_spend, txn_count,
+           prev_month_spend, mom_delta, mom_pct, prev_year_spend, yoy_delta,
+           yoy_pct, trailing_3mo_avg)
     """,
     """
     CREATE OR REPLACE VIEW reports.recurring_subscriptions AS SELECT * FROM (VALUES
-        ('m1', 'Netflix', -15.99, 'monthly', 30.0, 1.5, 12, DATE '2025-01-01',
-         DATE '2025-12-01', 'active', -191.88, 0.95)
-    ) AS t(merchant_id, merchant_normalized, avg_amount, cadence,
+        ('m1', 'Netflix', 'USD', -15.99, 'monthly', 30.0, 1.5, 12,
+         DATE '2025-01-01', DATE '2025-12-01', 'active', -191.88, 0.95)
+    ) AS t(merchant_id, merchant_normalized, currency_code, avg_amount, cadence,
            interval_days_avg, interval_days_stddev, occurrence_count, first_seen,
            last_seen, status, annualized_cost, confidence)
     """,
     """
     CREATE OR REPLACE VIEW reports.merchant_activity AS SELECT * FROM (VALUES
-        ('m1', 'Amazon', -500.0, 0.0, -500.0, 12, -41.67, -38.0,
+        ('m1', 'Amazon', 'USD', -500.0, 0.0, -500.0, 12, -41.67, -38.0,
          DATE '2025-01-01', DATE '2025-12-01', 11, 'Shopping', 2)
-    ) AS t(merchant_id, merchant_normalized, total_spend, total_inflow,
-           total_outflow, txn_count, avg_amount, median_amount, first_seen,
-           last_seen, active_months, top_category, account_count)
+    ) AS t(merchant_id, merchant_normalized, currency_code, total_spend,
+           total_inflow, total_outflow, txn_count, avg_amount, median_amount,
+           first_seen, last_seen, active_months, top_category, account_count)
     """,
     """
     CREATE OR REPLACE VIEW reports.large_transactions AS SELECT * FROM (VALUES
         ('t1', 'A1', 'Checking', current_date, -1200.0, 'Big purchase', 'm1',
-         'Amazon', 'Shopping', 3.1, 2.0, true)
+         'Amazon', 'Shopping', 'USD', 3.1, 2.0, true)
     ) AS t(transaction_id, account_id, account_name, txn_date, amount,
            description, merchant_id, merchant_normalized, category,
-           amount_zscore_account, amount_zscore_category, is_top_100)
+           currency_code, amount_zscore_account, amount_zscore_category,
+           is_top_100)
     """,
     """
     CREATE OR REPLACE VIEW reports.balance_drift AS SELECT * FROM (VALUES
-        ('A1', 'Checking', current_date, 1000.00, 1010.00, 10.00, 10.00, 1.0,
-         5, 'drift')
-    ) AS t(account_id, account_name, assertion_date, asserted_balance,
-           computed_balance, drift, drift_abs, drift_pct, days_since_assertion,
-           status)
+        ('A1', 'Checking', 'USD', current_date, 1000.00, 1010.00, 10.00, 10.00,
+         1.0, 5, 'drift')
+    ) AS t(account_id, account_name, currency_code, assertion_date,
+           asserted_balance, computed_balance, drift, drift_abs, drift_pct,
+           days_since_assertion, status)
     """,
 )
 

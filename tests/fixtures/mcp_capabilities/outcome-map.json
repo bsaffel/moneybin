@@ -72,7 +72,8 @@
       "reports recurring",
       "reports merchants",
       "reports large-transactions",
-      "reports balance-drift"
+      "reports balance-drift",
+      "reports run"
     ],
     "service_methods": [
       "moneybin.reports._framework.catalog.ReportCatalog.execute"
@@ -81,6 +82,81 @@
       "identical registered report rows, columns, truncation, and provenance for equal parameters"
     ],
     "exemption": null
+  },
+  {
+    "capability_id": "reports.catalog",
+    "mcp_tools": [
+      "reports"
+    ],
+    "cli_commands": [
+      "reports list"
+    ],
+    "service_methods": [
+      "moneybin.reports._framework.catalog.ReportCatalog.list"
+    ],
+    "observable_outcomes": [
+      "identical registered report metadata across the built-in, extension, and user tiers, each entry naming its tier"
+    ],
+    "exemption": null
+  },
+  {
+    "capability_id": "reports.verify",
+    "mcp_tools": [],
+    "cli_commands": [
+      "reports explain"
+    ],
+    "service_methods": [
+      "moneybin.reports._framework.explain.explain_report",
+      "moneybin.reports._framework.explain.explain_spec"
+    ],
+    "observable_outcomes": [
+      "the same evidence for every report tier: the query in both provenance forms, the resolved class map with per-column provenance, upstream lineage, drift freshness, and graduation eligibility with its disqualifying reason"
+    ],
+    "exemption": {
+      "surface": "mcp",
+      "category": "admission-pending",
+      "reason": "reports-dynamic.md R6 assigns the verify surface no MCP identity until its outcome is placed behind an admitted projection or passes the bounded-registry admission record"
+    }
+  },
+  {
+    "capability_id": "reports.lifecycle",
+    "mcp_tools": [],
+    "cli_commands": [
+      "reports create",
+      "reports set",
+      "reports delete"
+    ],
+    "service_methods": [
+      "moneybin.services.user_reports_service.UserReportsService.create",
+      "moneybin.services.user_reports_service.UserReportsService.update",
+      "moneybin.services.user_reports_service.UserReportsService.delete"
+    ],
+    "observable_outcomes": [
+      "one audited app.user_reports row whose derived class map, parameter classes, and drift fingerprint are re-derived on every SQL or parameter change"
+    ],
+    "exemption": {
+      "surface": "mcp",
+      "category": "admission-pending",
+      "reason": "reports-dynamic.md R5 leaves every lifecycle verb unnamed on MCP until the bounded-registry admission record is complete"
+    }
+  },
+  {
+    "capability_id": "reports.reclassify",
+    "mcp_tools": [],
+    "cli_commands": [
+      "reports reclassify"
+    ],
+    "service_methods": [
+      "moneybin.services.user_reports_service.UserReportsService.reclassify"
+    ],
+    "observable_outcomes": [
+      "one audited, human-confirmed class downgrade that must drop the sensitivity tier, refusing an equal-tier weakening whatever the reason"
+    ],
+    "exemption": {
+      "surface": "mcp",
+      "category": "admission-pending",
+      "reason": "reports-dynamic.md R5 requires elicitation-backed confirmation before this capability can take an MCP identity; the admission record is outstanding"
+    }
   },
   {
     "capability_id": "exports.delivery.run",
@@ -1065,8 +1141,6 @@
       "profile list",
       "profile switch",
       "profile delete",
-      "profile show",
-      "profile set",
       "demo"
     ],
     "service_methods": [
@@ -1081,6 +1155,27 @@
       "category": "operator-territory",
       "reason": "Profile and server bootstrapping must precede the MCP session they would otherwise need to invoke."
     }
+  },
+  {
+    "capability_id": "profile.settings",
+    "mcp_tools": [
+      "profile",
+      "profile_set"
+    ],
+    "cli_commands": [
+      "profile show",
+      "profile set"
+    ],
+    "service_methods": [
+      "moneybin.services.profile_service.ProfileService.show",
+      "moneybin.services.profile_service.ProfileService.set",
+      "moneybin.services.profile_settings_service.ProfileSettingsService.get_settings",
+      "moneybin.services.profile_settings_service.ProfileSettingsService.set_setting"
+    ],
+    "observable_outcomes": [
+      "the active profile's metadata and managed settings, including its home currency, are readable and mutable from either surface"
+    ],
+    "exemption": null
   },
   {
     "capability_id": "operator.pipeline-debug",

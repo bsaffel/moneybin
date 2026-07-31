@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     output_option,
@@ -229,7 +230,9 @@ def rules_create(
             data=result.to_payload(),
             sensitivity="low",
             total_count=len(rules),
-            actions=["Use transactions_categorize_rules to review all rules"],
+            actions=[
+                "Use `moneybin transactions categorize rules list` to review all rules"
+            ],
         )
         render_or_json(envelope, output, cli_actor="rules_create")
     elif not quiet:
@@ -275,7 +278,9 @@ def rules_delete(
                 rule_id, reapply=reapply, actor="cli"
             )
         if not deactivated:
-            raise UserError(f"Rule {rule_id} not found", code="RULE_NOT_FOUND")
+            raise UserError(
+                f"Rule {rule_id} not found", code=error_codes.TAXONOMY_RULE_NOT_FOUND
+            )
 
     if output == OutputFormat.JSON:
         render_or_json(

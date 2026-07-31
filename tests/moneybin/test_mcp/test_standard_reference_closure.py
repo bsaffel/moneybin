@@ -18,9 +18,9 @@ from pydantic import JsonValue
 from moneybin.audits.recipes import registry as recipe_registry
 from moneybin.database import Database
 from moneybin.mcp import prompts
-from moneybin.mcp.pagination import decode_keyset_cursor
 from moneybin.mcp.surface import STANDARD_TOOL_NAMES
 from moneybin.mcp.tools.reports import reports
+from moneybin.protocol.pagination import decode_keyset_cursor
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.reports._framework.contract import ReportSpec
 
@@ -89,9 +89,36 @@ def _prompt_texts() -> dict[str, str]:
     return {prompt.__name__: prompt() for prompt in prompts.PROMPT_FUNCTIONS}
 
 
+_ACTOR_KEYWORDS = frozenset({"cli_actor", "privacy_actor"})
+
+
+def _audit_actor_strings(tree: ast.AST) -> set[int]:
+    """Ids of literals passed as ``cli_actor=`` / ``privacy_actor=``.
+
+    These name the CLI command or MCP callback that performed the write — an
+    audit-log identity, not an instruction to a caller. Several legitimately
+    match a tool name that #344 retired, because the CLI kept the name the
+    tool used to have. Renaming them would falsify the audit trail.
+    """
+    return {
+        id(keyword.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg in _ACTOR_KEYWORDS and isinstance(keyword.value, ast.Constant)
+    }
+
+
 def _emitted_tool_strings() -> dict[str, list[str]]:
+    """Non-docstring literals anywhere in ``src`` that name an MCP tool.
+
+    Scans the whole package, not just ``mcp/tools/``: actions[] hints, error
+    messages, and log lines are emitted from services, adapters, connectors,
+    and CLI commands too, and every one of them is read by an agent or a user
+    who will try to act on the name.
+    """
     result: dict[str, list[str]] = {}
-    for path in sorted(_TOOLS_DIR.glob("*.py")):
+    for path in sorted(_SRC_DIR.rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
         docstrings = {
             id(node.body[0].value)
@@ -104,12 +131,13 @@ def _emitted_tool_strings() -> dict[str, list[str]]:
             and isinstance(node.body[0].value, ast.Constant)
             and isinstance(node.body[0].value.value, str)
         }
+        exempt = docstrings | _audit_actor_strings(tree)
         strings = [
             node.value
             for node in ast.walk(tree)
             if isinstance(node, ast.Constant)
             and isinstance(node.value, str)
-            and id(node) not in docstrings
+            and id(node) not in exempt
             and _tool_references(node.value)
         ]
         if strings:
@@ -253,7 +281,14 @@ def test_sync_review_prompt_uses_an_executable_reports_call() -> None:
 
 
 async def test_report_catalog_examples_use_executable_standard_calls() -> None:
-    response = await reports()
+    # The catalog spans all three tiers, so listing opens a read-only database
+    # for the user tier even when no saved report exists.
+    database_context = MagicMock()
+    database_context.__enter__.return_value = MagicMock(spec=Database)
+    with patch(
+        "moneybin.mcp.tools.reports.get_database", return_value=database_context
+    ):
+        response = await reports()
 
     unresolved: dict[str, list[str]] = {}
     for entry in response.data.reports:
@@ -290,10 +325,12 @@ def test_report_result_actions_use_executable_standard_calls() -> None:
     networth = MagicMock()
     networth.current.return_value = SimpleNamespace(
         balance_date=None,
+        currency_code=None,
         net_worth=0,
         total_assets=0,
         total_liabilities=0,
         account_count=0,
+        per_currency=[],
         per_account=[],
     )
     networth.history.return_value = SimpleNamespace(points=[])
@@ -387,3 +424,59 @@ def test_recovery_recipes_reference_only_standard_tools() -> None:
             unresolved[name] = stale
 
     assert unresolved == {}
+
+
+def _cli_action_strings() -> list[tuple[str, int, str]]:
+    """Literal ``actions=[...]`` entries emitted from CLI command modules."""
+    cli_dir = _ROOT / "src/moneybin/cli/commands"
+    found: list[tuple[str, int, str]] = []
+    for path in sorted(cli_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg != "actions" or not isinstance(keyword.value, ast.List):
+                    continue
+                for element in keyword.value.elts:
+                    text = _joined_constant(element)
+                    if text:
+                        found.append((
+                            str(path.relative_to(_ROOT)),
+                            element.lineno,
+                            text,
+                        ))
+    return found
+
+
+def _joined_constant(node: ast.expr) -> str | None:
+    """Flatten a literal or implicitly-concatenated string expression."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _joined_constant(node.left)
+        right = _joined_constant(node.right)
+        return None if left is None or right is None else left + right
+    return None
+
+
+def test_cli_action_hints_name_cli_commands_not_mcp_tools() -> None:
+    """A CLI envelope's next-step hints must be runnable by whoever got them.
+
+    An agent reading `--output json` from a CLI command can run commands, not
+    MCP tools. Naming a tool there is unactionable *and* drags the CLI into the
+    blast radius of every MCP rename — which is how `transactions_get` outlived
+    its retirement in user-facing output. The retired-name guard above cannot
+    catch this: a hint naming a *current* tool passes it.
+    """
+    known = _known_tool_names()
+    offenders = sorted(
+        f"{path}:{line}: {text!r}"
+        for path, line, text in _cli_action_strings()
+        if _mentioned_names(text, known) and "moneybin " not in text
+    )
+
+    assert offenders == [], (
+        f"{len(offenders)} CLI action hint(s) name an MCP tool instead of a "
+        f"`moneybin ...` command:\n" + "\n".join(offenders)
+    )

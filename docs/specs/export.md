@@ -86,11 +86,18 @@ format-neutral prepared snapshot. The snapshot contains:
 - a generated data dictionary.
 
 For a report, the snapshot additionally carries its provenance receipt: report
-identifier, resolved parameters, SQL, lineage, output classes, freshness, and
-graduation eligibility. This is the same information exposed by the report
-verification surface, rendered as artifact metadata rather than a new query
-path. Durable report artifacts are complete-or-fail: interactive MCP response
-row caps do not truncate the prepared snapshot.
+identifier, resolved parameters, SQL, lineage, output classes, freshness,
+graduation eligibility, and classification-drift state. This is the same
+information exposed by the report verification surface, rendered as artifact
+metadata rather than a new query path. Durable report artifacts are
+complete-or-fail: interactive MCP response row caps do not truncate the prepared
+snapshot.
+
+A saved report whose stored class map has drifted from its SQL still exports —
+masking more than declared is not an availability failure — and the receipt
+records `degraded` plus R4's `degraded_reason`. Without them the artifact's
+masked columns would be indistinguishable from columns that were empty at
+source, months after the session that produced the file.
 
 The report framework exposes the executed records and class map internally
 before its terminal response renderer masks them. `ExportService` uses that
@@ -115,6 +122,66 @@ existing privacy redaction engine: it masks CRITICAL-class identifiers, while
 lower-tier fields such as amounts, dates, merchant names, and descriptions
 remain in the artifact. It is protection against critical-identifier exposure,
 not a claim that the artifact is fully anonymized.
+
+A masked column is declared `VARCHAR` in the redacted artifact, whatever type the
+query returned. Every mask answers with text, so a column whose unredacted type is
+numeric holds `*****` once masked — Parquet declares its schema before writing, so
+a stale numeric declaration fails the whole file, and CSV would write the string
+under a manifest promising a number. The manifest, the data dictionary, and the
+Parquet schema therefore describe the artifact beside them rather than the
+unredacted export of the same query, and the two modes differ in declared type
+exactly where they differ in value. Reachable through a saved report, whose
+lineage carries a class through an expression (`SELECT length(last_four)`) without
+carrying the expression's type; no built-in report declares a masking class on an
+output column.
+
+A redacted export of a **user-created** report also withholds the executed
+query: the receipt's `sql` is `null`, and the unredacted artifact carries it
+verbatim. A user-created report's SQL is authored text, so a CRITICAL literal can
+sit in the statement (`WHERE routing_number = '021000021'`) rather than in a
+parameter the engine masks — and row redaction reaches rows only. The receipt
+keeps `lineage`, `parameter_classes`, and `output_classes` in both modes, so what
+the export reads stays auditable without republishing the literal.
+
+A built-in or extension report keeps its `sql` in both modes. That statement is
+repo-authored and reviewed, already public in the repo, and binds its values
+rather than inlining them — the receipt redacts those bindings separately — so
+there is no literal to withhold and dropping it would cost every default export
+the one field that makes the artifact reproducible. Tier decides it, on the same
+reasoning as the names below.
+
+The same authored-text problem reaches the *names*. `SELECT routing_number AS
+"021000021"` puts the literal in the artifact header, the data dictionary, and
+the receipt's `output_classes` key; `WHERE routing_number = $acct_021000021` puts
+one in the receipt's `parameters` and `parameter_classes` keys and in the
+subject. Redaction reaches values, not keys. A redacted export of a **user-tier**
+report therefore publishes `redacted_column_<position>` and
+`redacted_parameter_<position>` in place of **every** authored column and
+parameter name.
+
+Every one, not only the names beside a masked value. Keying on the value is the
+rule this started with, and it leaks: `SELECT 1 AS "021000021"` carries the
+literal beside a published `1`, so a name's sensitivity is plainly not a
+function of the column it labels. A name is arbitrary user text, and MoneyBin
+cannot classify arbitrary text — the same reason the catalog's collision warning
+withholds a report's name wholesale rather than judging it. The cost is a
+readability one, paid by the artifact that has to be safe to share: positional
+headers, with each column's class and the query's lineage still in the receipt
+and data dictionary.
+
+A `builtin` or `extension` name is repo-authored and describes the column or
+filter rather than a value, so it survives unchanged; an unredacted artifact
+keeps the author's own names, because it publishes the values beside them.
+
+The receipt's `degraded_reason` is the third field carrying that text. A drifted
+saved report names the columns whose class moved (`stale_classification:
+upstream classification changed for 021000021; …`), and the two other drift
+branches embed the derivation or decode error, which quotes the query back. A
+redacted export of a user-tier report therefore publishes the reason *code*
+alone — `stale_classification`, `unresolvable_query`, or `unreadable_row` — which
+still distinguishes a stale class map from an unreadable row for a reader months
+later. `degraded` is unchanged in both modes, and an unredacted artifact keeps
+the full sentence.
 
 MCP callers supply `redaction_mode="redacted"` or
 `redaction_mode="unredacted"`. An explicit `redaction_mode` does not prompt.
@@ -267,7 +334,7 @@ mode, checksums where applicable, and recovery actions on failure.
 ### R8 — MCP surface and parity
 
 MCP and CLI expose the same observable outcomes over the same services. The
-operating 47-tool standard registry uses exactly two export-specific tools and
+operating 49-tool standard registry uses exactly two export-specific tools and
 an existing status read:
 
 - `export_run` runs a bundle or report export after the caller supplies its
@@ -282,7 +349,7 @@ The split is deliberate. Reading destination status, configuring a destination,
 and writing exported data have different read/write, confirmation, and recovery
 contracts. A broad `export(operation=...)` tool would collapse those boundaries
 into a large union and violate the surface-design contract. The registry remains
-at 47 tools under the 50-tool hard limit; reports extend the catalog behind the
+at 49 tools under the 50-tool hard limit; reports extend the catalog behind the
 existing `reports` tool and consume no additional slots.
 
 The CLI applies the R3 safe default rules. MCP requires an explicit mode or the
@@ -331,6 +398,14 @@ dictionary reference. Report manifests add report identifier, resolved
 parameters, query/provenance receipt, class map, and freshness information.
 Parameters receive the same selected redaction policy as result columns; their
 classes travel with the manifest so a verifier can tell what was withheld.
+
+Each table's `source` names the one relation its rows were read from, or is
+`null` when there is no such relation — a user-created report is evaluated at
+query time over several `core` / `app` tables. Readers must accept `null` and
+take the full read set from the report receipt's `lineage`, which lists every
+upstream table. A bundle table's `source` is always a `core.*` name. Nothing
+synthesizes a `reports.<name>` placeholder: a provenance record a verifier
+cannot check against the database is worse than an explicit absence.
 
 Writers emit the current version. Readers and verification helpers support the
 current and immediately preceding artifact versions once the public contract
@@ -387,7 +462,7 @@ general plugin system.
    serialization, cancellable staging promotion, and preservation of the last
    successful snapshot on failure.
 7. **Surfaces:** exercise CLI and MCP capability parity, actual rendered MCP
-   schemas, confirmations, error envelopes, the 47-tool current registry, and
+   schemas, confirmations, error envelopes, the 49-tool current registry, and
    the 50-tool hard limit.
 
 ## Dependencies

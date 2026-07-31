@@ -24,7 +24,7 @@ Prefer this shape when the work fits.
 
 ## Use the Read tool for file content, not bash `cat`
 
-For reading a file into context, use the `Read` tool — not `cat`. `Read` takes a single absolute path (e.g. `Read(/Users/.../src/foo.py)`), is sandbox-independent, supports `offset`/`limit` for large files, and avoids the bash command-string matcher entirely. Reserve `cat` for cases that genuinely need shell interpretation: piping into another command, multi-file concatenation, or building files via heredoc. To find files by pattern, use `Glob` (or `Grep`), then `Read` the specific paths.
+`Read` is sandbox-independent and avoids the bash command-string matcher entirely; it also takes `offset`/`limit` for large files. Reserve `cat` for cases needing shell interpretation: piping, multi-file concatenation, heredocs. To find files by pattern use `Glob`/`Grep`, then `Read` the specific paths.
 
 ## Pipelines and chains run silently when components are allowlisted
 
@@ -41,15 +41,13 @@ If a pipeline prompts, it usually means one component (or a path it touches) isn
 
 ## Prefer tool-native structured output over regex filtering
 
-When the goal is "find specific items in tool output," reach for the tool's own filtering before grep. Single command, sandbox-eligible, denser output, more reliable to parse:
+To find specific items in tool output, use the tool's own filtering before grep — single command, sandbox-eligible, denser and more reliably parsed:
 
-- `ruff check --output-format json` or `--output-format concise` instead of `ruff | grep ...`
-- `pyright --outputjson` instead of piping pyright through grep
-- `pytest --tb=short -q` for compact failure summaries
-- `gh api ... --jq '.field'` instead of piping gh output through jq
-- `git log --pretty=format:'%h %s'` instead of piping git log through awk/cut
-
-This is also a token savings: structured output is denser than verbose text + filter.
+- `ruff check --output-format json` (or `concise`)
+- `pyright --outputjson`
+- `pytest --tb=short -q`
+- `gh api ... --jq '.field'`
+- `git log --pretty=format:'%h %s'`
 
 ## Don't reach for these
 
@@ -78,3 +76,19 @@ The sandbox is a guard, not an obstacle. Default to fixing the policy, not bypas
 - For an intentional edit to a guarded file, accept the approval prompt the guard raises.
 
 `--no-verify` is the current escape hatch but skips ALL hooks, including the legitimate ruff/pyright ones. Prefer scoping the offending hook over bypassing the whole chain.
+
+## Known cases — don't re-derive these
+
+Each of these has already cost a debugging detour. The first four are failures that **look** like they need a bypass and do not.
+
+| Case | What actually happens | What to do |
+|---|---|---|
+| `gh auth status` fails in-sandbox | Cosmetic. `GH_TOKEN` comes from the keychain wrapper and resolves for real API calls. | Ignore the status output; judge by whether the API call worked. |
+| `gh run view --log-failed` | Works in-sandbox — the `gh` cache path is allowlisted. | Read CI failure logs directly; no bypass. |
+| Bare `git push` after the sandbox blocked the `-u` write | Reports success and **no-ops**. | Push `HEAD:<branch>` explicitly, then verify `origin/<branch>` actually moved. |
+| `git branch -m` on a fresh branch → `could not lock config file .git/config` | The ref rename **succeeded**; only the (nonexistent) upstream-config write failed. | Confirm with `git symbolic-ref HEAD` and `git worktree list`. Don't retry unsandboxed. |
+| Compound bash — several `&&`/`;` statements or subshells | Defeats the static analyzer and prompts even when every component is allowlisted. | One statement per call, or move the logic into a single `python3` / `uv run python` helper. |
+| Bare `uv run sqlmesh -p … format` | Forks a worker pool the encrypted-DB design disallows. | `make format-sql` (sets `MAX_FORK_WORKERS=1`). |
+| Reading repos under `~/Workspace/` other than `moneybin*` (sibling clones, external projects) | Outside the read allowlist. | Genuine one-off bypass — quote the denied path first. |
+| `moneybin-sync` tests | testcontainers needs the Docker socket, outside the allowlist. | Genuine one-off bypass. |
+| `~/Documents/MoneyBin/` → `Operation not permitted` | macOS TCC, **not** the sandbox. | A bypass won't help; grant Terminal/Claude Code Documents access. |

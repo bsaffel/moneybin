@@ -17,58 +17,81 @@ WITH base AS (
     t.description,
     t.merchant_id,
     t.merchant_name AS merchant_normalized,
-    t.category
+    t.category,
+    t.currency_code
   FROM core.fct_transactions AS t
   INNER JOIN core.dim_accounts AS a
     ON t.account_id = a.account_id
   WHERE
     NOT t.is_transfer AND NOT a.archived
 ), per_account_median AS (
+  /* Every baseline below keys on currency_code as well as its own grain: a
+     median or MAD pooled across currencies compares unlike units, and would
+     score a typical charge in the smaller-denominated currency as an
+     anomaly (multi-currency.md Requirement 5). */
   SELECT
     account_id,
+    currency_code,
     MEDIAN(ABS(amount)) AS median_abs
   FROM base
   GROUP BY
-    account_id
+    account_id,
+    currency_code
 ), per_account AS (
   SELECT
     b.account_id,
+    b.currency_code,
     pam.median_abs,
     MEDIAN(ABS(ABS(b.amount) - pam.median_abs)) AS mad
   FROM base AS b
   INNER JOIN per_account_median AS pam
-    USING (account_id)
+    ON b.account_id = pam.account_id
+    AND b.currency_code IS NOT DISTINCT FROM pam.currency_code
   GROUP BY
     b.account_id,
+    b.currency_code,
     pam.median_abs
 ), per_category_median AS (
   SELECT
     category,
+    currency_code,
     MEDIAN(ABS(amount)) AS median_abs,
     COUNT(*) AS n
   FROM base
   GROUP BY
-    category
+    category,
+    currency_code
 ), per_category AS (
   SELECT
     b.category,
+    b.currency_code,
     pcm.median_abs,
     pcm.n,
     MEDIAN(ABS(ABS(b.amount) - pcm.median_abs)) AS mad
   FROM base AS b
   INNER JOIN per_category_median AS pcm
-    USING (category)
+    ON b.category = pcm.category
+    AND b.currency_code IS NOT DISTINCT FROM pcm.currency_code
   GROUP BY
     b.category,
+    b.currency_code,
     pcm.median_abs,
     pcm.n
 ), top_n AS (
+  /* Ranked within each currency rather than a single global LIMIT 100: a
+     cross-currency ORDER BY ABS(amount) sorts unlike units, so a profile
+     holding one high-denomination currency would crowd every other
+     currency's largest charges out of the flag entirely. */
   SELECT
     transaction_id
-  FROM base
-  ORDER BY
-    ABS(amount) DESC
-  LIMIT 100
+  FROM (
+    SELECT
+      transaction_id,
+      ROW_NUMBER() OVER (PARTITION BY currency_code ORDER BY ABS(amount) DESC) AS rank_in_currency
+    FROM base
+  )
+  WHERE
+    rank_in_currency <= 100
 )
 SELECT
   b.transaction_id, /* Joinable to core.fct_transactions */
@@ -80,6 +103,7 @@ SELECT
   b.merchant_id, /* Foreign key to core.dim_merchants.merchant_id; NULL when no canonical merchant was resolved */
   b.merchant_normalized, /* Normalized merchant string (display) */
   b.category, /* Spending category text; NULL if uncategorized */
+  b.currency_code, /* ISO 4217 currency this amount is denominated in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5) */
   CASE
     WHEN pa.mad > 0
     THEN (
@@ -104,9 +128,11 @@ SELECT
         transaction_id
       FROM top_n
     )
-  ) AS is_top_100 /* TRUE if in the top 100 by ABS(amount) overall */
+  ) AS is_top_100 /* TRUE if in the top 100 by ABS(amount) among transactions sharing this currency_code */
 FROM base AS b
 LEFT JOIN per_account AS pa
-  USING (account_id)
+  ON b.account_id = pa.account_id
+  AND b.currency_code IS NOT DISTINCT FROM pa.currency_code
 LEFT JOIN per_category AS pc
-  USING (category)
+  ON b.category = pc.category
+  AND b.currency_code IS NOT DISTINCT FROM pc.currency_code

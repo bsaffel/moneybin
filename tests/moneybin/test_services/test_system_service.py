@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, datetime
 
 import pytest
 
 from moneybin.database import Database
 from moneybin.services.system_service import SystemService, SystemStatus
-from tests.moneybin.db_helpers import create_core_tables_raw
+from tests.moneybin.db_helpers import create_core_tables_raw, record_sqlmesh_apply
 
 _INSERT_TRANSACTIONS = """
     INSERT INTO core.fct_transactions (
@@ -176,14 +177,18 @@ def _seed_import_log(db: Database, completed_at: datetime) -> None:
 
 
 def _seed_raw_ofx_account(db: Database, extracted_at: datetime, import_id: str) -> None:
-    """Insert one raw.ofx_accounts row at the given extracted_at."""
+    """Insert one raw.ofx_accounts row landing at the given time.
+
+    ``extracted_at`` is supplied only because it is part of the primary key;
+    ``loaded_at`` is the column freshness reads.
+    """
     db.conn.execute(
         """
         INSERT INTO raw.ofx_accounts
-        (account_id, source_file, extracted_at, import_id)
-        VALUES ('ACC001', 'test.qfx', ?, ?)
+        (account_id, source_file, extracted_at, loaded_at, import_id)
+        VALUES ('ACC001', 'test.qfx', ?, ?, ?)
         """,
-        [extracted_at, import_id],
+        [extracted_at, extracted_at, import_id],
     )
 
 
@@ -204,13 +209,16 @@ def _insert_dim_account(
 
 
 @pytest.mark.unit
-def test_status_transforms_pending_when_raw_newer_than_dim(
-    db: Database,
+def test_status_transforms_pending_when_raw_landed_after_the_apply(
+    db: Database, declare_only_models: Callable[..., None]
 ) -> None:
-    """transforms_pending is True when a raw account row postdates dim_accounts.extracted_at."""
+    """transforms_pending is True when a raw account row postdates the apply."""
+    declare_only_models("core.dim_accounts")
+    db.execute("SET TimeZone = 'UTC'")
     create_core_tables_raw(db.conn)
     dim_updated = datetime(2026, 5, 10, 12, 0)
     _insert_dim_account(db, datetime(2025, 1, 1), dim_updated)
+    record_sqlmesh_apply(db, dim_updated)
     _seed_raw_ofx_account(db, datetime(2026, 5, 13, 18, 24), "import-1")
     _seed_import_log(db, datetime(2026, 5, 13, 18, 24))
 
@@ -220,13 +228,18 @@ def test_status_transforms_pending_when_raw_newer_than_dim(
 
 
 @pytest.mark.unit
-def test_status_transforms_not_pending_after_apply(db: Database) -> None:
-    """transforms_pending is False when dim_accounts.extracted_at >= raw max extracted_at."""
+def test_status_transforms_not_pending_after_apply(
+    db: Database, declare_only_models: Callable[..., None]
+) -> None:
+    """transforms_pending is False when the apply followed every raw row."""
+    declare_only_models("core.dim_accounts")
+    db.execute("SET TimeZone = 'UTC'")
     create_core_tables_raw(db.conn)
     dim_updated = datetime(2026, 5, 13, 19, 0)
-    extracted = datetime(2026, 5, 13, 18, 24)
-    _insert_dim_account(db, extracted, dim_updated)
-    _seed_raw_ofx_account(db, extracted, "import-1")
+    landed = datetime(2026, 5, 13, 18, 24)
+    _insert_dim_account(db, landed, dim_updated)
+    record_sqlmesh_apply(db, dim_updated)
+    _seed_raw_ofx_account(db, landed, "import-1")
     _seed_import_log(db, datetime(2026, 5, 13, 18, 30))
 
     status = SystemService(db=db).status()
@@ -235,8 +248,11 @@ def test_status_transforms_not_pending_after_apply(db: Database) -> None:
 
 
 @pytest.mark.unit
-def test_status_transforms_pending_false_with_no_imports(db: Database) -> None:
+def test_status_transforms_pending_false_with_no_imports(
+    db: Database, declare_only_models: Callable[..., None]
+) -> None:
     """transforms_pending is False on a fresh DB with no imports."""
+    declare_only_models()
     # No core.dim_accounts and no imports → freshness returns pending=False.
     status = SystemService(db=db).status()
     assert status.transforms_pending is False

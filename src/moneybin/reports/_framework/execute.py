@@ -1,29 +1,50 @@
 """Run a report: execute the runner's query, classify, redact, summarize.
 
-The generic execution path shared by the generated MCP tool and CLI command.
-It mirrors ``execute_sql_query`` — same ``redact_records`` /
-``derive_query_tier`` bottleneck — but the SQL comes from a report runner and
-the per-column classes come from the report's view (see ``classify``) rather
-than live lineage on a user query.
+The steps every tier's rows pass through — built-in, extension, and user-created
+alike (R7 of ``docs/specs/reports-dynamic.md``). It mirrors ``execute_sql_query``
+— same ``redact_records`` / ``derive_query_tier`` bottleneck — but the SQL comes
+from a report runner and the per-column classes come from the report's declared
+map (see ``classify``) rather than live lineage on a user query.
+
+Production reaches these steps through ``ReportCatalog.execute``, which owns
+reference resolution and parameter validation; the single ``reports`` MCP tool
+and every CLI command go that way. ``run_report`` composes the same steps for a
+caller that already holds a spec and wants neither — today only tests.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Protocol, cast
 
+import duckdb
 from pydantic import JsonValue
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
+from moneybin.log_sanitizer import sql_digest
 from moneybin.mcp.privacy import tier_to_sensitivity
-from moneybin.privacy.redaction import redact_records
+from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
 from moneybin.privacy.sql_lineage import derive_query_tier
 from moneybin.privacy.taxonomy import DataClass, Tier
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import (
+    ResponseEnvelope,
+    build_envelope,
+    resolve_display_currency,
+)
 from moneybin.reports._framework.classify import classify_columns
-from moneybin.reports._framework.contract import ParamSpec, ReportSemantics, ReportSpec
+from moneybin.reports._framework.contract import (
+    ParamSpec,
+    ReportSemantics,
+    ReportSpec,
+    bound_value,
+)
+
+logger = logging.getLogger(__name__)
 
 type FrozenJsonValue = (
     None
@@ -52,7 +73,15 @@ class ReportResult:
     truncated: bool
     actions: list[str] = field(default_factory=list)
     period: str | None = None
-    display_currency: str = "USD"
+    # Unknown, never a currency: a result built without one has not been told a
+    # denomination, and a literal here would speak for every report that never
+    # mentions currency at all (multi-currency.md Requirement 5).
+    display_currency: str | None = None
+    #: R4's drift state, set by ``ReportCatalog.execute`` for a saved report whose
+    #: stored class map went stale. Never true for a packaged tier: a built-in is
+    #: a file in the repo and has no stored map to go stale.
+    degraded: bool = False
+    degraded_reason: str | None = None
 
     @property
     def classes_returned(self) -> list[str]:
@@ -76,6 +105,8 @@ class ReportResult:
             actions=self.actions or None,
             period=self.period,
             display_currency=self.display_currency,
+            degraded=self.degraded,
+            degraded_reason=self.degraded_reason,
         )
 
 
@@ -107,6 +138,17 @@ class CatalogReportExecution:
     period: str | None
     semantics: ReportSemantics
     provenance: tuple[str, ...]
+    # Same contract as ReportResult.display_currency — see the note there.
+    display_currency: str | None = None
+
+
+def _resolve_display_currency(records: list[dict[str, Any]]) -> str | None:
+    """The one currency every report row is denominated in, else None.
+
+    Thin projection over the shared envelope rule so reports and the balance
+    reads answer ``display_currency`` identically.
+    """
+    return resolve_display_currency(record.get("currency_code") for record in records)
 
 
 class _CatalogSpec(Protocol):
@@ -210,6 +252,23 @@ def build_catalog_execution(
     # of ReportSpec. The cast keeps classify_columns' existing public signature
     # stable while both kinds use its fail-closed undeclared-column behavior.
     col_classes = classify_columns(cast(ReportSpec, spec), columns)
+    # A report whose rows carry currency_code is authoritative about its own
+    # denomination, including when the answer is "no single one" — defaulting to
+    # a currency there would relabel a segmented result as one currency. Reports
+    # with no currency_code column say nothing either way and keep the unknown
+    # default.
+    # Resolved over every fetched row, not the truncated page: a mixed-currency
+    # result whose first `max_rows` happen to share one currency would otherwise
+    # advertise it confidently while the other currency's rows sit past the cap.
+    #
+    # The claim is scoped to the rows in THIS response, which is what the
+    # envelope field means and what `has_more` already qualifies. `records` is
+    # what the cursor fetched — max_rows + 1, one more than is returned — so
+    # agreement across it is always true of the returned rows, never a guess
+    # about rows past the fetch boundary. Withholding it whenever a result
+    # truncates would cost every large single-currency report a correct label
+    # and buy no safety, since the narrower claim was never wrong.
+    declares_currency = "currency_code" in columns
     return CatalogReportExecution(
         report_id=spec.report_id,
         parameters=MappingProxyType(dict(parameters)),
@@ -227,6 +286,40 @@ def build_catalog_execution(
         period=period,
         semantics=spec.semantics,
         provenance=spec.semantics.provenance,
+        **(
+            {"display_currency": _resolve_display_currency(records)}
+            if declares_currency
+            else {}
+        ),
+    )
+
+
+def masked_columns(output_classes: Mapping[str, DataClass]) -> tuple[str, ...]:
+    """The columns whose class masks their value, in declaration order.
+
+    Measured from the class's own transform rather than from a tier comparison:
+    all four CRITICAL classes share a tier but two of them mask only partially,
+    and below CRITICAL every transform is passthrough. The transform is what the
+    reader actually sees.
+    """
+    return tuple(
+        name
+        for name, data_class in output_classes.items()
+        if mask_strength(data_class) > MaskStrength.PASSTHROUGH
+    )
+
+
+def inspection_hint(report_id: str, columns: tuple[str, ...]) -> str:
+    """R3's masked-output hint — a ``'*****'`` with no explanation is a two-call fix.
+
+    Names the CLI command, not an MCP tool: R3 requires the hint bind only to an
+    admitted surface, the verify surface has no MCP identity, and pointing an
+    agent at a tool that does not exist is worse than saying nothing.
+    """
+    return (
+        f"Run `moneybin reports explain {report_id}` to see the derived class of "
+        f"each column and why {', '.join(columns)} "
+        f"{'is' if len(columns) == 1 else 'are'} masked"
     )
 
 
@@ -241,6 +334,13 @@ def redact_catalog_execution(
         consent=None,
     )
 
+    # R3: masked output self-explains. Appended rather than inserted — a runner
+    # that positions its own hints did so deliberately.
+    masked = masked_columns(execution.output_classes)
+    actions = list(execution.actions)
+    if masked:
+        actions.append(inspection_hint(execution.report_id, masked))
+
     return CatalogReportResult(
         report_id=execution.report_id,
         parameters=redact_report_parameters(spec, execution.parameters),
@@ -252,8 +352,9 @@ def redact_catalog_execution(
         tier=execution.tier,
         total_count=execution.total_count,
         truncated=execution.truncated,
-        actions=execution.actions,
+        actions=actions,
         period=execution.period,
+        display_currency=execution.display_currency,
     )
 
 
@@ -262,7 +363,34 @@ def execute_catalog_report(
 ) -> CatalogReportExecution:
     """Execute a catalog runner once; do not apply terminal redaction."""
     rq = spec.runner(db, **params)
-    cursor = db.execute(rq.sql, list(rq.params))
+    # `list()` on a Mapping yields its KEYS, which would bind parameter names as
+    # values. A named-binding runner's params must reach DuckDB as the mapping.
+    # Each entry is unwrapped from its `Binding`: the class travels with the value
+    # for the provenance renderer, and DuckDB is handed the value alone.
+    bindings = (
+        {name: bound_value(item) for name, item in rq.params.items()}
+        if isinstance(rq.params, Mapping)
+        else [bound_value(item) for item in rq.params]
+    )
+    try:
+        cursor = db.execute(rq.sql, bindings)
+    except duckdb.Error as e:
+        # A saved report's SQL is user-authored, and DuckDB's binder error echoes
+        # the statement it failed to bind — inline literals included. The MCP
+        # wrapper masks an unclassified failure, but `handle_cli_errors` re-raises
+        # one, so an upstream rename would print a routing number in a CLI
+        # traceback. Classify it here, where every tier's rows pass through, and
+        # keep only the exception type and the digest in the log.
+        logger.warning(
+            f"report execution failed: {type(e).__name__} "
+            f"(report_id={spec.report_id}, sql sha256={sql_digest(rq.sql)})"
+        )
+        raise UserError(
+            "The report's query could not run against the current schema. An "
+            "upstream table or column it reads may have been renamed or removed; "
+            "`moneybin reports explain` shows what it reads.",
+            code=error_codes.REPORT_QUERY_EXECUTION_FAILED,
+        ) from e
     descriptions = cursor.description or []
     columns = [str(description[0]) for description in descriptions]
     column_types = [

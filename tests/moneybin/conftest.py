@@ -5,7 +5,7 @@ the test suite, including profile cleanup and configuration management.
 """
 
 import shutil
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -166,6 +166,7 @@ def schema_catalog_db(
         "CAST(NULL AS VARCHAR) AS account_id, "
         "CAST(NULL AS VARCHAR) AS account_name, "
         "CAST(NULL AS VARCHAR) AS category, "
+        "CAST(NULL AS VARCHAR) AS currency_code, "
         "CAST(NULL AS DECIMAL(18,2)) AS inflow, "
         "CAST(NULL AS DECIMAL(18,2)) AS outflow, "
         "CAST(NULL AS DECIMAL(18,2)) AS net, "
@@ -176,6 +177,7 @@ def schema_catalog_db(
         "CREATE OR REPLACE VIEW reports.spending_trend AS "
         "SELECT CAST(NULL AS VARCHAR) AS year_month, "
         "CAST(NULL AS VARCHAR) AS category, "
+        "CAST(NULL AS VARCHAR) AS currency_code, "
         "CAST(NULL AS DECIMAL(18,2)) AS total_spend, "
         "CAST(NULL AS BIGINT) AS txn_count, "
         "CAST(NULL AS DECIMAL(18,2)) AS prev_month_spend, "
@@ -190,6 +192,7 @@ def schema_catalog_db(
     database.execute(
         "CREATE OR REPLACE VIEW reports.recurring_subscriptions AS "
         "SELECT CAST(NULL AS VARCHAR) AS merchant_normalized, "
+        "CAST(NULL AS VARCHAR) AS currency_code, "
         "CAST(NULL AS DECIMAL(18,2)) AS avg_amount, "
         "CAST(NULL AS VARCHAR) AS cadence, "
         "CAST(NULL AS DOUBLE) AS interval_days_avg, "
@@ -205,6 +208,7 @@ def schema_catalog_db(
     database.execute(
         "CREATE OR REPLACE VIEW reports.merchant_activity AS "
         "SELECT CAST(NULL AS VARCHAR) AS merchant_normalized, "
+        "CAST(NULL AS VARCHAR) AS currency_code, "
         "CAST(NULL AS DECIMAL(18,2)) AS total_spend, "
         "CAST(NULL AS DECIMAL(18,2)) AS total_inflow, "
         "CAST(NULL AS DECIMAL(18,2)) AS total_outflow, "
@@ -228,6 +232,7 @@ def schema_catalog_db(
         "CAST(NULL AS VARCHAR) AS description, "
         "CAST(NULL AS VARCHAR) AS merchant_normalized, "
         "CAST(NULL AS VARCHAR) AS category, "
+        "CAST(NULL AS VARCHAR) AS currency_code, "
         "CAST(NULL AS DOUBLE) AS amount_zscore_account, "
         "CAST(NULL AS DOUBLE) AS amount_zscore_category, "
         "CAST(NULL AS BOOLEAN) AS is_top_100 "
@@ -237,6 +242,7 @@ def schema_catalog_db(
         "CREATE OR REPLACE VIEW reports.balance_drift AS "
         "SELECT CAST(NULL AS VARCHAR) AS account_id, "
         "CAST(NULL AS VARCHAR) AS account_name, "
+        "CAST(NULL AS VARCHAR) AS currency_code, "
         "CAST(NULL AS DATE) AS assertion_date, "
         "CAST(NULL AS DECIMAL(18,2)) AS asserted_balance, "
         "CAST(NULL AS DECIMAL(18,2)) AS computed_balance, "
@@ -397,3 +403,28 @@ def db(
         )
     yield database
     database.close()
+
+
+@pytest.fixture()
+def declare_only_models(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
+    """Scope the registered SQLMesh model set to what a fixture actually builds.
+
+    ``TransformService.freshness()`` reports pending when a *partially* built
+    warehouse is missing a registered model. The real project declares 52, so
+    a fixture that stands up a handful of core tables is pending on that half
+    regardless of its timestamps — which would make a timestamp assertion pass
+    for the wrong reason. The registry reads project files, not the DB: it is
+    an input to freshness, not the mechanism under test, and the missing-model
+    half has its own tests that leave it alone.
+
+    Not needed for a fixture that builds *nothing* — a never-built warehouse
+    is its own state and reports neither missing models nor pending.
+    """
+
+    def _declare(*names: str) -> None:
+        monkeypatch.setattr(
+            "moneybin.sqlmesh_registry.registered_model_names",
+            lambda: frozenset(names),
+        )
+
+    return _declare

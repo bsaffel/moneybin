@@ -50,6 +50,7 @@ from typing import Any, Literal
 
 import duckdb
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.services.transform_service import TransformService
 
@@ -138,7 +139,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             "identity")`` to run. Defaults to every stage when None.
 
     Raises:
-        UserError(code="UNKNOWN_REFRESH_STEP"): if any element of ``steps``
+        UserError(code=error_codes.REFRESH_UNKNOWN_STEP): if any element of ``steps``
             is not in the canonical set.
 
     See module docstring for the conceptual contract. Soft-fail variant:
@@ -147,14 +148,17 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     in their response envelope.
     """
     from moneybin.errors import UserError  # noqa: PLC0415
-    from moneybin.services.matching_service import MatchingService  # noqa: PLC0415
+    from moneybin.services.matching_service import (  # noqa: PLC0415
+        PENDING_MATCHES_HINT,
+        MatchingService,
+    )
 
     if steps is not None:
         unknown = [s for s in steps if s not in CANONICAL_STEPS]
         if unknown:
             raise UserError(
                 f"Unknown refresh step(s): {', '.join(unknown)}",
-                code="UNKNOWN_REFRESH_STEP",
+                code=error_codes.REFRESH_UNKNOWN_STEP,
                 hint=f"known steps: {', '.join(CANONICAL_STEPS)}",
             )
 
@@ -191,7 +195,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                 )
                 logger.warning(
                     f"GSheet pull: {len(non_complete)} non-complete result(s) "
-                    f"({summary}); see gsheet_status for per-connection detail"
+                    f"({summary}); see gsheet for per-connection detail"
                 )
 
     matching_error: str | None = None
@@ -203,9 +207,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             if match_result.has_matches:
                 logger.info(f"Matching: {match_result.summary()}")
                 if match_result.has_pending:
-                    logger.info(
-                        "Run 'moneybin transactions review --type matches' when ready"
-                    )
+                    logger.info(PENDING_MATCHES_HINT)
         except (duckdb.CatalogException, duckdb.BinderException):
             # Views not built yet (first load precedes SQLMesh apply) — an
             # expected precondition, not a crash. Stay quiet; no error surfaced
@@ -345,7 +347,9 @@ def _run_categorize_step(db: Database) -> str | None:
         )
 
     if stats["total"] > 0:
-        logger.info(
+        # The categorization run already reported this same total and
+        # breakdown; at info the pipeline would echo it a second time.
+        logger.debug(
             f"Auto-categorized {stats['total']} transactions "
             f"({stats['merchant']} merchant, {stats['rule']} rule, "
             f"{stats['plaid']} plaid)"

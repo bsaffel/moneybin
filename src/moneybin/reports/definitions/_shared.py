@@ -48,7 +48,14 @@ MERCHANTS_SORTS: dict[str, str] = {
     "recent": "last_seen DESC",
 }
 LARGE_TXN_ANOMALIES: tuple[str, ...] = ("none", "account", "category")
-DRIFT_STATUSES: tuple[str, ...] = ("drift", "warning", "clean", "no-data", "all")
+DRIFT_STATUSES: tuple[str, ...] = (
+    "drift",
+    "warning",
+    "clean",
+    "no-data",
+    "currency-mismatch",
+    "all",
+)
 
 
 def default_window(months: int = 12) -> tuple[str, str]:

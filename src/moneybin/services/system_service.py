@@ -32,6 +32,7 @@ class SystemStatus:
     transforms_pending: bool
     transforms_last_apply_at: datetime | None
     schema_drift: dict[str, list[str]]
+    transforms_missing_models: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -44,6 +45,8 @@ class ModelFreshness:
     model_name: str
     last_changed_at: datetime | None
     last_applied_at: datetime | None
+    last_executed_at: datetime | None = None
+    model_kind: str | None = None
 
 
 class SystemService:
@@ -89,6 +92,7 @@ class SystemService:
             categorize_pending=review.categorize_pending,
             transforms_pending=freshness.pending,
             transforms_last_apply_at=freshness.last_apply_at,
+            transforms_missing_models=freshness.missing_models,
             schema_drift=schema_drift,
         )
 
@@ -144,7 +148,7 @@ class SystemService:
         """
         try:
             row = self._db.execute(
-                "SELECT last_changed_at, last_applied_at "
+                "SELECT last_changed_at, last_applied_at, last_executed_at, model_kind "
                 "FROM meta.model_freshness "
                 "WHERE model_name = ?",
                 [model_name],
@@ -157,4 +161,6 @@ class SystemService:
             model_name=model_name,
             last_changed_at=row[0],
             last_applied_at=row[1],
+            last_executed_at=row[2],
+            model_kind=row[3],
         )

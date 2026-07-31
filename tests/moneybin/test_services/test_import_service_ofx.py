@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -222,3 +223,46 @@ class TestImportOFXAccountResolution:
             """,
         ).fetchone()
         assert full_number is not None and full_number[0] == 1
+
+
+class TestImportOFXPermissionDenied:
+    """An unreadable OFX must classify as a permission failure, not a parse one."""
+
+    def test_permission_error_survives_the_ofx_read_boundary(
+        self, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OFX is a core format; the recovery advice must reach it too.
+
+        `_import_ofx` wraps read failures as `ValueError` so MCP's error
+        envelope catches them, but that flattening also erased
+        `PermissionError` — `classify_user_error` keys the
+        `infra_permission_denied` code and its Full-Disk-Access hint off the
+        exception TYPE, so a TCC-blocked .qfx reported `infra_invalid_input`
+        with no hint while an identically-blocked .csv reported the right one.
+        """
+        import builtins
+
+        from moneybin.errors import classify_user_error
+
+        target = tmp_path / "statement.ofx"
+        target.write_text("<OFX></OFX>")
+        real_open = builtins.open
+
+        def _deny(file: object, *args: object, **kwargs: object) -> Any:
+            # Scoped to the target so DuckDB and the import log keep working.
+            if str(file) == str(target):
+                raise PermissionError(1, "Operation not permitted", str(target))
+            return real_open(file, *args, **kwargs)  # pyright: ignore[reportCallIssue,reportArgumentType]
+
+        monkeypatch.setattr(builtins, "open", _deny)
+
+        service = ImportService(db)
+        with pytest.raises(PermissionError) as raised:
+            service.import_file(target, refresh=False)
+
+        # Classify the exception the boundary actually produced — that is the
+        # claim under test, not that PermissionError classifies in isolation.
+        classified = classify_user_error(raised.value)
+        assert classified is not None
+        assert classified.code == "infra_permission_denied"
+        assert classified.hint is not None

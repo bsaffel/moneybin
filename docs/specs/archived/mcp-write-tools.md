@@ -122,6 +122,6 @@ moneybin mcp serve --allow-writes
 
 ## Out of Scope
 
-- Category rules engine (auto-categorization) -- see [Transaction Categorization](../transaction-categorization.md)
+- Category rules engine (auto-categorization) -- see [Transaction Categorization](transaction-categorization.md)
 - Budget rollover and alerts -- see [Budget Tracking](../budget-tracking.md)
 - Transaction notes tool (schema exists, tool not yet implemented)

@@ -279,6 +279,19 @@ TRANSFER_MATCH_CONFIDENCE = Histogram(
     "Distribution of transfer match confidence scores",
 )
 
+# ── Multi-currency integrity ─────────────────────────────────────────────────
+
+PROFILE_CURRENCIES = Gauge(
+    "moneybin_profile_currencies",
+    "Distinct known currencies held across transactions, accounts, and balances",
+)
+
+UNKNOWN_CURRENCY_ROWS = Gauge(
+    "moneybin_unknown_currency_rows",
+    "Rows whose currency is unknown, so their amounts join no total",
+    ["grain"],
+)
+
 # ── Categorization ────────────────────────────────────────────────────────────
 
 CATEGORIZATION_AUTO_RATE = Gauge(
@@ -462,7 +475,7 @@ MERCHANT_RESOLUTION_OUTCOME_TOTAL = Counter(
 
 MERCHANT_LINK_OUTCOMES_TOTAL = Counter(
     "moneybin_merchant_link_outcomes_total",
-    "Outcomes of merchant-link review decisions via merchants_links_set.",
+    "Outcomes of merchant-link review decisions via identity_links_decide.",
     # outcome: accepted | rejected
     ["outcome"],
 )
@@ -698,4 +711,66 @@ SECURITY_LINK_DECISION_OUTCOMES_TOTAL = Counter(
 SECURITY_LINK_REVIEW_PENDING = Gauge(
     "moneybin_security_link_review_pending",
     "Current count of pending security_link_decisions.",
+)
+
+# ── User-created reports ─────────────────────────────────────────────────────
+
+USER_REPORT_SAVES_TOTAL = Counter(
+    "moneybin_user_report_saves_total",
+    "Saves of a user-created report through the lifecycle service.",
+    # outcome: saved | rejected
+    ["outcome"],
+)
+
+USER_REPORT_RUNS_TOTAL = Counter(
+    "moneybin_user_report_runs_total",
+    "Report executions through the shared catalog, by registry tier. Labeled by "
+    "tier so the user tier can be compared against the built-ins it executes "
+    "beside — one path, three tiers, is the claim this measures.",
+    # tier: builtin | extension | user; outcome: ok | error
+    ["tier", "outcome"],
+)
+
+USER_REPORT_UNRESOLVED_COLUMNS_TOTAL = Counter(
+    "moneybin_user_report_unresolved_columns_total",
+    # Read with the drift counter: together they say whether the invisible
+    # classification is invisible in practice, or whether users are quietly
+    # accumulating masked columns they never asked for.
+    "Columns a saved report's derivation could not resolve, counted per save.",
+)
+
+USER_REPORT_DRIFT_DETECTED_TOTAL = Counter(
+    "moneybin_user_report_drift_detected_total",
+    "Saved reports whose stored class map failed its fingerprint check at run "
+    "time, by what re-derivation concluded.",
+    # resolution: equal (the key moved but every class held) | failed_closed
+    ["resolution"],
+)
+
+USER_REPORT_RECLASSIFY_TOTAL = Counter(
+    "moneybin_user_report_reclassify_total",
+    # Watch this one for abuse rather than health: it is the only path that
+    # durably lowers a masking floor, so a rising confirm rate against a flat
+    # `declined` rate is the signal that the confirm has become a formality
+    # people click through. The two confirm outcomes are separate because
+    # `--yes` never increments `declined` — collapsed into one `confirmed`
+    # label, an assistant supplying the flag unasked is indistinguishable from
+    # the human it stands in for, which is the case this counter is watched for.
+    "Classification-downgrade attempts on a saved report, by outcome.",
+    # outcome: confirmed_prompt | confirmed_flag | declined | no_elicitation
+    #          | refused_not_weaker | refused_unknown_column
+    #          | refused_revision_moved | refused_derivation_moved
+    #          | refused_blank_reason | refused_reason_too_long
+    #          | refused_unrelated_drift
+    # The two `*_moved` labels report the same message to the caller and are
+    # deliberately separate here: one means the stored row was rewritten, the
+    # other that derivation's answer changed with the row untouched. Only the
+    # second can fire without any write, so collapsing them would hide the one
+    # that no concurrent writer explains.
+    # `refused_unrelated_drift` is a third thing again: the approved column is
+    # fine and something else moved — another output column, or one of the
+    # report's parameters — so a sustained rate here means
+    # saved reports are going stale faster than their owners re-save them —
+    # a backlog signal, not an abuse one.
+    ["outcome"],
 )

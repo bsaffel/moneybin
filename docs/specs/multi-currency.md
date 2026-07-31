@@ -37,9 +37,13 @@ Today amounts are *implicitly* USD, inconsistently:
   bug**, not a hypothetical — M1K.1's guard closes it.
 
 **Update, 2026-07-17:** the capture gaps and the `dim_accounts` naming described
-above are closed (Requirements 1–3, 8). The no-silent-blend guard (Requirement 5)
-that fully closes the live correctness bug is not yet built, so reports can still
-blend currencies until it ships.
+above are closed (Requirements 1–3, 8).
+
+**Update, 2026-07-26:** the no-silent-blend guard (Requirement 5) shipped, closing
+the live correctness bug: every `reports.*` model that sums money segments per
+`currency_code`, and the envelope no longer claims USD for rows that are not.
+The account grain stopped defaulting to `'USD'` in the same pass, which is what
+makes an unknown currency representable end-to-end (Requirement 3).
 
 The design move is the same one [`investments-data-model.md`](investments-data-model.md)
 makes: **lock the schema, stage the algorithm.** The investments spec (implemented,
@@ -105,7 +109,7 @@ both failure modes while preserving original-currency facts.
 
 | Phase | Scope | Depends on | Notes |
 |---|---|---|---|
-| **M1K.1** | Currency capture & integrity (no conversion) | nothing | Independent of investments; **may be pulled into the first public release** (see [`roadmap.md`](../roadmap.md) §"The first public release"). Closes the live silent-blend bug. Requirements 1, 2, 3, 8 (capture, schema, account-currency inheritance) implemented 2026-07-17; Requirements 4–7 (home currency, no-silent-blend guard, doctor check, report guard) remain open. |
+| **M1K.1** | Currency capture & integrity (no conversion) | nothing | Independent of investments; **may be pulled into the first public release** (see [`roadmap.md`](../roadmap.md) §"The first public release"). Closes the live silent-blend bug. Requirements 1, 2, 3, 8 (capture, schema, account-currency inheritance) implemented 2026-07-17; Requirements 4–7 (home currency, no-silent-blend guard, doctor check, report guard) implemented 2026-07-25, and Requirement 3's account-grain `'USD'` fallback removed 2026-07-26 — **M1K.1 closed**, except the first-run-wizard locale default explicitly descoped under Requirement 4. |
 | **M1K.2** | Display conversion (auditable rates) | M1K.1 + **investments (M1J)** | The unifying conversion layer over both cash and investment grains. Sequenced after investments so it converts *everything* in one coherent pass. |
 | **M1K.3** | Realized FX gain/loss | M1K.2 + investments cost-basis engine | Reuses the investments lot/cost-basis machinery; the genuinely investment-shaped part. |
 
@@ -152,25 +156,216 @@ Numbered, testable. Tagged by phase.
    **Implemented 2026-07-17:** `dim_accounts.currency_code` (renamed), `fct_balances`/
    `fct_balances_daily.currency_code`, and account-currency inheritance on
    `fct_transactions`/`fct_balances` all shipped.
+   **Completed 2026-07-26:** the account grain itself kept a `COALESCE(..., 'USD')`
+   until this pass — the one place the "never a blind `'USD'`" rule was still
+   broken, and the terminal fallback of the whole chain, so it silently supplied a
+   currency to every row that lacked one. `core.dim_accounts` now resolves
+   user override → the currency the account's own source reported (OFX `CURDEF` via
+   `prep.stg_ofx__balances`, Plaid `iso_currency_code`/`unofficial_currency_code` via
+   `prep.stg_plaid__balances`, the tabular `currency` column) → `NULL`. Until this
+   landed, Requirement 8's unknown-currency rule and Requirement 6's `fail` branch
+   were both unreachable in production.
 4. **Home currency setting.** A profile-level `home_currency` (ISO 4217), **mutable**,
    defaulted by **locale auto-detection with explicit user confirmation** in the
    [first-run wizard](mcp-first-run-setup.md). Distinct from per-account currency. It is
    **`app.*` state (DB-resident)**, not YAML config — the no-blend guard and report views
    are SQLMesh models that must read it to segment home vs. foreign — so it is written
    through a `*Repo` (Invariant 10), not the generic YAML `profile set`.
+   **Implemented 2026-07-25** as `app.profile_settings` (singleton row, V044) behind
+   `ProfileSettingsRepo`. `moneybin profile set home_currency EUR` dispatches the
+   managed key to the repo while dotted `section.field` keys still write `config.yaml`;
+   `profile show` splits `Config (config.yaml)` from `Settings (database)`. MCP gained
+   `profile` and `profile_set`. Unset reports null — never an implied USD. The
+   first-run-wizard locale default is **not** built: the setting is mutable and
+   segmentation does not depend on it, so nothing reads it yet.
 5. **No-silent-blend invariant.** An aggregation across rows of differing
    `currency_code` MUST NOT emit a single combined figure unless an explicit
    conversion with recorded rate provenance is applied. Absent conversion (all of
    M1K.1), results are **segmented per currency** (a sub-total per currency), never
    blended.
+   **Implemented 2026-07-25.** Every `reports.*` model that sums money projects and
+   groups by `currency_code`; `reports.balance_drift` projects it without regrouping
+   (asserted and computed balances are the same account's, so the comparison is
+   single-currency by construction). Two consumers re-aggregate the segmented views
+   and had to segment too: the `core:cashflow` runner (`currency_code` is in
+   `select_cols`/`group_cols` unconditionally, for every `by` value) and
+   `NetworthService` (see Requirement 7). `reports.large_transactions` additionally
+   scopes its median/MAD baselines and its top-100 rank per currency — a pooled
+   baseline compares unlike units and scores a typical charge in the
+   smaller-denominated currency as an anomaly.
+   **Ranking and reachability, 2026-07-26.** Segmentation makes each figure
+   correct; two follow-on defects left a correct figure unreadable or absent.
+   The framework truncates with `records[:max_rows]`, so the *first* sort key
+   decides what a capped response can contain: a report that emitted one
+   currency's rows before the next let a single currency fill the cap and drop
+   the others out of the response entirely — missing, not merely ranked lower.
+   Four of the six runners did this — `balance_drift` ordered globally by raw
+   `drift_abs`; `large_transactions`, `merchant_activity`, and
+   `recurring_subscriptions` ranked correctly per currency and then re-grouped
+   by `currency_code` at the top level, undoing it. All four now order by
+   rank-within-currency first, so any prefix represents every currency.
+   `test_no_report_sort_lets_a_cap_omit_a_currency` scans the sources rather
+   than waiting for someone to build a mixed-currency fixture per report — the
+   defect reached four runners because each was fixed where it was found rather
+   than swept for. (`cash_flow` and `spending_trend` were exempted here on a
+   rationale the next paragraph retracts.) Separately, `core.fct_transaction_lines` — the
+   canonical split-expanded grain — projected every parent column except the
+   denomination, so an agent on it could not tell a EUR line from a USD one; it
+   now carries `currency_code`, as does `core.uncategorized_queue`, whose review
+   surface asks a user to act on the amount it shows. The curated `sql_schema`
+   examples that sum money across `core.*` group by currency, held by
+   `test_every_money_aggregating_example_names_its_currency`, which derives its
+   eligible set from `CLASSIFICATION` so a new money example on a
+   currency-bearing table inherits the guard rather than escaping it.
+   The prefix-truncation defect had a second channel the runner scan cannot
+   see: `sql_query` also keeps a prefix (`rows[:max_rows]`), and so does an
+   agent's own `LIMIT`, which examples asking for "top" anything invite. Twelve
+   curated examples led their sort with `currency_code` and now rank within
+   each currency first, or lead with the non-currency dimension where the query
+   is a time series or a closed vocabulary. Two keep `ORDER BY currency_code`
+   because they return exactly one row per currency, where ordering is not the
+   lever — any prefix of *k* rows holds *k* currencies whatever the sort key
+   is. `test_no_example_leads_its_sort_with_currency_code` asserts set equality
+   against those two, so a new offender fails and so does a stale exemption.
+
+   **The sweep that closed the class, 2026-07-27.** The exemption above was
+   wrong. It held that a leading `year_month` makes truncation drop tail months
+   across all currencies alike — true only when each (month, currency) is
+   exactly one row, which is the case for neither report. `cash_flow` groups on
+   a caller-chosen dimension and `spending_trend` on category, so a single month
+   holds several rows per currency and sorting currency-major hands that month's
+   entire budget to the lexicographically-first currency. Both now rank within
+   (month, currency) and order `year_month, rank_in_currency, currency_code`:
+   the month stays outermost because it is a time series, and the rank
+   interleaves the currencies inside it. The invariant is therefore *not* that a
+   rank leads the sort, but that a rank precedes any bare `currency_code` key.
+
+   Enumerating the whole grid rather than the reported sites found two more the
+   review had not. `networth_history` is a `ServiceReportSpec` whose SQL lives in
+   `networth_service`, so a scan over `reports/definitions/` could never see it;
+   it walked one currency's entire series before starting the next, and a
+   currency opened partway through the window vanished from a capped response
+   instead of showing a shorter series. And the `sort="impact"` branch of
+   `CategorizationQueries.list_uncategorized_transactions` ranks `priority_score`
+   — `ABS(amount) * age_days`, which `core.uncategorized_queue`'s own column
+   comment calls meaningful only within one currency — across denominations
+   before `LIMIT`, so the highest-denomination currency filled the whole queue.
+   That last one names no `currency_code` in its sort at all. The class has two
+   limbs, and only one is a property of the sort keys:
+
+   - **Interleaving** — `currency_code` sorts major to the metric. A source scan
+     owns it: `test_no_report_sort_lets_a_cap_omit_a_currency` covers both report
+     channels, deriving the service channel from the service classes
+     `service_reports` imports, so a new service-backed report inherits the guard
+     rather than escaping it the way `networth_history` did.
+   - **Cross-unit ranking** — a money metric ranked across currencies with no
+     `PARTITION BY currency_code`. It leaves no trace in the sort keys, so no
+     scan can catch it; it is guarded behaviourally beside the surface that ranks
+     (`test_impact_queue_spans_currencies_under_cap`).
+
+   `sort="date"` is deliberately untouched: `txn_date` is currency-agnostic, so a
+   cap drops the oldest rows across every currency alike, and interleaving there
+   would only break the "most recent first" contract the sort exists to provide.
+   `SpendingService.by_category` sums `ABS(amount)` with no `currency_code`
+   anywhere in the module and is a real blend, but it has no caller in
+   `src/moneybin/`; it is tracked for deletion or segmentation rather than fixed
+   here, and sits outside the guard's scope because it is not report-reachable.
+   **Which payloads owe a currency, 2026-07-26.** The MCP-side enumeration
+   (`test_money_tools_name_their_currency`) asked whether a payload carries a
+   money-classed field and no `DataClass.CURRENCY`, and six tools answered yes.
+   That question is wrong: `TXN_AMOUNT` marks a field *masking-sensitive*, not
+   *denominable*. Walking each payload to the exact leaf, only two were real.
+   `transactions` was — the flagship read returned bare amounts, so a
+   mixed-currency page (`display_currency` null by design) had no denomination
+   anywhere in the response; its rows now carry `currency_code` from
+   `core.fct_transactions` through both the MCP and CLI construction sites.
+   The other real one is `transactions_categorize_rules`: `min_amount`/
+   `max_amount` are genuine bounds, but `app.categorization_rules` has no
+   currency column, so a rule cannot say which currency it bounds — schema work,
+   deferred to M1K.2. The remaining four are classification artifacts with no
+   currency to state: `import_files` and `import_preview` expose
+   `as_printed`/`as_recorded`, a single magnitude printed and then negated as
+   `str` so the caller can confirm a sign convention; `investments_lots_select`
+   exposes `quantity`, a share count; `system_audit` exposes
+   `before_value`/`after_value`, polymorphic audit evidence whose audited column
+   differs per event. The guard now splits three ways instead of two, and each
+   not-denominable entry pins the money-classed `(field, type)` leaves its
+   reason rests on — a payload that grows a real `Decimal` amount fails rather
+   than inheriting an exemption written for a string sample.
+   **Known limit — unknown pools into one segment.** `GROUP BY currency_code`
+   puts every row whose currency is unknown into a single `NULL` segment and
+   sums it. Two accounts denominated in genuinely different currencies that
+   both lack one are therefore added together, producing a figure in no unit.
+   This is not fixable by grouping: nothing distinguishes two unknowns from
+   each other. It is why Requirement 6 makes an unknown currency a **failure**
+   rather than a warning — the remedy is `accounts set --currency`, not an
+   aggregate MoneyBin could compute. Withholding the segment's totals instead
+   was considered and rejected: the population this creates is tabular imports
+   whose file carried no currency column, who are almost always single-currency,
+   and blanking net worth and cash flow for all of them to guard a case their
+   own doctor output already fails on trades a certain harm for a rare one.
+   **The invariant binds `core.*` too, not only `reports.*`.**
+   `core.fct_balances_daily` carries a balance forward adjusted by intervening
+   transactions, and `fct_transactions.currency_code` resolves per row — so an
+   account whose statements are USD can hold a transaction of its own in EUR.
+   Summing them and adding the result to the carry blends currencies one layer
+   *below* every guard: the row still reports the observation's currency, so
+   `balance_drift`'s `currency_mismatch` check compares two matching `USD`
+   values and passes the blended number through to `reports.net_worth`. The
+   carry therefore applies only the transactions denominated in the currency it
+   is carrying. The excluded movement is not dropped silently — it lands in the
+   next observation's `reconciliation_delta` and reads as drift, and the
+   Requirement 6 warn names the behaviour. The same reasoning governs the
+   *carry itself*: `core.fct_balances.currency_code` resolves per row, so a
+   corrected re-import can move an account from USD to EUR between two
+   consecutive observations. `reconciliation_delta` subtracts the prior carry
+   from the new observation, so across that boundary it would difference two
+   units and label the result with the newer one — invisible to the same
+   `currency_mismatch` check, which would again see two agreeing codes. The
+   delta is therefore `NULL` whenever the observed currency differs from the
+   carried one, and `balance_drift` already renders a null delta as `no-data`.
+   **Guard placement rule:** a currency guard on a derived value must sit where
+   the arithmetic happens. A guard downstream of the blend can only compare
+   labels, and both labels survive a blend intact.
+
 6. **Doctor check.** `system doctor` reports when a profile holds more than one
    distinct currency across transactions/accounts/balances, **flags accounts/rows whose
    currency is unknown (`NULL`) so the user can assign one before it can blend**, and flags
    any report path that would violate Requirement 5.
+   **Implemented 2026-07-25** as the `currency_integrity` invariant: **fail** on any
+   unknown-currency account/transaction/balance (with the `accounts set --currency`
+   fix in the detail, the `moneybin transform` that makes it take effect in `core.*`,
+   and the affected ids attached), **warn** on two or more known
+   currencies with nothing unknown — naming both consequences a user would
+   otherwise read as a bug: reports sub-total per currency, and a transaction
+   denominated differently from its account sits out of that account's carried
+   balance and shows up as its drift — **pass** otherwise. It publishes
+   `moneybin_profile_currencies` and `moneybin_unknown_currency_rows{grain}`.
+   The third clause — "any report path that would violate Requirement 5" — is a
+   **build-time** guard rather than a runtime one, because the set of report paths is
+   code, not data: `test_every_money_bearing_report_projects_the_currency_it_is_denominated_in`
+   enumerates the live report catalog and fails CI for any registered report that
+   declares a `TXN_AMOUNT`/`BALANCE` column without a `currency_code` one. A runtime
+   check could only re-assert what CI already proved, and would go stale against a
+   report added later.
 7. **Report guard.** Report views that sum money detect mixed currency and either
    segment (default) or return an explicit "cross-currency total unavailable until
    conversion ships" signal — never a silent blend. Single-currency profiles (the
    common case, including USD-only users) see **zero behavior change**.
+   **Implemented 2026-07-25.** Segmentation is the default everywhere. The one place
+   that takes the explicit-signal branch is `core:networth`'s scalar headline, which
+   has no room for a sub-total per currency: `NetWorthSnapshotPayload` nulls
+   `net_worth`/`total_assets`/`total_liabilities`/`currency_code` when more than one
+   currency contributes and carries each currency's totals in `per_currency`; its
+   report records attach each account row to its own currency's totals.
+   `NetworthService.history` partitions both its bucketing and its period-over-period
+   `LAG` by `currency_code`, so a change is never the difference between two
+   currencies' positions. Zero-behavior-change is held by fixtures, not assertion: the
+   pre-existing single-currency report and net-worth tests assert the same figures
+   unchanged, and `tests/scenarios/test_multi_currency_report_segmentation.py` proves
+   the mixed case is what discriminates a segmented model from a blending one
+   (restoring the blend in `reports.cash_flow` fails it; a single-currency fixture
+   cannot).
 8. **Migration is additive.** New currency columns are nullable additions to raw tables;
    core is rebuilt from raw (no in-place core patch). The migration does **not** depend on
    `home_currency` (also introduced in M1K.1): a row with no captured currency inherits its
@@ -180,8 +375,12 @@ Numbered, testable. Tagged by phase.
    surfaced by `system doctor` (Req 6) for the user to assign. `home_currency` itself is
    established by the first-run wizard (Req 4), not the migration. Versioned migration under
    `src/moneybin/sql/migrations/`.
-   **Implemented 2026-07-17** for the capture/inheritance columns above; the Requirements 5
-   and 6 behaviors referenced in this item (segmentation, doctor surfacing) are still open.
+   **Implemented 2026-07-17** for the capture/inheritance columns above.
+   **Completed 2026-07-26:** segmentation and doctor surfacing shipped with Requirements
+   5–7, and the account-grain `'USD'` fallback that made "still `NULL`" impossible is
+   gone (see Requirement 3). `tests/scenarios/test_multi_currency_report_segmentation.py::test_a_transaction_with_no_captured_currency_stays_unknown`
+   holds the whole chain: an uncaptured currency stays `NULL` through core, gets its own
+   report segment, and fails `system doctor`.
 
 ### M1K.2 — Display conversion
 
@@ -349,6 +548,28 @@ flowchart LR
 - `ResponseEnvelope.summary.display_currency` populated whenever money is returned
   (the profile's home currency for single-currency profiles — never a hardcoded `USD`,
   which would mislabel a EUR/GBP-only user; the requested/home currency under conversion).
+- **The envelope derives it; call sites do not have to remember.** `build_envelope`
+  reads `currency_code` off the payload it is given — the record itself, or the rows
+  of its single primary list — and applies `resolve_display_currency`: one agreed
+  known code, else null. An explicit argument still wins, for the caller that
+  resolved a currency the payload cannot show (the reports framework resolves across
+  every matching row, not just the returned page).
+
+  This is placement, not preference. A default of `"USD"` on the parameter is
+  inherited silently by every call site that omits it, so the guard has to sit
+  where the envelope is *constructed*, not at each of the 251 places that build
+  one. Rounds 10 and 11 of the M1K.1 review fixed named call sites twice and the
+  class reopened both times — nine of the eleven money-bearing tools were still
+  claiming USD when the third round found `accounts_set`. Same lesson as the
+  reconciliation guard below: a currency guard must sit where the value is
+  produced, because downstream nothing can tell an inherited default from a
+  deliberate one.
+
+  A payload that records no currency anywhere reports null rather than a guess.
+  That is honest but uninformative, so the set of such tools is pinned by
+  `tests/moneybin/test_mcp/test_money_tools_name_their_currency.py` — enumerated
+  from the live registry with set equality, so a new money tool cannot join it
+  silently.
 - M1K.2 rate / conversion / exposure operations follow the existing MCP taxonomy —
   multi-currency is a **crosscutting service-layer concern, not its own tool namespace**
   (`mcp-architecture.md`), and tool names use the noun=query / path-prefix-verb-suffix
@@ -423,11 +644,12 @@ realized FX gain/loss on the conversion pairs.
    surface listed above is actually in scope.
 
    The original text here assumed the MCP-parameter rename needed the
-   ship-alongside-the-old-name-for-one-release protocol from `design-principles.md`. That
-   protocol is explicitly **post-launch only**; per that doc's own launch trigger
-   (**M3H** hosted launch, or the first tagged release adopted by a non-author user —
-   `design-principles.md` itself currently misstates this as "M3E," a separate stale
-   milestone-code reference worth fixing there independently of this spec), MoneyBin is
+   ship-alongside-the-old-name-for-one-release protocol from
+   `design-principles-depth.md`. That protocol is explicitly **post-launch
+   only**; per the launch trigger in `design-principles.md` (**M3H** hosted
+   launch, or the first tagged release adopted by a non-author user — that rule
+   currently misstates this as "M3E," a separate stale milestone-code reference
+   worth fixing there independently of this spec), MoneyBin is
    still pre-launch — no tag has been cut and no non-author user has adopted the MCP
    contract yet. So the rename is a direct, one-time change: no shim, no follow-up removal
    PR. Implementation is scoped to M1K.1, not this spec pass — see Requirement 3.

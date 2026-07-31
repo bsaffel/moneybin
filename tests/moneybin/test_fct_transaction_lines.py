@@ -117,6 +117,46 @@ class TestFctTransactionLinesModel:
         ).fetchone()
         assert whole_count == (0,)
 
+    def test_every_line_carries_the_parent_transaction_currency(
+        self, db: Database
+    ) -> None:
+        """Split children and whole rows alike inherit the parent's currency.
+
+        Without this column an agent on the canonical split-expanded grain sums
+        EUR and USD `line_amount`s into one figure — the exact blend the rest of
+        M1K.1 eliminates, and reachable through the curated `sql_schema` example
+        for this view (`multi-currency.md` Requirement 5).
+        """
+        create_core_tables(db)
+        _insert_split(
+            db,
+            "txn_eur",
+            Decimal("-100.00"),
+            [("s1", Decimal("-60.00"), "Food"), ("s2", Decimal("-40.00"), "Fun")],
+        )
+        _insert_unsplit(db, "txn_usd", Decimal("-25.00"))
+        db.execute(
+            "UPDATE core.fct_transactions SET currency_code = ? "
+            "WHERE transaction_id = ?",
+            ["EUR", "txn_eur"],
+        )
+        db.execute(
+            "UPDATE core.fct_transactions SET currency_code = ? "
+            "WHERE transaction_id = ?",
+            ["USD", "txn_usd"],
+        )
+
+        rows = db.execute(
+            """
+            SELECT line_id, currency_code
+            FROM core.fct_transaction_lines
+            ORDER BY currency_code, line_id
+            """
+        ).fetchall()
+
+        # Both grains: the two split children carry EUR, the unsplit row USD.
+        assert rows == [("s1", "EUR"), ("s2", "EUR"), ("whole", "USD")]
+
     def test_view_reads_from_fct_not_from_app_splits(self, db: Database) -> None:
         """Clearing core.fct_transactions yields zero view rows even if app.* has splits.
 

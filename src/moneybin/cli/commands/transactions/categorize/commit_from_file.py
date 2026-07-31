@@ -1,6 +1,5 @@
 """Commit LLM-generated categorizations from a JSON file or stdin."""
 
-import dataclasses
 import json
 import logging
 import sys
@@ -8,10 +7,11 @@ from pathlib import Path
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, output_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import ErrorDetail
 
 logger = logging.getLogger(__name__)
 
@@ -125,17 +125,17 @@ def categorize_commit_from_file(
         sensitivity="medium",
         total_count=input_count,
         actions=[
-            "Use transactions_categorize_rules to review auto-created rules",
-            "Use transactions_categorize_pending to fetch the next batch",
+            "Use `moneybin transactions categorize rules list` to review "
+            "auto-created rules",
+            "Use `moneybin transactions categorize pending` to fetch the next batch",
         ],
     )
     if result.errors > 0:
-        envelope = dataclasses.replace(
-            envelope,
-            error=UserError(
-                f"{result.errors} item(s) failed to categorize",
-                code="categorization_errors",
-            ),
+        envelope = envelope.with_error(
+            ErrorDetail(
+                message=f"{result.errors} item(s) failed to categorize",
+                code=error_codes.TRANSACTION_CATEGORIZATION_ERRORS,
+            )
         )
     render_or_json(
         envelope,
