@@ -552,12 +552,13 @@ def test_run_returns_the_receipt_when_the_audit_write_cannot_open(
     """A failed receipt write must not turn a published export into an error.
 
     The receipt write opens its own connection *after* the artifact is already
-    on disk (or in Sheets), and takes a single non-blocking attempt — so any
-    concurrent holder at that instant raises, making this reachable rather
-    than theoretical. Propagating it would report failure for an irreversible
-    success and lose the caller's only copy of the receipt, inviting a re-run
-    that publishes a second artifact. Fail loudly in the log, not in the
-    return value.
+    on disk (or in Sheets), so it can fail on its own — a writer still holding
+    the lock past ``get_database``'s write-lock wait, or an attach error —
+    while the export it describes is already irreversible. (The mock below
+    fails on the first attempt; production retries to that deadline first.)
+    Propagating it would report failure for an irreversible success and lose
+    the caller's only copy of the receipt, inviting a re-run that publishes a
+    second artifact. Fail loudly in the log, not in the return value.
 
     What reaches the log is bounded too: a lock or attach failure carries the
     database path in its message, and ``SanitizedLogFormatter`` masks amounts
