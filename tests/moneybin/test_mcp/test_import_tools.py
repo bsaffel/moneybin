@@ -754,6 +754,32 @@ async def test_import_confirm_ignores_format_created_after_preview(
     }
 
 
+async def test_preview_hint_asks_for_the_mapping_when_a_field_is_missing(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A date hint cannot answer a plan that is also missing a required field.
+
+    Both unreadable-date recoveries remap the date column or supply a format,
+    so with `amount` absent the agent corrects the date, re-previews, and is
+    refused again. The service already preferred unknown_layout here; this
+    builder decided it separately and did not.
+    """
+    csv = tmp_path / "no_amount.csv"
+    csv.write_text(
+        "Date,Description\nnot-a-date,Coffee\nalso-not-a-date,Rent\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(file_path=str(csv))
+
+    hint = " ".join(preview.actions)
+    assert "--date-format" not in hint, hint
+    assert "'<dest_field>'" in hint, hint
+
+
 async def test_override_does_not_promote_an_untouched_weak_match(
     mcp_db: object,
     tmp_path: Path,

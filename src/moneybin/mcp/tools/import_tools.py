@@ -1033,8 +1033,30 @@ def import_preview_coarse(
     expires_wire = expires_at.isoformat()
     # Confirm rejects both of these outright, so the correction hint below has
     # to survive the preview_id rewrite at the end of this function.
+    from moneybin.services.import_confirmation import (
+        classify_unconfirmable_plan,
+        header_row_consumed_recovery_mcp,
+        unreadable_date_recovery_mcp,
+    )
+
     plan_is_unconfirmable = reviewed_plan is not None and (
         reviewed_plan["confidence"] == "low" or reviewed_plan["date_format"] is None
+    )
+    # One classifier, shared with both service branches: which recovery a plan
+    # needs was decided three separate ways and corrected one site at a time,
+    # and each divergence shipped a hint that could not resolve the refusal it
+    # accompanied.
+    plan_reason = (
+        classify_unconfirmable_plan(
+            header_row_looks_like_data=bool(
+                reviewed_plan["header_row_looks_like_data"]
+            ),
+            date_format=reviewed_plan["date_format"],
+            field_mapping=dict(reviewed_plan["field_mapping"]),
+            flagged_fields=list(reviewed_plan["flagged_fields"]),
+        )
+        if reviewed_plan is not None
+        else None
     )
     if isinstance(response.data, ImportPreviewPayload):
         payload: ImportPreviewCoarsePayload = ImportTabularPreviewCoarsePayload(
@@ -1049,30 +1071,9 @@ def import_preview_coarse(
             actions = [
                 "Use import_confirm(preview_id=...) before the preview expires.",
             ]
-        elif reviewed_plan is not None and reviewed_plan["header_row_looks_like_data"]:
-            from moneybin.services.import_confirmation import (
-                header_row_consumed_recovery_mcp,
-            )
-
+        elif plan_reason == "header_row_consumed":
             actions = [header_row_consumed_recovery_mcp()]
-        elif (
-            reviewed_plan is not None
-            and reviewed_plan["date_format"] is None
-            # Only when the column IS mapped. With no transaction_date at all
-            # the plan is a mapping problem — the service says so by reporting
-            # unknown_layout — and no date format can supply a missing column.
-            and "transaction_date" in reviewed_plan["field_mapping"]
-        ):
-            # A mapping= retry cannot change date_format, so when the column is
-            # already mapped and its *values* are what the detector can't read
-            # (a real format it carries no candidate for, e.g. %Y%m%d), the
-            # mapping hint restages the same unconfirmable preview forever. MCP
-            # takes no date-format parameter; the CLI's --date-format is the
-            # only surface that can change the date representation.
-            from moneybin.services.import_confirmation import (
-                unreadable_date_recovery_mcp,
-            )
-
+        elif plan_reason == "unreadable_date":
             actions = [unreadable_date_recovery_mcp(file_path)]
         else:
             actions = [

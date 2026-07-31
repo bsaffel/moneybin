@@ -1483,6 +1483,7 @@ class ImportService:
                     ConfirmationRequired,
                     ImportConfirmationRequiredError,
                     ProposedMapping,
+                    classify_unconfirmable_plan,
                 )
 
                 # The plan persists the tier, not the score, so re-score from
@@ -1560,20 +1561,13 @@ class ImportService:
                         # *values* are the problem — with no date column at all,
                         # --date-format is useless and a mapping override is
                         # the real recovery.
-                        reason=(
-                            "header_row_consumed"
-                            if reviewed_plan.header_row_looks_like_data
-                            else "unreadable_date"
-                            if reviewed_plan.date_format is None
-                            and "transaction_date" in reviewed_plan.field_mapping
-                            # A missing required field outranks the date: both
-                            # unreadable_date actions only remap the date or
-                            # supply a format, so neither supplies what is
-                            # absent, and the corrected preview refuses again.
-                            # unknown_layout's hint asks for the mapping the
-                            # caller actually has to provide.
-                            and not missing_required
-                            else "unknown_layout"
+                        reason=classify_unconfirmable_plan(
+                            header_row_looks_like_data=(
+                                reviewed_plan.header_row_looks_like_data
+                            ),
+                            date_format=reviewed_plan.date_format,
+                            field_mapping=reviewed_plan.field_mapping,
+                            flagged_fields=list(reviewed_plan.flagged_fields),
                         ),
                     )
                 )
@@ -1612,6 +1606,7 @@ class ImportService:
                 ImportConfirmationRequiredError,
                 Override,
                 ProposedMapping,
+                classify_unconfirmable_plan,
                 coerce_number_format,
                 coerce_sign_convention,
                 resolve_or_confirm,
@@ -1724,14 +1719,11 @@ class ImportService:
                         proposed=proposed,
                         # See the reviewed-plan branch: a file with no date
                         # column mapped is a mapping problem, not a format one.
-                        reason=(
-                            "unreadable_date"
-                            if "transaction_date" in proposed.field_mapping
-                            # See the reviewed-plan branch: a still-missing
-                            # required field outranks the date, because the
-                            # date actions cannot supply it.
-                            and not confidence.missing_required
-                            else "unknown_layout"
+                        reason=classify_unconfirmable_plan(
+                            header_row_looks_like_data=False,
+                            date_format=None,
+                            field_mapping=proposed.field_mapping,
+                            flagged_fields=list(mapping_result.flagged_fields),
                         ),
                         samples=dict(proposed.sample_values),
                     )

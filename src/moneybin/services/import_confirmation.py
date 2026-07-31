@@ -271,6 +271,41 @@ def unreadable_date_recovery(file_path: str) -> str:
     )
 
 
+def classify_unconfirmable_plan(
+    *,
+    header_row_looks_like_data: bool,
+    date_format: str | None,
+    field_mapping: dict[str, str],
+    flagged_fields: list[str],
+) -> ConfirmationReason:
+    """Name the cause a caller's next action has to answer.
+
+    One rule, because it was implemented three times and corrected one site
+    at a time: the service's reviewed-plan replay, its first-contact branch,
+    and the MCP preview action builder all decide which recovery to offer for
+    the same staged plan, and every divergence between them shipped a hint
+    that could not resolve the refusal it accompanied.
+
+    Precedence is by what the caller can actually do:
+
+    1. A consumed header row — no input touches it, so it outranks everything.
+    2. A missing required destination — the date recoveries remap a column or
+       supply a format, and neither supplies a field that is absent.
+    3. An unreadable date on a *mapped* column — remap it or name its format.
+    4. Otherwise a plain mapping correction.
+    """
+    from moneybin.extractors.tabular.column_mapper import score_mapping
+
+    if header_row_looks_like_data:
+        return "header_row_consumed"
+    _, missing_required = score_mapping(field_mapping, flagged_fields, date_format)
+    if missing_required:
+        return "unknown_layout"
+    if date_format is None and "transaction_date" in field_mapping:
+        return "unreadable_date"
+    return "unknown_layout"
+
+
 def header_row_consumed_recovery() -> str:
     """The consumed-header recovery, for the CLI and the inbox sidecar.
 
