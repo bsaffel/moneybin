@@ -683,6 +683,11 @@ class InvestmentPricePullPayload:
     queued_for_review: Annotated[int, DataClass.AGGREGATE]
     unpriced: list[InvestmentUnpricedEntry]
     failed_sources: list[InvestmentFailedSourceEntry]
+    # Whether these rows reached core. A pull writes raw.security_prices; every
+    # consumer reads core.fct_security_prices. Without this an agent cannot tell
+    # a current valuation from one that predates the closes it just fetched.
+    refreshed: Annotated[bool, DataClass.AGGREGATE] = False
+    refresh_error: Annotated[str | None, DataClass.AGGREGATE] = None
 
 
 @dataclass(frozen=True, slots=True)

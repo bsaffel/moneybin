@@ -20,6 +20,7 @@ violation, not a capability gap.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
@@ -46,6 +47,25 @@ app = typer.Typer(
     help="Market prices for held securities: refresh feeds, mark by hand, inspect",
     no_args_is_help=True,
 )
+logger = logging.getLogger(__name__)
+
+
+def _report_refresh_failure(error: str | None) -> None:
+    """Surface a failed apply and exit non-zero, in both output modes.
+
+    ``refresh()`` soft-fails so the pull's already-committed rows survive, which
+    leaves the exit code as the only thing a script can gate on. The retry is a
+    bare ``refresh run``: ``raw.security_prices`` is append-only and the closes
+    are already stored, so re-pulling would spend the provider's rate limit
+    re-fetching rows that are sitting there. Mirrors ``sync pull``.
+    """
+    if not error:
+        return
+    logger.warning(
+        f"⚠️  transforms failed ({error}); the new closes landed in raw and are "
+        "not valuing holdings yet. Retry with 'moneybin refresh run'."
+    )
+    raise typer.Exit(1)
 
 
 def _parse_date(value: str, flag: str) -> date:
@@ -80,6 +100,11 @@ def investments_prices_pull(
         "--since",
         help="Fetch closes from this ISO date forward. Default: the last few days.",
     ),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help="Rebuild the price models so the new closes value holdings right away",
+    ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
@@ -91,6 +116,10 @@ def investments_prices_pull(
     A security whose feed key cannot be derived with confidence is queued for
     review rather than bound to a guess — a ticker is not an identifier, so the
     same symbol can name a different security at the provider.
+
+    Closes land in raw.security_prices; holdings value from core. Pass --refresh
+    to rebuild the models in the same command, or run 'moneybin refresh run'
+    afterwards.
     """
     with handle_cli_errors(
         cli_actor="investments_prices_pull",
@@ -98,6 +127,7 @@ def investments_prices_pull(
     ):
         # Deferred: the adapters pull in httpx, which every CLI invocation would
         # otherwise pay for at import time (cli.md cold-start hygiene).
+        from moneybin.services import refresh as refresh_module  # noqa: PLC0415
         from moneybin.services.price_service import build_price_service  # noqa: PLC0415
 
         start = _parse_date(since, "--since") if since else None
@@ -105,6 +135,13 @@ def investments_prices_pull(
             service = build_price_service(db, actor="investments_prices_pull")
             security_ids = [service.resolve_security(ref) for ref in securities] or None
             result = service.pull(security_ids=security_ids, since=start)
+            # Unconditional when asked for, unlike sync's rows_changed gate: that
+            # gate exists because sync refreshes on its own, so a no-op apply is
+            # pure cost. Here the user named the flag, and a pull writing nothing
+            # this time can still be the one that follows a pull left unapplied.
+            refreshed = (
+                refresh_module.refresh(db, steps=["transform"]) if refresh else None
+            )
 
     payload = InvestmentPricePullPayload(
         rows_written=result.rows_written,
@@ -119,11 +156,14 @@ def investments_prices_pull(
             InvestmentFailedSourceEntry(source_type=f.source_type, message=f.message)
             for f in result.failed_sources
         ],
+        refreshed=bool(refreshed and refreshed.applied),
+        refresh_error=refreshed.error if refreshed else None,
     )
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(data=payload), output, cli_actor="investments_prices_pull"
         )
+        _report_refresh_failure(payload.refresh_error)
         return
     if not quiet:
         typer.echo(
@@ -135,6 +175,15 @@ def investments_prices_pull(
                 f"👀 {result.queued_for_review} feed key(s) need review — "
                 "run 'moneybin investments securities links pending'"
             )
+        # Closes land in raw; holdings value from core. Say so, or a user who
+        # pulls and immediately lists sees the pre-pull series with nothing
+        # explaining why. Silent when nothing new landed, and when --refresh
+        # already propagated it — a failed apply reports through its own path.
+        if result.rows_written and refreshed is None:
+            typer.echo(
+                "💡 These closes value holdings once the models rebuild — "
+                "run 'moneybin refresh run', or pull with --refresh next time"
+            )
     # A whole-source failure no longer aborts the run, so it has to be visible
     # here or the only trace is every one of that source's securities reporting
     # 'price_feed_error' with nothing saying what to fix. stderr because it is a
@@ -143,6 +192,7 @@ def investments_prices_pull(
         typer.echo(f"⚠️  {failure.source_type}: {failure.message}", err=True)
     for entry in result.unpriced:
         typer.echo(f"{entry.security_id:<14} unpriced: {entry.reason}")
+    _report_refresh_failure(payload.refresh_error)
 
 
 @app.command("set")

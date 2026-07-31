@@ -262,11 +262,17 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   +-- select <disposal_id> --lot <lot_id>:<qty> [--lot ...]  -- Replace lot selection (declarative set; multi-lot)
 |   +-- gains                      -- Realized gain/loss (the 1099-B surface)
 |   +-- prices                     -- Market prices for held securities (Pillar C.2)
-|   |   +-- pull [--security REF]... [--since DATE]
+|   |   +-- pull [--security REF]... [--since DATE] [--refresh]
 |   |   |         Refresh stored closes for held positions from the configured feeds.
 |   |   |         Fetch scope comes from open positions, not the whole catalog. A feed
 |   |   |         key that cannot be derived with confidence is queued for review
 |   |   |         rather than bound to a guess -- a ticker is not an identifier.
+|   |   |         Closes land in raw.security_prices and holdings value from core, so
+|   |   |         a pull alone changes no reported value. --refresh rebuilds the
+|   |   |         transform step in the same command; without it the success line
+|   |   |         names `refresh run`. A failed apply exits 1 in both output modes --
+|   |   |         the rows are already committed, so the retry is a bare `refresh
+|   |   |         run`, never a re-pull against the provider's rate limit.
 |   |   +-- set <security> <date> <price> [--currency CUR] [--note TEXT]
 |   |   |         Record your own price. Outranks every provider close for that date
 |   |   |         and leaves other dates untouched. A non-positive price is refused:

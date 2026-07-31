@@ -313,6 +313,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   queued feed key binds it (`moneybin investments securities links set <id>
   --accept --into <security>`); accepting an identity decision still merges the
   two securities, and the confirmation you are shown says which one it is.
+  Pulled closes reach your holdings once the models rebuild: pass
+  `--refresh` to do it in the same command, or run `moneybin refresh run`
+  afterwards — the pull names the step rather than leaving new rows silently
+  unreachable. A failed rebuild exits non-zero and tells you to retry the
+  rebuild alone, since the closes are already stored and re-pulling would
+  spend the provider's rate limit re-fetching them.
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.
