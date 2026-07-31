@@ -114,16 +114,6 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.formats",
         "TabularFormat",
     ),
-    # BridgeResponseError is a pure exception type (ValueError subclass) caught
-    # at the import_confirm boundary so a malformed bridge response maps to a
-    # clean import_bridge_response_invalid UserError — without also swallowing a
-    # ValueError raised later by extraction/load. No DB or extractor logic
-    # crosses the layer.
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.pdf.bridge",
-        "BridgeResponseError",
-    ),
     # --- Pure utility functions (parsing / detection, no DB) ------------
     # detect_format / map_columns / read_file are stateless transforms
     # over file content. They produce dataframes/structs that services
@@ -148,6 +138,14 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.column_mapper",
         "map_columns",
     ),
+    # why: pure read — samples one column of an in-memory frame the adapter
+    # already holds. Needed so a mapping override can refresh samples for a
+    # destination the detector never proposed.
+    (
+        "mcp/tools/import_tools.py",
+        "moneybin.extractors.tabular.column_mapper",
+        "collect_samples",
+    ),
     (
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.format_detector",
@@ -157,6 +155,15 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.readers",
         "read_file",
+    ),
+    # FIELD_ALIASES is a pure module-level constant (destination field name ->
+    # alias list) — import_preview's mapping= override validates against its
+    # keys the same way the service layer's resolve_or_confirm does. No DB or
+    # extractor logic crosses the layer.
+    (
+        "mcp/tools/import_tools.py",
+        "moneybin.extractors.tabular.field_aliases",
+        "FIELD_ALIASES",
     ),
     # `formats` re-exports — multi-name imports from the same module
     # flatten to one allowlist entry per imported name. These are all

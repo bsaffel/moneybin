@@ -1186,6 +1186,103 @@ class TestPendingSidecarAccountHint:
         actions = payload["actions"]
         assert all("--account-name chase-checking" in a for a in actions), actions
 
+    def test_every_sidecar_command_survives_a_path_with_spaces(
+        self, tmp_path: Path
+    ) -> None:
+        """A pending file under "Bank Exports/" must still yield runnable commands.
+
+        Quoting was fixed once in the shared recovery helper and then a new
+        unquoted command was added beside it, so assert across *every* emitted
+        `moneybin` command rather than the one line last reported.
+        """
+        import shlex
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "jan stmt.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("Date,Amount\n2026-05-01,-10\n")
+
+        # header_row_consumed offers no command on purpose — nothing MoneyBin
+        # runs un-consumes a header row — so it asserts the opposite.
+        for reason, expects_command in (
+            ("unknown_layout", True),
+            ("unreadable_date", True),
+            ("account_confirmation", True),
+            ("header_row_consumed", False),
+        ):
+            sidecar = svc.write_pending_sidecar(
+                _Path(moved),
+                channel="tabular",
+                tier="medium",
+                score=0.75,
+                reason=reason,
+                proposed_mapping={"transaction_date": "Date", "amount": "Amount"},
+                samples={},
+                flagged=[],
+                missing_required=[],
+                unmapped_columns=[],
+            )
+
+            import yaml
+
+            raw = str(moved)
+            quoted = shlex.quote(raw)
+            checked = 0
+            for action in yaml.safe_load(sidecar.read_text())["actions"]:
+                if "moneybin " not in action or raw not in action:
+                    continue
+                checked += 1
+                assert quoted in action, f"{reason}: unquoted path in {action!r}"
+            if expects_command:
+                assert checked, f"{reason} emitted no command naming the file"
+            else:
+                assert not checked, f"{reason} must offer no command to run"
+
+    def test_unreadable_date_sidecar_names_both_recoveries(
+        self, tmp_path: Path
+    ) -> None:
+        """The sidecar is a fourth surface carrying the same recovery text.
+
+        Its generic branch offers `--accept` (which re-hits the gate) and a
+        bare `--mapping` with no hint that the date column is the one to
+        correct. The unreadable-date branch must name the column correction
+        *and* `--date-format`, since either can be the real fix depending on
+        whether the right column was mapped.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "compact.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("Date,Amount\n20260501,-10\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="tabular",
+            tier="medium",
+            score=0.75,
+            reason="unreadable_date",
+            proposed_mapping={"transaction_date": "Date", "amount": "Amount"},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+        )
+
+        import yaml
+
+        actions = yaml.safe_load(sidecar.read_text())["actions"]
+        recovery = [a for a in actions if "--date-format" in a]
+        assert recovery, actions
+        assert any("--mapping transaction_date=" in a for a in recovery), recovery
+        # --accept is the one option that helps in neither case.
+        assert not any("--accept" in a for a in actions), actions
+
     def test_actions_omit_account_name_when_no_hint(self, tmp_path: Path) -> None:
         from pathlib import Path as _Path
 

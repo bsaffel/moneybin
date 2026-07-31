@@ -74,6 +74,7 @@ def _make_confirmation_error(
     missing_required: tuple[str, ...] = (),
     field_mapping: dict[str, str] | None = None,
     unmapped: tuple[str, ...] = ("Notes",),
+    reason: str = "unknown_layout",
 ) -> ImportConfirmationRequiredError:
     """Build an ImportConfirmationRequiredError with testable defaults."""
     if field_mapping is None:
@@ -97,7 +98,7 @@ def _make_confirmation_error(
         channel="tabular",
         confidence=confidence,
         proposed=proposed,
-        reason="unknown_layout",
+        reason=reason,  # type: ignore[arg-type]  # test fixture accepts every reason
         samples=dict(proposed.sample_values),
     )
     return ImportConfirmationRequiredError(outcome)
@@ -483,6 +484,71 @@ class TestImportFilesConfirmFlow:
         assert payload["data"]["channel"] == "tabular"
         assert "proposed_mapping" in payload["data"]
         assert "samples" in payload["data"]
+
+    def test_consumed_header_actions_do_not_prescribe_another_mapping(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """No mapping restores a row already read as column names.
+
+        The reason was wired into the MCP action builders and not the CLI, so
+        both catch blocks fell into the generic branch and told the user to
+        retry with another mapping — which returns the same refusal.
+        """
+        csv_file = tmp_path / "headerless.csv"
+        csv_file.write_text("2026-01-05,-4.50,Coffee\n")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(reason="header_row_consumed"),
+        )
+
+        result = runner.invoke(app, ["files", str(csv_file), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["data"]["reason"] == "header_row_consumed"
+        actions = payload["actions"]
+        assert any("Add a header row" in a for a in actions), actions
+        assert not any("--mapping <field>=<column>" in a for a in actions), actions
+        assert not any("--confirm to accept" in a for a in actions), actions
+
+    def test_unreadable_date_json_actions_name_both_recoveries(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """An unreadable date has two causes, and the actions must name both.
+
+        `--date-format` alone is a dead end when a status column claimed the
+        date alias: map_columns re-runs detection against whatever an override
+        names, so a column correction recovers that file while a format aimed
+        at the wrong column is refused again. `--mapping` alone is a dead end
+        when the mapped column is right and its format simply has no candidate.
+        The generic `--confirm` accept hint helps in neither case — it re-hits
+        this gate, which fires ahead of resolve_or_confirm whatever signal it
+        carries.
+        """
+        csv_file = tmp_path / "compact.csv"
+        csv_file.write_text("Date,Amount,Memo\n20260105,-50.00,Coffee\n")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(reason="unreadable_date"),
+        )
+
+        result = runner.invoke(app, ["files", str(csv_file), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["data"]["reason"] == "unreadable_date"
+        actions = payload["actions"]
+        recovery = [a for a in actions if "--date-format" in a]
+        assert recovery, actions
+        # One action carries both, so neither cause is left without a fix.
+        assert any("--mapping transaction_date=" in a for a in recovery), recovery
+        assert not any("--confirm to accept" in a for a in actions)
 
     def test_unknown_layout_json_envelope_includes_tier(
         self,

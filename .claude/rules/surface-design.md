@@ -184,7 +184,7 @@ Use `_confirm` when the proposal originates from the system. Use `_commit` when 
 
 **Canonical confirm pairing (`import_files` + `import_confirm`).** The propose→review→confirm pattern uses a **gated establish** tool plus a `_confirm` terminal tool:
 1. The establish tool (`import_files`) runs detection and returns a `confirmation_required` envelope (with `proposed_mapping`, `samples`, `flagged`, and `actions[]` hints) when it encounters an unknown layout instead of importing.
-2. The caller inspects the proposal (optionally via `import_preview`) and calls the `_confirm` tool (`import_confirm`) with `accept=True` or a partial `mapping={...}` override to ratify and execute.
+2. The caller inspects the proposal via `import_preview(file_path=..., mapping={...})` — the mapping-override correction lives here, since a staged preview is immutable — then calls the `_confirm` tool (`import_confirm(preview_id=...)`) to ratify and execute the unchanged preview.
 
 This is the canonical shape for any new system-proposed-then-ratified flow: the entry tool gates and returns the proposal; a `_confirm` tool takes the ratification. Do not introduce `_apply`, `_execute`, or action-polymorphism in this pattern.
 

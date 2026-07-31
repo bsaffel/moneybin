@@ -382,6 +382,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   schema in addition to `core`/`app`.** Report columns are masked by each
   report's declared privacy classes, same as the typed tools — account and
   routing numbers stay masked (`****<last4>`). (#330)
+- **A confirmation refusal can now report `reason="unreadable_date"` (#372).**
+  It narrows `unknown_layout` to the one cause a column correction cannot
+  answer: a mapped date column whose values nothing could parse. The CLI, the
+  inbox sidecar, and the MCP envelope use it to prescribe `--date-format`
+  instead of an accept/override retry that returns to the same gate. A file
+  with no date column mapped keeps reporting `unknown_layout`, because there a
+  mapping override is the real recovery. Agents branching on `reason` should
+  handle the new value.
+- **A malformed PDF `bridge_response` now reports `infra_invalid_input`
+  instead of `import_bridge_response_invalid` (#372).** The bridge-specific
+  code is retired along with the branch that raised it; the failure is an
+  input-validation error like any other. Callers matching the old code need
+  updating. Three further codes are retired with the branches that raised
+  them: `import_confirm_channel_conflict`, `import_confirm_requires_signal`,
+  and `import_file_changed_during_confirmation`.
+- **`import_confirm` now declares a maximum sensitivity of `critical`, up
+  from `medium` (#372).** Its refusal envelope can carry
+  `account_proposals[].source_account_key`, which is an account identifier,
+  so the tool's declared ceiling has to admit the critical tier for the
+  masking middleware to apply. Hosts that gate tools on declared sensitivity
+  will see `import_confirm` move band.
 
 ### Fixed
 - **An export you ran earlier is findable afterwards (#374).** `export_run` and
@@ -399,6 +420,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   if it fails after a successful publish, the run still succeeds and the
   returned receipt is your only copy. The published artifact itself stays
   permanent and is not undoable.
+- **A mapping override that switches to debit/credit columns no longer keeps
+  the discarded column's number format (#372).** The detector reads the number
+  format from the single `amount` column, so correcting a layout to a
+  `debit_amount`/`credit_amount` pair left the format derived from the column
+  the correction retired. A US-formatted `Amount` beside European split columns
+  parsed `1.234,56` as `1.23456` — wrong by three orders of magnitude, with no
+  error — and saved that format for later imports of the same layout. Both the
+  MCP preview and the CLI first-contact path now re-read the format from the
+  surviving amount columns.
+- **An import no longer reports success on a statement MoneyBin could not
+  read (#372).** `import_confirm` replayed a staged preview whose column mapping
+  scored low — or whose date format was never detected — straight into the
+  loader, which parsed zero rows and returned a successful import of nothing.
+  `moneybin import confirm <file> --accept` had the same hole on first contact:
+  a date column that matched by header but whose values nothing could parse
+  scored medium, which `--accept` resolved unconditionally.
+  Both cases now return `confirmation_required` carrying the file's own column
+  names and sample values, and name the recovery path: `import_preview` with a
+  `mapping` override stages a corrected preview to confirm instead. An override
+  that switches between a single `amount` column and a `debit`/`credit` pair now
+  also retires the detector's sign rule, which would otherwise have rejected
+  every row. An override that leaves a header row consumed as data — or a date
+  column whose values nothing can parse — holds the confirmation gate open at
+  the tier the detector actually scored, instead of reporting high confidence
+  beside a preview that says it is not confirmable. When the header row itself
+  was a transaction, the preview now says so and points at the source file:
+  no column correction recovers a record consumed as column names. A date
+  column the detector carries no candidate for is still importable through
+  `moneybin import files <file> --confirm --date-format <strptime>`; that
+  override is now checked against the column's own values first — whether the
+  layout was detected fresh, matched a saved format, or matched a built-in one
+  — so a format that cannot read the file is refused rather than loading
+  nothing. A refusal that replays a staged preview also reports the score and
+  flagged fields the preview showed, instead of re-deriving a clean score that
+  named nothing to correct. `moneybin import files`, `moneybin import confirm`,
+  and the inbox sidecar now name both real recoveries for that refusal —
+  `--mapping transaction_date=<column>` when a status column claimed the date
+  alias, `--date-format <strptime>` when the mapped column is right and its
+  format simply has no candidate — in place of a bare `--confirm`, which
+  returns to the same gate. `moneybin import preview` prints `Date format: not
+  detected` rather than dropping the line.
 - **A card imported from both a PDF statement and a bank file no longer loads
   twice (#371).** PDF import built its account key as a string and skipped the
   identity resolver every other source uses, so the same card arriving as a PDF
@@ -698,6 +760,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reach the model provider as-is, and there is no consent gate yet.
 
 ### Security
+- **Fixed a redaction bypass that returned a source account identifier in the
+  clear through `import_confirm`'s `confirmation_required` envelope (#372).**
+  The tool declares `dynamic_classification=True`, and the decorator skips
+  `redact_typed` for dynamic tools — so the raw-dict envelope shipped
+  `account_proposals[].source_account_key` (the native OFX/Plaid identifier,
+  `ACCOUNT_IDENTIFIER` → CRITICAL) unmasked, with no `classes_returned`
+  recorded. It is now a typed `ImportConfirmRequiredPayload` routed through the
+  redaction path, the key is masked, and `classes_returned` reports
+  `account_identifier`. A related hint in `actions[]` interpolated the same raw
+  key into prose, which the middleware never redacts; it no longer names the
+  key at all.
 - **Fixed an under-classification leak that returned a bank routing number in
   the clear through `sql_query` / `moneybin sql query` via `INTERSECT`.** The
   set-operation fix in #330 treated `INTERSECT` like `EXCEPT` — values from the
