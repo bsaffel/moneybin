@@ -468,7 +468,9 @@ def test_reissued_card_dissimilar_alias_surfaces_for_review(db: Database) -> Non
         "WHERE decision_id = ?",
         [reissued.pending_decision_ids[0]],
     ).fetchone()
-    assert dec == (first.account_id, "institution")
+    # Its own signal string, not the fallback pick-list's "institution" — the
+    # review queue has to show which of the two proposed this pairing.
+    assert dec == (first.account_id, "institution_reissue")
 
 
 def test_institution_last4_skips_when_slug_is_empty(db: Database) -> None:

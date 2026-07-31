@@ -318,7 +318,17 @@ signal reliability:
    no existing account holds them, and it lets a later source bearing the same
    token / scoped number auto-adopt via step 1 instead of minting a duplicate.
    Then look for existing accounts sharing `institution + last4` (when institution
-   is known), then fuzzy `account_name`, querying `core.dim_accounts`:
+   is known), then fuzzy `account_name`, then the **reissue signal** — same
+   institution where both sides carry a last-four and the two *differ*
+   (`institution_reissue`, confidence 0.3) — querying `core.dim_accounts`. The
+   reissue signal exists because a replacement card changes its last four by
+   definition, so signal 1 cannot fire; and on the PDF path `account_name` is a
+   per-file filename alias, so signal 2 misses too. Requiring a last-four on both
+   sides, and requiring them to differ, keeps it the reissue shape rather than a
+   general "any account at this institution" list. It is on for `resolve()` and
+   its `propose()` preview, which must agree, and off for `propose_existing()`
+   backfill, where every account is already known-distinct and pairwise proposals
+   would be noise:
    - **0 candidates** → done: a new standalone account. Its `last_four` /
      institution / name (captured per Decision 7) become candidate signals for
      *future* imports.

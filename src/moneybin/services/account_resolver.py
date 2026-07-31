@@ -634,7 +634,12 @@ class AccountResolver:
         return [
             _Candidate(
                 account_id=str(r[0]),
-                signal="institution",
+                # Distinct from _fallback_candidates' "institution": both are
+                # institution-scoped, but this one fired on real evidence (a
+                # last-four that changed) and that one fired because nothing did.
+                # The string is persisted as match_reason and shown in the review
+                # queue, so collapsing them would hide which it was.
+                signal="institution_reissue",
                 value=target_inst,
                 confidence=0.3,
             )

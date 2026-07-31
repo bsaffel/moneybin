@@ -257,7 +257,8 @@ class LinkCandidateRow:
     # embed identifying text, so it must not be under-classified to LOW here.
     candidate_display_name: Annotated[str, DataClass.USER_NOTE]
     confidence: Annotated[float | None, DataClass.AGGREGATE]
-    signal: Annotated[str, DataClass.TXN_TYPE]  # "institution_last4" or "name"
+    # "institution_last4", "name", or "institution_reissue"
+    signal: Annotated[str, DataClass.TXN_TYPE]
 
     @classmethod
     def from_candidate(cls, c: PendingLinkCandidate) -> LinkCandidateRow:

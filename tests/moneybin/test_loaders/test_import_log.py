@@ -173,6 +173,36 @@ class TestFindExistingImportByContent:
         )
         assert result == (import_id, "complete")
 
+    def test_a_changed_file_at_the_same_path_is_a_new_import(
+        self, db: Database
+    ) -> None:
+        """Same name, different bytes — July's statement saved over June's.
+
+        Reusing one filename is ordinary: a fixed download-manager target, or
+        just overwriting last month's file. The path predicate exists for rows
+        that predate ``file_sha256`` and therefore carry NULL; once a row has a
+        real digest, content is what identifies it, and different bytes are a
+        different document. Matching such a row on path alone would reject a
+        genuinely new statement as "already imported".
+        """
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+            file_sha256=self._DIGEST,
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/statement.ofx",  # noqa: S108  # same path...
+            file_sha256=self._OTHER_DIGEST,  # ...different bytes
+        )
+        assert result is None
+
     def test_does_not_match_different_content_at_a_new_path(self, db: Database) -> None:
         import_id = import_log.begin_import(
             db,

@@ -375,12 +375,18 @@ def find_existing_import(
 ) -> tuple[str, str] | None:
     """Return (import_id, status) for the most recent live batch, or None.
 
-    Matches on the source path **or** the file's content digest, so a second
-    download saved as ``statement (1).pdf`` and a statement filed out of
-    Downloads are both recognized as the document they already are. Path is
-    kept alongside content because batches predating ``file_sha256`` carry
-    NULL, and a NULL is not a wildcard — a caller's real digest must never
-    match one.
+    Matches on the file's content digest, so a second download saved as
+    ``statement (1).pdf`` and a statement filed out of Downloads are both
+    recognized as the document they already are.
+
+    Path matching is scoped to rows that carry no digest — batches imported
+    before ``file_sha256`` existed, which cannot be re-derived because their
+    source file may be long gone. Once a row has a real digest, content alone
+    identifies it: reusing one filename across months is ordinary, and matching
+    such a row on path would reject a genuinely new statement as already
+    imported. A NULL is a wildcard in neither direction — a caller's real digest
+    never matches a legacy row, and a caller with no digest never collapses two
+    of them.
 
     Excludes 'reverted' and 'failed' rows. Returns 'importing' batches too
     so callers can distinguish a successful prior import from a crashed
@@ -391,7 +397,7 @@ def find_existing_import(
         SELECT import_id, status
         FROM {IMPORT_LOG.full_name}
         WHERE (
-                source_file = ?
+                (source_file = ? AND file_sha256 IS NULL)
              OR (? IS NOT NULL AND file_sha256 = ?)
           )
           AND status NOT IN ('reverted', 'failed')
