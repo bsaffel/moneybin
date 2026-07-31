@@ -439,7 +439,7 @@ class TestTabularConfirmationFlow:
     ) -> None:
         """Layouts with debit_amount + credit_amount (no single 'amount') must validate.
 
-        _score_mapping treats debit_amount + credit_amount as satisfying the
+        score_mapping treats debit_amount + credit_amount as satisfying the
         amount requirement (returns score=1.0), so _import_tabular must pass
         the matching required_fields tuple to resolve_or_confirm instead of
         the literal ('transaction_date', 'amount', 'description') — otherwise

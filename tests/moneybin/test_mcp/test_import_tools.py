@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import shlex
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,7 +22,6 @@ from moneybin.extractors.confidence import Confidence
 from moneybin.mcp.tools.import_tools import (
     _bridge_confirm_action,  # pyright: ignore[reportPrivateUsage]
     _validate_file_path,  # pyright: ignore[reportPrivateUsage]
-    import_confirm,
     import_confirm_coarse,
     import_files,
     import_files_coarse,
@@ -2023,6 +2021,96 @@ async def test_import_confirm_coarse_rejects_pdf_without_confirmation_gate(
     assert response.error.code == "import_preview_direct_import_required"
 
 
+def _sign_payload(**overrides: Any) -> dict[str, Any]:
+    """A sign-confirmation payload as confirmation_payload_dict emits one."""
+    payload: dict[str, Any] = {
+        "sign_evidence": ["Amount"],
+        "sign_sample_rows": [],
+        "sign_convention": "negative_is_income",
+        "sign_prior_convention": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_the_elicitation_prompt_describes_the_flip_that_will_apply() -> None:
+    """A self-healed recipe must not be described with first-contact wording.
+
+    `_sign_confirmation_message` is the last thing a human reads before a
+    ledger-wide sign change. On the `sign_prior_convention` branch the flip is
+    a *repair* that can un-invert; the credit-card wording describes the
+    opposite of what approving does, so they would ratify the reverse.
+    """
+    from moneybin.mcp.tools.import_tools import (
+        _sign_confirmation_message,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    message = _sign_confirmation_message(
+        _sign_payload(
+            sign_convention="negative_is_expense",
+            sign_prior_convention="negative_is_income",
+        ),
+        source="PDF statement",
+    )
+
+    assert "credit card" not in message.lower()
+    assert "negative_is_income" in message
+    assert "negative_is_expense" in message
+
+
+def test_the_elicitation_prompt_keeps_card_framing_on_first_contact() -> None:
+    """With no prior convention, "is this a credit card?" is the real question."""
+    from moneybin.mcp.tools.import_tools import (
+        _sign_confirmation_message,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    message = _sign_confirmation_message(_sign_payload(), source="PDF statement")
+
+    assert "credit card" in message.lower()
+    assert "Approve this sign inversion?" in message
+
+
+@pytest.mark.parametrize(
+    "signal",
+    [
+        {"account_name": "Checking"},
+        {"account_bindings": {"stmt-key": "acct_123"}},
+        {"account_metadata": {"stmt-key": {"institution": "Chase"}}},
+    ],
+    ids=["account_name", "account_bindings", "account_metadata"],
+)
+async def test_import_confirm_coarse_rejects_every_tabular_account_signal_for_pdf(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    signal: dict[str, Any],
+) -> None:
+    """A PDF preview refuses every tabular account signal, not just account_name.
+
+    PDF rows resolve the account from the statement; only account_id pins them
+    to an existing one. Each arm needs its own case — a guard narrowed to the
+    one signal under test would silently drop the other two, binding the
+    statement to whichever account the extractor inferred with no error.
+    """
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "preview",
+            "channel": "pdf",
+            "deterministic": True,
+        },
+    )
+
+    response = await import_confirm_coarse(preview_id=preview_id, **signal)
+
+    assert response.error is not None
+    assert response.error.code == "import_pdf_account_signal_unsupported"
+
+
 async def test_import_preview_coarse_keeps_ofx_on_direct_import_surface(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -2035,6 +2123,147 @@ async def test_import_preview_coarse_keeps_ofx_on_direct_import_surface(
 
     assert response.error is not None
     assert response.error.code == "import_preview_direct_import_required"
+
+
+async def test_import_preview_coarse_mapping_override_corrects_swapped_columns(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """mapping= on import_preview overrides the auto-detected column mapping.
+
+    The mapping-override capability lives on import_preview (Option A), not
+    import_confirm — staged previews are immutable (Req 8 in
+    smart-import-confirmation.md), so a mapping correction builds a fresh
+    preview rather than mutating the confirm call.
+    """
+    csv = tmp_path / "swapped.csv"
+    csv.write_text(
+        "Date,Amount,Description\n"
+        "2026-07-01,Coffee purchase,-4.50\n"
+        "2026-07-02,Salary deposit,100.00\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(
+        file_path=str(csv),
+        mapping={"amount": "Description", "description": "Amount"},
+    )
+
+    assert preview.data.mapping["amount"] == "Description"
+    assert preview.data.mapping["description"] == "Amount"
+
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+    assert confirmed.data.status == "complete"
+    assert confirmed.data.rows_loaded == 2
+
+
+async def test_mapping_override_to_single_amount_retires_the_split_sign_rule(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Overriding a split layout to one amount column must move the sign rule too.
+
+    The detector sees Debit/Credit and infers ``split_debit_credit``. Carrying
+    that convention onto a single-``amount`` mapping makes ``_extract_amounts``
+    take the split branch, find no debit_amount, and reject every row — the
+    confirm then reports ``complete`` with ``rows_loaded: 0`` and no error,
+    which is exactly the silent failure the confirm gate exists to prevent.
+    """
+    csv = tmp_path / "split.csv"
+    csv.write_text(
+        "Date,Debit,Credit,Net,Description\n"
+        "2026-07-01,4.50,,-4.50,Coffee\n"
+        "2026-07-02,,100.00,100.00,Salary\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    baseline = await import_preview_coarse(file_path=str(csv))
+    assert baseline.data.sign_convention == "split_debit_credit"
+
+    preview = await import_preview_coarse(file_path=str(csv), mapping={"amount": "Net"})
+
+    assert preview.data.mapping["amount"] == "Net"
+    assert "debit_amount" not in preview.data.mapping
+    assert preview.data.sign_convention != "split_debit_credit"
+    # A dropped destination must not keep advertising samples.
+    assert "debit_amount" not in preview.data.sample_values
+    assert "credit_amount" not in preview.data.sample_values
+
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+    assert confirmed.data.status == "complete"
+    assert confirmed.data.rows_loaded == 2
+
+
+async def test_mapping_override_does_not_clear_a_structural_red_flag(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """An override answers a column question, not "the header row is a transaction".
+
+    ``resolve_tier`` forces ``low`` on a structural red flag so the confirm
+    gate engages, and that forced tier is the only carrier of the flag into
+    import_confirm. Promoting to ``high`` on any override would let a
+    one-field correction disarm the gate for a file whose first transaction
+    row was consumed as column names.
+    """
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    # No header row — pl.read_excel eats this real transaction as column names.
+    ws.append(["2026-07-01", -4.50, "Coffee"])
+    ws.append(["2026-07-02", 100.00, "Salary"])
+    xlsx = tmp_path / "headerless.xlsx"
+    wb.save(xlsx)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    baseline = await import_preview_coarse(file_path=str(xlsx))
+    assert baseline.data.header_row_looks_like_data is True
+    assert baseline.data.confidence == "low"
+
+    preview = await import_preview_coarse(
+        file_path=str(xlsx),
+        mapping={"description": "Coffee"},
+    )
+
+    assert preview.data.header_row_looks_like_data is True
+    assert preview.data.confidence == "low"
+
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+    assert confirmed.data.status == "confirmation_required"
+
+
+async def test_import_preview_coarse_rejects_invalid_mapping_override(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """An override naming a nonexistent source column raises, not silently drops."""
+    csv = tmp_path / "basic.csv"
+    csv.write_text("Date,Amount,Description\n2026-07-01,-4.50,Coffee\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    response = await import_preview_coarse(
+        file_path=str(csv),
+        mapping={"description": "NoSuchColumn"},
+    )
+
+    assert response.error is not None
+    assert response.error.code == "import_preview_mapping_invalid"
+    assert "NoSuchColumn" in response.error.message
 
 
 async def test_import_preview_confirm_status_coarse_workflow(
@@ -2064,6 +2293,89 @@ async def test_import_preview_confirm_status_coarse_workflow(
 
     assert confirmed.data.status == "complete"
     assert status.data.sections[0].records[0]["status"] == "complete"
+
+
+async def test_import_confirm_coarse_surfaces_account_confirmation_instead_of_crashing(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A bare single-account CSV surfaces account_confirmation, not a crash.
+
+    Regression test for the crash reported live: import_preview_coarse tells
+    the caller to call import_confirm(preview_id=...), but a bare
+    single-account file (no account_name/account_id, no account-identifying
+    column) used to raise an unhandled ImportConfirmationRequiredError
+    instead of surfacing the account_confirmation proposal.
+    """
+    from moneybin.privacy.payloads.imports import ImportConfirmRequiredPayload
+
+    csv = tmp_path / "statement.csv"
+    csv.write_text(
+        "Date,Description,Amount\n2026-07-01,Coffee,-4.50\n2026-07-02,Deposit,100.00\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(file_path=str(csv))
+    confirmed = await import_confirm_coarse(preview_id=preview.data.preview_id)
+
+    assert confirmed.error is None
+    data = confirmed.data
+    assert isinstance(data, ImportConfirmRequiredPayload)
+    assert data.status == "confirmation_required"
+    assert data.reason == "account_confirmation"
+    assert data.account_proposals
+    # import_confirm is dynamic_classification=True, so the decorator does not
+    # redact for it. source_account_key is ACCOUNT_IDENTIFIER (CRITICAL) — a
+    # raw-dict envelope shipped it verbatim.
+    key = data.account_proposals[0].get("source_account_key", "")
+    assert key.startswith("****"), key
+    assert confirmed.classes_returned is not None
+    assert "account_identifier" in confirmed.classes_returned
+
+
+async def test_import_confirm_coarse_gates_low_confidence_reviewed_plan(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A low-confidence preview must not silently succeed with 0 rows at confirm.
+
+    Regression test: the reviewed_plan confirm path never checked confidence
+    tier at all. import_preview_coarse persists a plan with confidence='low',
+    but import_confirm_coarse loaded it unconditionally — the transform step
+    then dropped every row it couldn't parse, "succeeding" with rows_loaded=0
+    and no error (spec Requirement 4: low is never auto-acceptable).
+    """
+    from moneybin.privacy.payloads.imports import ImportConfirmRequiredPayload
+
+    csv = tmp_path / "notes.csv"
+    csv.write_text(
+        "Notes,Reference\n"
+        "Some transaction narrative text here,REF001\n"
+        "Another narrative description entry,REF002\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(file_path=str(csv))
+    assert preview.data.confidence == "low"
+
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+
+    assert confirmed.error is None
+    data = confirmed.data
+    assert isinstance(data, ImportConfirmRequiredPayload)
+    assert data.status == "confirmation_required"
+    assert data.reason == "unknown_layout"
+    # The recovery hint tells the agent to send mapping={dest: source_column},
+    # so between the proposal and the unmapped list the envelope must name
+    # every column in the file — otherwise the agent has nothing to fill in.
+    named = set(data.proposed_mapping.values()) | set(data.unmapped_columns)
+    assert named == {"Notes", "Reference"}
+    assert data.samples, "samples must show what each mapped column contains"
 
 
 async def test_import_status_coarse_defaults_to_all_sections(
@@ -2570,21 +2882,18 @@ def test_symlink_escaping_home_raises_user_error(
     assert excinfo.value.code == "import_invalid_file_path"
 
 
-def test_bridge_confirm_action_quotes_path_with_apostrophe() -> None:
-    """Embed a single-quote path via ``repr``, not raw interpolation.
+def test_bridge_confirm_action_names_the_preview_id_workflow() -> None:
+    """The bridge hint ratifies a staged preview, never a raw file path.
 
-    Keeps the suggested ``import_confirm`` call in the action hint a
-    syntactically valid string literal even when the path contains a quote.
+    A path-keyed confirm signature no longer exists; suggesting one sends the
+    agent at a call that cannot be made.
     """
-    path = "/home/alice/O'Brien/statement.pdf"
+    hint = _bridge_confirm_action(payload_ref="bridge_payload")
 
-    hint = _bridge_confirm_action(path, payload_ref="bridge_payload")
-
-    # repr-quoted form: file_path="/home/alice/O'Brien/statement.pdf" — valid.
-    assert f"file_path={path!r}" in hint
-    # The buggy form file_path='/home/alice/O'Brien/...' is an unterminated
-    # literal and must not appear.
-    assert f"file_path='{path}'" not in hint
+    assert "import_confirm(preview_id=..., bridge_response=" in hint
+    assert "file_path=" not in hint
+    # The transparency notice must survive — it is why the agent may read the doc.
+    assert "transparency_notice" in hint
 
 
 # ---------------------------------------------------------------------------
@@ -2691,10 +3000,15 @@ class TestImportFilesConfirmationRequired:
         # batches stay at "low"; any pending file bumps the batch to "medium".
         assert result.summary.sensitivity == "medium"
 
-    async def test_actions_list_includes_import_confirm_hint(
+    async def test_confirmation_actions_route_through_the_staged_preview(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        """actions[] includes a concrete import_confirm invocation hint."""
+        """A pending file is corrected via import_preview, never a path-keyed confirm.
+
+        import_confirm takes a preview_id only. A hint naming file_path=,
+        accept=, or mapping= on the confirm call sends the agent at a signature
+        that does not exist.
+        """
         csv_file = tmp_path / "statements" / "unknown.csv"
         csv_file.parent.mkdir(parents=True)
         csv_file.touch()
@@ -2713,40 +3027,37 @@ class TestImportFilesConfirmationRequired:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = import_files(paths=[str(csv_file)])
+            result = await import_files_coarse(paths=[str(csv_file)])
 
         joined = " ".join(result.actions or [])
-        assert "import_confirm" in joined
-        assert "accept=True" in joined
+        assert f"import_preview(file_path='{csv_file}')" in joined
+        assert "import_confirm(file_path=" not in joined
+        assert "accept=True" not in joined
 
-    async def test_account_confirmation_action_binds_every_account(
+    async def test_import_files_builds_no_confirm_hint_of_its_own(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        """Bind every account in one import_confirm call.
+        """The unregistered builder must not mint a path-keyed confirm hint.
 
-        A bare account_confirmation file's action ratifies the mapping AND binds
-        every account — not a looping accept-only hint (no binding) nor an
-        irrelevant mapping-override hint.
+        This is the level the dead-hint removal is observable at.
+        ``import_files_coarse`` used to filter ``import_confirm(file_path=``
+        out of its output, so a coarse-level assertion passes with the dead
+        hints present *or* absent and pins neither. ``import_files`` is the
+        function that built them, and nothing filters it.
         """
-        csv_file = tmp_path / "statements" / "bare.csv"
+        from moneybin.mcp.tools.import_tools import import_files
+
+        csv_file = tmp_path / "statements" / "unknown.csv"
         csv_file.parent.mkdir(parents=True)
         csv_file.touch()
-
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setattr(
             "moneybin.mcp.tools.import_tools.get_database",
             _fake_database,
         )
 
-        error = _make_confirmation_error(
-            tier="high",
-            score=1.0,
-            reason="account_confirmation",
-            account_proposals=[{"source_account_key": "bare-abc123", "candidates": []}],
-        )
         mock_service = MagicMock()
-        mock_service.import_file.side_effect = error
-
+        mock_service.import_file.side_effect = _make_confirmation_error()
         with patch(
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
@@ -2754,12 +3065,45 @@ class TestImportFilesConfirmationRequired:
             result = import_files(paths=[str(csv_file)])
 
         joined = " ".join(result.actions or [])
-        assert "account_bindings={'bare-abc123': '<account_id|new>'}" in joined
-        assert "accept=True" in joined
-        # The account-confirmation reason must not emit the mapping-only paths
-        # (accept-as-is with no binding loops; a mapping override is irrelevant).
-        assert "to accept the proposed mapping as-is" not in joined
-        assert "mapping={'<dest_field>'" not in joined
+        assert "import_confirm(" not in joined
+        assert "accept=True" not in joined
+        assert "account_bindings=" not in joined
+        assert "mapping={" not in joined
+
+    async def test_account_confirmation_action_binds_every_account(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Bind every account by re-confirming the SAME preview_id.
+
+        account_confirmation is the one reason resolvable in place — the column
+        mapping is already settled, so the hint must re-call import_confirm on
+        the same preview rather than send the agent back for a fresh one. The
+        binding is all-or-nothing: every detected source key appears.
+        """
+        from moneybin.mcp.tools.import_tools import (
+            _import_confirm_coarse_confirmation_actions,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        outcome = _make_confirmation_error(
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=[
+                {"source_account_key": "bare-abc123", "candidates": []},
+                {"source_account_key": "bare-def456", "candidates": []},
+            ],
+        ).outcome
+
+        actions = _import_confirm_coarse_confirmation_actions(
+            "pv_123", str(tmp_path / "bare.csv"), outcome
+        )
+
+        joined = " ".join(actions)
+        assert "'bare-abc123': '<account_id|new>'" in joined
+        assert "'bare-def456': '<account_id|new>'" in joined
+        assert "import_confirm(preview_id='pv_123'" in joined
+        # The mapping is settled — do not send the agent back for a new preview.
+        assert "import_preview(" not in joined
 
     async def test_low_tier_envelope_includes_missing_required(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -2879,572 +3223,6 @@ class TestImportFilesConfirmationRequired:
 
 
 # ---------------------------------------------------------------------------
-# TestImportConfirmTool
-# ---------------------------------------------------------------------------
-
-
-class TestImportConfirmTool:
-    """import_confirm tool: accept, override, validation, actor_kind."""
-
-    async def test_requires_accept_or_mapping(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """Calling with neither accept=True nor mapping returns an error envelope."""
-        csv_file = tmp_path / "statements" / "test.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        result = await import_confirm(file_path=str(csv_file))
-        assert result.error is not None
-        assert result.error.code == "import_confirm_requires_signal"
-
-    async def test_accept_loads_data(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """accept=True calls import_file with confirm=True and returns imported status."""
-        csv_file = tmp_path / "statements" / "test.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database",
-            _fake_database,
-        )
-
-        from moneybin.services.import_service import ImportResult
-
-        mock_service = MagicMock()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(csv_file),
-            file_type="tabular",
-            transactions=10,
-            import_id="abc-123",
-        )
-
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            with patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ):
-                result = await import_confirm(file_path=str(csv_file), accept=True)
-
-        assert result.data.rows_loaded == 10
-        assert result.data.import_id == "abc-123"
-
-    async def test_tabular_sign_confirmation_elicitation_is_human_gated(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """An agent's mapping accept pauses for a separate human sign decision."""
-        from moneybin.services.import_confirmation import SignConventionProposal
-        from moneybin.services.import_service import ImportResult
-
-        csv_file = tmp_path / "statements" / "card.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database", _fake_database
-        )
-        sign_error = ImportConfirmationRequiredError(
-            ConfirmationRequired(
-                channel="tabular",
-                confidence=_make_confidence(score=1.0, tier="high"),
-                proposed=SignConventionProposal(
-                    sign_convention="negative_is_income",
-                    evidence=("a column header contains the word 'credit'",),
-                    sample_rows=[],
-                ),
-                reason="sign_convention",
-            )
-        )
-        mock_service = MagicMock()
-        mock_service.import_file.side_effect = [
-            sign_error,
-            ImportResult(
-                file_path=str(csv_file),
-                file_type="tabular",
-                transactions=2,
-                import_id="sign-123",
-            ),
-        ]
-        confirm = AsyncMock()
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
-            patch("moneybin.services.inbox_service.InboxService"),
-            patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ),
-        ):
-            result = await import_confirm(file_path=str(csv_file), accept=True)
-
-        assert result.data.import_id == "sign-123"
-        confirm.assert_awaited_once()
-        assert confirm.await_args is not None
-        assert "Sample rows" not in confirm.await_args.args[0]
-        assert (
-            mock_service.import_file.call_args_list[1].kwargs["human_sign_confirmation"]
-            is True
-        )
-
-    async def test_tabular_sign_no_elicitation_cli_fallback_is_lossless(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """The terminal fallback reproduces every public confirmation input."""
-        from moneybin.services.import_confirmation import SignConventionProposal
-
-        csv_file = tmp_path / "statements" / "Owner's card.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database", _fake_database
-        )
-        sign_error = ImportConfirmationRequiredError(
-            ConfirmationRequired(
-                channel="tabular",
-                confidence=_make_confidence(score=1.0, tier="high"),
-                proposed=SignConventionProposal(
-                    sign_convention="negative_is_income",
-                    evidence=("Debit",),
-                    sample_rows=[],
-                ),
-                reason="sign_convention",
-            )
-        )
-        mock_service = MagicMock()
-        mock_service.import_file.side_effect = sign_error
-        mapping = {"description": "Merchant Name"}
-        bindings = {"minted card": "new", "settled": "acct existing"}
-        metadata = {
-            "minted card": {
-                "display_name": "Owner's Card",
-                "last_four": "4267",
-            }
-        }
-
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            result = await import_confirm(
-                file_path=str(csv_file),
-                mapping=mapping,
-                save_format=False,
-                account_id="acct explicit",
-                account_name="Owner's Card",
-                account_bindings=bindings,
-                account_metadata=metadata,
-            )
-
-        assert result.error is not None
-        assert result.error.code == "mutation_confirmation_required"
-        assert result.error.hint is not None
-        command = result.error.hint.split("`", 2)[1]
-        tokens = shlex.split(command)
-        assert tokens[:4] == ["moneybin", "import", "confirm", str(csv_file)]
-        assert "--accept" not in tokens
-        assert "--confirm-sign" in tokens
-        assert "--no-save-format" in tokens
-        assert tokens[tokens.index("--account-id") + 1] == "acct explicit"
-        assert tokens[tokens.index("--account-name") + 1] == "Owner's Card"
-        assert tokens[tokens.index("--mapping") + 1] == "description=Merchant Name"
-        binding_values = {
-            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-binding"
-        }
-        assert binding_values == {
-            "minted card=new",
-            "settled=acct existing",
-        }
-        metadata_values = {
-            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
-        }
-        assert metadata_values == {
-            "minted card:display_name=Owner's Card",
-            "minted card:last_four=4267",
-        }
-        assert "human_sign_confirmation" not in result.error.hint
-        assert mock_service.import_file.call_count == 1
-
-    async def test_tabular_sign_retry_returns_account_confirmation_envelope(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """Account recovery preserves inputs and discloses repeated sign elicitation."""
-        from moneybin.services.import_confirmation import SignConventionProposal
-
-        csv_file = tmp_path / "statements" / "card.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database", _fake_database
-        )
-        sign_error = ImportConfirmationRequiredError(
-            ConfirmationRequired(
-                channel="tabular",
-                confidence=_make_confidence(score=1.0, tier="high"),
-                proposed=SignConventionProposal(
-                    sign_convention="negative_is_income",
-                    evidence=("a column header contains the word 'credit'",),
-                    sample_rows=[],
-                ),
-                reason="sign_convention",
-            )
-        )
-        account_error = _make_confirmation_error(
-            tier="high",
-            score=1.0,
-            reason="account_confirmation",
-            account_proposals=[{"source_account_key": "card-abc", "candidates": []}],
-        )
-        mock_service = MagicMock()
-        mock_service.import_file.side_effect = [sign_error, account_error]
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch("moneybin.mcp.elicitation.confirm_or_raise", AsyncMock()),
-            patch("moneybin.services.inbox_service.InboxService"),
-            patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ),
-        ):
-            result = await import_confirm(
-                file_path=str(csv_file),
-                mapping={"description": "Memo"},
-                save_format=False,
-                account_id="acct-explicit",
-                account_name="Card Account",
-                account_bindings={"settled": "acct-123", "minted": "new"},
-                account_metadata={
-                    "minted": {
-                        "display_name": "Travel Card",
-                        "last_four": "4267",
-                    }
-                },
-            )
-
-        data = result.data
-        assert isinstance(data, dict)
-        assert data["status"] == "confirmation_required"
-        assert data["reason"] == "account_confirmation"
-        actions = " ".join(result.actions or [])
-        assert "accept=True" not in actions
-        assert "mapping={'description': 'Memo'}" in actions
-        assert "save_format=False" in actions
-        assert "account_id='acct-explicit'" in actions
-        assert "account_name='Card Account'" in actions
-        assert "'settled': 'acct-123'" in actions
-        assert "'minted': 'new'" in actions
-        assert "'card-abc': '<account_id|new>'" in actions
-        assert "'display_name': 'Travel Card'" in actions
-        assert "'last_four': '4267'" in actions
-        assert "not persisted across MCP calls" in actions
-        assert "ask the human to confirm the sign inversion again" in actions
-        assert "human_sign_confirmation" not in actions
-
-    async def test_mapping_override_passes_overrides_to_service(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """mapping= is forwarded as overrides= to import_file."""
-        csv_file = tmp_path / "statements" / "test.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database",
-            _fake_database,
-        )
-
-        from moneybin.services.import_service import ImportResult
-
-        mock_service = MagicMock()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(csv_file),
-            file_type="tabular",
-            transactions=5,
-            import_id="xyz-456",
-        )
-        override = {"description": "Memo"}
-
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            with patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ):
-                await import_confirm(file_path=str(csv_file), mapping=override)
-
-        _args, kwargs = mock_service.import_file.call_args
-        assert kwargs.get("overrides") == override
-
-    async def test_account_confirmation_reprompt_carries_proposals_and_binding(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """Account_confirmation re-prompt from import_confirm carries proposals.
-
-        Bare-file path: import_files returns unknown_layout, the agent calls
-        import_confirm(accept=True), and the bare-account gate fires. The
-        re-prompt envelope must carry account_proposals in data AND an
-        account-binding action — not a looping accept/mapping-only hint.
-        """
-        csv_file = tmp_path / "statements" / "bare.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database",
-            _fake_database,
-        )
-
-        error = _make_confirmation_error(
-            tier="high",
-            score=1.0,
-            reason="account_confirmation",
-            account_proposals=[{"source_account_key": "bare-abc123", "candidates": []}],
-        )
-        mock_service = MagicMock()
-        mock_service.import_file.side_effect = error
-
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            with patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ):
-                result = await import_confirm(file_path=str(csv_file), accept=True)
-
-        data = result.data
-        assert isinstance(data, dict)
-        assert data["status"] == "confirmation_required"
-        assert data["reason"] == "account_confirmation"
-        proposals = data["account_proposals"]
-        assert isinstance(proposals, list) and proposals
-        assert proposals[0]["source_account_key"] == "bare-abc123"
-        joined = " ".join(result.actions or [])
-        assert "account_bindings={'bare-abc123': '<account_id|new>'}" in joined
-        assert "accept=True" in joined
-        # No standalone accept-as-is / mapping-override hint for this reason.
-        assert "to accept the proposed mapping as-is" not in joined
-        assert "mapping={'<dest_field>'" not in joined
-
-    async def test_passes_actor_kind_agent_to_service(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """import_confirm always passes actor_kind='agent' to ImportService."""
-        csv_file = tmp_path / "statements" / "test.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database",
-            _fake_database,
-        )
-
-        from moneybin.services.import_service import ImportResult
-
-        mock_service = MagicMock()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(csv_file),
-            file_type="tabular",
-            transactions=3,
-            import_id="qrs-789",
-        )
-
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            with patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ):
-                await import_confirm(file_path=str(csv_file), accept=True)
-
-        _args, kwargs = mock_service.import_file.call_args
-        assert kwargs.get("actor_kind") == "agent"
-
-    async def test_account_bindings_forwarded_to_service(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """import_confirm threads account_bindings to ImportService.import_file."""
-        csv_file = tmp_path / "statements" / "test.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database",
-            _fake_database,
-        )
-
-        from moneybin.services.import_service import ImportResult
-
-        mock_service = MagicMock()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(csv_file),
-            file_type="tabular",
-            transactions=2,
-            import_id="bnd-001",
-        )
-        bindings = {"wf-checking": "acct123456", "wf-savings": "new"}
-
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            with patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ):
-                await import_confirm(
-                    file_path=str(csv_file),
-                    accept=True,
-                    account_bindings=bindings,
-                )
-
-        _args, kwargs = mock_service.import_file.call_args
-        assert kwargs.get("account_bindings") == bindings
-
-    async def test_account_metadata_forwarded_to_service(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """import_confirm threads account_metadata to ImportService.import_file."""
-        csv_file = tmp_path / "statements" / "test.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database",
-            _fake_database,
-        )
-
-        from moneybin.services.import_service import ImportResult
-
-        mock_service = MagicMock()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(csv_file),
-            file_type="tabular",
-            transactions=1,
-            import_id="mta-001",
-        )
-        metadata = {"wf-checking": {"display_name": "WF Checking", "last_four": "4267"}}
-
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            with patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ):
-                await import_confirm(
-                    file_path=str(csv_file),
-                    accept=True,
-                    account_bindings={"wf-checking": "new"},
-                    account_metadata=metadata,
-                )
-
-        _args, kwargs = mock_service.import_file.call_args
-        assert kwargs.get("account_metadata") == metadata
-
-    async def test_save_format_default_true(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """save_format defaults to True and is forwarded to import_file."""
-        csv_file = tmp_path / "statements" / "test.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database",
-            _fake_database,
-        )
-
-        from moneybin.services.import_service import ImportResult
-
-        mock_service = MagicMock()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(csv_file),
-            file_type="tabular",
-            transactions=2,
-            import_id="save-001",
-        )
-
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            with patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ):
-                await import_confirm(file_path=str(csv_file), accept=True)
-
-        _args, kwargs = mock_service.import_file.call_args
-        assert kwargs.get("save_format") is True
-
-    async def test_import_revert_hint_in_actions(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """actions[] includes an import_revert hint referencing the import_id."""
-        csv_file = tmp_path / "statements" / "test.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database",
-            _fake_database,
-        )
-
-        from moneybin.services.import_service import ImportResult
-
-        mock_service = MagicMock()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(csv_file),
-            file_type="tabular",
-            transactions=1,
-            import_id="revert-001",
-        )
-
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            with patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ):
-                result = await import_confirm(file_path=str(csv_file), accept=True)
-
-        joined = " ".join(result.actions)
-        assert "import_revert" in joined
-        assert "revert-001" in joined
-
-
-# ---------------------------------------------------------------------------
 # PDF bridge wire-in: import_files escalation, import_preview, import_confirm
 # ---------------------------------------------------------------------------
 
@@ -3549,9 +3327,15 @@ class TestImportFilesPdfBridge:
             }
         ]
 
-    async def test_pdf_escalation_action_points_at_bridge_response(
+    async def test_pdf_escalation_routes_through_the_staged_preview(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
+        """A bridge escalation sends the agent to import_preview, not a raw confirm.
+
+        The bridge_response ratification needs a preview_id, so the hint that
+        names bridge_response belongs on the preview envelope
+        (_bridge_confirm_action); import_files only opens the workflow.
+        """
         pdf = tmp_path / "statements" / "chase.pdf"
         pdf.parent.mkdir(parents=True)
         pdf.touch()
@@ -3566,11 +3350,13 @@ class TestImportFilesPdfBridge:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = import_files(paths=[str(pdf)])
+            result = await import_files_coarse(paths=[str(pdf)])
 
-        assert any("bridge_response" in a for a in result.actions)
-        # The tabular accept/mapping hint must NOT appear for a PDF bridge.
-        assert not any("mapping={" in a for a in result.actions)
+        joined = " ".join(result.actions)
+        assert f"import_preview(file_path='{pdf}')" in joined
+        # No dead confirm signature, and no tabular mapping hint on a PDF.
+        assert "import_confirm(file_path=" not in joined
+        assert "mapping={" not in joined
 
 
 class TestImportFilesPdfSign:
@@ -3617,13 +3403,14 @@ class TestImportFilesPdfSign:
         actions = " ".join(result.actions)
         # The in-MCP human gate leads; the terminal CLI stays as the fallback,
         # both branches named.
-        assert "confirm_pdf_sign=True" in actions
+        assert "import_confirm(preview_id=...)" in actions
         assert "moneybin import files" in actions
         assert "--confirm" in actions
         assert "--sign negative_is_expense" in actions
-        # Dead ends must stay gone: import_confirm has no sign= parameter, and a
-        # sign confirmation is NOT a bridge, so neither hint may leak in.
+        # Dead ends must stay gone: import_confirm has no sign= or file_path=
+        # parameter, and a sign confirmation is NOT a bridge, so no hint may leak.
         assert "sign='negative_is_expense'" not in actions
+        assert "import_confirm(file_path=" not in actions
         assert "bridge_response" not in actions
         # A sign proposal is not a validation failure — no misleading prefix.
         assert "Validation failed" not in actions
@@ -3779,642 +3566,13 @@ class TestImportPreviewPdf:
         # The agent is told both branches, and pointed at the in-MCP human gate
         # first — with the terminal as the fallback.
         actions = " ".join(result.actions)
-        assert "confirm_pdf_sign=True" in actions
+        assert "import_confirm(preview_id=...)" in actions
         assert "moneybin import files" in actions
         assert "--confirm" in actions
         assert "--sign negative_is_expense" in actions
-        # Still a dead end: import_confirm has no sign= parameter.
+        # Still a dead end: import_confirm has no sign= or file_path= parameter.
         assert "sign='negative_is_expense'" not in actions
-
-
-class TestImportConfirmBridge:
-    """import_confirm(bridge_response=...) applies a PDF bridge response."""
-
-    def _patch(self, monkeypatch: MonkeyPatch, tmp_path: Path) -> Path:
-        pdf = tmp_path / "statements" / "chase.pdf"
-        pdf.parent.mkdir(parents=True)
-        pdf.touch()
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database", _fake_database
-        )
-        return pdf
-
-    async def test_applied(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-        from moneybin.services.import_service import BridgeApplyResult
-
-        pdf = self._patch(monkeypatch, tmp_path)
-        mock_service = MagicMock()
-        mock_service.apply_pdf_bridge_response.return_value = BridgeApplyResult(
-            outcome="applied",
-            import_id="imp123",
-            rows_loaded=12,
-            format_name="chase_abc123",
-            expected_row_count=12,
-            actual_row_count=12,
-            rows_diverged=False,
-        )
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            result = await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"recipe": {}, "rows": []},
-            )
-
-        data = result.data
-        assert isinstance(data, dict)
-        assert data["status"] == "applied"
-        assert data["import_id"] == "imp123"
-        assert data["rows_loaded"] == 12
-        assert any("import_revert" in a for a in result.actions)
-
-    async def test_applied_archives_pending_file(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """A successful bridge confirm archives the PDF out of pending/.
-
-        Mirrors the tabular confirm path: a bridge-confirmed inbox PDF must
-        complete the inbox lifecycle rather than lingering in pending/ after a
-        successful load.
-        """
-        from moneybin.services.import_service import BridgeApplyResult
-
-        pdf = self._patch(monkeypatch, tmp_path)
-        mock_service = MagicMock()
-        mock_service.apply_pdf_bridge_response.return_value = BridgeApplyResult(
-            outcome="applied",
-            import_id="imp123",
-            rows_loaded=12,
-            format_name="chase_abc123",
-            expected_row_count=12,
-            actual_row_count=12,
-            rows_diverged=False,
-        )
-        mock_inbox_cls = MagicMock()
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch(
-                "moneybin.services.inbox_service.InboxService",
-                mock_inbox_cls,
-            ),
-        ):
-            await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"recipe": {}, "rows": []},
-            )
-
-        archive = mock_inbox_cls.for_active_profile_no_db.return_value
-        archive.archive_confirmed_file.assert_called_once()
-
-    async def test_invalid_does_not_archive(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """An invalid reconciliation loaded nothing, so nothing is archived."""
-        from moneybin.services.import_service import BridgeApplyResult
-
-        pdf = self._patch(monkeypatch, tmp_path)
-        mock_service = MagicMock()
-        mock_service.apply_pdf_bridge_response.return_value = BridgeApplyResult(
-            outcome="invalid",
-            import_id=None,
-            rows_loaded=0,
-            format_name=None,
-            expected_row_count=10,
-            actual_row_count=8,
-            rows_diverged=True,
-            reject_reason="reconciliation_failed",
-        )
-        mock_inbox_cls = MagicMock()
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch(
-                "moneybin.services.inbox_service.InboxService",
-                mock_inbox_cls,
-            ),
-        ):
-            await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"recipe": {}, "rows": []},
-            )
-
-        archive = mock_inbox_cls.for_active_profile_no_db.return_value
-        archive.archive_confirmed_file.assert_not_called()
-
-    async def test_invalid_reconciliation(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        from moneybin.services.import_service import BridgeApplyResult
-
-        pdf = self._patch(monkeypatch, tmp_path)
-        mock_service = MagicMock()
-        mock_service.apply_pdf_bridge_response.return_value = BridgeApplyResult(
-            outcome="invalid",
-            import_id=None,
-            rows_loaded=0,
-            format_name=None,
-            expected_row_count=10,
-            actual_row_count=8,
-            rows_diverged=True,
-            reject_reason="reconciliation_failed",
-        )
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            result = await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"recipe": {}, "rows": []},
-            )
-
-        data = result.data
-        assert isinstance(data, dict)
-        assert data["status"] == "invalid"
-        assert data["reject_reason"] == "reconciliation_failed"
-        assert "import_id" not in data  # nothing loaded
-
-    async def test_divergence_surfaced_in_actions(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        from moneybin.services.import_service import BridgeApplyResult
-
-        pdf = self._patch(monkeypatch, tmp_path)
-        mock_service = MagicMock()
-        mock_service.apply_pdf_bridge_response.return_value = BridgeApplyResult(
-            outcome="applied",
-            import_id="imp123",
-            rows_loaded=11,
-            format_name="chase_abc123",
-            expected_row_count=12,
-            actual_row_count=11,
-            rows_diverged=True,
-        )
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            result = await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"recipe": {}, "rows": []},
-            )
-
-        assert any("12" in a and "11" in a for a in result.actions)
-
-    async def test_conflict_with_accept_returns_error_envelope(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        pdf = self._patch(monkeypatch, tmp_path)
-        result = await import_confirm(
-            file_path=str(pdf),
-            accept=True,
-            bridge_response={"recipe": {}, "rows": []},
-        )
-        assert result.error is not None
-        assert result.error.code == "import_confirm_channel_conflict"
-
-    async def test_malformed_response_maps_to_user_error(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        from moneybin.extractors.pdf.bridge import BridgeResponseError
-
-        pdf = self._patch(monkeypatch, tmp_path)
-        mock_service = MagicMock()
-        # parse_bridge_response raises BridgeResponseError on a bad shape.
-        mock_service.apply_pdf_bridge_response.side_effect = BridgeResponseError(
-            "bridge response missing 'recipe' key"
-        )
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            result = await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"rows": []},
-            )
-        assert result.error is not None
-        assert result.error.code == "import_bridge_response_invalid"
-
-    async def test_inverted_bridge_recipe_requires_human_elicitation(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """A human approval, not the agent, is required before the bridge loads."""
-        from moneybin.services.import_service import BridgeApplyResult
-
-        pdf = self._patch(monkeypatch, tmp_path)
-        mock_service = MagicMock()
-        mock_service.apply_pdf_bridge_response.side_effect = [
-            _sign_error(),
-            BridgeApplyResult(
-                outcome="applied",
-                import_id="imp123",
-                rows_loaded=2,
-                format_name="chase_abc123",
-                expected_row_count=2,
-                actual_row_count=2,
-                rows_diverged=False,
-            ),
-        ]
-        confirm = AsyncMock()
-        mock_inbox_cls = MagicMock()
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
-            patch("moneybin.services.inbox_service.InboxService", mock_inbox_cls),
-        ):
-            result = await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"recipe": {}, "rows": []},
-            )
-
-        data = result.data
-        assert isinstance(data, dict)
-        assert data["status"] == "applied"
-        confirm.assert_awaited_once()
-        assert confirm.await_args is not None
-        prompt = confirm.await_args.args[0]
-        assert "minimum payment" in prompt
-        assert "COFFEE SHOP" in prompt
-        assert (
-            mock_service.apply_pdf_bridge_response.call_args_list[1].kwargs["confirm"]
-            is True
-        )
-
-    async def test_inverted_bridge_recipe_cannot_load_without_elicitation(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """An unsupported MCP client leaves the PDF unchanged."""
-        pdf = self._patch(monkeypatch, tmp_path)
-        mock_service = MagicMock()
-        mock_service.apply_pdf_bridge_response.side_effect = _sign_error()
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            result = await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"recipe": {}, "rows": []},
-            )
-
-        assert result.error is not None
-        assert result.error.code == "mutation_confirmation_required"
-        assert mock_service.apply_pdf_bridge_response.call_count == 1
-
-    async def test_non_parse_value_error_not_labeled_bridge_invalid(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        # A plain ValueError raised after parsing (e.g. malformed PDF in
-        # extract, or the load) must NOT be mislabeled import_bridge_response_invalid —
-        # the narrowed catch lets it propagate to the generic error boundary.
-        pdf = self._patch(monkeypatch, tmp_path)
-        mock_service = MagicMock()
-        mock_service.apply_pdf_bridge_response.side_effect = ValueError(
-            "could not extract text from PDF"
-        )
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            result = await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"recipe": {}, "rows": []},
-            )
-        assert result.error is not None
-        assert result.error.code != "import_bridge_response_invalid"
-
-    async def test_account_name_with_bridge_raises(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        # PDF rows resolve the account from the statement; account_name is a
-        # tabular-only signal. Passing it with bridge_response must error loudly
-        # rather than being silently dropped (the bridge path takes account_id).
-        pdf = self._patch(monkeypatch, tmp_path)
-        result = await import_confirm(
-            file_path=str(pdf),
-            bridge_response={"recipe": {}, "rows": []},
-            account_name="Chase Checking",
-        )
-        assert result.error is not None
-        assert result.error.code == "import_pdf_account_signal_unsupported"
-
-    async def test_invalid_path_precedes_account_name_guard(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        # A bad path must surface as invalid_file_path even when account_name is
-        # also (mis)used with bridge_response — path validation runs first, so
-        # the path error isn't masked by the account_name guard.
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-        result = await import_confirm(
-            file_path="/etc/passwd",
-            bridge_response={"recipe": {}, "rows": []},
-            account_name="Chase Checking",
-        )
-        assert result.error is not None
-        assert result.error.code == "import_invalid_file_path"
-
-    async def test_pdf_with_accept_rejected_not_looped(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        # A PDF confirmed via the tabular channel (accept=True, no
-        # bridge_response) must be rejected with channel guidance — NOT run
-        # through the tabular import path, which would re-raise the bridge
-        # escalation that this tool's catch can't serialize, looping the agent.
-        pdf = self._patch(monkeypatch, tmp_path)
-        result = await import_confirm(file_path=str(pdf), accept=True)
-        assert result.error is not None
-        assert result.error.code == "import_confirm_channel_conflict"
-
-    async def test_card_sign_confirm_directs_to_the_sign_channel_and_loads_nothing(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """accept=True on a real card statement refuses and names the right channel.
-
-        accept= is the tabular column-mapping signal and never ratifies a PDF. The
-        refusal must route the caller to confirm_pdf_sign=True (which elicits the
-        human), never crash with a TypeError, and never run the import path (no
-        inverted rows land). Uses the committed card fixture so the file on disk
-        is genuinely a credit-card statement.
-        """
-        pdf = write_card_statement_pdf(tmp_path)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database", _fake_database
-        )
-
-        mock_service = MagicMock()
-        with patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ):
-            result = await import_confirm(file_path=str(pdf), accept=True)
-
-        # A clean UserError envelope — not a crash / TypeError.
-        assert result.error is not None
-        assert result.error.code == "import_confirm_channel_conflict"
-        message = result.error.message
-        # The live in-MCP channel, plus the terminal fallback, both branches named.
-        assert "confirm_pdf_sign=True" in message
-        assert "moneybin import files" in message
-        assert "--confirm" in message
-        assert "--sign negative_is_expense" in message
-        # Refused before any import ran — nothing loaded, inverted or otherwise.
-        mock_service.import_file.assert_not_called()
-        mock_service.pdf_preview.assert_not_called()
-
-
-class TestImportConfirmPdfSign:
-    """import_confirm(confirm_pdf_sign=True) ratifies a deterministic PDF inversion.
-
-    The same credit-card inversion already elicits a human on the bridge and
-    tabular channels. These tests pin the third channel to that one gate: a
-    human decides, an agent never self-accepts, and a decline loads nothing.
-    """
-
-    def _card_pdf(self, tmp_path: Path, monkeypatch: MonkeyPatch) -> Path:
-        pdf = write_card_statement_pdf(tmp_path)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database", _fake_database
-        )
-        return pdf
-
-    def _sign_error(self) -> ImportConfirmationRequiredError:
-        from moneybin.services.import_confirmation import SignConventionProposal
-
-        return ImportConfirmationRequiredError(
-            ConfirmationRequired(
-                channel="pdf",
-                confidence=_make_confidence(score=1.0, tier="high"),
-                proposed=SignConventionProposal(
-                    sign_convention="negative_is_income",
-                    evidence=("Minimum Payment Due",),
-                    sample_rows=[{"printed": "39.83", "recorded": "-39.83"}],
-                ),
-                reason="sign_convention",
-                error_message="This looks like a credit-card statement.",
-            )
-        )
-
-    async def test_confirm_pdf_sign_elicits_human_then_imports(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """The human ratifies once; the retry carries that ratification down."""
-        from moneybin.services.import_service import ImportResult
-
-        pdf = self._card_pdf(tmp_path, monkeypatch)
-        mock_service = MagicMock()
-        mock_service.pdf_preview.side_effect = self._sign_error()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(pdf),
-            file_type="pdf",
-            transactions=24,
-            import_id="pdf-sign-1",
-        )
-        confirm = AsyncMock()
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
-            patch("moneybin.services.inbox_service.InboxService"),
-        ):
-            result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
-
-        assert result.error is None
-        assert result.data.rows_loaded == 24
-        assert result.data.import_id == "pdf-sign-1"
-        confirm.assert_awaited_once()
-        # The proposal is surfaced by the non-mutating probe, so the ONLY write
-        # happens after the human approves — and it carries their ratification.
-        mock_service.pdf_preview.assert_called_once()
-        mock_service.import_file.assert_called_once()
-        assert mock_service.import_file.call_args.kwargs["confirm"] is True
-
-    async def test_confirm_pdf_sign_declined_imports_nothing(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """A refused (or unavailable) elicitation never inverts the ledger."""
-        pdf = self._card_pdf(tmp_path, monkeypatch)
-        mock_service = MagicMock()
-        mock_service.pdf_preview.side_effect = self._sign_error()
-        declined = AsyncMock(
-            side_effect=UserError("declined", code="mutation_confirmation_required")
-        )
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch("moneybin.mcp.elicitation.confirm_or_raise", declined),
-        ):
-            result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
-
-        assert result.error is not None
-        assert result.error.code == "mutation_confirmation_required"
-        # A refusal writes NOTHING at all — the proposal came from the probe,
-        # so no import attempt ran even to surface it.
-        mock_service.import_file.assert_not_called()
-
-    async def test_confirm_pdf_sign_prompt_names_the_statement_not_a_bridge(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """A deterministic PDF has no bridge recipe; the prompt must not claim one."""
-        from moneybin.services.import_service import ImportResult
-
-        pdf = self._card_pdf(tmp_path, monkeypatch)
-        mock_service = MagicMock()
-        mock_service.pdf_preview.side_effect = self._sign_error()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(pdf), file_type="pdf", transactions=1, import_id="x"
-        )
-        confirm = AsyncMock()
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
-            patch("moneybin.services.inbox_service.InboxService"),
-        ):
-            await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
-
-        assert confirm.await_args is not None
-        message = confirm.await_args.args[0]
-        assert "bridge" not in message.lower()
-        assert "PDF statement" in message
-        # The concrete flip the human is ratifying, not just an abstract claim.
-        assert "39.83" in message
-
-    def _un_inverting_sign_error(self) -> ImportConfirmationRequiredError:
-        """A self-heal repair proposing the OPPOSITE of the card inference.
-
-        Mirrors what `_attempt_self_heal` hands the gate when a previously
-        ratified `negative_is_income` recipe re-derives as `negative_is_expense`
-        (exercised end-to-end by `test_a_repair_that_un_inverts_the_ledger_is_gated`).
-        """
-        from moneybin.services.import_confirmation import SignConventionProposal
-
-        return ImportConfirmationRequiredError(
-            ConfirmationRequired(
-                channel="pdf",
-                confidence=_make_confidence(score=1.0, tier="high"),
-                proposed=SignConventionProposal(
-                    sign_convention="negative_is_expense",
-                    prior_sign_convention="negative_is_income",
-                    evidence=("Minimum Payment Due",),
-                    sample_rows=[{"printed": "39.83", "recorded": "39.83"}],
-                ),
-                reason="sign_convention",
-                error_message="The saved layout was re-derived.",
-            )
-        )
-
-    async def test_the_elicitation_prompt_describes_the_flip_that_will_apply(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """The prompt a human approves must match what approving does.
-
-        This is the last thing shown before a ledger-wide sign change is
-        applied, so a wrong direction here is the most expensive place for one:
-        the human either approves a flip they were told was its opposite, or
-        rejects a correct repair. The card wording is right for a first-contact
-        inference and backwards for a repair that *un*-inverts.
-        """
-        from moneybin.services.import_service import ImportResult
-
-        pdf = self._card_pdf(tmp_path, monkeypatch)
-        mock_service = MagicMock()
-        mock_service.pdf_preview.side_effect = self._un_inverting_sign_error()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(pdf), file_type="pdf", transactions=1, import_id="x"
-        )
-        confirm = AsyncMock()
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
-            patch("moneybin.services.inbox_service.InboxService"),
-        ):
-            await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
-
-        assert confirm.await_args is not None
-        message = confirm.await_args.args[0]
-        # Approving here accepts the as-printed convention, so the prompt must
-        # not tell the human it identifies a credit card and reverses amounts.
-        assert "credit card" not in message.lower()
-        assert "charges become negative expenses" not in message
-        # Both conventions must be named, so the direction is unambiguous.
-        assert "negative_is_income" in message
-        assert "negative_is_expense" in message
-
-    async def test_the_elicitation_prompt_keeps_card_framing_on_first_contact(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """The common case must not regress into convention jargon.
-
-        With no prior convention the proposal is always `negative_is_income`,
-        and "is this a credit card?" is the question the human can actually
-        answer.
-        """
-        from moneybin.services.import_service import ImportResult
-
-        pdf = self._card_pdf(tmp_path, monkeypatch)
-        mock_service = MagicMock()
-        mock_service.pdf_preview.side_effect = self._sign_error()
-        mock_service.import_file.return_value = ImportResult(
-            file_path=str(pdf), file_type="pdf", transactions=1, import_id="x"
-        )
-        confirm = AsyncMock()
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
-            patch("moneybin.services.inbox_service.InboxService"),
-        ):
-            await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
-
-        assert confirm.await_args is not None
-        assert "credit card" in confirm.await_args.args[0].lower()
-
-    async def test_confirm_pdf_sign_rejected_alongside_bridge_response(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """The two PDF channels are mutually exclusive, like accept/mapping."""
-        pdf = self._card_pdf(tmp_path, monkeypatch)
-        result = await import_confirm(
-            file_path=str(pdf),
-            bridge_response={"recipe": {}, "rows": []},
-            confirm_pdf_sign=True,
-        )
-        assert result.error is not None
-        assert result.error.code == "import_confirm_channel_conflict"
-
-    async def test_confirm_pdf_sign_rejected_on_tabular_file(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """Tabular files ratify their inversion through accept=, not confirm_pdf_sign=."""
-        csv_file = tmp_path / "statements" / "card.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.touch()
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        result = await import_confirm(file_path=str(csv_file), confirm_pdf_sign=True)
-        assert result.error is not None
-        assert result.error.code == "import_confirm_channel_conflict"
+        assert "import_confirm(file_path=" not in actions
 
 
 def test_pdf_sign_actions_lead_with_the_mcp_confirm_path() -> None:
@@ -4427,354 +3585,12 @@ def test_pdf_sign_actions_lead_with_the_mcp_confirm_path() -> None:
         "/home/a/card.pdf", "looks like a card", channel="pdf"
     )
 
-    assert "confirm_pdf_sign=True" in actions[1]
+    assert "import_preview(file_path=...)" in actions[1]
+    assert "import_confirm(preview_id=...)" in actions[1]
+    # The agent must not answer the sign question itself.
+    assert "sign_sample_rows" in actions[1]
     # The terminal override for "it is NOT a card" survives as the escape hatch.
     assert any("--sign negative_is_expense" in a for a in actions)
-
-
-class TestImportConfirmPdfSignBridgeEscalation:
-    """confirm_pdf_sign on a PDF that turns out to need the bridge, not a sign decision."""
-
-    async def test_bridge_escalation_returns_payload_without_blank_action(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        """The bridge request carries no error_message — no empty action may leak."""
-        pdf = write_card_statement_pdf(tmp_path)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database", _fake_database
-        )
-        bridge_error = ImportConfirmationRequiredError(
-            ConfirmationRequired(
-                channel="pdf",
-                confidence=_make_confidence(score=0.3, tier="low"),
-                proposed=BridgePayload(
-                    payload={"document_text": "…", "transparency_notice": "…"}
-                ),
-                reason="unknown_layout",
-            )
-        )
-        mock_service = MagicMock()
-        mock_service.pdf_preview.side_effect = bridge_error
-        confirm = AsyncMock()
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
-        ):
-            result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
-
-        data = result.data
-        assert isinstance(data, dict)
-        assert data["status"] == "confirmation_required"
-        assert data["bridge_payload"] is not None
-        # A bridge request is not a sign decision — the human is never asked.
-        confirm.assert_not_awaited()
-        # Every hint must be substantive; a blank string is not a next step.
-        assert all(action.strip() for action in result.actions)
-        assert any("bridge_response" in action for action in result.actions)
-
-
-async def test_confirm_pdf_sign_rejects_account_name_instead_of_dropping_it(
-    tmp_path: Path, monkeypatch: MonkeyPatch
-) -> None:
-    """account_name is a tabular signal the PDF sign channel cannot honor.
-
-    `_import_pdf` takes no account_name — accepting one and forwarding only
-    account_id would silently bind the rows to a filename-derived account
-    instead of the one the caller named. The bridge channel rejects it for
-    exactly this reason; this channel must too.
-    """
-    pdf = write_card_statement_pdf(tmp_path)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
-
-    mock_service = MagicMock()
-    with patch(
-        "moneybin.services.import_service.ImportService", return_value=mock_service
-    ):
-        result = await import_confirm(
-            file_path=str(pdf), confirm_pdf_sign=True, account_name="Chase Freedom"
-        )
-
-    assert result.error is not None
-    assert result.error.code == "import_pdf_account_signal_unsupported"
-    assert "account_id" in result.error.message
-    # Refused before any import ran — no rows bound to the wrong account.
-    mock_service.import_file.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "signal",
-    [
-        {"account_name": "Chase Freedom"},
-        {"account_bindings": {"stmt-4387": "acct-123"}},
-        {"account_metadata": {"stmt-4387": {"display_name": "Freedom"}}},
-    ],
-    ids=["account_name", "account_bindings", "account_metadata"],
-)
-@pytest.mark.parametrize(
-    "channel",
-    [
-        {"confirm_pdf_sign": True},
-        {"bridge_response": {"recipe": {}, "rows": []}},
-    ],
-    ids=["sign", "bridge"],
-)
-async def test_pdf_channels_reject_every_tabular_account_signal(
-    channel: dict[str, object],
-    signal: dict[str, object],
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-) -> None:
-    """Neither PDF channel may silently discard an account-selection signal.
-
-    `_import_pdf` and `apply_pdf_bridge_response` both take only `account_id`.
-    Any other account signal cannot be honored, so it must be refused rather
-    than dropped — a drop binds the rows to a statement- or filename-derived
-    account while the caller believes they chose one. The full matrix is pinned
-    here so a fourth signal can't be added on one channel and forgotten on the
-    other.
-    """
-    pdf = write_card_statement_pdf(tmp_path)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
-
-    mock_service = MagicMock()
-    with patch(
-        "moneybin.services.import_service.ImportService", return_value=mock_service
-    ):
-        result = await import_confirm(file_path=str(pdf), **channel, **signal)  # pyright: ignore[reportArgumentType]
-
-    assert result.error is not None
-    assert result.error.code == "import_pdf_account_signal_unsupported"
-    # The message must name the offending parameter and the supported one.
-    assert next(iter(signal)) in result.error.message
-    assert "account_id" in result.error.message
-    # Refused before any import ran — nothing bound to the wrong account.
-    mock_service.import_file.assert_not_called()
-    mock_service.apply_pdf_bridge_response.assert_not_called()
-
-
-async def test_confirm_pdf_sign_without_a_pending_proposal_imports_nothing(
-    tmp_path: Path, monkeypatch: MonkeyPatch
-) -> None:
-    """confirm_pdf_sign asserts a sign proposal exists; a false premise must not import.
-
-    The caller is answering a question MoneyBin asked. If no sign gate actually
-    fires for this PDF — a stale proposal, a replaced file, the wrong path —
-    then running the import anyway silently does something the caller never
-    requested (loading an ordinary statement, or writing seed rows) and returns
-    success without a human ever being asked. Verify the premise read-only
-    first.
-    """
-    from moneybin.services.import_service import PdfPreviewResult
-
-    pdf = write_card_statement_pdf(tmp_path)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
-
-    mock_service = MagicMock()
-    # The probe reports a clean deterministic PDF — no sign proposal pending.
-    mock_service.pdf_preview.return_value = PdfPreviewResult(
-        file_path=str(pdf),
-        deterministic=True,
-        decision_reason="passed",
-        confidence=1.0,
-        row_count=24,
-    )
-    confirm = AsyncMock()
-    archive = MagicMock()
-    with (
-        patch(
-            "moneybin.services.import_service.ImportService",
-            return_value=mock_service,
-        ),
-        patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
-        patch("moneybin.services.inbox_service.InboxService", archive),
-    ):
-        result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
-
-    assert result.error is not None
-    assert result.error.code == "import_sign_confirmation_not_pending"
-    # Nothing was written and nobody was asked — the premise failed first.
-    mock_service.import_file.assert_not_called()
-    confirm.assert_not_awaited()
-    archive.for_active_profile_no_db.assert_not_called()
-
-
-class TestConfirmationBindsToTheApprovedBytes:
-    """A sign approval must not transfer to content the human never saw.
-
-    The prompt stays open as long as the person takes to answer (the tool
-    allows 180s) and the retry re-reads the path. If the file is replaced in
-    that window, a different card statement would get its inversion
-    pre-ratified — every amount reversed in a document nobody reviewed. Each
-    test replaces the file from inside the elicitation callback, which is
-    exactly when the real race would land.
-    """
-
-    def _sign_error(self, channel: Channel) -> ImportConfirmationRequiredError:
-        from moneybin.services.import_confirmation import SignConventionProposal
-
-        return ImportConfirmationRequiredError(
-            ConfirmationRequired(
-                channel=channel,
-                confidence=_make_confidence(score=1.0, tier="high"),
-                proposed=SignConventionProposal(
-                    sign_convention="negative_is_income",
-                    evidence=("Minimum Payment Due",),
-                    sample_rows=[],
-                ),
-                reason="sign_convention",
-            )
-        )
-
-    async def test_pdf_sign_channel_refuses_a_swapped_file(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        pdf = write_card_statement_pdf(tmp_path)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database", _fake_database
-        )
-        mock_service = MagicMock()
-        mock_service.pdf_preview.side_effect = self._sign_error("pdf")
-
-        async def _swap_file_while_prompt_is_open(*_a: object, **_k: object) -> None:
-            pdf.write_bytes(b"%PDF-1.4 a completely different statement")
-
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch(
-                "moneybin.mcp.elicitation.confirm_or_raise",
-                AsyncMock(side_effect=_swap_file_while_prompt_is_open),
-            ),
-            patch("moneybin.services.inbox_service.InboxService"),
-        ):
-            result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
-
-        assert result.error is not None
-        assert result.error.code == "import_file_changed_during_confirmation"
-        # The approval never reached the replacement.
-        mock_service.import_file.assert_not_called()
-
-    async def test_tabular_channel_refuses_a_swapped_file(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        csv_file = tmp_path / "statements" / "card.csv"
-        csv_file.parent.mkdir(parents=True)
-        csv_file.write_text("date,amount\n2026-01-01,10.00\n")
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database", _fake_database
-        )
-        mock_service = MagicMock()
-        mock_service.import_file.side_effect = self._sign_error("tabular")
-
-        async def _swap_file_while_prompt_is_open(*_a: object, **_k: object) -> None:
-            csv_file.write_text("date,amount\n2026-02-02,-999.00\n")
-
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch(
-                "moneybin.mcp.elicitation.confirm_or_raise",
-                AsyncMock(side_effect=_swap_file_while_prompt_is_open),
-            ),
-            patch("moneybin.services.inbox_service.InboxService"),
-            patch(
-                "moneybin.extractors.tabular.format_detector.detect_format",
-                side_effect=ValueError("preview unavailable"),
-            ),
-        ):
-            result = await import_confirm(file_path=str(csv_file), accept=True)
-
-        assert result.error is not None
-        assert result.error.code == "import_file_changed_during_confirmation"
-        # Only the gating attempt ran — the ratified retry never did.
-        assert mock_service.import_file.call_count == 1
-
-    async def test_bridge_channel_refuses_a_swapped_file(
-        self, tmp_path: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        pdf = tmp_path / "statements" / "chase.pdf"
-        pdf.parent.mkdir(parents=True)
-        pdf.write_bytes(b"%PDF-1.4 original")
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "moneybin.mcp.tools.import_tools.get_database", _fake_database
-        )
-        mock_service = MagicMock()
-        mock_service.apply_pdf_bridge_response.side_effect = self._sign_error("pdf")
-
-        async def _swap_file_while_prompt_is_open(*_a: object, **_k: object) -> None:
-            pdf.write_bytes(b"%PDF-1.4 a completely different statement")
-
-        with (
-            patch(
-                "moneybin.services.import_service.ImportService",
-                return_value=mock_service,
-            ),
-            patch(
-                "moneybin.mcp.elicitation.confirm_or_raise",
-                AsyncMock(side_effect=_swap_file_while_prompt_is_open),
-            ),
-            patch("moneybin.services.inbox_service.InboxService"),
-        ):
-            result = await import_confirm(
-                file_path=str(pdf), bridge_response={"recipe": {}, "rows": []}
-            )
-
-        assert result.error is not None
-        assert result.error.code == "import_file_changed_during_confirmation"
-        # Only the gating attempt ran — the ratified retry never did.
-        assert mock_service.apply_pdf_bridge_response.call_count == 1
-
-
-@pytest.mark.parametrize(
-    "tabular_signal",
-    [{"accept": True}, {"mapping": {"amount": "Amount"}}],
-    ids=["accept", "mapping"],
-)
-async def test_confirm_pdf_sign_rejects_tabular_mapping_signals(
-    tabular_signal: dict[str, object], tmp_path: Path, monkeypatch: MonkeyPatch
-) -> None:
-    """The sign channel takes no column mapping, and says so instead of guessing.
-
-    Sibling coverage to `test_confirm_pdf_sign_rejected_alongside_bridge_response`:
-    each channel selector must refuse the others' signals rather than silently
-    picking one. A caller who learned the CLI's `--accept --confirm-sign`
-    pairing will try exactly this combination.
-    """
-    pdf = write_card_statement_pdf(tmp_path)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
-
-    mock_service = MagicMock()
-    with patch(
-        "moneybin.services.import_service.ImportService", return_value=mock_service
-    ):
-        result = await import_confirm(
-            file_path=str(pdf),
-            confirm_pdf_sign=True,
-            **tabular_signal,  # pyright: ignore[reportArgumentType]
-        )
-
-    assert result.error is not None
-    assert result.error.code == "import_confirm_channel_conflict"
-    # Names both the offending signal class and the channel that owns it.
-    assert "mapping" in result.error.message
-    # Refused before any probe or import ran.
-    mock_service.pdf_preview.assert_not_called()
-    mock_service.import_file.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

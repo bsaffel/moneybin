@@ -36,11 +36,7 @@ that branches on it; treat as one-way per .claude/rules/design-principles.md.
 # Import — loading raw data
 # ---------------------------------------------------------------------------
 
-IMPORT_BRIDGE_RESPONSE_INVALID = "import_bridge_response_invalid"
-IMPORT_CONFIRM_CHANNEL_CONFLICT = "import_confirm_channel_conflict"
-IMPORT_CONFIRM_REQUIRES_SIGNAL = "import_confirm_requires_signal"
 IMPORT_CURSOR_INVALID = "import_cursor_invalid"
-IMPORT_FILE_CHANGED_DURING_CONFIRMATION = "import_file_changed_during_confirmation"
 IMPORT_FILE_NOT_FOUND = "import_file_not_found"
 IMPORT_FORMAT_UNKNOWN = "import_format_unknown"
 IMPORT_ID_NOT_ALLOWED = "import_id_not_allowed"
@@ -61,6 +57,7 @@ IMPORT_PREVIEW_CONSUMED = "import_preview_consumed"
 IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED = "import_preview_direct_import_required"
 IMPORT_PREVIEW_ERROR = "import_preview_error"
 IMPORT_PREVIEW_EXPIRED = "import_preview_expired"
+IMPORT_PREVIEW_MAPPING_INVALID = "import_preview_mapping_invalid"
 IMPORT_PREVIEW_NOT_FOUND = "import_preview_not_found"
 IMPORT_PREVIEW_PLAN_MISMATCH = "import_preview_plan_mismatch"
 IMPORT_PREVIEW_PLAN_MISSING = "import_preview_plan_missing"
@@ -74,7 +71,6 @@ IMPORT_SAVED_FORMAT_BUILTIN_IMMUTABLE = "import_saved_format_builtin_immutable"
 IMPORT_SAVED_FORMAT_NOT_FOUND = "import_saved_format_not_found"
 IMPORT_SECTIONS_DUPLICATE = "import_sections_duplicate"
 IMPORT_SECTIONS_REQUIRED = "import_sections_required"
-IMPORT_SIGN_CONFIRMATION_NOT_PENDING = "import_sign_confirmation_not_pending"
 IMPORT_SIGN_PROPOSAL_CHANGED = "import_sign_proposal_changed"
 IMPORT_SUPERSEDED = "import_superseded"
 

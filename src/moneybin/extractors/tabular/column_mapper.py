@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _SAMPLE_SIZE = 20
 
 
-def _collect_samples(df: pl.DataFrame, col: str) -> list[str | None]:
+def collect_samples(df: pl.DataFrame, col: str) -> list[str | None]:
     """Extract sample values from a column as strings.
 
     Args:
@@ -170,7 +170,7 @@ def map_columns(
 
     # Collect sample values for mapped fields
     for dest, src in mapping.items():
-        _samples[dest] = _collect_samples(df, src)
+        _samples[dest] = collect_samples(df, src)
 
     # Content validation on date fields
     date_format = None
@@ -198,7 +198,7 @@ def map_columns(
                 mapping[req_field] = candidate
                 claimed.add(candidate)
                 flagged.append(req_field)
-                _samples[req_field] = _collect_samples(df, candidate)
+                _samples[req_field] = collect_samples(df, candidate)
                 if req_field == "transaction_date" and date_format is None:
                     date_format, _ = detect_date_format(_samples[req_field])
 
@@ -215,7 +215,7 @@ def map_columns(
 
     # Confidence tier
     unmapped = [c for c in df.columns if c not in claimed]
-    score, missing_required = _score_mapping(mapping, flagged, date_format)
+    score, missing_required = score_mapping(mapping, flagged, date_format)
     from moneybin.extractors.confidence import resolve_tier
 
     confidence = resolve_tier(
@@ -313,12 +313,16 @@ def _score_column_for_field(values: list[str], field_name: str) -> float:
     return 0.0
 
 
-def _score_mapping(
+def score_mapping(
     mapping: dict[str, str],
     flagged: list[str],
     date_format: str | None,
 ) -> tuple[float, tuple[str, ...]]:
-    """Compute a normalized confidence score + the missing-required set."""
+    """Compute a normalized confidence score + the missing-required set.
+
+    The sole emitter of the discrete score vocabulary the detection metrics
+    bucket on — re-derive it anywhere else and the buckets drift.
+    """
     has_date = "transaction_date" in mapping
     has_single_amount = "amount" in mapping
     has_debit = "debit_amount" in mapping

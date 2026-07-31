@@ -380,7 +380,9 @@ class ReviewedTabularPlan:
     encoding: str
     file_size: int
     field_mapping: dict[str, str]
-    date_format: str
+    date_format: str | None
+    """None when the detector could not read the date column. Never a
+    fabricated default — that replays as a silent zero-row import."""
     sign_convention: SignConventionType
     number_format: NumberFormatType
     is_multi_account: bool
@@ -1414,6 +1416,79 @@ class ImportService:
                     "The reviewed import mapping references unavailable columns.",
                     code=error_codes.IMPORT_PREVIEW_PLAN_MISMATCH,
                 )
+            if reviewed_plan.confidence == "low" or reviewed_plan.date_format is None:
+                # Req 4: low is never auto-acceptable, even replayed from a
+                # staged preview — and a plan whose date format was never
+                # detected parses to zero rows whatever tier it carries.
+                # Without this gate the transform stage silently drops every
+                # row it can't parse and the confirm "succeeds" with
+                # rows_loaded=0 and no error. A corrected mapping requires a
+                # fresh preview (Req 8) — mapping=... on import_preview, not a
+                # mutated confirm call.
+                from moneybin.extractors.confidence import Confidence
+                from moneybin.extractors.tabular.column_mapper import (
+                    collect_samples,
+                    score_mapping,
+                )
+                from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+                from moneybin.services.import_confirmation import (
+                    ConfirmationRequired,
+                    ImportConfirmationRequiredError,
+                    ProposedMapping,
+                )
+
+                # The plan persists only the tier, so re-score from the mapping
+                # rather than inventing a number: score_mapping is the canonical
+                # emitter, and it names the *missing half* of a partial
+                # debit/credit pair instead of the contradictory "amount".
+                score, missing_required = score_mapping(
+                    reviewed_plan.field_mapping, [], reviewed_plan.date_format
+                )
+                mapped_columns = set(reviewed_plan.field_mapping.values())
+                plan_samples = {
+                    dest: [
+                        value
+                        for value in collect_samples(df, column)
+                        if value is not None
+                    ]
+                    for dest, column in reviewed_plan.field_mapping.items()
+                }
+                record_counter(
+                    IMPORT_CONFIRMATIONS_TOTAL,
+                    labels={
+                        "channel": "tabular",
+                        "tier": "low",
+                        "outcome": "declined",
+                    },
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                    disposition="rollback",
+                )
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        confidence=Confidence(
+                            score=score,
+                            tier="low",
+                            flagged=(),
+                            missing_required=missing_required,
+                        ),
+                        # Name the file's own columns: the recovery hint tells
+                        # the agent to send mapping={dest: source_column}, so an
+                        # envelope with no column names forces it to guess.
+                        proposed=ProposedMapping(
+                            field_mapping=dict(reviewed_plan.field_mapping),
+                            sample_values=plan_samples,
+                            unmapped_columns=tuple(
+                                column
+                                for column in df.columns
+                                if column not in mapped_columns
+                            ),
+                        ),
+                        samples=plan_samples,
+                        reason="unknown_layout",
+                    )
+                )
             resolved = ResolvedMapping(
                 field_mapping=dict(reviewed_plan.field_mapping),
                 date_format=reviewed_plan.date_format,
@@ -1449,6 +1524,7 @@ class ImportService:
                 ImportConfirmationRequiredError,
                 Override,
                 ProposedMapping,
+                coerce_sign_convention,
                 resolve_or_confirm,
             )
 
@@ -1480,21 +1556,17 @@ class ImportService:
                 signal = None
 
             # Required fields depend on the EFFECTIVE amount shape after the
-            # override resolves the single/split contention. Both this
-            # pre-compute and validate_partial_mapping's merge logic call
-            # resolve_amount_shape so a future shape addition only updates
-            # one place.
+            # override resolves the single/split contention, so this
+            # pre-compute and validate_partial_mapping's merge logic must
+            # agree — both route through resolve_amount_shape.
             from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
-            from moneybin.services.import_confirmation import resolve_amount_shape
+            from moneybin.services.import_confirmation import (
+                tabular_required_fields,
+            )
 
-            amount_required = resolve_amount_shape(
+            required_fields = tabular_required_fields(
                 proposed_keys=set(proposed.field_mapping.keys()),
                 override_keys=set(overrides.keys()) if overrides else set(),
-            )
-            required_fields = (
-                "transaction_date",
-                *amount_required,
-                "description",
             )
             outcome = resolve_or_confirm(
                 channel="tabular",
@@ -1565,27 +1637,10 @@ class ImportService:
                     observations=observations,
                 )
 
-            # Coerce sign_convention based on the resolved amount shape so an
-            # override that swaps single ⇄ split doesn't carry a stale
-            # detector-derived convention into transform_dataframe (split
-            # rule against a single ``amount`` mapping rejects every row,
-            # and vice versa). Detector-derived sign for the resolved shape
-            # is preserved when the override didn't change the shape.
-            resolved_has_split = (
-                "debit_amount" in outcome.field_mapping
-                and "credit_amount" in outcome.field_mapping
+            resolved_sign = coerce_sign_convention(
+                field_mapping=outcome.field_mapping,
+                detected=mapping_result.sign_convention,
             )
-            detector_was_split = mapping_result.sign_convention == "split_debit_credit"
-            if resolved_has_split and not detector_was_split:
-                resolved_sign = "split_debit_credit"
-            elif not resolved_has_split and detector_was_split:
-                # Split → single: detector's split-only convention is no
-                # longer valid. Fall back to the default
-                # ``negative_is_expense``; callers can pass --sign to
-                # override if their export uses a different convention.
-                resolved_sign = "negative_is_expense"
-            else:
-                resolved_sign = mapping_result.sign_convention
             resolved = ResolvedMapping(
                 field_mapping=outcome.field_mapping,
                 date_format=mapping_result.date_format or "%Y-%m-%d",

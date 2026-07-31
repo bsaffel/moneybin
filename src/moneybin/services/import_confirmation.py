@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from moneybin.extractors.confidence import Confidence
+from moneybin.extractors.tabular.formats import SignConventionType
 from moneybin.services.account_resolution_types import AccountProposalDict
 
 Channel = Literal["tabular", "gsheet", "pdf"]
@@ -268,6 +269,49 @@ def resolve_amount_shape(
         and "amount" not in proposed_keys
     )
     return ("debit_amount", "credit_amount") if proposed_is_split else ("amount",)
+
+
+def tabular_required_fields(
+    *,
+    proposed_keys: set[str] | frozenset[str],
+    override_keys: set[str] | frozenset[str],
+) -> tuple[str, ...]:
+    """The tabular channel's required destinations for the post-merge amount shape.
+
+    The one place the channel's required set lives, so adding a field (or an
+    amount shape) doesn't mean hunting every caller that pre-validates.
+    """
+    amount_fields = resolve_amount_shape(
+        proposed_keys=proposed_keys, override_keys=override_keys
+    )
+    return ("transaction_date", *amount_fields, "description")
+
+
+def coerce_sign_convention(
+    *,
+    field_mapping: dict[str, str],
+    detected: SignConventionType,
+) -> SignConventionType:
+    """Keep sign_convention consistent with the amount shape actually mapped.
+
+    A split rule against a single ``amount`` mapping rejects every row, and a
+    single-amount rule against a debit/credit pair does the same — so an
+    override that swaps the shape must not carry the detector's convention
+    forward. Every path that merges an override onto a detected mapping calls
+    this; skipping it produces a plan that parses to zero rows and still
+    reports success.
+    """
+    resolved_is_split = (
+        "debit_amount" in field_mapping and "credit_amount" in field_mapping
+    )
+    detected_is_split = detected == "split_debit_credit"
+    if resolved_is_split and not detected_is_split:
+        return "split_debit_credit"
+    if not resolved_is_split and detected_is_split:
+        # The detector's split-only convention no longer applies. Fall back to
+        # the default; callers can still pass an explicit sign override.
+        return "negative_is_expense"
+    return detected
 
 
 def validate_partial_mapping(
