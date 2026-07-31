@@ -378,7 +378,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is `B1`, so an OFX import offered `b1` while the account dimension held
   `Chase`, and every institution-based match missed. Slugifying the display
   name doesn't close the gap either — `U.S. Bank` gives `u-s-bank`, not the
-  registry's `us_bank`. Both sides now carry the same registry slug.
+  registry's `us_bank`. Every source now resolves to the same registry slug
+  before comparison: OFX by exact `<FID>`, tabular and Plaid by matching their
+  institution text against `seeds.institutions` with case and punctuation
+  stripped, so a spreadsheet's `U.S. Bank` and a statement's `<FID>` reach the
+  same account. An unregistered institution keeps its own text.
   `institution_name` is unchanged and stays the display column. Run `moneybin
   transform apply` to rebuild; until then the MCP server reports the missing
   column as schema drift at boot and in `system_status`.

@@ -92,6 +92,15 @@ Reading the table precisely requires four caveats:
   back to `<ORG>` only for an unregistered FID. The import-time slug recorded on
   each transaction keeps the older `<ORG>`-first order, because changing it
   would re-key every transaction already imported.
+- **Every source resolves to one registry slug before comparison.** Sources
+  spell an institution differently — a `<FID>`, a sheet's hand-typed
+  `U.S. Bank`, a filename heuristic's `us_bank` — and comparing those spellings
+  directly splits a bank from itself, because the registry's slug is curated
+  rather than derived (`U.S. Bank` slugifies to `u-s-bank`, never `us_bank`).
+  Both sides of every institution comparison are therefore resolved through
+  `seeds.institutions` first, matching case- and punctuation-stripped text
+  against the registry's slug *and* its display name. An unregistered
+  institution keeps its own text, which still compares consistently.
 - **A bare bank CSV carries no identity.** Date/Description/Amount alone can't
   tell MoneyBin which account it is, so binding is always explicit — which is why
   the pick-list (rung 4) exists.

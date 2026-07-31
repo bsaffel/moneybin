@@ -43,11 +43,41 @@ WITH ofx_balance_currency AS (
   GROUP BY
     source_account_key,
     source_origin
+), institution_alias AS (
+  /* Normalized spelling -> canonical registry slug, indexing both halves of every
+     seeds.institutions row because sources arrive carrying either: OFX resolves a
+     display name, a sheet's Institution column is written by hand, the filename
+     heuristic already emits the slug. Punctuation is stripped rather than replaced,
+     which is what lets those meet — the registry's slug is curated, not derived, so
+     no amount of slugifying turns "U.S. Bank" into "us_bank". Grouped so a future
+     registry row normalizing onto an existing alias cannot fan one account into two.
+     Mirrors extractors/institution_resolution.py::slug_for_institution_name, which
+     the resolver applies to the *source* side; the two must agree, and
+     test_registry_alias_lookup_matches_the_sql_model pins that. */
+  SELECT
+    alias,
+    MIN(slug) AS slug
+  FROM (
+    SELECT
+      REGEXP_REPLACE(LOWER(slug), '[^a-z0-9]', '', 'g') AS alias,
+      slug
+    FROM seeds.institutions
+    UNION ALL
+    SELECT
+      REGEXP_REPLACE(LOWER(display_name), '[^a-z0-9]', '', 'g') AS alias,
+      slug
+    FROM seeds.institutions
+  )
+  WHERE
+    alias <> ''
+  GROUP BY
+    alias
 ), ofx_accounts AS (
   /* OFX <ORG> is a routing code, not a name — Chase publishes "B1", Wells Fargo
-     "WF" — so resolve from the exact <FID> via seeds.institutions and fall back
-     to the raw <ORG> when the FID is unregistered. Two columns come out of that
-     join and they are NOT interchangeable: institution_name is for display,
+     "WF" — so resolve from the exact <FID> via seeds.institutions, then from the
+     <ORG> as a name for issuers that publish one, and only then fall back to the
+     raw <ORG>. Two columns come out of that join and they are NOT
+     interchangeable: institution_name is for display,
      institution_slug is what account matching compares. Slugifying the display
      name is not the inverse of the registry ("U.S. Bank" -> "u-s-bank", not
      "us_bank"), so a consumer that matches on the name drops candidates.
@@ -59,7 +89,7 @@ WITH ofx_balance_currency AS (
     a.routing_number,
     a.account_type,
     COALESCE(i.display_name, a.institution_org) AS institution_name,
-    COALESCE(i.slug, a.institution_org) AS institution_slug,
+    COALESCE(i.slug, ia.slug, a.institution_org) AS institution_slug,
     a.institution_fid,
     'ofx' AS source_type,
     a.source_file,
@@ -75,6 +105,10 @@ WITH ofx_balance_currency AS (
   FROM prep.stg_ofx__accounts AS a
   LEFT JOIN seeds.institutions AS i
     ON i.fid = a.institution_fid
+  /* Only reached when the FID is unregistered: some issuers put a real name in
+     <ORG> ("WELLS FARGO") rather than a routing code, and that name resolves. */
+  LEFT JOIN institution_alias AS ia
+    ON ia.alias = REGEXP_REPLACE(LOWER(a.institution_org), '[^a-z0-9]', '', 'g')
   LEFT JOIN ofx_balance_currency AS c
     ON c.source_account_key = a.source_account_key AND c.source_origin = a.source_origin
 ), tabular_accounts AS (
@@ -84,7 +118,7 @@ WITH ofx_balance_currency AS (
     routing_number,
     account_type,
     institution_name,
-    institution_name AS institution_slug, /* Already a slug: resolve_institution_tabular returns one. */
+    COALESCE(ia.slug, institution_name) AS institution_slug, /* Resolved, never aliased across: a sheet's Institution column and the filename/format chain both yield display text, so passing it straight through would make one column mean two things by source and stop an OFX row for the same bank from matching it */
     institution_fid,
     source_type,
     source_file,
@@ -103,6 +137,8 @@ WITH ofx_balance_currency AS (
     END AS last_four_raw,
     currency AS source_currency /* the one source that carries it on the account itself */
   FROM prep.stg_tabular__accounts
+  LEFT JOIN institution_alias AS ia
+    ON ia.alias = REGEXP_REPLACE(LOWER(institution_name), '[^a-z0-9]', '', 'g')
 ), plaid_accounts AS (
   /* Every column is alias-qualified because the balance-currency join makes
      bare source_account_key ambiguous. */
@@ -112,7 +148,7 @@ WITH ofx_balance_currency AS (
     NULL::TEXT AS routing_number,
     a.account_type,
     a.institution_name,
-    a.institution_name AS institution_slug, /* Plaid carries no FID, so the display name is the best slug available; both sides are slugified when compared */
+    COALESCE(ia.slug, a.institution_name) AS institution_slug, /* Plaid carries no FID, so its display name is all there is to resolve from; unregistered institutions keep the name and rely on both sides being slugified when compared */
     NULL::TEXT AS institution_fid,
     'plaid' AS source_type,
     a.source_file,
@@ -126,6 +162,8 @@ WITH ofx_balance_currency AS (
     END AS last_four_raw,
     c.source_currency
   FROM prep.stg_plaid__accounts AS a
+  LEFT JOIN institution_alias AS ia
+    ON ia.alias = REGEXP_REPLACE(LOWER(a.institution_name), '[^a-z0-9]', '', 'g')
   LEFT JOIN plaid_balance_currency AS c
     ON c.source_account_key = a.source_account_key AND c.source_origin = a.source_origin
 ), all_accounts AS (

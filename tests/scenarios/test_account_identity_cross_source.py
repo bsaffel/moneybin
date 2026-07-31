@@ -441,3 +441,53 @@ def test_reissued_card_queues_reissue_proposal_through_real_import() -> None:
         assert merged is not None and merged[0] == 0, (
             "a reissue proposal must not auto-merge onto the original card"
         )
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_tabular_display_name_lands_as_the_canonical_registry_slug() -> None:
+    """A sheet's hand-written institution must reach the dim as the registry slug.
+
+    `institution_slug` is the column account matching compares, and OFX fills it
+    from the <FID> registry ('us_bank'). A tabular source has only the text its
+    Institution column holds — 'U.S. Bank' — and passing that straight through
+    would leave one column meaning two different things depending on which
+    source wrote the row. The same bank would then fail to match itself across
+    sources, because slugifying a display name never reproduces a curated slug
+    ('u-s-bank' against 'us-bank').
+
+    U.S. Bank is the fixture precisely because it is the one seeds row where the
+    two disagree: Wells Fargo and Chase slugify onto their own slugs and would
+    pass with the derivation removed entirely.
+
+    Seeding `raw.*` is the real input to the model under test — the derivation
+    being exercised is the staging→core SQL, not the importer that fills raw.
+    """
+    scenario = Scenario(
+        scenario="account-identity-cross-source",
+        setup=SetupSpec(persona="family"),
+        pipeline=[],
+    )
+    with scenario_env(scenario) as (db, _tmp, env):
+        db.execute(
+            "INSERT INTO raw.tabular_accounts "
+            "(account_id, account_name, institution_name, source_file, "
+            " source_type, source_origin, import_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                "usb-checking",
+                "US Bank Checking",
+                "U.S. Bank",
+                "/tmp/usbank.csv",  # noqa: S108  # test fixture path
+                "csv",
+                "tiller",
+                "test-import",
+            ],
+        )
+        run_step("transform", scenario.setup, db, env=env)
+        row = db.execute(
+            "SELECT institution_slug FROM core.dim_accounts WHERE account_id = ?",
+            ["usb-checking"],
+        ).fetchone()
+
+    assert row is not None, "seeded tabular account never reached core.dim_accounts"
+    assert row[0] == "us_bank", row[0]

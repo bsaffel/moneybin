@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import duckdb
 
 from moneybin.database import Database
+from moneybin.extractors.institution_resolution import slug_for_institution_name
 from moneybin.extractors.tabular.account_matching import match_account
 from moneybin.metrics.observations import MetricObservations, record_observation
 from moneybin.metrics.registry import (
@@ -70,6 +71,23 @@ def fetch_display_name(db: Database, account_id: str) -> str:
     except duckdb.CatalogException:
         return ""
     return str(row[0]) if row and row[0] is not None else ""
+
+
+def _institution_key(institution: str | None) -> str | None:
+    """Comparison key for an institution, canonical wherever the registry knows it.
+
+    Both sides of every institution comparison pass through here. Sources carry
+    whatever spelling they have — a sheet's hand-written "U.S. Bank", a
+    filename heuristic's "us_bank", the registry slug an OFX ``<FID>`` resolves
+    to — and slugifying alone never makes those meet, because the registry's
+    slug is curated rather than derived from the name ("u-s-bank" against
+    "us-bank"). Resolving through the registry first collapses every known
+    spelling of one institution onto a single key; an unregistered name falls
+    back to a plain slug, which still absorbs case and separator differences.
+    """
+    if not institution:
+        return None
+    return slugify(slug_for_institution_name(institution) or institution) or None
 
 
 # Cap on the fallback pick-list (existing accounts surfaced for the human to pick
@@ -541,18 +559,17 @@ class AccountResolver:
             if (
                 src.last_four
                 and src.institution
-                and (target_inst := slugify(src.institution))
+                and (target_inst := _institution_key(src.institution))
             ):
-                # Match on institution_slug, never institution_name. The name is
-                # for display, and slugifying it does not recover the registry
-                # slug: slugify("U.S. Bank") is "u-s-bank" where the registry
-                # says "us_bank" (which slugifies to "us-bank"). Slugifying both
-                # sides absorbs the registry's underscore convention, so only a
-                # name-vs-slug comparison can split a bank from itself. Fetch by
-                # exact last_four and compare in Python because the two sides
-                # still differ in case. An empty slug (institution is all
-                # punctuation) is skipped — it would spuriously match other
-                # empty-slug rows sharing last_four.
+                # Match on institution_slug, never institution_name: the name is
+                # for display, and the dim's per-field merge lets a later
+                # source win it outright. Both sides go through
+                # _institution_key so the spellings a source happens to carry
+                # meet the registry's curated slug. Fetch by exact last_four and
+                # compare in Python because the two sides still differ in case.
+                # An institution that normalizes to nothing (all punctuation) is
+                # skipped — it would match every other such row sharing
+                # last_four.
                 rows = self._db.execute(
                     f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
                     "WHERE last_four = ? AND account_id != ?",
@@ -567,7 +584,7 @@ class AccountResolver:
                         confidence=0.5,
                     )
                     for r in rows
-                    if r[1] and slugify(str(r[1])) == target_inst
+                    if r[1] and _institution_key(str(r[1])) == target_inst
                 )
             if out:
                 return out
@@ -631,7 +648,7 @@ class AccountResolver:
         and low confidence — a reissue is proposed, never auto-merged, because a
         wrong silent merge is the hardest inference to notice and undo.
         """
-        target_inst = slugify(src.institution) if src.institution else None
+        target_inst = _institution_key(src.institution) if src.institution else None
         if not target_inst or not src.last_four:
             return []
         rows = self._db.execute(
@@ -653,7 +670,7 @@ class AccountResolver:
                 confidence=0.3,
             )
             for r in rows
-            if r[1] and slugify(str(r[1])) == target_inst
+            if r[1] and _institution_key(str(r[1])) == target_inst
         ][:_FALLBACK_CANDIDATE_CAP]
 
     def _fallback_candidates(
@@ -680,7 +697,7 @@ class AccountResolver:
             "WHERE account_id != ? ORDER BY institution_slug, account_id",
             [exclude_account_id],
         ).fetchall()
-        target_inst = slugify(src.institution) if src.institution else None
+        target_inst = _institution_key(src.institution) if src.institution else None
         if target_inst:
             scoped = [
                 _Candidate(
@@ -690,7 +707,7 @@ class AccountResolver:
                     confidence=0.2,
                 )
                 for r in rows
-                if r[1] and slugify(str(r[1])) == target_inst
+                if r[1] and _institution_key(str(r[1])) == target_inst
             ]
             if scoped:
                 return scoped[:_FALLBACK_CANDIDATE_CAP]

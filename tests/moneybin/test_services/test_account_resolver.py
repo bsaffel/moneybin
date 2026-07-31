@@ -1084,3 +1084,44 @@ def test_institution_matching_compares_slugs_not_display_names(db: Database) -> 
     assert [c.signal for c in proposal.candidates] == ["institution_reissue"], (
         proposal.candidates
     )
+
+
+def test_institution_matching_canonicalizes_a_hand_written_name(db: Database) -> None:
+    """A sheet's "U.S. Bank" must meet the registry's "us_bank".
+
+    The mirror of the case above. There the dim held the curated slug and the
+    source supplied it too; here the source is a Tiller-style sheet whose
+    Institution column is human-written display text, matched against an
+    account an OFX statement minted. Slugifying both sides cannot close that
+    gap — `u-s-bank` and `us-bank` — because the registry's slug is curated,
+    not derived from the name. Only a lookup through the registry collapses
+    every spelling of one institution onto a single key.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(
+        _src(source_type="ofx", institution="us_bank", last_four="1111")
+    )
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="1111",
+        institution_name="U.S. Bank",
+        institution_slug="us_bank",
+        display_name="U.S. Bank Checking …1111",
+    )
+
+    proposal = resolver.propose(
+        _src(
+            source_type="csv",
+            source_account_key="usb-checking",
+            institution="U.S. Bank",
+            last_four="1111",
+            # Deliberately unlike the dim's display_name: the name signal would
+            # otherwise answer for the institution signal under test.
+            account_name="statement import",
+        )
+    )
+    assert [c.signal for c in proposal.candidates] == ["institution_last4"], (
+        proposal.candidates
+    )
