@@ -90,6 +90,7 @@ WITH ofx_balance_currency AS (
     a.account_type,
     COALESCE(i.display_name, a.institution_org) AS institution_name,
     COALESCE(i.slug, ia.slug, a.institution_org) AS institution_slug,
+    NOT COALESCE(i.slug, ia.slug) IS NULL AS institution_slug_resolved,
     a.institution_fid,
     'ofx' AS source_type,
     a.source_file,
@@ -119,6 +120,7 @@ WITH ofx_balance_currency AS (
     account_type,
     institution_name,
     COALESCE(ia.slug, institution_name) AS institution_slug, /* Resolved, never aliased across: a sheet's Institution column and the filename/format chain both yield display text, so passing it straight through would make one column mean two things by source and stop an OFX row for the same bank from matching it */
+    NOT ia.slug IS NULL AS institution_slug_resolved,
     institution_fid,
     source_type,
     source_file,
@@ -149,6 +151,7 @@ WITH ofx_balance_currency AS (
     a.account_type,
     a.institution_name,
     COALESCE(ia.slug, a.institution_name) AS institution_slug, /* Plaid carries no FID, so its display name is all there is to resolve from; unregistered institutions keep the name and rely on both sides being slugified when compared */
+    NOT ia.slug IS NULL AS institution_slug_resolved,
     NULL::TEXT AS institution_fid,
     'plaid' AS source_type,
     a.source_file,
@@ -201,6 +204,14 @@ WITH ofx_balance_currency AS (
          by source strength then recency — ARG_MIN over (source_rank ASC,
          extracted_at DESC); negating epoch_us flips the timestamp to descending
          within the composite ordering key.
+       - institution_slug: resolved-first, then recency. Only some sources can
+         resolve one — OFX has a <FID>, a spreadsheet has whatever its
+         Institution column was typed as — so ranking this by recency alone lets
+         an unregistered spelling overwrite a registry slug the moment a sheet
+         for the same account arrives later. Matching then compares the canonical
+         slug against that raw text, misses the account, and mints a duplicate.
+         Source rank is the wrong key here: a tabular row that DID resolve is
+         more useful than an OFX row that fell back to a raw <ORG>.
        - Descriptive fields (institution_name, account_type, official_name,
          account_subtype): first non-null by recency — ARG_MAX over extracted_at.
          account_type arrives already normalized to one canonical vocabulary by
@@ -222,7 +233,10 @@ WITH ofx_balance_currency AS (
       NOT institution_fid IS NULL) AS institution_fid,
     ARG_MAX(institution_name, extracted_at) FILTER(WHERE
       NOT institution_name IS NULL) AS institution_name,
-    ARG_MAX(institution_slug, extracted_at) FILTER(WHERE
+    ARG_MIN(
+      institution_slug,
+      (CASE WHEN institution_slug_resolved THEN 0 ELSE 1 END, -EPOCH_US(extracted_at))
+    ) FILTER(WHERE
       NOT institution_slug IS NULL) AS institution_slug,
     ARG_MAX(account_type, extracted_at) FILTER(WHERE
       NOT account_type IS NULL) AS account_type,

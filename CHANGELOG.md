@@ -382,7 +382,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before comparison: OFX by exact `<FID>`, tabular and Plaid by matching their
   institution text against `seeds.institutions` with case and punctuation
   stripped, so a spreadsheet's `U.S. Bank` and a statement's `<FID>` reach the
-  same account. An unregistered institution keeps its own text.
+  same account. An unregistered institution keeps its own text. Where several
+  sources merge into one account, a resolved slug wins over unresolved text
+  regardless of arrival order, so one unrecognized spelling in a later
+  spreadsheet can't overwrite the canonical slug.
   `institution_name` is unchanged and stays the display column. Run `moneybin
   transform apply` to rebuild; until then the MCP server reports the missing
   column as schema drift at boot and in `system_status`.

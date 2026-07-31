@@ -100,7 +100,11 @@ Reading the table precisely requires four caveats:
   Both sides of every institution comparison are therefore resolved through
   `seeds.institutions` first, matching case- and punctuation-stripped text
   against the registry's slug *and* its display name. An unregistered
-  institution keeps its own text, which still compares consistently.
+  institution keeps its own text, which still compares consistently. When
+  several sources merge into one account, a slug the registry resolved outranks
+  unresolved text no matter which arrived most recently — otherwise one
+  unrecognized spelling in a later spreadsheet would overwrite the canonical
+  slug and stop that account matching itself on the next import.
 - **A bare bank CSV carries no identity.** Date/Description/Amount alone can't
   tell MoneyBin which account it is, so binding is always explicit — which is why
   the pick-list (rung 4) exists.
