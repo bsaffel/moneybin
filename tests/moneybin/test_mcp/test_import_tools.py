@@ -2404,6 +2404,30 @@ async def test_import_preview_coarse_rejects_invalid_mapping_override(
     assert "NoSuchColumn" in response.error.message
 
 
+async def test_import_preview_coarse_rejects_an_unknown_destination_field(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A misspelled destination is refused, not merged as a new field.
+
+    The sibling case covers an unknown *source* column; a typo on the left of
+    the pair is the failure an agent is likelier to author.
+    """
+    csv = tmp_path / "basic.csv"
+    csv.write_text("Date,Amount,Description\n2026-07-01,-4.50,Coffee\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    response = await import_preview_coarse(
+        file_path=str(csv),
+        mapping={"descrption": "Description"},
+    )
+
+    assert response.error is not None
+    assert response.error.code == "import_preview_mapping_invalid"
+    assert "descrption" in response.error.message
+
+
 async def test_import_preview_confirm_status_coarse_workflow(
     mcp_db: object,
     tmp_path: Path,

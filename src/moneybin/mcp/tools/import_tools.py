@@ -2465,7 +2465,11 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             import_confirm_coarse,
             "import_confirm",
             "Atomically consume an unchanged preview and import its file, "
-            "eliciting human approval before any sign inversion.",
+            "eliciting human approval before any sign inversion. When the "
+            "file's accounts are unresolved it imports nothing and returns "
+            "account proposals whose source_account_key is masked; bind a "
+            "single account with account_name, or several with "
+            "moneybin import confirm <file> --account-binding.",
         ),
         (
             import_status_coarse,

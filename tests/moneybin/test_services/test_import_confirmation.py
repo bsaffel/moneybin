@@ -666,6 +666,34 @@ class TestCoerceConfidenceTier:
             == "high"
         )
 
+    def test_a_flag_on_a_retired_destination_stops_counting(self) -> None:
+        """A flag survives `override_keys` but names no column in the result.
+
+        Regression: switching to a split shape retires `amount`, but
+        `map_columns` had content-discovered a spare numeric column as `amount`
+        and flagged it. The flag is not an override key, so it kept scoring
+        0.85 against a mapping that no longer contains the field it names —
+        re-confirming a plan the user had already corrected.
+        """
+        from moneybin.services.import_confirmation import coerce_confidence_tier
+
+        assert (
+            coerce_confidence_tier(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "description": "Memo",
+                    "debit_amount": "Soll",
+                    "credit_amount": "Haben",
+                },
+                detected_flagged=["amount"],
+                override_keys={"debit_amount", "credit_amount"},
+                date_format="%Y-%m-%d",
+                structural_red_flag=False,
+                **self._BANDS,
+            )
+            == "high"
+        )
+
     def test_a_structural_red_flag_pins_low_whatever_the_score(self) -> None:
         from moneybin.services.import_confirmation import coerce_confidence_tier
 

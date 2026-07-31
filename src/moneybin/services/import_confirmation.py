@@ -535,7 +535,15 @@ def coerce_confidence_tier(
     from moneybin.extractors.confidence import resolve_tier
     from moneybin.extractors.tabular.column_mapper import score_mapping
 
-    remaining = [flag for flag in detected_flagged if flag not in override_keys]
+    # A flag counts only while the destination it names survives into the
+    # merged mapping. An amount-shape swap retires `amount` without naming it
+    # as an override key, so a flag left on it would otherwise keep scoring
+    # against a field the corrected plan no longer has.
+    remaining = [
+        flag
+        for flag in detected_flagged
+        if flag not in override_keys and flag in field_mapping
+    ]
     score, _ = score_mapping(field_mapping, remaining, date_format)
     return resolve_tier(
         score,

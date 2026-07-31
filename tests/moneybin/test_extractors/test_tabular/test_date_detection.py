@@ -107,6 +107,15 @@ class TestDetectDateFormat:
         fmt, _confidence = detect_date_format(values)
         assert fmt is not None
 
+    def test_unreadable_values_name_no_format(self) -> None:
+        """The detector must say "no format", never guess one.
+
+        A fabricated `"%Y-%m-%d"` here is what let a column of unparseable
+        dates reject every row and report the import as a success.
+        """
+        values: list[str | None] = ["foo", "bar", "baz"]
+        assert detect_date_format(values) == (None, "low")
+
 
 class TestDetectNumberFormat:
     """Tests for number format detection."""

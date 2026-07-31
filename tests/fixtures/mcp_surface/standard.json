@@ -1,5 +1,5 @@
 {
-  "sha256": "4037ef40b8ad152ba9f633dfcbd2b9ef29cb17630faca5cfa11c55380beae086",
+  "sha256": "6367145c937ed26d31b726213281f84ba4549d23bc775f4182d0304a229b70b9",
   "tool_count": 49,
   "tools": [
     {
@@ -1469,7 +1469,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically consume an unchanged preview and import its file, eliciting human approval before any sign inversion.",
+        "description": "Atomically consume an unchanged preview and import its file, eliciting human approval before any sign inversion. When the file's accounts are unresolved it imports nothing and returns account proposals whose source_account_key is masked; bind a single account with account_name, or several with moneybin import confirm <file> --account-binding.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1569,12 +1569,12 @@
         },
         "name": "import_confirm"
       },
-      "description_bytes": 112,
+      "description_bytes": 344,
       "input_schema_bytes": 788,
       "name": "import_confirm",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 1094
+      "total_bytes": 1326
     },
     {
       "annotation_bytes": 91,
@@ -5013,5 +5013,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 53605
+  "total_bytes": 53837
 }
