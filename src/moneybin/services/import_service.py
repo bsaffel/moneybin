@@ -393,6 +393,10 @@ class ReviewedTabularPlan:
     rows_skipped_trailing: int
     header_row_looks_like_data: bool
     header_signature: list[str]
+    flagged_fields: list[str]
+    """Fields the preview flagged as weakly matched. Required, not defaulted:
+    an absent value re-scores as a clean mapping, which is how a flagged 0.85
+    plan came to report score=1.0 beside its own "low" tier."""
 
     def to_dict(self) -> dict[str, Any]:
         """Return the canonical JSON-ready representation."""
@@ -1442,12 +1446,18 @@ class ImportService:
                     ProposedMapping,
                 )
 
-                # The plan persists only the tier, so re-score from the mapping
-                # rather than inventing a number: score_mapping is the canonical
-                # emitter, and it names the *missing half* of a partial
-                # debit/credit pair instead of the contradictory "amount".
+                # The plan persists the tier, not the score, so re-score from
+                # the mapping rather than inventing a number: score_mapping is
+                # the canonical emitter, and it names the *missing half* of a
+                # partial debit/credit pair instead of the contradictory
+                # "amount". Feed it the preview's own flagged set — dropping it
+                # re-scores a flagged 0.85 plan as a clean 1.0, so the refusal
+                # would report score=1.0 beside tier="low" and name none of the
+                # fields that earned the tier.
                 score, missing_required = score_mapping(
-                    reviewed_plan.field_mapping, [], reviewed_plan.date_format
+                    reviewed_plan.field_mapping,
+                    list(reviewed_plan.flagged_fields),
+                    reviewed_plan.date_format,
                 )
                 # Report the tier the preview already showed rather than a flat
                 # "low": an undetected date format alone scores 0.75 (medium),
@@ -1487,7 +1497,7 @@ class ImportService:
                         confidence=Confidence(
                             score=score,
                             tier=declined_tier,
-                            flagged=(),
+                            flagged=tuple(reviewed_plan.flagged_fields),
                             missing_required=missing_required,
                         ),
                         # Name the file's own columns: the recovery hint tells
@@ -1529,7 +1539,6 @@ class ImportService:
             )
         else:
             from moneybin.config import get_settings
-            from moneybin.extractors.tabular.date_detection import format_parses
             from moneybin.metrics.registry import (
                 IMPORT_CONFIRMATIONS_TOTAL,
                 IMPORT_DETECTION_SCORE,
@@ -1599,20 +1608,13 @@ class ImportService:
             )
 
             # An explicit --date-format is the documented way in for a real
-            # format the detector carries no candidate for (%Y%m%d). Honour it,
-            # but hold it to the bar a detected candidate clears: waving it
-            # through unchecked would reopen the zero-row import from the other
-            # side, since import_file applies the override downstream of here.
-            date_format_effective = mapping_result.date_format
-            if date_format_override is not None:
-                date_format_effective = (
-                    date_format_override
-                    if format_parses(
-                        mapping_result.sample_values.get("transaction_date", ()),
-                        date_format_override,
-                    )
-                    else None
-                )
+            # format the detector carries no candidate for (%Y%m%d), so its
+            # presence — not the detector's silence — decides whether this plan
+            # has a date format at all. Override first, matching the precedence
+            # the replace below applies. Whether it can actually *read* the
+            # column is checked once down there, where every branch honours it;
+            # a second check here would be a second gate to keep in step.
+            date_format_effective = date_format_override or mapping_result.date_format
             if date_format_effective is None:
                 # A date column nothing could parse makes the plan unloadable at
                 # any tier: the transform drops every row and the import reports
@@ -1774,6 +1776,27 @@ class ImportService:
                 f"Valid values: {list(get_args(NumberFormatType))}.",
                 code=error_codes.IMPORT_INVALID_NUMBER_FORMAT,
             )
+        # Every branch above reaches the same `date_format=date_format_override`
+        # replace below, so this is the one place that sees the override applied
+        # — a saved or header-matched format lands here as surely as a fresh
+        # detection. An unreadable strptime string is not a slow failure: the
+        # transform drops every row it cannot parse and the import reports
+        # success with rows_loaded=0. Hold it to the bar a detected candidate
+        # clears rather than trusting that the caller typed it correctly.
+        if date_format_override is not None:
+            from moneybin.extractors.tabular.column_mapper import collect_samples
+            from moneybin.extractors.tabular.date_detection import format_parses
+
+            date_column = resolved.field_mapping.get("transaction_date")
+            if date_column in df.columns and not format_parses(
+                collect_samples(df, date_column), date_format_override
+            ):
+                raise UserError(
+                    f"Date format {date_format_override!r} could not read the "
+                    f"{date_column!r} column. Importing with it would drop every "
+                    "row. Check the format against the column's own values.",
+                    code=error_codes.IMPORT_INVALID_DATE_FORMAT,
+                )
         if sign:
             _validate_explicit_tabular_sign_shape(
                 resolved.field_mapping,

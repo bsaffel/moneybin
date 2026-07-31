@@ -1007,6 +1007,9 @@ def import_preview_coarse(
                 *data.mapping.values(),
                 *data.unmapped_columns,
             }),
+            # Carried so a later refusal re-scores against the same evidence the
+            # caller reviewed, instead of a clean mapping it never saw.
+            flagged_fields=list(data.flagged_fields),
         ).to_dict()
     sha256, size = _bytes_identity(source_bytes)
     issued_at = datetime.now(UTC)
