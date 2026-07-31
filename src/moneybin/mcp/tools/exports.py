@@ -536,8 +536,10 @@ def register_export_tools(mcp: FastMCP) -> None:
         "create another immutable local artifact. Redaction must be selected for "
         "this run; omission elicits redacted (default) versus unredacted and "
         "refuses when elicitation is unavailable. Returns receipt identity, row "
-        "counts, output classes, and checksums. Writes no app.* state; recovery "
-        "uses the returned artifact or Sheets receipt.",
+        "counts, output classes, and checksums, and makes a best-effort record "
+        "of that receipt in app.audit_log for later system_audit() recovery — "
+        "recording can fail after a successful publish, so treat this response "
+        "as the only certain copy; the artifact is permanent — no revert.",
         privacy_actor="export_run",
     )
     register(

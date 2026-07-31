@@ -185,7 +185,32 @@ stays below the 50-tool hard limit:
   catalog report to a named local or Sheets destination. Every call supplies
   `redaction_mode`; omission elicits a choice where supported and otherwise
   returns a structured refusal. `redacted` is the safe default, never a saved
-  destination preference.
+  destination preference. Each successful run records its receipt — export id,
+  destination id and name, format, artifact file name, subject kind, report id,
+  row counts, and checksums — to `app.audit_log` under action `export.run`, so
+  a later turn or session reads it with `system_audit()` instead of relying on
+  the one-time return value. The row names the artifact, never its full path,
+  because `export.md` R9 keeps local paths out of persisted state. It records
+  what a run produced rather than where the file is now — a destination root
+  can be repointed or removed after publication — and the checksums are what
+  confirm a candidate file is that artifact. It carries no parameter binding
+  and no derivative of one: `export_id` is unique per run and the checksums
+  differ whenever the content does, so neither the values nor a hash of them
+  is needed to tell two runs apart. Recording is best-effort, so the tool
+  description tells the caller to treat the returned receipt as the only
+  certain copy. That write opens its own connection after publication returns,
+  so no writer lock is held across filesystem or Sheets I/O. Because it opens
+  after publication rather than at tool start, it runs inside the request's
+  publication barrier: an already-ended request skips the write, and a started
+  one holds the timeout handler until it finishes, so the tool's response and
+  the receipt can never diverge. A receipt write that cannot open is logged and
+  counted in `moneybin_export_receipt_failures_total`, and never converts a
+  published export into an error, because the artifact already exists and a
+  reported failure would invite a re-run that publishes a second one. The
+  published artifact is permanent: `system_audit_undo` refuses the row because
+  its target lies outside the repository-owned `app.*` surface. That target is
+  a readable `export.run` pair rather than nulls, so the refusal names what it
+  declines instead of rendering an empty schema and table.
 - `exports_set` asserts one named local or Sheets destination's typed target
   state. It shares the same service/repository owners as
   `moneybin export destination ...`; removing configuration never deletes
