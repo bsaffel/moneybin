@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
@@ -57,6 +58,8 @@ if TYPE_CHECKING:
     from moneybin.exports.sheets import SheetsAuthorization
     from moneybin.exports.workbook_roles import WorkbookRolePermit
     from moneybin.services.audit_service import AuditEvent
+
+logger = logging.getLogger(__name__)
 
 
 #: Stems of the positional names a redacted export publishes in place of a
@@ -250,39 +253,56 @@ class ExportService:
         read-only snapshot lease is already released by this point, so the
         writer lock is never held across filesystem or Sheets I/O — the
         property #349 exists to protect.
+
+        Never raises. By the time this runs the artifact is already published
+        and cannot be withdrawn, so letting a write failure escape would report
+        an irreversible success as an error and discard the caller's only copy
+        of the receipt — prompting a re-run that publishes a *second* artifact.
+        The receipt is lost from the audit log either way; this keeps the loss
+        to the thing that actually failed, and logs it.
         """
         from moneybin.database import get_database  # noqa: PLC0415
         from moneybin.services.audit_service import AuditService  # noqa: PLC0415
 
         destination = receipt.destination
-        with get_database(read_only=False) as db:
-            AuditService(db).record_audit_event(
-                action="export.run",
-                # No app.* row backs an export, so the target names the export
-                # itself. undo_dispatch refuses targets outside the repo-owned
-                # app.* surface, which is what keeps a published artifact from
-                # ever appearing undoable via system_audit_undo.
-                target=(None, None, receipt.export_id),
-                before=None,
-                after=None,
-                actor=actor,
-                context={
-                    "destination_name": destination.name,
-                    "destination_kind": destination.kind,
-                    "format": receipt.format,
-                    "redaction_mode": receipt.redaction_mode,
-                    "artifact_path": (
-                        str(receipt.artifact_path) if receipt.artifact_path else None
-                    ),
-                    "compressed_artifact_path": (
-                        str(receipt.compressed_artifact_path)
-                        if receipt.compressed_artifact_path
-                        else None
-                    ),
-                    "sheets_identity": receipt.sheets_identity,
-                    "row_counts": dict(receipt.row_counts),
-                    "checksums": dict(receipt.checksums),
-                },
+        try:
+            with get_database(read_only=False) as db:
+                AuditService(db).record_audit_event(
+                    action="export.run",
+                    # No app.* row backs an export, so the target names the
+                    # export itself. undo_dispatch refuses targets outside the
+                    # repo-owned app.* surface, which is what keeps a published
+                    # artifact from ever appearing undoable via
+                    # system_audit_undo.
+                    target=(None, None, receipt.export_id),
+                    before=None,
+                    after=None,
+                    actor=actor,
+                    context={
+                        "destination_name": destination.name,
+                        "destination_kind": destination.kind,
+                        "format": receipt.format,
+                        "redaction_mode": receipt.redaction_mode,
+                        "artifact_path": (
+                            str(receipt.artifact_path)
+                            if receipt.artifact_path
+                            else None
+                        ),
+                        "compressed_artifact_path": (
+                            str(receipt.compressed_artifact_path)
+                            if receipt.compressed_artifact_path
+                            else None
+                        ),
+                        "sheets_identity": receipt.sheets_identity,
+                        "row_counts": dict(receipt.row_counts),
+                        "checksums": dict(receipt.checksums),
+                    },
+                )
+        except Exception:  # noqa: BLE001  # never fail an already-published export
+            logger.exception(
+                f"Export {receipt.export_id} published successfully but its "
+                f"receipt could not be recorded to the audit log; recover it "
+                f"from the returned receipt or the artifact itself."
             )
 
     def resolve_destination(self, reference: str) -> ExportDestination:

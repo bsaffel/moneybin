@@ -11,7 +11,7 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
-from moneybin.database import Database
+from moneybin.database import Database, DatabaseLockError
 from moneybin.errors import UserError
 from moneybin.exports.models import (
     ExportCommand,
@@ -263,6 +263,46 @@ def test_run_records_a_discoverable_receipt_in_the_audit_log(
     assert recorded["artifact_path"] == "/exports/archive/bundle.csv"
     assert recorded["row_counts"] == {"accounts": 3, "transactions": 42}
     assert recorded["checksums"] == {"accounts": "sha-a", "transactions": "sha-b"}
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_returns_the_receipt_when_the_audit_write_cannot_open(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failed receipt write must not turn a published export into an error.
+
+    The receipt write opens its own connection *after* the artifact is already
+    on disk (or in Sheets), and a concurrent holder can keep it waiting past
+    ``DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS`` — so this raise is reachable, not
+    theoretical. Propagating it would report failure for an irreversible
+    success and lose the caller's only copy of the receipt, inviting a re-run
+    that publishes a second artifact. Fail loudly in the log, not in the
+    return value.
+    """
+    read_lease = _database_context(db)
+    get_database.side_effect = [read_lease, DatabaseLockError("writer busy")]
+
+    destination = _destination("local")
+    receipt = replace(_receipt(destination), export_id="exp-locked")
+    publisher_type.return_value.publish.return_value = receipt
+
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+        caplog.at_level("ERROR"),
+    ):
+        result = ExportService.run(_command(), actor="mcp:export_run")
+
+    assert result == receipt
+    assert "exp-locked" in caplog.text
 
 
 @patch("moneybin.config.get_settings")

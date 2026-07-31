@@ -190,9 +190,12 @@ stays below the 50-tool hard limit:
   `app.audit_log` under action `export.run`, so a later turn or session
   recovers it with `system_audit()` instead of relying on the one-time return
   value. That write opens its own connection after publication returns, so no
-  writer lock is held across filesystem or Sheets I/O. The published artifact
-  is permanent: `system_audit_undo` refuses the row because its target lies
-  outside the repository-owned `app.*` surface.
+  writer lock is held across filesystem or Sheets I/O. A receipt write that
+  cannot open — a concurrent holder outlasting the writer-lock wait — is logged
+  and never converts a published export into an error, because the artifact
+  already exists and a reported failure would invite a re-run that publishes a
+  second one. The published artifact is permanent: `system_audit_undo` refuses
+  the row because its target lies outside the repository-owned `app.*` surface.
 - `exports_set` asserts one named local or Sheets destination's typed target
   state. It shares the same service/repository owners as
   `moneybin export destination ...`; removing configuration never deletes
