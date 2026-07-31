@@ -390,9 +390,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is the filename, so the name match misses too — the replacement minted a fresh
   account with no confirm and no review entry at all. A same-institution account
   whose last four differs now files a review proposal naming the original card,
-  listed by `moneybin accounts links pending`. The import still creates the
-  second account and does not stop to ask: only CSV/Excel has a pre-load
-  confirmation today, and extending that to OFX and PDF is the next change.
+  listed by `moneybin accounts links pending`, once the original has been
+  through a `moneybin refresh` — every account-matching signal reads the account
+  dimension the refresh builds, so importing both cards in one batch files
+  nothing. The import still creates the second account and does not stop to ask:
+  only CSV/Excel has a pre-load confirmation today, and extending that to OFX
+  and PDF is the next change.
 - **An OFX file you renamed or moved is no longer re-imported as a new one
   (#375).** Duplicate detection compared the file's *path*, so a second download
   saved as `statement (1).qfx`, or a statement filed out of Downloads before

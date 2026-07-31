@@ -350,6 +350,23 @@ signal reliability:
 (consistent with `match_decisions_repo`) — `actor_kind` is a runtime distinction,
 not a `decided_by` value.
 
+**Known gap — the candidate universe is `core.dim_accounts`, so every weak
+signal is blind to an account the refresh has not yet published.** An account
+minted earlier in the same `import_files` batch (which refreshes once at the
+end), or by any import run with `refresh=False`, is invisible to all four
+passes: `institution_last4`, fuzzy `name`, `institution_reissue`, and the
+gate's fallback pick-list alike. Importing an original and its replacement card
+in one batch therefore mints two accounts and files no proposal — and the
+`propose_existing()` backfill cannot recover it, because the reissue signal is
+deliberately off there. Verified by probe, not by reading: with one fixture
+pair, the `institution_last4` proposal appears when a transform runs between
+the two imports and is empty when it does not. This is a property of where
+candidates are read from, not of any one signal, so the fix belongs with the
+propose-then-bind inversion — which has to settle the candidate universe anyway,
+since it must compute candidates *before* an account exists to compare against.
+Fixing it for the reissue pass alone would leave two candidate-source semantics
+inside one function.
+
 `institution` is **best-effort metadata**, never a required input: when unknown
 (a bare CSV), the `institution+last4` candidate rung simply doesn't fire and
 resolution falls through to name / mint-new. Thresholds reuse `MatchingSettings`

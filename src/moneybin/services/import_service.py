@@ -63,7 +63,7 @@ from moneybin.services.import_confirmation import (
     SignConventionProposal,
 )
 from moneybin.services.refresh import refresh as _refresh
-from moneybin.utils.file import file_sha256, source_sha256
+from moneybin.utils.file import source_sha256
 
 logger = logging.getLogger(__name__)
 
@@ -930,13 +930,20 @@ class ImportService:
         # advice — the affordance would work for tabular files but not OFX.
         try:
             with open(canonical_path, "rb") as f:
-                content = f.read().decode("utf-8", errors="replace")
+                raw = f.read()
         except PermissionError:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
             raise
         except OSError as e:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
             raise ValueError(f"Could not read OFX file: {e}") from e
+        # One read serves both identities: hashing these bytes rather than
+        # reopening the path makes the digest describe exactly what gets parsed
+        # below. Hash BEFORE the decode — `errors="replace"` is lossy, so a
+        # digest taken from `content` would disagree with every other channel's
+        # digest for the same file, and they all hash raw bytes.
+        digest = source_sha256(canonical_path, raw)
+        content = raw.decode("utf-8", errors="replace")
         if "�" in content:
             logger.warning(
                 f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: "
@@ -944,12 +951,10 @@ class ImportService:
             )
 
         # Re-import detection: content first, path as the fallback for batches
-        # imported before file_sha256 existed. Placed here rather than at the
-        # top of the method for two reasons — the read above has already proven
-        # the file readable (so hashing can't raise a denial the guarded read
-        # was supposed to classify), and institution resolution below may
-        # *prompt*, which a file we're about to reject should never trigger.
-        digest = file_sha256(canonical_path)
+        # imported before file_sha256 existed. The check sits below the read
+        # rather than at the top of the method because institution resolution
+        # further down may *prompt*, which a file we're about to reject should
+        # never trigger.
         if not force:
             existing = import_log.find_existing_import(
                 self._db, str(canonical_path), file_sha256=digest
@@ -1398,6 +1403,15 @@ class ImportService:
 
         if len(df) == 0:
             raise ValueError(f"No data rows found in {file_path.name}")
+
+        # Digest here rather than at batch creation below: Phase 3 commits
+        # account mappings and pending decisions, so a hash that raised after it
+        # — an ordinary path import whose file left a synced Downloads folder
+        # mid-import — would strand those writes with no batch to belong to.
+        # Same reason `_validate_account_metadata` fails fast above. read_file
+        # has already proven the path readable, so this cannot raise a denial
+        # that the guarded read was supposed to classify.
+        digest = source_sha256(file_path, source_bytes)
 
         # Stage 3: Column mapping — match by headers if not already matched by name
         if reviewed_plan is None and not matched_format:
@@ -1991,7 +2005,7 @@ class ImportService:
             account_names=sorted(acct_id_to_name.values()),
             format_name=matched_format.name if matched_format else None,
             format_source=format_source,
-            file_sha256=source_sha256(file_path, source_bytes),
+            file_sha256=digest,
         )
         result.import_id = import_id
 

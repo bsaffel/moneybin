@@ -89,12 +89,12 @@ def file_sha256(path: Path) -> str:
 def source_sha256(path: Path, source_bytes: bytes | None) -> str:
     """Digest of the bytes an import actually parsed.
 
-    A caller handed an immutable snapshot — the persisted-preview confirm flow
-    is the one that does — must record *that* snapshot's digest. Re-reading the
-    path would tag the batch with whatever happens to be on disk at write time,
-    which is precisely what a content identity exists to rule out. Chunked and
-    whole-buffer hashing agree, so the two branches are interchangeable for
-    identical content.
+    Callers pass ``source_bytes`` whenever they already hold the buffer they
+    parsed — an immutable preview snapshot, or a read the channel had to do
+    anyway. Re-reading the path instead would tag the batch with whatever
+    happens to be on disk at write time, which is precisely what a content
+    identity exists to rule out. Chunked and whole-buffer hashing agree, so
+    identical content yields one digest through either branch.
     """
     if source_bytes is not None:
         return hashlib.sha256(source_bytes).hexdigest()
