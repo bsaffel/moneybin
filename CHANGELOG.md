@@ -384,13 +384,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
-- **A replacement card no longer becomes a second account without asking
+- **A replacement card no longer lands as a second account with no trace
   (#375).** A reissued card changes its last four digits by definition, so the
   institution+last-four match cannot fire, and on the PDF path the account name
   is the filename, so the name match misses too — the replacement minted a fresh
-  account with no confirm and no review entry, splitting one card's history
-  across two accounts. A same-institution account whose last four differs now
-  surfaces as a low-confidence review proposal, never an automatic merge.
+  account with no confirm and no review entry at all. A same-institution account
+  whose last four differs now files a review proposal naming the original card,
+  listed by `moneybin accounts links pending`. The import still creates the
+  second account and does not stop to ask: only CSV/Excel has a pre-load
+  confirmation today, and extending that to OFX and PDF is the next change.
 - **An OFX file you renamed or moved is no longer re-imported as a new one
   (#375).** Duplicate detection compared the file's *path*, so a second download
   saved as `statement (1).qfx`, or a statement filed out of Downloads before
