@@ -58,6 +58,38 @@ def test_human_import_gates_on_weak_account_candidate(
     assert n is not None and n[0] == 0
 
 
+def test_agent_import_gates_on_weak_account_candidate(
+    db: Database,
+) -> None:
+    """An agent never self-picks an account identity — it gets the same confirm.
+
+    Same fixture as the human gate above, only the actor differs. Previously
+    ``_gate_account_proposals`` returned immediately for any non-human actor, so
+    an agent-driven import resolved straight through and bound the account with
+    no confirm and no pre-load stop — the path most likely to run unattended and
+    least likely to have anyone notice a wrong binding.
+    """
+    _seed_existing_account(db, account_id="wf_existing01", display_name="WF Checking")
+    svc = ImportService(db)
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking",
+            refresh=False,
+            confirm=True,
+            actor_kind="agent",
+        )
+    outcome = exc.value.outcome
+    assert outcome.reason == "account_confirmation"
+    cand_ids = [
+        c["account_id"] for p in outcome.account_proposals for c in p["candidates"]
+    ]
+    assert "wf_existing01" in cand_ids
+    # Same pre-load guarantee the human path gets: nothing landed.
+    n = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+    assert n is not None and n[0] == 0
+
+
 def test_masked_label_reaches_resolver_as_clean_name(
     db: Database,
 ) -> None:
@@ -142,25 +174,38 @@ def test_binding_new_mints_standalone(
     assert n is not None and n[0] == 0
 
 
-def test_agent_import_does_not_gate_and_queues(
+def test_agent_import_loads_after_answering_the_gate(
     db: Database,
 ) -> None:
+    """The agent's round trip: gated first, then loads once it answers.
+
+    Replaces the former ``does_not_gate_and_queues``, which asserted the agent
+    bypassed the gate entirely. The gate is now actor-independent, so the agent
+    must answer it — and answering is what lets rows land. Proves the stop is a
+    stop, not a dead end.
+    """
     _seed_existing_account(db, account_id="wf_existing01", display_name="WF Checking")
     svc = ImportService(db)
-    # Agent path never gates — it loads and leaves the merge proposal in the
-    # review queue (M1S.5 safety net).
+    with pytest.raises(ImportConfirmationRequiredError):
+        svc.import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking",
+            refresh=False,
+            confirm=True,
+            actor_kind="agent",
+        )
+    assert db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone() == (
+        0,
+    )
     result = svc.import_file(
         _STANDARD_CSV,
         account_name="WF Checking",
         refresh=False,
         confirm=True,
         actor_kind="agent",
+        account_bindings={"wf-checking": "wf_existing01"},
     )
     assert result.transactions > 0
-    n = db.execute(
-        "SELECT COUNT(*) FROM app.account_link_decisions WHERE status='pending'"
-    ).fetchone()
-    assert n is not None and n[0] >= 1
 
 
 def _minted_account_id(db: Database, source_key: str) -> str:

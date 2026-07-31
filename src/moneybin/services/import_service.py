@@ -1255,21 +1255,21 @@ class ImportService:
         resolver: AccountResolver,
         source_accounts: list[SourceAccount],
         *,
-        actor_kind: "ActorKind",
         resolved_mapping: dict[str, str],
     ) -> None:
         """Surface weak account-merge candidates for confirmation before load.
 
-        Interactive-human first contact only: when an unbound source account
-        resolves to weak merge candidate(s), raise
-        ``ImportConfirmationRequiredError`` (no rows load) so the human ratifies
-        the account identity (adopt a candidate or declare ``"new"``). Agent /
-        non-interactive imports never gate here — they mint+propose and the
-        proposal stays visible in the account-link review queue (M1S.5), per
-        ``account-identity-resolution.md`` Decision 7.
+        When an unbound source account resolves to weak merge candidate(s),
+        raise ``ImportConfirmationRequiredError`` (no rows load) so the caller
+        ratifies the account identity — adopt a candidate or declare ``"new"``.
+
+        Actor-independent by design: an agent never self-picks an account
+        identity. It receives the same pre-load stop as a human, surfaced as a
+        ``confirmation_required`` envelope. This deliberately drops the earlier
+        non-human early return, under which agent-driven imports bound accounts
+        with no confirm at all — the path most likely to run unattended and
+        least likely to have a wrong binding noticed.
         """
-        if actor_kind != "human":
-            return
         proposals: list[AccountProposalDict] = []
         for src in source_accounts:
             # A bound account (explicit_account_id / force_standalone) is already
@@ -2292,7 +2292,6 @@ class ImportService:
         self._gate_account_proposals(
             resolver,
             source_accounts,
-            actor_kind=actor_kind,
             resolved_mapping=dict(resolved.field_mapping),
         )
 
