@@ -394,8 +394,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `system_audit` or `moneybin system audit`. The artifact is named, never
   path-qualified, so the audit log stays free of local filesystem layout — the
   record tells you what a run produced, and its checksums confirm a file on
-  disk is that artifact. The published artifact itself stays permanent and is
-  not undoable.
+  disk is that artifact. Report parameters are not recorded in any form; the
+  export id and checksums already separate two runs. Recording is best-effort:
+  if it fails after a successful publish, the run still succeeds and the
+  returned receipt is your only copy. The published artifact itself stays
+  permanent and is not undoable.
 - **A card imported from both a PDF statement and a bank file no longer loads
   twice (#371).** PDF import built its account key as a string and skipped the
   identity resolver every other source uses, so the same card arriving as a PDF

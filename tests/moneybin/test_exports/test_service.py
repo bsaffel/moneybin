@@ -159,6 +159,15 @@ def test_export_metrics_are_registered_with_bounded_labels() -> None:
         "destination_kind",
         "redaction_mode",
     )
+    receipt_failures = getattr(metrics_registry, "EXPORT_RECEIPT_FAILURES_TOTAL", None)
+    assert receipt_failures is not None
+    # `reason` carries the exception *type* name, never its message: a lock or
+    # attach failure's message embeds the database path, and an unbounded
+    # label value is a cardinality bomb as well as a disclosure.
+    assert receipt_failures._labelnames == (  # type: ignore[reportPrivateUsage]
+        "destination_kind",
+        "reason",
+    )
 
 
 @patch("moneybin.exports.local.LocalExportPublisher")
@@ -283,13 +292,17 @@ def test_run_records_the_report_subject_without_its_parameter_values(
     publisher_type: MagicMock,
     db: Database,
 ) -> None:
-    """A report receipt must say which binding produced it, not what it held.
+    """A report receipt says *which report* ran, and nothing about its binding.
 
-    Row counts do not distinguish two bindings — the same report over two date
-    ranges can return the same number of rows — and a Sheets export has no
-    ``artifact_name`` at all, so without this the row cannot tell two runs of
-    one report apart. The values themselves stay out: ``app.audit_log`` is
-    durable and re-served by ``system_audit``, unlike the one-time artifact.
+    ``app.audit_log`` is durable and re-served by ``system_audit`` long after
+    the one-time artifact is gone, so no parameter value — and no derivative of
+    one — belongs in it. An earlier revision hashed the binding to tell two runs
+    apart; it was removed rather than keyed. For a redacted export the hash
+    covered already-masked values, so two bindings sharing a mask collapsed to
+    one fingerprint; for an unredacted one it was an unkeyed digest of a
+    low-entropy binding, which is a verifier for guessing it. What distinguishes
+    two runs instead is already here and stronger: ``export_id`` is unique per
+    run, and ``checksums`` differ whenever the exported content does.
     """
     from moneybin.services.audit_service import AuditService
 
@@ -320,29 +333,59 @@ def test_run_records_the_report_subject_without_its_parameter_values(
     assert recorded is not None
     assert recorded["subject_kind"] == "report"
     assert recorded["report_id"] == "spend_by_category"
-    assert recorded["parameters_fingerprint"] is not None
     assert "acct-77" not in str(recorded)
     assert "2026-01-01" not in str(recorded)
+    # No derivative of the binding either. Asserted by key rather than by
+    # scanning for a digest, so re-adding the field fails here even when its
+    # hash happens to contain no substring the checks above would catch.
+    assert "parameters_fingerprint" not in recorded
 
 
-def test_parameters_fingerprint_separates_bindings_and_ignores_key_order() -> None:
-    """The fingerprint's whole job is telling two bindings apart."""
-    # Tested directly rather than through run(): a single export carries one
-    # binding, so key-order independence has no observable behavioural path.
-    from moneybin.exports.service import (
-        _parameters_fingerprint,  # type: ignore[reportPrivateUsage]
-    )
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_export_receipt_refuses_undo_with_a_legible_target(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """Refusing to undo a published export must say *what* it refuses.
 
-    one = _parameters_fingerprint({"start": "2026-01-01", "account_id": "acct-77"})
-    reordered = _parameters_fingerprint({
-        "account_id": "acct-77",
-        "start": "2026-01-01",
-    })
-    other = _parameters_fingerprint({"start": "2026-02-01", "account_id": "acct-77"})
+    A published artifact can never be withdrawn, so the refusal itself is
+    correct and load-bearing. But ``UndoService`` builds that message from the
+    row's ``(target_schema, target_table)``, and a null pair renders as the
+    bare ``"."`` — ``_row_targets`` coalesces each null to ``""``. Every other
+    outside-``app.*`` audit row (``import_service``'s ``("raw", "pdf_seeds")``)
+    keeps a real pair precisely so this message stays readable.
+    """
+    from moneybin.services.audit_service import AuditService
+    from moneybin.services.undo_service import UndoService
 
-    assert one == reordered
-    assert one != other
-    assert _parameters_fingerprint(None) is None
+    get_database.side_effect = _database_factory(db)
+    destination = _destination("local")
+    receipt = replace(_receipt(destination), export_id="exp-undo")
+    publisher_type.return_value.publish.return_value = receipt
+
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        ExportService.run(_command(), actor="mcp:export_run")
+
+    event = AuditService(db).list_events(action_pattern="export.run")[0]
+    # Drive the real refusal rather than asserting on the stored tuple: the
+    # garbling happens in UndoService's message construction, so a test that
+    # only read the row back would pass with the bug in place.
+    with pytest.raises(UserError) as refusal:
+        UndoService(db).undo(event.operation_id, actor="mcp:system_audit_undo")
+
+    assert "export.run" in str(refusal.value)
+    # The exact garbled rendering a null pair produces, pinned so a revert to
+    # `(None, None, ...)` fails here rather than only weakening the message.
+    assert "touched .," not in str(refusal.value)
 
 
 @patch("moneybin.exports.local.LocalExportPublisher")
@@ -422,6 +465,10 @@ def test_run_returns_the_receipt_when_the_audit_write_cannot_open(
     database path in its message, and ``SanitizedLogFormatter`` masks amounts
     and account numbers, not filesystem paths.
     """
+    failures = metrics_registry.EXPORT_RECEIPT_FAILURES_TOTAL.labels(
+        destination_kind="local", reason="DatabaseLockError"
+    )
+    before = failures._value.get()  # type: ignore[reportPrivateUsage]
     read_lease = _database_context(db)
     locked = DatabaseLockError("/Users/someone/Documents/MoneyBin/main.duckdb held")
     get_database.side_effect = [read_lease, locked]
@@ -448,6 +495,11 @@ def test_run_returns_the_receipt_when_the_audit_write_cannot_open(
     # carries. Asserting the absence keeps a later switch back to
     # logger.exception (which appends both message and traceback) failing.
     assert "/Users/someone" not in caplog.text
+    # A swallowed failure must leave a countable trace. Without this the only
+    # way to learn how often receipts silently fail to record is log-scraping,
+    # and the export itself still reports outcome="success" — correctly, since
+    # the artifact really was published.
+    assert failures._value.get() == before + 1  # type: ignore[reportPrivateUsage]
 
 
 @patch("moneybin.config.get_settings")

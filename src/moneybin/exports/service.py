@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import os
 from collections.abc import Callable, Mapping, Sequence
@@ -39,7 +37,11 @@ from moneybin.exports.snapshot import (
     build_data_dictionary,
     prepared_table_checksum,
 )
-from moneybin.metrics.registry import EXPORT_DURATION_SECONDS, EXPORT_RUNS_TOTAL
+from moneybin.metrics.registry import (
+    EXPORT_DURATION_SECONDS,
+    EXPORT_RECEIPT_FAILURES_TOTAL,
+    EXPORT_RUNS_TOTAL,
+)
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
     get_report_catalog,
@@ -116,21 +118,6 @@ _SUBJECT_KINDS = frozenset({"bundle", "report"})
 _FORMATS = frozenset({"csv", "parquet", "xlsx", "sheets"})
 _DESTINATION_KINDS = frozenset({"local", "sheets"})
 _REDACTION_MODES = frozenset({"redacted", "unredacted"})
-_FINGERPRINT_LENGTH: Final = 12
-
-
-def _parameters_fingerprint(parameters: object) -> str | None:
-    """Identify one report parameter binding without disclosing its values.
-
-    A receipt has to distinguish two runs of the same report, and row counts
-    cannot — the same query over two date ranges can return the same number of
-    rows. The values themselves stay out of ``app.audit_log``, which is durable
-    and re-served by ``system_audit`` long after the one-time artifact is gone.
-    """
-    if parameters is None:
-        return None
-    canonical = json.dumps(parameters, sort_keys=True, default=str)
-    return hashlib.sha256(canonical.encode()).hexdigest()[:_FINGERPRINT_LENGTH]
 
 
 class ExportService:
@@ -274,12 +261,16 @@ class ExportService:
         write entirely, and a started one holds the timeout handler until it
         finishes, so the tool's response and this write can never diverge.
 
-        Never raises. By the time this runs the artifact is already published
-        and cannot be withdrawn, so letting a write failure escape would report
-        an irreversible success as an error and discard the caller's only copy
-        of the receipt — prompting a re-run that publishes a *second* artifact.
-        The receipt is lost from the audit log either way; this keeps the loss
-        to the thing that actually failed, and logs it.
+        Never raises, so recording is best-effort rather than guaranteed — the
+        tool description says so, because an agent that promised recovery on a
+        run whose receipt silently failed to record would be wrong. By the time
+        this runs the artifact is already published and cannot be withdrawn, so
+        letting a write failure escape would report an irreversible success as
+        an error and discard the caller's only copy of the receipt — prompting
+        a re-run that publishes a *second* artifact. The receipt is lost from
+        the audit log either way; this keeps the loss to the thing that
+        actually failed, logs it, and counts it in
+        ``EXPORT_RECEIPT_FAILURES_TOTAL``.
         """
         from moneybin.database import get_database  # noqa: PLC0415
         from moneybin.errors import exception_origin  # noqa: PLC0415
@@ -313,7 +304,13 @@ class ExportService:
                     # repo-owned app.* surface, which is what keeps a published
                     # artifact from ever appearing undoable via
                     # system_audit_undo.
-                    target=(None, None, receipt.export_id),
+                    #
+                    # A real schema/table pair rather than nulls, matching
+                    # import_service's ("raw", "pdf_seeds"): UndoService builds
+                    # its refusal from this pair, and a null one renders as a
+                    # bare "." (_row_targets coalesces null to ""), so the
+                    # refusal would be correct but unreadable.
+                    target=("export", "run", receipt.export_id),
                     before=None,
                     after=None,
                     actor=actor,
@@ -326,14 +323,17 @@ class ExportService:
                         "destination_kind": destination.kind,
                         "format": receipt.format,
                         "redaction_mode": receipt.redaction_mode,
-                        # What was exported, not just where it went. A Sheets
-                        # export has no artifact_name, so for a report this is
-                        # the only thing telling two runs apart.
+                        # What was exported, not just where it went — but the
+                        # report's identity only, never its binding or any
+                        # derivative of one. An earlier revision hashed the
+                        # parameters to tell two runs apart; for a redacted
+                        # export that hash covered already-masked values, so
+                        # two bindings sharing a mask collapsed into one, and
+                        # for an unredacted one it was an unkeyed digest of a
+                        # low-entropy binding — a verifier for guessing it.
+                        # export_id and checksums already discriminate runs.
                         "subject_kind": receipt.subject.get("kind"),
                         "report_id": receipt.subject.get("report_id"),
-                        "parameters_fingerprint": _parameters_fingerprint(
-                            receipt.subject.get("parameters")
-                        ),
                         # File name, never the full path: R9 forbids
                         # persisting local paths, and a real export directory
                         # embeds the OS username. The row identifies what an
@@ -358,6 +358,13 @@ class ExportService:
                     },
                 )
         except Exception as exc:  # noqa: BLE001  # never fail a published export
+            # A swallowed failure still has to be countable: the run itself
+            # reports outcome="success" (correctly — the artifact is
+            # published), so without this the only signal is a log line.
+            EXPORT_RECEIPT_FAILURES_TOTAL.labels(
+                destination_kind=destination.kind,
+                reason=type(exc).__name__,
+            ).inc()
             # Type and origin, never the message or traceback: a lock or
             # attach failure carries the database path, and
             # SanitizedLogFormatter masks amounts and account numbers, not
