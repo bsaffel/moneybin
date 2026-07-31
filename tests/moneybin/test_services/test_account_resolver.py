@@ -191,12 +191,25 @@ def _seed_dim_account(
     last_four: str | None = None,
     institution_name: str | None = None,
     display_name: str | None = None,
+    institution_slug: str | None = None,
 ) -> None:
-    """Insert a minimal core.dim_accounts row (simulates a prior transform run)."""
+    """Insert a minimal core.dim_accounts row (simulates a prior transform run).
+
+    ``institution_slug`` defaults to ``institution_name`` because most callers
+    seed a value that is already slug-shaped. Pass both explicitly to model the
+    real dim, where the name is for display and the slug is for matching.
+    """
     db.conn.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
-        "display_name) VALUES (?, ?, ?, ?)",  # noqa: S608  # test fixture insert
-        [account_id, last_four, institution_name, display_name or f"acct {account_id}"],
+        "institution_slug, display_name) "
+        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        [
+            account_id,
+            last_four,
+            institution_name,
+            institution_slug if institution_slug is not None else institution_name,
+            display_name or f"acct {account_id}",
+        ],
     )
 
 
@@ -1027,3 +1040,47 @@ def test_resolve_rolls_back_partial_writes_on_failure(db: Database) -> None:
 
     n = db.conn.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
     assert n is not None and n[0] == 0
+
+
+def test_institution_matching_compares_slugs_not_display_names(db: Database) -> None:
+    """A display name that slugifies away from its own slug must still match.
+
+    `core.dim_accounts` carries a human-readable `institution_name` resolved
+    from the OFX <FID> ("U.S. Bank"), while a source supplies the registry slug
+    ("us_bank"). Slugifying the display name is not the inverse of the registry:
+    `slugify("U.S. Bank")` is `u-s-bank` and `slugify("us_bank")` is `us-bank`,
+    so comparing against the name silently drops the candidate.
+
+    U.S. Bank is the fixture precisely because it is the seeds row where the two
+    disagree — Chase and Citi are single words and would pass either way, so
+    they cannot isolate this. Matching therefore reads `institution_slug`, the
+    dim's canonical registry slug, on both sides.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(
+        _src(source_type="ofx", institution="us_bank", last_four="1111")
+    )
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="1111",
+        institution_name="U.S. Bank",
+        institution_slug="us_bank",
+        display_name="U.S. Bank Checking …1111",
+    )
+
+    # Same institution, last four changed: only the reissue signal may fire, so
+    # a hit proves the institution comparison itself succeeded.
+    proposal = resolver.propose(
+        _src(
+            source_type="ofx",
+            source_account_key="9876",
+            institution="us_bank",
+            last_four="9876",
+            account_name="replacement card",
+        )
+    )
+    assert [c.signal for c in proposal.candidates] == ["institution_reissue"], (
+        proposal.candidates
+    )

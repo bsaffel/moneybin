@@ -305,7 +305,7 @@ class AccountResolver:
     def propose_existing(self, account_id: str) -> AccountProposal | None:
         """Backfill verdict for an account already in core.dim_accounts.
 
-        Looks up the account's institution_name, last_four, and display_name,
+        Looks up the account's institution_slug, last_four, and display_name,
         builds a synthetic SourceAccount (source_type/source_origin="backfill";
         the candidate pass only uses last_four, institution, account_name), then
         delegates to _find_candidates excluding the account itself.
@@ -316,7 +316,7 @@ class AccountResolver:
         """
         try:
             row = self._db.execute(
-                f"SELECT institution_name, last_four, display_name "  # noqa: S608  # TableRef + parameterized value
+                f"SELECT institution_slug, last_four, display_name "  # noqa: S608  # TableRef + parameterized value
                 f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
                 [account_id],
             ).fetchone()
@@ -325,14 +325,17 @@ class AccountResolver:
             return None
         if row is None:
             return None
-        institution_name, last_four, display_name = row
+        # institution_slug, not institution_name: _find_candidates compares
+        # against the slug column, so feeding a display name back in here would
+        # re-create the very mismatch this reads around.
+        institution_slug, last_four, display_name = row
         src = SourceAccount(
             source_type="backfill",
             source_origin="backfill",
             source_account_key="",
             account_name=str(display_name or ""),
             last_four=str(last_four) if last_four is not None else None,
-            institution=str(institution_name) if institution_name is not None else None,
+            institution=str(institution_slug) if institution_slug is not None else None,
         )
         raw_candidates = self._find_candidates(src, exclude_account_id=account_id)
         if not raw_candidates:
@@ -540,14 +543,18 @@ class AccountResolver:
                 and src.institution
                 and (target_inst := slugify(src.institution))
             ):
-                # institution_name holds raw source text (OFX <ORG> "CHASE"),
-                # while src.institution may be a slug ("chase"). An exact SQL
-                # match never fires across that case/format gap, so fetch by the
-                # exact last_four and slugify-compare the institution in Python.
-                # An empty slug (institution is all punctuation) is skipped — it
-                # would spuriously match other empty-slug rows sharing last_four.
+                # Match on institution_slug, never institution_name. The name is
+                # for display, and slugifying it does not recover the registry
+                # slug: slugify("U.S. Bank") is "u-s-bank" where the registry
+                # says "us_bank" (which slugifies to "us-bank"). Slugifying both
+                # sides absorbs the registry's underscore convention, so only a
+                # name-vs-slug comparison can split a bank from itself. Fetch by
+                # exact last_four and compare in Python because the two sides
+                # still differ in case. An empty slug (institution is all
+                # punctuation) is skipped — it would spuriously match other
+                # empty-slug rows sharing last_four.
                 rows = self._db.execute(
-                    f"SELECT account_id, institution_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                    f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
                     "WHERE last_four = ? AND account_id != ?",
                     [src.last_four, exclude_account_id],
                 ).fetchall()
@@ -628,7 +635,7 @@ class AccountResolver:
         if not target_inst or not src.last_four:
             return []
         rows = self._db.execute(
-            f"SELECT account_id, institution_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
             "WHERE account_id != ? AND last_four IS NOT NULL AND last_four != ? "
             "ORDER BY account_id",
             [exclude_account_id, src.last_four],
@@ -662,15 +669,15 @@ class AccountResolver:
 
         Institution-scoping must never *shrink* the list to empty: the
         CSV-resolved institution slug frequently doesn't match
-        ``dim_accounts.institution_name`` (cross-source slug drift, or an
+        ``dim_accounts.institution_slug`` (cross-source slug drift, or an
         account name polluting a saved format's institution). When the scoped
         pass matches nothing, fall through to all accounts — the entire point of
         the fallback is a non-empty pick-list, so a mismatched scope must not
         recreate ``candidates: []``.
         """
         rows = self._db.execute(
-            f"SELECT account_id, institution_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
-            "WHERE account_id != ? ORDER BY institution_name, account_id",
+            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE account_id != ? ORDER BY institution_slug, account_id",
             [exclude_account_id],
         ).fetchall()
         target_inst = slugify(src.institution) if src.institution else None

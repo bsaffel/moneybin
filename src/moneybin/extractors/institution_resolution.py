@@ -89,6 +89,19 @@ _FILENAME_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+def slug_for_fid(fid: str | None) -> str | None:
+    """Canonical registry slug for an OFX ``<FID>``, or None if unregistered.
+
+    Distinct from ``resolve_institution``, which prefers ``<ORG>`` and so returns
+    a routing code for issuers that publish one (Chase's ORG is ``B1``). That
+    value is correct for ``source_origin`` and must stay stable, but it cannot be
+    matched against ``core.dim_accounts.institution_slug``, which is FID-derived.
+    """
+    if not fid:
+        return None
+    return _fid_to_slug().get(fid)
+
+
 def resolve_institution(
     parsed_ofx: Any,
     *,

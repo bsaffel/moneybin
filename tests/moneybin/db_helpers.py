@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     routing_number VARCHAR,
     account_type VARCHAR,
     institution_name VARCHAR,
+    institution_slug VARCHAR,
     institution_fid VARCHAR,
     source_type VARCHAR,
     source_file VARCHAR,

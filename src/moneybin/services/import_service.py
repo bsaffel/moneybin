@@ -905,6 +905,7 @@ class ImportService:
         from moneybin.extractors.institution_resolution import (
             InstitutionResolutionError,
             resolve_institution,
+            slug_for_fid,
         )
         from moneybin.extractors.ofx import OFXExtractor
         from moneybin.extractors.ofx.extractor import preprocess_ofx_content
@@ -1092,7 +1093,15 @@ class ImportService:
                         f"{row.get('account_type') or ''}".strip(),
                         account_number=scoped_number,
                         last_four=acctid[-4:],
-                        institution=source_origin,
+                        # The FID slug, not source_origin. source_origin comes
+                        # from <ORG>, which is a routing code for some issuers
+                        # ("B1" = Chase), and it must stay untouched because
+                        # downstream identity keys on it. Matching needs the
+                        # same canonical slug core.dim_accounts.institution_slug
+                        # carries, so resolve it from the FID and fall back to
+                        # source_origin when the FID is unregistered.
+                        institution=slug_for_fid(row.get("institution_fid"))
+                        or source_origin,
                     )
                 )
                 ACCOUNT_LINK_OUTCOMES_TOTAL.labels(

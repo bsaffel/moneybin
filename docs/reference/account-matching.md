@@ -72,7 +72,7 @@ makes a candidate recognizable but is never a key on its own; **institution** an
 
 | Source | Strong key (auto-adopts) | Last 4 (corroborating) | Institution | Name |
 |---|---|---|---|---|
-| **OFX / QFX / QBO** | `<ACCTID>` scoped by `<BANKID>` | `RIGHT(<ACCTID>, 4)` | `<ORG>`, else `<FID>` lookup, else filename | account type / label |
+| **OFX / QFX / QBO** | `<ACCTID>` scoped by `<BANKID>` | `RIGHT(<ACCTID>, 4)` | `<FID>` lookup, else `<ORG>`, else filename | account type / label |
 | **Plaid** | `account_id` (same connection only) | `mask` | `institution_name` | official account name |
 | **Tabular — aggregator export** (Tiller, Monarch, …, with account info) | *none* — labels are mutable | parsed from the account-label / `Account #` column | a per-row `Institution` column, or parsed from the label | the account label |
 | **Tabular — bare bank export** (Date / Description / Amount only) | *none* | *none* | filename heuristic, or unknown | filename stem (a placeholder) |
@@ -86,6 +86,12 @@ Reading the table precisely requires four caveats:
   export) decides how the file is parsed. The *institution* is a property of the
   account and comes from row data (an `Institution` column, OFX `<ORG>`, Plaid
   `institution_name`) — MoneyBin never treats the tool name as the institution.
+- **OFX matching reads `<FID>` before `<ORG>`.** `<ORG>` is a routing code for
+  some issuers — Chase publishes `B1`, Wells Fargo `WF` — so matching resolves
+  the institution from the exact `<FID>` against `seeds.institutions`, falling
+  back to `<ORG>` only for an unregistered FID. The import-time slug recorded on
+  each transaction keeps the older `<ORG>`-first order, because changing it
+  would re-key every transaction already imported.
 - **A bare bank CSV carries no identity.** Date/Description/Amount alone can't
   tell MoneyBin which account it is, so binding is always explicit — which is why
   the pick-list (rung 4) exists.

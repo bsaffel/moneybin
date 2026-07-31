@@ -45,16 +45,21 @@ WITH ofx_balance_currency AS (
     source_origin
 ), ofx_accounts AS (
   /* OFX <ORG> is a routing code, not a name — Chase publishes "B1", Wells Fargo
-     "WF" — so resolve a display name from the exact <FID> via seeds.institutions
-     and fall back to the raw <ORG> when the FID is unregistered. This is a
-     display concern only: the import-time institution slug (source_origin) is
-     deliberately untouched, because it feeds the transaction_id content hash. */
+     "WF" — so resolve from the exact <FID> via seeds.institutions and fall back
+     to the raw <ORG> when the FID is unregistered. Two columns come out of that
+     join and they are NOT interchangeable: institution_name is for display,
+     institution_slug is what account matching compares. Slugifying the display
+     name is not the inverse of the registry ("U.S. Bank" -> "u-s-bank", not
+     "us_bank"), so a consumer that matches on the name drops candidates.
+     The import-time institution slug (source_origin) stays untouched either
+     way, because it feeds the transaction_id content hash. */
   SELECT
     a.account_id,
     a.source_account_key,
     a.routing_number,
     a.account_type,
     COALESCE(i.display_name, a.institution_org) AS institution_name,
+    COALESCE(i.slug, a.institution_org) AS institution_slug,
     a.institution_fid,
     'ofx' AS source_type,
     a.source_file,
@@ -79,6 +84,7 @@ WITH ofx_balance_currency AS (
     routing_number,
     account_type,
     institution_name,
+    institution_name AS institution_slug, /* Already a slug: resolve_institution_tabular returns one. */
     institution_fid,
     source_type,
     source_file,
@@ -106,6 +112,7 @@ WITH ofx_balance_currency AS (
     NULL::TEXT AS routing_number,
     a.account_type,
     a.institution_name,
+    a.institution_name AS institution_slug, /* Plaid carries no FID, so the display name is the best slug available; both sides are slugified when compared */
     NULL::TEXT AS institution_fid,
     'plaid' AS source_type,
     a.source_file,
@@ -177,6 +184,8 @@ WITH ofx_balance_currency AS (
       NOT institution_fid IS NULL) AS institution_fid,
     ARG_MAX(institution_name, extracted_at) FILTER(WHERE
       NOT institution_name IS NULL) AS institution_name,
+    ARG_MAX(institution_slug, extracted_at) FILTER(WHERE
+      NOT institution_slug IS NULL) AS institution_slug,
     ARG_MAX(account_type, extracted_at) FILTER(WHERE
       NOT account_type IS NULL) AS account_type,
     ARG_MAX(official_name, extracted_at) FILTER(WHERE
@@ -200,6 +209,7 @@ SELECT
   w.routing_number, /* ABA bank routing number; merged first-non-null by source strength then recency; NULL when no source provided it */
   w.account_type, /* Canonical account classification, normalized across all sources via seeds.account_type_map: depository, credit, loan, investment, other. NULL when the source spelling is unrecognized — the finer source distinction is preserved in account_subtype */
   w.institution_name, /* Human-readable name of the financial institution */
+  w.institution_slug, /* Canonical institution slug used to match accounts across sources; institution_name is for display only and does not slugify back to this */
   w.institution_fid, /* OFX financial institution identifier; NULL for tabular/plaid sources */
   w.source_type, /* Origin of the winning record after the cross-source merge: ofx, csv, tsv, excel, plaid, etc. */
   w.source_file, /* Path to the source file from which the winning record was loaded */

@@ -240,8 +240,13 @@ reversed_by            TEXT
   (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`),
   `account_name`, and `institution_reissue` (same institution, both sides carry
   a last-four and they differ) are *weak signals* the resolver computes live and matches
-  against **existing accounts' `last_four` / `institution_name` / `display_name`
+  against **existing accounts' `last_four` / `institution_slug` / `display_name`
   on `core.dim_accounts`** (durably present there — captured at mint, Decision 7).
+  The institution comparison is slug-to-slug, never against `institution_name`:
+  the display name doesn't slugify back to the registry value (`U.S. Bank` →
+  `u-s-bank`, not `us_bank`), and an OFX `<ORG>` is a routing code at some
+  issuers (Chase publishes `B1`), so a name-side comparison drops candidates
+  on both ends.
   A match produces a `pending` decision row recording which signal fired. Weak
   signals are never an accepted `ref_kind` and never auto-merge. **⚠ Reconciled
   (Decision 8):** "durably present, captured at mint" was the gap — last4 was
@@ -712,7 +717,7 @@ collapse onto, by construction.
 
 | Source | derived last4 | derived institution |
 |---|---|---|
-| OFX/QFX/QBO | `RIGHT(<ACCTID>,4)` from the source key | `<ORG>` (already) |
+| OFX/QFX/QBO | `RIGHT(<ACCTID>,4)` from the source key | registry slug for `<FID>`, else `<ORG>` — **not** `<ORG>` first, which is a routing code at some issuers |
 | Plaid | `mask` | `institution_name` (already) |
 | tabular — aggregator | last4 parsed from the account-label value / `Account #` column | per-row `Institution` column or parsed from the label — **never the exporter/tool name** |
 | tabular — bare | none (Tier C) | filename heuristic / explicit / unknown |

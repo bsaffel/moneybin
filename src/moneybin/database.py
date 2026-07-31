@@ -323,6 +323,7 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "routing_number",
         "account_type",
         "institution_name",
+        "institution_slug",
         "institution_fid",
         "source_type",
         "source_file",

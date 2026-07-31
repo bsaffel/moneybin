@@ -372,6 +372,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so they read `Wells Fargo checking …1789`, not `Wells Fargo depository
   …1789`. Queries filtering on the old uppercase values need updating; run
   `moneybin transform apply` to rebuild.
+- **`core.dim_accounts` gained an `institution_slug` column, and account
+  matching now compares it instead of `institution_name` (#375).** OFX files
+  identify the bank two ways, and only one of them is a name: Chase's `<ORG>`
+  is `B1`, so an OFX import offered `b1` while the account dimension held
+  `Chase`, and every institution-based match missed. Slugifying the display
+  name doesn't close the gap either — `U.S. Bank` gives `u-s-bank`, not the
+  registry's `us_bank`. Both sides now carry the same registry slug.
+  `institution_name` is unchanged and stays the display column. Run `moneybin
+  transform apply` to rebuild; until then the MCP server reports the missing
+  column as schema drift at boot and in `system_status`.
 - **`accounts_set`'s currency parameter is now `currency_code`, not
   `iso_currency_code`.** Aligns the account-currency parameter name with
   every other currency field in the schema. Pre-launch, so this is a direct
