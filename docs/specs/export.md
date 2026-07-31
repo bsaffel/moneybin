@@ -364,8 +364,19 @@ repository and paired `app.audit_log` record under Invariant 10.
 
 The completed local manifest and the subject-specific Sheets manifest tab are
 the user-visible receipts. CLI and MCP receipts also identify the selected
-format. Export runs do not add mutable application history merely to duplicate
-those immutable receipts.
+format.
+
+Each completed run also records its receipt to `app.audit_log` under action
+`export.run`, read back with `system_audit`. This is not duplicated history:
+the immutable receipts above do not cover every destination, because a Sheets
+export leaves no local manifest, so without this row a run that has already
+happened has no query path at all. The row carries the export id, destination
+name and kind, format, redaction mode, Sheets identity, row counts, and
+checksums. It identifies a local artifact by **file name only** — never its
+full path, which keeps the rule above intact; the name resolves against the
+destination's configured root. The row is not undoable: its target lies
+outside the repository-owned `app.*` surface, so `system_audit_undo` refuses
+it and a published artifact never appears withdrawable.
 
 ## Data model
 

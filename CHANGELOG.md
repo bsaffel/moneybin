@@ -384,15 +384,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
-- **An export you ran earlier is findable afterwards.** `export_run` and
+- **An export you ran earlier is findable afterwards (#374).** `export_run` and
   `moneybin export` returned the receipt — export id, destination, artifact
-  path, row counts, and checksums — exactly once and stored none of it, so a
+  name, row counts, and checksums — exactly once and stored none of it, so a
   later turn or session had no way to confirm what an export produced or verify
   it against the file on disk. Sheets destinations, which leave no local
   manifest, had no recovery path at all. Each successful run now records that
   receipt to the audit log under action `export.run`; read it back with
-  `system_audit` or `moneybin system audit`. The published artifact itself stays
-  permanent and is not undoable.
+  `system_audit` or `moneybin system audit`. The artifact is named, never
+  path-qualified, so the audit log stays free of local filesystem layout. The
+  published artifact itself stays permanent and is not undoable.
 - **A card imported from both a PDF statement and a bank file no longer loads
   twice (#371).** PDF import built its account key as a string and skipped the
   identity resolver every other source uses, so the same card arriving as a PDF

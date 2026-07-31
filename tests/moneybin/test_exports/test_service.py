@@ -260,7 +260,12 @@ def test_run_records_a_discoverable_receipt_in_the_audit_log(
     assert event.actor == "mcp:export_run"
     assert event.target_id == "exp-abc123"
     recorded = event.context_json or {}
-    assert recorded["artifact_path"] == "/exports/archive/bundle.csv"
+    assert recorded["artifact_name"] == "bundle.csv"
+    # export.md R9 forbids persisting full local paths: a real export
+    # directory is ~/Documents/MoneyBin/<profile>/exports and embeds the OS
+    # username. Asserted across the whole context, not just the one key, so
+    # the guard survives a future field carrying the directory back in.
+    assert "/exports/archive" not in str(recorded)
     assert recorded["row_counts"] == {"accounts": 3, "transactions": 42}
     assert recorded["checksums"] == {"accounts": "sha-a", "transactions": "sha-b"}
 

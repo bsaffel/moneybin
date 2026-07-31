@@ -186,10 +186,11 @@ stays below the 50-tool hard limit:
   `redaction_mode`; omission elicits a choice where supported and otherwise
   returns a structured refusal. `redacted` is the safe default, never a saved
   destination preference. Each successful run records its receipt — export id,
-  destination, format, artifact paths, row counts, and checksums — to
+  destination, format, artifact file name, row counts, and checksums — to
   `app.audit_log` under action `export.run`, so a later turn or session
   recovers it with `system_audit()` instead of relying on the one-time return
-  value. That write opens its own connection after publication returns, so no
+  value. The row names the artifact, never its full path, because `export.md`
+  R9 keeps local paths out of persisted state. That write opens its own connection after publication returns, so no
   writer lock is held across filesystem or Sheets I/O. A receipt write that
   cannot open — a concurrent holder outlasting the writer-lock wait — is logged
   and never converts a published export into an error, because the artifact

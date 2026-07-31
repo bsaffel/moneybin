@@ -283,13 +283,19 @@ class ExportService:
                         "destination_kind": destination.kind,
                         "format": receipt.format,
                         "redaction_mode": receipt.redaction_mode,
-                        "artifact_path": (
-                            str(receipt.artifact_path)
+                        # File name, never the full path: R9 forbids
+                        # persisting local paths, and a real export directory
+                        # embeds the OS username. The name resolves against
+                        # destination_name's configured root, so recovery
+                        # survives without putting the environment in
+                        # queryable state.
+                        "artifact_name": (
+                            receipt.artifact_path.name
                             if receipt.artifact_path
                             else None
                         ),
-                        "compressed_artifact_path": (
-                            str(receipt.compressed_artifact_path)
+                        "compressed_artifact_name": (
+                            receipt.compressed_artifact_path.name
                             if receipt.compressed_artifact_path
                             else None
                         ),
