@@ -754,6 +754,32 @@ async def test_import_confirm_ignores_format_created_after_preview(
     }
 
 
+async def test_import_preview_refuses_a_mapping_override_on_a_pdf(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """`mapping=` is tabular-only; a PDF has no column proposal to override.
+
+    Without this guard the parameter is silently ignored: the PDF branch never
+    reads it, so an agent correcting a mapping it believes exists gets an
+    unchanged preview back and no signal that its correction was dropped.
+    """
+    from moneybin import error_codes
+
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF mapping-guard fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    response = await import_preview_coarse(
+        file_path=str(pdf),
+        mapping={"transaction_date": "Date"},
+    )
+
+    assert response.error is not None
+    assert response.error.code == error_codes.IMPORT_PREVIEW_CHANNEL_CONFLICT
+
+
 async def test_import_preview_pdf_bridge_keeps_recipe_inputs_usable(
     mcp_db: object,
     tmp_path: Path,
@@ -2411,9 +2437,44 @@ async def test_refusing_an_unreadable_date_reports_the_tier_the_preview_showed(
     data = confirmed.data
     assert isinstance(data, ImportConfirmRequiredPayload)
     # A mapped date column whose values nothing parsed — distinct from the
-    # generic unknown layout, because only --date-format recovers it.
+    # generic unknown layout, because a mapping retry alone may not recover it.
     assert data.reason == "unreadable_date"
     assert data.tier == "medium", data.tier
+
+
+async def test_confirm_refusal_names_both_recoveries_for_an_unreadable_date(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The confirm-side actions must not send the agent on a mapping loop.
+
+    Only `account_confirmation` was special-cased, so an unreadable date fell
+    into the generic "build a corrected preview via mapping=" hint. That is a
+    dead end for the half of this reason where the column is already right:
+    the corrected preview restages the same unconfirmable plan, and MCP takes
+    no date-format parameter. The preview-side builder already said both
+    things; this one didn't.
+    """
+    csv = tmp_path / "unreadable_dates.csv"
+    csv.write_text(
+        "Date,Description,Amount\n"
+        "not-a-date,Coffee,-4.50\n"
+        "also-not-a-date,Deposit,100.00\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(file_path=str(csv))
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+
+    hint = " ".join(confirmed.actions)
+    assert "mapping={'transaction_date'" in hint, hint
+    assert "--date-format" in hint, hint
+    # The generic hint's dead-end phrasing must not be what the agent reads.
+    assert "'<dest_field>'" not in hint, hint
 
 
 async def test_preview_keeps_the_correction_hint_for_an_unconfirmable_plan(

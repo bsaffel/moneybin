@@ -262,6 +262,29 @@ def unreadable_date_recovery(file_path: str) -> str:
     )
 
 
+def unreadable_date_recovery_mcp(file_path: str) -> str:
+    """The same two recoveries as above, in MCP's idiom.
+
+    Kept adjacent to the CLI wording on purpose: this claim has drifted three
+    times across the surfaces that print it, each time by fixing one copy and
+    leaving a sibling asserting the opposite. The *substance* — remap the
+    column, or supply a format, and never claim one is impossible — is what
+    must stay identical; only the command names differ. MCP exposes no
+    date-format parameter, so that branch names the CLI.
+    """
+    return (
+        "This mapping is not confirmable as staged: no date format could "
+        "be read from the mapped date column. If the wrong column is "
+        f"mapped, use import_preview(file_path={file_path!r}, "
+        "mapping={'transaction_date': '<source_column>'}); "
+        "data.sample_values and data.unmapped_columns name the file's "
+        "columns. If the column is right and its format is simply "
+        "unrecognized, no mapping correction can change that — import "
+        "it with `moneybin import files <file> --confirm --date-format "
+        "<strptime>`."
+    )
+
+
 class ImportConfirmationRequiredError(Exception):
     """Raised when an import cannot proceed without explicit confirmation.
 

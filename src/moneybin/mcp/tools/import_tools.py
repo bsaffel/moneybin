@@ -1058,17 +1058,11 @@ def import_preview_coarse(
             # mapping hint restages the same unconfirmable preview forever. MCP
             # takes no date-format parameter; the CLI's --date-format is the
             # only surface that can change the date representation.
-            actions = [
-                "This mapping is not confirmable as staged: no date format could "
-                "be read from the mapped date column. If the wrong column is "
-                f"mapped, use import_preview(file_path={file_path!r}, "
-                "mapping={'transaction_date': '<source_column>'}); "
-                "data.sample_values and data.unmapped_columns name the file's "
-                "columns. If the column is right and its format is simply "
-                "unrecognized, no mapping correction can change that — import "
-                "it with `moneybin import files <file> --confirm --date-format "
-                "<strptime>`.",
-            ]
+            from moneybin.services.import_confirmation import (
+                unreadable_date_recovery_mcp,
+            )
+
+            actions = [unreadable_date_recovery_mcp(file_path)]
         else:
             actions = [
                 "This mapping is not confirmable as staged. Use import_preview("
@@ -2037,6 +2031,17 @@ def _import_confirm_coarse_confirmation_actions(
             "unmasked source key, so it runs from the CLI: `moneybin import "
             "confirm <file> --account-binding <source_key>=<account_id|new>`."
         )
+        return actions
+    if outcome.reason == "unreadable_date":
+        # The generic hint below prescribes a mapping= retry, which cannot
+        # change how the mapped column's values parse — for the half of this
+        # reason where the column is right, it stages the same unconfirmable
+        # preview forever. Same text the preview-side builder uses.
+        from moneybin.services.import_confirmation import (
+            unreadable_date_recovery_mcp,
+        )
+
+        actions.append(unreadable_date_recovery_mcp(file_path))
         return actions
     actions.append(
         f"This preview's mapping cannot be corrected in place — staged "

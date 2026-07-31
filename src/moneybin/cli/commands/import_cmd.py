@@ -2046,14 +2046,18 @@ def import_preview(
             if mapping_result.sign_convention:
                 typer.echo(f"Sign convention: {mapping_result.sign_convention}")
             # Say "not detected" rather than dropping the line: a missing row
-            # reads as "nothing to report", when it is the one fact that makes
-            # this file unimportable without --date-format.
+            # reads as "nothing to report", when it is the one fact that blocks
+            # the import. Name both fixes — a status column can claim the date
+            # alias while the real dates sit unmapped, and --date-format aimed
+            # at that wrong column is refused.
             if mapping_result.date_format:
                 typer.echo(f"Date format: {mapping_result.date_format}")
             else:
                 typer.echo(
-                    "Date format: not detected — this file cannot import "
-                    "without --date-format <strptime>"
+                    "Date format: not detected — re-run with `--mapping "
+                    "transaction_date=<column>` if the wrong column matched, "
+                    "or `--date-format <strptime>` if its format is simply "
+                    "unrecognized"
                 )
             if mapping_result.number_format:
                 typer.echo(f"Number format: {mapping_result.number_format}")
