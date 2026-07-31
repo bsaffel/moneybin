@@ -384,21 +384,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
-- **A replacement card no longer becomes a second account without asking.** A
-  reissued card changes its last four digits by definition, so the
+- **A replacement card no longer becomes a second account without asking
+  (#375).** A reissued card changes its last four digits by definition, so the
   institution+last-four match cannot fire, and on the PDF path the account name
   is the filename, so the name match misses too — the replacement minted a fresh
   account with no confirm and no review entry, splitting one card's history
   across two accounts. A same-institution account whose last four differs now
   surfaces as a low-confidence review proposal, never an automatic merge.
-- **An OFX file you renamed or moved is no longer re-imported as a new one.**
-  Duplicate detection compared the file's *path*, so a second download saved as
-  `statement (1).qfx`, or a statement filed out of Downloads before importing,
-  read as a brand-new file. Every import batch — OFX, CSV/Excel, and PDF — now
-  records a SHA-256 of the file's bytes, and OFX duplicate detection matches on
-  content first, path second. Batches imported before this change keep matching
-  on path alone, because their source file may be long gone. A file whose bytes
-  changed is still a new import: this recognizes the same document, not the same
+- **An OFX file you renamed or moved is no longer re-imported as a new one
+  (#375).** Duplicate detection compared the file's *path*, so a second download
+  saved as `statement (1).qfx`, or a statement filed out of Downloads before
+  importing, read as a brand-new file. Every import batch — OFX, CSV/Excel, and
+  PDF — now records a SHA-256 of the file's bytes, and OFX duplicate detection
+  matches on content first, path second. Batches imported before this change
+  keep matching on path alone, because their source file may be long gone. A
+  file whose bytes changed is still a new import: this recognizes the same
+  document, not the same
   name. CSV/Excel and PDF have no duplicate check at either level — `--force` is
   OFX-only — so re-importing one still creates a second batch; row-level dedup,
   not the import log, is what keeps the totals right there.
