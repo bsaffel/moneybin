@@ -615,6 +615,29 @@ class _MergeProposal:
     is_feed_key: bool
 
 
+def _feed_key_bind_radius(
+    service: SecurityLinksService, decision: dict[str, Any]
+) -> dict[str, int]:
+    """Rows a feed-key bind touches: one new link, plus the ref's pending decisions.
+
+    Both ends of one confirmation compute this — the proposal states it, the
+    commit recomputes it before verifying the grant — so it has to be one
+    expression over one set of inputs or a ratified bind can stop matching its
+    own prompt. Scoped to the full ``(source_type, ref_kind, ref_value)`` key
+    ``_reject_pending_siblings`` rejects on; ``pending()`` groups by
+    ``(ref_kind, ref_value)`` alone, so counting a group would overstate the
+    radius for a symbol two feeds serve.
+    """
+    return {
+        "security_links": 1,
+        "security_link_decisions": service.decisions_for_ref(
+            ref_kind=str(decision["ref_kind"]),
+            ref_value=str(decision["ref_value"]),
+            source_type=str(decision["source_type"]),
+        ),
+    }
+
+
 def _load_pending_proposal(decision_id: str) -> _MergeProposal:
     """Read the decision out of the live review queue, or raise if it isn't there."""
     with get_database(read_only=True) as db:
@@ -630,11 +653,12 @@ def _load_pending_proposal(decision_id: str) -> _MergeProposal:
                         # key has none by construction, so the merge preview is
                         # both unreachable and the wrong question: binding creates
                         # one link and resolves the ref's decisions, full stop.
+                        decision = service.decision_by_id(decision_id)
+                        # pending() returned this id from this same connection.
+                        if decision is None:  # pragma: no cover
+                            break
                         provisional = None
-                        blast_radius = {
-                            "security_links": 1,
-                            "security_link_decisions": len(group.candidates),
-                        }
+                        blast_radius = _feed_key_bind_radius(service, decision)
                     else:
                         impact = service.accept_impact(
                             decision_id,
@@ -782,14 +806,7 @@ def _apply_accept(
                     decision_id=decision_id,
                     candidate_security_id=into,
                     provisional_security_id=None,
-                    blast_radius={
-                        "security_links": 1,
-                        "security_link_decisions": service.decisions_for_ref(
-                            ref_kind=str(decision["ref_kind"]),
-                            ref_value=str(decision["ref_value"]),
-                            source_type=str(decision["source_type"]),
-                        ),
-                    },
+                    blast_radius=_feed_key_bind_radius(service, decision),
                 )
             )
             service.accept_feed_key(decision_id, into=into, decided_by="user")
