@@ -445,6 +445,104 @@ def test_run_skips_the_receipt_write_when_the_request_already_ended(
 
 @patch("moneybin.exports.local.LocalExportPublisher")
 @patch("moneybin.database.get_database")
+def test_run_binds_the_receipt_write_to_an_explicit_publication_lifetime(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """An explicit ``publication_lifetime`` must bound the receipt write too.
+
+    ``run`` resolves ``publication_lifetime or current_request_lifetime()`` once
+    and hands that to both publish steps. A receipt write that re-derived the
+    ambient lifetime instead would silently get ``None`` here — no ambient scope
+    is installed — and a no-op barrier, so the write this test cancels would
+    commit anyway. The parameter exists for callers that own their own
+    lifetime; the barrier is worth nothing to them if only two of the three
+    steps honour it.
+    """
+    from moneybin.services.audit_service import AuditService
+    from moneybin.services.request_lifetime import RequestLifetime
+
+    get_database.side_effect = _database_factory(db)
+    lifetime = RequestLifetime()
+
+    destination = _destination("local")
+    receipt = replace(_receipt(destination), export_id="exp-explicit-lifetime")
+
+    def publish(*_args: object, **_kwargs: object) -> ExportReceipt:
+        lifetime.cancel()
+        return receipt
+
+    publisher_type.return_value.publish.side_effect = publish
+
+    # Deliberately no request_lifetime_scope: the ambient lifetime stays None so
+    # only the explicit argument can carry the cancellation through.
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        result = ExportService.run(
+            _command(), actor="mcp:export_run", publication_lifetime=lifetime
+        )
+
+    assert result == receipt
+    assert AuditService(db).list_events(action_pattern="export.run") == []
+
+
+@patch("moneybin.exports.sheets.SheetsExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_records_a_sheets_receipt_with_its_workbook_identity(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """Sheets is the destination the audit row is the *only* recovery path for.
+
+    A local export leaves an artifact on disk to find; a Sheets export leaves
+    nothing outside the workbook, which is why the missing receipt was worth
+    fixing at all. The write path has no kind-specific branching, so this
+    asserts the end state rather than a separate mechanism: the row carries the
+    workbook identity and no local-artifact names.
+    """
+    from moneybin.services.audit_service import AuditService
+
+    get_database.side_effect = _database_factory(db)
+
+    destination = _destination("sheets")
+    receipt = replace(
+        _receipt(destination),
+        export_id="exp-sheets-1",
+        sheets_identity="spreadsheet-1/MB_bundle",
+    )
+    publisher_type.return_value.publish.return_value = receipt
+
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        ExportService.run(_command(destination_kind="sheets"), actor="mcp:export_run")
+
+    events = AuditService(db).list_events(action_pattern="export.run")
+
+    assert len(events) == 1
+    recorded = events[0].context_json or {}
+    assert events[0].target_id == "exp-sheets-1"
+    assert recorded["destination_kind"] == "sheets"
+    assert recorded["sheets_identity"] == "spreadsheet-1/MB_bundle"
+    assert recorded["artifact_name"] is None
+    assert recorded["compressed_artifact_name"] is None
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
 def test_run_returns_the_receipt_when_the_audit_write_cannot_open(
     get_database: MagicMock,
     publisher_type: MagicMock,

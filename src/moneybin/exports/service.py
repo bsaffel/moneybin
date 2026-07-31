@@ -242,7 +242,7 @@ class ExportService:
             raise
         else:
             EXPORT_RUNS_TOTAL.labels(**labels, outcome="success").inc()
-            cls._record_receipt(receipt, actor=actor)
+            cls._record_receipt(receipt, actor=actor, lifetime=lifetime)
             return receipt
         finally:
             EXPORT_DURATION_SECONDS.labels(**labels).observe(
@@ -250,7 +250,13 @@ class ExportService:
             )
 
     @classmethod
-    def _record_receipt(cls, receipt: ExportReceipt, *, actor: str) -> None:
+    def _record_receipt(
+        cls,
+        receipt: ExportReceipt,
+        *,
+        actor: str,
+        lifetime: RequestLifetime | None,
+    ) -> None:
         """Persist one receipt so a later turn or session can still find it.
 
         Opens its own short write transaction *after* publication returns. The
@@ -276,7 +282,6 @@ class ExportService:
         from moneybin.errors import exception_origin  # noqa: PLC0415
         from moneybin.services.audit_service import AuditService  # noqa: PLC0415
         from moneybin.services.request_lifetime import (  # noqa: PLC0415
-            current_request_lifetime,
             publication_barrier,
         )
 
@@ -293,8 +298,12 @@ class ExportService:
             # for interrupt — both outside max_wait. The barrier covers all of
             # it, refusing to start once the request has ended and holding the
             # timeout handler until a started write finishes.
+            #
+            # run() resolved this lifetime once and gave it to both publish
+            # steps; re-deriving the ambient one here would ignore an explicit
+            # publication_lifetime and bind this write to a no-op barrier.
             with (
-                publication_barrier(current_request_lifetime()),
+                publication_barrier(lifetime),
                 get_database(read_only=False) as db,
             ):
                 AuditService(db).record_audit_event(
