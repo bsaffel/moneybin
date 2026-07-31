@@ -4,6 +4,11 @@ Every in-scope mutating service calls ``record_audit_event()`` inside the same
 DuckDB transaction as its mutation. The surface (CLI/MCP) supplies the actor;
 the service supplies action + target + before/after.
 
+``ExportService`` is the one deliberate exception: an export's mutation is
+external I/O — a file on disk or a Sheets tab — so there is no DuckDB
+transaction to share. It records its receipt afterwards on a best-effort
+basis, and a failed record never converts a published export into an error.
+
 See ``docs/specs/transaction-curation.md`` (§Audit log, Req 25–31) and the
 schema in ``src/moneybin/sql/schema/app_audit_log.sql``.
 """

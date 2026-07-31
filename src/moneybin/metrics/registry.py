@@ -240,6 +240,16 @@ EXPORT_DURATION_SECONDS = Histogram(
     ["subject_kind", "format", "destination_kind", "redaction_mode"],
 )
 
+# Counted separately from EXPORT_RUNS_TOTAL rather than as a failure outcome on
+# it: the artifact really was published, so the run is a success and only the
+# receipt was lost. `reason` is the exception type name — never its message,
+# which for a lock or attach failure carries the database path.
+EXPORT_RECEIPT_FAILURES_TOTAL = Counter(
+    "moneybin_export_receipt_failures_total",
+    "Published exports whose receipt could not be recorded to the audit log.",
+    ["destination_kind", "reason"],
+)
+
 # ── Deduplication ─────────────────────────────────────────────────────────────
 
 DEDUP_MATCHES_TOTAL = Counter(

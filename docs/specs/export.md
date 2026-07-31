@@ -364,8 +364,43 @@ repository and paired `app.audit_log` record under Invariant 10.
 
 The completed local manifest and the subject-specific Sheets manifest tab are
 the user-visible receipts. CLI and MCP receipts also identify the selected
-format. Export runs do not add mutable application history merely to duplicate
-those immutable receipts.
+format.
+
+Each completed run also records its receipt to `app.audit_log` under action
+`export.run`, read back with `system_audit`. This is not duplicated history:
+the immutable receipts above do not cover every destination, because a Sheets
+export leaves no local manifest, so without this row a run that has already
+happened has no query path at all. The row carries the export id, destination
+id, name and kind, format, redaction mode, Sheets identity, row counts, and
+checksums, and identifies a local artifact by **file name only** — never its
+full path, which keeps the rule above intact.
+
+It also carries the subject's kind and report id, and nothing about the
+parameter binding — not the values, and not a hash of them. The audit log is
+durable and re-served by `system_audit` long after the artifact is gone, and a
+digest is a verifier: over a low-entropy binding it is a means of guessing the
+values, and over an already-redacted one it collapses two bindings that share a
+mask into a single value. What separates two runs is already recorded and
+stronger than either: `export_id` is unique per run, and the checksums differ
+whenever the exported content differs.
+
+Recording is best-effort. The write happens after the artifact is published and
+cannot be withdrawn, so a failure is logged and counted in
+`moneybin_export_receipt_failures_total` rather than raised — a reported failure
+would invite a re-run that publishes a second artifact. The MCP tool description
+states this, so a caller treats the returned receipt as the only certain copy.
+
+The row answers *what an export produced*, not *where the file is now*. It is
+deliberately not a locator: `ExportDestinationsRepo.set_local` can repoint a
+saved destination's root under the same name, and `remove` deletes the
+destination row while leaving published artifacts in place, so no stored
+reference to a destination stays resolvable. The recorded checksums are what
+confirm a candidate file on disk is the artifact a given run produced. The
+destination id is recorded beside the name because the name is renameable.
+
+The row is not undoable: its target lies outside the repository-owned `app.*`
+surface, so `system_audit_undo` refuses it and a published artifact never
+appears withdrawable.
 
 ## Data model
 

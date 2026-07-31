@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
@@ -36,7 +37,11 @@ from moneybin.exports.snapshot import (
     build_data_dictionary,
     prepared_table_checksum,
 )
-from moneybin.metrics.registry import EXPORT_DURATION_SECONDS, EXPORT_RUNS_TOTAL
+from moneybin.metrics.registry import (
+    EXPORT_DURATION_SECONDS,
+    EXPORT_RECEIPT_FAILURES_TOTAL,
+    EXPORT_RUNS_TOTAL,
+)
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
     get_report_catalog,
@@ -57,6 +62,8 @@ if TYPE_CHECKING:
     from moneybin.exports.sheets import SheetsAuthorization
     from moneybin.exports.workbook_roles import WorkbookRolePermit
     from moneybin.services.audit_service import AuditEvent
+
+logger = logging.getLogger(__name__)
 
 
 #: Stems of the positional names a redacted export publishes in place of a
@@ -138,7 +145,6 @@ class ExportService:
         on_destination_resolved: Callable[[ExportDestination], None] | None = None,
     ) -> ExportReceipt:
         """Snapshot under a read lease, then publish after releasing DuckDB."""
-        _ = actor
         requested_destination_kind = command.destination_reference.partition(":")[0]
         labels = {
             "subject_kind": _bounded_label(command.subject_kind, _SUBJECT_KINDS),
@@ -236,10 +242,147 @@ class ExportService:
             raise
         else:
             EXPORT_RUNS_TOTAL.labels(**labels, outcome="success").inc()
+            cls._record_receipt(receipt, actor=actor, lifetime=lifetime)
             return receipt
         finally:
             EXPORT_DURATION_SECONDS.labels(**labels).observe(
                 perf_counter() - started_at
+            )
+
+    @classmethod
+    def _record_receipt(
+        cls,
+        receipt: ExportReceipt,
+        *,
+        actor: str,
+        lifetime: RequestLifetime | None,
+    ) -> None:
+        """Persist one receipt so a later turn or session can still find it.
+
+        Opens its own short write transaction *after* publication returns. The
+        read-only snapshot lease is already released by this point, so the
+        writer lock is never held across filesystem or Sheets I/O — the
+        property #349 exists to protect. Because it opens late, it runs inside
+        the request's publication barrier: an already-ended request skips the
+        write entirely, and a started one holds the timeout handler until it
+        finishes, so the tool's response and this write can never diverge.
+
+        Never raises, so recording is best-effort rather than guaranteed — the
+        tool description says so, because an agent that promised recovery on a
+        run whose receipt silently failed to record would be wrong. By the time
+        this runs the artifact is already published and cannot be withdrawn, so
+        letting a write failure escape would report an irreversible success as
+        an error and discard the caller's only copy of the receipt — prompting
+        a re-run that publishes a *second* artifact. The receipt is lost from
+        the audit log either way; this keeps the loss to the thing that
+        actually failed, logs it, and counts it in
+        ``EXPORT_RECEIPT_FAILURES_TOTAL``.
+        """
+        from moneybin.database import get_database  # noqa: PLC0415
+        from moneybin.errors import exception_origin  # noqa: PLC0415
+        from moneybin.services.audit_service import AuditService  # noqa: PLC0415
+        from moneybin.services.request_lifetime import (  # noqa: PLC0415
+            publication_barrier,
+        )
+
+        destination = receipt.destination
+        try:
+            # The whole open-and-write sits inside the barrier, the same one
+            # local.py and sheets.py put their publish step in. Every other
+            # write in a tool body proves it cannot commit late via
+            # tool_timeout_seconds >= the write-lock wait; this one opens
+            # after publication, whose duration is unbounded, so that proof
+            # does not reach it. Nor would bounding the lock wait alone:
+            # write_lock shells out to `ps` before its first attempt, and a
+            # successful open runs migrations before the connection registers
+            # for interrupt — both outside max_wait. The barrier covers all of
+            # it, refusing to start once the request has ended and holding the
+            # timeout handler until a started write finishes.
+            #
+            # run() resolved this lifetime once and gave it to both publish
+            # steps; re-deriving the ambient one here would ignore an explicit
+            # publication_lifetime and bind this write to a no-op barrier.
+            with (
+                publication_barrier(lifetime),
+                get_database(read_only=False) as db,
+            ):
+                AuditService(db).record_audit_event(
+                    action="export.run",
+                    # No app.* row backs an export, so the target names the
+                    # export itself. undo_dispatch refuses targets outside the
+                    # repo-owned app.* surface, which is what keeps a published
+                    # artifact from ever appearing undoable via
+                    # system_audit_undo.
+                    #
+                    # A real schema/table pair rather than nulls, matching
+                    # import_service's ("raw", "pdf_seeds"): UndoService builds
+                    # its refusal from this pair, and a null one renders as a
+                    # bare "." (_row_targets coalesces null to ""), so the
+                    # refusal would be correct but unreadable.
+                    target=("export", "run", receipt.export_id),
+                    before=None,
+                    after=None,
+                    actor=actor,
+                    context={
+                        # The id as well as the name: a destination can be
+                        # renamed, so the name alone stops identifying the
+                        # target it had at publication time.
+                        "destination_id": destination.destination_id,
+                        "destination_name": destination.name,
+                        "destination_kind": destination.kind,
+                        "format": receipt.format,
+                        "redaction_mode": receipt.redaction_mode,
+                        # What was exported, not just where it went — but the
+                        # report's identity only, never its binding or any
+                        # derivative of one. An earlier revision hashed the
+                        # parameters to tell two runs apart; for a redacted
+                        # export that hash covered already-masked values, so
+                        # two bindings sharing a mask collapsed into one, and
+                        # for an unredacted one it was an unkeyed digest of a
+                        # low-entropy binding — a verifier for guessing it.
+                        # export_id and checksums already discriminate runs.
+                        "subject_kind": receipt.subject.get("kind"),
+                        "report_id": receipt.subject.get("report_id"),
+                        # File name, never the full path: R9 forbids
+                        # persisting local paths, and a real export directory
+                        # embeds the OS username. The row identifies what an
+                        # export produced; it does not promise to re-locate
+                        # the file, because a destination root can be
+                        # repointed or removed after publication. The
+                        # checksums are what confirm a candidate file is this
+                        # artifact.
+                        "artifact_name": (
+                            receipt.artifact_path.name
+                            if receipt.artifact_path
+                            else None
+                        ),
+                        "compressed_artifact_name": (
+                            receipt.compressed_artifact_path.name
+                            if receipt.compressed_artifact_path
+                            else None
+                        ),
+                        "sheets_identity": receipt.sheets_identity,
+                        "row_counts": dict(receipt.row_counts),
+                        "checksums": dict(receipt.checksums),
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001  # never fail a published export
+            # A swallowed failure still has to be countable: the run itself
+            # reports outcome="success" (correctly — the artifact is
+            # published), so without this the only signal is a log line.
+            EXPORT_RECEIPT_FAILURES_TOTAL.labels(
+                destination_kind=destination.kind,
+                reason=type(exc).__name__,
+            ).inc()
+            # Type and origin, never the message or traceback: a lock or
+            # attach failure carries the database path, and
+            # SanitizedLogFormatter masks amounts and account numbers, not
+            # filesystem paths. Same boundary rule as mcp/decorator.py.
+            logger.error(
+                f"Export {receipt.export_id} published successfully but its "
+                f"receipt could not be recorded to the audit log "
+                f"({type(exc).__name__} at {exception_origin(exc)}); recover "
+                f"it from the returned receipt or the artifact itself."
             )
 
     def resolve_destination(self, reference: str) -> ExportDestination:

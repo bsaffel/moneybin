@@ -90,3 +90,48 @@ When catching exceptions from external libraries (keyring, duckdb, argon2, base6
 - A `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`) provides runtime detection and masking of PII patterns (SSNs, account numbers, dollar amounts) as a safety net. It masks and warns — it never suppresses log entries.
 - **Error messages** returned to users (CLI, MCP) must be generic. Catch specific exceptions and return clean messages — never let stack traces with financial data in local variables propagate to output.
 - See [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md) for the full list of allowed vs prohibited log content.
+
+## Operations metadata is judged by disclosure, not by column class
+
+Two different surfaces get judged two different ways, and conflating them
+costs review rounds without buying privacy.
+
+- **Data plane** — report outputs, `sql_query` results, exported table rows.
+  Governed by declared `DataClass` and its CI-verified derivation
+  (`reports.md`). A column's class decides its masking. This is where the
+  machinery earns its keep, and none of it is negotiable.
+- **Operations metadata** — audit context (`app.audit_log.context_json`),
+  receipts, metric labels, log lines. These describe an operation the user
+  performed on their own machine. The test is **not** "what class would this
+  column be" but: *does this value cross a boundary carrying something the
+  other side cannot already see?* The boundaries that matter are the model
+  provider (anything an MCP tool returns) and any artifact that outlives the
+  session.
+
+Applying data-plane reasoning to operations metadata produces two failure
+modes, both observed:
+
+- **Over-restriction** — withholding a value the provider already receives
+  through a normal read, which costs information and protects nothing.
+- **Under-restriction by proxy** — persisting a *derivative* (a hash, a
+  truncated digest, a bucketed count) on the theory that it is not the value.
+  A digest over a low-entropy input is a verifier for guessing that input, and
+  a digest over an already-masked input collapses distinct values. Neither is
+  a masking transform. **Never persist a hash of a sensitive value as a
+  privacy measure** — either the value is safe to record, or the field does
+  not belong in the row.
+
+Prefer an identifier the system already minted (`export_id`, `operation_id`)
+or a content checksum over anything derived from user input: both discriminate
+at least as well without digesting a binding the user chose. A minted id
+discloses nothing; a checksum over a very small result stays guessable by the
+rule above, so prefer it to a parameter hash rather than reading it as inert.
+Origin: PR #374, where a receipt's
+parameter fingerprint was added, found to leak on one path and collapse on the
+other, and removed — the export id and checksums already did the job.
+
+**A declared class is evidence, not proof.** Before reasoning from one, check
+what the field actually holds: `balance_drift`'s `account` parameter is
+declared `ACCOUNT_IDENTIFIER` (CRITICAL) but accepts an opaque `account_id` or
+a display name. Over-declaration passes CI by design (`reports.md`), so a class
+read in isolation can overstate a field's sensitivity by two tiers.
