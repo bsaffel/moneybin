@@ -19,6 +19,7 @@ from moneybin.services.import_confirmation import (
     Resolved,
     SignConventionProposal,
     resolve_or_confirm,
+    unreadable_date_recovery,
     validate_partial_mapping,
 )
 
@@ -580,6 +581,28 @@ class TestResolveOrConfirm:
         assert isinstance(out, ConfirmationRequired)
         assert "NotInFile" in out.error_message
         assert "not in the source" in out.error_message
+
+
+class TestUnreadableDateRecovery:
+    """The recovery text four surfaces print verbatim."""
+
+    def test_a_path_with_spaces_stays_runnable(self) -> None:
+        """A prescribed command the user cannot paste is not a recovery.
+
+        Bank exports land in directories like "Bank Exports/" often enough
+        that an unquoted path breaks the hint exactly when it is needed. The
+        CLI already shlex-quotes every other suggested command.
+        """
+        message = unreadable_date_recovery("/home/me/Bank Exports/jan stmt.csv")
+        assert "'/home/me/Bank Exports/jan stmt.csv'" in message
+        # The bare, unquoted form must not appear anywhere in the message.
+        assert "files /home/me/Bank Exports/jan stmt.csv" not in message
+
+    def test_both_recoveries_are_named(self) -> None:
+        """Either cause can be the real one, so neither may be dropped."""
+        message = unreadable_date_recovery("/data/plain.csv")
+        assert "--mapping transaction_date=" in message
+        assert "--date-format" in message
 
 
 def test_import_confirmation_required_error_carries_outcome() -> None:

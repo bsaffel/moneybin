@@ -34,6 +34,17 @@ class TestFormatParses:
         assert format_parses([], "%Y%m%d") is False
         assert format_parses([None, "", "   "], "%Y%m%d") is False
 
+    def test_a_format_that_will_not_compile_is_refused_not_raised(self) -> None:
+        """A repeated directive raises re.error, which is not a ValueError.
+
+        strptime builds a regex from the format, so "%Y %Y" fails as a
+        duplicate group name. Catching only ValueError let a malformed caller
+        format escape validation and reach the user as an internal traceback
+        instead of IMPORT_INVALID_DATE_FORMAT.
+        """
+        assert format_parses(["2026 2026"], "%Y %Y") is False
+        assert format_parses(["01/02/2026"], "%d/%d/%Y") is False
+
 
 class TestDetectDateFormat:
     """Tests for date format detection."""

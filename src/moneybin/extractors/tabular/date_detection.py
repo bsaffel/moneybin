@@ -69,6 +69,14 @@ def format_parses(values: "Sequence[str | None]", fmt: str) -> bool:
             datetime.strptime(value, fmt)
         except ValueError:
             continue
+        except re.error:
+            # strptime compiles the format into a regex, so a format that
+            # repeats a directive ("%Y %Y") fails as a duplicate group name —
+            # re.error, which is NOT a ValueError. Catching only ValueError let
+            # a malformed caller format escape this check and surface as an
+            # internal traceback instead of IMPORT_INVALID_DATE_FORMAT. No
+            # value can rescue the format, so stop rather than retry each one.
+            return False
         parsed += 1
     return parsed / len(clean) >= _MIN_PARSE_RATE
 

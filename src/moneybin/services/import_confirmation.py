@@ -244,15 +244,21 @@ def unreadable_date_recovery(file_path: str) -> str:
     and `--date-format` aimed at the wrong column would just be refused again.
     Mirrors the MCP hint in import_tools.py; keep the two in step.
     """
+    import shlex
+
+    # Quoted like every other suggested command in the CLI: a bank export
+    # lands in "Bank Exports/" often enough that an unquoted path makes the
+    # prescribed recovery uncopyable exactly when the user needs it.
+    quoted = shlex.quote(file_path)
     return (
         "No date format could be read from the mapped date column. If the "
         "wrong column is mapped — a status column can claim the date alias "
         "while the real dates sit in an unmapped one — re-run with `--mapping "
         "transaction_date=<source_column>`, which re-runs detection against "
-        f"that column; `moneybin import preview {file_path}` names the file's "
+        f"that column; `moneybin import preview {quoted}` names the file's "
         "columns. If the mapped column is right and its format is simply "
         "unrecognized, no mapping can change that: re-run `moneybin import "
-        f"files {file_path} --confirm --date-format <strptime>`."
+        f"files {quoted} --confirm --date-format <strptime>`."
     )
 
 
