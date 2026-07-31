@@ -908,6 +908,45 @@ class TestTabularConfirmationFlow:
             )
         assert exc_info.value.code == error_codes.IMPORT_INVALID_DATE_FORMAT
 
+    def test_a_buffered_successful_detection_reaches_the_histogram(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The other half of "all detections" — successes, not just refusals.
+
+        Tagging the observation `rollback` fixed the refusal path and broke
+        this one: a buffered caller flushes "commit" on success, and flush()
+        discards every item whose disposition does not match. That moved the
+        bias from "successes only" to "failures only" rather than removing it.
+        """
+        from moneybin.metrics.observations import MetricObservations
+        from moneybin.metrics.registry import IMPORT_DETECTION_SCORE
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "clean.csv"
+        csv.write_text(
+            "Date,Description,Amount\n"
+            "2026-01-05,Coffee,-4.50\n"
+            "2026-01-06,Payroll,100.00\n",
+            encoding="utf-8",
+        )
+        observations = MetricObservations()
+        before = IMPORT_DETECTION_SCORE._sum.get()  # type: ignore[reportPrivateUsage]
+
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            emit_metrics=False,
+            observations=observations,
+        )
+        observations.flush("commit")
+
+        assert result.import_id is not None
+        after = IMPORT_DETECTION_SCORE._sum.get()  # type: ignore[reportPrivateUsage]
+        assert after > before, "a successful detection never reached the histogram"
+
     def test_an_unreadable_date_still_reaches_the_calibration_histogram(
         self, db: Database
     ) -> None:

@@ -1650,21 +1650,33 @@ class ImportService:
                 proposed_keys=set(proposed.field_mapping.keys()),
                 override_keys=set(overrides.keys()) if overrides else set(),
             )
-            # Every detection belongs in the histogram, including the ones that
-            # never reach resolve_or_confirm below — the bands are tuned from
-            # this distribution, and dropping the failures biases it toward
-            # layouts that happened to work.
-            record_observation(
-                IMPORT_DETECTION_SCORE,
-                confidence.score,
-                labels={},
-                emit_metrics=emit_metrics,
-                observations=observations,
-                # The gates below raise, and the MCP caller flushes "rollback"
-                # on exception — a "commit" item is discarded there, which is
-                # exactly the histogram bias the comment above warns against.
-                disposition="rollback",
-            )
+            # Every detection belongs in the histogram — the ones that never
+            # reach resolve_or_confirm below *and* the ones that import
+            # cleanly. The bands are tuned from this distribution, so dropping
+            # either end biases it. This sits before the gates, so it is the
+            # one metric here on a path that can end both ways: a buffered
+            # caller flushes "commit" on success and "rollback" on the refusal
+            # those gates raise, and flush() discards whatever does not match.
+            # Queue both, and exactly one lands. The unbuffered path emits
+            # directly, so it records once or it would double-count.
+            if observations is not None:
+                for disposition in ("commit", "rollback"):
+                    record_observation(
+                        IMPORT_DETECTION_SCORE,
+                        confidence.score,
+                        labels={},
+                        emit_metrics=emit_metrics,
+                        observations=observations,
+                        disposition=disposition,
+                    )
+            else:
+                record_observation(
+                    IMPORT_DETECTION_SCORE,
+                    confidence.score,
+                    labels={},
+                    emit_metrics=emit_metrics,
+                    observations=None,
+                )
 
             # An explicit --date-format is the documented way in for a real
             # format the detector carries no candidate for (%Y%m%d), so its
