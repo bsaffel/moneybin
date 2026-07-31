@@ -290,6 +290,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **An import no longer reports success on a statement MoneyBin could not
+  read.** `import_confirm` replayed a staged preview whose column mapping
+  scored low — or whose date format was never detected — straight into the
+  loader, which parsed zero rows and returned a successful import of nothing.
+  Both cases now return `confirmation_required` carrying the file's own column
+  names and sample values, and name the recovery path: `import_preview` with a
+  `mapping` override stages a corrected preview to confirm instead. An override
+  that switches between a single `amount` column and a `debit`/`credit` pair now
+  also retires the detector's sign rule, which would otherwise have rejected
+  every row; an override that leaves a header row consumed as data still holds
+  the confirmation gate open rather than reporting high confidence.
 - **Picking tax lots no longer reports success on a write nothing will read.**
   `moneybin investments lots select` and `investments_lots_select` accepted a
   lot selection for any security, but the cost-basis engine reads
