@@ -318,7 +318,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   afterwards — the pull names the step rather than leaving new rows silently
   unreachable. A failed rebuild exits non-zero and tells you to retry the
   rebuild alone, since the closes are already stored and re-pulling would
-  spend the provider's rate limit re-fetching them.
+  spend the provider's rate limit re-fetching them. (#373)
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.
