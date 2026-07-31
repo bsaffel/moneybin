@@ -32,6 +32,7 @@ from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.services._validators import NOTE_MAX_LEN
 from moneybin.services.price_service import (
     COINGECKO_REF_KIND,
     COINGECKO_SOURCE_TYPE,
@@ -1210,6 +1211,74 @@ def test_a_nonpositive_mark_is_refused(db: Database) -> None:
     count = db.execute("SELECT COUNT(*) FROM app.security_price_overrides").fetchone()
     assert count is not None
     assert count[0] == 0
+
+
+def test_an_oversized_note_is_refused(db: Database) -> None:
+    """DuckDB ``VARCHAR`` is unbounded, so the application has to set the limit.
+
+    An unbounded note is stored once and then copied into the audit before/after
+    image on every later correction, so the cost of one oversized string is paid
+    repeatedly. ``NOTE_MAX_LEN`` is the bound the rest of the codebase already
+    applies to user note text; this path simply skipped it.
+
+    The length is derived from the constant rather than written as a literal, so
+    the test still names the real boundary if the bound is ever retuned.
+    """
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    with pytest.raises(ValueError, match="exceeds"):
+        service.set_mark(
+            "s1",
+            date(2026, 6, 30),
+            Decimal("42.50"),
+            quote_currency="USD",
+            note="x" * (NOTE_MAX_LEN + 1),
+        )
+
+    count = db.execute("SELECT COUNT(*) FROM app.security_price_overrides").fetchone()
+    assert count is not None
+    assert count[0] == 0
+
+
+def test_a_note_at_the_limit_is_stored(db: Database) -> None:
+    """The boundary itself is legal — an off-by-one here rejects a valid note.
+
+    Paired with the oversized case deliberately: a guard written as ``>=`` passes
+    that test and fails this one, and neither fixture alone can tell the two
+    versions apart.
+    """
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    service.set_mark(
+        "s1",
+        date(2026, 6, 30),
+        Decimal("42.50"),
+        quote_currency="USD",
+        note="x" * NOTE_MAX_LEN,
+    )
+
+    row = db.execute(
+        "SELECT LENGTH(note) FROM app.security_price_overrides WHERE security_id = 's1'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == NOTE_MAX_LEN
+
+
+def test_a_blank_note_is_refused(db: Database) -> None:
+    """``--note '   '`` is a slip, not an annotation; ``None`` is how you omit one."""
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    with pytest.raises(ValueError, match="non-empty"):
+        service.set_mark(
+            "s1",
+            date(2026, 6, 30),
+            Decimal("42.50"),
+            quote_currency="USD",
+            note="   ",
+        )
 
 
 def test_a_malformed_quote_currency_is_refused(db: Database) -> None:

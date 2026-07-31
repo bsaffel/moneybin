@@ -1,5 +1,5 @@
 {
-  "sha256": "370bc5f8b70a90cc46d19e9672030805831473bde7bed0c862d4780f0047ac34",
+  "sha256": "7ca651caa562b12e4dd3f09bca9f70d2528df3c74494017173ec8ad58cf853a7",
   "tool_count": 49,
   "tools": [
     {
@@ -1148,7 +1148,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically accept or reject account, merchant, and security identity link decisions. Accepting a security decision either merges two instruments' tax lots or only binds a price-feed symbol to a security, which deletes nothing and moves no lot; the confirmation prompt names which one. Any accepted merge or bind confirms the exact normalized full batch and complete live before-state; reject-only batches do not prompt.",
+        "description": "Atomically accept or reject account, merchant, and security identity link decisions. Accepting a security decision either merges two instruments' tax lots, manual events, and price marks, or only binds a price-feed symbol to a security, which deletes nothing and moves no row; the confirmation prompt names which one and counts every category it moves. Any accepted merge or bind confirms the exact normalized full batch and complete live before-state; reject-only batches do not prompt.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1453,12 +1453,12 @@
         },
         "name": "identity_links_decide"
       },
-      "description_bytes": 419,
+      "description_bytes": 487,
       "input_schema_bytes": 2438,
       "name": "identity_links_decide",
       "other_bytes": 63,
       "output_schema_bytes": 0,
-      "total_bytes": 3056
+      "total_bytes": 3124
     },
     {
       "annotation_bytes": 91,
@@ -4999,5 +4999,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 53253
+  "total_bytes": 53321
 }

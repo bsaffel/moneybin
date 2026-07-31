@@ -53,3 +53,17 @@ class PriceFeedNotFoundError(PriceFeedError):
 
 class PriceFeedAPIError(PriceFeedError):
     """A provider response that is not auth, rate limit, not-found, or unreachable."""
+
+
+class PriceFeedWindowUnsupportedError(PriceFeedError):
+    """The requested window reaches further back than this provider serves.
+
+    Unlike its siblings this is decided before any request: the window is a
+    property of the ask, not of a response. It is still a whole-batch condition —
+    the same window applies to every security in the run — so it contains per
+    source and leaves other feeds' rows intact.
+
+    Its own type rather than PriceFeedAPIError because the remedy is different in
+    kind: nothing is wrong with the provider, and the fix is a narrower window
+    argument rather than a retry.
+    """

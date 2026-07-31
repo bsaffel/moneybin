@@ -6,7 +6,8 @@ import json
 import logging
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -41,6 +42,7 @@ from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.repositories.security_price_repo import SecurityPriceRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.auto_rule_service import (
     AutoConfirmResult,
@@ -51,6 +53,7 @@ from moneybin.services.auto_rule_service import (
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.review_decisions_service import (
+    IDENTITY_BLAST_RADIUS_CATEGORIES,
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
     ReviewDecisionsService,
@@ -100,6 +103,7 @@ def _identity_plan(
                 else (),
                 "transactions": (f"transaction-{index}",),
                 "lots": (f"lot-{index}",) if request.kind == "security_link" else (),
+                "price_marks": (),
             },
         )
         for index, request in enumerate(decisions)
@@ -268,6 +272,78 @@ def _identity_security_setup(label: str) -> dict[str, str]:
         "provisional": provisional,
         "survivor": survivor,
     }
+
+
+def _identity_feed_key_setup(label: str) -> dict[str, str]:
+    """A pending price-feed decision, deliberately with NO accepted binding.
+
+    The absence is the fixture's whole point: a feed key asks whether a market-data
+    symbol names this security, and ``PriceService`` queues it precisely because no
+    link exists yet. Seeding one would make this an identity merge wearing a
+    feed-key ``ref_kind`` and would pass against the merge-only code it exists to
+    catch.
+    """
+    security = _mint_identity_security(
+        name=f"Feed security {label}",
+        created_by="user",
+        ticker=f"F{label[:3].upper()}",
+    )
+    ref_value = f"FEED{label[:3].upper()}"
+    decision_id = f"feed-{label}"
+    with get_database(read_only=False) as db:
+        SecurityLinkDecisionsRepo(db).insert(
+            decision_id=decision_id,
+            ref_kind="tiingo_ticker",
+            ref_value=ref_value,
+            source_type="tiingo",
+            candidate_security_id=security,
+            provider_ticker=ref_value,
+            provider_name=f"Feed security {label}",
+            confidence_score=0.5,
+            match_reason="name_divergence",
+            actor="system",
+        )
+    return {
+        "decision_id": decision_id,
+        "security": security,
+        "ref_value": ref_value,
+    }
+
+
+def _accepted_feed_binding(ref_value: str) -> str | None:
+    """The security a ``tiingo_ticker`` ref is bound to, or ``None`` if unbound."""
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            """
+            SELECT security_id FROM app.security_links
+            WHERE ref_kind = 'tiingo_ticker' AND ref_value = ?
+              AND source_type = 'tiingo' AND status = 'accepted'
+            """,
+            [ref_value],
+        ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
+def _seed_price_mark(security_id: str, price_date: date) -> None:
+    """Author one user price mark on ``security_id`` — a row a merge must move."""
+    with get_database(read_only=False) as db:
+        SecurityPriceRepo(db).set(
+            security_id,
+            price_date,
+            "USD",
+            close=Decimal("101.50"),
+            note=None,
+            actor="mcp",
+        )
+
+
+def _security_exists(security_id: str) -> bool:
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT 1 FROM app.securities WHERE security_id = ?",
+            [security_id],
+        ).fetchone()
+    return row is not None
 
 
 def _seed_identity_merchant_transaction(
@@ -1663,6 +1739,183 @@ async def test_identity_security_confirmation_ignores_unrelated_catalog_state() 
     )
 
 
+def test_every_preparer_reports_every_blast_radius_category() -> None:
+    """Set equality, because the two failure directions are opposite and silent.
+
+    ``_identity_binding`` indexes ``affected_ids`` by
+    ``IDENTITY_BLAST_RADIUS_CATEGORIES``. A preparer missing a key raises KeyError
+    inside the confirm path — loud, but only for whichever domain the batch happens
+    to touch. A preparer carrying a key the constant omits is the dangerous one: it
+    reports no error at all and the confirmation prompt just never mentions those
+    rows, which is exactly how a merge came to move every price override behind a
+    summary that counted five categories.
+    """
+    account = _identity_account_setup("radius")
+    merchant = _identity_merchant_setup("radius")
+    security = _identity_security_setup("radius")
+    requests = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account["decision_id"],
+            decision="accept",
+            target_id=account["candidate"],
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant["decision_id"],
+            decision="accept",
+            target_id=merchant["merchant_id"],
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=security["decision_id"],
+            decision="accept",
+            target_id=security["survivor"],
+        ),
+    ]
+    with get_database(read_only=True) as db:
+        plan = ReviewDecisionsService(db, actor="mcp").plan_identity(list(requests))
+
+    assert len(plan.items) == 3
+    for item in plan.items:
+        assert set(item.affected_ids) == set(IDENTITY_BLAST_RADIUS_CATEGORIES), (
+            f"{item.request.kind} preparer disagrees with the category constant"
+        )
+
+
+async def test_identity_decide_accepts_a_feed_key_decision() -> None:
+    """The coarse path must route a feed key to the bind, as the fine one does.
+
+    ``_prepare_security`` called ``accept_impact()`` for every accept. That
+    preflight demands an already-accepted binding to move onto the survivor, which
+    a feed-key decision never has, so this tool refused every ``tiingo_ticker`` and
+    ``coingecko_slug`` row with "nothing to merge away" — while its own description
+    advertised those decisions as supported. The fine-grained
+    ``investments_securities_links_set`` routed correctly the whole time, so the
+    queue was drainable by one surface and permanently stuck on the other.
+    """
+    setup = _identity_feed_key_setup("acc")
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["security"],
+        )
+    ]
+
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    assert required.error.details is not None
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert response.error is None
+    assert _identity_decision_status("security_link", setup["decision_id"]) == (
+        "accepted"
+    )
+    assert _accepted_feed_binding(setup["ref_value"]) == setup["security"]
+
+
+async def test_identity_decide_deletes_nothing_when_binding_a_feed_key() -> None:
+    """A bind is not a merge, and the merge path ends by DELETEing a catalog row.
+
+    Reaching that step with a feed-key decision would destroy the very security the
+    user is trying to price. Asserted separately from the accept because a routing
+    fix that bound the link but still ran the merge's cascade would satisfy the
+    other test alone.
+    """
+    setup = _identity_feed_key_setup("keep")
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["security"],
+        )
+    ]
+
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.details is not None
+    await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert _security_exists(setup["security"])
+
+
+async def test_identity_confirmation_counts_the_price_marks_a_merge_moves() -> None:
+    """A row the merge mutates but the prompt omits is a write nobody agreed to.
+
+    ``accept_merge`` re-points every override onto the survivor, but the coarse
+    confirmation counted only accounts, merchants, securities, transactions, and
+    lots — so a user with hand-authored valuations approved a batch whose summary
+    never mentioned them.
+    """
+    setup = _identity_security_setup("marks")
+    _seed_price_mark(setup["provisional"], date(2026, 7, 1))
+    _seed_price_mark(setup["provisional"], date(2026, 7, 2))
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["survivor"],
+        )
+    ]
+
+    required = await identity_links_decide_coarse(decisions=decisions)
+
+    assert required.error is not None
+    assert required.error.details is not None
+    assert required.error.details["blast_radius"] == {
+        "accounts": 0,
+        "merchants": 0,
+        "securities": 2,
+        "transactions": 0,
+        "lots": 0,
+        "price_marks": 2,
+    }
+
+
+async def test_a_price_mark_authored_after_preview_invalidates_the_token() -> None:
+    """Approval binds to the rows the merge will move, marks included.
+
+    A mark authored between preview and submission is a valuation the user never
+    saw and never agreed to re-point. Counting marks in the blast radius is what
+    makes the recomputed binding differ, so the stale grant is refused instead of
+    silently carrying a wider merge than the one that was approved.
+    """
+    setup = _identity_security_setup("mark-drift")
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["survivor"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.details is not None
+    token = str(required.error.details["confirmation_token"])
+    _seed_price_mark(setup["provisional"], date(2026, 7, 3))
+
+    mismatched = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+
+    assert mismatched.error is not None
+    assert mismatched.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert _identity_decision_status("security_link", setup["decision_id"]) == "pending"
+
+
 async def test_identity_confirmation_uses_exact_merchant_blast_radius() -> None:
     setup = _identity_merchant_setup("blast")
     _seed_identity_merchant_transaction(
@@ -1688,6 +1941,7 @@ async def test_identity_confirmation_uses_exact_merchant_blast_radius() -> None:
         "securities": 0,
         "transactions": 0,
         "lots": 0,
+        "price_marks": 0,
     }
     _seed_identity_merchant_transaction(
         "merchant-blast-unrelated",
@@ -1872,6 +2126,7 @@ def test_identity_confirmation_binds_order_state_ids_and_blast_radius() -> None:
         "securities": 1,
         "transactions": 3,
         "lots": 1,
+        "price_marks": 0,
     }
 
 

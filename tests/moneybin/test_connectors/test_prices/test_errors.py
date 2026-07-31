@@ -11,6 +11,7 @@ from moneybin.connectors.prices.errors import (
     PriceFeedNotFoundError,
     PriceFeedRateLimitError,
     PriceFeedUnreachableError,
+    PriceFeedWindowUnsupportedError,
 )
 from moneybin.error_codes import PRICE_FEED_ERROR
 from moneybin.errors import UserError, classify_user_error
@@ -21,6 +22,7 @@ _SUBCLASSES = (
     PriceFeedRateLimitError,
     PriceFeedNotFoundError,
     PriceFeedAPIError,
+    PriceFeedWindowUnsupportedError,
 )
 
 

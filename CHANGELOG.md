@@ -332,10 +332,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and stops asking that provider rather than spending the rest of the quota
   confirming the same failure. `--currency` must be a real ISO-4217 code and a
   price must be a finite number: `USDX` and `NaN` are refused up front rather
-  than stored as a mark that quietly matches no position. Prices in
+  than stored as a mark that quietly matches no position. A `--note` is bounded
+  at 2,000 characters, the same limit every other note in MoneyBin carries.
+  Prices in
   `core.fct_security_prices` are now treated as your own financial data rather
   than public reference data, because that column can carry the exact price you
-  paid or a valuation you wrote yourself. (#373)
+  paid or a valuation you wrote yourself. A crypto `--since` reaching further
+  back than CoinGecko's keyless tier serves is refused, naming the earliest date
+  it can return — it previously narrowed the window to 365 days and reported a
+  full backfill — and equities still pull over the window you asked for. In the
+  review queue, accepting a price-feed symbol through `identity_links_decide`
+  now binds it instead of failing with "nothing to merge away", and a security
+  merge's confirmation counts the price marks it moves rather than moving them
+  unmentioned. (#373)
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.

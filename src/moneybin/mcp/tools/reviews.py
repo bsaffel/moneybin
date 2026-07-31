@@ -103,6 +103,7 @@ from moneybin.services.matching_service import MatchingService
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.mutation_context import current_operation_id
 from moneybin.services.review_decisions_service import (
+    IDENTITY_BLAST_RADIUS_CATEGORIES,
     IdentityDecisionPlan,
     ReviewDecisionsService,
 )
@@ -1088,7 +1089,7 @@ def _identity_binding(
         key: len({
             entity_id for item in plan.items for entity_id in item.affected_ids[key]
         })
-        for key in ("accounts", "merchants", "securities", "transactions", "lots")
+        for key in IDENTITY_BLAST_RADIUS_CATEGORIES
     }
     return ConfirmationBinding(
         arguments=arguments,
@@ -1210,9 +1211,10 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         "identity_links_decide",
         "Atomically accept or reject account, merchant, and security identity "
         "link decisions. Accepting a security decision either merges two "
-        "instruments' tax lots or only binds a price-feed symbol to a security, "
-        "which deletes nothing and moves no lot; the confirmation prompt names "
-        "which one. Any accepted merge or bind confirms the exact normalized "
+        "instruments' tax lots, manual events, and price marks, or only binds a "
+        "price-feed symbol to a security, which deletes nothing and moves no "
+        "row; the confirmation prompt names which one and counts every category "
+        "it moves. Any accepted merge or bind confirms the exact normalized "
         "full batch and complete live before-state; reject-only batches do not "
         "prompt.",
         privacy_actor="identity_links_decide",

@@ -273,6 +273,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |         names `refresh run`. A failed apply exits 1 in both output modes --
 |   |   |         the rows are already committed, so the retry is a bare `refresh
 |   |   |         run`, never a re-pull against the provider's rate limit.
+|   |   |         --since further back than 365 days is refused for crypto, naming the
+|   |   |         earliest date CoinGecko's keyless tier serves: narrowing the window
+|   |   |         silently returned one year and reported a full backfill. The refusal
+|   |   |         is per source, so equities still pull over the window you asked for.
 |   |   +-- set <security> <date> <price> [--currency CUR] [--note TEXT] [--refresh]
 |   |   |         Record your own price. Outranks every provider close for that date
 |   |   |         and leaves other dates untouched. A non-positive price is refused:
@@ -290,6 +294,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |         --currency must be an ISO-4217 code: `USDX` would store and match
 |   |   |         no position, so it exits 1 rather than reporting a mark that
 |   |   |         values nothing. A non-finite PRICE (`NaN`, `Infinity`) exits 2.
+|   |   |         --note is bounded at NOTE_MAX_LEN (2,000) characters and may not be
+|   |   |         blank: DuckDB VARCHAR is unbounded, and every later correction copies
+|   |   |         the note into its audit before/after image, so one oversized string
+|   |   |         is stored repeatedly rather than once. Omit the flag for no note.
 |   |   +-- delete <security> <date> [--currency CUR] [--refresh]
 |   |   |         Remove a mark, returning that date to provider-derived valuation.
 |   |   |         Load-bearing, not CRUD symmetry -- `set` can only change the number,

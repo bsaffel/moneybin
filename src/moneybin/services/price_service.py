@@ -49,7 +49,7 @@ from moneybin.repositories.security_link_decisions_repo import (
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.repositories.security_price_repo import SecurityPriceRepo
-from moneybin.services._validators import validate_currency_code
+from moneybin.services._validators import validate_currency_code, validate_note_text
 from moneybin.tables import (
     AUDIT_LOG,
     DIM_HOLDINGS,
@@ -616,6 +616,15 @@ class PriceService:
                 "A price mark must be positive. A worthless position is recorded "
                 "as a disposal or write-off in the ledger, not as a zero price."
             )
+        if note is not None:
+            # DuckDB VARCHAR is unbounded, so the bound has to be the application's.
+            # A mark is corrected in place, and every correction copies the note into
+            # its audit before/after image — so one oversized string is stored and
+            # re-stored, not stored once. `validate_note_text` is the bound the rest
+            # of the codebase already applies to user note text; reusing it keeps one
+            # limit rather than a second one that drifts. `None` still means "no
+            # note"; an empty string is a slip and is refused as one.
+            validate_note_text(note)
         SecurityPriceRepo(self._db).set(
             security_id,
             price_date,

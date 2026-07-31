@@ -17,7 +17,7 @@ Two response facts below were verified against the live keyless API on
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import httpx
@@ -29,7 +29,10 @@ from moneybin.connectors.prices.coingecko import (
     COINGECKO_MAX_HISTORY_DAYS,
     CoinGeckoPriceAdapter,
 )
-from moneybin.connectors.prices.errors import PriceFeedRateLimitError
+from moneybin.connectors.prices.errors import (
+    PriceFeedRateLimitError,
+    PriceFeedWindowUnsupportedError,
+)
 from moneybin.connectors.prices.protocol import SecurityRef
 
 _DAY_MS = 86_400_000
@@ -171,16 +174,52 @@ def test_it_sends_no_credential() -> None:
     assert "x_cg_pro_api_key" not in request.url.params
 
 
-def test_it_never_asks_for_more_history_than_the_keyless_tier_serves() -> None:
-    """The free tier caps historical data at 365 days; a wider ask is clamped."""
+def test_it_refuses_a_window_deeper_than_the_keyless_tier_serves() -> None:
+    """Silently narrowing an explicit window returns a partial backfill as a whole one.
+
+    Replaces a test that asserted the clamp. The free tier serves 365 days, and
+    quietly substituting that for a five-year ``--since`` wrote the recent rows and
+    reported an ordinary success, so nothing anywhere told the user the older four
+    years were never requested. Refusing names the window CoinGecko can actually
+    serve, and ``pull``'s per-source containment keeps every other feed's rows.
+
+    No request is issued, so the refusal also costs none of the keyless quota.
+    """
+    today = date.today()
+    with respx.mock:
+        route = respx.get(_chart_route()).mock(
+            return_value=httpx.Response(200, json=_prices([]))
+        )
+
+        with pytest.raises(PriceFeedWindowUnsupportedError, match="365"):
+            CoinGeckoPriceAdapter().fetch(
+                [_ref()],
+                today - timedelta(days=COINGECKO_MAX_HISTORY_DAYS),
+                today,
+            )
+
+    assert not route.called
+
+
+def test_it_serves_the_deepest_window_the_keyless_tier_allows() -> None:
+    """The boundary itself is legal — an off-by-one here refuses a valid backfill.
+
+    Paired with the refusal deliberately: a guard spelled ``>=`` passes that test
+    and fails this one, and neither fixture on its own separates the two versions.
+    """
+    today = date.today()
     with respx.mock:
         route = respx.get(_chart_route()).mock(
             return_value=httpx.Response(
-                200, json=_prices([(_midnight_ms(date(2026, 7, 25)), "64000.10")])
+                200, json=_prices([(_midnight_ms(today), "64000.10")])
             )
         )
 
-        CoinGeckoPriceAdapter().fetch([_ref()], date(2020, 1, 1), date(2026, 7, 24))
+        CoinGeckoPriceAdapter().fetch(
+            [_ref()],
+            today - timedelta(days=COINGECKO_MAX_HISTORY_DAYS - 1),
+            today,
+        )
 
     days = int(route.calls.last.request.url.params["days"])
     assert days == COINGECKO_MAX_HISTORY_DAYS

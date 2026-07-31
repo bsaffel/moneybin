@@ -918,8 +918,12 @@ against the live API on 2026-07-24, because the documentation states neither:
 `/coins/{id}/market_chart/range` answers **401** without a key, while
 `/coins/{id}/market_chart?days=N` answers 200. `/coins/{id}/ohlc/range` — the one
 endpoint that would return a true daily *close* — is Analyst-plan-and-above. So
-the adapter uses the `days` form, and the keyless tier's 365-day history bound is
-clamped rather than silently requested and quietly truncated.
+the adapter uses the `days` form, and a `--since` reaching further back than the
+keyless tier's 365-day bound is **refused**, naming the earliest date CoinGecko
+can serve. Clamping to 365 days instead wrote those rows and reported an ordinary
+success, so a five-year backfill returned one year and said so nowhere. The
+refusal is a whole-batch condition — one window covers every coin in the run — so
+`pull` contains it per source and every Tiingo row still lands.
 
 **A crypto observation is the midnight boundary of the following day.** The only
 daily point the keyless tier serves is 00:00:00 UTC, which is the value at the

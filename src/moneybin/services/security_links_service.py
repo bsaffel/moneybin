@@ -317,6 +317,52 @@ class SecurityLinksService:
     # Mutations
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def binds_a_feed_key(ref_kind: str) -> bool:
+        """Whether accepting this ref binds a price feed rather than merging identities.
+
+        Public because the coarse batch preflight has to route the same way
+        ``accept`` does, one step earlier. Re-deriving the rule from
+        ``_FEED_KEY_REF_KINDS`` at that second call site is exactly how the coarse
+        path came to run every accept through the merge preflight while the
+        fine-grained one routed correctly.
+        """
+        return ref_kind in _FEED_KEY_REF_KINDS
+
+    def _require_bindable(
+        self,
+        decision: dict[str, Any],
+        *,
+        decision_id: str,
+        into: str,
+    ) -> None:
+        """Refusals shared by the feed-key preflight and the bind that follows it."""
+        if into != decision["candidate_security_id"]:
+            raise UserError(
+                "into does not match the candidate named in decision "
+                f"{decision_id!r}; pass the decision's own "
+                "candidate_security_id as a confirming safety check.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        if not self._security_exists(into):
+            raise UserError(
+                f"Security {into!r} no longer exists, so a price feed cannot "
+                "be bound to it.",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+
+    def bind_impact(self, decision_id: str, *, into: str) -> None:
+        """Preflight an accepted feed-key decision before a batch's first write.
+
+        The merge path exposes ``accept_impact`` so a batch discovers its refusals
+        before mutating anything; this is that step for a bind. It previews no rows
+        because a bind mutates none — it creates the link that did not exist — so it
+        asserts only what ``accept_feed_key`` asserts, through the same helper, and
+        the guard cannot drift from the write it guards.
+        """
+        decision = self._require_pending(decision_id)
+        self._require_bindable(decision, decision_id=decision_id, into=into)
+
     def accept(
         self,
         decision_id: str,
@@ -324,6 +370,7 @@ class SecurityLinksService:
         into: str,
         decided_by: str = "user",
         verify_accept: Callable[[SecurityLinkAcceptImpact], None] | None = None,
+        in_outer_txn: bool = False,
     ) -> AcceptOutcome:
         """Accept one pending decision by whichever mechanism its ref_kind needs.
 
@@ -353,13 +400,26 @@ class SecurityLinksService:
         user it merged two securities when it only created a link. Re-deriving
         it from ``_FEED_KEY_REF_KINDS`` in each adapter would put the routing
         rule in two places instead.
+
+        ``in_outer_txn`` lets the coarse batch enter through this same router
+        rather than calling ``accept_merge`` directly. That call is what made the
+        batch surface merge-only while this one routed correctly.
         """
         decision = self._require_pending(decision_id)
-        if str(decision["ref_kind"]) in _FEED_KEY_REF_KINDS:
-            self.accept_feed_key(decision_id, into=into, decided_by=decided_by)
+        if self.binds_a_feed_key(str(decision["ref_kind"])):
+            self.accept_feed_key(
+                decision_id,
+                into=into,
+                decided_by=decided_by,
+                in_outer_txn=in_outer_txn,
+            )
             return "bound"
         self.accept_merge(
-            decision_id, into=into, decided_by=decided_by, verify_accept=verify_accept
+            decision_id,
+            into=into,
+            decided_by=decided_by,
+            verify_accept=verify_accept,
+            in_outer_txn=in_outer_txn,
         )
         return "merged"
 
@@ -392,19 +452,7 @@ class SecurityLinksService:
             self._db.begin()
         try:
             decision = self._require_pending(decision_id)
-            if into != decision["candidate_security_id"]:
-                raise UserError(
-                    "into does not match the candidate named in decision "
-                    f"{decision_id!r}; pass the decision's own "
-                    "candidate_security_id as a confirming safety check.",
-                    code=error_codes.MUTATION_INVALID_INPUT,
-                )
-            if not self._security_exists(into):
-                raise UserError(
-                    f"Security {into!r} no longer exists, so a price feed cannot "
-                    "be bound to it.",
-                    code=error_codes.MUTATION_NOT_FOUND,
-                )
+            self._require_bindable(decision, decision_id=decision_id, into=into)
             event = self._decisions.update_status(
                 decision_id,
                 status="accepted",

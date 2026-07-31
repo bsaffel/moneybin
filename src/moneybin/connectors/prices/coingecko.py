@@ -35,7 +35,10 @@ from decimal import Decimal
 import httpx
 
 from moneybin.connectors.prices._http import DEFAULT_TIMEOUT, fetch_json
-from moneybin.connectors.prices.errors import PriceFeedNotFoundError
+from moneybin.connectors.prices.errors import (
+    PriceFeedNotFoundError,
+    PriceFeedWindowUnsupportedError,
+)
 from moneybin.connectors.prices.protocol import (
     PriceFetchFailure,
     PriceFetchResult,
@@ -47,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 # The keyless tier serves at most a year of history. Asking for more returns the
-# same year, so the adapter clamps rather than letting the caller believe a
+# same year, so the adapter refuses rather than letting the caller believe a
 # deeper backfill happened.
 COINGECKO_MAX_HISTORY_DAYS = 365
 
@@ -149,9 +152,25 @@ def _days_to_request(start: date) -> int:
 
     The `days` parameter counts back from now rather than from the window's end,
     so the span is measured against today and the response is filtered after.
+
+    Refuses rather than clamps a span the keyless tier cannot serve. Clamping
+    silently substituted 365 days for whatever was asked, wrote those rows, and
+    reported an ordinary success — so a deeper `--since` came back looking
+    complete, and the only place the difference was visible was CoinGecko's
+    documentation. Since the whole batch shares one window, this leaves as a
+    whole-batch error and `pull` contains it per source.
     """
     span = (date.today() - start).days + 1
-    return max(1, min(span, COINGECKO_MAX_HISTORY_DAYS))
+    if span > COINGECKO_MAX_HISTORY_DAYS:
+        earliest = date.today() - timedelta(days=COINGECKO_MAX_HISTORY_DAYS - 1)
+        raise PriceFeedWindowUnsupportedError(
+            f"CoinGecko's keyless endpoint serves at most "
+            f"{COINGECKO_MAX_HISTORY_DAYS} days of history, and {start.isoformat()} "
+            f"is further back than that. Re-run with a start date of "
+            f"{earliest.isoformat()} or later for the deepest crypto history "
+            f"available; other price sources are unaffected."
+        )
+    return max(1, span)
 
 
 def _parse_point(point: object) -> tuple[date, Decimal] | None:
