@@ -1513,7 +1513,16 @@ class ImportService:
                             ),
                         ),
                         samples=plan_samples,
-                        reason="unknown_layout",
+                        # Only claim the narrower reason when a date column is
+                        # actually mapped and its *values* are the problem.
+                        # With no date column at all, --date-format is useless
+                        # and a mapping override is the real recovery.
+                        reason=(
+                            "unreadable_date"
+                            if reviewed_plan.date_format is None
+                            and "transaction_date" in reviewed_plan.field_mapping
+                            else "unknown_layout"
+                        ),
                     )
                 )
             resolved = ResolvedMapping(
@@ -1637,7 +1646,13 @@ class ImportService:
                         channel="tabular",
                         confidence=confidence,
                         proposed=proposed,
-                        reason="unknown_layout",
+                        # See the reviewed-plan branch: a file with no date
+                        # column mapped is a mapping problem, not a format one.
+                        reason=(
+                            "unreadable_date"
+                            if "transaction_date" in proposed.field_mapping
+                            else "unknown_layout"
+                        ),
                         samples=dict(proposed.sample_values),
                     )
                 )

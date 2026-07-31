@@ -2410,7 +2410,9 @@ async def test_refusing_an_unreadable_date_reports_the_tier_the_preview_showed(
 
     data = confirmed.data
     assert isinstance(data, ImportConfirmRequiredPayload)
-    assert data.reason == "unknown_layout"
+    # A mapped date column whose values nothing parsed — distinct from the
+    # generic unknown layout, because only --date-format recovers it.
+    assert data.reason == "unreadable_date"
     assert data.tier == "medium", data.tier
 
 

@@ -382,6 +382,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   schema in addition to `core`/`app`.** Report columns are masked by each
   report's declared privacy classes, same as the typed tools — account and
   routing numbers stay masked (`****<last4>`). (#330)
+- **A confirmation refusal can now report `reason="unreadable_date"` (#372).**
+  It narrows `unknown_layout` to the one cause a column correction cannot
+  answer: a mapped date column whose values nothing could parse. The CLI, the
+  inbox sidecar, and the MCP envelope use it to prescribe `--date-format`
+  instead of an accept/override retry that returns to the same gate. A file
+  with no date column mapped keeps reporting `unknown_layout`, because there a
+  mapping override is the real recovery. Agents branching on `reason` should
+  handle the new value.
+- **A malformed PDF `bridge_response` now reports `infra_invalid_input`
+  instead of `import_bridge_response_invalid` (#372).** The bridge-specific
+  code is retired along with the branch that raised it; the failure is an
+  input-validation error like any other. Callers matching the old code need
+  updating.
 
 ### Fixed
 - **An import no longer reports success on a statement MoneyBin could not
@@ -409,7 +422,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   — so a format that cannot read the file is refused rather than loading
   nothing. A refusal that replays a staged preview also reports the score and
   flagged fields the preview showed, instead of re-deriving a clean score that
-  named nothing to correct.
+  named nothing to correct. `moneybin import files`, `moneybin import confirm`,
+  and the inbox sidecar now name `--date-format` for that refusal instead of
+  offering `--confirm` and `--mapping`, which both return to the same gate, and
+  `moneybin import preview` prints `Date format: not detected` rather than
+  dropping the line.
 - **A card imported from both a PDF statement and a bank file no longer loads
   twice (#371).** PDF import built its account key as a string and skipped the
   identity resolver every other source uses, so the same card arriving as a PDF

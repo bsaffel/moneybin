@@ -534,6 +534,7 @@ def import_files_command(
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
         from moneybin.services.import_confirmation import (  # noqa: PLC0415
             ImportConfirmationRequiredError,
+            unreadable_date_recovery,
         )
 
         if isinstance(_exc, ImportConfirmationRequiredError):
@@ -586,6 +587,8 @@ def import_files_command(
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
+                elif outcome.reason == "unreadable_date":
+                    confirm_actions.append(unreadable_date_recovery(file_path_str))
                 else:
                     # resolve_or_confirm refuses Accept on low-tier proposals (the
                     # detector couldn't form a complete one); suggesting --confirm
@@ -1407,6 +1410,7 @@ def import_confirm_command(
 
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
+        unreadable_date_recovery,
     )
 
     try:
@@ -1480,6 +1484,10 @@ def import_confirm_command(
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
+        elif outcome.reason == "unreadable_date":
+            # `import confirm` carries no --date-format, so the recovery is a
+            # different command, not a different flag on this one.
+            confirm_actions.append(unreadable_date_recovery(str(file_path)))
         else:
             confirm_actions.append(
                 "Re-run with --mapping <field>=<column> to override specific fields."
@@ -1544,6 +1552,9 @@ def import_confirm_command(
                 )
                 + "`."
             )
+        elif outcome.reason == "unreadable_date":
+            logger.error("❌ No date format could be read from the date column.")
+            logger.info(f"💡 {unreadable_date_recovery(str(file_path))}")
         else:
             msg = f"❌ Confirmation failed: {outcome.reason}" + (
                 f" — {outcome.error_message}" if outcome.error_message else ""
@@ -2034,8 +2045,16 @@ def import_preview(
                 typer.echo(f"  {field} ← {col}")
             if mapping_result.sign_convention:
                 typer.echo(f"Sign convention: {mapping_result.sign_convention}")
+            # Say "not detected" rather than dropping the line: a missing row
+            # reads as "nothing to report", when it is the one fact that makes
+            # this file unimportable without --date-format.
             if mapping_result.date_format:
                 typer.echo(f"Date format: {mapping_result.date_format}")
+            else:
+                typer.echo(
+                    "Date format: not detected — this file cannot import "
+                    "without --date-format <strptime>"
+                )
             if mapping_result.number_format:
                 typer.echo(f"Number format: {mapping_result.number_format}")
 

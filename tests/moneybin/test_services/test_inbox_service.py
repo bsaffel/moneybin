@@ -1186,6 +1186,45 @@ class TestPendingSidecarAccountHint:
         actions = payload["actions"]
         assert all("--account-name chase-checking" in a for a in actions), actions
 
+    def test_unreadable_date_sidecar_names_the_date_format_flag(
+        self, tmp_path: Path
+    ) -> None:
+        """The sidecar is a third surface with the same dead end as the CLI.
+
+        `import confirm --accept` re-hits the gate and `--mapping` re-runs a
+        detector that still cannot read the values, so a sidecar offering only
+        those two sends its reader in a circle. Only `import files
+        --date-format` changes the format.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "compact.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("Date,Amount\n20260501,-10\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="tabular",
+            tier="medium",
+            score=0.75,
+            reason="unreadable_date",
+            proposed_mapping={"transaction_date": "Date", "amount": "Amount"},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+        )
+
+        import yaml
+
+        actions = yaml.safe_load(sidecar.read_text())["actions"]
+        assert any("--date-format" in a for a in actions), actions
+        assert not any("--mapping" in a for a in actions), actions
+        assert not any("--accept" in a for a in actions), actions
+
     def test_actions_omit_account_name_when_no_hint(self, tmp_path: Path) -> None:
         from pathlib import Path as _Path
 

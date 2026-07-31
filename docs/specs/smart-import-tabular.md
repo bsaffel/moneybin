@@ -1189,10 +1189,13 @@ def import_preview(file_path: str, mapping: dict[str, str] | None = None) -> Pre
 `mapping` is a partial field→column override — the same partial-merge
 validation `resolve_or_confirm`'s Override signal uses (Req 11): unrecognized
 destination fields or absent source columns raise. A validated override
-resolves the detected ambiguity and reports `confidence="high"` — except when
-`header_row_looks_like_data` is set. That structural red flag is orthogonal to
-the column mapping (a real transaction row was consumed as column names), so it
-keeps the tier at `low` and the confirm gate armed; an override cannot clear it.
+resolves the detected ambiguity and reports `confidence="high"` — except on the
+two facts an override does not answer. `header_row_looks_like_data` is orthogonal
+to the column mapping (a real transaction row was consumed as column names), so
+that structural red flag keeps the tier at `low` and the confirm gate armed; an
+override cannot clear it. A date column whose values nothing could parse
+(`date_format is None`) likewise keeps the detector's own tier, because remapping
+the column does not change how its values read.
 An override that changes the amount shape also re-derives `sign_convention` and
 drops samples for the retired destination, so the persisted plan never carries a
 split rule against a single `amount` column. Staged previews are immutable

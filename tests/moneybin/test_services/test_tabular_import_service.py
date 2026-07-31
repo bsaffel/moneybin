@@ -537,7 +537,9 @@ class TestTabularConfirmationFlow:
                     confirm=True,
                 )
         outcome = exc_info.value.outcome
-        assert outcome.reason == "unknown_layout"
+        # The date column IS mapped; its values are what nothing could read, so
+        # the refusal names the one recovery that changes them.
+        assert outcome.reason == "unreadable_date"
         # Keep the detected tier: filing a medium failure under "low" would
         # contradict the preview the caller already holds.
         assert outcome.confidence.tier == "medium"

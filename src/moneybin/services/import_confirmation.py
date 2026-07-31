@@ -22,7 +22,11 @@ from moneybin.services.account_resolution_types import AccountProposalDict
 Channel = Literal["tabular", "gsheet", "pdf"]
 ActorKind = Literal["human", "agent"]
 ConfirmationReason = Literal[
-    "unknown_layout", "validation_failure", "account_confirmation", "sign_convention"
+    "unknown_layout",
+    "validation_failure",
+    "account_confirmation",
+    "sign_convention",
+    "unreadable_date",
 ]
 ConfirmationOutcome = Literal["accepted", "overridden", "declined"]
 
@@ -144,6 +148,11 @@ class ConfirmationRequired:
     already accepted; the caller ratifies the account binding via
     `account_proposals`.
 
+    `reason='unreadable_date'` narrows `unknown_layout` to the one cause no
+    mapping correction can answer: nothing could read the date column's
+    values. It exists so a surface can prescribe `--date-format` instead of
+    the generic accept/override hints, which both return to this same gate.
+
     `account_proposals` carries the `AccountProposal.to_dict()` payload for
     each detected source account whose resolution needs ratification — weak
     candidates to choose among, or a no-candidate proposal for the bare
@@ -216,6 +225,25 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         "sign_sample_rows": sign_sample_rows,
         "account_proposals": list(outcome.account_proposals),
     }
+
+
+def unreadable_date_recovery(file_path: str) -> str:
+    """Name the only flag that can recover a date column nothing could parse.
+
+    Lives here, beside the reason it answers, because three surfaces need the
+    identical sentence — the CLI's two confirmation handlers and the inbox
+    sidecar. Each previously offered `--accept` and `--mapping`: the first
+    re-hits this gate, which fires ahead of resolve_or_confirm whatever signal
+    it carries, and the second re-runs a detector that still cannot read the
+    values whichever column it maps. `--date-format` lives on `import files`;
+    `import confirm` takes none.
+    """
+    return (
+        "No date format could be read from the mapped date column, so no "
+        "column correction can recover this file. Re-run `moneybin import "
+        f"files {file_path} --confirm --date-format <strptime>` with the "
+        "format the column actually uses (for example %Y%m%d)."
+    )
 
 
 class ImportConfirmationRequiredError(Exception):

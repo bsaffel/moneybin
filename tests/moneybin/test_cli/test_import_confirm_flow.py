@@ -74,6 +74,7 @@ def _make_confirmation_error(
     missing_required: tuple[str, ...] = (),
     field_mapping: dict[str, str] | None = None,
     unmapped: tuple[str, ...] = ("Notes",),
+    reason: str = "unknown_layout",
 ) -> ImportConfirmationRequiredError:
     """Build an ImportConfirmationRequiredError with testable defaults."""
     if field_mapping is None:
@@ -97,7 +98,7 @@ def _make_confirmation_error(
         channel="tabular",
         confidence=confidence,
         proposed=proposed,
-        reason="unknown_layout",
+        reason=reason,  # type: ignore[arg-type]  # test fixture accepts every reason
         samples=dict(proposed.sample_values),
     )
     return ImportConfirmationRequiredError(outcome)
@@ -483,6 +484,38 @@ class TestImportFilesConfirmFlow:
         assert payload["data"]["channel"] == "tabular"
         assert "proposed_mapping" in payload["data"]
         assert "samples" in payload["data"]
+
+    def test_unreadable_date_json_actions_name_the_date_format_flag(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The one refusal a mapping override can never answer must say so.
+
+        `--confirm` re-hits the same gate (it fires ahead of resolve_or_confirm
+        whatever signal it carries) and `--mapping` re-runs a detector that
+        still cannot read the values, so an agent following the generic
+        actions loops forever. Only `--date-format` changes the format, and it
+        lives on `import files`.
+        """
+        csv_file = tmp_path / "compact.csv"
+        csv_file.write_text("Date,Amount,Memo\n20260105,-50.00,Coffee\n")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(reason="unreadable_date"),
+        )
+
+        result = runner.invoke(app, ["files", str(csv_file), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["data"]["reason"] == "unreadable_date"
+        actions = payload["actions"]
+        assert any("--date-format" in a for a in actions)
+        # The two dead ends must not be offered beside the real recovery.
+        assert not any("--mapping" in a for a in actions)
+        assert not any("--confirm to accept" in a for a in actions)
 
     def test_unknown_layout_json_envelope_includes_tier(
         self,

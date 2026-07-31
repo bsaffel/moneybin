@@ -884,6 +884,10 @@ class InboxService:
         (``sign_sample_rows``) so the flip is visible before anyone ratifies it.
         Mirrors the MCP ``_sign_confirm_actions`` treatment.
         """
+        from moneybin.services.import_confirmation import (  # noqa: PLC0415  # avoid an import cycle at module scope
+            unreadable_date_recovery,
+        )
+
         sidecar = moved_path.with_name(moved_path.name + ".pending.yml")
         if reason == "sign_convention":
             # "magic stays visible": a whole-ledger sign inversion the user can't
@@ -942,6 +946,11 @@ class InboxService:
                 "Or move the file into inbox/<account-slug>/ and re-run sync "
                 "(the subfolder names the account)."
             )
+        elif reason == "unreadable_date":
+            # Same dead end the CLI handlers had: --accept re-hits the gate and
+            # --mapping re-runs a detector that still cannot read the values.
+            # Only `import files --date-format` changes the representation.
+            actions.append(unreadable_date_recovery(str(moved_path)))
         else:
             account_suffix = f" --account-name {account_hint}" if account_hint else ""
             # resolve_or_confirm refuses --accept on low-tier proposals; omit the
