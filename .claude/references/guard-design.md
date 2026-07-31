@@ -56,30 +56,37 @@ match the command word instead. (#346)
 
 **Matching the verb does not gate what the verb touches.** #346's "match the
 command word" bounds *which* statement runs; it says nothing about *what it
-reads*, and for a whole class of statements the target is invisible to the AST.
+reads*, and for a whole class of statements the target is invisible to the
+**generic table walk**, not to the AST itself. Take the leaked pragma:
 `PRAGMA storage_info('sqlmesh__core.core__dim_accounts__<hash>')` parses its
 target to a **string literal inside `exp.Anonymous`** — not an `exp.Table` — so
-`tables_outside_schemas` finds no table to refuse and the schema allowlist
-silently does not apply. `EXPLAIN` has the identical defect via `exp.Command`.
-The consequence was a cleartext CRITICAL leak: `storage_info`'s per-segment
-`Min:`/`Max:` stats returned an 8-character prefix of a stored 9-digit
-`routing_number` (ABA check digit makes the ninth arithmetically recoverable),
-in an envelope declaring `sensitivity: "low"` — so the audit trail recorded the
-wrong tier too. **No allowlist of verb names fixes an invisible target**, and
-re-parsing the payload to gate it is the #346 shape (classify a derived string
-while the engine executes the original). #360 dropped `PRAGMA` and `EXPLAIN`
-from the accepted prefixes outright instead; `sql_schema` already covered the
-legitimate introspection need, so the user-facing cost was near zero. Two rules
-carry forward. **Assert on `stats` content, not on the statement being
-refused**: a future stats-bearing pragma admitted by a name allowlist would
-reintroduce the leak while a refusal-shaped test stayed green
+`tables_outside_schemas`, which walks `find_all(exp.Table)`, finds no table to
+refuse and the schema allowlist silently does not apply. `EXPLAIN` has the
+identical defect via `exp.Command`. The consequence was a cleartext CRITICAL
+leak: `storage_info`'s per-segment `Min:`/`Max:` stats returned an 8-character
+prefix of a stored 9-digit `routing_number` (ABA check digit makes the ninth
+arithmetically recoverable), in an envelope declaring `sensitivity: "low"` — so
+the audit trail recorded the wrong tier too. **No allowlist of verb names fixes
+a target the table walk never visits.** A verb-specific reader could reach that
+literal — but gating on what it reads means re-parsing the payload, which is the
+#346 shape exactly (classify a derived string while the engine executes the
+original). #360 dropped `PRAGMA` and `EXPLAIN` from the accepted prefixes
+outright instead. **Price a removal on every surface the primitive backs**:
+`execute_sql_query` serves the MCP tool and `moneybin sql query` alike, and
+there is no CLI counterpart to `sql_schema` (`sql_query.py:373-376`). The cost
+was near zero on both, for two different reasons — MCP callers already had
+`sql_schema`, and CLI callers keep the `DESCRIBE`/`SHOW` the same change left
+admitted. Citing only the MCP replacement would have priced half the blast
+radius. Two rules carry forward. **Assert on `stats` content, not on the
+statement being refused**: a future stats-bearing pragma admitted by a name
+allowlist would reintroduce the leak while a refusal-shaped test stayed green
 (`test_metadata_path_never_returns_a_critical_value` pins the prefix, not the
 verdict). And **the same engine re-exposes a closed verb as a table function** —
 `SELECT * FROM pragma_storage_info(...)` clears a prefix gate on a literal
 `SELECT`. That one is closed, but not by the mechanism you would guess: sqlglot
 parses the call to an `exp.Table` whose `db` *and* `name` are both empty, so it
 takes the unqualified branch, matches no allowed schema, and fails closed. An
-empty *schema* alone would not have done it — the empty **name** is what finds
+empty **schema** alone would not have done it — the empty **name** is what finds
 nothing to resolve. (#360)
 
 **Applying an existing guard to a second path means guarding a tree the first
