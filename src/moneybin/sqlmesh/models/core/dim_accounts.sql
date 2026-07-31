@@ -43,18 +43,54 @@ WITH ofx_balance_currency AS (
   GROUP BY
     source_account_key,
     source_origin
+), institution_alias AS (
+  /* Normalized spelling -> canonical registry slug, indexing both halves of every
+     seeds.institutions row because sources arrive carrying either: OFX resolves a
+     display name, a sheet's Institution column is written by hand, the filename
+     heuristic already emits the slug. Punctuation is stripped rather than replaced,
+     which is what lets those meet — the registry's slug is curated, not derived, so
+     no amount of slugifying turns "U.S. Bank" into "us_bank". Grouped so a future
+     registry row normalizing onto an existing alias cannot fan one account into two.
+     Mirrors extractors/institution_resolution.py::slug_for_institution_name, which
+     the resolver applies to the *source* side; the two must agree, and
+     test_registry_alias_lookup_matches_the_sql_model pins that. */
+  SELECT
+    alias,
+    MIN(slug) AS slug
+  FROM (
+    SELECT
+      REGEXP_REPLACE(LOWER(slug), '[^a-z0-9]', '', 'g') AS alias,
+      slug
+    FROM seeds.institutions
+    UNION ALL
+    SELECT
+      REGEXP_REPLACE(LOWER(display_name), '[^a-z0-9]', '', 'g') AS alias,
+      slug
+    FROM seeds.institutions
+  )
+  WHERE
+    alias <> ''
+  GROUP BY
+    alias
 ), ofx_accounts AS (
   /* OFX <ORG> is a routing code, not a name — Chase publishes "B1", Wells Fargo
-     "WF" — so resolve a display name from the exact <FID> via seeds.institutions
-     and fall back to the raw <ORG> when the FID is unregistered. This is a
-     display concern only: the import-time institution slug (source_origin) is
-     deliberately untouched, because it feeds the transaction_id content hash. */
+     "WF" — so resolve from the exact <FID> via seeds.institutions, then from the
+     <ORG> as a name for issuers that publish one, and only then fall back to the
+     raw <ORG>. Two columns come out of that join and they are NOT
+     interchangeable: institution_name is for display,
+     institution_slug is what account matching compares. Slugifying the display
+     name is not the inverse of the registry ("U.S. Bank" -> "u-s-bank", not
+     "us_bank"), so a consumer that matches on the name drops candidates.
+     The import-time institution slug (source_origin) stays untouched either
+     way, because it feeds the transaction_id content hash. */
   SELECT
     a.account_id,
     a.source_account_key,
     a.routing_number,
     a.account_type,
     COALESCE(i.display_name, a.institution_org) AS institution_name,
+    COALESCE(i.slug, ia.slug, a.institution_org) AS institution_slug,
+    NOT COALESCE(i.slug, ia.slug) IS NULL AS institution_slug_resolved,
     a.institution_fid,
     'ofx' AS source_type,
     a.source_file,
@@ -70,6 +106,10 @@ WITH ofx_balance_currency AS (
   FROM prep.stg_ofx__accounts AS a
   LEFT JOIN seeds.institutions AS i
     ON i.fid = a.institution_fid
+  /* Only reached when the FID is unregistered: some issuers put a real name in
+     <ORG> ("WELLS FARGO") rather than a routing code, and that name resolves. */
+  LEFT JOIN institution_alias AS ia
+    ON ia.alias = REGEXP_REPLACE(LOWER(a.institution_org), '[^a-z0-9]', '', 'g')
   LEFT JOIN ofx_balance_currency AS c
     ON c.source_account_key = a.source_account_key AND c.source_origin = a.source_origin
 ), tabular_accounts AS (
@@ -79,6 +119,8 @@ WITH ofx_balance_currency AS (
     routing_number,
     account_type,
     institution_name,
+    COALESCE(ia.slug, institution_name) AS institution_slug, /* Resolved, never aliased across: a sheet's Institution column and the filename/format chain both yield display text, so passing it straight through would make one column mean two things by source and stop an OFX row for the same bank from matching it */
+    NOT ia.slug IS NULL AS institution_slug_resolved,
     institution_fid,
     source_type,
     source_file,
@@ -97,6 +139,8 @@ WITH ofx_balance_currency AS (
     END AS last_four_raw,
     currency AS source_currency /* the one source that carries it on the account itself */
   FROM prep.stg_tabular__accounts
+  LEFT JOIN institution_alias AS ia
+    ON ia.alias = REGEXP_REPLACE(LOWER(institution_name), '[^a-z0-9]', '', 'g')
 ), plaid_accounts AS (
   /* Every column is alias-qualified because the balance-currency join makes
      bare source_account_key ambiguous. */
@@ -106,6 +150,8 @@ WITH ofx_balance_currency AS (
     NULL::TEXT AS routing_number,
     a.account_type,
     a.institution_name,
+    COALESCE(ia.slug, a.institution_name) AS institution_slug, /* Plaid carries no FID, so its display name is all there is to resolve from; unregistered institutions keep the name and rely on both sides being slugified when compared */
+    NOT ia.slug IS NULL AS institution_slug_resolved,
     NULL::TEXT AS institution_fid,
     'plaid' AS source_type,
     a.source_file,
@@ -119,6 +165,8 @@ WITH ofx_balance_currency AS (
     END AS last_four_raw,
     c.source_currency
   FROM prep.stg_plaid__accounts AS a
+  LEFT JOIN institution_alias AS ia
+    ON ia.alias = REGEXP_REPLACE(LOWER(a.institution_name), '[^a-z0-9]', '', 'g')
   LEFT JOIN plaid_balance_currency AS c
     ON c.source_account_key = a.source_account_key AND c.source_origin = a.source_origin
 ), all_accounts AS (
@@ -156,6 +204,14 @@ WITH ofx_balance_currency AS (
          by source strength then recency — ARG_MIN over (source_rank ASC,
          extracted_at DESC); negating epoch_us flips the timestamp to descending
          within the composite ordering key.
+       - institution_slug: resolved-first, then recency. Only some sources can
+         resolve one — OFX has a <FID>, a spreadsheet has whatever its
+         Institution column was typed as — so ranking this by recency alone lets
+         an unregistered spelling overwrite a registry slug the moment a sheet
+         for the same account arrives later. Matching then compares the canonical
+         slug against that raw text, misses the account, and mints a duplicate.
+         Source rank is the wrong key here: a tabular row that DID resolve is
+         more useful than an OFX row that fell back to a raw <ORG>.
        - Descriptive fields (institution_name, account_type, official_name,
          account_subtype): first non-null by recency — ARG_MAX over extracted_at.
          account_type arrives already normalized to one canonical vocabulary by
@@ -177,6 +233,11 @@ WITH ofx_balance_currency AS (
       NOT institution_fid IS NULL) AS institution_fid,
     ARG_MAX(institution_name, extracted_at) FILTER(WHERE
       NOT institution_name IS NULL) AS institution_name,
+    ARG_MIN(
+      institution_slug,
+      (CASE WHEN institution_slug_resolved THEN 0 ELSE 1 END, -EPOCH_US(extracted_at))
+    ) FILTER(WHERE
+      NOT institution_slug IS NULL) AS institution_slug,
     ARG_MAX(account_type, extracted_at) FILTER(WHERE
       NOT account_type IS NULL) AS account_type,
     ARG_MAX(official_name, extracted_at) FILTER(WHERE
@@ -200,6 +261,7 @@ SELECT
   w.routing_number, /* ABA bank routing number; merged first-non-null by source strength then recency; NULL when no source provided it */
   w.account_type, /* Canonical account classification, normalized across all sources via seeds.account_type_map: depository, credit, loan, investment, other. NULL when the source spelling is unrecognized — the finer source distinction is preserved in account_subtype */
   w.institution_name, /* Human-readable name of the financial institution */
+  w.institution_slug, /* Canonical institution slug used to match accounts across sources; institution_name is for display only and does not slugify back to this */
   w.institution_fid, /* OFX financial institution identifier; NULL for tabular/plaid sources */
   w.source_type, /* Origin of the winning record after the cross-source merge: ofx, csv, tsv, excel, plaid, etc. */
   w.source_file, /* Path to the source file from which the winning record was loaded */

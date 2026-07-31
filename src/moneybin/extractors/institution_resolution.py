@@ -89,6 +89,59 @@ _FILENAME_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+def slug_for_fid(fid: str | None) -> str | None:
+    """Canonical registry slug for an OFX ``<FID>``, or None if unregistered.
+
+    Distinct from ``resolve_institution``, which prefers ``<ORG>`` and so returns
+    a routing code for issuers that publish one (Chase's ORG is ``B1``). That
+    value is correct for ``source_origin`` and must stay stable, but it cannot be
+    matched against ``core.dim_accounts.institution_slug``, which is FID-derived.
+    """
+    if not fid:
+        return None
+    return _fid_to_slug().get(fid)
+
+
+def _institution_alias(value: str) -> str:
+    """Registry lookup key: case and punctuation stripped entirely."""
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+@lru_cache(maxsize=1)
+def _alias_to_slug() -> dict[str, str]:
+    """Normalized institution name *or* slug → canonical registry slug.
+
+    Both halves of every registry row are indexed because sources arrive with
+    either: OFX resolves a display name, a Tiller sheet has one written by
+    hand, the filename heuristic already emits the slug. Stripping punctuation
+    rather than replacing it is what lets those meet — the registry's slug is
+    curated, not derived, so no amount of slugifying turns "U.S. Bank" into
+    "us_bank" ("u-s-bank" against "us-bank").
+    """
+    raw = resources.files("moneybin").joinpath(_REGISTRY_RESOURCE).read_text()
+    index: dict[str, str] = {}
+    for row in csv.DictReader(io.StringIO(raw)):
+        slug = row["slug"]
+        if not slug:
+            continue
+        for spelling in (slug, row["display_name"]):
+            if alias := _institution_alias(spelling or ""):
+                index[alias] = slug
+    return index
+
+
+def slug_for_institution_name(name: str | None) -> str | None:
+    """Canonical registry slug for an institution's name or slug, else None.
+
+    Complements ``slug_for_fid`` for the sources that carry no FID: a tabular
+    sheet's Institution column, a Plaid institution name. Unregistered
+    institutions return None so callers can fall back to the text they have.
+    """
+    if not name:
+        return None
+    return _alias_to_slug().get(_institution_alias(name))
+
+
 def resolve_institution(
     parsed_ofx: Any,
     *,

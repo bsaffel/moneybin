@@ -199,3 +199,121 @@ class TestSharedInstitutionRegistry:
             assert fid == str(int(fid)), (
                 f"fid {fid!r} has a leading zero, which pandas strips on read"
             )
+
+
+class TestRegistryAliasLookup:
+    """slug_for_institution_name resolves every spelling the registry carries."""
+
+    def _registry_rows(self) -> list[dict[str, str]]:
+        import csv as _csv
+        import io as _io
+        from importlib import resources
+
+        raw = (
+            resources
+            .files("moneybin")
+            .joinpath("sqlmesh/models/seeds/institutions.csv")
+            .read_text()
+        )
+        return list(_csv.DictReader(_io.StringIO(raw)))
+
+    def test_every_registry_spelling_resolves_to_its_own_slug(self) -> None:
+        """Both halves of a row are lookup keys: sources arrive with either."""
+        from moneybin.extractors.institution_resolution import (
+            slug_for_institution_name,
+        )
+
+        rows = self._registry_rows()
+        assert rows, "institution registry is empty"
+        for row in rows:
+            assert slug_for_institution_name(row["slug"]) == row["slug"]
+            assert slug_for_institution_name(row["display_name"]) == row["slug"]
+
+    def test_a_display_name_that_slugifies_away_from_its_slug_still_resolves(
+        self,
+    ) -> None:
+        """The case the whole lookup exists for.
+
+        Most registry display names happen to slugify onto their own slug
+        ('Wells Fargo' -> 'wells_fargo'), so they would resolve with the lookup
+        removed. 'U.S. Bank' is the one that cannot: the curated slug drops the
+        periods entirely where slugifying keeps them as separators.
+        """
+        from moneybin.extractors.institution_resolution import (
+            slug_for_institution_name,
+        )
+        from moneybin.utils import slugify
+
+        assert slugify("U.S. Bank") != slugify("us_bank")
+        assert slug_for_institution_name("U.S. Bank") == "us_bank"
+
+    def test_an_unregistered_institution_resolves_to_nothing(self) -> None:
+        """Callers fall back to the text they have; None is how they know to."""
+        from moneybin.extractors.institution_resolution import (
+            slug_for_institution_name,
+        )
+
+        assert slug_for_institution_name("Sunrise Community Credit Union") is None
+        assert slug_for_institution_name(None) is None
+        assert slug_for_institution_name("") is None
+
+    def test_registry_alias_lookup_matches_the_sql_model(self) -> None:
+        """core.dim_accounts must normalize institutions exactly as Python does.
+
+        The dim derives institution_slug with a REGEXP_REPLACE alias join while
+        AccountResolver derives the same key in Python. Two implementations of
+        one normalization drift silently — a bank resolves on one side only, and
+        the symptom is an account that quietly stops matching itself. Each
+        spelling below is checked twice: that the model's own expression
+        collapses it onto the registry slug (so the SQL join fires), and that
+        the Python lookup returns that same slug. The pattern is read out of the
+        model rather than restated here, so changing the SQL moves the SQL half
+        of the assertion with it.
+        """
+        import re
+
+        import duckdb
+
+        from moneybin.extractors.institution_resolution import (
+            slug_for_institution_name,
+        )
+
+        # Spellings a real source might carry, and the registry slug each must
+        # reach: case, punctuation, and separator variants.
+        variants = [
+            ("U.S. Bank", "us_bank"),
+            ("us bank", "us_bank"),
+            ("US-BANK", "us_bank"),
+            ("us_bank", "us_bank"),
+            ("Wells Fargo", "wells_fargo"),
+            ("WELLS_FARGO", "wells_fargo"),
+            ("Bank of America", "bank_of_america"),
+            ("bankofamerica", "bank_of_america"),
+            ("Chase", "chase"),
+        ]
+        # The expectations above name registry rows; if one is renamed or
+        # dropped this fails loudly rather than silently testing nothing.
+        known = {row["slug"] for row in self._registry_rows()}
+        assert {slug for _spelling, slug in variants} <= known, known
+
+        model = Path("src/moneybin/sqlmesh/models/core/dim_accounts.sql").read_text()
+        patterns = set(
+            re.findall(r"REGEXP_REPLACE\(LOWER\([^)]*\), '([^']*)', '', 'g'\)", model)
+        )
+        assert patterns, "dim_accounts no longer normalizes institutions in SQL"
+        assert len(patterns) == 1, f"model uses more than one normalization: {patterns}"
+        pattern = patterns.pop()
+
+        con = duckdb.connect()
+        try:
+            for spelling, expected in variants:
+                aliases = con.execute(
+                    "SELECT REGEXP_REPLACE(LOWER(?), ?, '', 'g'), "
+                    "REGEXP_REPLACE(LOWER(?), ?, '', 'g')",
+                    [spelling, pattern, expected, pattern],
+                ).fetchone()
+                assert aliases is not None
+                assert aliases[0] == aliases[1], (spelling, expected, aliases)
+                assert slug_for_institution_name(spelling) == expected, spelling
+        finally:
+            con.close()

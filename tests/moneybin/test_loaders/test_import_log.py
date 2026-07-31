@@ -141,6 +141,233 @@ class TestFindExistingImport:
         assert result is None
 
 
+class TestFindExistingImportByContent:
+    """A moved, renamed, or re-downloaded copy is still the same document.
+
+    Path-only matching misses the ordinary cases: the browser saving a second
+    download as ``statement (1).pdf``, or the user filing the statement out of
+    Downloads before importing. Both land as a fresh batch, and the import then
+    re-asks which account the statement belongs to — a second decision point on
+    a document already answered, where a different answer re-keys every row.
+    """
+
+    _DIGEST = "a" * 64
+    _OTHER_DIGEST = "b" * 64
+
+    def test_matches_a_renamed_copy_by_content(self, db: Database) -> None:
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/statement.pdf",  # noqa: S108  # test fixture path
+            source_type="pdf",
+            source_origin="chase",
+            account_names=["sapphire"],
+            file_sha256=self._DIGEST,
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Statements/2026-06 chase.pdf",  # noqa: S108  # test fixture path
+            file_sha256=self._DIGEST,
+        )
+        assert result == (import_id, "complete")
+
+    def test_a_changed_file_at_the_same_path_is_a_new_import(
+        self, db: Database
+    ) -> None:
+        """Same name, different bytes — July's statement saved over June's.
+
+        Reusing one filename is ordinary: a fixed download-manager target, or
+        just overwriting last month's file. The path predicate exists for rows
+        that predate ``file_sha256`` and therefore carry NULL; once a row has a
+        real digest, content is what identifies it, and different bytes are a
+        different document. Matching such a row on path alone would reject a
+        genuinely new statement as "already imported".
+        """
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+            file_sha256=self._DIGEST,
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/statement.ofx",  # noqa: S108  # same path...
+            file_sha256=self._OTHER_DIGEST,  # ...different bytes
+        )
+        assert result is None
+
+    def test_does_not_match_different_content_at_a_new_path(self, db: Database) -> None:
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/june.pdf",  # noqa: S108  # test fixture path
+            source_type="pdf",
+            source_origin="chase",
+            account_names=["sapphire"],
+            file_sha256=self._DIGEST,
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/july.pdf",  # noqa: S108  # test fixture path
+            file_sha256=self._OTHER_DIGEST,
+        )
+        assert result is None
+
+    def test_a_real_digest_never_matches_a_row_imported_before_the_column(
+        self, db: Database
+    ) -> None:
+        """Batches predating file_sha256 carry NULL — not a wildcard."""
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/legacy.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/legacy-copy.ofx",  # noqa: S108  # test fixture path
+            file_sha256=self._DIGEST,
+        )
+        assert result is None
+
+    def test_an_unknown_digest_does_not_collapse_two_legacy_rows(
+        self, db: Database
+    ) -> None:
+        """NULL == NULL must not match: a caller with no digest matches on path only."""
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/legacy.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/unrelated.ofx",  # noqa: S108  # test fixture path
+            file_sha256=None,
+        )
+        assert result is None
+
+    def test_a_legacy_path_blocks_until_that_path_has_a_digest(
+        self, db: Database
+    ) -> None:
+        """The first re-import at a legacy path is still refused.
+
+        A row predating ``file_sha256`` carries no content to compare against,
+        so whether this is the same document is genuinely unknowable. Refusing
+        and letting ``--force`` decide is the conservative answer, and this
+        pins it: only the *permanence* below is the defect.
+        """
+        legacy = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        import_log.finalize_import(
+            db, legacy, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
+            file_sha256=self._DIGEST,
+        )
+        assert result == (legacy, "complete")
+
+    def test_a_legacy_row_stops_answering_once_its_path_has_a_digest(
+        self, db: Database
+    ) -> None:
+        """A legacy row must not veto every future import at its path.
+
+        Nothing backfills that NULL — a ``--force`` re-import writes a new
+        digest-backed row *beside* the legacy one rather than retiring it. So
+        while the path fallback stays live, the legacy row keeps answering for
+        its path forever, and every later statement saved to a reused download
+        target is rejected as already imported. Once the same path has been
+        imported with a real digest, content is available for that path and the
+        legacy row's "something was imported here" is subsumed by it.
+        """
+        legacy = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        import_log.finalize_import(
+            db, legacy, status="complete", rows_total=1, rows_imported=1
+        )
+        digest_backed = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+            file_sha256=self._DIGEST,
+        )
+        import_log.finalize_import(
+            db, digest_backed, status="complete", rows_total=1, rows_imported=1
+        )
+
+        # Next month's statement, saved over the same filename: neither row
+        # describes these bytes.
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
+            file_sha256=self._OTHER_DIGEST,
+        )
+        assert result is None
+
+    def test_a_digest_backed_path_still_recognizes_its_own_content(
+        self, db: Database
+    ) -> None:
+        """Retiring the legacy fallback must not cost real duplicate detection."""
+        legacy = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        import_log.finalize_import(
+            db, legacy, status="complete", rows_total=1, rows_imported=1
+        )
+        digest_backed = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+            file_sha256=self._DIGEST,
+        )
+        import_log.finalize_import(
+            db, digest_backed, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
+            file_sha256=self._DIGEST,
+        )
+        assert result == (digest_backed, "complete")
+
+
 class TestBeginImportValidatesSourceType:
     """begin_import raises ValueError for unrecognized source_type values."""
 

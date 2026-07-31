@@ -10,6 +10,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+_HASH_CHUNK_BYTES = 1024 * 1024
+
 
 def copy_to_raw(
     source_file: Path | str,
@@ -70,6 +72,35 @@ def copy_to_raw(
     return target_path
 
 
+def file_sha256(path: Path) -> str:
+    """SHA-256 over a file's bytes, read in chunks (statements can be large).
+
+    The one file digest in the codebase — re-import detection, preview
+    trust-binding, and copy-idempotency all key on it, so they must agree
+    character for character.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def source_sha256(path: Path, source_bytes: bytes | None) -> str:
+    """Digest of the bytes an import actually parsed.
+
+    Callers pass ``source_bytes`` whenever they already hold the buffer they
+    parsed — an immutable preview snapshot, or a read the channel had to do
+    anyway. Re-reading the path instead would tag the batch with whatever
+    happens to be on disk at write time, which is precisely what a content
+    identity exists to rule out. Chunked and whole-buffer hashing agree, so
+    identical content yields one digest through either branch.
+    """
+    if source_bytes is not None:
+        return hashlib.sha256(source_bytes).hexdigest()
+    return file_sha256(path)
+
+
 def _files_are_identical(file1: Path, file2: Path) -> bool:
     """Check if two files have identical content.
 
@@ -86,8 +117,4 @@ def _files_are_identical(file1: Path, file2: Path) -> bool:
     if file1.stat().st_size != file2.stat().st_size:
         return False
 
-    # Compare SHA-256 hashes
-    hash1 = hashlib.sha256(file1.read_bytes()).hexdigest()
-    hash2 = hashlib.sha256(file2.read_bytes()).hexdigest()
-
-    return hash1 == hash2
+    return file_sha256(file1) == file_sha256(file2)

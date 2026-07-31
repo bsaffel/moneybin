@@ -37,10 +37,10 @@ def system_db(db: Database) -> Database:
 
     conn.execute("""
         INSERT INTO core.dim_accounts VALUES
-        ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
+        ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          'Test Bank CHECKING ...0001', NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE),
-        ('ACC002', '222000050', 'SAVINGS', 'Other Bank', '5678', 'ofx',
+        ('ACC002', '222000050', 'SAVINGS', 'Other Bank', 'other_bank', '5678', 'ofx',
          'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          'Other Bank SAVINGS ...0002', NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE)
     """)  # noqa: S608  # test input, not executing SQL
@@ -199,7 +199,7 @@ def _insert_dim_account(
     db.conn.execute(
         """
         INSERT INTO core.dim_accounts VALUES
-        ('ACC001', '111000025', 'CHECKING', 'Test Bank', '1234', 'ofx',
+        ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', ?, CURRENT_TIMESTAMP, ?,
          'Test Bank CHECKING ...0001', NULL, NULL, NULL, NULL, 'USD',
          NULL, FALSE, TRUE)

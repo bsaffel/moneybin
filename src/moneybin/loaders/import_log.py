@@ -90,6 +90,7 @@ def begin_import(
     account_names: list[str],
     format_name: str | None = None,
     format_source: str | None = None,
+    file_sha256: str | None = None,
 ) -> str:
     """Create an import_log row in 'importing' state. Returns the new import_id (UUID).
 
@@ -103,6 +104,10 @@ def begin_import(
         format_name: Tabular format name if a format matched; None for OFX.
         format_source: How the format was resolved ('built-in', 'saved', 'detected').
             None for OFX.
+        file_sha256: Digest of the source file's bytes, from
+            ``moneybin.utils.file.file_sha256``. Lets ``find_existing_import``
+            recognize the same document under a different path. None only for
+            callers with no file on disk.
 
     Returns:
         UUID import_id for this batch.
@@ -119,13 +124,14 @@ def begin_import(
     db.execute(
         f"""
         INSERT INTO {IMPORT_LOG.full_name} (
-            import_id, source_file, source_type, source_origin,
+            import_id, source_file, file_sha256, source_type, source_origin,
             format_name, format_source, account_names, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'importing')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'importing')
         """,
         [
             import_id,
             source_file,
+            file_sha256,
             source_type,
             source_origin,
             format_name,
@@ -364,8 +370,30 @@ def get_import_history_page(
 def find_existing_import(
     db: Database,
     source_file: str,
+    *,
+    file_sha256: str | None = None,
 ) -> tuple[str, str] | None:
     """Return (import_id, status) for the most recent live batch, or None.
+
+    Matches on the file's content digest, so a second download saved as
+    ``statement (1).pdf`` and a statement filed out of Downloads are both
+    recognized as the document they already are.
+
+    Path matching is scoped to rows that carry no digest — batches imported
+    before ``file_sha256`` existed, which cannot be re-derived because their
+    source file may be long gone. Once a row has a real digest, content alone
+    identifies it: reusing one filename across months is ordinary, and matching
+    such a row on path would reject a genuinely new statement as already
+    imported.
+
+    That fallback retires per path. Nothing backfills a legacy NULL — a
+    ``--force`` re-import writes a new digest-backed row *beside* the legacy one
+    — so left live it would answer for its path forever and reject every later
+    statement saved to a reused download target. A digest-backed batch at the
+    same path means content is available there, which subsumes it.
+
+    A NULL is a wildcard in neither direction: a caller with no digest never
+    collapses two legacy rows at different paths.
 
     Excludes 'reverted' and 'failed' rows. Returns 'importing' batches too
     so callers can distinguish a successful prior import from a crashed
@@ -375,12 +403,25 @@ def find_existing_import(
         f"""
         SELECT import_id, status
         FROM {IMPORT_LOG.full_name}
-        WHERE source_file = ?
+        WHERE (
+                (
+                  source_file = ?
+                  AND file_sha256 IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM {IMPORT_LOG.full_name} AS digested
+                    WHERE digested.source_file = ?
+                      AND NOT digested.file_sha256 IS NULL
+                      AND digested.status NOT IN ('reverted', 'failed')
+                  )
+                )
+             OR (? IS NOT NULL AND file_sha256 = ?)
+          )
           AND status NOT IN ('reverted', 'failed')
         ORDER BY started_at DESC
         LIMIT 1
         """,
-        [source_file],
+        [source_file, source_file, file_sha256, file_sha256],
     ).fetchone()
     if row is None:
         return None

@@ -22,5 +22,7 @@ CREATE TABLE IF NOT EXISTS raw.import_log (
     balance_validated BOOLEAN,                  -- Whether running balance validation passed (NULL if no balance column)
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- When the import batch began
     completed_at TIMESTAMP,                     -- When the import batch finished (NULL if still running or failed)
-    reverted_at TIMESTAMP                       -- When the import was reverted (NULL if not reverted)
+    reverted_at TIMESTAMP,                      -- When the import was reverted (NULL if not reverted)
+    -- Appended last so a fresh install and a V046-upgraded database agree on ordinal position.
+    file_sha256 VARCHAR                         -- SHA-256 over the source file bytes; identifies the same document across renames and moves. NULL for batches imported before this column existed
 );

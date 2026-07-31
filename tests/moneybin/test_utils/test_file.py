@@ -8,6 +8,8 @@ import pytest
 from moneybin.utils.file import (
     _files_are_identical,  # type: ignore[reportPrivateUsage] - testing private function
     copy_to_raw,
+    file_sha256,
+    source_sha256,
 )
 
 
@@ -387,3 +389,44 @@ class TestFilesAreIdentical:
         file2.write_text("")
 
         assert _files_are_identical(file1, file2)
+
+
+class TestSourceSha256:
+    """The digest an import records must describe the bytes it actually parsed."""
+
+    def test_prefers_the_supplied_snapshot_over_the_live_path(
+        self, tmp_path: Path
+    ) -> None:
+        """A caller holding an immutable snapshot records that, not what is on disk.
+
+        The persisted-preview confirm flow parses bytes captured at preview
+        time. Re-reading the path at write time would tag the batch with
+        whatever replaced the file since — the one thing a content identity
+        exists to rule out.
+        """
+        path = tmp_path / "statement.ofx"
+        path.write_bytes(b"replaced on disk after the preview")
+        snapshot = b"the bytes the preview captured"
+
+        assert source_sha256(path, snapshot) == hashlib.sha256(snapshot).hexdigest()
+
+    def test_falls_back_to_the_path_when_no_snapshot_was_supplied(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "statement.ofx"
+        path.write_bytes(b"only on disk")
+
+        assert source_sha256(path, None) == file_sha256(path)
+
+    def test_both_branches_agree_for_identical_content(self, tmp_path: Path) -> None:
+        """Chunked and whole-buffer hashing must not diverge.
+
+        Channels differ in whether they carry a snapshot, so the same file
+        imported two ways has to produce one digest — otherwise re-import
+        detection stops recognizing it across channels.
+        """
+        content = b"x" * (1024 * 1024 + 7)  # spans the chunk boundary
+        path = tmp_path / "large.ofx"
+        path.write_bytes(content)
+
+        assert source_sha256(path, content) == source_sha256(path, None)

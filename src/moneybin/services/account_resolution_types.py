@@ -33,9 +33,11 @@ class AccountCandidate:
     account_id: str
     display_name: str
     confidence: float
-    # "institution_last4" | "name" | "institution" | "fallback". The last two are
-    # the interactive import gate's last-resort pick-list (existing accounts shown
-    # when no real signal cleared); never emitted on the backfill link queue.
+    # "institution_last4" | "name" | "institution_reissue" | "institution" |
+    # "fallback". The first three fired on real evidence and reach the persisted
+    # decision log. The last two are the interactive import gate's last-resort
+    # pick-list (existing accounts shown when nothing cleared); never emitted on
+    # the backfill link queue.
     signal: str
 
 
@@ -125,7 +127,7 @@ class ResolvedAccount:
     """True when a fresh canonical account was minted this call."""
 
     pending_decision_ids: tuple[str, ...] = ()
-    """Decision rows written for weak (institution+last4 / name) candidates."""
+    """Decision rows for weak candidates (institution+last4, name, reissue)."""
 
     outcome: str = "minted_new"
     """One of the ACCOUNT_LINK_OUTCOMES_TOTAL result labels."""
@@ -139,7 +141,11 @@ class PendingLinkCandidate:
     candidate_account_id: str
     candidate_display_name: str
     confidence: float | None
-    signal: str  # e.g. "institution_last4" | "name"
+    # "institution_last4" | "name" | "institution_reissue" — only these three.
+    # Narrower than _Candidate.signal: this reads persisted decision rows, and
+    # the single insert site passes fallback=False, so the gate's last-resort
+    # pick-list ("institution" / "fallback") is never written to review.
+    signal: str
 
 
 @dataclass(frozen=True)

@@ -88,6 +88,7 @@ from moneybin.protocol.pagination import (
     encode_keyset_cursor,
 )
 from moneybin.services.import_confirmation import sign_convention_effect
+from moneybin.utils.file import file_sha256
 
 logger = logging.getLogger(__name__)
 
@@ -875,11 +876,7 @@ def _import_preview_tabular(
 
 def _file_identity(path: Path) -> tuple[str, int]:
     """Return the immutable content identity bound into an import preview."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest(), path.stat().st_size
+    return file_sha256(path), path.stat().st_size
 
 
 def _bytes_identity(source_bytes: bytes) -> tuple[str, int]:

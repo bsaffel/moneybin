@@ -54,6 +54,7 @@ def _insert_ofx_account(
     account_type: str,
     extracted_at: str,
     source_origin: str = "test_bank_ofx",
+    institution_fid: str = "fid-ofx",
 ) -> None:
     db.execute(
         """
@@ -61,7 +62,7 @@ def _insert_ofx_account(
             (account_id, routing_number, account_type, institution_org,
              institution_fid, source_file, source_type, source_origin,
              extracted_at, loaded_at)
-        VALUES (?, ?, ?, ?, 'fid-ofx', '/tmp/test.ofx', 'ofx', ?,
+        VALUES (?, ?, ?, ?, ?, '/tmp/test.ofx', 'ofx', ?,
                 ?::TIMESTAMP, ?::TIMESTAMP)
         """,  # noqa: S608  # test fixture
         [
@@ -69,6 +70,7 @@ def _insert_ofx_account(
             routing_number,
             account_type,
             institution_org,
+            institution_fid,
             source_origin,
             extracted_at,
             extracted_at,
@@ -226,6 +228,85 @@ def test_dim_accounts_unlinked_account_keyed_by_source_native(db: Database) -> N
     ).fetchone()
     assert null_count is not None
     assert null_count[0] == 0, "core.dim_accounts must never emit a NULL account_id"
+
+
+@pytest.mark.slow
+def test_a_resolved_institution_slug_outranks_later_unresolved_text(
+    db: Database,
+) -> None:
+    """A registry-resolved slug must survive a later source that only has raw text.
+
+    institution_slug is the column account matching compares, and only some
+    sources can resolve it: OFX has a <FID>, a spreadsheet has whatever its
+    Institution column was typed as. When an unregistered spelling merges into
+    an account whose slug came from the registry, ordering that merge by pure
+    recency lets the raw text overwrite the canonical slug — and the next
+    import for that bank then compares 'us_bank' against 'Shared Bank CSV',
+    misses the account, and mints a duplicate.
+
+    Every other authority-sensitive field in this merge already orders by
+    (source_rank, recency); institution_slug ranks on whether the value
+    resolved, which is the property that actually makes it comparable.
+
+    The fixture isolates that ranking alone: the OFX row is *earlier*, so
+    recency on its own would pick the tabular text. 'Shared Bank CSV' is
+    deliberately absent from seeds.institutions — a registered spelling would
+    resolve and the two branches would agree.
+    """
+    canonical_id = "canoninstslug01"
+    ofx_native = "ofx-acctid-inst1"
+    tab_native = "tab-acctid-inst1"
+
+    # OFX: earlier, FID 5950 resolves through seeds.institutions to 'us_bank'.
+    _insert_ofx_account(
+        db,
+        native_key=ofx_native,
+        routing_number="123000220",
+        institution_org="USB",
+        account_type="CHECKING",
+        extracted_at="2024-01-01 00:00:00",
+        institution_fid="5950",
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-ofx-inst",
+        account_id=canonical_id,
+        ref_value=ofx_native,
+        source_type="ofx",
+        source_origin="test_bank_ofx",
+    )
+
+    # Tabular: later, and its institution text matches no registry spelling.
+    _insert_tabular_account(
+        db,
+        native_key=tab_native,
+        account_name="Shared Checking",
+        institution_name="Shared Bank CSV",
+        account_type="checking",
+        extracted_at="2024-06-01 00:00:00",
+    )
+    _insert_accepted_source_native(
+        db,
+        link_id="link-tab-inst",
+        account_id=canonical_id,
+        ref_value=tab_native,
+        source_type="csv",
+        source_origin="test_bank_tab",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT institution_slug FROM core.dim_accounts WHERE account_id = ?",
+        [canonical_id],
+    ).fetchone()
+
+    assert row is not None, "merged canonical row missing from core.dim_accounts"
+    assert row[0] == "us_bank", (
+        f"institution_slug: expected the registry-resolved slug to survive the "
+        f"later unresolved text, got {row[0]!r}"
+    )
 
 
 @pytest.mark.slow

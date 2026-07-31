@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import duckdb
 
 from moneybin.database import Database
+from moneybin.extractors.institution_resolution import slug_for_institution_name
 from moneybin.extractors.tabular.account_matching import match_account
 from moneybin.metrics.observations import MetricObservations, record_observation
 from moneybin.metrics.registry import (
@@ -72,6 +73,23 @@ def fetch_display_name(db: Database, account_id: str) -> str:
     return str(row[0]) if row and row[0] is not None else ""
 
 
+def _institution_key(institution: str | None) -> str | None:
+    """Comparison key for an institution, canonical wherever the registry knows it.
+
+    Both sides of every institution comparison pass through here. Sources carry
+    whatever spelling they have — a sheet's hand-written "U.S. Bank", a
+    filename heuristic's "us_bank", the registry slug an OFX ``<FID>`` resolves
+    to — and slugifying alone never makes those meet, because the registry's
+    slug is curated rather than derived from the name ("u-s-bank" against
+    "us-bank"). Resolving through the registry first collapses every known
+    spelling of one institution onto a single key; an unregistered name falls
+    back to a plain slug, which still absorbs case and separator differences.
+    """
+    if not institution:
+        return None
+    return slugify(slug_for_institution_name(institution) or institution) or None
+
+
 # Cap on the fallback pick-list (existing accounts surfaced for the human to pick
 # from when no real signal cleared). Bounds an otherwise-unbounded "list all
 # accounts" so a large book doesn't dump everything; a personal-finance user
@@ -88,7 +106,9 @@ class _Candidate:
     """
 
     account_id: str
-    signal: str  # "institution_last4" | "name" | "institution" | "fallback"
+    # "institution_last4" | "name" | "institution_reissue" | "institution" |
+    # "fallback" — the last two are the gate's last-resort pick-list.
+    signal: str
     value: str
     confidence: float
 
@@ -181,7 +201,9 @@ class AccountResolver:
         # minting a duplicate. Safe: step 1 above already proved no conflict.
         self._write_strong_ref(src, account_id=account_id, decided_by="auto")
 
-        candidates = self._find_candidates(src, exclude_account_id=account_id)
+        candidates = self._find_candidates(
+            src, exclude_account_id=account_id, reissue=True
+        )
         if not candidates:
             return ResolvedAccount(
                 account_id=account_id, is_new=True, outcome="minted_new"
@@ -279,7 +301,7 @@ class AccountResolver:
         # leaves it off so a no-match named account still mints silently.
         preview_id = uuid.uuid4().hex[:12]
         raw_candidates = self._find_candidates(
-            src, exclude_account_id=preview_id, fallback=fallback
+            src, exclude_account_id=preview_id, fallback=fallback, reissue=True
         )
         candidates = tuple(
             AccountCandidate(
@@ -301,7 +323,7 @@ class AccountResolver:
     def propose_existing(self, account_id: str) -> AccountProposal | None:
         """Backfill verdict for an account already in core.dim_accounts.
 
-        Looks up the account's institution_name, last_four, and display_name,
+        Looks up the account's institution_slug, last_four, and display_name,
         builds a synthetic SourceAccount (source_type/source_origin="backfill";
         the candidate pass only uses last_four, institution, account_name), then
         delegates to _find_candidates excluding the account itself.
@@ -312,7 +334,7 @@ class AccountResolver:
         """
         try:
             row = self._db.execute(
-                f"SELECT institution_name, last_four, display_name "  # noqa: S608  # TableRef + parameterized value
+                f"SELECT institution_slug, last_four, display_name "  # noqa: S608  # TableRef + parameterized value
                 f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
                 [account_id],
             ).fetchone()
@@ -321,14 +343,17 @@ class AccountResolver:
             return None
         if row is None:
             return None
-        institution_name, last_four, display_name = row
+        # institution_slug, not institution_name: _find_candidates compares
+        # against the slug column, so feeding a display name back in here would
+        # re-create the very mismatch this reads around.
+        institution_slug, last_four, display_name = row
         src = SourceAccount(
             source_type="backfill",
             source_origin="backfill",
             source_account_key="",
             account_name=str(display_name or ""),
             last_four=str(last_four) if last_four is not None else None,
-            institution=str(institution_name) if institution_name is not None else None,
+            institution=str(institution_slug) if institution_slug is not None else None,
         )
         raw_candidates = self._find_candidates(src, exclude_account_id=account_id)
         if not raw_candidates:
@@ -504,12 +529,24 @@ class AccountResolver:
             )
 
     def _find_candidates(
-        self, src: SourceAccount, *, exclude_account_id: str, fallback: bool = False
+        self,
+        src: SourceAccount,
+        *,
+        exclude_account_id: str,
+        fallback: bool = False,
+        reissue: bool = False,
     ) -> list[_Candidate]:
         """Weak-signal candidates from core.dim_accounts (institution+last4, then name).
 
         Each is a review proposal, never an auto-merge. Returns no candidates if
         core.dim_accounts is not yet materialized (first import before any transform).
+
+        ``reissue`` (arriving source accounts only): when neither signal clears,
+        surface same-institution accounts whose last-four differs — see
+        ``_reissue_candidates``. On for ``resolve()`` and its ``propose()``
+        preview, which must agree; off for ``propose_existing()``, where every
+        account in an established book is already known-distinct and pairwise
+        proposals would be noise, not signal.
 
         ``fallback`` (interactive import gate only — never the backfill link
         queue): when no last4/name signal clears, surface existing accounts as a
@@ -522,16 +559,19 @@ class AccountResolver:
             if (
                 src.last_four
                 and src.institution
-                and (target_inst := slugify(src.institution))
+                and (target_inst := _institution_key(src.institution))
             ):
-                # institution_name holds raw source text (OFX <ORG> "CHASE"),
-                # while src.institution may be a slug ("chase"). An exact SQL
-                # match never fires across that case/format gap, so fetch by the
-                # exact last_four and slugify-compare the institution in Python.
-                # An empty slug (institution is all punctuation) is skipped — it
-                # would spuriously match other empty-slug rows sharing last_four.
+                # Match on institution_slug, never institution_name: the name is
+                # for display, and the dim's per-field merge lets a later
+                # source win it outright. Both sides go through
+                # _institution_key so the spellings a source happens to carry
+                # meet the registry's curated slug. Fetch by exact last_four and
+                # compare in Python because the two sides still differ in case.
+                # An institution that normalizes to nothing (all punctuation) is
+                # skipped — it would match every other such row sharing
+                # last_four.
                 rows = self._db.execute(
-                    f"SELECT account_id, institution_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                    f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
                     "WHERE last_four = ? AND account_id != ?",
                     [src.last_four, exclude_account_id],
                 ).fetchall()
@@ -544,7 +584,7 @@ class AccountResolver:
                         confidence=0.5,
                     )
                     for r in rows
-                    if r[1] and slugify(str(r[1])) == target_inst
+                    if r[1] and _institution_key(str(r[1])) == target_inst
                 )
             if out:
                 return out
@@ -580,12 +620,58 @@ class AccountResolver:
                     for c in result.candidates
                     if c["account_id"]
                 )
+            if not out and reissue:
+                out = self._reissue_candidates(src, exclude_account_id)
             if not out and fallback:
                 out = self._fallback_candidates(src, exclude_account_id)
             return out
         except duckdb.CatalogException:
             logger.debug("core.dim_accounts unavailable; no candidates")
             return []
+
+    def _reissue_candidates(
+        self, src: SourceAccount, exclude_account_id: str
+    ) -> list[_Candidate]:
+        """Same-institution accounts whose last-four differs — the reissue signal.
+
+        A reissued card changes its last four by definition, so the
+        institution+last4 signal cannot fire; and on the PDF path
+        ``account_name`` is a per-file filename alias, so the name signal misses
+        too. Both signals silent meant the replacement card minted a fresh
+        account with no confirm and no review entry — a statement silently
+        fragmenting into a second account.
+
+        Requires BOTH sides to carry a last-four, and requires them to differ.
+        That keeps this the reissue shape rather than a general "any account at
+        this institution" pick-list: an account with no known last-four is a
+        different gap, and an equal last-four already fired signal 1. Review-only
+        and low confidence — a reissue is proposed, never auto-merged, because a
+        wrong silent merge is the hardest inference to notice and undo.
+        """
+        target_inst = _institution_key(src.institution) if src.institution else None
+        if not target_inst or not src.last_four:
+            return []
+        rows = self._db.execute(
+            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE account_id != ? AND last_four IS NOT NULL AND last_four != ? "
+            "ORDER BY account_id",
+            [exclude_account_id, src.last_four],
+        ).fetchall()
+        return [
+            _Candidate(
+                account_id=str(r[0]),
+                # Distinct from _fallback_candidates' "institution": both are
+                # institution-scoped, but this one fired on real evidence (a
+                # last-four that changed) and that one fired because nothing did.
+                # The string is persisted as match_reason and shown in the review
+                # queue, so collapsing them would hide which it was.
+                signal="institution_reissue",
+                value=target_inst,
+                confidence=0.3,
+            )
+            for r in rows
+            if r[1] and _institution_key(str(r[1])) == target_inst
+        ][:_FALLBACK_CANDIDATE_CAP]
 
     def _fallback_candidates(
         self, src: SourceAccount, exclude_account_id: str
@@ -600,18 +686,18 @@ class AccountResolver:
 
         Institution-scoping must never *shrink* the list to empty: the
         CSV-resolved institution slug frequently doesn't match
-        ``dim_accounts.institution_name`` (cross-source slug drift, or an
+        ``dim_accounts.institution_slug`` (cross-source slug drift, or an
         account name polluting a saved format's institution). When the scoped
         pass matches nothing, fall through to all accounts — the entire point of
         the fallback is a non-empty pick-list, so a mismatched scope must not
         recreate ``candidates: []``.
         """
         rows = self._db.execute(
-            f"SELECT account_id, institution_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
-            "WHERE account_id != ? ORDER BY institution_name, account_id",
+            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE account_id != ? ORDER BY institution_slug, account_id",
             [exclude_account_id],
         ).fetchall()
-        target_inst = slugify(src.institution) if src.institution else None
+        target_inst = _institution_key(src.institution) if src.institution else None
         if target_inst:
             scoped = [
                 _Candidate(
@@ -621,7 +707,7 @@ class AccountResolver:
                     confidence=0.2,
                 )
                 for r in rows
-                if r[1] and slugify(str(r[1])) == target_inst
+                if r[1] and _institution_key(str(r[1])) == target_inst
             ]
             if scoped:
                 return scoped[:_FALLBACK_CANDIDATE_CAP]

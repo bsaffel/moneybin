@@ -74,7 +74,7 @@ def links_pending(
             f"— {len(group.candidates)} candidate(s) ──"
         )
         typer.echo(
-            f"  {'Decision ID':<14} {'Candidate ID':<14} {'Signal':<18} "
+            f"  {'Decision ID':<14} {'Candidate ID':<14} {'Signal':<20} "
             f"{'Conf':>5}  {'Display Name'}"
         )
         for c in group.candidates:
@@ -82,7 +82,7 @@ def links_pending(
             typer.echo(
                 f"  {c.decision_id[:12]:<14} "
                 f"{c.candidate_account_id[:12]:<14} "
-                f"{c.signal:<18} "
+                f"{c.signal:<20} "
                 f"{conf_str:>5}  "
                 f"{c.candidate_display_name or '-'}"
             )
@@ -168,7 +168,7 @@ def links_history(
 
     typer.echo(
         f"\n{'Decision ID':<14} {'Provisional':<14} {'Candidate':<14} "
-        f"{'Status':<10} {'Decided By':<10} {'Signal':<18} {'Conf':>5}"
+        f"{'Status':<10} {'Decided By':<10} {'Signal':<20} {'Conf':>5}"
     )
     typer.echo("-" * 90)
     for d in payload.decisions:
@@ -179,7 +179,7 @@ def links_history(
             f"{d.candidate_account_id[:12]:<14} "
             f"{d.status:<10} "
             f"{d.decided_by:<10} "
-            f"{d.signal:<18} "
+            f"{d.signal:<20} "
             f"{conf_str:>5}"
         )
     typer.echo()

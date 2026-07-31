@@ -85,6 +85,48 @@ def test_source_native_reimport_is_idempotent(db: Database) -> None:
     assert n is not None and n[0] == 1
 
 
+def test_same_issuer_same_last_four_merges_silently_today(db: Database) -> None:
+    """PIN (finding 2 item 1): two distinct cards sharing a last-four merge silently.
+
+    A PDF discloses only issuer + masked suffix, so both cards derive the SAME
+    source-native key ``chase_xxxx1234`` (import_service.py:3368). That key fills
+    the *strong*-ref slot, so ``_lookup_strong_ref`` hits on the second card and
+    ``_run_ladder`` adopts at step 1 — before the candidate pass ever runs. The
+    differing statement alias is contradicting evidence the resolver never looks
+    at, because step 1 short-circuits.
+
+    This test asserts TODAY's behavior deliberately. Flipping it to the
+    refuse-and-route-to-review expectation requires a discriminator that can tell
+    "same card, next statement" (which MUST keep adopting — that is the
+    idempotency #371 established) from "second card, same last four". Until that
+    discriminator exists, this pins the defect so it cannot regress unnoticed.
+    """
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(
+        _src(
+            source_type="pdf",
+            source_origin="chase",
+            source_account_key="chase_xxxx1234",
+            account_name="sapphire-reserve-june-statement",
+            last_four="1234",
+            institution="chase",
+        )
+    )
+    second = resolver.resolve(
+        _src(
+            source_type="pdf",
+            source_origin="chase",
+            source_account_key="chase_xxxx1234",  # collides: different card, same last4
+            account_name="freedom-unlimited-june-statement",
+            last_four="1234",
+            institution="chase",
+        )
+    )
+    assert second.account_id == first.account_id  # silently merged
+    assert second.outcome == "adopted_strong"
+    assert second.pending_decision_ids == ()  # no confirm, no review, no trace
+
+
 def test_persistent_token_auto_adopts_across_source_origin(db: Database) -> None:
     """A remembered persistent_token re-links the same account across connections."""
     resolver = AccountResolver(db, actor="system")
@@ -149,12 +191,25 @@ def _seed_dim_account(
     last_four: str | None = None,
     institution_name: str | None = None,
     display_name: str | None = None,
+    institution_slug: str | None = None,
 ) -> None:
-    """Insert a minimal core.dim_accounts row (simulates a prior transform run)."""
+    """Insert a minimal core.dim_accounts row (simulates a prior transform run).
+
+    ``institution_slug`` defaults to ``institution_name`` because most callers
+    seed a value that is already slug-shaped. Pass both explicitly to model the
+    real dim, where the name is for display and the slug is for matching.
+    """
     db.conn.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
-        "display_name) VALUES (?, ?, ?, ?)",  # noqa: S608  # test fixture insert
-        [account_id, last_four, institution_name, display_name or f"acct {account_id}"],
+        "institution_slug, display_name) "
+        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        [
+            account_id,
+            last_four,
+            institution_name,
+            institution_slug if institution_slug is not None else institution_name,
+            display_name or f"acct {account_id}",
+        ],
     )
 
 
@@ -339,6 +394,98 @@ def test_renamed_csv_label_reassociates_via_last4_not_duplicate(db: Database) ->
     ), pend
 
 
+def test_reissued_card_matching_name_still_surfaces_for_review(db: Database) -> None:
+    """A reissue whose display name survives is caught by the NAME signal today.
+
+    Probe for finding 1: institution matches, last-four changed. Signal 1 cannot
+    fire (last4 is different by definition). This pins which guard actually
+    catches the reissue so the fix targets the real gap.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(
+        _src(
+            source_origin="chase",
+            source_account_key="chase_xxxx1234",
+            account_name="Chase Sapphire",
+            last_four="1234",
+            institution="chase",
+        )
+    )
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="1234",
+        institution_name="chase",
+        display_name="Chase Sapphire",
+    )
+    reissued = resolver.resolve(
+        _src(
+            source_origin="chase",
+            source_account_key="chase_xxxx5678",
+            account_name="Chase Sapphire",  # name survives the reissue
+            last_four="5678",  # ...but the card number does not
+            institution="chase",
+        )
+    )
+    assert reissued.outcome == "pending_review"
+    assert len(reissued.pending_decision_ids) == 1
+
+
+def test_reissued_card_dissimilar_alias_surfaces_for_review(db: Database) -> None:
+    """A reissue with no surviving name signal must still reach the review queue.
+
+    The PDF path sets ``account_name`` to the per-file filename alias
+    (import_service.py:3398), so a reissue changes BOTH the last-four and the
+    alias. Neither of ``_find_candidates``' two signals can fire, so before the
+    reissue signal the second card minted with no confirm, no review entry, and
+    no trace — a bank statement silently fragmenting into a second account.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(
+        _src(
+            source_type="pdf",
+            source_origin="chase",
+            source_account_key="chase_xxxx1234",
+            account_name="chase-june-2026-statement",
+            last_four="1234",
+            institution="chase",
+        )
+    )
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="1234",
+        institution_name="chase",
+        display_name="chase-june-2026-statement",
+    )
+    reissued = resolver.resolve(
+        _src(
+            source_type="pdf",
+            source_origin="chase",
+            source_account_key="chase_xxxx5678",
+            account_name="replacement card ending 5678",
+            last_four="5678",
+            institution="chase",
+        )
+    )
+    # Never auto-merged — a weak signal proposes, it does not decide.
+    assert reissued.account_id != first.account_id
+    # ...but it must not vanish either: the same institution with a changed
+    # last-four is evidence enough to surface a review, not to mint in silence.
+    assert reissued.outcome == "pending_review"
+    assert len(reissued.pending_decision_ids) == 1
+    dec = db.conn.execute(
+        "SELECT candidate_account_id, match_reason FROM app.account_link_decisions "
+        "WHERE decision_id = ?",
+        [reissued.pending_decision_ids[0]],
+    ).fetchone()
+    # Its own signal string, not the fallback pick-list's "institution" — the
+    # review queue has to show which of the two proposed this pairing.
+    assert dec == (first.account_id, "institution_reissue")
+
+
 def test_institution_last4_skips_when_slug_is_empty(db: Database) -> None:
     """A purely non-alphanumeric institution slugifies to '' and must not match.
 
@@ -508,6 +655,40 @@ def test_propose_surfaces_fallback_pick_list_at_gate(db: Database) -> None:
     assert {c.account_id for c in proposal.candidates} == {"acct_a"}
 
 
+def test_reissue_signal_outranks_the_fallback_pick_list(db: Database) -> None:
+    """When both could fire at the gate, the reissue signal is what surfaces.
+
+    ``_find_candidates`` tries reissue before fallback and short-circuits, so a
+    targeted guess beats a blind everyone-at-this-bank list. Nothing pinned that
+    ordering: every other ``fallback=True`` test sets ``last_four=None``, which
+    makes ``_reissue_candidates`` unable to fire at all, so the two were never
+    eligible in the same call.
+
+    This fixture makes both eligible and only both — same institution, so
+    fallback applies; last-fours present on both sides and differing, so reissue
+    applies; and a dissimilar display name so the fuzzy signal stays silent.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_a",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    resolver = AccountResolver(db, actor="system")
+    proposal = resolver.propose(
+        _src(
+            account_name="replacement card ending 5678",
+            last_four="5678",
+            institution="chase",
+        ),
+        fallback=True,
+    )
+    assert [c.signal for c in proposal.candidates] == ["institution_reissue"]
+    assert {c.account_id for c in proposal.candidates} == {"acct_a"}
+
+
 def test_propose_no_fallback_by_default_keeps_multi_account_mint_silent(
     db: Database,
 ) -> None:
@@ -536,6 +717,34 @@ def test_propose_existing_does_not_flood_with_fallback(db: Database) -> None:
     )
     _seed_dim_account(
         db, account_id="acct_b", display_name="Citi Savings", institution_name="CITI"
+    )
+    resolver = AccountResolver(db, actor="system")
+    assert resolver.propose_existing("acct_a") is None
+
+
+def test_propose_existing_does_not_emit_reissue_candidates(db: Database) -> None:
+    """Backfill stays quiet on the reissue signal — an established book is known-distinct.
+
+    Fixture trips ONLY the reissue guard: same institution, both last-fours
+    known and different (so signal 1 misses), dissimilar display names below the
+    0.6 fuzzy threshold (so signal 2 misses). If ``propose_existing`` passed
+    ``reissue=True``, every pair of same-issuer cards in an existing book would
+    propose against every other — noise, not signal.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_a",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="acct_b",
+        display_name="Freedom Unlimited",
+        institution_name="CHASE",
+        last_four="5678",
     )
     resolver = AccountResolver(db, actor="system")
     assert resolver.propose_existing("acct_a") is None
@@ -831,3 +1040,88 @@ def test_resolve_rolls_back_partial_writes_on_failure(db: Database) -> None:
 
     n = db.conn.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
     assert n is not None and n[0] == 0
+
+
+def test_institution_matching_compares_slugs_not_display_names(db: Database) -> None:
+    """A display name that slugifies away from its own slug must still match.
+
+    `core.dim_accounts` carries a human-readable `institution_name` resolved
+    from the OFX <FID> ("U.S. Bank"), while a source supplies the registry slug
+    ("us_bank"). Slugifying the display name is not the inverse of the registry:
+    `slugify("U.S. Bank")` is `u-s-bank` and `slugify("us_bank")` is `us-bank`,
+    so comparing against the name silently drops the candidate.
+
+    U.S. Bank is the fixture precisely because it is the seeds row where the two
+    disagree — Chase and Citi are single words and would pass either way, so
+    they cannot isolate this. Matching therefore reads `institution_slug`, the
+    dim's canonical registry slug, on both sides.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(
+        _src(source_type="ofx", institution="us_bank", last_four="1111")
+    )
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="1111",
+        institution_name="U.S. Bank",
+        institution_slug="us_bank",
+        display_name="U.S. Bank Checking …1111",
+    )
+
+    # Same institution, last four changed: only the reissue signal may fire, so
+    # a hit proves the institution comparison itself succeeded.
+    proposal = resolver.propose(
+        _src(
+            source_type="ofx",
+            source_account_key="9876",
+            institution="us_bank",
+            last_four="9876",
+            account_name="replacement card",
+        )
+    )
+    assert [c.signal for c in proposal.candidates] == ["institution_reissue"], (
+        proposal.candidates
+    )
+
+
+def test_institution_matching_canonicalizes_a_hand_written_name(db: Database) -> None:
+    """A sheet's "U.S. Bank" must meet the registry's "us_bank".
+
+    The mirror of the case above. There the dim held the curated slug and the
+    source supplied it too; here the source is a Tiller-style sheet whose
+    Institution column is human-written display text, matched against an
+    account an OFX statement minted. Slugifying both sides cannot close that
+    gap — `u-s-bank` and `us-bank` — because the registry's slug is curated,
+    not derived from the name. Only a lookup through the registry collapses
+    every spelling of one institution onto a single key.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    first = resolver.resolve(
+        _src(source_type="ofx", institution="us_bank", last_four="1111")
+    )
+    _seed_dim_account(
+        db,
+        account_id=first.account_id,
+        last_four="1111",
+        institution_name="U.S. Bank",
+        institution_slug="us_bank",
+        display_name="U.S. Bank Checking …1111",
+    )
+
+    proposal = resolver.propose(
+        _src(
+            source_type="csv",
+            source_account_key="usb-checking",
+            institution="U.S. Bank",
+            last_four="1111",
+            # Deliberately unlike the dim's display_name: the name signal would
+            # otherwise answer for the institution signal under test.
+            account_name="statement import",
+        )
+    )
+    assert [c.signal for c in proposal.candidates] == ["institution_last4"], (
+        proposal.candidates
+    )

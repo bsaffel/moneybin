@@ -227,7 +227,7 @@ provisional_account_id TEXT  NOT NULL,     -- the just-minted source account und
 candidate_account_id   TEXT  NOT NULL,     -- an existing canonical account proposed as the same
 confidence_score       DECIMAL(5, 4),
 match_signals          TEXT,               -- JSON-encoded (per match_decisions convention):
-                                           --   which weak signal matched + its value (institution_last4 / name)
+                                           --   which weak signal matched + its value (institution_last4 / name / institution_reissue)
 status                 TEXT  NOT NULL,     -- pending | accepted | rejected | reversed
 decided_by             TEXT  NOT NULL,     -- auto | user
 match_reason           TEXT,
@@ -237,10 +237,16 @@ reversed_by            TEXT
 ```
 
 - **Candidate signals are not stored on `account_links`.** `institution_last4`
-  (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`) and
-  `account_name` are *weak signals* the resolver computes live and matches
-  against **existing accounts' `last_four` / `institution_name` / `display_name`
+  (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`),
+  `account_name`, and `institution_reissue` (same institution, both sides carry
+  a last-four and they differ) are *weak signals* the resolver computes live and matches
+  against **existing accounts' `last_four` / `institution_slug` / `display_name`
   on `core.dim_accounts`** (durably present there — captured at mint, Decision 7).
+  The institution comparison is slug-to-slug, never against `institution_name`:
+  the display name doesn't slugify back to the registry value (`U.S. Bank` →
+  `u-s-bank`, not `us_bank`), and an OFX `<ORG>` is a routing code at some
+  issuers (Chase publishes `B1`), so a name-side comparison drops candidates
+  on both ends.
   A match produces a `pending` decision row recording which signal fired. Weak
   signals are never an accepted `ref_kind` and never auto-merge. **⚠ Reconciled
   (Decision 8):** "durably present, captured at mint" was the gap — last4 was
@@ -318,7 +324,17 @@ signal reliability:
    no existing account holds them, and it lets a later source bearing the same
    token / scoped number auto-adopt via step 1 instead of minting a duplicate.
    Then look for existing accounts sharing `institution + last4` (when institution
-   is known), then fuzzy `account_name`, querying `core.dim_accounts`:
+   is known), then fuzzy `account_name`, then the **reissue signal** — same
+   institution where both sides carry a last-four and the two *differ*
+   (`institution_reissue`, confidence 0.3) — querying `core.dim_accounts`. The
+   reissue signal exists because a replacement card changes its last four by
+   definition, so signal 1 cannot fire; and on the PDF path `account_name` is a
+   per-file filename alias, so signal 2 misses too. Requiring a last-four on both
+   sides, and requiring them to differ, keeps it the reissue shape rather than a
+   general "any account at this institution" list. It is on for `resolve()` and
+   its `propose()` preview, which must agree, and off for `propose_existing()`
+   backfill, where every account is already known-distinct and pairwise proposals
+   would be noise:
    - **0 candidates** → done: a new standalone account. Its `last_four` /
      institution / name (captured per Decision 7) become candidate signals for
      *future* imports.
@@ -338,6 +354,23 @@ signal reliability:
 ¹ `decided_by` is `auto | user | system`; **agent ratification maps to `user`**
 (consistent with `match_decisions_repo`) — `actor_kind` is a runtime distinction,
 not a `decided_by` value.
+
+**Known gap — the candidate universe is `core.dim_accounts`, so every weak
+signal is blind to an account the refresh has not yet published.** An account
+minted earlier in the same `import_files` batch (which refreshes once at the
+end), or by any import run with `refresh=False`, is invisible to all four
+passes: `institution_last4`, fuzzy `name`, `institution_reissue`, and the
+gate's fallback pick-list alike. Importing an original and its replacement card
+in one batch therefore mints two accounts and files no proposal — and the
+`propose_existing()` backfill cannot recover it, because the reissue signal is
+deliberately off there. Verified by probe, not by reading: with one fixture
+pair, the `institution_last4` proposal appears when a transform runs between
+the two imports and is empty when it does not. This is a property of where
+candidates are read from, not of any one signal, so the fix belongs with the
+propose-then-bind inversion — which has to settle the candidate universe anyway,
+since it must compute candidates *before* an account exists to compare against.
+Fixing it for the reissue pass alone would leave two candidate-source semantics
+inside one function.
 
 `institution` is **best-effort metadata**, never a required input: when unknown
 (a bare CSV), the `institution+last4` candidate rung simply doesn't fire and
@@ -684,7 +717,7 @@ collapse onto, by construction.
 
 | Source | derived last4 | derived institution |
 |---|---|---|
-| OFX/QFX/QBO | `RIGHT(<ACCTID>,4)` from the source key | `<ORG>` (already) |
+| OFX/QFX/QBO | `RIGHT(<ACCTID>,4)` from the source key | registry slug for `<FID>`, else `<ORG>` — **not** `<ORG>` first, which is a routing code at some issuers |
 | Plaid | `mask` | `institution_name` (already) |
 | tabular — aggregator | last4 parsed from the account-label value / `Account #` column | per-row `Institution` column or parsed from the label — **never the exporter/tool name** |
 | tabular — bare | none (Tier C) | filename heuristic / explicit / unknown |
@@ -839,6 +872,17 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
   scenario-expectations rule. Scaling this to the full 5-account / 279-row WF
   persona (which needs a twin generator) is tracked as follow-up enrichment, not
   a capability gap — the collapse mechanism is identical at any N.
+- **Scenario** (reissue + document identity): the same file proves a reissued
+  card reaches the review queue through a real import — the fixture's last four
+  differs from the original, so `institution_last4` is structurally unable to
+  fire and the name is deliberately unlike, leaving the reissue signal as the
+  only guard that can catch it. `test_ofx_reimport_identity.py` proves document
+  identity follows content in **both** directions: identical bytes at a new path
+  (`statement (1).qfx`) are refused as already-imported, and different bytes at a
+  reused path import as new. Both were validated by restoring the defect —
+  `reissue=False` empties the proposal list, and the unscoped path predicate
+  refuses the third import — because a scenario that has never failed is an
+  assertion about nothing.
 
 ## Phased implementation outline (later increments)
 

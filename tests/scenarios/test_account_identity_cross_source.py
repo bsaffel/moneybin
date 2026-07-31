@@ -378,3 +378,116 @@ def test_csv_first_then_ofx_matches_accepts_and_collapses_end_to_end() -> None:
         rows = db.execute("SELECT source_count FROM core.fct_transactions").fetchall()
         assert len(rows) == 3, f"expected 3 deduped rows, got {len(rows)}"
         assert all(sc == 2 for (sc,) in rows), rows
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_reissued_card_queues_reissue_proposal_through_real_import() -> None:
+    """A replacement card reaches the review queue through the real pipeline.
+
+    Brandon's bank reissues a card: same institution, new last four. The old
+    signals both miss by construction — ``institution_last4`` cannot fire
+    because the last four is precisely what changed, and the display name is
+    filename-derived — so before the reissue signal this minted a second
+    account with no proposal and no trace.
+
+    The fixture is chosen so ONLY the reissue guard can catch it (per
+    testing.md, "a fixture that trips two guards isolates neither"):
+
+    * last four ``9876`` differs from the ofx account's ``1111`` -> the
+      ``institution_last4`` bridge is structurally unable to fire;
+    * the account name is deliberately unlike the ofx account's -> the fuzzy
+      ``name`` signal stays silent.
+
+    Nothing is pre-wired: the ofx account is minted by a real import, and the
+    proposal is whatever ``AccountResolver`` produces when the csv is imported
+    the way an agent would import it. Asserting the exact singleton list (not
+    ``in``) is what makes the isolation real — if either sibling signal also
+    fired, this fails.
+    """
+    scenario = Scenario(
+        scenario="account-identity-cross-source",
+        setup=SetupSpec(persona="family"),
+        pipeline=[],
+    )
+    with scenario_env(scenario) as (db, _tmp, env):
+        svc = ImportService(db)
+        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
+        checking_id = _ofx_canonical_id(db, "1111")
+        run_step("transform", scenario.setup, db, env=env)
+
+        svc.import_file(
+            _FIXTURES / "wells_fargo_checking.csv",
+            account_name="Replacement Card (...9876)",
+            confirm=True,
+            actor_kind="agent",
+            refresh=False,
+        )
+
+        decisions = db.execute(
+            "SELECT match_reason FROM app.account_link_decisions "
+            "WHERE status = 'pending' AND candidate_account_id = ?",
+            [checking_id],
+        ).fetchall()
+        assert [r[0] for r in decisions] == ["institution_reissue"], decisions
+
+        # The whole point: a reissue is a PROPOSAL, never a silent merge. The
+        # replacement keeps its own provisional account until a human accepts.
+        merged = db.execute(
+            "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native' "
+            "AND source_type = 'csv' AND account_id = ?",
+            [checking_id],
+        ).fetchone()
+        assert merged is not None and merged[0] == 0, (
+            "a reissue proposal must not auto-merge onto the original card"
+        )
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_tabular_display_name_lands_as_the_canonical_registry_slug() -> None:
+    """A sheet's hand-written institution must reach the dim as the registry slug.
+
+    `institution_slug` is the column account matching compares, and OFX fills it
+    from the <FID> registry ('us_bank'). A tabular source has only the text its
+    Institution column holds — 'U.S. Bank' — and passing that straight through
+    would leave one column meaning two different things depending on which
+    source wrote the row. The same bank would then fail to match itself across
+    sources, because slugifying a display name never reproduces a curated slug
+    ('u-s-bank' against 'us-bank').
+
+    U.S. Bank is the fixture precisely because it is the one seeds row where the
+    two disagree: Wells Fargo and Chase slugify onto their own slugs and would
+    pass with the derivation removed entirely.
+
+    Seeding `raw.*` is the real input to the model under test — the derivation
+    being exercised is the staging→core SQL, not the importer that fills raw.
+    """
+    scenario = Scenario(
+        scenario="account-identity-cross-source",
+        setup=SetupSpec(persona="family"),
+        pipeline=[],
+    )
+    with scenario_env(scenario) as (db, _tmp, env):
+        db.execute(
+            "INSERT INTO raw.tabular_accounts "
+            "(account_id, account_name, institution_name, source_file, "
+            " source_type, source_origin, import_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                "usb-checking",
+                "US Bank Checking",
+                "U.S. Bank",
+                "/tmp/usbank.csv",  # noqa: S108  # test fixture path
+                "csv",
+                "tiller",
+                "test-import",
+            ],
+        )
+        run_step("transform", scenario.setup, db, env=env)
+        row = db.execute(
+            "SELECT institution_slug FROM core.dim_accounts WHERE account_id = ?",
+            ["usb-checking"],
+        ).fetchone()
+
+    assert row is not None, "seeded tabular account never reached core.dim_accounts"
+    assert row[0] == "us_bank", row[0]

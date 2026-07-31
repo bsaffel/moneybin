@@ -473,9 +473,10 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
     existing accounts that may represent the same real-world account.
 
     For each candidate: decision_id, candidate_account_id, display name,
-    confidence score, and the matching signal that fired (institution_last4
-    or name). ref_value (the raw native reference, which can be a full
-    account number) is never included.
+    confidence score, and the matching signal that fired (institution_last4,
+    name, or institution_reissue — same bank, last four changed). ref_value
+    (the raw native reference, which can be a full account number) is never
+    included.
 
     Decide each group via accounts_links_set. accounts_links_run (backfill
     discovery) and accounts links undo are not yet registered — deferred to

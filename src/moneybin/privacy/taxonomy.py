@@ -628,6 +628,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "include_in_net_worth": DataClass.TXN_TYPE,
         "institution_fid": DataClass.INSTITUTION,
         "institution_name": DataClass.INSTITUTION,
+        "institution_slug": DataClass.INSTITUTION,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "loaded_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "official_name": DataClass.INSTITUTION,

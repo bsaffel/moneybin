@@ -372,6 +372,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so they read `Wells Fargo checking …1789`, not `Wells Fargo depository
   …1789`. Queries filtering on the old uppercase values need updating; run
   `moneybin transform apply` to rebuild.
+- **`core.dim_accounts` gained an `institution_slug` column, and account
+  matching now compares it instead of `institution_name` (#375).** OFX files
+  identify the bank two ways, and only one of them is a name: Chase's `<ORG>`
+  is `B1`, so an OFX import offered `b1` while the account dimension held
+  `Chase`, and every institution-based match missed. Slugifying the display
+  name doesn't close the gap either — `U.S. Bank` gives `u-s-bank`, not the
+  registry's `us_bank`. Every source now resolves to the same registry slug
+  before comparison: OFX by exact `<FID>`, tabular and Plaid by matching their
+  institution text against `seeds.institutions` with case and punctuation
+  stripped, so a spreadsheet's `U.S. Bank` and a statement's `<FID>` reach the
+  same account. An unregistered institution keeps its own text. Where several
+  sources merge into one account, a resolved slug wins over unresolved text
+  regardless of arrival order, so one unrecognized spelling in a later
+  spreadsheet can't overwrite the canonical slug.
+  `institution_name` is unchanged and stays the display column. Run `moneybin
+  transform apply` to rebuild; until then the MCP server reports the missing
+  column as schema drift at boot and in `system_status`.
 - **`accounts_set`'s currency parameter is now `currency_code`, not
   `iso_currency_code`.** Aligns the account-currency parameter name with
   every other currency field in the schema. Pre-launch, so this is a direct
@@ -405,6 +422,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   will see `import_confirm` move band.
 
 ### Fixed
+- **A replacement card no longer lands as a second account with no trace
+  (#375).** A reissued card changes its last four digits by definition, so the
+  institution+last-four match cannot fire, and on the PDF path the account name
+  is the filename, so the name match misses too — the replacement minted a fresh
+  account with no confirm and no review entry at all. A same-institution account
+  whose last four differs now files a review proposal naming the original card,
+  listed by `moneybin accounts links pending`, once the original has been
+  through a `moneybin refresh` — every account-matching signal reads the account
+  dimension the refresh builds, so importing both cards in one batch files
+  nothing. The import still creates the second account and does not stop to ask:
+  only CSV/Excel has a pre-load confirmation today, and extending that to OFX
+  and PDF is the next change.
+- **An OFX file you renamed or moved is no longer re-imported as a new one
+  (#375).** Duplicate detection compared the file's *path*, so a second download
+  saved as `statement (1).qfx`, or a statement filed out of Downloads before
+  importing, read as a brand-new file. Every import batch — OFX, CSV/Excel, and
+  PDF — now records a SHA-256 of the file's bytes, and OFX duplicate detection
+  identifies a document by those bytes. Saving July's statement over June's
+  under the same filename is therefore a new import, not a duplicate: this
+  recognizes the same document, not the same name. Batches imported before this
+  change carry no digest and keep matching on path alone, because their source
+  file may be long gone. CSV/Excel and PDF have no duplicate check at either
+  level — `--force` is OFX-only — so re-importing one still creates a second
+  batch; row-level dedup, not the import log, is what keeps the totals right
+  there.
 - **An export you ran earlier is findable afterwards (#374).** `export_run` and
   `moneybin export` returned the receipt — export id, destination, artifact
   name, row counts, and checksums — exactly once and stored none of it, so a

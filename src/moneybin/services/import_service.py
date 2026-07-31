@@ -63,6 +63,7 @@ from moneybin.services.import_confirmation import (
     SignConventionProposal,
 )
 from moneybin.services.refresh import refresh as _refresh
+from moneybin.utils.file import source_sha256
 
 logger = logging.getLogger(__name__)
 
@@ -949,6 +950,7 @@ class ImportService:
         from moneybin.extractors.institution_resolution import (
             InstitutionResolutionError,
             resolve_institution,
+            slug_for_fid,
         )
         from moneybin.extractors.ofx import OFXExtractor
         from moneybin.extractors.ofx.extractor import preprocess_ofx_content
@@ -962,9 +964,47 @@ class ImportService:
         result = ImportResult(file_path=str(canonical_path), file_type="ofx")
         _t0 = time.monotonic()
 
-        # Re-import detection
+        # Parse once for institution resolution; the extractor parses again
+        # internally. These files are small — the duplicate parse is fine and
+        # avoids leaking a parser-internal type into the extractor signature.
+        # Wrap read+parse failures as ValueError so MCP's error envelope catches
+        # them; otherwise OSError leaks as an internal tool error.
+        # PermissionError is deliberately re-raised intact: `classify_user_error`
+        # keys the `infra_permission_denied` code and its Full-Disk-Access hint
+        # off the exception type, so flattening it to ValueError here would
+        # downgrade a TCC/chmod denial to `infra_invalid_input` with no recovery
+        # advice — the affordance would work for tabular files but not OFX.
+        try:
+            with open(canonical_path, "rb") as f:
+                raw = f.read()
+        except PermissionError:
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
+            raise
+        except OSError as e:
+            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
+            raise ValueError(f"Could not read OFX file: {e}") from e
+        # One read serves both identities: hashing these bytes rather than
+        # reopening the path makes the digest describe exactly what gets parsed
+        # below. Hash BEFORE the decode — `errors="replace"` is lossy, so a
+        # digest taken from `content` would disagree with every other channel's
+        # digest for the same file, and they all hash raw bytes.
+        digest = source_sha256(canonical_path, raw)
+        content = raw.decode("utf-8", errors="replace")
+        if "�" in content:
+            logger.warning(
+                f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: "
+                f"{canonical_path.name}"
+            )
+
+        # Re-import detection: content first, path as the fallback for batches
+        # imported before file_sha256 existed. The check sits below the read
+        # rather than at the top of the method because institution resolution
+        # further down may *prompt*, which a file we're about to reject should
+        # never trigger.
         if not force:
-            existing = import_log.find_existing_import(self._db, str(canonical_path))
+            existing = import_log.find_existing_import(
+                self._db, str(canonical_path), file_sha256=digest
+            )
             if existing:
                 existing_id, existing_status = existing
                 if existing_status == "importing":
@@ -979,30 +1019,6 @@ class ImportService:
                     f"Use --force to re-import."
                 )
 
-        # Parse once for institution resolution; the extractor parses again
-        # internally. These files are small — the duplicate parse is fine and
-        # avoids leaking a parser-internal type into the extractor signature.
-        # Wrap read+parse failures as ValueError so MCP's error envelope catches
-        # them; otherwise OSError leaks as an internal tool error.
-        # PermissionError is deliberately re-raised intact: `classify_user_error`
-        # keys the `infra_permission_denied` code and its Full-Disk-Access hint
-        # off the exception type, so flattening it to ValueError here would
-        # downgrade a TCC/chmod denial to `infra_invalid_input` with no recovery
-        # advice — the affordance would work for tabular files but not OFX.
-        try:
-            with open(canonical_path, "rb") as f:
-                content = f.read().decode("utf-8", errors="replace")
-        except PermissionError:
-            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
-            raise
-        except OSError as e:
-            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
-            raise ValueError(f"Could not read OFX file: {e}") from e
-        if "�" in content:
-            logger.warning(
-                f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: "
-                f"{canonical_path.name}"
-            )
         content = preprocess_ofx_content(content)
         try:
             parsed_ofx: Any = ofxparse.OfxParser.parse(  # type: ignore[reportUnknownMemberType]
@@ -1046,6 +1062,7 @@ class ImportService:
             source_type="ofx",
             source_origin=source_origin,
             account_names=account_ids,
+            file_sha256=digest,
         )
         result.import_id = import_id
 
@@ -1055,6 +1072,11 @@ class ImportService:
                 canonical_path,
                 import_id=import_id,
                 source_origin=source_origin,
+                # The bytes `digest` was taken from, not a fresh read: a file
+                # replaced in between would be recorded as one version and
+                # loaded as another, so a later genuine import of the new
+                # version reads as a duplicate of the old.
+                source_bytes=raw,
             )
         except Exception:
             import_log.finalize_import(
@@ -1121,7 +1143,15 @@ class ImportService:
                         f"{row.get('account_type') or ''}".strip(),
                         account_number=scoped_number,
                         last_four=acctid[-4:],
-                        institution=source_origin,
+                        # The FID slug, not source_origin. source_origin comes
+                        # from <ORG>, which is a routing code for some issuers
+                        # ("B1" = Chase), and it must stay untouched because
+                        # downstream identity keys on it. Matching needs the
+                        # same canonical slug core.dim_accounts.institution_slug
+                        # carries, so resolve it from the FID and fall back to
+                        # source_origin when the FID is unregistered.
+                        institution=slug_for_fid(row.get("institution_fid"))
+                        or source_origin,
                     )
                 )
                 ACCOUNT_LINK_OUTCOMES_TOTAL.labels(
@@ -1432,6 +1462,15 @@ class ImportService:
 
         if len(df) == 0:
             raise ValueError(f"No data rows found in {file_path.name}")
+
+        # Digest here rather than at batch creation below: Phase 3 commits
+        # account mappings and pending decisions, so a hash that raised after it
+        # — an ordinary path import whose file left a synced Downloads folder
+        # mid-import — would strand those writes with no batch to belong to.
+        # Same reason `_validate_account_metadata` fails fast above. read_file
+        # has already proven the path readable, so this cannot raise a denial
+        # that the guarded read was supposed to classify.
+        digest = source_sha256(file_path, source_bytes)
 
         # Stage 3: Column mapping — match by headers if not already matched by name
         if reviewed_plan is None and not matched_format:
@@ -2301,6 +2340,7 @@ class ImportService:
             account_names=sorted(acct_id_to_name.values()),
             format_name=matched_format.name if matched_format else None,
             format_source=format_source,
+            file_sha256=digest,
         )
         result.import_id = import_id
 
@@ -2869,6 +2909,7 @@ class ImportService:
             source_type="pdf",
             source_origin=resolved_alias,
             account_names=[resolved_alias],
+            file_sha256=source_sha256(canonical, source_bytes),
         )
         result.import_id = import_id
 
@@ -3485,6 +3526,7 @@ class ImportService:
             source_type="pdf",
             source_origin=resolved_alias,
             account_names=[resolved_alias],
+            file_sha256=source_sha256(canonical, source_bytes),
         )
         result.import_id = import_id
 

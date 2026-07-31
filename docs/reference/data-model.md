@@ -133,6 +133,7 @@ Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Jo
 | `routing_number` | VARCHAR | ABA routing number; NULL when not provided. |
 | `account_type` | VARCHAR | Canonical classification, normalized across all sources via `seeds.account_type_map`: `depository`, `credit`, `loan`, `investment`, `other`. `NULL` when the source spelling is unrecognized. |
 | `institution_name` | VARCHAR | Human-readable institution. For OFX, resolved from `<FI><FID>` via `seeds.institutions`, falling back to the raw `<ORG>` for an unregistered FID — `<ORG>` is a routing code (Chase publishes `B1`), not a name. |
+| `institution_slug` | VARCHAR | Canonical institution slug, the value account matching compares. Resolved from `seeds.institutions` for every source: OFX by exact `<FID>`, tabular and Plaid by normalizing their institution text (case and punctuation stripped) against both the registry's `slug` and its `display_name`. Falls back to the source's own text when the institution is unregistered. Slugifying a display name does not reproduce a curated slug (`U.S. Bank` → `u-s-bank`, not `us_bank`), so a consumer that matches on `institution_name` drops candidates. |
 | `institution_fid` | VARCHAR | OFX FID; NULL for tabular sources. |
 | `source_type`, `source_file` | VARCHAR | Source of the winning record after dedup; source file path. |
 | `extracted_at`, `loaded_at`, `updated_at` | TIMESTAMP | Source-parse / DB-write times (UTC). `updated_at = GREATEST(loaded_at, account_settings.updated_at)`. |
