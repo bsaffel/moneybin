@@ -9,8 +9,9 @@
 > lots/gains/holdings, four-method cost-basis engine) is now `implemented`.
 > Pillar C phase C.1 shipped: positions carry `market_value` and
 > `unrealized_gain` from the close the broker already sends through `sync pull`.
-> C.2 (Tiingo and CoinGecko feeds, manual overrides) and C.3 (the daily
-> `core.fct_holdings_daily` series) remain designed but unbuilt, as does Pillar
+> Pillar C phase C.2 shipped: Tiingo and CoinGecko adapters, per-date user price
+> marks, trade-implied prices, and the `investments prices` CLI. C.3 (the daily
+> `core.fct_holdings_daily` series) remains designed but unbuilt, as does Pillar
 > D (net-worth integration); the M1J milestone itself stays open until cost
 > basis ties to a real broker 1099-B for a full tax year.
 > Umbrella doc for the investments initiative (milestone M1J). Child specs listed
@@ -98,7 +99,7 @@ cost-basis-method election, and specific-lot selection overrides. Everything in
 |---|---|---|---|
 | **A. Investment data model** | The securities dimension + the investment-transaction ledger (raw → prep → core), plus manual entry | No | [`investments-data-model.md`](investments-data-model.md) *(foundation child — A+B)* |
 | **B. Cost-basis & gain/loss engine** | Derived lots; FIFO + HIFO + specific-ID + average-cost; realized gain/loss; short-term/long-term split | No | [`investments-data-model.md`](investments-data-model.md) *(ships with A)* |
-| **C. Price feeds & valuation** | Broker-carried, Tiingo, and CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss. **C.1 shipped** — the broker-carried close values `core.dim_holdings`; C.2 (Tiingo, CoinGecko, overrides) and C.3 (daily series) remain designed | Yes (it *is* the feed) | [`investments-price-feeds.md`](investments-price-feeds.md) |
+| **C. Price feeds & valuation** | Broker-carried, Tiingo, and CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss. **C.1 + C.2 shipped** — the broker-carried close values `core.dim_holdings`, and Tiingo, CoinGecko, user marks, and trade-implied prices compete for each date; C.3 (daily series) remains designed | Yes (it *is* the feed) | [`investments-price-feeds.md`](investments-price-feeds.md) |
 | **D. Net-worth integration** | Holdings valuation folded into `reports.net_worth` counting each investment account **once** — never added on top of its existing balance observation (see Open questions) | Yes (consumes C) | `investments-net-worth.md` *(planned)* |
 
 ### Already-carved children

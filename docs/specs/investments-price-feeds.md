@@ -14,8 +14,11 @@ top of the shipped cost-basis engine.
 Phase C.1 shipped: `core.dim_holdings` carries `market_value`, `unrealized_gain`,
 `price_date`, `price_source`, `days_since_observed`, and `valuation_status` beside
 `quantity`, `cost_basis`, and `average_cost`, valued from the close Plaid already
-delivers in its existing sync payload. External feeds, manual overrides, and
-trade-implied prices (C.2) and the daily valued series (C.3) remain designed.
+delivers in its existing sync payload. Phase C.2 shipped: Tiingo and CoinGecko
+adapters, per-date user price marks in `app.security_price_overrides`,
+trade-implied prices derived from executions, staleness surfacing, three
+`system doctor` price checks, and the `investments prices` CLI. The daily valued
+series (C.3) remains designed.
 `src/moneybin/sqlmesh/models/reports/net_worth.sql` reads `core.fct_balances_daily`
 alone and excludes holdings entirely. A brokerage account therefore enters net
 worth at its provider-reported balance, and none of its positions enter as
