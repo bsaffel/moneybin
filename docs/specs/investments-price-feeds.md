@@ -309,6 +309,27 @@ revalidated: a user-confirmed key may deliberately differ from the ticker, since
 provider symbol formats diverge from ours (`BRK.B` against `BRK-B`), and
 overriding that would re-ask a settled question.
 
+**Retirement happens after the replacement exists, not before.** The stale
+binding is the only key pricing that security, so reversing it first turns every
+way the replacement can fail — no provider coverage for the new symbol, a
+transient metadata error, an ambiguous match routed to review — into a holding
+that was valued yesterday and is unpriced today. The retirement therefore runs
+immediately before the replacement is inserted, which still leaves exactly one
+accepted link per `ref_kind`.
+
+**A retired key keeps resolving its own history.** `prep.stg_security_prices`
+joins `app.security_links` to turn a provider key back into a `security_id`, so
+admitting only `accepted` rows would drop every close stored under the old symbol
+out of prep and out of `core.fct_security_prices` — an ordinary ticker rename
+erasing the entire pre-rename series, with no error. The join therefore also
+matches a `reversed` row whose `reversed_by` is `auto`, for observations dated
+before its `reversed_at`. Both halves carry weight. `reversed_by` separates
+bookkeeping from judgement: a user's reversal says the pairing was wrong, so its
+closes must stay dropped. The date bound handles ticker recycling — the rename
+frees the old symbol, and whoever lists under it next binds it accepted, so an
+unbounded retired link would go on claiming those closes and value this security
+from a different company's series.
+
 **The exchange comparison is deliberately weak.** Either label absent does not
 contradict — an absent signal never votes — and a label that prefixes the other
 (`NASDAQ` vs `NASDAQ-GS`) agrees. Treating every spelling difference as a

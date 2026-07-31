@@ -113,25 +113,36 @@ _CORPORATE_SUFFIXES = frozenset({
 # of history on every sync.
 _DEFAULT_LOOKBACK_DAYS = 4
 
+# What a stored close can actually be. Both price columns —
+# raw.security_prices.close and app.security_price_overrides.close — are
+# DECIMAL(28, 10), so the representable set is one shared property of the
+# storage: named once here, and applied by both write paths.
+#
+# PRICE_QUANTUM is also the smallest positive close. Anything below it quantizes
+# to exactly 0 — silently, and *after* an adapter's own `close <= 0` guard has
+# passed on the full-precision value. The stored CHECK (close > 0) then rejects
+# the row, and on the pull path DuckDB aborts the whole multi-row insert, losing
+# every well-priced security batched with it. So the pull path drops such an
+# observation one at a time and reports it as that security's outcome, while
+# set_mark refuses it outright: a mark is one deliberate value, and storing a
+# number other than the one echoed back is worse than declining it. Widening the
+# column instead would trade a visible refusal for a stored price no downstream
+# total could represent either.
+PRICE_PRECISION = 28
+PRICE_SCALE = 10
+PRICE_WHOLE_DIGITS = PRICE_PRECISION - PRICE_SCALE
+PRICE_QUANTUM = Decimal(1).scaleb(-PRICE_SCALE)
+MAX_STORED_PRICE = Decimal(10) ** PRICE_WHOLE_DIGITS - PRICE_QUANTUM
+
 _RAW_PRICE_SCHEMA = {
     "provider_security_key": pl.Utf8,
     "price_date": pl.Date,
     "quote_currency": pl.Utf8,
     "source_type": pl.Utf8,
     "source_origin": pl.Utf8,
-    "close": pl.Decimal(28, 10),
+    "close": pl.Decimal(PRICE_PRECISION, PRICE_SCALE),
     "price_basis": pl.Utf8,
 }
-
-# The smallest close raw.security_prices can hold. Its column is DECIMAL(28,10),
-# so polars quantizes anything below this to exactly 0 — silently, and *after*
-# each adapter's own `close <= 0` guard has passed on the full-precision value.
-# The stored CHECK (close > 0) then rejects the row and DuckDB aborts the whole
-# multi-row insert, losing every well-priced security batched with it. So the
-# drop happens here, one observation at a time, and is reported as that
-# security's outcome. Widening the column instead would trade a visible refusal
-# for a stored price no downstream total could represent either.
-_MIN_STORABLE_CLOSE = Decimal("1E-10")
 
 # app.security_links.reversed_by is a closed vocabulary ('auto' | 'user' |
 # 'system'). A reversal this service performs to retire a binding whose catalog
@@ -335,6 +346,18 @@ class PriceService:
         # providers agree on the newest date a pull can produce — which
         # investment_price_disagreement compares them on.
         end = self._today - timedelta(days=1)
+        if since is not None and since > end:
+            # An inverted window is a usage error, and every provider expresses it
+            # as something else: Tiingo is handed start > end, CoinGecko matches no
+            # observation at all, and both come back as "this security could not be
+            # priced". The user reads a feed outage where they mistyped a date. Refuse
+            # before the first request so no quota answers the question either.
+            raise UserError(
+                f"--since {since.isoformat()} is after the last complete day. "
+                f"A pull never requests today's in-progress close, so the newest "
+                f"date it can return is {end.isoformat()}.",
+                code=error_codes.INVESTMENT_DATE_RANGE_INVALID,
+            )
         start = since or end - timedelta(days=_DEFAULT_LOOKBACK_DAYS)
         held = self.held_securities(security_ids)
         unpriced: list[UnpricedSecurity] = []
@@ -452,7 +475,7 @@ class PriceService:
                 continue
             unstorable: set[str] = set()
             for obs in result.observations:
-                if obs.close < _MIN_STORABLE_CLOSE:
+                if obs.close < PRICE_QUANTUM:
                     unstorable.add(obs.provider_security_key)
                     continue
                 observations.append(obs)
@@ -611,6 +634,10 @@ class PriceService:
         *worthless* and *unknown* two states every downstream total, report, and
         doctor check has to tell apart.
         """
+        # Storability first, and specifically the finite check inside it: comparing
+        # a Decimal NaN with `<=` raises InvalidOperation, so a guard placed after
+        # the positivity test could never see one.
+        self._require_storable(close)
         if close <= 0:
             raise ValueError(
                 "A price mark must be positive. A worthless position is recorded "
@@ -650,6 +677,40 @@ class PriceService:
             actor=self._actor,
         )
         return event is not None
+
+    @staticmethod
+    def _require_storable(close: Decimal) -> None:
+        """Refuse a close ``DECIMAL(28, 10)`` would silently alter or reject.
+
+        The success payload echoes the number the caller passed, so a value the
+        column rounds is reported as stored and is not. The two failures differ:
+        excess precision quantizes — below one quantum, all the way to zero,
+        which then trips the table's own ``CHECK (close > 0)`` as an untyped
+        DuckDB error the CLI can only render as a traceback — while excess
+        magnitude fails the conversion outright. Both are usage errors, so both
+        are refused here rather than left to the storage layer to express.
+        """
+        if not close.is_finite():
+            raise UserError(
+                "A price mark must be a finite number.",
+                code=error_codes.INVESTMENT_PRICE_MARK_UNREPRESENTABLE,
+            )
+        # Magnitude first: quantizing a value this large would itself overflow
+        # the decimal context before the precision check could answer.
+        if close > MAX_STORED_PRICE:
+            raise UserError(
+                f"A price mark carries at most {PRICE_WHOLE_DIGITS} digits before "
+                "the decimal point; this price is larger than that.",
+                code=error_codes.INVESTMENT_PRICE_MARK_UNREPRESENTABLE,
+            )
+        if close != close.quantize(PRICE_QUANTUM):
+            raise UserError(
+                f"A price mark is stored to {PRICE_SCALE} decimal places; this "
+                "price carries more precision than that, so storing it would "
+                "record a different number than the one reported back. Round it "
+                "first.",
+                code=error_codes.INVESTMENT_PRICE_MARK_UNREPRESENTABLE,
+            )
 
     def _canonical_quote_currency(self, value: str) -> str:
         """Normalize and validate a currency before it becomes part of a series key.
@@ -756,14 +817,11 @@ class PriceService:
             else TIINGO_REF_KIND
         )
         bound = self._bound_ref(security.security_id, ref_kind, source_type)
-        if bound is not None:
-            if not self._binding_is_stale(security, source_type, bound):
-                return _Derivation(ref_value=bound.ref_value)
-            # The catalog value this key was derived from has since changed, so
-            # the binding now points at a different company's series. Retire it
-            # through the audited path before re-deriving; leaving it accepted
-            # would give this security two accepted links for one ref_kind.
-            self._retire_stale_binding(security.security_id, ref_kind, source_type)
+        stale = bound is not None and self._binding_is_stale(
+            security, source_type, bound
+        )
+        if bound is not None and not stale:
+            return _Derivation(ref_value=bound.ref_value)
 
         settled = self._review_settled(ref_kind, source_type, security)
         if settled is not None:
@@ -789,6 +847,18 @@ class PriceService:
             )
 
         if derivation.ref_value is not None:
+            if stale:
+                # The catalog value this key was derived from has moved, so the old
+                # binding now points at a different company's series and must go.
+                # Retiring it here rather than before the derivation is the whole
+                # point: it is the ONLY key pricing this security, and every way
+                # deriving a replacement can fail — no provider coverage for the new
+                # symbol, a transient metadata error, an ambiguous match queued for
+                # review — would otherwise leave the security with no accepted link
+                # at all, so a holding valued yesterday goes silently unpriced. Doing
+                # it immediately before the insert still leaves exactly one accepted
+                # link per ref_kind, which is what the retirement exists to preserve.
+                self._retire_stale_binding(security.security_id, ref_kind, source_type)
             try:
                 self._links.insert(
                     security_id=security.security_id,

@@ -19,7 +19,9 @@ from pathlib import Path
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.investments import (
+    _confirm_message,  # pyright: ignore[reportPrivateUsage]  # the merge prompt under test
     _load_pending_proposal,  # pyright: ignore[reportPrivateUsage]  # the adapter branch under test
+    _MergeProposal,  # pyright: ignore[reportPrivateUsage]  # the prompt's input shape
 )
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import (
@@ -96,3 +98,52 @@ def test_a_feed_key_proposal_merges_nothing_away(mcp_db: Path) -> None:
     assert proposal.is_feed_key is True
     assert proposal.provisional_security_id is None
     assert proposal.blast_radius["security_links"] == 1
+
+
+def _merge_proposal(*, marks: int) -> _MergeProposal:
+    """An identity-merge proposal carrying ``marks`` price overrides to re-point."""
+    return _MergeProposal(
+        decision_id="dec-merge",
+        ref_kind="plaid_security_id",
+        ref_value="plaid-ref-1",
+        provider_ticker="VTI",
+        provider_name="Vanguard Total Stock Mkt",
+        candidate_security_id="sec-survivor",
+        candidate_ticker="VTI",
+        candidate_name="Vanguard Total Stock Market ETF",
+        match_reason="fuzzy_name",
+        provisional_security_id="sec-provisional",
+        blast_radius={
+            "security_links": 1,
+            "lot_selections": 0,
+            "manual_investment_transactions": 0,
+            "security_price_overrides": marks,
+        },
+        is_feed_key=False,
+    )
+
+
+def test_a_merge_prompt_names_the_price_marks_it_moves() -> None:
+    """`accept_merge` re-points every override; the prompt named four other things.
+
+    `_repoint_price_marks` moves the user's own valuations onto the survivor and
+    `accept_impact` already counts them, but that count reaches only the
+    confirmation digest. The elicited text listed provider refs, lot selections,
+    manual ledger rows and the catalog deletion — so a human could ratify a merge
+    without ever being told their hand-set prices were part of it.
+    """
+    message = _confirm_message(_merge_proposal(marks=3))
+
+    assert "3 price marks" in message
+
+
+def test_a_merge_prompt_says_so_when_no_price_mark_moves() -> None:
+    """Silence reads as "not applicable", not as "none".
+
+    Paired with the test above: a prompt that only ever appends the clause when
+    the count is non-zero passes that one, and leaves a user who does keep manual
+    valuations unsure whether this merge is about to touch them.
+    """
+    message = _confirm_message(_merge_proposal(marks=0))
+
+    assert "no price mark" in message

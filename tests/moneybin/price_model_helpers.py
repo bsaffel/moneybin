@@ -77,6 +77,30 @@ def close_source_ctes() -> set[str]:
     return sources
 
 
+def historical_reversal_actor() -> str:
+    """The ``reversed_by`` value the staging join still resolves observations for.
+
+    A retired feed key and a user-rejected one are both ``status = 'reversed'``,
+    and only ``reversed_by`` separates them: retirement is bookkeeping after a
+    ticker moved, so the closes stored under the old symbol were still this
+    security's prices; a user reversal is a judgement that the pairing was wrong,
+    so its closes must drop. The model names that actor as a SQL literal while
+    the service writes it from ``price_service._AUTO_REVERSAL``. Parsing it back
+    out is what stops the two from drifting into silently resurrecting — or
+    silently erasing — a price series.
+    """
+    sql = MODEL_PATH.read_text()
+    literal = re.search(r"links\.reversed_by\s*=\s*'([^']+)'", sql)
+    assert literal is not None, (
+        f"no `links.reversed_by = '...'` predicate found in {MODEL_PATH.name}; "
+        "either the retired-link arm was dropped — which erases a renamed "
+        "security's price history from core — or it no longer discriminates "
+        "retirement from a user's rejection, which resurrects prices the user "
+        "rejected"
+    )
+    return literal.group(1)
+
+
 def ref_kind_mapping() -> dict[str, str]:
     """The (source_type -> ref_kind) pairs the model's CASE actually maps."""
     sql = MODEL_PATH.read_text()

@@ -277,6 +277,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |         earliest date CoinGecko's keyless tier serves: narrowing the window
 |   |   |         silently returned one year and reported a full backfill. The refusal
 |   |   |         is per source, so equities still pull over the window you asked for.
+|   |   |         --since after the last complete day is refused before any request:
+|   |   |         a pull never asks for today's in-progress close, so `start > end`
+|   |   |         reached Tiingo as an inverted range and CoinGecko as an empty
+|   |   |         match, and every held security came back as a feed failure.
 |   |   +-- set <security> <date> <price> [--currency CUR] [--note TEXT] [--refresh]
 |   |   |         Record your own price. Outranks every provider close for that date
 |   |   |         and leaves other dates untouched. A non-positive price is refused:
@@ -298,6 +302,11 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |         blank: DuckDB VARCHAR is unbounded, and every later correction copies
 |   |   |         the note into its audit before/after image, so one oversized string
 |   |   |         is stored repeatedly rather than once. Omit the flag for no note.
+|   |   |         PRICE must fit DECIMAL(28,10) -- at most 18 digits before the point
+|   |   |         and 10 after. Finer precision rounds on the way in, so the number
+|   |   |         stored would differ from the one echoed back; below 1e-10 it rounds
+|   |   |         to zero and trips the table's CHECK (close > 0) as an untyped DuckDB
+|   |   |         error. Both are refused here as usage errors instead.
 |   |   +-- delete <security> <date> [--currency CUR] [--refresh]
 |   |   |         Remove a mark, returning that date to provider-derived valuation.
 |   |   |         Load-bearing, not CRUD symmetry -- `set` can only change the number,

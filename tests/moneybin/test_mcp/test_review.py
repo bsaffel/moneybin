@@ -18,7 +18,9 @@ from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.mcp.tools import reviews as reviews_module
 from moneybin.mcp.tools.reviews import (
+    IDENTITY_BLAST_RADIUS_LABELS,
     _identity_binding,  # pyright: ignore[reportPrivateUsage]
+    _identity_confirm_message,  # pyright: ignore[reportPrivateUsage]  # prompt under test
     identity_links_decide_coarse,
     register_review_coarse_reads,
     register_review_coarse_writes,
@@ -59,6 +61,10 @@ from moneybin.services.review_decisions_service import (
     ReviewDecisionsService,
 )
 from moneybin.services.undo_service import UndoService
+from tests.moneybin.db_helpers import (
+    CORE_FCT_INVESTMENT_LOTS_DDL,
+    CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
+)
 
 from .schema_assertions import (
     assert_literal_values,
@@ -2369,3 +2375,153 @@ async def test_review_standard_write_registrar_is_closed_and_max_risk() -> None:
     assert reviews_tool.annotations.destructiveHint is False
     assert identity_tool.annotations is not None
     assert identity_tool.annotations.destructiveHint is True
+
+
+def _seed_investment_history(security_id: str, label: str) -> None:
+    """One core ledger event and one open tax lot on ``security_id``.
+
+    A bind moves neither. They exist so the blast radius has something it could
+    wrongly claim: against an empty candidate every gating rule reports the same
+    empty tuple and the test cannot tell them apart.
+
+    The two fact tables are created here rather than in the shared MCP template
+    because ``create_core_tables_raw`` does not build them, and
+    ``_query_ids`` swallows the resulting CatalogException and returns ``()``.
+    Every blast-radius assertion in this module was therefore reading an empty
+    tuple that no gating rule could have changed — which is precisely how a bind
+    came to claim every transaction and lot of its candidate unnoticed.
+    """
+    with get_database(read_only=False) as db:
+        db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+        db.execute(CORE_FCT_INVESTMENT_LOTS_DDL)
+        db.execute(
+            """
+            INSERT INTO core.fct_investment_transactions
+                (investment_transaction_id, account_id, security_id, trade_date,
+                 type, quantity, amount, currency_code)
+            VALUES (?, 'ACC001', ?, DATE '2026-01-15', 'buy', 10, -1500.00, 'USD')
+            """,  # noqa: S608  # test fixture insert, static SQL
+            [f"txn-{label}", security_id],
+        )
+        db.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 original_quantity, remaining_quantity, currency_code, is_open)
+            VALUES (?, 'ACC001', ?, DATE '2026-01-15', 10, 10, 'USD', TRUE)
+            """,  # noqa: S608  # test fixture insert, static SQL
+            [f"lot-{label}", security_id],
+        )
+
+
+def test_a_feed_key_bind_claims_no_transaction_and_no_lot() -> None:
+    """A bind creates one link. It re-points nothing, so it moves nothing.
+
+    Reporting the candidate's whole ledger as "affected" is wrong twice. It
+    contradicts the bind's own mutation contract in the prompt a human reads, and
+    — because the blast radius is part of the digest their approval is bound to —
+    it makes any refresh or ledger write between preview and commit invalidate a
+    grant for rows the bind never touches.
+
+    ``securities`` is asserted non-empty in the same breath: a fix that simply
+    blanked the radius for feed keys would satisfy the first two assertions and
+    understate a write that genuinely does make one security priceable.
+    """
+    setup = _identity_feed_key_setup("radius")
+    _seed_investment_history(setup["security"], "radius")
+
+    with get_database(read_only=True) as db:
+        plan = ReviewDecisionsService(db, actor="mcp").plan_identity([
+            SecurityLinkDecisionRequest(
+                kind="security_link",
+                decision_id=setup["decision_id"],
+                decision="accept",
+                target_id=setup["security"],
+            )
+        ])
+
+    (item,) = plan.items
+    assert item.affected_ids["transactions"] == ()
+    assert item.affected_ids["lots"] == ()
+    assert item.affected_ids["securities"] == (setup["security"],)
+
+
+def test_an_identity_merge_still_claims_the_rows_it_re_points() -> None:
+    """The merge side must keep counting what it moves.
+
+    Paired with the bind above: gating the transaction and lot queries on the
+    wrong flag in either direction passes one test and fails the other, and a
+    merge that under-reports its blast radius is the more dangerous of the two.
+    """
+    setup = _identity_security_setup("radius-merge")
+    _seed_investment_history(setup["provisional"], "radius-merge")
+
+    with get_database(read_only=True) as db:
+        plan = ReviewDecisionsService(db, actor="mcp").plan_identity([
+            SecurityLinkDecisionRequest(
+                kind="security_link",
+                decision_id=setup["decision_id"],
+                decision="accept",
+                target_id=setup["survivor"],
+            )
+        ])
+
+    (item,) = plan.items
+    assert item.affected_ids["transactions"] == ("txn-radius-merge",)
+    assert item.affected_ids["lots"] == ("lot-radius-merge",)
+
+
+def test_every_blast_radius_category_has_a_prompt_label() -> None:
+    """Set equality, because a missing label is silent in the direction that matters.
+
+    ``_identity_confirm_message`` reports only the categories it can name. A
+    category added to ``IDENTITY_BLAST_RADIUS_CATEGORIES`` without a label here
+    would be counted in the digest the approval binds to and then omitted from
+    the sentence the human reads — which is the same failure as counting five
+    categories while moving six, one layer further out.
+    """
+    assert set(IDENTITY_BLAST_RADIUS_LABELS) == set(IDENTITY_BLAST_RADIUS_CATEGORIES)
+
+
+def test_the_identity_prompt_counts_every_category_it_moves() -> None:
+    """The registered description promises the prompt counts what it moves.
+
+    Until now it did not: the counts lived only in the confirmation digest, which
+    the human never sees, while the elicited text was fixed prose naming
+    "security lots" and nothing else. A merge could move a user's hand-set
+    valuations onto another instrument with no sentence anywhere saying so.
+    """
+    message = _identity_confirm_message({
+        "accounts": 0,
+        "merchants": 0,
+        "securities": 2,
+        "transactions": 7,
+        "lots": 3,
+        "price_marks": 4,
+    })
+
+    assert "4 price marks you set by hand" in message
+    assert "7 transactions" in message
+    assert "3 tax lots" in message
+    assert "2 securities" in message
+
+
+def test_the_identity_prompt_omits_categories_it_does_not_touch() -> None:
+    """A radius padded with zeros reads as a bigger blast than it is.
+
+    Paired with the test above: listing every category unconditionally satisfies
+    that one, and would tell a user binding a price feed that the batch touches
+    accounts and merchants it never opens.
+    """
+    message = _identity_confirm_message({
+        "accounts": 0,
+        "merchants": 0,
+        "securities": 1,
+        "transactions": 0,
+        "lots": 0,
+        "price_marks": 0,
+    })
+
+    assert "1 security" in message
+    assert "account" not in message.split("This batch touches:")[-1]
+    assert "tax lot" not in message.split("This batch touches:")[-1]

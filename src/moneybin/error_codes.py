@@ -267,6 +267,7 @@ INVESTMENT_METHOD_NOT_SPECIFIC = "investment_method_not_specific"
 INVESTMENT_OPEN_ONLY_NOT_ALLOWED = "investment_open_only_not_allowed"
 INVESTMENT_PRICE_MARK_CURRENCY_AMBIGUOUS = "investment_price_mark_currency_ambiguous"
 INVESTMENT_PRICE_MARK_CURRENCY_INVALID = "investment_price_mark_currency_invalid"
+INVESTMENT_PRICE_MARK_UNREPRESENTABLE = "investment_price_mark_unrepresentable"
 INVESTMENT_SECURITY_NOT_BOUND = "investment_security_not_bound"
 INVESTMENT_SECURITY_NOT_IN_CATALOG = "investment_security_not_in_catalog"
 

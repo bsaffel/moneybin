@@ -196,3 +196,110 @@ def test_non_positive_close_is_rejected(db: Database) -> None:
         _insert_price(db, key="sec_vti", close="0.0", price_date="2026-07-16")
     with pytest.raises(duckdb.ConstraintException):
         _insert_price(db, key="sec_vti", close="-5.00", price_date="2026-07-17")
+
+
+def _retire_link(db: Database, *, key: str, on: str, by: str = "auto") -> None:
+    """Reverse an accepted link the way a retirement or a rejection leaves it."""
+    db.execute(
+        """
+        UPDATE app.security_links
+        SET status = 'reversed', reversed_at = ?::TIMESTAMP, reversed_by = ?
+        WHERE ref_value = ?
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [f"{on} 00:00:00", by, key],
+    )
+
+
+@pytest.mark.slow
+def test_an_auto_retired_link_still_resolves_its_earlier_observations(
+    db: Database,
+) -> None:
+    """A renamed ticker must not erase the series stored under the old symbol.
+
+    `_retire_stale_binding` reverses an auto-derived link when the catalog value
+    it came from moves — FB becomes META. Those FB closes were still this
+    security's prices, so an INNER JOIN that admits only `accepted` drops the
+    entire pre-rename history out of prep and therefore out of core, on an
+    ordinary corporate action and with no error.
+    """
+    _insert_price(
+        db, key="FB", close="180.00", source="tiingo", price_date="2026-07-10"
+    )
+    _accept_link(
+        db,
+        key="FB",
+        canonical_id="canonmeta000001",
+        ref_kind="tiingo_ticker",
+        source_type="tiingo",
+    )
+    _retire_link(db, key="FB", on="2026-07-15")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT security_id, close FROM prep.stg_security_prices"
+    ).fetchone()
+    assert row == ("canonmeta000001", Decimal("180.0000000000"))
+
+
+@pytest.mark.slow
+def test_an_auto_retired_link_does_not_claim_later_observations(db: Database) -> None:
+    """The retired key stops resolving the moment it is retired.
+
+    Tickers get recycled — the rename that freed FB also frees it for whoever
+    lists under it next. Without the date bound the retired link would keep
+    claiming every future FB close, quietly valuing this security from a
+    different company's series: the exact failure retiring the binding existed
+    to prevent.
+    """
+    _insert_price(
+        db, key="FB", close="180.00", source="tiingo", price_date="2026-07-10"
+    )
+    _insert_price(db, key="FB", close="9.99", source="tiingo", price_date="2026-07-20")
+    _accept_link(
+        db,
+        key="FB",
+        canonical_id="canonmeta000001",
+        ref_kind="tiingo_ticker",
+        source_type="tiingo",
+    )
+    _retire_link(db, key="FB", on="2026-07-15")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    dates = [
+        str(row[0])
+        for row in db.execute(
+            "SELECT price_date FROM prep.stg_security_prices ORDER BY price_date"
+        ).fetchall()
+    ]
+    assert dates == ["2026-07-10"]
+
+
+@pytest.mark.slow
+def test_a_user_reversed_link_resolves_nothing(db: Database) -> None:
+    """A rejection is a judgement, not bookkeeping, so its prices must drop.
+
+    Paired with the auto-retirement tests deliberately: an arm written to admit
+    every `reversed` row passes those and fails this one, and it would restore
+    exactly the valuation the user reversed the binding to reject.
+    """
+    _insert_price(
+        db, key="FB", close="180.00", source="tiingo", price_date="2026-07-10"
+    )
+    _accept_link(
+        db,
+        key="FB",
+        canonical_id="canonmeta000001",
+        ref_kind="tiingo_ticker",
+        source_type="tiingo",
+    )
+    _retire_link(db, key="FB", on="2026-07-15", by="user")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    staged = db.execute("SELECT COUNT(*) FROM prep.stg_security_prices").fetchone()
+    assert staged is not None and staged[0] == 0

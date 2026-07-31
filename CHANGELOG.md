@@ -342,9 +342,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it can return — it previously narrowed the window to 365 days and reported a
   full backfill — and equities still pull over the window you asked for. In the
   review queue, accepting a price-feed symbol through `identity_links_decide`
-  now binds it instead of failing with "nothing to merge away", and a security
-  merge's confirmation counts the price marks it moves rather than moving them
-  unmentioned. (#373)
+  now binds it instead of failing with "nothing to merge away", and the
+  confirmation you read before a security merge names and counts every category
+  it moves — including the price marks you set by hand — instead of listing tax
+  lots alone. Binding a feed key no longer reports that security's whole ledger
+  as affected: it creates one link and moves nothing, so it says so. A `--since`
+  after the last complete day is refused before any request, rather than reaching
+  the providers as an inverted range and coming back as a feed outage. A price
+  outside what the stored column can represent is refused as a usage error rather
+  than rounding on the way in, so the price echoed back is the price stored. When
+  a ticker rename retires an auto-derived feed key, the closes already stored
+  under the old symbol keep valuing that security instead of disappearing from
+  reports, and the old key is retired only once a replacement is in hand — a
+  provider that cannot answer for the new symbol no longer leaves the holding
+  unpriced. (#373)
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.

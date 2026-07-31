@@ -791,10 +791,19 @@ class ReviewDecisionsService:
             )
         ]
         material_accept = changed and request.decision == "accept"
-        # A bind moves no lot, event, or mark, so only a merge populates the
-        # re-pointing categories below. `securities` stays on material_accept: a
-        # bind does affect one security — it becomes priceable — and reporting a
-        # wholly empty blast radius for a write would understate it.
+        # A bind creates one link and re-points nothing, so it moves no event, no
+        # lot, and no mark: EVERY re-pointing category below gates on this flag,
+        # not just the last one. Claiming the candidate's ledger for a bind is
+        # wrong twice over — it contradicts the mutation contract the prompt
+        # states, and because these counts are part of the digest the approval is
+        # bound to, an unrelated refresh between preview and commit then
+        # invalidates a grant for rows the bind never touches. (`before_state`
+        # needs no such gate: it reads no core table, only the app and raw rows
+        # this decision itself can change.)
+        #
+        # `securities` deliberately stays on material_accept: a bind does affect
+        # one security — it becomes priceable — and reporting a wholly empty
+        # blast radius for a write would understate it.
         material_merge = material_accept and not binds_a_feed_key
         marks = _query_json_rows(
             self._db,
@@ -816,7 +825,7 @@ class ReviewDecisionsService:
                 """,  # noqa: S608  # TableRef constant + parameterized value
                 [source_id],
             )
-            if material_accept
+            if material_merge
             else ()
         )
         manual_transactions = (
@@ -833,7 +842,7 @@ class ReviewDecisionsService:
                 """,  # noqa: S608  # TableRef constant + parameterized value
                 [source_id],
             )
-            if material_accept
+            if material_merge
             else ()
         )
         transactions = tuple(dict.fromkeys((*core_transactions, *manual_transactions)))
@@ -848,7 +857,7 @@ class ReviewDecisionsService:
                 """,  # noqa: S608  # TableRef constant + parameterized value
                 [source_id],
             )
-            if material_accept
+            if material_merge
             else ()
         )
         return IdentityDecisionPlanItem(

@@ -138,9 +138,13 @@ def links_set(
       --reject                                  keep the provisional security;
                                                  this pairing is not re-proposed
 
-    A merge re-points every accepted provider ref and tax lot onto the
-    candidate in one transaction — review the candidate's ticker, name, and
-    Reason in `investments securities links pending` before accepting.
+    A merge re-points every accepted provider ref, tax lot, manual investment
+    ledger row, and price mark you set by hand onto the candidate in one
+    transaction, then deletes the provisional catalog row — review the
+    candidate's ticker, name, and Reason in
+    `investments securities links pending` before accepting. There is no
+    interactive prompt: `--into` is the confirmation, so this help text is the
+    only place the blast radius is stated.
     `--into` must equal the decision's own candidate_security_id: on a tied
     group the resolver files one decision per candidate, so this is the
     confirming check that stops a mistyped or stale decision_id from

@@ -16,6 +16,25 @@ MODEL (
    ref_kind is mapped per source rather than hardcoded, so C.2's tiingo_ticker and
    coingecko_slug extend the CASE instead of forking a second resolution path.
 
+   RETIRED KEYS still resolve their own history. A reversed link is one of two very
+   different things, and only reversed_by tells them apart. PriceService retires an
+   auto-derived feed key ('auto') when the catalog value it came from moves — a ticker
+   rename, FB to META — which is bookkeeping: the closes stored under the old symbol
+   were still this security's prices, and admitting only 'accepted' would erase the
+   entire pre-rename series from here and from core on an ordinary corporate action,
+   with no error. A reversal by anyone else is a judgement that the pairing was wrong,
+   so its observations must stay dropped; restoring them would reinstate exactly the
+   valuation the user rejected.
+
+   The price_date bound is not optional. A rename frees the old symbol, and tickers get
+   recycled — whoever lists under FB next binds it accepted. Without the bound the
+   retired link would go on claiming every future FB close, valuing this security from a
+   different company's series: the precise failure retiring the binding existed to
+   prevent. Observations dated before the retirement resolve through it; nothing after
+   does. The 'auto' literal is pinned to price_service._AUTO_REVERSAL by
+   test_price_service.py::test_the_staging_model_retires_the_actor_this_service_writes,
+   because a silent drift here reads as "this security has no history".
+
    COVERAGE — read this before adding a price adapter. The CASE below maps three
    sources: 'plaid', 'tiingo', and 'coingecko'. That is the complete set that resolves
    today. Any other value of raw.security_prices.source_type makes the CASE return NULL,
@@ -64,8 +83,7 @@ SELECT
   p.loaded_at
 FROM raw.security_prices AS p
 JOIN app.security_links AS links
-  ON links.status = 'accepted'
-  AND links.source_type = p.source_type
+  ON links.source_type = p.source_type
   AND links.ref_value = p.provider_security_key
   AND links.ref_kind = CASE p.source_type
     WHEN 'plaid'
@@ -75,3 +93,11 @@ JOIN app.security_links AS links
     WHEN 'coingecko'
     THEN 'coingecko_slug'
   END
+  AND (
+    links.status = 'accepted'
+    OR (
+      links.status = 'reversed'
+      AND links.reversed_by = 'auto'
+      AND p.price_date < links.reversed_at::DATE
+    )
+  )

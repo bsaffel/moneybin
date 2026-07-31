@@ -771,7 +771,20 @@ def _confirm_message(p: _MergeProposal) -> str:
     Names BOTH sides — the provisional is identified by its provider ref (the
     catalog id it will be deleted under is an implementation detail the review
     queue does not surface) — plus the reason the resolver refused to decide.
+
+    The price-mark clause is stated either way, never appended only when the
+    count is non-zero: ``accept_merge`` re-points the user's own valuations
+    alongside the lots, and a prompt silent on them reads as "not applicable"
+    rather than "none". ``accept_impact`` already counts them for the digest;
+    this is the sentence that puts the same number in front of a human.
     """
+    marks = p.blast_radius.get("security_price_overrides", 0)
+    mark_clause = (
+        f"Your own valuations move with them: {marks} price mark"
+        f"{'' if marks == 1 else 's'} you set by hand will price the survivor."
+        if marks
+        else "You have set no price mark on the provisional, so none move."
+    )
     return (
         "Confirm a security merge (this fuses two instruments' tax lots).\n\n"
         f"MERGE AWAY — provisional, provider ref {p.ref_kind}={p.ref_value}:\n"
@@ -785,8 +798,10 @@ def _confirm_message(p: _MergeProposal) -> str:
         "match, not a certain one.\n\n"
         "Accepting re-points every accepted provider ref, tax-lot selection, "
         "and manual investment ledger row onto the survivor, then deletes the "
-        "provisional catalog row. If these are not the same instrument, cost "
-        "basis and every later realized gain will be wrong. Reversible via "
+        "provisional catalog row. "
+        f"{mark_clause} "
+        "If these are not the same instrument, cost basis and every later "
+        "realized gain will be wrong. Reversible via "
         "system_audit_undo(operation_id).\n\n"
         "Accept this merge?"
     )
@@ -887,8 +902,10 @@ async def investments_securities_links_set(
 
     Mutation surface: writes app.security_link_decisions + app.security_links;
     a merge also writes app.lot_selections + raw.manual_investment_transactions
-    + app.securities (deleting the merged-away provisional row). A feed-key
-    binding touches neither the catalog nor any lot. Revert with
+    + app.security_price_overrides (your hand-set valuations move onto the
+    survivor) + app.securities (deleting the merged-away provisional row). A
+    feed-key binding touches none of those — no catalog row, no lot, no mark.
+    Revert with
     system_audit_undo(operation_id) — the whole cascade is one audited operation
     and reverses atomically; find the operation_id via system_audit. Find pending
     decisions with investments_securities_links_pending.

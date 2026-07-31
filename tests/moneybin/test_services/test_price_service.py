@@ -34,8 +34,11 @@ from moneybin.repositories.security_link_decisions_repo import (
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services._validators import NOTE_MAX_LEN
 from moneybin.services.price_service import (
+    _AUTO_REVERSAL,  # pyright: ignore[reportPrivateUsage]  # pinned against the model
     COINGECKO_REF_KIND,
     COINGECKO_SOURCE_TYPE,
+    MAX_STORED_PRICE,
+    PRICE_QUANTUM,
     TIINGO_REF_KIND,
     TIINGO_SOURCE_TYPE,
     PriceService,
@@ -50,7 +53,10 @@ from moneybin.tables import (
     SECURITY_LINK_DECISIONS,
     SECURITY_LINKS,
 )
-from tests.moneybin.price_model_helpers import ref_kind_mapping
+from tests.moneybin.price_model_helpers import (
+    historical_reversal_actor,
+    ref_kind_mapping,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -1612,3 +1618,224 @@ class TestMarkCurrencyResolution:
         service = _service(db, _FakeTiingo())
 
         assert service.resolve_quote_currency("s_bhp") == "USD"
+
+
+# --------------------------------------------------------------------------
+# The requested window
+# --------------------------------------------------------------------------
+
+
+def test_a_since_after_the_last_complete_day_is_refused(db: Database) -> None:
+    """``start > end`` is a usage error, not a feed failure.
+
+    ``pull`` deliberately ends at yesterday, so a ``--since`` of today or later
+    inverts the range. Tiingo is handed ``start > end`` and CoinGecko simply
+    matches no observation, so every held security comes back as a feed failure
+    or unpriced — the user reads a provider outage where they made a typo. The
+    refusal happens before any request so no quota is spent answering it.
+    """
+    _seed_security(db, security_id="s1", name="Apple Inc", ticker="AAPL")
+    _hold(db, "s1")
+    tiingo = _FakeTiingo(metadata={"AAPL": TickerMetadata("Apple Inc", None)})
+    service = _service(db, tiingo)
+
+    with pytest.raises(UserError) as caught:
+        service.pull(since=_TODAY)
+
+    assert caught.value.code == error_codes.INVESTMENT_DATE_RANGE_INVALID
+    assert not tiingo.fetched, "no price request may be spent on a refused window"
+    assert not tiingo.metadata_calls, "nor a key-derivation round-trip"
+
+
+def test_a_since_on_the_last_complete_day_is_accepted(db: Database) -> None:
+    """The last complete day is a legal single-day window.
+
+    Paired with the refusal above deliberately: a guard written ``since >= end``
+    passes that test and fails this one, and neither fixture alone separates the
+    two versions.
+    """
+    _seed_security(db, security_id="s1", name="Apple Inc", ticker="AAPL")
+    _hold(db, "s1")
+    tiingo = _FakeTiingo(metadata={"AAPL": TickerMetadata("Apple Inc", None)})
+    service = _service(db, tiingo)
+    last_complete_day = _TODAY - timedelta(days=1)
+
+    service.pull(since=last_complete_day)
+
+    assert tiingo.windows == [(last_complete_day, last_complete_day)]
+
+
+# --------------------------------------------------------------------------
+# What DECIMAL(28, 10) can actually hold
+# --------------------------------------------------------------------------
+
+
+def test_a_price_finer_than_the_stored_resolution_is_refused(db: Database) -> None:
+    """A price the column cannot represent must not reach the column.
+
+    ``close`` is ``DECIMAL(28, 10)``. A positive value below one quantum rounds
+    to zero on the way in, which then trips the table's own ``CHECK (close > 0)``
+    as an untyped DuckDB error — the CLI prints a traceback where it owes a usage
+    message. The bound is derived from ``PRICE_QUANTUM`` rather than written as a
+    literal, so retuning the column retunes the test with it.
+    """
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    with pytest.raises(UserError) as caught:
+        service.set_mark(
+            "s1",
+            date(2026, 6, 30),
+            PRICE_QUANTUM / 10,
+            quote_currency="USD",
+            note=None,
+        )
+
+    assert caught.value.code == error_codes.INVESTMENT_PRICE_MARK_UNREPRESENTABLE
+    count = db.execute("SELECT COUNT(*) FROM app.security_price_overrides").fetchone()
+    assert count is not None
+    assert count[0] == 0
+
+
+def test_a_price_at_the_stored_resolution_is_kept_exactly(db: Database) -> None:
+    """One quantum is legal, and is stored as the value the caller passed."""
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    service.set_mark(
+        "s1", date(2026, 6, 30), PRICE_QUANTUM, quote_currency="USD", note=None
+    )
+
+    row = db.execute(
+        "SELECT close FROM app.security_price_overrides WHERE security_id = 's1'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == PRICE_QUANTUM
+
+
+def test_a_price_beyond_the_stored_range_is_refused(db: Database) -> None:
+    """18 integer digits is the ceiling; the 19th overflows the conversion.
+
+    This fixture is exactly representable at ten decimal places, so the
+    resolution guard has nothing to say about it — only the magnitude guard can
+    refuse it, which is what makes the two separable.
+    """
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    with pytest.raises(UserError) as caught:
+        service.set_mark(
+            "s1",
+            date(2026, 6, 30),
+            MAX_STORED_PRICE + PRICE_QUANTUM,
+            quote_currency="USD",
+            note=None,
+        )
+
+    assert caught.value.code == error_codes.INVESTMENT_PRICE_MARK_UNREPRESENTABLE
+
+
+def test_the_largest_storable_price_is_kept_exactly(db: Database) -> None:
+    """The ceiling itself is legal — an off-by-one here refuses a valid mark."""
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    service.set_mark(
+        "s1", date(2026, 6, 30), MAX_STORED_PRICE, quote_currency="USD", note=None
+    )
+
+    row = db.execute(
+        "SELECT close FROM app.security_price_overrides WHERE security_id = 's1'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == MAX_STORED_PRICE
+
+
+# --------------------------------------------------------------------------
+# Retiring a feed key whose catalog value moved
+# --------------------------------------------------------------------------
+
+
+def _seed_stale_binding(db: Database, *, ticker: str, ref_value: str) -> None:
+    """A security whose catalog ticker has moved away from its bound feed key."""
+    _seed_security(db, security_id="s1", name="Meta Platforms", ticker=ticker)
+    _hold(db, "s1")
+    SecurityLinksRepo(db).insert(
+        security_id="s1",
+        ref_kind=TIINGO_REF_KIND,
+        ref_value=ref_value,
+        source_type=TIINGO_SOURCE_TYPE,
+        decided_by="auto",
+        actor="system",
+    )
+
+
+def test_a_stale_binding_is_kept_when_no_replacement_can_be_derived(
+    db: Database,
+) -> None:
+    """Retiring before deriving can strand a holding with no key at all.
+
+    The old binding is the only thing pricing this security. Reversing it first
+    and then failing to derive a replacement — no provider coverage for the new
+    symbol, a transient metadata error, an ambiguous match queued for review —
+    leaves the security with no accepted link, so a holding that was valued
+    yesterday is unpriced today and nothing says why.
+    """
+    _seed_stale_binding(db, ticker="META", ref_value="FB")
+    tiingo = _FakeTiingo(metadata={})  # META has no coverage at the provider
+    service = _service(db, tiingo)
+
+    service.pull()
+
+    assert _links(db) == [(TIINGO_REF_KIND, "FB", "s1")]
+
+
+def test_a_stale_binding_is_retired_once_its_replacement_is_derived(
+    db: Database,
+) -> None:
+    """The retirement still happens — just after there is something to replace it.
+
+    Paired with the test above: a fix that simply stopped retiring would pass
+    that one and fail this one, leaving the security two accepted links for one
+    ref_kind.
+    """
+    _seed_stale_binding(db, ticker="META", ref_value="FB")
+    tiingo = _FakeTiingo(metadata={"META": TickerMetadata("Meta Platforms", None)})
+    service = _service(db, tiingo)
+
+    service.pull()
+
+    assert _links(db) == [(TIINGO_REF_KIND, "META", "s1")]
+
+
+def test_the_staging_model_retires_the_actor_this_service_writes() -> None:
+    """One actor name, written in Python and matched in SQL, must not drift.
+
+    ``_retire_stale_binding`` stamps ``reversed_by`` from ``_AUTO_REVERSAL``;
+    ``prep.stg_security_prices`` decides whether a reversed link still resolves
+    its earlier observations by comparing that column to a SQL literal. If the
+    two stop agreeing, a renamed security's whole price history disappears from
+    core and nothing fails — the join simply matches nothing, which is
+    indistinguishable from having no history.
+    """
+    assert historical_reversal_actor() == _AUTO_REVERSAL
+
+
+def test_a_non_finite_price_is_refused_as_a_usage_error(db: Database) -> None:
+    """NaN must not reach the positivity test, which cannot survive it.
+
+    ``Decimal("NaN") <= 0`` raises ``InvalidOperation``, so a finite check placed
+    after that comparison is unreachable and NaN still escapes as an untyped
+    arithmetic error. The CLI parses its own ``PRICE`` and refuses non-finite
+    input before calling here; this is the service boundary saying the same thing
+    for every other caller, and it only holds because it runs first.
+    """
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    for value in (Decimal("NaN"), Decimal("Infinity")):
+        with pytest.raises(UserError) as caught:
+            service.set_mark(
+                "s1", date(2026, 6, 30), value, quote_currency="USD", note=None
+            )
+        assert caught.value.code == error_codes.INVESTMENT_PRICE_MARK_UNREPRESENTABLE
