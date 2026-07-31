@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from moneybin.extractors.confidence import Confidence
+from moneybin.extractors.confidence import Confidence, Tier
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 from moneybin.services.account_resolution_types import AccountProposalDict
 
@@ -426,6 +426,44 @@ def coerce_number_format(
     if not usable:
         return detected
     return detect_number_format(usable)
+
+
+def coerce_confidence_tier(
+    *,
+    field_mapping: dict[str, str],
+    detected_flagged: list[str],
+    override_keys: set[str],
+    date_format: str | None,
+    structural_red_flag: bool,
+    t_high: float,
+    t_med: float,
+) -> Tier:
+    """Re-band a merged mapping instead of asserting a tier for it.
+
+    Third sibling of ``coerce_sign_convention`` / ``coerce_number_format``:
+    an override answers only for the fields it names, so the merged plan has
+    to be re-scored rather than declared. The predecessor asserted ``high``
+    whenever a hand-kept list of exceptions was empty, and that list was
+    reported incomplete twice — first missing the structural red flag and the
+    unreadable date, then missing a *second* required field still weakly
+    matched, which promoted an untouched weak match to the one tier eligible
+    for agent self-accept.
+
+    Lives here rather than in the MCP adapter because it is a domain decision,
+    and ``test_adapters_dont_bypass_service_layer`` enforces that boundary —
+    it failed the moment the scoring call was written into the tool wrapper.
+    """
+    from moneybin.extractors.confidence import resolve_tier
+    from moneybin.extractors.tabular.column_mapper import score_mapping
+
+    remaining = [flag for flag in detected_flagged if flag not in override_keys]
+    score, _ = score_mapping(field_mapping, remaining, date_format)
+    return resolve_tier(
+        score,
+        t_high=t_high,
+        t_med=t_med,
+        structural_red_flag=structural_red_flag,
+    )
 
 
 def validate_partial_mapping(

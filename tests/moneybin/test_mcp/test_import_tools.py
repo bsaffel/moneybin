@@ -754,6 +754,45 @@ async def test_import_confirm_ignores_format_created_after_preview(
     }
 
 
+async def test_override_does_not_promote_an_untouched_weak_match(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Correcting one field must not vouch for a different one.
+
+    The tier was asserted as "high" whenever two named red flags were absent,
+    so an override that fixed field A promoted a plan whose field B was still
+    weakly matched. "high" is the tier eligible for agent self-accept, so that
+    walked an unreviewed weak match straight past the confirm gate. Re-scoring
+    through score_mapping/resolve_tier bands a surviving flag at 0.85 →
+    medium under the default t_high=0.90.
+    """
+    csv = tmp_path / "weak_description.csv"
+    # "Blurb" matches no description alias, so it is claimed by content
+    # discovery — which is what flags a field. The override then corrects a
+    # different destination entirely, leaving that flag standing.
+    csv.write_text(
+        "Date,Amount,Total,Blurb\n"
+        "2026-01-05,-4.50,-4.50,Coffee at the corner shop\n"
+        "2026-01-06,100.00,100.00,Payroll deposit for January\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    plain = await import_preview_coarse(file_path=str(csv))
+    assert plain.data.flagged_fields, "fixture must leave a field flagged"
+
+    corrected = await import_preview_coarse(
+        file_path=str(csv),
+        mapping={"amount": "Total"},
+    )
+
+    assert corrected.data.confidence != "high", (
+        f"promoted to high with {corrected.data.flagged_fields} still flagged"
+    )
+
+
 async def test_preview_override_rereads_number_format_from_the_kept_columns(
     mcp_db: object,
     tmp_path: Path,

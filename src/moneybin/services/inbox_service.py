@@ -16,6 +16,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
@@ -90,20 +91,21 @@ def _sign_sidecar_actions(
         sign_convention_effect,
     )
 
+    quoted = shlex.quote(str(moved_path))
     if prior_sign is None:
         return [
-            f"If it IS a credit card: moneybin import files {moved_path} "
+            f"If it IS a credit card: moneybin import files {quoted} "
             "--confirm (records charges as expenses, payments as credits).",
             f"If it is NOT a credit card: moneybin import files "
-            f"{moved_path} --sign negative_is_expense (records amounts "
+            f"{quoted} --sign negative_is_expense (records amounts "
             "exactly as printed).",
         ]
     accepted = proposed_sign or "the re-derived convention"
     return [
         f"Accept the change — {sign_convention_effect(accepted)}: "
-        f"moneybin import files {moved_path} --confirm.",
+        f"moneybin import files {quoted} --confirm.",
         f"Keep the previous convention — {sign_convention_effect(prior_sign)}: "
-        f"moneybin import files {moved_path} --sign {prior_sign}.",
+        f"moneybin import files {quoted} --sign {prior_sign}.",
     ]
 
 
@@ -888,6 +890,9 @@ class InboxService:
             unreadable_date_recovery,
         )
 
+        # Every suggested command interpolates this path; a pending file under
+        # "Bank Exports/" otherwise emits a command the reader cannot paste.
+        quoted_path = shlex.quote(str(moved_path))
         sidecar = moved_path.with_name(moved_path.name + ".pending.yml")
         if reason == "sign_convention":
             # "magic stays visible": a whole-ledger sign inversion the user can't
@@ -933,13 +938,13 @@ class InboxService:
                 f"--account-binding {key}=<account_id|new>" for key in keys
             )
             actions.append(
-                f"moneybin import confirm {moved_path} --accept {bindings} "
+                f"moneybin import confirm {quoted_path} --accept {bindings} "
                 "(adopt existing accounts, or 'new' to mint distinct ones; "
                 "supply every source key in this one command)"
             )
             if len(keys) == 1:
                 actions.append(
-                    f"moneybin import confirm {moved_path} --accept "
+                    f"moneybin import confirm {quoted_path} --accept "
                     "--account-name <name> (name a new account directly)"
                 )
             actions.append(
@@ -955,7 +960,7 @@ class InboxService:
             # in pending/ and the next sync re-processes a finished item. Say
             # so rather than leaving the user to discover it.
             actions.append(
-                f"moneybin import confirm {moved_path} "
+                f"moneybin import confirm {quoted_path} "
                 "--mapping transaction_date=<source_column> (if a status "
                 "column claimed the date alias — this path archives the file "
                 "on success)"
@@ -974,11 +979,11 @@ class InboxService:
             # same outcome. Override is always available as a recovery path.
             if tier != "low":
                 actions.append(
-                    f"moneybin import confirm {moved_path} --accept{account_suffix} "
+                    f"moneybin import confirm {quoted_path} --accept{account_suffix} "
                     "(accept the proposed mapping as-is)"
                 )
             actions.append(
-                f"moneybin import confirm {moved_path} "
+                f"moneybin import confirm {quoted_path} "
                 f"--mapping <dest_field>=<source_column>{account_suffix} "
                 "(partial-merge override; repeatable)"
             )

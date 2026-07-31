@@ -1186,6 +1186,51 @@ class TestPendingSidecarAccountHint:
         actions = payload["actions"]
         assert all("--account-name chase-checking" in a for a in actions), actions
 
+    def test_every_sidecar_command_survives_a_path_with_spaces(
+        self, tmp_path: Path
+    ) -> None:
+        """A pending file under "Bank Exports/" must still yield runnable commands.
+
+        Quoting was fixed once in the shared recovery helper and then a new
+        unquoted command was added beside it, so assert across *every* emitted
+        `moneybin` command rather than the one line last reported.
+        """
+        import shlex
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "jan stmt.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("Date,Amount\n2026-05-01,-10\n")
+
+        for reason in ("unknown_layout", "unreadable_date", "account_confirmation"):
+            sidecar = svc.write_pending_sidecar(
+                _Path(moved),
+                channel="tabular",
+                tier="medium",
+                score=0.75,
+                reason=reason,
+                proposed_mapping={"transaction_date": "Date", "amount": "Amount"},
+                samples={},
+                flagged=[],
+                missing_required=[],
+                unmapped_columns=[],
+            )
+
+            import yaml
+
+            raw = str(moved)
+            quoted = shlex.quote(raw)
+            checked = 0
+            for action in yaml.safe_load(sidecar.read_text())["actions"]:
+                if "moneybin " not in action or raw not in action:
+                    continue
+                checked += 1
+                assert quoted in action, f"{reason}: unquoted path in {action!r}"
+            assert checked, f"{reason} emitted no command naming the file"
+
     def test_unreadable_date_sidecar_names_both_recoveries(
         self, tmp_path: Path
     ) -> None:

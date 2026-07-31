@@ -747,6 +747,7 @@ def _import_preview_tabular(
     from moneybin.extractors.tabular.readers import read_file
     from moneybin.services.import_confirmation import (
         MappingValidationError,
+        coerce_confidence_tier,
         coerce_number_format,
         coerce_sign_convention,
         tabular_required_fields,
@@ -818,20 +819,23 @@ def _import_preview_tabular(
             detected=number_format,
         )
         # A caller-validated override resolves the ambiguity the detector
-        # couldn't (Req 11) — carry it forward as ratified, not the raw
-        # detector score. Matches resolve_or_confirm's Override -> Resolved.
-        # Two facts an override cannot answer keep the detector's own tier
-        # instead: a header row consumed as data, and a date column whose
-        # values nothing could parse. Either one leaves the plan unconfirmable,
-        # and this same envelope says so in actions[] — claiming "high" beside
-        # that hint reports two different tiers for one plan. resolve_tier
-        # already forced "low" for the red flag, so mapping_result.confidence
-        # carries it unchanged.
-        confidence = (
-            mapping_result.confidence
-            if read_result.header_row_looks_like_data
-            or mapping_result.date_format is None
-            else "high"
+        # couldn't (Req 11), but only for the fields it actually names. Re-score
+        # and re-band through the canonical path rather than asserting a tier:
+        # a hand-kept list of "facts an override cannot answer" was reported
+        # incomplete twice — first missing the structural red flag and the
+        # unreadable date, then missing a *second* required field still weakly
+        # matched, which promoted an untouched weak match to `high` and made it
+        # eligible for agent self-accept. score_mapping and resolve_tier already
+        # know all three: a red flag forces low, an unread date scores 0.75, and
+        # a surviving flag scores 0.85.
+        confidence = coerce_confidence_tier(
+            field_mapping=field_mapping,
+            detected_flagged=mapping_result.flagged_fields,
+            override_keys=set(mapping.keys()),
+            date_format=mapping_result.date_format,
+            structural_red_flag=read_result.header_row_looks_like_data,
+            t_high=bands.t_high,
+            t_med=bands.t_med,
         )
 
     return build_envelope(
