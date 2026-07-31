@@ -69,15 +69,18 @@ wrong tier too. **No allowlist of verb names fixes an invisible target**, and
 re-parsing the payload to gate it is the #346 shape (classify a derived string
 while the engine executes the original). #360 dropped `PRAGMA` and `EXPLAIN`
 from the accepted prefixes outright instead; `sql_schema` already covered the
-legitimate introspection need, so the user-facing cost was near zero. Two
-follow-ons worth carrying: a regression test here must assert on **`stats`
-content**, not on the statement being refused — a future stats-bearing pragma
-admitted by a name allowlist reintroduces this silently; and the same engine
-often re-exposes the closed verb as a **table function**
-(`SELECT * FROM pragma_storage_info(...)`), which clears a prefix gate on a
-literal `SELECT`. That one is bounded only because an unqualified function
-resolves to an empty schema name and the allowlist fails closed on it — verify
-that, don't assume it. (#360)
+legitimate introspection need, so the user-facing cost was near zero. Two rules
+carry forward. **Assert on `stats` content, not on the statement being
+refused**: a future stats-bearing pragma admitted by a name allowlist would
+reintroduce the leak while a refusal-shaped test stayed green
+(`test_metadata_path_never_returns_a_critical_value` pins the prefix, not the
+verdict). And **the same engine re-exposes a closed verb as a table function** —
+`SELECT * FROM pragma_storage_info(...)` clears a prefix gate on a literal
+`SELECT`. That one is closed, but not by the mechanism you would guess: sqlglot
+parses the call to an `exp.Table` whose `db` *and* `name` are both empty, so it
+takes the unqualified branch, matches no allowed schema, and fails closed. An
+empty *schema* alone would not have done it — the empty **name** is what finds
+nothing to resolve. (#360)
 
 **Applying an existing guard to a second path means guarding a tree the first
 path had already normalized.** The false *refusals* land in the shape the
