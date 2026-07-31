@@ -485,19 +485,22 @@ class TestImportFilesConfirmFlow:
         assert "proposed_mapping" in payload["data"]
         assert "samples" in payload["data"]
 
-    def test_unreadable_date_json_actions_name_the_date_format_flag(
+    def test_unreadable_date_json_actions_name_both_recoveries(
         self,
         mock_db: MagicMock,
         mocker: Any,
         tmp_path: Path,
     ) -> None:
-        """The one refusal a mapping override can never answer must say so.
+        """An unreadable date has two causes, and the actions must name both.
 
-        `--confirm` re-hits the same gate (it fires ahead of resolve_or_confirm
-        whatever signal it carries) and `--mapping` re-runs a detector that
-        still cannot read the values, so an agent following the generic
-        actions loops forever. Only `--date-format` changes the format, and it
-        lives on `import files`.
+        `--date-format` alone is a dead end when a status column claimed the
+        date alias: map_columns re-runs detection against whatever an override
+        names, so a column correction recovers that file while a format aimed
+        at the wrong column is refused again. `--mapping` alone is a dead end
+        when the mapped column is right and its format simply has no candidate.
+        The generic `--confirm` accept hint helps in neither case — it re-hits
+        this gate, which fires ahead of resolve_or_confirm whatever signal it
+        carries.
         """
         csv_file = tmp_path / "compact.csv"
         csv_file.write_text("Date,Amount,Memo\n20260105,-50.00,Coffee\n")
@@ -512,9 +515,10 @@ class TestImportFilesConfirmFlow:
         payload = json.loads(result.output)
         assert payload["data"]["reason"] == "unreadable_date"
         actions = payload["actions"]
-        assert any("--date-format" in a for a in actions)
-        # The two dead ends must not be offered beside the real recovery.
-        assert not any("--mapping" in a for a in actions)
+        recovery = [a for a in actions if "--date-format" in a]
+        assert recovery, actions
+        # One action carries both, so neither cause is left without a fix.
+        assert any("--mapping transaction_date=" in a for a in recovery), recovery
         assert not any("--confirm to accept" in a for a in actions)
 
     def test_unknown_layout_json_envelope_includes_tier(

@@ -1186,15 +1186,16 @@ class TestPendingSidecarAccountHint:
         actions = payload["actions"]
         assert all("--account-name chase-checking" in a for a in actions), actions
 
-    def test_unreadable_date_sidecar_names_the_date_format_flag(
+    def test_unreadable_date_sidecar_names_both_recoveries(
         self, tmp_path: Path
     ) -> None:
-        """The sidecar is a third surface with the same dead end as the CLI.
+        """The sidecar is a fourth surface carrying the same recovery text.
 
-        `import confirm --accept` re-hits the gate and `--mapping` re-runs a
-        detector that still cannot read the values, so a sidecar offering only
-        those two sends its reader in a circle. Only `import files
-        --date-format` changes the format.
+        Its generic branch offers `--accept` (which re-hits the gate) and a
+        bare `--mapping` with no hint that the date column is the one to
+        correct. The unreadable-date branch must name the column correction
+        *and* `--date-format`, since either can be the real fix depending on
+        whether the right column was mapped.
         """
         from pathlib import Path as _Path
 
@@ -1221,8 +1222,10 @@ class TestPendingSidecarAccountHint:
         import yaml
 
         actions = yaml.safe_load(sidecar.read_text())["actions"]
-        assert any("--date-format" in a for a in actions), actions
-        assert not any("--mapping" in a for a in actions), actions
+        recovery = [a for a in actions if "--date-format" in a]
+        assert recovery, actions
+        assert any("--mapping transaction_date=" in a for a in recovery), recovery
+        # --accept is the one option that helps in neither case.
         assert not any("--accept" in a for a in actions), actions
 
     def test_actions_omit_account_name_when_no_hint(self, tmp_path: Path) -> None:

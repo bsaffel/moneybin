@@ -148,10 +148,13 @@ class ConfirmationRequired:
     already accepted; the caller ratifies the account binding via
     `account_proposals`.
 
-    `reason='unreadable_date'` narrows `unknown_layout` to the one cause no
-    mapping correction can answer: nothing could read the date column's
-    values. It exists so a surface can prescribe `--date-format` instead of
-    the generic accept/override hints, which both return to this same gate.
+    `reason='unreadable_date'` narrows `unknown_layout` to one cause: a
+    `transaction_date` column is mapped and nothing could read its values.
+    It exists so a surface can name the two fixes that work — remap the
+    column, or supply `--date-format` — instead of a generic accept hint,
+    which returns to this same gate. It is NOT raised when no date column is
+    mapped at all; that stays `unknown_layout`, where a mapping override is
+    the only recovery and no date format would help.
 
     `account_proposals` carries the `AccountProposal.to_dict()` payload for
     each detected source account whose resolution needs ratification — weak
@@ -228,21 +231,28 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
 
 
 def unreadable_date_recovery(file_path: str) -> str:
-    """Name the only flag that can recover a date column nothing could parse.
+    """Name both recoveries for a date column nothing could parse.
 
-    Lives here, beside the reason it answers, because three surfaces need the
-    identical sentence — the CLI's two confirmation handlers and the inbox
-    sidecar. Each previously offered `--accept` and `--mapping`: the first
-    re-hits this gate, which fires ahead of resolve_or_confirm whatever signal
-    it carries, and the second re-runs a detector that still cannot read the
-    values whichever column it maps. `--date-format` lives on `import files`;
-    `import confirm` takes none.
+    Lives here, beside the reason it answers, because four surfaces need the
+    identical sentence — the CLI's three confirmation handlers and the inbox
+    sidecar. It must name *both*, because `unreadable_date` covers two
+    different mistakes. The detector may have read the right column and carry
+    no candidate for its format, which only `--date-format` fixes. Or a status
+    column ("Pending"/"Cleared") claimed the date alias while the real dates
+    sit in an unmapped column — there `map_columns` re-runs detection against
+    whatever an override names, so a plain column correction recovers the file
+    and `--date-format` aimed at the wrong column would just be refused again.
+    Mirrors the MCP hint in import_tools.py; keep the two in step.
     """
     return (
-        "No date format could be read from the mapped date column, so no "
-        "column correction can recover this file. Re-run `moneybin import "
-        f"files {file_path} --confirm --date-format <strptime>` with the "
-        "format the column actually uses (for example %Y%m%d)."
+        "No date format could be read from the mapped date column. If the "
+        "wrong column is mapped — a status column can claim the date alias "
+        "while the real dates sit in an unmapped one — re-run with `--mapping "
+        "transaction_date=<source_column>`, which re-runs detection against "
+        f"that column; `moneybin import preview {file_path}` names the file's "
+        "columns. If the mapped column is right and its format is simply "
+        "unrecognized, no mapping can change that: re-run `moneybin import "
+        f"files {file_path} --confirm --date-format <strptime>`."
     )
 
 

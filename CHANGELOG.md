@@ -423,10 +423,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   nothing. A refusal that replays a staged preview also reports the score and
   flagged fields the preview showed, instead of re-deriving a clean score that
   named nothing to correct. `moneybin import files`, `moneybin import confirm`,
-  and the inbox sidecar now name `--date-format` for that refusal instead of
-  offering `--confirm` and `--mapping`, which both return to the same gate, and
-  `moneybin import preview` prints `Date format: not detected` rather than
-  dropping the line.
+  and the inbox sidecar now name both real recoveries for that refusal —
+  `--mapping transaction_date=<column>` when a status column claimed the date
+  alias, `--date-format <strptime>` when the mapped column is right and its
+  format simply has no candidate — in place of a bare `--confirm`, which
+  returns to the same gate. `moneybin import preview` prints `Date format: not
+  detected` rather than dropping the line.
 - **A card imported from both a PDF statement and a bank file no longer loads
   twice (#371).** PDF import built its account key as a string and skipped the
   identity resolver every other source uses, so the same card arriving as a PDF
