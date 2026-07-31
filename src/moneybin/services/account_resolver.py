@@ -181,7 +181,9 @@ class AccountResolver:
         # minting a duplicate. Safe: step 1 above already proved no conflict.
         self._write_strong_ref(src, account_id=account_id, decided_by="auto")
 
-        candidates = self._find_candidates(src, exclude_account_id=account_id)
+        candidates = self._find_candidates(
+            src, exclude_account_id=account_id, reissue=True
+        )
         if not candidates:
             return ResolvedAccount(
                 account_id=account_id, is_new=True, outcome="minted_new"
@@ -279,7 +281,7 @@ class AccountResolver:
         # leaves it off so a no-match named account still mints silently.
         preview_id = uuid.uuid4().hex[:12]
         raw_candidates = self._find_candidates(
-            src, exclude_account_id=preview_id, fallback=fallback
+            src, exclude_account_id=preview_id, fallback=fallback, reissue=True
         )
         candidates = tuple(
             AccountCandidate(
@@ -504,12 +506,24 @@ class AccountResolver:
             )
 
     def _find_candidates(
-        self, src: SourceAccount, *, exclude_account_id: str, fallback: bool = False
+        self,
+        src: SourceAccount,
+        *,
+        exclude_account_id: str,
+        fallback: bool = False,
+        reissue: bool = False,
     ) -> list[_Candidate]:
         """Weak-signal candidates from core.dim_accounts (institution+last4, then name).
 
         Each is a review proposal, never an auto-merge. Returns no candidates if
         core.dim_accounts is not yet materialized (first import before any transform).
+
+        ``reissue`` (arriving source accounts only): when neither signal clears,
+        surface same-institution accounts whose last-four differs — see
+        ``_reissue_candidates``. On for ``resolve()`` and its ``propose()``
+        preview, which must agree; off for ``propose_existing()``, where every
+        account in an established book is already known-distinct and pairwise
+        proposals would be noise, not signal.
 
         ``fallback`` (interactive import gate only — never the backfill link
         queue): when no last4/name signal clears, surface existing accounts as a
@@ -580,12 +594,53 @@ class AccountResolver:
                     for c in result.candidates
                     if c["account_id"]
                 )
+            if not out and reissue:
+                out = self._reissue_candidates(src, exclude_account_id)
             if not out and fallback:
                 out = self._fallback_candidates(src, exclude_account_id)
             return out
         except duckdb.CatalogException:
             logger.debug("core.dim_accounts unavailable; no candidates")
             return []
+
+    def _reissue_candidates(
+        self, src: SourceAccount, exclude_account_id: str
+    ) -> list[_Candidate]:
+        """Same-institution accounts whose last-four differs — the reissue signal.
+
+        A reissued card changes its last four by definition, so the
+        institution+last4 signal cannot fire; and on the PDF path
+        ``account_name`` is a per-file filename alias, so the name signal misses
+        too. Both signals silent meant the replacement card minted a fresh
+        account with no confirm and no review entry — a statement silently
+        fragmenting into a second account.
+
+        Requires BOTH sides to carry a last-four, and requires them to differ.
+        That keeps this the reissue shape rather than a general "any account at
+        this institution" pick-list: an account with no known last-four is a
+        different gap, and an equal last-four already fired signal 1. Review-only
+        and low confidence — a reissue is proposed, never auto-merged, because a
+        wrong silent merge is the hardest inference to notice and undo.
+        """
+        target_inst = slugify(src.institution) if src.institution else None
+        if not target_inst or not src.last_four:
+            return []
+        rows = self._db.execute(
+            f"SELECT account_id, institution_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE account_id != ? AND last_four IS NOT NULL AND last_four != ? "
+            "ORDER BY account_id",
+            [exclude_account_id, src.last_four],
+        ).fetchall()
+        return [
+            _Candidate(
+                account_id=str(r[0]),
+                signal="institution",
+                value=target_inst,
+                confidence=0.3,
+            )
+            for r in rows
+            if r[1] and slugify(str(r[1])) == target_inst
+        ][:_FALLBACK_CANDIDATE_CAP]
 
     def _fallback_candidates(
         self, src: SourceAccount, exclude_account_id: str
