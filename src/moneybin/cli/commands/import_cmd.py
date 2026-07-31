@@ -534,6 +534,7 @@ def import_files_command(
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
         from moneybin.services.import_confirmation import (  # noqa: PLC0415
             ImportConfirmationRequiredError,
+            header_row_consumed_recovery,
             unreadable_date_recovery,
         )
 
@@ -587,6 +588,8 @@ def import_files_command(
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
+                elif outcome.reason == "header_row_consumed":
+                    confirm_actions.append(header_row_consumed_recovery())
                 elif outcome.reason == "unreadable_date":
                     confirm_actions.append(unreadable_date_recovery(file_path_str))
                 else:
@@ -1410,6 +1413,7 @@ def import_confirm_command(
 
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
+        header_row_consumed_recovery,
         unreadable_date_recovery,
     )
 
@@ -1484,6 +1488,8 @@ def import_confirm_command(
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
+        elif outcome.reason == "header_row_consumed":
+            confirm_actions.append(header_row_consumed_recovery())
         elif outcome.reason == "unreadable_date":
             # `import confirm` carries no --date-format, so the recovery is a
             # different command, not a different flag on this one.
@@ -1552,6 +1558,9 @@ def import_confirm_command(
                 )
                 + "`."
             )
+        elif outcome.reason == "header_row_consumed":
+            logger.error("❌ A transaction row was consumed as the header.")
+            logger.info(f"💡 {header_row_consumed_recovery()}")
         elif outcome.reason == "unreadable_date":
             logger.error("❌ No date format could be read from the date column.")
             logger.info(f"💡 {unreadable_date_recovery(str(file_path))}")

@@ -210,11 +210,12 @@ IMPORT_REVALIDATION_FAILURE_TOTAL = Counter(
     "Known layout that failed the replay/validation guard and re-surfaced.",
     ("channel",),
 )
-# Declared but not yet incremented — the matched_format path (see
-# ImportService._import_tabular) currently trusts the saved layout
-# without a structural replay check (column presence, header drift).
-# The .inc() call wires in when the replay guard lands; declaring the
-# counter now keeps dashboards/alerting stable across that change.
+# Wired: ImportService._import_tabular refuses a saved layout whose skip_rows
+# now consumes a transaction as the header row, and records it here. That is
+# the first replay check to land; column-presence and header-drift checks on
+# the matched_format path are still trusted without verification, so a rise
+# here means a saved format stopped reading its own file, not that every kind
+# of drift is caught.
 
 
 # ── SQLMesh transforms ───────────────────────────────────────────────────────

@@ -485,6 +485,35 @@ class TestImportFilesConfirmFlow:
         assert "proposed_mapping" in payload["data"]
         assert "samples" in payload["data"]
 
+    def test_consumed_header_actions_do_not_prescribe_another_mapping(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """No mapping restores a row already read as column names.
+
+        The reason was wired into the MCP action builders and not the CLI, so
+        both catch blocks fell into the generic branch and told the user to
+        retry with another mapping — which returns the same refusal.
+        """
+        csv_file = tmp_path / "headerless.csv"
+        csv_file.write_text("2026-01-05,-4.50,Coffee\n")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(reason="header_row_consumed"),
+        )
+
+        result = runner.invoke(app, ["files", str(csv_file), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["data"]["reason"] == "header_row_consumed"
+        actions = payload["actions"]
+        assert any("Add a header row" in a for a in actions), actions
+        assert not any("--mapping <field>=<column>" in a for a in actions), actions
+        assert not any("--confirm to accept" in a for a in actions), actions
+
     def test_unreadable_date_json_actions_name_both_recoveries(
         self,
         mock_db: MagicMock,

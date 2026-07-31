@@ -1756,48 +1756,27 @@ class ImportService:
                     "use --sign to override if expense amounts look wrong."
                 )
 
-        # Record format match and detection confidence metrics
-        if matched_format:
-            from moneybin.metrics.registry import IMPORT_KNOWN_FORMAT_REUSE_TOTAL
-
-            record_counter(
-                IMPORT_KNOWN_FORMAT_REUSE_TOTAL,
-                labels={"channel": "tabular"},
-                emit_metrics=emit_metrics,
-                observations=observations,
-            )
-            record_counter(
-                TABULAR_FORMAT_MATCHES,
-                labels={
-                    "format_name": matched_format.name,
-                    "format_source": format_source,
-                },
-                emit_metrics=emit_metrics,
-                observations=observations,
-            )
-        record_counter(
-            TABULAR_DETECTION_CONFIDENCE,
-            labels={"confidence": resolved.confidence},
-            emit_metrics=emit_metrics,
-            observations=observations,
-        )
-
         # All three branches converge here, which is the only place this gate
-        # covers every one of them. The flag is computed only for an explicit
-        # skip_rows (readers.py: auto-detection never picks a data-looking row),
-        # so it can only be true when a saved or built-in format supplied the
-        # skip — and that is exactly the `elif matched_format:` branch, which
-        # asserts confidence="high" and commits. The reviewed-plan branch
-        # already refuses earlier with the same reason; first contact never
-        # sets the flag at all. No caller input clears it: a mapping override
-        # cannot un-consume a header row, and resolve_or_confirm honours an
-        # Override at every tier by design.
+        # covers every one of them — and it sits ABOVE the success metrics
+        # below, because a refusal must not first record a silent format reuse.
+        # The flag is computed only for an explicit skip_rows (readers.py:
+        # auto-detection never picks a data-looking row), so it can only be
+        # true when a saved or built-in format supplied the skip — and that is
+        # exactly the `elif matched_format:` branch, which asserts
+        # confidence="high" and commits. The reviewed-plan branch already
+        # refuses earlier with the same reason; first contact never sets the
+        # flag at all. No caller input clears it: a mapping override cannot
+        # un-consume a header row, and resolve_or_confirm honours an Override
+        # at every tier by design.
         if read_result.header_row_looks_like_data:
             # Confidence is imported at module scope, but a sibling branch
             # imports it locally, which makes the name function-local here.
             from moneybin.extractors.confidence import Confidence
             from moneybin.extractors.tabular.column_mapper import collect_samples
-            from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+            from moneybin.metrics.registry import (
+                IMPORT_CONFIRMATIONS_TOTAL,
+                IMPORT_REVALIDATION_FAILURE_TOTAL,
+            )
             from moneybin.services.import_confirmation import (
                 ConfirmationRequired,
                 ImportConfirmationRequiredError,
@@ -1809,11 +1788,22 @@ class ImportService:
                 for dest, column in resolved.field_mapping.items()
                 if column in df.columns
             }
+            # This IS the replay guard the registry says the counter waits on:
+            # a saved layout that no longer reads its own file. Record it as
+            # such, and label the decline with the tier the envelope carries —
+            # the matched_format branch hardcodes resolved.confidence="high",
+            # so using it here would file a low-tier refusal under high.
+            record_counter(
+                IMPORT_REVALIDATION_FAILURE_TOTAL,
+                labels={"channel": "tabular"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             record_counter(
                 IMPORT_CONFIRMATIONS_TOTAL,
                 labels={
                     "channel": "tabular",
-                    "tier": resolved.confidence,
+                    "tier": "low",
                     "outcome": "declined",
                 },
                 emit_metrics=emit_metrics,
@@ -1841,6 +1831,32 @@ class ImportService:
                     samples=gate_samples,
                 )
             )
+
+        # Record format match and detection confidence metrics
+        if matched_format:
+            from moneybin.metrics.registry import IMPORT_KNOWN_FORMAT_REUSE_TOTAL
+
+            record_counter(
+                IMPORT_KNOWN_FORMAT_REUSE_TOTAL,
+                labels={"channel": "tabular"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+            record_counter(
+                TABULAR_FORMAT_MATCHES,
+                labels={
+                    "format_name": matched_format.name,
+                    "format_source": format_source,
+                },
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+        record_counter(
+            TABULAR_DETECTION_CONFIDENCE,
+            labels={"confidence": resolved.confidence},
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
 
         # Apply CLI overrides — rebuild a new ResolvedMapping (frozen).
         # Validate at runtime: typing.cast has no runtime effect, so an

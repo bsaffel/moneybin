@@ -1205,7 +1205,14 @@ class TestPendingSidecarAccountHint:
         moved.parent.mkdir(parents=True, exist_ok=True)
         moved.write_text("Date,Amount\n2026-05-01,-10\n")
 
-        for reason in ("unknown_layout", "unreadable_date", "account_confirmation"):
+        # header_row_consumed offers no command on purpose — nothing MoneyBin
+        # runs un-consumes a header row — so it asserts the opposite.
+        for reason, expects_command in (
+            ("unknown_layout", True),
+            ("unreadable_date", True),
+            ("account_confirmation", True),
+            ("header_row_consumed", False),
+        ):
             sidecar = svc.write_pending_sidecar(
                 _Path(moved),
                 channel="tabular",
@@ -1229,7 +1236,10 @@ class TestPendingSidecarAccountHint:
                     continue
                 checked += 1
                 assert quoted in action, f"{reason}: unquoted path in {action!r}"
-            assert checked, f"{reason} emitted no command naming the file"
+            if expects_command:
+                assert checked, f"{reason} emitted no command naming the file"
+            else:
+                assert not checked, f"{reason} must offer no command to run"
 
     def test_unreadable_date_sidecar_names_both_recoveries(
         self, tmp_path: Path

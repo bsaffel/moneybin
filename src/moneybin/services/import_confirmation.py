@@ -271,6 +271,23 @@ def unreadable_date_recovery(file_path: str) -> str:
     )
 
 
+def header_row_consumed_recovery() -> str:
+    """The consumed-header recovery, for the CLI and the inbox sidecar.
+
+    Identical substance to the MCP wording below and deliberately adjacent to
+    it: there is no command to offer on either surface, because MoneyBin
+    exposes no skip-rows override. Only the closing sentence differs, since a
+    CLI reader re-runs a command rather than re-previewing through a tool.
+    """
+    return (
+        "This file's first row was read as column names, but it parses as a "
+        "transaction — a real record was consumed as the header. No --mapping "
+        "or --override correction can recover it, and MoneyBin exposes no "
+        "skip-rows override. Add a header row to the source file, or correct "
+        "the saved format's skip_rows, then import it again."
+    )
+
+
 def header_row_consumed_recovery_mcp() -> str:
     """The only honest recovery when a transaction was read as the header.
 

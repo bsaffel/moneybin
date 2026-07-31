@@ -606,6 +606,87 @@ class TestTabularConfirmationFlow:
 
         assert exc_info.value.outcome.reason == "header_row_consumed"
 
+    def test_a_consumed_header_refusal_counts_as_a_revalidation_failure(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A refusal must not first record the saved format as a silent reuse.
+
+        The guard sits on the matched_format path, so placing it after the
+        metrics block counted a mastery KPI (IMPORT_KNOWN_FORMAT_REUSE_TOTAL)
+        for a layout that then refused, and filed the decline under
+        resolved.confidence — hardcoded "high" on that branch — while the
+        envelope said low. IMPORT_REVALIDATION_FAILURE_TOTAL was declared for
+        exactly this guard and went unincremented.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.metrics.observations import MetricObservations
+        from moneybin.metrics.registry import (
+            IMPORT_KNOWN_FORMAT_REUSE_TOTAL,
+            IMPORT_REVALIDATION_FAILURE_TOTAL,
+        )
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "preamble_metrics.csv"
+        csv.write_text(
+            "Statement export\n2026-01-05,-4.50,Coffee\n2026-01-06,100.00,Payroll\n",
+            encoding="utf-8",
+        )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="skiprows_metrics",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=",",
+                encoding="utf-8",
+                header_signature=["2026-01-05", "-4.50", "Coffee"],
+                field_mapping={
+                    "transaction_date": "2026-01-05",
+                    "amount": "-4.50",
+                    "description": "Coffee",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                skip_rows=1,
+            ),
+            actor="test",
+        )
+
+        observations = MetricObservations()
+        reuse_before = IMPORT_KNOWN_FORMAT_REUSE_TOTAL.labels(
+            channel="tabular"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        fail_before = IMPORT_REVALIDATION_FAILURE_TOTAL.labels(
+            channel="tabular"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+
+        with pytest.raises(ImportConfirmationRequiredError):
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="skiprows_metrics",
+                save_format=False,
+                emit_metrics=False,
+                observations=observations,
+            )
+        observations.flush("commit")
+
+        assert (
+            IMPORT_REVALIDATION_FAILURE_TOTAL.labels(channel="tabular")._value.get()  # type: ignore[reportPrivateUsage]
+            == fail_before + 1
+        )
+        # The refusal must not have been counted as a successful reuse.
+        assert (
+            IMPORT_KNOWN_FORMAT_REUSE_TOTAL.labels(channel="tabular")._value.get()  # type: ignore[reportPrivateUsage]
+            == reuse_before
+        )
+
     def test_an_override_cannot_resolve_an_unreadable_date_column(
         self, db: Database
     ) -> None:

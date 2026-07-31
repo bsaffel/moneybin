@@ -887,6 +887,7 @@ class InboxService:
         Mirrors the MCP ``_sign_confirm_actions`` treatment.
         """
         from moneybin.services.import_confirmation import (  # noqa: PLC0415  # avoid an import cycle at module scope
+            header_row_consumed_recovery,
             unreadable_date_recovery,
         )
 
@@ -951,6 +952,12 @@ class InboxService:
                 "Or move the file into inbox/<account-slug>/ and re-run sync "
                 "(the subfolder names the account)."
             )
+        elif reason == "header_row_consumed":
+            # Nothing to run: no --accept, --mapping, or --date-format touches
+            # a row already consumed as column names. The file stays in
+            # pending/ until the source (or the saved format's skip_rows) is
+            # corrected, which is the honest instruction.
+            actions.append(header_row_consumed_recovery())
         elif reason == "unreadable_date":
             # Two halves, and only one stays inside the inbox lifecycle. A
             # wrong-column correction runs through `import confirm`, which
