@@ -947,10 +947,26 @@ class InboxService:
                 "(the subfolder names the account)."
             )
         elif reason == "unreadable_date":
-            # Same dead end the CLI handlers had: --accept re-hits the gate and
-            # --mapping re-runs a detector that still cannot read the values.
-            # Only `import files --date-format` changes the representation.
+            # Two halves, and only one stays inside the inbox lifecycle. A
+            # wrong-column correction runs through `import confirm`, which
+            # archives on success. An unrecognized format needs --date-format,
+            # which only `import files` carries — and that command does not
+            # call archive_confirmed_file, so the file and this sidecar stay
+            # in pending/ and the next sync re-processes a finished item. Say
+            # so rather than leaving the user to discover it.
+            actions.append(
+                f"moneybin import confirm {moved_path} "
+                "--mapping transaction_date=<source_column> (if a status "
+                "column claimed the date alias — this path archives the file "
+                "on success)"
+            )
             actions.append(unreadable_date_recovery(str(moved_path)))
+            actions.append(
+                "If you recover via `import files --date-format`, delete this "
+                f"sidecar and move {moved_path.name} out of pending/ "
+                "afterwards — that command does not archive, so the next sync "
+                "would process it again."
+            )
         else:
             account_suffix = f" --account-name {account_hint}" if account_hint else ""
             # resolve_or_confirm refuses --accept on low-tier proposals; omit the

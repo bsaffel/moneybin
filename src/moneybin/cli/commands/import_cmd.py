@@ -2053,11 +2053,16 @@ def import_preview(
             if mapping_result.date_format:
                 typer.echo(f"Date format: {mapping_result.date_format}")
             else:
+                # Name only what THIS command accepts: preview takes
+                # --override, not --mapping, and no --date-format at all.
+                # The other half of the recovery therefore has to name the
+                # command that does carry it.
                 typer.echo(
-                    "Date format: not detected — re-run with `--mapping "
-                    "transaction_date=<column>` if the wrong column matched, "
-                    "or `--date-format <strptime>` if its format is simply "
-                    "unrecognized"
+                    "Date format: not detected — re-run with `--override "
+                    "transaction_date=<column>` if the wrong column matched; "
+                    "if the mapped column is right, its format is unrecognized "
+                    "and only `moneybin import files <file> --confirm "
+                    "--date-format <strptime>` can read it"
                 )
             if mapping_result.number_format:
                 typer.echo(f"Number format: {mapping_result.number_format}")
