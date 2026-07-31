@@ -216,6 +216,72 @@ def test_reviewed_plan_rejects_parse_or_mapping_drift(
     assert exc.value.code == "import_preview_plan_mismatch"
 
 
+def test_a_missing_required_field_outranks_an_unreadable_date(
+    db: Database, tmp_path: Path
+) -> None:
+    """The reason must name a cause the caller's next action can answer.
+
+    Both unreadable_date actions only remap the date column or supply a
+    format. When another required destination is still missing, neither
+    supplies it, so the caller corrects the date, re-previews, and is refused
+    again — a loop with no instruction that resolves it. unknown_layout's hint
+    asks for the mapping actually needed.
+    """
+    import polars as pl
+
+    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+    from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+    csv_file = tmp_path / "no_amount.csv"
+    csv_file.write_text("Date,Description\nnot-a-date,Coffee\n", encoding="utf-8")
+    reviewed_plan = ReviewedTabularPlan(
+        file_type="csv",
+        delimiter=",",
+        encoding="utf-8",
+        file_size=csv_file.stat().st_size,
+        # transaction_date IS mapped and unreadable, and `amount` is absent.
+        field_mapping={"transaction_date": "Date", "description": "Description"},
+        date_format=None,
+        sign_convention="negative_is_expense",
+        number_format="us",
+        is_multi_account=False,
+        confidence="low",
+        skip_rows=0,
+        has_header=True,
+        rows_in_file=2,
+        rows_skipped_trailing=0,
+        header_row_looks_like_data=False,
+        header_signature=["Date", "Description"],
+        flagged_fields=[],
+    )
+    read_result = type(
+        "ReadResult",
+        (),
+        {
+            "df": pl.DataFrame({"Date": ["not-a-date"], "Description": ["Coffee"]}),
+            "rows_in_file": 2,
+            "header_row_looks_like_data": False,
+        },
+    )()
+
+    with (
+        patch(
+            "moneybin.extractors.tabular.readers.read_file",
+            return_value=read_result,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        ImportService(db).import_file(
+            csv_file,
+            reviewed_plan=reviewed_plan,
+            refresh=False,
+            save_format=False,
+        )
+
+    assert exc.value.outcome.reason == "unknown_layout"
+    assert "amount" in exc.value.outcome.confidence.missing_required
+
+
 def test_a_declined_reviewed_plan_keeps_the_preview_s_flagged_evidence(
     db: Database, tmp_path: Path
 ) -> None:

@@ -1566,6 +1566,13 @@ class ImportService:
                             else "unreadable_date"
                             if reviewed_plan.date_format is None
                             and "transaction_date" in reviewed_plan.field_mapping
+                            # A missing required field outranks the date: both
+                            # unreadable_date actions only remap the date or
+                            # supply a format, so neither supplies what is
+                            # absent, and the corrected preview refuses again.
+                            # unknown_layout's hint asks for the mapping the
+                            # caller actually has to provide.
+                            and not missing_required
                             else "unknown_layout"
                         ),
                     )
@@ -1720,6 +1727,10 @@ class ImportService:
                         reason=(
                             "unreadable_date"
                             if "transaction_date" in proposed.field_mapping
+                            # See the reviewed-plan branch: a still-missing
+                            # required field outranks the date, because the
+                            # date actions cannot supply it.
+                            and not confidence.missing_required
                             else "unknown_layout"
                         ),
                         samples=dict(proposed.sample_values),
