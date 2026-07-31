@@ -396,8 +396,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `mapping` override stages a corrected preview to confirm instead. An override
   that switches between a single `amount` column and a `debit`/`credit` pair now
   also retires the detector's sign rule, which would otherwise have rejected
-  every row; an override that leaves a header row consumed as data still holds
-  the confirmation gate open rather than reporting high confidence.
+  every row. An override that leaves a header row consumed as data — or a date
+  column whose values nothing can parse — holds the confirmation gate open at
+  the tier the detector actually scored, instead of reporting high confidence
+  beside a preview that says it is not confirmable. When the header row itself
+  was a transaction, the preview now says so and points at the source file:
+  no column correction recovers a record consumed as column names.
 - **A card imported from both a PDF statement and a bank file no longer loads
   twice (#371).** PDF import built its account key as a string and skipped the
   identity resolver every other source uses, so the same card arriving as a PDF

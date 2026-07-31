@@ -813,10 +813,19 @@ def _import_preview_tabular(
         # A caller-validated override resolves the ambiguity the detector
         # couldn't (Req 11) — carry it forward as ratified, not the raw
         # detector score. Matches resolve_or_confirm's Override -> Resolved.
-        # A structural red flag is orthogonal to the column mapping, though:
-        # the override doesn't address a header row consumed as data, so
-        # resolve_tier's forced "low" has to survive and keep the gate armed.
-        confidence = "low" if read_result.header_row_looks_like_data else "high"
+        # Two facts an override cannot answer keep the detector's own tier
+        # instead: a header row consumed as data, and a date column whose
+        # values nothing could parse. Either one leaves the plan unconfirmable,
+        # and this same envelope says so in actions[] — claiming "high" beside
+        # that hint reports two different tiers for one plan. resolve_tier
+        # already forced "low" for the red flag, so mapping_result.confidence
+        # carries it unchanged.
+        confidence = (
+            mapping_result.confidence
+            if read_result.header_row_looks_like_data
+            or mapping_result.date_format is None
+            else "high"
+        )
 
     return build_envelope(
         data=ImportPreviewPayload(
@@ -1022,18 +1031,30 @@ def import_preview_coarse(
         # A low tier (or an unread date column) is rejected at confirm time by
         # design, so pointing there would burn a guaranteed round trip plus a
         # full re-parse. The tier is already known here — name the correction.
-        actions = (
-            [
+        if not plan_is_unconfirmable:
+            actions = [
+                "Use import_confirm(preview_id=...) before the preview expires.",
+            ]
+        elif reviewed_plan is not None and reviewed_plan["header_row_looks_like_data"]:
+            # resolve_tier pins this to low whatever the mapping says, and no
+            # surface exposes a skip-rows / no-header correction — skip_rows is
+            # only ever written from detection. Prescribing mapping= here loops
+            # the agent through previews that can never confirm; the one real
+            # recovery is the source file.
+            actions = [
+                "This file's first row was read as column names, but it parses "
+                "as a transaction — a real record was consumed as the header. "
+                "No column correction can recover it, and MoneyBin exposes no "
+                "skip-rows override. Add a header row to the source file and "
+                "preview it again.",
+            ]
+        else:
+            actions = [
                 "This mapping is not confirmable as staged. Use import_preview("
                 f"file_path={file_path!r}, mapping={{'<dest_field>': "
                 "'<source_column>'}) to correct it; data.sample_values and "
                 "data.unmapped_columns name the file's columns.",
             ]
-            if plan_is_unconfirmable
-            else [
-                "Use import_confirm(preview_id=...) before the preview expires.",
-            ]
-        )
     elif data.get("status") == "confirmation_required" and "bridge_payload" in data:
         payload = ImportPdfBridgePreviewPayload(
             **data,

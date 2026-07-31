@@ -2444,6 +2444,77 @@ async def test_preview_keeps_the_correction_hint_for_an_unconfirmable_plan(
     assert "import_confirm(" not in hint, hint
 
 
+async def test_override_keeps_the_detector_tier_when_the_date_is_unreadable(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A ratified override must not claim `high` while the dates stay unreadable.
+
+    An override answers a column question; it cannot make detect_date_format
+    read the date column's values. The plan is exactly as unconfirmable as the
+    baseline, and this same envelope says so in actions[] — reporting `high`
+    beside that hint hands the agent two contradictory confidence signals for
+    one plan.
+    """
+    csv = tmp_path / "unreadable-date.csv"
+    csv.write_text(
+        "Date,Description,Amount,Memo\n"
+        "not-a-date,Coffee,-4.50,Latte\n"
+        "also-not-a-date,Deposit,100.00,Payroll\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    baseline = await import_preview_coarse(file_path=str(csv))
+    assert baseline.data.date_format is None
+
+    preview = await import_preview_coarse(
+        file_path=str(csv),
+        mapping={"description": "Memo"},
+    )
+
+    assert preview.data.mapping["description"] == "Memo"
+    assert preview.data.date_format is None
+    assert preview.data.confidence != "high"
+    assert preview.data.confidence == baseline.data.confidence
+    hint = " ".join(preview.actions)
+    assert "not confirmable as staged" in hint, hint
+
+
+async def test_structural_red_flag_hint_does_not_prescribe_a_mapping_retry(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A consumed header row is unfixable by mapping=, so don't recommend it.
+
+    resolve_tier pins the tier to `low` on a structural red flag and no override
+    clears it, while no MCP or CLI surface exposes a skip-rows/no-header
+    correction — `skip_rows` is only ever written from detection. The generic
+    "send mapping={...}" hint therefore loops the agent through previews that
+    can never confirm; the only real recovery is at the source file.
+    """
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    # No header row — pl.read_excel eats this real transaction as column names.
+    ws.append(["2026-07-01", -4.50, "Coffee"])
+    ws.append(["2026-07-02", 100.00, "Salary"])
+    xlsx = tmp_path / "headerless.xlsx"
+    wb.save(xlsx)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(file_path=str(xlsx))
+
+    assert preview.data.header_row_looks_like_data is True
+    hint = " ".join(preview.actions)
+    assert "header row" in hint, hint
+    assert "mapping=" not in hint, hint
+    assert "import_confirm(" not in hint, hint
+
+
 async def test_account_confirmation_hint_never_names_the_raw_source_key(
     mcp_db: object,
     tmp_path: Path,
