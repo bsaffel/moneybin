@@ -1513,12 +1513,18 @@ class ImportService:
                             ),
                         ),
                         samples=plan_samples,
-                        # Only claim the narrower reason when a date column is
-                        # actually mapped and its *values* are the problem.
-                        # With no date column at all, --date-format is useless
-                        # and a mapping override is the real recovery.
+                        # Narrow the reason to the cause, so a surface can name
+                        # the recovery that actually applies. Structural first:
+                        # a consumed header row outranks any mapping question,
+                        # since no caller input touches it. Then an unreadable
+                        # date, but only when the column IS mapped and its
+                        # *values* are the problem — with no date column at all,
+                        # --date-format is useless and a mapping override is
+                        # the real recovery.
                         reason=(
-                            "unreadable_date"
+                            "header_row_consumed"
+                            if reviewed_plan.header_row_looks_like_data
+                            else "unreadable_date"
                             if reviewed_plan.date_format is None
                             and "transaction_date" in reviewed_plan.field_mapping
                             else "unknown_layout"
@@ -1775,6 +1781,66 @@ class ImportService:
             emit_metrics=emit_metrics,
             observations=observations,
         )
+
+        # All three branches converge here, which is the only place this gate
+        # covers every one of them. The flag is computed only for an explicit
+        # skip_rows (readers.py: auto-detection never picks a data-looking row),
+        # so it can only be true when a saved or built-in format supplied the
+        # skip — and that is exactly the `elif matched_format:` branch, which
+        # asserts confidence="high" and commits. The reviewed-plan branch
+        # already refuses earlier with the same reason; first contact never
+        # sets the flag at all. No caller input clears it: a mapping override
+        # cannot un-consume a header row, and resolve_or_confirm honours an
+        # Override at every tier by design.
+        if read_result.header_row_looks_like_data:
+            # Confidence is imported at module scope, but a sibling branch
+            # imports it locally, which makes the name function-local here.
+            from moneybin.extractors.confidence import Confidence
+            from moneybin.extractors.tabular.column_mapper import collect_samples
+            from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+            from moneybin.services.import_confirmation import (
+                ConfirmationRequired,
+                ImportConfirmationRequiredError,
+                ProposedMapping,
+            )
+
+            gate_samples = {
+                dest: [v for v in collect_samples(df, column) if v is not None]
+                for dest, column in resolved.field_mapping.items()
+                if column in df.columns
+            }
+            record_counter(
+                IMPORT_CONFIRMATIONS_TOTAL,
+                labels={
+                    "channel": "tabular",
+                    "tier": resolved.confidence,
+                    "outcome": "declined",
+                },
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+            raise ImportConfirmationRequiredError(
+                ConfirmationRequired(
+                    channel="tabular",
+                    confidence=Confidence(
+                        score=0.0,
+                        tier="low",
+                        flagged=(),
+                        missing_required=(),
+                    ),
+                    proposed=ProposedMapping(
+                        field_mapping=dict(resolved.field_mapping),
+                        sample_values=gate_samples,
+                        unmapped_columns=tuple(
+                            c
+                            for c in df.columns
+                            if c not in resolved.field_mapping.values()
+                        ),
+                    ),
+                    reason="header_row_consumed",
+                    samples=gate_samples,
+                )
+            )
 
         # Apply CLI overrides — rebuild a new ResolvedMapping (frozen).
         # Validate at runtime: typing.cast has no runtime effect, so an

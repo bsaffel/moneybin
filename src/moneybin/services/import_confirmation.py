@@ -27,6 +27,7 @@ ConfirmationReason = Literal[
     "account_confirmation",
     "sign_convention",
     "unreadable_date",
+    "header_row_consumed",
 ]
 ConfirmationOutcome = Literal["accepted", "overridden", "declined"]
 
@@ -148,6 +149,14 @@ class ConfirmationRequired:
     already accepted; the caller ratifies the account binding via
     `account_proposals`.
 
+    `reason='header_row_consumed'` narrows `unknown_layout` to the one cause
+    no caller input can answer: the first row was read as column names but
+    parses as a transaction, so a real record is already gone. It exists
+    because `resolve_or_confirm` honours an `Override` at every tier by
+    design — the caller's column correction outranks a low score — and that
+    is right for a mapping problem and wrong for this one, which no column
+    correction touches. Surfaces route it to source repair, not a retry.
+
     `reason='unreadable_date'` narrows `unknown_layout` to one cause: a
     `transaction_date` column is mapped and nothing could read its values.
     It exists so a surface can name the two fixes that work — remap the
@@ -259,6 +268,24 @@ def unreadable_date_recovery(file_path: str) -> str:
         "columns. If the mapped column is right and its format is simply "
         "unrecognized, no mapping can change that: re-run `moneybin import "
         f"files {quoted} --confirm --date-format <strptime>`."
+    )
+
+
+def header_row_consumed_recovery_mcp() -> str:
+    """The only honest recovery when a transaction was read as the header.
+
+    Takes no file path because there is no command to run: MoneyBin exposes
+    no skip-rows override (`skip_rows` is only ever written from detection),
+    so every mapping retry restages the same unconfirmable plan. Shared by
+    the preview- and confirm-side action builders — keeping one text per
+    state is what stops the two from drifting, which they did for three
+    consecutive review rounds.
+    """
+    return (
+        "This file's first row was read as column names, but it parses as a "
+        "transaction — a real record was consumed as the header. No column "
+        "correction can recover it, and MoneyBin exposes no skip-rows "
+        "override. Add a header row to the source file and preview it again."
     )
 
 

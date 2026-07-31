@@ -1050,19 +1050,19 @@ def import_preview_coarse(
                 "Use import_confirm(preview_id=...) before the preview expires.",
             ]
         elif reviewed_plan is not None and reviewed_plan["header_row_looks_like_data"]:
-            # resolve_tier pins this to low whatever the mapping says, and no
-            # surface exposes a skip-rows / no-header correction — skip_rows is
-            # only ever written from detection. Prescribing mapping= here loops
-            # the agent through previews that can never confirm; the one real
-            # recovery is the source file.
-            actions = [
-                "This file's first row was read as column names, but it parses "
-                "as a transaction — a real record was consumed as the header. "
-                "No column correction can recover it, and MoneyBin exposes no "
-                "skip-rows override. Add a header row to the source file and "
-                "preview it again.",
-            ]
-        elif reviewed_plan is not None and reviewed_plan["date_format"] is None:
+            from moneybin.services.import_confirmation import (
+                header_row_consumed_recovery_mcp,
+            )
+
+            actions = [header_row_consumed_recovery_mcp()]
+        elif (
+            reviewed_plan is not None
+            and reviewed_plan["date_format"] is None
+            # Only when the column IS mapped. With no transaction_date at all
+            # the plan is a mapping problem — the service says so by reporting
+            # unknown_layout — and no date format can supply a missing column.
+            and "transaction_date" in reviewed_plan["field_mapping"]
+        ):
             # A mapping= retry cannot change date_format, so when the column is
             # already mapped and its *values* are what the detector can't read
             # (a real format it carries no candidate for, e.g. %Y%m%d), the
@@ -2043,11 +2043,22 @@ def _import_confirm_coarse_confirmation_actions(
             "confirm <file> --account-binding <source_key>=<account_id|new>`."
         )
         return actions
+    # Every reason the service narrows gets the same text the preview-side
+    # builder uses. Two hand-kept branch lists over one set of states is what
+    # let these drift apart for three rounds; one helper per state is what
+    # keeps them together.
+    if outcome.reason == "header_row_consumed":
+        from moneybin.services.import_confirmation import (
+            header_row_consumed_recovery_mcp,
+        )
+
+        actions.append(header_row_consumed_recovery_mcp())
+        return actions
     if outcome.reason == "unreadable_date":
         # The generic hint below prescribes a mapping= retry, which cannot
         # change how the mapped column's values parse — for the half of this
         # reason where the column is right, it stages the same unconfirmable
-        # preview forever. Same text the preview-side builder uses.
+        # preview forever.
         from moneybin.services.import_confirmation import (
             unreadable_date_recovery_mcp,
         )

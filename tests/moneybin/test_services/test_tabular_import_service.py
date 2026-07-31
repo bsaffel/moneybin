@@ -544,6 +544,68 @@ class TestTabularConfirmationFlow:
         # contradict the preview the caller already holds.
         assert outcome.confidence.tier == "medium"
 
+    def test_a_saved_format_cannot_commit_a_consumed_header_row(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The structural gate must cover the branch where the flag can be set.
+
+        `header_row_looks_like_data` is computed only for an explicit
+        `skip_rows` (readers.py — auto-detection never picks a data-looking
+        row), so the only branch that can see it true is `elif matched_format:`,
+        which asserts confidence="high" and commits. `--format <saved>` on a
+        file whose post-skip header line is a transaction therefore imported a
+        plan with one record already consumed as column names, while
+        `import_preview` refuses the same plan. No caller input clears it:
+        resolve_or_confirm honours an Override at every tier by design, and no
+        column mapping un-consumes a header row.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        # Row 1 is a preamble the format skips; row 2 then becomes the header
+        # and is itself a transaction.
+        csv = tmp_path / "preamble_then_data.csv"
+        csv.write_text(
+            "Statement export\n2026-01-05,-4.50,Coffee\n2026-01-06,100.00,Payroll\n",
+            encoding="utf-8",
+        )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="skiprows_fixture",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=",",
+                encoding="utf-8",
+                header_signature=["2026-01-05", "-4.50", "Coffee"],
+                field_mapping={
+                    "transaction_date": "2026-01-05",
+                    "amount": "-4.50",
+                    "description": "Coffee",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                skip_rows=1,
+            ),
+            actor="test",
+        )
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="skiprows_fixture",
+                save_format=False,
+            )
+
+        assert exc_info.value.outcome.reason == "header_row_consumed"
+
     def test_an_override_cannot_resolve_an_unreadable_date_column(
         self, db: Database
     ) -> None:

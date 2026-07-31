@@ -394,7 +394,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instead of `import_bridge_response_invalid` (#372).** The bridge-specific
   code is retired along with the branch that raised it; the failure is an
   input-validation error like any other. Callers matching the old code need
-  updating.
+  updating. Three further codes are retired with the branches that raised
+  them: `import_confirm_channel_conflict`, `import_confirm_requires_signal`,
+  and `import_file_changed_during_confirmation`.
+- **`import_confirm` now declares a maximum sensitivity of `critical`, up
+  from `medium` (#372).** Its refusal envelope can carry
+  `account_proposals[].source_account_key`, which is an account identifier,
+  so the tool's declared ceiling has to admit the critical tier for the
+  masking middleware to apply. Hosts that gate tools on declared sensitivity
+  will see `import_confirm` move band.
 
 ### Fixed
 - **A mapping override that switches to debit/credit columns no longer keeps
