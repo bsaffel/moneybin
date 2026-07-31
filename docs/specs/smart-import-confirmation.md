@@ -130,7 +130,12 @@ first, implementing this shared shape rather than a PDF-only one.
    `_confirm` step of the propose→review→confirm workflow.
 8. **Staged previews are immutable.** A confirmation call cannot replace the
    detected mapping or extraction. Correct a detection by creating a fresh
-   preview from the source file, then confirm that new `preview_id`.
+   preview from the source file, then confirm that new `preview_id`. For
+   tabular, `import_preview(file_path=..., mapping={...})` takes the
+   partial-merge override at preview time (the same validation
+   `resolve_or_confirm`'s Override signal used to apply at first contact,
+   Requirement 11) — the mapping-override capability lives on the preview
+   step, never on `import_confirm`.
 9. **A known format can still fail validation and re-surface.** Reuse, not just first
    contact, is guarded: tabular's running-balance / sign checks and PDF's balance
    reconciliation can fail on a recognized layout. On failure the import does not load
@@ -273,7 +278,7 @@ shapes or verbs.** The confirm flow uses the existing import tools plus
 | Tool / command | Shape | Role |
 |---|---|---|
 | `import_files(paths=[...], ...)` | Shape 3 (discrete event) | Entry + fast-path. Known layout → load. Unknown → `confirmation_required` (no data loaded) with `actions[]` → `import_confirm`. |
-| `import_preview(file_path=...)` | Shape 3 (staged preview) | Persists encrypted preview state while returning the proposed mapping, `Confidence`, samples, and unmapped columns. Its live annotation is `readOnlyHint=false` and `idempotentHint=false`. For PDF, it also emits the bridge payload (IR / page image + extraction request). |
+| `import_preview(file_path=..., mapping=...)` | Shape 3 (staged preview) | Persists encrypted preview state while returning the proposed mapping, `Confidence`, samples, and unmapped columns. `mapping` is an optional tabular-only partial-merge override (Requirement 8); a validated override reports `confidence="high"` only when the plan is actually confirmable, and otherwise keeps the detector's own tier — a structural red flag pins it to `low`, and an unparseable date column leaves it wherever the score bands it, because neither is a question the override answers. Its live annotation is `readOnlyHint=false` and `idempotentHint=false`. For PDF, it also emits the bridge payload (IR / page image + extraction request). |
 | `import_confirm(preview_id=..., ...)` | Shape 3, `_confirm` | Atomically consume an unchanged staged preview and import its file. Optional keyword fields include account bindings and metadata, bridge response, confirmation token, and format retention. Sign inversion remains human-owned through elicitation. |
 | `import_status(sections=["formats"])` | Shape 5 | List learned formats (tabular + pdf). |
 | `gsheet_connect` | `_connect` lifecycle | Its `connection_id` mode re-detects and reconnects a binding; its `url` mode creates one. Both retain inline `confirm_mapping` / `column_mapping` and share the confidence bands + `resolve_or_confirm` primitive underneath. |

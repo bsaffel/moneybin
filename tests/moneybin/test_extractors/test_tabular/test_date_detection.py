@@ -5,8 +5,58 @@ from decimal import Decimal
 from moneybin.extractors.tabular.date_detection import (
     detect_date_format,
     detect_number_format,
+    format_parses,
     parse_amount_str,
 )
+
+
+class TestFormatParses:
+    """Tests for validating a caller-supplied date format against real values."""
+
+    def test_accepts_a_format_the_detector_does_not_carry(self) -> None:
+        """%Y%m%d is absent from _DATE_FORMATS but is a real bank date format."""
+        values: list[str | None] = ["20260105", "20260212", "20260331"]
+        assert format_parses(values, "%Y%m%d") is True
+
+    def test_rejects_a_format_that_cannot_read_the_column(self) -> None:
+        values: list[str | None] = ["20260105", "20260212", "20260331"]
+        assert format_parses(values, "%d/%m/%Y") is False
+
+    def test_a_dirty_column_still_clears_the_override_bar(self) -> None:
+        """An explicit override answers a different question than detection.
+
+        The detector's 0.9 is a confidence bar for guessing unasked. An
+        override is the caller asserting the format, and the transform imports
+        valid rows while counting the rest in rows_rejected — which `import
+        status` shows. Holding the override to 0.9 made a file with 8 good
+        dates in 10 unimportable by either route: detection refused it for
+        falling short, and the documented --date-format recovery refused it
+        by the same number.
+        """
+        # 8 of 10 — under the detector's bar, comfortably over a majority.
+        assert format_parses(["20260105"] * 8 + ["not-a-date"] * 2, "%Y%m%d") is True
+
+    def test_a_format_reading_a_minority_is_still_refused(self) -> None:
+        """Below a majority the format is likelier wrong than the data dirty."""
+        assert format_parses(["20260105"] * 4 + ["not-a-date"] * 6, "%Y%m%d") is False
+        # Exactly half clears: the bar is inclusive.
+        assert format_parses(["20260105"] * 5 + ["not-a-date"] * 5, "%Y%m%d") is True
+
+    def test_no_values_to_check_is_not_a_pass(self) -> None:
+        """Fail closed: an unverifiable override must not clear the gate."""
+        assert format_parses([], "%Y%m%d") is False
+        assert format_parses([None, "", "   "], "%Y%m%d") is False
+
+    def test_a_format_that_will_not_compile_is_refused_not_raised(self) -> None:
+        """A repeated directive raises re.error, which is not a ValueError.
+
+        strptime builds a regex from the format, so "%Y %Y" fails as a
+        duplicate group name. Catching only ValueError let a malformed caller
+        format escape validation and reach the user as an internal traceback
+        instead of IMPORT_INVALID_DATE_FORMAT.
+        """
+        assert format_parses(["2026 2026"], "%Y %Y") is False
+        assert format_parses(["01/02/2026"], "%d/%d/%Y") is False
 
 
 class TestDetectDateFormat:
@@ -56,6 +106,15 @@ class TestDetectDateFormat:
         values: list[str | None] = ["", None, "01/15/2026", "", "02/20/2026"]
         fmt, _confidence = detect_date_format(values)
         assert fmt is not None
+
+    def test_unreadable_values_name_no_format(self) -> None:
+        """The detector must say "no format", never guess one.
+
+        A fabricated `"%Y-%m-%d"` here is what let a column of unparseable
+        dates reject every row and report the import as a success.
+        """
+        values: list[str | None] = ["foo", "bar", "baz"]
+        assert detect_date_format(values) == (None, "low")
 
 
 class TestDetectNumberFormat:

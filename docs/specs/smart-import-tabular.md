@@ -1179,12 +1179,28 @@ does not receive a public sign parameter.
 ### `import_preview` — preview file structure
 
 ```python
-def import_preview(file_path: str) -> PreviewResult:
+def import_preview(file_path: str, mapping: dict[str, str] | None = None) -> PreviewResult:
     # Returns: headers, sample_rows, detected_format, delimiter, encoding,
     #          sheet_names (Excel), row_count_estimate, has_header, skip_rows,
     #          rows_in_file (row-count reconciliation), header_row_looks_like_data
     #          (structural red flag — forces confidence to low)
 ```
+
+`mapping` is a partial field→column override — the same partial-merge
+validation `resolve_or_confirm`'s Override signal uses (Req 11): unrecognized
+destination fields or absent source columns raise. A validated override
+resolves the detected ambiguity and reports `confidence="high"` — except on the
+two facts an override does not answer. `header_row_looks_like_data` is orthogonal
+to the column mapping (a real transaction row was consumed as column names), so
+that structural red flag keeps the tier at `low` and the confirm gate armed; an
+override cannot clear it. A date column whose values nothing could parse
+(`date_format is None`) likewise keeps the detector's own tier, because remapping
+the column does not change how its values read.
+An override that changes the amount shape also re-derives `sign_convention` and
+drops samples for the retired destination, so the persisted plan never carries a
+split rule against a single `amount` column. Staged previews are immutable
+(Req 8 in `smart-import-confirmation.md`), so a mapping correction is only made
+here, at preview time, never at `import_confirm`.
 
 ### `import_status` — read import history, formats, or inbox state
 
