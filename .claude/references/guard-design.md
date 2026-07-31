@@ -54,6 +54,46 @@ nodes: sqlglot lowers `EXPLAIN` to the same `exp.Command` it uses for syntax it
 cannot parse, so allowlisting that node wholesale reopens what you just closed —
 match the command word instead. (#346)
 
+**Matching the verb does not gate what the verb touches.** #346's "match the
+command word" bounds *which* statement runs; it says nothing about *what it
+reads*, and for a whole class of statements the target is invisible to the AST.
+`PRAGMA storage_info('sqlmesh__core.core__dim_accounts__<hash>')` parses its
+target to a **string literal inside `exp.Anonymous`** — not an `exp.Table` — so
+`tables_outside_schemas` finds no table to refuse and the schema allowlist
+silently does not apply. `EXPLAIN` has the identical defect via `exp.Command`.
+The consequence was a cleartext CRITICAL leak: `storage_info`'s per-segment
+`Min:`/`Max:` stats returned an 8-character prefix of a stored 9-digit
+`routing_number` (ABA check digit makes the ninth arithmetically recoverable),
+in an envelope declaring `sensitivity: "low"` — so the audit trail recorded the
+wrong tier too. **No allowlist of verb names fixes an invisible target**, and
+re-parsing the payload to gate it is the #346 shape (classify a derived string
+while the engine executes the original). #360 dropped `PRAGMA` and `EXPLAIN`
+from the accepted prefixes outright instead; `sql_schema` already covered the
+legitimate introspection need, so the user-facing cost was near zero. Two
+follow-ons worth carrying: a regression test here must assert on **`stats`
+content**, not on the statement being refused — a future stats-bearing pragma
+admitted by a name allowlist reintroduces this silently; and the same engine
+often re-exposes the closed verb as a **table function**
+(`SELECT * FROM pragma_storage_info(...)`), which clears a prefix gate on a
+literal `SELECT`. That one is bounded only because an unqualified function
+resolves to an empty schema name and the allowlist fails closed on it — verify
+that, don't assume it. (#360)
+
+**Applying an existing guard to a second path means guarding a tree the first
+path had already normalized.** The false *refusals* land in the shape the
+original path silently repaired. Extending `tables_outside_schemas` to
+`sql_query`'s metadata branch produced two, both caught in review: `DESCRIBE
+CORE.dim_accounts` was refused because the data path lowercases via
+`expand_star` while the metadata path passes the raw parse tree, and `SHOW
+TABLES FROM core` was refused because sqlglot parses that schema into a Table
+node's *name* slot rather than its `db` slot. The test-design consequence is
+sharp: **a fixture on a DENIED schema cannot catch either** — `RAW` is refused
+whatever its case, so the assertion passes for the wrong reason. Only an
+**allowed** schema in non-canonical case isolates the guard. When you re-apply a
+guard at a new call site, enumerate the normalizations the original site
+performed upstream of it, and write the fixture where a false refusal would be
+*visible*. (#360)
+
 **Enumerate the exposed set, never the declared set.** A guard that iterates the
 registry you are trusting can never reveal what you failed to declare. Widening
 `sql_query`'s gate to the whole `reports` schema shipped a masking hole: the
