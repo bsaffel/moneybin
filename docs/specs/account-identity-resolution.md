@@ -850,6 +850,17 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
   scenario-expectations rule. Scaling this to the full 5-account / 279-row WF
   persona (which needs a twin generator) is tracked as follow-up enrichment, not
   a capability gap — the collapse mechanism is identical at any N.
+- **Scenario** (reissue + document identity): the same file proves a reissued
+  card reaches the review queue through a real import — the fixture's last four
+  differs from the original, so `institution_last4` is structurally unable to
+  fire and the name is deliberately unlike, leaving the reissue signal as the
+  only guard that can catch it. `test_ofx_reimport_identity.py` proves document
+  identity follows content in **both** directions: identical bytes at a new path
+  (`statement (1).qfx`) are refused as already-imported, and different bytes at a
+  reused path import as new. Both were validated by restoring the defect —
+  `reissue=False` empties the proposal list, and the unscoped path predicate
+  refuses the third import — because a scenario that has never failed is an
+  assertion about nothing.
 
 ## Phased implementation outline (later increments)
 

@@ -141,7 +141,11 @@ class PendingLinkCandidate:
     candidate_account_id: str
     candidate_display_name: str
     confidence: float | None
-    signal: str  # e.g. "institution_last4" | "name"
+    # "institution_last4" | "name" | "institution_reissue" — only these three.
+    # Narrower than _Candidate.signal: this reads persisted decision rows, and
+    # the single insert site passes fallback=False, so the gate's last-resort
+    # pick-list ("institution" / "fallback") is never written to review.
+    signal: str
 
 
 @dataclass(frozen=True)

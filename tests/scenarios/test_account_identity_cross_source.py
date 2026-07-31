@@ -378,3 +378,66 @@ def test_csv_first_then_ofx_matches_accepts_and_collapses_end_to_end() -> None:
         rows = db.execute("SELECT source_count FROM core.fct_transactions").fetchall()
         assert len(rows) == 3, f"expected 3 deduped rows, got {len(rows)}"
         assert all(sc == 2 for (sc,) in rows), rows
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_reissued_card_queues_reissue_proposal_through_real_import() -> None:
+    """A replacement card reaches the review queue through the real pipeline.
+
+    Brandon's bank reissues a card: same institution, new last four. The old
+    signals both miss by construction — ``institution_last4`` cannot fire
+    because the last four is precisely what changed, and the display name is
+    filename-derived — so before the reissue signal this minted a second
+    account with no proposal and no trace.
+
+    The fixture is chosen so ONLY the reissue guard can catch it (per
+    testing.md, "a fixture that trips two guards isolates neither"):
+
+    * last four ``9876`` differs from the ofx account's ``1111`` -> the
+      ``institution_last4`` bridge is structurally unable to fire;
+    * the account name is deliberately unlike the ofx account's -> the fuzzy
+      ``name`` signal stays silent.
+
+    Nothing is pre-wired: the ofx account is minted by a real import, and the
+    proposal is whatever ``AccountResolver`` produces when the csv is imported
+    the way an agent would import it. Asserting the exact singleton list (not
+    ``in``) is what makes the isolation real — if either sibling signal also
+    fired, this fails.
+    """
+    scenario = Scenario(
+        scenario="account-identity-cross-source",
+        setup=SetupSpec(persona="family"),
+        pipeline=[],
+    )
+    with scenario_env(scenario) as (db, _tmp, env):
+        svc = ImportService(db)
+        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
+        checking_id = _ofx_canonical_id(db, "1111")
+        run_step("transform", scenario.setup, db, env=env)
+
+        svc.import_file(
+            _FIXTURES / "wells_fargo_checking.csv",
+            account_name="Replacement Card (...9876)",
+            confirm=True,
+            actor_kind="agent",
+            refresh=False,
+        )
+
+        decisions = db.execute(
+            "SELECT match_reason FROM app.account_link_decisions "
+            "WHERE status = 'pending' AND candidate_account_id = ?",
+            [checking_id],
+        ).fetchall()
+        assert [r[0] for r in decisions] == ["institution_reissue"], decisions
+
+        # The whole point: a reissue is a PROPOSAL, never a silent merge. The
+        # replacement keeps its own provisional account until a human accepts.
+        merged = db.execute(
+            "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native' "
+            "AND source_type = 'csv' AND account_id = ?",
+            [checking_id],
+        ).fetchone()
+        assert merged is not None and merged[0] == 0, (
+            "a reissue proposal must not auto-merge onto the original card"
+        )
