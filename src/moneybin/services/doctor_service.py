@@ -16,6 +16,11 @@ from moneybin.errors import RecoveryAction
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
 from moneybin.metrics.registry import PROFILE_CURRENCIES, UNKNOWN_CURRENCY_ROWS
 from moneybin.sqlmesh_registry import model_presence
+from moneybin.staleness import (
+    SECURITY_TYPE_STALENESS_DAYS,
+    is_stale,
+    resolve_threshold_days,
+)
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
@@ -28,6 +33,7 @@ from moneybin.tables import (
     CATEGORY_OVERRIDES,
     DIM_ACCOUNTS,
     DIM_HOLDINGS,
+    DIM_SECURITIES,
     FCT_BALANCES,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
@@ -235,6 +241,7 @@ class DoctorService:
             self._run_investment_phantom_holdings(),
             self._run_investment_price_disagreement(),
             self._run_investment_unpriced_holdings(),
+            self._run_investment_stale_prices(),
             self._run_investment_unmapped_price_source(),
         ]
         raw_invariants = [
@@ -1407,6 +1414,83 @@ class DoctorService:
                     "`moneybin investments prices set`"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_stale_prices(self) -> InvariantResult:
+        """Positions valued from a close older than its security type allows.
+
+        The surface ``_run_investment_unpriced_holdings`` defers to when it skips
+        ``carried_forward``. Without it a feedless position keeps its last
+        observed close indefinitely — a years-old ``trade_implied`` purchase
+        price — and is summed into portfolio totals as though it were current.
+        Nothing else says otherwise: ``holdings`` publishes
+        ``max_days_since_observed`` as a number rather than a warning, precisely
+        so that reporting an age is not mistaken for judging one.
+
+        Scoped to ``carried_forward``. ``valued`` means the close is dated today
+        and can never be stale; ``unpriced`` and ``withheld`` publish no value,
+        and their remedies — a price source, a reconciled share count — are owned
+        by their own checks.
+
+        The threshold resolves per security type rather than globally: markets
+        close ~114 days a year, so an equity threshold tight enough to catch a
+        neglected crypto position would fire on most days for most users and
+        train the reader to ignore every staleness warning. Comparison lives in
+        Python rather than SQL because ``moneybin.staleness`` is the shared
+        vocabulary `asset-tracking.md` values appraisals against too, and one
+        rule with two implementations is how the two drift.
+        """
+        name = "investment_stale_prices"
+        default_days = get_settings().investments.price_staleness_default_days
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT h.security_id,
+                       COALESCE(s.security_type, 'other') AS security_type,
+                       MAX(h.days_since_observed) AS days_since_observed
+                FROM {DIM_HOLDINGS.full_name} AS h
+                LEFT JOIN {DIM_SECURITIES.full_name} AS s
+                  ON s.security_id = h.security_id
+                WHERE h.valuation_status = 'carried_forward'
+                  AND h.days_since_observed IS NOT NULL
+                GROUP BY h.security_id, s.security_type
+                ORDER BY h.security_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core views absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"holdings view unavailable: {e}",
+                affected_ids=[],
+            )
+        stale = [
+            str(security_id)
+            for security_id, security_type, days in rows
+            if is_stale(
+                int(days),
+                resolve_threshold_days(
+                    str(security_type),
+                    type_defaults=SECURITY_TYPE_STALENESS_DAYS,
+                    global_default=default_days,
+                ),
+            )
+        ]
+        if stale:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(stale)} held security(s) are valued from a close older "
+                    "than their type allows, so their market values and every "
+                    "total that sums them are carried forward from a price that "
+                    "may no longer hold — run `moneybin investments prices pull` "
+                    "to refresh them, or record a current valuation with "
+                    "`moneybin investments prices set` for a security no "
+                    "provider covers"
+                ),
+                affected_ids=stale,
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 

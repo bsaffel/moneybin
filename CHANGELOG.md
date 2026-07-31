@@ -300,11 +300,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resolved series with the source that won each date. A non-positive mark is
   refused — a worthless position is a ledger event, not a zero price. Store the
   Tiingo token with `investments prices token`; CoinGecko needs no credential.
-  `moneybin system doctor` gains three checks over the price series: two feeds
+  `moneybin system doctor` gains four checks over the price series: two feeds
   quoting the same security, date, and currency more than 2% apart (one of them
   is wrong, and valuation picks a winner by rank without saying so); held
   positions carrying no usable price, which report no market value and are
-  absent from every total that sums one; and price rows whose source the
+  absent from every total that sums one; positions still valued from a close
+  older than their security type allows — four days for a stock, one for crypto
+  — so a holding no feed covers can no longer sit in your net worth at a price
+  nobody has confirmed in years; and price rows whose source the
   pipeline cannot resolve, which are discarded before they can value anything.
   One source failing does not cost you the others: a missing Tiingo token still
   refreshes crypto, and the refresh names the source that failed and why. Prices
@@ -327,7 +330,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reported success on a mark that valued nothing. When a provider is rate-limited
   or down, the refresh says so instead of reporting your holdings as unsupported,
   and stops asking that provider rather than spending the rest of the quota
-  confirming the same failure. (#373)
+  confirming the same failure. `--currency` must be a real ISO-4217 code and a
+  price must be a finite number: `USDX` and `NaN` are refused up front rather
+  than stored as a mark that quietly matches no position. Prices in
+  `core.fct_security_prices` are now treated as your own financial data rather
+  than public reference data, because that column can carry the exact price you
+  paid or a valuation you wrote yourself. (#373)
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.

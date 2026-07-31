@@ -753,13 +753,14 @@ def test_run_all_returns_expected_invariants(
     # audit coverage (M1S) + 9 investment reconciliation checks (T17: staging
     # rejects, opening-lot review, unmodeled legs, holdings divergence,
     # source overlap, unresolved securities, conflicting security refs,
-    # unreported holdings, phantom holdings) + 3 investment price checks
-    # (M1J.3 C.2: price disagreement, unpriced holdings, unmapped price source)
+    # unreported holdings, phantom holdings) + 4 investment price checks
+    # (M1J.3 C.2: price disagreement, unpriced holdings, stale prices,
+    # unmapped price source)
     # + sqlmesh_model_presence (registered-but-unbuilt models) +
     # currency_integrity (M1K.1 Req 6: unknown-currency rows, then merely-mixed
     # currency) + profile_settings audit coverage (M1K.1 Req 4) + user_reports
     # audit coverage (M2P.2).
-    assert len(report.invariants) == 54
+    assert len(report.invariants) == 55
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -1929,6 +1930,7 @@ def test_run_all_includes_investment_checks(
     assert "investment_phantom_holdings" in names
     assert "investment_price_disagreement" in names
     assert "investment_unpriced_holdings" in names
+    assert "investment_stale_prices" in names
     assert "investment_unmapped_price_source" in names
 
 
@@ -2212,6 +2214,136 @@ def test_unpriced_holdings_reports_one_security_held_in_two_accounts_once(
     )
 
     result = _investment_result(db, monkeypatch, "investment_unpriced_holdings")
+
+    assert result.affected_ids == ["sec_1"]
+
+
+def _stale_prices_ddl(db: Database) -> None:
+    """Only the columns the check reads, per the phantom-holdings precedent."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "quantity DECIMAL(28,10), valuation_status VARCHAR, "
+        "days_since_observed INTEGER)"
+    )
+    db.execute(
+        "CREATE TABLE core.dim_securities (security_id VARCHAR, security_type VARCHAR)"
+    )
+
+
+def _hold_at_age(
+    db: Database,
+    *,
+    security_id: str,
+    days: int | None,
+    security_type: str,
+    status: str = "carried_forward",
+) -> None:
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('acc_1', ?, 10, ?, ?)",
+        [security_id, status, days],
+    )
+    db.execute(
+        "INSERT INTO core.dim_securities VALUES (?, ?)", [security_id, security_type]
+    )
+
+
+@pytest.mark.unit
+def test_stale_prices_warns_when_a_close_outlives_its_type_threshold(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A feedless position keeps its last close forever and says nothing.
+
+    ``carried_forward`` publishes a market_value the reader treats as current,
+    and the unpriced check deliberately skips it because "its age the staleness
+    surface carries" — this is that surface.
+    """
+    _stale_prices_ddl(db)
+    _hold_at_age(db, security_id="sec_1", days=400, security_type="equity")
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["sec_1"]
+
+
+@pytest.mark.unit
+def test_stale_prices_absorbs_an_ordinary_weekend(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Markets close ~114 days a year; firing on that trains the reader to ignore it."""
+    _stale_prices_ddl(db)
+    _hold_at_age(db, security_id="sec_1", days=3, security_type="equity")
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_stale_prices_holds_crypto_to_its_own_tighter_threshold(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One global threshold cannot be right for both.
+
+    Both positions are the same 2 days old, so only a per-type threshold can
+    separate them: crypto trades continuously and yesterday's close is already
+    the stalest thing worth having, while 2 days on an equity is a weekend.
+    """
+    _stale_prices_ddl(db)
+    _hold_at_age(db, security_id="sec_coin", days=2, security_type="crypto")
+    _hold_at_age(db, security_id="sec_stock", days=2, security_type="equity")
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["sec_coin"]
+
+
+@pytest.mark.unit
+def test_stale_prices_falls_back_to_the_configured_default(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`cash` and `other` are unnamed on purpose and take the global default."""
+    monkeypatch.setenv("MONEYBIN_INVESTMENTS__PRICE_STALENESS_DEFAULT_DAYS", "10")
+    _stale_prices_ddl(db)
+    _hold_at_age(db, security_id="sec_1", days=11, security_type="other")
+    _hold_at_age(db, security_id="sec_2", days=9, security_type="other")
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["sec_1"]
+
+
+@pytest.mark.unit
+def test_stale_prices_does_not_claim_an_unpriced_position(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing was ever observed, so there is no age — that is the other check's."""
+    _stale_prices_ddl(db)
+    _hold_at_age(
+        db, security_id="sec_1", days=None, security_type="equity", status="unpriced"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_stale_prices_reports_one_security_held_in_two_accounts_once(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The remedy is per security — add a feed or record a mark — not per position."""
+    _stale_prices_ddl(db)
+    _hold_at_age(db, security_id="sec_1", days=400, security_type="equity")
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('acc_2', 'sec_1', 3, "
+        "'carried_forward', 400)"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
 
     assert result.affected_ids == ["sec_1"]
 

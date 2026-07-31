@@ -49,6 +49,7 @@ from moneybin.repositories.security_link_decisions_repo import (
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.repositories.security_price_repo import SecurityPriceRepo
+from moneybin.services._validators import validate_currency_code
 from moneybin.tables import (
     AUDIT_LOG,
     DIM_HOLDINGS,
@@ -522,7 +523,9 @@ class PriceService:
 
     # ---------------------------- user marks ----------------------------
 
-    def resolve_quote_currency(self, security_id: str) -> str:
+    def resolve_quote_currency(
+        self, security_id: str, explicit: str | None = None
+    ) -> str:
         """The currency a mark must carry to reach this security's positions.
 
         ``core.dim_holdings`` values a position only where
@@ -535,6 +538,9 @@ class PriceService:
         rule in ``surface-design.md`` — most specific evidence first, refuse on
         ambiguity, never guess:
 
+        0. **What the caller said**, canonicalized and validated. Naming the
+           currency is the escape hatch for every case below that refuses, so it
+           is answered without consulting the holdings at all.
         1. **The open positions' currency**, when they agree. This is the value
            the join actually compares, so it is what makes the mark do its job.
         2. **Two open positions disagreeing** — refuse. One instrument held in
@@ -546,7 +552,13 @@ class PriceService:
            quotes provider prices in, so the mark lands in the series the
            provider will later write to instead of beside it.
         4. **Neither** — refuse.
+
+        Every rung returns a canonical code, so callers never normalize: a
+        surface that upper-cased its own input would be a second spelling rule
+        beside this one, and the two would disagree the first time either moved.
         """
+        if explicit is not None:
+            return self._canonical_quote_currency(explicit)
         try:
             rows = self._db.execute(
                 f"SELECT DISTINCT UPPER(currency_code) FROM {DIM_HOLDINGS.full_name} "  # noqa: S608  # TableRef constant
@@ -607,7 +619,7 @@ class PriceService:
         SecurityPriceRepo(self._db).set(
             security_id,
             price_date,
-            quote_currency.upper(),
+            self._canonical_quote_currency(quote_currency),
             close=close,
             note=note,
             actor=self._actor,
@@ -625,10 +637,35 @@ class PriceService:
         event = SecurityPriceRepo(self._db).delete(
             security_id,
             price_date,
-            quote_currency.upper(),
+            self._canonical_quote_currency(quote_currency),
             actor=self._actor,
         )
         return event is not None
+
+    def _canonical_quote_currency(self, value: str) -> str:
+        """Normalize and validate a currency before it becomes part of a series key.
+
+        A malformed code is not a rejected input — it is a mark that writes,
+        reports success, and values nothing. ``core.dim_holdings`` matches a mark
+        to a position on exact string equality, so ``USDX`` or a padded ``" USD "``
+        joins to no position, forever and without a symptom.
+
+        Both writers share this one canonicalization deliberately: ``set`` is the
+        only way to create an override and ``delete`` the only way to remove one,
+        so if they normalized differently a mark written under one spelling would
+        be unreachable under the other.
+        """
+        candidate = value.strip().upper()
+        try:
+            validate_currency_code(candidate)
+        except ValueError as exc:
+            raise UserError(
+                f"{value!r} is not an ISO-4217 currency code. A mark only values "
+                "a holding quoted in exactly the same currency, so a code like "
+                "this one would store successfully and match no position.",
+                code=error_codes.INVESTMENT_PRICE_MARK_CURRENCY_INVALID,
+            ) from exc
+        return candidate
 
     def list_prices(
         self,

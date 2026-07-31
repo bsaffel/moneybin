@@ -561,7 +561,14 @@ def investments_lots_select(
 def investments_securities_links_pending() -> ResponseEnvelope[
     SecurityLinksPendingPayload
 ]:
-    """List pending security merge decisions, grouped by provider ref.
+    """List pending security identity and price-feed decisions, grouped by provider ref.
+
+    Two kinds share this queue. An identity decision proposes MERGING a
+    provisional security into a catalog entry — it deletes a row and re-points
+    tax lots. A price-feed decision only proposes BINDING a provider's market-data
+    symbol (`tiingo_ticker`, `coingecko_id`) to a security so its closes value the
+    position; nothing is fused, nothing is deleted, and no lot moves. A group with
+    no `provider_ticker`/`provider_name` side is a feed-key binding.
 
     Returns the review queue of provider refs (a Plaid `plaid_security_id`
     or `institution_security_id`) with candidate merge-survivor proposals.
@@ -588,7 +595,9 @@ def investments_securities_links_pending() -> ResponseEnvelope[
         total_count=n_pending,
         actions=[
             "Use identity_links_decide with kind='security_link', "
-            "decision='accept', decision_id, and target_id to merge",
+            "decision='accept', decision_id, and target_id to apply the "
+            "decision — a merge for an identity proposal, a price-feed "
+            "binding for a feed-key one",
             "Use identity_links_decide with kind='security_link', "
             "decision='reject', and decision_id to keep it distinct",
         ],
@@ -687,6 +696,15 @@ def _load_pending_proposal(decision_id: str) -> _MergeProposal:
     )
 
 
+# The two acceptances a security-link decision can commit. They are NOT the same
+# mutation: a merge deletes a catalog row and re-points tax lots, while a bind
+# only records which provider symbol prices a security. Every agent-facing
+# description of this decision must cover both — an accept documented solely as a
+# merge overstates what a feed-key decision does and deters confirming it.
+FEED_KEY_BIND_KIND = "security_feed_key_bind"
+IDENTITY_MERGE_KIND = "security_identity_merge"
+
+
 def _security_link_binding(
     *,
     decision_id: str,
@@ -715,9 +733,7 @@ def _security_link_binding(
         actor="mcp",
         profile=get_settings().profile,
         authorization_context="local-profile",
-        operation_kind=(
-            "security_feed_key_bind" if is_feed_key else "security_identity_merge"
-        ),
+        operation_kind=(FEED_KEY_BIND_KIND if is_feed_key else IDENTITY_MERGE_KIND),
         blast_radius=blast_radius,
     )
 
@@ -859,14 +875,20 @@ async def investments_securities_links_set(
       candidate answers only that pairing, not whether another candidate is
       the correct match).
 
-    A merge fuses two instruments' tax lots: it re-points every accepted
+    Accepting commits ONE of two mutations, and the confirmation prompt names
+    which. A merge fuses two instruments' tax lots: it re-points every accepted
     provider ref and lot selection onto the survivor and DELETES the
     provisional catalog row. If they are not the same instrument, cost basis
-    and every later realized gain are wrong.
+    and every later realized gain are wrong. A price-feed binding is the
+    cheaper one — it records that a provider's market-data symbol
+    (`tiingo_ticker`, `coingecko_id`) prices this security, so no row is
+    deleted, no lot moves, and the worst case is a position valued from the
+    wrong company's closes until the binding is undone.
 
-    Mutation surface: writes app.security_link_decisions + app.security_links
-    + app.lot_selections + raw.manual_investment_transactions + app.securities
-    (deletes the merged-away provisional row on accept). Revert with
+    Mutation surface: writes app.security_link_decisions + app.security_links;
+    a merge also writes app.lot_selections + raw.manual_investment_transactions
+    + app.securities (deleting the merged-away provisional row). A feed-key
+    binding touches neither the catalog nor any lot. Revert with
     system_audit_undo(operation_id) — the whole cascade is one audited operation
     and reverses atomically; find the operation_id via system_audit. Find pending
     decisions with investments_securities_links_pending.

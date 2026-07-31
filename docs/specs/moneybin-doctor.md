@@ -77,7 +77,7 @@ Nine checks covering the Plaid investment ledger. They split into two families: 
 
 ### Investment pricing (M1J.3 C.2)
 
-Three checks covering the price series holdings are valued from. C.2 is the
+Four checks covering the price series holdings are valued from. C.2 is the
 first phase in which one security can carry more than one price source, and the
 first in which a price can come from somewhere other than the broker that
 reports the position.
@@ -86,7 +86,18 @@ reports the position.
 |---|---|
 | `investment_price_disagreement` | Two provider feeds holding closes for the same security, date, and quote currency that differ by more than `investments.price_disagreement_tolerance_pct`. Resolution picks a winner by source rank; this is where that choice becomes visible instead of silent. |
 | `investment_unpriced_holdings` | Open positions whose `valuation_status` is `unpriced` — no usable price, so they report no market value and are absent from every total that sums one. |
+| `investment_stale_prices` | Open positions whose `valuation_status` is `carried_forward` and whose close is older than its security type allows. The threshold resolves per type through `moneybin.staleness` — 4 days for exchange-traded, 1 for crypto, `investments.price_staleness_default_days` for a type the table does not name. |
 | `investment_unmapped_price_source` | Price rows whose `source_type` `prep.stg_security_prices` has no `ref_kind` mapping for, detected as rows with an accepted matching binding that still never reach staging. |
+
+**`investment_stale_prices` is the only surface that judges a price's age.**
+`core.dim_holdings` publishes `days_since_observed` and `holdings` publishes
+`max_days_since_observed`, both as numbers rather than warnings — a boolean flag
+on every position would fire on the ~114 days a year markets are closed. Per-type
+thresholds are what make a warning affordable, and this check is where they
+apply. Without it a feedless position keeps a years-old `trade_implied` purchase
+price indefinitely and is summed into portfolio totals as though it were current,
+which is why `investment_unpriced_holdings` deliberately scopes to `unpriced`
+alone and leaves `carried_forward` here.
 
 **The disagreement check reads `prep.stg_security_prices`, not the resolved fact
 table.** The fact table has already collapsed each conflicting pair to one

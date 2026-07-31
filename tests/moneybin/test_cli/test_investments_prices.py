@@ -376,22 +376,31 @@ class TestMarkCurrencyDefault:
 
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_resolve()
-    @patch("moneybin.services.price_service.PriceService.resolve_quote_currency")
+    @patch(
+        "moneybin.services.price_service.PriceService.resolve_quote_currency",
+        return_value="GBP",
+    )
     @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
-    def test_an_explicit_currency_is_not_second_guessed(
+    def test_an_explicit_currency_is_handed_to_the_resolver_verbatim(
         self,
         set_mark: MagicMock,
         derive: MagicMock,
         _resolve: MagicMock,
         _db: MagicMock,
     ) -> None:
-        """Naming the currency is the escape hatch for the ambiguous cases."""
+        """The CLI must not canonicalize on the way in.
+
+        Whether an explicit code short-circuits the holdings lookup is the
+        resolver's contract and is tested there. What this pins is that the CLI
+        forwards the raw flag rather than upper-casing it first — a second
+        spelling rule beside the resolver's own is how the two drift apart.
+        """
         result = runner.invoke(
             app, ["set", "PRIVCO", "2026-07-30", "42.50", "--currency", "gbp"]
         )
 
         assert result.exit_code == 0
-        assert not derive.called, "an explicit flag must not consult the holdings"
+        assert derive.call_args.args[-1] == "gbp"
         assert set_mark.call_args.kwargs["quote_currency"] == "GBP"
 
     @patch("moneybin.cli.commands.investments.prices.get_database")
@@ -451,3 +460,31 @@ class TestMarkCurrencyDefault:
         assert result.exit_code == 1
         assert not set_mark.called, "a refused mark must not write"
         assert "--currency" in caplog.text
+
+
+class TestPriceArgumentParsing:
+    """A malformed PRICE is a usage error, so it must exit 2 before any work.
+
+    `Decimal` accepts `NaN` and `Infinity` as ordinary literals, so both survive
+    parsing and fail much deeper — `NaN` on the `close <= 0` comparison, infinity
+    inside DuckDB — surfacing as an internal error for what the user experiences
+    as a typo.
+    """
+
+    # "-Infinity" is deliberately absent: Typer rejects it as an unknown option
+    # before the parser sees it, so it would exit 2 with the finite check removed.
+    @pytest.mark.parametrize("value", ["NaN", "Infinity", "inf", "nan"])
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    def test_set_refuses_a_non_finite_price(self, db: MagicMock, value: str) -> None:
+        result = runner.invoke(app, ["set", "PRIVCO", "2026-07-30", value])
+
+        assert result.exit_code == 2, f"{value!r} must be a usage error"
+        assert not db.called, "a usage error must not open the database"
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    def test_set_still_refuses_ordinary_nonsense(self, db: MagicMock) -> None:
+        """The finite check must not displace the pre-existing decimal check."""
+        result = runner.invoke(app, ["set", "PRIVCO", "2026-07-30", "forty"])
+
+        assert result.exit_code == 2
+        assert not db.called

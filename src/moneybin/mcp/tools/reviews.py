@@ -1157,7 +1157,8 @@ async def identity_links_decide_coarse(
             message=(
                 "Confirm this complete identity-decision batch. Accepted links "
                 "can merge account histories, merchant attribution, or security "
-                "lots; every decision in the ordered batch will commit together."
+                "lots, or bind a price-feed symbol without merging anything; "
+                "every decision in the ordered batch will commit together."
             ),
             confirmation_token=confirmation_token,
         )
@@ -1208,8 +1209,12 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         identity_links_decide_coarse,
         "identity_links_decide",
         "Atomically accept or reject account, merchant, and security identity "
-        "link decisions. Any accepted merge confirms the exact normalized full "
-        "batch and complete live before-state; reject-only batches do not prompt.",
+        "link decisions. Accepting a security decision either merges two "
+        "instruments' tax lots or only binds a price-feed symbol to a security, "
+        "which deletes nothing and moves no lot; the confirmation prompt names "
+        "which one. Any accepted merge or bind confirms the exact normalized "
+        "full batch and complete live before-state; reject-only batches do not "
+        "prompt.",
         privacy_actor="identity_links_decide",
     )
 

@@ -717,18 +717,18 @@ class InvestmentFailedSourceEntry:
 class InvestmentPriceMarkPayload:
     """Payload for ``investments_prices_set`` / ``_delete`` — the mark's identity.
 
-    ``close`` is AGGREGATE, matching the registry entries for
-    ``app.security_price_overrides.close`` and ``core.fct_security_prices.close``:
-    a per-UNIT price is public reference data (what a security was worth on a
-    date), unlike ``fct_investment_transactions.price``, which is what the user
-    actually paid. The elevated figure is ``market_value`` — quantity x close —
-    which reveals position size and stays BALANCE on the holdings payload.
+    ``close`` is TXN_AMOUNT, matching the registry entries for
+    ``app.security_price_overrides.close`` and ``core.fct_security_prices.close``.
+    A mark is a number the user wrote — a 409A valuation, a private-company
+    estimate — so it is a personal financial fact, not a market observation that
+    happens to be stored locally. ``market_value`` (quantity x close) reveals
+    position size on top of that and stays BALANCE on the holdings payload.
     """
 
     security_id: Annotated[str, DataClass.RECORD_ID]
     price_date: Annotated[date, DataClass.TIMESTAMP_OBSERVABILITY]
     quote_currency: Annotated[str, DataClass.CURRENCY]
-    close: Annotated[Decimal | None, DataClass.AGGREGATE]
+    close: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
     removed: Annotated[bool, DataClass.AGGREGATE]
     # Whether the mark reached core. Same reason as InvestmentPricePullPayload:
     # the write lands in app.security_price_overrides and every consumer reads
@@ -740,11 +740,16 @@ class InvestmentPriceMarkPayload:
 
 @dataclass(frozen=True, slots=True)
 class InvestmentPriceRow:
-    """One resolved price in an ``investments_prices_list`` result."""
+    """One resolved price in an ``investments_prices_list`` result.
+
+    ``close`` is the resolved winner across provider, override, and trade-implied
+    sources, so it carries the tier of the strictest of those — see
+    ``core.fct_security_prices.close`` in the registry.
+    """
 
     price_date: Annotated[date, DataClass.TIMESTAMP_OBSERVABILITY]
     quote_currency: Annotated[str, DataClass.CURRENCY]
-    close: Annotated[Decimal, DataClass.AGGREGATE]
+    close: Annotated[Decimal, DataClass.TXN_AMOUNT]
     source_type: Annotated[str, DataClass.TXN_TYPE]
     price_basis: Annotated[str, DataClass.TXN_TYPE]
 

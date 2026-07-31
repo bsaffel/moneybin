@@ -286,7 +286,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |         quote_currency matches the position's currency_code, so a fixed
 |   |   |         default wrote a mark, reported success, and valued nothing for every
 |   |   |         non-USD holding. Refused when nothing is held or two denominations
-|   |   |         are -- ambiguity asks rather than guesses.
+|   |   |         are in use -- ambiguity asks rather than guesses. An explicit
+|   |   |         --currency must be an ISO-4217 code: `USDX` would store and match
+|   |   |         no position, so it exits 1 rather than reporting a mark that
+|   |   |         values nothing. A non-finite PRICE (`NaN`, `Infinity`) exits 2.
 |   |   +-- delete <security> <date> [--currency CUR] [--refresh]
 |   |   |         Remove a mark, returning that date to provider-derived valuation.
 |   |   |         Load-bearing, not CRUD symmetry -- `set` can only change the number,

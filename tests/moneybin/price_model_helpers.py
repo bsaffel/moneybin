@@ -56,6 +56,27 @@ def trade_implied_types() -> set[str]:
     return set(re.findall(r"'([^']+)'", predicate.group(1)))
 
 
+def close_source_ctes() -> set[str]:
+    """The CTEs whose rows are unioned into `core.fct_security_prices.close`.
+
+    Parsed rather than restated because this set is exactly what determines what
+    the resolved `close` column can contain, and therefore how it must be
+    classified. `trade_implied` was added without revisiting that classification,
+    which put the user's own execution price behind a column documented as public
+    reference data — deriving the set means the next union member cannot land the
+    same way silently.
+    """
+    sql = FCT_PRICES_PATH.read_text()
+    block = re.search(r"\), candidates AS \((.*?)\n\), ", sql, re.DOTALL)
+    assert block is not None, (
+        f"no `candidates AS (...)` CTE found in {FCT_PRICES_PATH.name}; the union "
+        "that decides what `close` can contain may have moved or been renamed"
+    )
+    sources = set(re.findall(r"\n  FROM (\w+)\b", block.group(1)))
+    assert sources, "no `FROM <cte>` branches parsed out of the candidates union"
+    return sources
+
+
 def ref_kind_mapping() -> dict[str, str]:
     """The (source_type -> ref_kind) pairs the model's CASE actually maps."""
     sql = MODEL_PATH.read_text()

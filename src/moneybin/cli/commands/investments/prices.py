@@ -100,12 +100,20 @@ def _parse_date(value: str, flag: str) -> date:
 
 
 def _parse_amount(value: str) -> Decimal:
-    """Parse a price as an exact Decimal — never through float."""
+    """Parse a price as an exact, finite Decimal — never through float."""
     try:
-        return Decimal(value)
+        parsed = Decimal(value)
     except InvalidOperation:
         typer.echo(f"error: PRICE must be a decimal number, got {value!r}", err=True)
         raise typer.Exit(2) from None
+    if not parsed.is_finite():
+        # Decimal parses "NaN" and "Infinity" as ordinary literals, so without
+        # this they survive as numbers and fail far downstream — NaN raises
+        # InvalidOperation on the close <= 0 comparison, infinity fails inside
+        # DuckDB — reporting an internal error for what is a typo.
+        typer.echo(f"error: PRICE must be a finite number, got {value!r}", err=True)
+        raise typer.Exit(2) from None
+    return parsed
 
 
 @app.command("pull")
@@ -224,7 +232,8 @@ def investments_prices_set(
         "--currency",
         help=(
             "ISO-4217 quote currency. Defaults to the currency the position is "
-            "held in; required when nothing is held or two denominations are"
+            "held in; required when nothing is held or two denominations are in "
+            "use."
         ),
     ),
     note: str | None = typer.Option(
@@ -266,11 +275,7 @@ def investments_prices_set(
         with get_database(read_only=False) as db:
             service = build_price_service(db, actor="investments_prices_set")
             security_id = service.resolve_security(security)
-            quote_currency = (
-                currency.upper()
-                if currency
-                else service.resolve_quote_currency(security_id)
-            )
+            quote_currency = service.resolve_quote_currency(security_id, currency)
             service.set_mark(
                 security_id,
                 parsed_date,
@@ -317,7 +322,8 @@ def investments_prices_delete(
         "--currency",
         help=(
             "ISO-4217 quote currency. Defaults to the currency the position is "
-            "held in; required when nothing is held or two denominations are"
+            "held in; required when nothing is held or two denominations are in "
+            "use."
         ),
     ),
     refresh: bool = typer.Option(
@@ -348,11 +354,7 @@ def investments_prices_delete(
         with get_database(read_only=False) as db:
             service = build_price_service(db, actor="investments_prices_delete")
             security_id = service.resolve_security(security)
-            quote_currency = (
-                currency.upper()
-                if currency
-                else service.resolve_quote_currency(security_id)
-            )
+            quote_currency = service.resolve_quote_currency(security_id, currency)
             removed = service.delete_mark(
                 security_id, parsed_date, quote_currency=quote_currency
             )

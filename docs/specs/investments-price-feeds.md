@@ -16,7 +16,7 @@ Phase C.1 shipped: `core.dim_holdings` carries `market_value`, `unrealized_gain`
 `quantity`, `cost_basis`, and `average_cost`, valued from the close Plaid already
 delivers in its existing sync payload. Phase C.2 shipped: Tiingo and CoinGecko
 adapters, per-date user price marks in `app.security_price_overrides`,
-trade-implied prices derived from executions, staleness surfacing, three
+trade-implied prices derived from executions, staleness surfacing, four
 `system doctor` price checks, and the `investments prices` CLI. The daily valued
 series (C.3) remains designed.
 `src/moneybin/sqlmesh/models/reports/net_worth.sql` reads `core.fct_balances_daily`
@@ -783,6 +783,18 @@ its staleness threshold": an observation sitting exactly on its threshold is
 still within it. A security never observed at all is `unpriced`, not stale —
 distinct statuses because the first wants a price source and the second wants a
 refresh.
+
+`system doctor`'s `investment_stale_prices` is where the threshold is applied.
+Everything else publishes the age as a number and judges nothing:
+`core.dim_holdings.days_since_observed` per position,
+`holdings.max_days_since_observed` across the portfolio, and the
+`price_staleness_days` gauge. That split is deliberate — a per-position boolean
+would fire on the ~114 days a year markets are closed — but it leaves one gap the
+numbers cannot close on their own: a position no feed covers keeps its last
+close indefinitely, is summed into portfolio totals as `carried_forward`, and
+nothing marks the figure as one nobody has confirmed in years. A doctor check
+resolves the threshold once per security type and reports only the positions
+past it, which is what makes the warning affordable enough to be worth reading.
 
 ---
 

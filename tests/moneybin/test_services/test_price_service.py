@@ -1212,6 +1212,71 @@ def test_a_nonpositive_mark_is_refused(db: Database) -> None:
     assert count[0] == 0
 
 
+def test_a_malformed_quote_currency_is_refused(db: Database) -> None:
+    """A typo'd currency is not a rejected input — it is a mark that joins nothing.
+
+    ``dim_holdings`` matches a mark to a position on exact string equality, so
+    ``USDX`` writes, reports success, and values nothing, forever and silently.
+    Refusing at the write is the only point where the mistake is still visible.
+    """
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    with pytest.raises(UserError) as caught:
+        service.set_mark(
+            "s1", date(2026, 6, 30), Decimal("42.50"), quote_currency="USDX", note=None
+        )
+
+    assert caught.value.code == error_codes.INVESTMENT_PRICE_MARK_CURRENCY_INVALID
+    count = db.execute("SELECT COUNT(*) FROM app.security_price_overrides").fetchone()
+    assert count is not None
+    assert count[0] == 0
+
+
+def test_a_padded_currency_writes_the_canonical_series(db: Database) -> None:
+    """Stray whitespace is a typing slip, not a different currency."""
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    service.set_mark(
+        "s1", date(2026, 6, 30), Decimal("42.50"), quote_currency=" usd ", note=None
+    )
+
+    row = db.execute(
+        "SELECT quote_currency FROM app.security_price_overrides"
+    ).fetchone()
+    assert row == ("USD",)
+
+
+def test_delete_normalizes_the_currency_the_same_way_set_does(db: Database) -> None:
+    """The two writers must agree on the key, or a mark becomes unreachable.
+
+    ``set`` is the only way to create an override and ``delete`` the only way to
+    remove one. If they canonicalized differently, a mark written under one
+    spelling could not be deleted under the other — the exact unreachability
+    ``delete`` exists to prevent.
+    """
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+    service.set_mark(
+        "s1", date(2026, 6, 30), Decimal("42.50"), quote_currency="USD", note=None
+    )
+
+    assert service.delete_mark("s1", date(2026, 6, 30), quote_currency=" usd ") is True
+
+
+def test_deleting_with_a_malformed_currency_is_refused(db: Database) -> None:
+    """Reporting "nothing was removed" for a typo would read as "no mark existed"."""
+    _seed_security(db, security_id="s1", name="Private Co")
+
+    with pytest.raises(UserError) as caught:
+        _service(db, _FakeTiingo()).delete_mark(
+            "s1", date(2026, 6, 30), quote_currency="US"
+        )
+
+    assert caught.value.code == error_codes.INVESTMENT_PRICE_MARK_CURRENCY_INVALID
+
+
 def test_deleting_a_mark_returns_the_date_to_provider_valuation(db: Database) -> None:
     """Without delete a mark is unreachable: it outranks every provider row."""
     _seed_security(db, security_id="s1", name="Private Co")
@@ -1388,6 +1453,23 @@ class TestMarkCurrencyResolution:
         service = _service(db, _FakeTiingo())
 
         assert service.resolve_quote_currency("s_bhp") == "AUD"
+
+    def test_an_explicit_currency_answers_without_consulting_the_holdings(
+        self, db: Database
+    ) -> None:
+        """Naming the currency is the escape hatch for every refusing rung.
+
+        The security below is held in two currencies, which rung 2 refuses. An
+        explicit code has to win outright, or the escape hatch would not reach
+        the only case that needs it.
+        """
+        _seed_security(db, security_id="s1", name="Dual Listed")
+        _hold(db, "s1", currency_code="USD", account_id="a1")
+        _hold(db, "s1", currency_code="EUR", account_id="a2")
+
+        service = _service(db, _FakeTiingo())
+
+        assert service.resolve_quote_currency("s1", " gbp ") == "GBP"
 
     def test_it_refuses_when_one_security_is_held_in_two_currencies(
         self, db: Database
