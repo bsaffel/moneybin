@@ -444,6 +444,54 @@ class TestPreview:
         assert result.exit_code == 0
         assert "Columns" in result.output
 
+    def test_undetected_date_hint_only_names_flags_preview_accepts(
+        self, tmp_path: Path
+    ) -> None:
+        """A hint that names a flag this command lacks is worse than silence.
+
+        The user pastes it and gets "No such option". This has now shipped
+        twice in one PR — `import confirm --date-format` and `import preview
+        --mapping` — so assert against the command's *registered* options
+        rather than a literal, which only re-pins whatever was written.
+        The other half of the recovery genuinely lives on `import files`, so
+        flags inside an explicit `moneybin import files` clause are exempt.
+        """
+        import re
+
+        csv_file = tmp_path / "unreadable.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\nnot-a-date,100,Coffee\nalso-not-a-date,200,Rent\n"
+        )
+
+        result = runner.invoke(app, ["preview", str(csv_file)])
+
+        assert result.exit_code == 0
+        line = next(
+            ln for ln in result.output.splitlines() if ln.startswith("Date format:")
+        )
+        assert "not detected" in line, line
+
+        from typing import cast
+
+        import click
+        import typer.main
+
+        group = cast(click.Group, typer.main.get_command(app))
+        preview_cmd: click.Command = group.commands["preview"]
+        registered: set[str] = {
+            opt
+            for param in preview_cmd.params
+            for opt in param.opts
+            if opt.startswith("--")
+        }
+        # Drop the clause that deliberately delegates to another command.
+        own = re.sub(r"`moneybin import files[^`]*`", "", line)
+        for flag in re.findall(r"--[a-z-]+", own):
+            assert flag in registered, (
+                f"{flag} is named by `import preview` but not registered on it; "
+                f"registered: {sorted(registered)}"
+            )
+
     def test_preview_warns_on_header_that_looks_like_data(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

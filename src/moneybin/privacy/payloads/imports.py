@@ -3,7 +3,7 @@
 Covers: import_files, import_preview, import_status, import_revert,
 import_formats, import_inbox_sync, import_inbox_pending,
 import_labels_set (curation tool migrated from batch 4 stopgap),
-and import_confirm.
+and import_confirm_coarse (registered as ``import_confirm``).
 
 Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
 middleware can derive sensitivity via ``derive_tier`` without inspecting
@@ -24,8 +24,12 @@ Tier derivation summary:
                                      failed list may contain error strings)
   - ``ImportInboxPendingPayload``  → Tier.LOW (filename/account metadata only)
   - ``ImportLabelsSetPayload``     → Tier.MEDIUM (labels = USER_NOTE)
-  - ``ImportConfirmPayload``       → Tier.MEDIUM (sample_values = DESCRIPTION —
-                                     raw file content may contain PII)
+  - ``ImportConfirmCoarsePayload`` → Tier.MEDIUM (union max; reject_reason on
+                                     ImportPdfBridgeInvalidPayload = DESCRIPTION,
+                                     every other member field is LOW);
+                                     confirmation_required re-surfaces build a
+                                     raw dict envelope instead (see
+                                     import_tools.py)
 """
 
 from __future__ import annotations
@@ -536,40 +540,6 @@ class ImportLabelsSetPayload:
     labels: Annotated[list[str], DataClass.USER_NOTE]
 
 
-# ---------------------------------------------------------------------------
-# import_confirm — confirmation outcome payload
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class ImportConfirmPayload:
-    """Payload for ``import_confirm`` — post-confirmation import result.
-
-    ``status`` is always ``"imported"`` here — the discriminant mirrors the
-    ``confirmation_required`` envelope's top-level status field, so callers
-    can branch on a single discriminant regardless of whether ``import_confirm``
-    succeeded or re-surfaced ConfirmationRequired (a re-surface emits a raw
-    dict with ``status="confirmation_required"``; see ``import_tools.py``).
-    ``merged_mapping`` is the authoritative destination → source column
-    mapping the load actually used (threaded from ``ImportResult.field_mapping``
-    populated inside ``_import_tabular`` from the ``resolve_or_confirm`` outcome,
-    NOT re-derived from a post-hoc detection pass — those can diverge on
-    ambiguous headers).
-    ``sample_values`` carries raw file content that may include PII
-    (merchant names, description text); annotated as DESCRIPTION (MEDIUM).
-    Sample values are populated best-effort by re-reading the file post-load
-    for display; they're informational, not load-state.
-    """
-
-    import_id: Annotated[str | None, DataClass.RECORD_ID]
-    rows_loaded: Annotated[int, DataClass.AGGREGATE]
-    merged_mapping: Annotated[dict[str, Any], DataClass.TXN_TYPE]
-    # raw file content — may contain PII → DESCRIPTION (MEDIUM)
-    sample_values: Annotated[dict[str, Any], DataClass.DESCRIPTION]
-    sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
-    status: Annotated[str, DataClass.TXN_TYPE] = "imported"
-
-
 class ImportTabularConfirmCoarsePayload(BaseModel):
     """Successful tabular preview confirmation."""
 
@@ -633,10 +603,60 @@ class ImportPdfBridgeInvalidPayload(BaseModel):
     rows_diverged: Annotated[bool, DataClass.TXN_TYPE]
 
 
+class ImportConfirmRequiredPayload(BaseModel):
+    """A non-sign confirmation the confirm call could not resolve on its own.
+
+    Typed rather than a raw dict because ``import_confirm`` is
+    ``dynamic_classification=True``: the decorator does not redact on the
+    tool's behalf, so an untyped envelope would ship
+    ``account_proposals[].source_account_key`` (ACCOUNT_IDENTIFIER → CRITICAL)
+    unmasked and record no ``classes_returned``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["confirmation_required"], DataClass.TXN_TYPE] = (
+        "confirmation_required"
+    )
+    preview_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[Literal["confirmation_required"], DataClass.TXN_TYPE] = (
+        "confirmation_required"
+    )
+    channel: Annotated[str, DataClass.TXN_TYPE]
+    tier: Annotated[str, DataClass.AGGREGATE]
+    score: Annotated[float, DataClass.AGGREGATE]
+    reason: Annotated[str, DataClass.TXN_TYPE]
+    error_message: Annotated[str | None, DataClass.DESCRIPTION] = None
+    proposed_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE] = Field(
+        default_factory=dict
+    )
+    samples: Annotated[dict[str, list[str]], DataClass.DESCRIPTION] = Field(
+        default_factory=dict
+    )
+    flagged: Annotated[list[str], DataClass.TXN_TYPE] = Field(default_factory=list)
+    missing_required: Annotated[list[str], DataClass.TXN_TYPE] = Field(
+        default_factory=list
+    )
+    unmapped_columns: Annotated[list[str], DataClass.TXN_TYPE] = Field(
+        default_factory=list
+    )
+    bridge_payload: ImportConfirmationBridgePayload | None = None
+    account_proposals: list[ImportConfirmationAccountProposal] = Field(
+        default_factory=list
+    )
+
+    # No sign_* fields: this payload is built only where the reason is NOT
+    # sign_convention, so the proposal is never a SignConventionProposal and
+    # every sign field would be a constant empty. Declaring sign_sample_rows
+    # here would also enroll import_confirm in the money surface on TXN_AMOUNT
+    # leaves it can never emit.
+
+
 ImportConfirmCoarsePayload = Annotated[
     ImportTabularConfirmCoarsePayload
     | ImportPdfBridgeAppliedPayload
     | ImportPdfSignAppliedPayload
-    | ImportPdfBridgeInvalidPayload,
+    | ImportPdfBridgeInvalidPayload
+    | ImportConfirmRequiredPayload,
     Field(discriminator="kind"),
 ]

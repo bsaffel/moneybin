@@ -534,6 +534,8 @@ def import_files_command(
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
         from moneybin.services.import_confirmation import (  # noqa: PLC0415
             ImportConfirmationRequiredError,
+            header_row_consumed_recovery,
+            unreadable_date_recovery,
         )
 
         if isinstance(_exc, ImportConfirmationRequiredError):
@@ -586,6 +588,10 @@ def import_files_command(
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
+                elif outcome.reason == "header_row_consumed":
+                    confirm_actions.append(header_row_consumed_recovery())
+                elif outcome.reason == "unreadable_date":
+                    confirm_actions.append(unreadable_date_recovery(file_path_str))
                 else:
                     # resolve_or_confirm refuses Accept on low-tier proposals (the
                     # detector couldn't form a complete one); suggesting --confirm
@@ -1258,8 +1264,8 @@ def import_confirm_command(
         help=(
             "Explicitly approve an inferred tabular sign inversion (pair with "
             "--accept). For a PDF statement use `import files <path> --confirm`; "
-            "the MCP equivalent is import_confirm(confirm_pdf_sign=True), which "
-            "asks the human rather than asserting their approval."
+            "the MCP equivalent is import_confirm(preview_id=...) on a sign "
+            "preview, which asks the human rather than asserting their approval."
         ),
     ),
     sign: SignConventionType | None = typer.Option(
@@ -1407,6 +1413,8 @@ def import_confirm_command(
 
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
+        header_row_consumed_recovery,
+        unreadable_date_recovery,
     )
 
     try:
@@ -1480,6 +1488,12 @@ def import_confirm_command(
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
+        elif outcome.reason == "header_row_consumed":
+            confirm_actions.append(header_row_consumed_recovery())
+        elif outcome.reason == "unreadable_date":
+            # `import confirm` carries no --date-format, so the recovery is a
+            # different command, not a different flag on this one.
+            confirm_actions.append(unreadable_date_recovery(str(file_path)))
         else:
             confirm_actions.append(
                 "Re-run with --mapping <field>=<column> to override specific fields."
@@ -1544,6 +1558,12 @@ def import_confirm_command(
                 )
                 + "`."
             )
+        elif outcome.reason == "header_row_consumed":
+            logger.error("❌ A transaction row was consumed as the header.")
+            logger.info(f"💡 {header_row_consumed_recovery()}")
+        elif outcome.reason == "unreadable_date":
+            logger.error("❌ No date format could be read from the date column.")
+            logger.info(f"💡 {unreadable_date_recovery(str(file_path))}")
         else:
             msg = f"❌ Confirmation failed: {outcome.reason}" + (
                 f" — {outcome.error_message}" if outcome.error_message else ""
@@ -2034,8 +2054,25 @@ def import_preview(
                 typer.echo(f"  {field} ← {col}")
             if mapping_result.sign_convention:
                 typer.echo(f"Sign convention: {mapping_result.sign_convention}")
+            # Say "not detected" rather than dropping the line: a missing row
+            # reads as "nothing to report", when it is the one fact that blocks
+            # the import. Name both fixes — a status column can claim the date
+            # alias while the real dates sit unmapped, and --date-format aimed
+            # at that wrong column is refused.
             if mapping_result.date_format:
                 typer.echo(f"Date format: {mapping_result.date_format}")
+            else:
+                # Name only what THIS command accepts: preview takes
+                # --override, not --mapping, and no --date-format at all.
+                # The other half of the recovery therefore has to name the
+                # command that does carry it.
+                typer.echo(
+                    "Date format: not detected — re-run with `--override "
+                    "transaction_date=<column>` if the wrong column matched; "
+                    "if the mapped column is right, its format is unrecognized "
+                    "and only `moneybin import files <file> --confirm "
+                    "--date-format <strptime>` can read it"
+                )
             if mapping_result.number_format:
                 typer.echo(f"Number format: {mapping_result.number_format}")
 

@@ -179,11 +179,11 @@ IMPORT_CONFIRMATIONS_TOTAL = Counter(
 IMPORT_DETECTION_SCORE = Histogram(
     "moneybin_import_detection_score",
     "Distribution of normalized confidence score across all detections.",
-    # _score_mapping in column_mapper.py emits a discrete set today:
+    # score_mapping in column_mapper.py emits a discrete set today:
     # {0.40, 0.75, 0.85, 1.0}. Buckets are aligned to that distribution so
     # the histogram's high-band buckets aren't permanently empty (which
     # would make tuning t_high above 0.85 functionally equivalent to 0.86).
-    # If _score_mapping evolves to a continuous distribution, re-fan these.
+    # If score_mapping evolves to a continuous distribution, re-fan these.
     buckets=(0.0, 0.4, 0.75, 0.85, 1.0),
 )
 
@@ -210,11 +210,12 @@ IMPORT_REVALIDATION_FAILURE_TOTAL = Counter(
     "Known layout that failed the replay/validation guard and re-surfaced.",
     ("channel",),
 )
-# Declared but not yet incremented — the matched_format path (see
-# ImportService._import_tabular) currently trusts the saved layout
-# without a structural replay check (column presence, header drift).
-# The .inc() call wires in when the replay guard lands; declaring the
-# counter now keeps dashboards/alerting stable across that change.
+# Wired: ImportService._import_tabular refuses a saved layout whose skip_rows
+# now consumes a transaction as the header row, and records it here. That is
+# the first replay check to land; column-presence and header-drift checks on
+# the matched_format path are still trusted without verification, so a rise
+# here means a saved format stopped reading its own file, not that every kind
+# of drift is caught.
 
 
 # ── SQLMesh transforms ───────────────────────────────────────────────────────
