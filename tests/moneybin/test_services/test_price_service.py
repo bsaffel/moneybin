@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 from prometheus_client import REGISTRY
 
+from moneybin import error_codes
 from moneybin.connectors.prices.errors import PriceFeedAuthError
 from moneybin.connectors.prices.protocol import (
     PriceFetchFailure,
@@ -26,6 +27,7 @@ from moneybin.connectors.prices.protocol import (
 )
 from moneybin.connectors.prices.tiingo import TickerMetadata
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
@@ -181,11 +183,18 @@ def _seed_security(
     )
 
 
-def _hold(db: Database, security_id: str, *, quantity: str = "10") -> None:
+def _hold(
+    db: Database,
+    security_id: str,
+    *,
+    quantity: str = "10",
+    currency_code: str = "USD",
+    account_id: str = "acct1",
+) -> None:
     db.execute(
         "INSERT INTO core.dim_holdings (account_id, security_id, quantity, "
         "currency_code) VALUES (?, ?, ?, ?)",
-        ["acct1", security_id, Decimal(quantity), "USD"],
+        [account_id, security_id, Decimal(quantity), currency_code],
     )
 
 
@@ -1156,7 +1165,9 @@ def test_setting_a_mark_stores_it_with_override_provenance(db: Database) -> None
     _seed_security(db, security_id="s1", name="Private Co")
     service = _service(db, _FakeTiingo())
 
-    service.set_mark("s1", date(2026, 6, 30), Decimal("42.50"), note="409A")
+    service.set_mark(
+        "s1", date(2026, 6, 30), Decimal("42.50"), quote_currency="USD", note="409A"
+    )
 
     row = db.execute(
         "SELECT security_id, price_date, quote_currency, close, note "
@@ -1170,8 +1181,12 @@ def test_setting_a_mark_twice_replaces_the_value(db: Database) -> None:
     _seed_security(db, security_id="s1", name="Private Co")
     service = _service(db, _FakeTiingo())
 
-    service.set_mark("s1", date(2026, 6, 30), Decimal("42.50"), note="first")
-    service.set_mark("s1", date(2026, 6, 30), Decimal("51.00"), note="revised")
+    service.set_mark(
+        "s1", date(2026, 6, 30), Decimal("42.50"), quote_currency="USD", note="first"
+    )
+    service.set_mark(
+        "s1", date(2026, 6, 30), Decimal("51.00"), quote_currency="USD", note="revised"
+    )
 
     rows = db.execute("SELECT close, note FROM app.security_price_overrides").fetchall()
     assert rows == [(Decimal("51.00"), "revised")]
@@ -1188,7 +1203,9 @@ def test_a_nonpositive_mark_is_refused(db: Database) -> None:
     service = _service(db, _FakeTiingo())
 
     with pytest.raises(ValueError, match="positive"):
-        service.set_mark("s1", date(2026, 6, 30), Decimal("0"), note=None)
+        service.set_mark(
+            "s1", date(2026, 6, 30), Decimal("0"), quote_currency="USD", note=None
+        )
 
     count = db.execute("SELECT COUNT(*) FROM app.security_price_overrides").fetchone()
     assert count is not None
@@ -1199,9 +1216,11 @@ def test_deleting_a_mark_returns_the_date_to_provider_valuation(db: Database) ->
     """Without delete a mark is unreachable: it outranks every provider row."""
     _seed_security(db, security_id="s1", name="Private Co")
     service = _service(db, _FakeTiingo())
-    service.set_mark("s1", date(2026, 6, 30), Decimal("42.50"), note=None)
+    service.set_mark(
+        "s1", date(2026, 6, 30), Decimal("42.50"), quote_currency="USD", note=None
+    )
 
-    deleted = service.delete_mark("s1", date(2026, 6, 30))
+    deleted = service.delete_mark("s1", date(2026, 6, 30), quote_currency="USD")
 
     assert deleted is True
     count = db.execute("SELECT COUNT(*) FROM app.security_price_overrides").fetchone()
@@ -1215,7 +1234,11 @@ def test_deleting_an_absent_mark_reports_that_nothing_was_removed(
     """A silent success would read as "the override is gone" when none existed."""
     _seed_security(db, security_id="s1", name="Private Co")
 
-    assert _service(db, _FakeTiingo()).delete_mark("s1", date(2026, 6, 30)) is False
+    removed = _service(db, _FakeTiingo()).delete_mark(
+        "s1", date(2026, 6, 30), quote_currency="USD"
+    )
+
+    assert removed is False
 
 
 def test_listing_prices_reads_the_resolved_series(db: Database) -> None:
@@ -1328,3 +1351,113 @@ def test_every_ref_kind_the_service_queues_is_routed_as_a_feed_key() -> None:
         "PriceService queues these ref_kinds, but SecurityLinksService.accept "
         f"routes them to the MERGE path: {sorted(queued - _FEED_KEY_REF_KINDS)}"
     )
+
+
+class TestMarkCurrencyResolution:
+    """A mark carries the currency that makes it reach the position, or asks.
+
+    core.dim_holdings joins a price to a position only where
+    `lp.quote_currency = UPPER(p.currency_code)`, so a mark quoted in any other
+    currency writes, reports success, and values nothing — the failure is
+    invisible at the moment it happens and stays invisible afterwards.
+    """
+
+    def test_it_reads_the_currency_the_position_is_denominated_in(
+        self, db: Database
+    ) -> None:
+        """One currency across the open positions is the unambiguous case."""
+        _seed_security(db, security_id="s_bhp", name="BHP Group", currency_code="AUD")
+        _hold(db, "s_bhp", currency_code="EUR")
+        service = _service(db, _FakeTiingo())
+
+        assert service.resolve_quote_currency("s_bhp") == "EUR"
+
+    def test_it_prefers_the_position_over_the_catalog_declaration(
+        self, db: Database
+    ) -> None:
+        """The join compares against the position, so the catalog cannot decide it.
+
+        app.securities.currency_code is what the provider fetch quotes in, but a
+        mark exists to value a holding — and the holding's own currency_code is
+        the value dim_holdings actually compares. Taking the catalog's answer
+        here would write a mark that matches the provider series and still joins
+        to nothing, which is the original bug wearing a different default.
+        """
+        _seed_security(db, security_id="s_bhp", name="BHP Group", currency_code="USD")
+        _hold(db, "s_bhp", currency_code="AUD")
+        service = _service(db, _FakeTiingo())
+
+        assert service.resolve_quote_currency("s_bhp") == "AUD"
+
+    def test_it_refuses_when_one_security_is_held_in_two_currencies(
+        self, db: Database
+    ) -> None:
+        """Two denominations is a question only the user can answer."""
+        _seed_security(db, security_id="s_bhp", name="BHP Group")
+        _hold(db, "s_bhp", currency_code="AUD", account_id="acct1")
+        _hold(db, "s_bhp", currency_code="GBP", account_id="acct2")
+        service = _service(db, _FakeTiingo())
+
+        with pytest.raises(UserError) as caught:
+            service.resolve_quote_currency("s_bhp")
+
+        assert caught.value.code == error_codes.INVESTMENT_PRICE_MARK_CURRENCY_AMBIGUOUS
+        message = str(caught.value)
+        assert "AUD" in message and "GBP" in message, "name the candidates"
+        assert "--currency" in message, "name the flag that resolves it"
+
+    def test_an_unheld_security_falls_back_to_its_catalog_currency(
+        self, db: Database
+    ) -> None:
+        """Marking a security before holding it is legitimate, not an error.
+
+        A 409A valuation is routinely recorded ahead of the purchase. The
+        catalog's currency_code is a declared fact rather than a default, and it
+        is what the provider fetch quotes in — so the mark lands in the series
+        the provider will later write to instead of beside it.
+        """
+        _seed_security(db, security_id="s_bhp", name="BHP Group", currency_code="AUD")
+        service = _service(db, _FakeTiingo())
+
+        assert service.resolve_quote_currency("s_bhp") == "AUD"
+
+    def test_it_refuses_for_a_security_no_rung_can_answer_for(
+        self, db: Database
+    ) -> None:
+        """Both rungs silent means nothing to infer — ask rather than assume USD.
+
+        app.securities.currency_code is NOT NULL, so the catalog rung answers for
+        anything in the catalog; an id that is not there is what leaves the whole
+        ladder without an answer.
+        """
+        service = _service(db, _FakeTiingo())
+
+        with pytest.raises(UserError) as caught:
+            service.resolve_quote_currency("s_not_in_catalog")
+
+        assert caught.value.code == error_codes.INVESTMENT_PRICE_MARK_CURRENCY_AMBIGUOUS
+        assert "--currency" in str(caught.value)
+
+    def test_a_position_outranks_the_catalog_when_both_answer(
+        self, db: Database
+    ) -> None:
+        """The ladder is ordered, not first-found: the join compares the position."""
+        _seed_security(db, security_id="s_bhp", name="BHP Group", currency_code="USD")
+        _hold(db, "s_bhp", currency_code="AUD")
+        service = _service(db, _FakeTiingo())
+
+        assert service.resolve_quote_currency("s_bhp") == "AUD"
+
+    def test_a_closed_position_does_not_decide_the_currency(self, db: Database) -> None:
+        """Quantity zero is a closed position; it values nothing and votes on nothing.
+
+        Without the quantity filter a security sold out of a EUR account and
+        rebought in a USD one reads as ambiguous forever, refusing a mark the
+        user can legitimately set.
+        """
+        _seed_security(db, security_id="s_bhp", name="BHP Group")
+        _hold(db, "s_bhp", currency_code="EUR", quantity="0", account_id="acct1")
+        _hold(db, "s_bhp", currency_code="USD", quantity="5", account_id="acct2")
+        service = _service(db, _FakeTiingo())
+
+        assert service.resolve_quote_currency("s_bhp") == "USD"

@@ -28,7 +28,7 @@ import httpx
 from moneybin.connectors.prices._http import DEFAULT_TIMEOUT, fetch_json
 from moneybin.connectors.prices.errors import (
     PriceFeedAuthError,
-    PriceFeedError,
+    PriceFeedNotFoundError,
 )
 from moneybin.connectors.prices.protocol import (
     PriceFetchFailure,
@@ -110,12 +110,13 @@ class TiingoPriceAdapter:
                     headers=headers,
                     sleep=self._sleep,
                 )
-            except PriceFeedAuthError:
-                # A rejected token is wrong for every security in the batch, so
-                # retrying the remaining 39 only burns the rate limit before
-                # failing identically. Whole-batch conditions propagate.
-                raise
-            except PriceFeedError as exc:
+            except PriceFeedNotFoundError as exc:
+                # The only condition that describes this security rather than the
+                # run. Everything else — a rejected token, an exhausted quota, an
+                # unreachable host, a 5xx — is wrong for every security in the
+                # batch, so retrying the remaining 39 only burns the rate limit
+                # before failing identically. Whole-batch conditions propagate to
+                # PriceService, which contains them per source.
                 failures.append(PriceFetchFailure(ref.provider_security_key, str(exc)))
                 continue
             priced = self._observations(ref, bars)
@@ -143,7 +144,10 @@ class TiingoPriceAdapter:
 
         ``None`` is not an error — it means no Tiingo series covers this security,
         which is a valuation gap for the held-but-unpriced check to surface, not
-        a failed request.
+        a failed request. Only a 404 earns it: a quota exhaustion or a 5xx says
+        nothing about coverage, and answering ``None`` there would report every
+        held security as unsupported while hiding the one condition the user can
+        actually act on.
         """
         try:
             body = fetch_json(
@@ -153,9 +157,7 @@ class TiingoPriceAdapter:
                 headers={"Authorization": f"Token {self._token()}"},
                 sleep=self._sleep,
             )
-        except PriceFeedAuthError:
-            raise
-        except PriceFeedError:
+        except PriceFeedNotFoundError:
             return None
         if not isinstance(body, dict):
             return None

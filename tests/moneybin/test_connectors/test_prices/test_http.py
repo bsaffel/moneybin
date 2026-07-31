@@ -20,6 +20,7 @@ import respx
 from moneybin.connectors.prices._http import fetch_json
 from moneybin.connectors.prices.errors import (
     PriceFeedAPIError,
+    PriceFeedNotFoundError,
     PriceFeedRateLimitError,
     PriceFeedUnreachableError,
 )
@@ -75,6 +76,30 @@ def test_a_body_that_is_not_json_names_the_status_not_the_body() -> None:
     assert "200" in message, "the status is the only diagnostic the caller gets"
     assert _TOKEN not in message
     assert "upstream rejected" not in message
+
+
+@respx.mock
+def test_an_unknown_symbol_is_typed_apart_from_a_broken_provider() -> None:
+    """404 is the one status an adapter may answer for a single security.
+
+    Every other typed error is a whole-batch condition (see errors.py), so the
+    adapters decide containment on the exception type alone. If a 404 arrived as
+    the same PriceFeedAPIError a 500 does, either the provider being down reads
+    as 'this symbol has no coverage' or one unknown ticker aborts the batch —
+    the type is what keeps those apart.
+    """
+    respx.get(url__startswith=_URL).mock(
+        return_value=httpx.Response(404, json={"detail": "Error: Ticker not found"})
+    )
+
+    with httpx.Client() as client, pytest.raises(PriceFeedNotFoundError) as caught:
+        _fetch(client)
+
+    assert not isinstance(caught.value, PriceFeedAPIError), (
+        "a not-found must not be catchable as the generic API error"
+    )
+    assert "404" in str(caught.value)
+    assert _TOKEN not in str(caught.value)
 
 
 @respx.mock

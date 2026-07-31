@@ -18,7 +18,11 @@ import httpx
 import pytest
 import respx
 
-from moneybin.connectors.prices.errors import PriceFeedAuthError
+from moneybin.connectors.prices.errors import (
+    PriceFeedAPIError,
+    PriceFeedAuthError,
+    PriceFeedRateLimitError,
+)
 from moneybin.connectors.prices.protocol import SecurityRef
 from moneybin.connectors.prices.tiingo import TIINGO_BASE_URL, TiingoPriceAdapter
 
@@ -228,15 +232,20 @@ def test_it_retries_a_rate_limited_security_then_succeeds() -> None:
 
 @respx.mock
 def test_it_does_not_retry_a_server_error() -> None:
-    """Only rate limiting is retried; a 500 is reported once and moved past."""
+    """Only rate limiting is retried; a 500 is raised once, not retried.
+
+    It propagates rather than becoming a per-security failure because a broken
+    provider is not a fact about this ticker — PriceService contains it per
+    source, so the other sources still write their rows.
+    """
     route = respx.get(_prices_route()).mock(return_value=httpx.Response(500))
     adapter = _adapter()
     adapter._sleep = lambda _seconds: None  # type: ignore[method-assign]  # test hook
 
-    result = adapter.fetch([_ref()], _START, _END)
+    with pytest.raises(PriceFeedAPIError):
+        adapter.fetch([_ref()], _START, _END)
 
     assert route.call_count == 1
-    assert len(result.failures) == 1
 
 
 @respx.mock
@@ -327,6 +336,58 @@ def test_metadata_returns_none_for_a_ticker_tiingo_does_not_know() -> None:
     )
 
     assert _adapter().fetch_metadata("NOPE") is None
+
+
+@respx.mock
+def test_metadata_reports_an_outage_instead_of_claiming_no_coverage() -> None:
+    """A rate limit is not an answer about this ticker, so it must not read as one.
+
+    `None` from fetch_metadata means "no Tiingo series covers this security", and
+    _tiingo_key turns that into the `no_provider_coverage` reason a user sees. A
+    quota exhaustion answers nothing about coverage, so returning None here tells
+    every held security it is unsupported and hides the one condition the user
+    could actually act on.
+    """
+    respx.get(_meta_route()).mock(return_value=httpx.Response(429))
+    adapter = _adapter()
+    adapter._sleep = lambda _seconds: None  # type: ignore[method-assign]  # test hook
+
+    with pytest.raises(PriceFeedRateLimitError):
+        adapter.fetch_metadata("AAPL")
+
+
+@respx.mock
+def test_metadata_reports_a_broken_provider_instead_of_claiming_no_coverage() -> None:
+    """Same rule for a 5xx: the provider failed, it did not answer 'unknown'."""
+    respx.get(_meta_route()).mock(return_value=httpx.Response(503))
+
+    with pytest.raises(PriceFeedAPIError):
+        _adapter().fetch_metadata("AAPL")
+
+
+@respx.mock
+def test_a_rate_limit_stops_the_batch_instead_of_spending_it_on_every_security() -> (
+    None
+):
+    """The quota is the shared resource, so walking on deepens the very limit hit.
+
+    Recording a per-security failure and continuing costs RETRY_MAX more requests
+    for each remaining security, all of them certain to fail the same way, and
+    leaves the run reporting 40 individually-unpriced securities rather than one
+    actionable "Tiingo rate limit" a user can wait out.
+    """
+    first = respx.get(_prices_route("AAPL")).mock(return_value=httpx.Response(429))
+    second = respx.get(_prices_route("MSFT")).mock(
+        return_value=httpx.Response(200, json=[_bar()])
+    )
+    adapter = _adapter()
+    adapter._sleep = lambda _seconds: None  # type: ignore[method-assign]  # test hook
+
+    with pytest.raises(PriceFeedRateLimitError):
+        adapter.fetch([_ref("AAPL"), _ref("MSFT")], _START, _END)
+
+    assert first.call_count == 3, "the first security still exhausts its own retries"
+    assert not second.called, "a whole-batch condition must not spend the next request"
 
 
 @respx.mock

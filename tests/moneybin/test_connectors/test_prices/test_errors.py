@@ -8,6 +8,7 @@ from moneybin.connectors.prices.errors import (
     PriceFeedAPIError,
     PriceFeedAuthError,
     PriceFeedError,
+    PriceFeedNotFoundError,
     PriceFeedRateLimitError,
     PriceFeedUnreachableError,
 )
@@ -18,6 +19,7 @@ _SUBCLASSES = (
     PriceFeedAuthError,
     PriceFeedUnreachableError,
     PriceFeedRateLimitError,
+    PriceFeedNotFoundError,
     PriceFeedAPIError,
 )
 
@@ -25,10 +27,29 @@ _SUBCLASSES = (
 class TestPriceFeedErrorHierarchy:
     """Verify error class hierarchy and subclass relationships."""
 
+    def test_every_subclass_is_covered_by_this_module(self) -> None:
+        """_SUBCLASSES must equal the real hierarchy, not merely be part of it.
+
+        The rest of this module iterates _SUBCLASSES, so a new error type added
+        without touching this list would ship with none of its wiring asserted —
+        and the taxonomy-code and classifier tests below would still pass. Set
+        equality is what makes adding a type require naming it here.
+        """
+        assert set(PriceFeedError.__subclasses__()) == set(_SUBCLASSES)
+
     def test_error_hierarchy_subclasses_base(self) -> None:
         """All price-feed subclasses are subclasses of PriceFeedError."""
         for cls in _SUBCLASSES:
             assert issubclass(cls, PriceFeedError)
+
+    def test_a_not_found_is_not_catchable_as_the_generic_api_error(self) -> None:
+        """Adapters branch on the type: not-found is contained, everything else propagates.
+
+        If PriceFeedNotFoundError ever became a PriceFeedAPIError, both adapters'
+        `except PriceFeedNotFoundError` would start swallowing 5xx responses as
+        per-security failures — silently restoring the bug this split removed.
+        """
+        assert not issubclass(PriceFeedNotFoundError, PriceFeedAPIError)
 
     def test_price_feed_error_subclasses_user_error(self) -> None:
         """PriceFeedError is a subclass of UserError."""

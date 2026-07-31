@@ -16,6 +16,7 @@ import httpx
 from moneybin.connectors.prices.errors import (
     PriceFeedAPIError,
     PriceFeedAuthError,
+    PriceFeedNotFoundError,
     PriceFeedRateLimitError,
     PriceFeedUnreachableError,
 )
@@ -86,6 +87,11 @@ def _raise_for_status(response: httpx.Response) -> None:
     if response.status_code in (401, 403):
         raise PriceFeedAuthError(
             f"price feed rejected the credential ({response.status_code})"
+        )
+    if response.status_code == 404:
+        # The only status that describes one security rather than the run.
+        raise PriceFeedNotFoundError(
+            f"price feed does not know this symbol ({response.status_code})"
         )
     if response.status_code >= 400:
         raise PriceFeedAPIError(f"price feed returned {response.status_code}")

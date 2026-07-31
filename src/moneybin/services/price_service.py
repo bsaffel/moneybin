@@ -522,13 +522,72 @@ class PriceService:
 
     # ---------------------------- user marks ----------------------------
 
+    def resolve_quote_currency(self, security_id: str) -> str:
+        """The currency a mark must carry to reach this security's positions.
+
+        ``core.dim_holdings`` values a position only where
+        ``lp.quote_currency = UPPER(p.currency_code)``, so a mark quoted in any
+        other currency is written, reported as a success, and joins to nothing.
+        That failure is invisible when it happens and stays invisible, which is
+        why the currency is derived rather than defaulted.
+
+        A resolution ladder, not one lookup, mirroring the reference-resolution
+        rule in ``surface-design.md`` — most specific evidence first, refuse on
+        ambiguity, never guess:
+
+        1. **The open positions' currency**, when they agree. This is the value
+           the join actually compares, so it is what makes the mark do its job.
+        2. **Two open positions disagreeing** — refuse. One instrument held in
+           two denominations is a question only the user can answer.
+        3. **Nothing held, but the catalog declares a currency.** Marking a
+           security before holding it is legitimate (a 409A valuation recorded
+           ahead of the purchase), and ``app.securities.currency_code`` is a
+           declared fact rather than a default. It is also what ``_held()``
+           quotes provider prices in, so the mark lands in the series the
+           provider will later write to instead of beside it.
+        4. **Neither** — refuse.
+        """
+        try:
+            rows = self._db.execute(
+                f"SELECT DISTINCT UPPER(currency_code) FROM {DIM_HOLDINGS.full_name} "  # noqa: S608  # TableRef constant
+                "WHERE security_id = ? AND quantity <> 0 "
+                "AND currency_code IS NOT NULL",
+                [security_id],
+            ).fetchall()
+        except duckdb.CatalogException:
+            # Core models never built — the same "nothing held" state as an empty
+            # table, so fall through to the catalog rather than failing here.
+            rows = []
+        currencies = sorted(str(row[0]) for row in rows)
+        if len(currencies) == 1:
+            return currencies[0]
+        if not currencies:
+            declared = self._db.execute(
+                f"SELECT UPPER(currency_code) FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef constant
+                "WHERE security_id = ? AND currency_code IS NOT NULL",
+                [security_id],
+            ).fetchone()
+            if declared and declared[0]:
+                return str(declared[0])
+        detail = (
+            f"is held in {' and '.join(currencies)}"
+            if currencies
+            else "has no open position and no catalog currency"
+        )
+        raise UserError(
+            f"Cannot tell which currency to mark {security_id} in: it {detail}. "
+            "Pass --currency to say which series this price belongs to — a mark "
+            "only values a holding quoted in the same currency.",
+            code=error_codes.INVESTMENT_PRICE_MARK_CURRENCY_AMBIGUOUS,
+        )
+
     def set_mark(
         self,
         security_id: str,
         price_date: date,
         close: Decimal,
         *,
-        quote_currency: str = "USD",
+        quote_currency: str,
         note: str | None,
     ) -> None:
         """Record the user's own price for one security, date, and currency.
@@ -555,7 +614,7 @@ class PriceService:
         )
 
     def delete_mark(
-        self, security_id: str, price_date: date, *, quote_currency: str = "USD"
+        self, security_id: str, price_date: date, *, quote_currency: str
     ) -> bool:
         """Remove one mark, returning ``True`` if a row was actually deleted.
 

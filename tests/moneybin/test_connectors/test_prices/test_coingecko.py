@@ -29,6 +29,7 @@ from moneybin.connectors.prices.coingecko import (
     COINGECKO_MAX_HISTORY_DAYS,
     CoinGeckoPriceAdapter,
 )
+from moneybin.connectors.prices.errors import PriceFeedRateLimitError
 from moneybin.connectors.prices.protocol import SecurityRef
 
 _DAY_MS = 86_400_000
@@ -260,6 +261,36 @@ def test_one_unknown_coin_does_not_lose_the_rest_of_the_batch() -> None:
 
     assert [obs.provider_security_key for obs in result.observations] == ["bitcoin"]
     assert [f.provider_security_key for f in result.failures] == ["nosuchcoin"]
+
+
+def test_a_rate_limit_stops_the_batch_instead_of_spending_it_on_every_coin() -> None:
+    """The keyless tier's quota is shared, so continuing only deepens the limit.
+
+    Same containment rule as the Tiingo adapter: a whole-batch condition leaves
+    by exception so PriceService can report one actionable failure per source,
+    rather than every coin arriving as its own unexplained per-security failure.
+    """
+    with respx.mock:
+        first = respx.get(_chart_route("bitcoin")).mock(
+            return_value=httpx.Response(429)
+        )
+        second = respx.get(_chart_route("ethereum")).mock(
+            return_value=httpx.Response(
+                200, json=_prices([(_midnight_ms(date(2026, 7, 25)), "3200.00")])
+            )
+        )
+        adapter = CoinGeckoPriceAdapter()
+        adapter._sleep = lambda _seconds: None  # type: ignore[method-assign]  # test hook
+
+        with pytest.raises(PriceFeedRateLimitError):
+            adapter.fetch(
+                [_ref("bitcoin"), _ref("ethereum")],
+                date(2026, 7, 24),
+                date(2026, 7, 24),
+            )
+
+    assert first.call_count == 3, "the first coin still exhausts its own retries"
+    assert not second.called, "a whole-batch condition must not spend the next request"
 
 
 def test_it_retries_a_rate_limited_coin_then_succeeds() -> None:

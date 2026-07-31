@@ -281,12 +281,20 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |         app.security_price_overrides while holdings value from core -- so it
 |   |   |         carries the same --refresh flag, the same `refresh run` hint, and the
 |   |   |         same non-zero exit on a failed apply.
+|   |   |         --currency defaults to the currency the position is held in, not a
+|   |   |         fixed USD: core.dim_holdings values a position only where the price's
+|   |   |         quote_currency matches the position's currency_code, so a fixed
+|   |   |         default wrote a mark, reported success, and valued nothing for every
+|   |   |         non-USD holding. Refused when nothing is held or two denominations
+|   |   |         are -- ambiguity asks rather than guesses.
 |   |   +-- delete <security> <date> [--currency CUR] [--refresh]
 |   |   |         Remove a mark, returning that date to provider-derived valuation.
 |   |   |         Load-bearing, not CRUD symmetry -- `set` can only change the number,
 |   |   |         so without this a mark is unreachable once written. --refresh behaves
 |   |   |         as on `set`, but is skipped when no mark existed to remove: nothing
-|   |   |         changed, so there is nothing to propagate.
+|   |   |         changed, so there is nothing to propagate. --currency derives
+|   |   |         identically to `set` -- a delete defaulting to USD could not reach a
+|   |   |         mark `set` was right to write in EUR.
 |   |   +-- list <security> [--since DATE] [--source SRC] [--output json] [--quiet]
 |   |   |         The resolved series, newest first: the winning close and its source
 |   |   |         per date, not every observation that competed for it.

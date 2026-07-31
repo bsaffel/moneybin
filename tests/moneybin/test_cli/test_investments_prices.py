@@ -20,7 +20,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from moneybin import error_codes
 from moneybin.cli.commands.investments.prices import app
+from moneybin.errors import UserError
 from moneybin.services.price_service import PullResult
 from moneybin.services.refresh import RefreshResult
 
@@ -183,7 +185,9 @@ class TestPriceMarkRefresh:
     def test_set_names_the_command_that_makes_the_mark_visible(
         self, _set: MagicMock, _resolve: MagicMock, _db: MagicMock
     ) -> None:
-        result = runner.invoke(app, ["set", "PRIVCO", "2026-07-30", "42.50"])
+        result = runner.invoke(
+            app, ["set", "PRIVCO", "2026-07-30", "42.50", "--currency", "USD"]
+        )
 
         assert result.exit_code == 0
         assert _REFRESH_HINT in result.output
@@ -203,7 +207,8 @@ class TestPriceMarkRefresh:
         mock_refresh.return_value = RefreshResult(applied=True, duration_seconds=1.5)
 
         result = runner.invoke(
-            app, ["set", "PRIVCO", "2026-07-30", "42.50", "--refresh"]
+            app,
+            ["set", "PRIVCO", "2026-07-30", "42.50", "--currency", "USD", "--refresh"],
         )
 
         assert result.exit_code == 0
@@ -230,7 +235,16 @@ class TestPriceMarkRefresh:
 
         with caplog.at_level(logging.WARNING):
             result = runner.invoke(
-                app, ["set", "PRIVCO", "2026-07-30", "42.50", "--refresh"]
+                app,
+                [
+                    "set",
+                    "PRIVCO",
+                    "2026-07-30",
+                    "42.50",
+                    "--currency",
+                    "USD",
+                    "--refresh",
+                ],
             )
 
         assert result.exit_code == 1
@@ -253,7 +267,17 @@ class TestPriceMarkRefresh:
 
         result = runner.invoke(
             app,
-            ["set", "PRIVCO", "2026-07-30", "42.50", "--refresh", "--output", "json"],
+            [
+                "set",
+                "PRIVCO",
+                "2026-07-30",
+                "42.50",
+                "--currency",
+                "USD",
+                "--refresh",
+                "--output",
+                "json",
+            ],
         )
 
         assert result.exit_code == 0
@@ -268,7 +292,9 @@ class TestPriceMarkRefresh:
         self, _delete: MagicMock, _resolve: MagicMock, _db: MagicMock
     ) -> None:
         """Removing a mark changes the resolved series exactly as writing one does."""
-        result = runner.invoke(app, ["delete", "PRIVCO", "2026-07-30"])
+        result = runner.invoke(
+            app, ["delete", "PRIVCO", "2026-07-30", "--currency", "USD"]
+        )
 
         assert result.exit_code == 0
         assert _REFRESH_HINT in result.output
@@ -285,7 +311,9 @@ class TestPriceMarkRefresh:
 
         Mirrors `test_a_pull_that_wrote_nothing_suggests_nothing`.
         """
-        result = runner.invoke(app, ["delete", "PRIVCO", "2026-07-30"])
+        result = runner.invoke(
+            app, ["delete", "PRIVCO", "2026-07-30", "--currency", "USD"]
+        )
 
         assert result.exit_code == 0
         assert _REFRESH_HINT not in result.output
@@ -309,7 +337,117 @@ class TestPriceMarkRefresh:
         pull may have been left unapplied, a no-op delete cannot have stranded
         anything: the mark it would have removed was never there.
         """
-        result = runner.invoke(app, ["delete", "PRIVCO", "2026-07-30", "--refresh"])
+        result = runner.invoke(
+            app, ["delete", "PRIVCO", "2026-07-30", "--currency", "USD", "--refresh"]
+        )
 
         assert result.exit_code == 0
         assert mock_refresh.call_count == 0
+
+
+class TestMarkCurrencyDefault:
+    """`set`/`delete` take the position's currency, or refuse — never a fixed USD.
+
+    `core.dim_holdings` values a position only where the price's quote_currency
+    equals the position's currency_code. A hardcoded USD default therefore wrote
+    a mark, printed `✅ Marked`, and left every non-USD holding valued exactly as
+    before — a wrong answer that announced itself as a right one.
+    """
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch(
+        "moneybin.services.price_service.PriceService.resolve_quote_currency",
+        return_value="EUR",
+    )
+    @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
+    def test_set_marks_in_the_currency_the_position_is_held_in(
+        self,
+        set_mark: MagicMock,
+        _currency: MagicMock,
+        _resolve: MagicMock,
+        _db: MagicMock,
+    ) -> None:
+        result = runner.invoke(app, ["set", "PRIVCO", "2026-07-30", "42.50"])
+
+        assert result.exit_code == 0
+        assert set_mark.call_args.kwargs["quote_currency"] == "EUR"
+        assert "EUR" in result.output, "the echo must name the currency actually used"
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch("moneybin.services.price_service.PriceService.resolve_quote_currency")
+    @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
+    def test_an_explicit_currency_is_not_second_guessed(
+        self,
+        set_mark: MagicMock,
+        derive: MagicMock,
+        _resolve: MagicMock,
+        _db: MagicMock,
+    ) -> None:
+        """Naming the currency is the escape hatch for the ambiguous cases."""
+        result = runner.invoke(
+            app, ["set", "PRIVCO", "2026-07-30", "42.50", "--currency", "gbp"]
+        )
+
+        assert result.exit_code == 0
+        assert not derive.called, "an explicit flag must not consult the holdings"
+        assert set_mark.call_args.kwargs["quote_currency"] == "GBP"
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch(
+        "moneybin.services.price_service.PriceService.resolve_quote_currency",
+        return_value="EUR",
+    )
+    @patch(
+        "moneybin.services.price_service.PriceService.delete_mark", return_value=True
+    )
+    def test_delete_targets_the_same_series_set_would_have_written(
+        self,
+        delete_mark: MagicMock,
+        _currency: MagicMock,
+        _resolve: MagicMock,
+        _db: MagicMock,
+    ) -> None:
+        """A delete that defaulted to USD could not reach a mark set in EUR.
+
+        The two commands must derive identically or `delete` becomes a no-op that
+        reports success on exactly the marks `set` was right to create.
+        """
+        result = runner.invoke(app, ["delete", "PRIVCO", "2026-07-30"])
+
+        assert result.exit_code == 0
+        assert delete_mark.call_args.kwargs["quote_currency"] == "EUR"
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch(
+        "moneybin.services.price_service.PriceService.resolve_quote_currency",
+        side_effect=UserError(
+            "Cannot tell which currency to mark s1 in: it is held in AUD and GBP. "
+            "Pass --currency to say which series this price belongs to.",
+            code=error_codes.INVESTMENT_PRICE_MARK_CURRENCY_AMBIGUOUS,
+        ),
+    )
+    @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
+    def test_set_refuses_rather_than_guessing_when_the_currency_is_ambiguous(
+        self,
+        set_mark: MagicMock,
+        _currency: MagicMock,
+        _resolve: MagicMock,
+        _db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The service's refusal has to survive the CLI, not be swallowed into a write.
+
+        Which cases are ambiguous is the service's call and is tested there; this
+        asserts the CLI's own half — a clean non-zero exit naming the flag, and
+        critically nothing written on the way out. The message rides the error
+        logger to stderr per cli.md, so it is read from caplog, not stdout.
+        """
+        result = runner.invoke(app, ["set", "PRIVCO", "2026-07-30", "42.50"])
+
+        assert result.exit_code == 1
+        assert not set_mark.called, "a refused mark must not write"
+        assert "--currency" in caplog.text

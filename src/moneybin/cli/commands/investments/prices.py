@@ -219,7 +219,14 @@ def investments_prices_set(
         ..., help="Date the price applies to (YYYY-MM-DD)"
     ),
     price: str = typer.Argument(..., help="Price of one unit, e.g. 42.50"),
-    currency: str = typer.Option("USD", "--currency", help="ISO-4217 quote currency"),
+    currency: str | None = typer.Option(
+        None,
+        "--currency",
+        help=(
+            "ISO-4217 quote currency. Defaults to the currency the position is "
+            "held in; required when nothing is held or two denominations are"
+        ),
+    ),
     note: str | None = typer.Option(
         None, "--note", help="Why this price was set (e.g. a 409A valuation)"
     ),
@@ -240,6 +247,10 @@ def investments_prices_set(
     disposal or write-off — not a zero price. Admitting zero would make
     "worthless" and "unknown" two states every downstream total must tell apart.
 
+    Without --currency the mark takes the currency the position is held in. A
+    mark only values a holding quoted in the same currency, so a fixed default
+    would write successfully and value nothing for any non-USD position.
+
     The mark lands in app; holdings value from core. Pass --refresh to rebuild
     the models in the same command, or run 'moneybin refresh run' afterwards.
     """
@@ -255,11 +266,16 @@ def investments_prices_set(
         with get_database(read_only=False) as db:
             service = build_price_service(db, actor="investments_prices_set")
             security_id = service.resolve_security(security)
+            quote_currency = (
+                currency.upper()
+                if currency
+                else service.resolve_quote_currency(security_id)
+            )
             service.set_mark(
                 security_id,
                 parsed_date,
                 parsed_price,
-                quote_currency=currency,
+                quote_currency=quote_currency,
                 note=note,
             )
             refreshed = (
@@ -269,7 +285,7 @@ def investments_prices_set(
     payload = InvestmentPriceMarkPayload(
         security_id=security_id,
         price_date=parsed_date,
-        quote_currency=currency.upper(),
+        quote_currency=quote_currency,
         close=parsed_price,
         removed=False,
         refreshed=bool(refreshed and refreshed.applied),
@@ -282,7 +298,7 @@ def investments_prices_set(
         _report_refresh_failure(payload.refresh_error)
         return
     typer.echo(
-        f"✅ Marked {security_id} at {parsed_price} {currency.upper()} on {parsed_date}"
+        f"✅ Marked {security_id} at {parsed_price} {quote_currency} on {parsed_date}"
     )
     _echo_refresh_hint("This mark values holdings", stale=refreshed is None)
     _report_refresh_failure(payload.refresh_error)
@@ -296,7 +312,14 @@ def investments_prices_delete(
     price_date: str = typer.Argument(
         ..., help="Date of the mark to remove (YYYY-MM-DD)"
     ),
-    currency: str = typer.Option("USD", "--currency", help="ISO-4217 quote currency"),
+    currency: str | None = typer.Option(
+        None,
+        "--currency",
+        help=(
+            "ISO-4217 quote currency. Defaults to the currency the position is "
+            "held in; required when nothing is held or two denominations are"
+        ),
+    ),
     refresh: bool = typer.Option(
         False,
         "--refresh",
@@ -325,8 +348,13 @@ def investments_prices_delete(
         with get_database(read_only=False) as db:
             service = build_price_service(db, actor="investments_prices_delete")
             security_id = service.resolve_security(security)
+            quote_currency = (
+                currency.upper()
+                if currency
+                else service.resolve_quote_currency(security_id)
+            )
             removed = service.delete_mark(
-                security_id, parsed_date, quote_currency=currency
+                security_id, parsed_date, quote_currency=quote_currency
             )
             # Gated on `removed`, unlike `pull --refresh`. A pull stays
             # unconditional because an earlier pull may have been left
@@ -341,7 +369,7 @@ def investments_prices_delete(
     payload = InvestmentPriceMarkPayload(
         security_id=security_id,
         price_date=parsed_date,
-        quote_currency=currency.upper(),
+        quote_currency=quote_currency,
         close=None,
         removed=removed,
         refreshed=bool(refreshed and refreshed.applied),

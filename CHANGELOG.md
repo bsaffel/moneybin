@@ -321,7 +321,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   while every total keeps showing the value you just overrode. A failed rebuild
   exits non-zero and tells you to retry the rebuild alone, since the closes are
   already stored and re-pulling would spend the provider's rate limit
-  re-fetching them. (#373)
+  re-fetching them. A mark takes the currency the position is actually held in
+  rather than assuming dollars, and asks when a security is held in two — a
+  price only values a holding quoted in the same currency, so a fixed default
+  reported success on a mark that valued nothing. When a provider is rate-limited
+  or down, the refresh says so instead of reporting your holdings as unsupported,
+  and stops asking that provider rather than spending the rest of the quota
+  confirming the same failure. (#373)
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.
