@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 from collections.abc import Callable, Mapping, Sequence
@@ -114,6 +116,21 @@ _SUBJECT_KINDS = frozenset({"bundle", "report"})
 _FORMATS = frozenset({"csv", "parquet", "xlsx", "sheets"})
 _DESTINATION_KINDS = frozenset({"local", "sheets"})
 _REDACTION_MODES = frozenset({"redacted", "unredacted"})
+_FINGERPRINT_LENGTH: Final = 12
+
+
+def _parameters_fingerprint(parameters: object) -> str | None:
+    """Identify one report parameter binding without disclosing its values.
+
+    A receipt has to distinguish two runs of the same report, and row counts
+    cannot — the same query over two date ranges can return the same number of
+    rows. The values themselves stay out of ``app.audit_log``, which is durable
+    and re-served by ``system_audit`` long after the one-time artifact is gone.
+    """
+    if parameters is None:
+        return None
+    canonical = json.dumps(parameters, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:_FINGERPRINT_LENGTH]
 
 
 class ExportService:
@@ -252,9 +269,10 @@ class ExportService:
         Opens its own short write transaction *after* publication returns. The
         read-only snapshot lease is already released by this point, so the
         writer lock is never held across filesystem or Sheets I/O — the
-        property #349 exists to protect. Because it opens late, it takes a
-        single non-blocking attempt rather than the default queued wait, which
-        could otherwise outlive the caller's tool deadline.
+        property #349 exists to protect. Because it opens late, it runs inside
+        the request's publication barrier: an already-ended request skips the
+        write entirely, and a started one holds the timeout handler until it
+        finishes, so the tool's response and this write can never diverge.
 
         Never raises. By the time this runs the artifact is already published
         and cannot be withdrawn, so letting a write failure escape would report
@@ -266,18 +284,28 @@ class ExportService:
         from moneybin.database import get_database  # noqa: PLC0415
         from moneybin.errors import exception_origin  # noqa: PLC0415
         from moneybin.services.audit_service import AuditService  # noqa: PLC0415
+        from moneybin.services.request_lifetime import (  # noqa: PLC0415
+            current_request_lifetime,
+            publication_barrier,
+        )
 
         destination = receipt.destination
         try:
-            # One non-blocking attempt, never a queued wait. MCPConfig proves
-            # a timed-out worker cannot commit after the caller gave up by
-            # requiring tool_timeout_seconds >= the write-lock wait — a proof
-            # that holds only while the write starts when the tool does. This
-            # write starts after publication, whose duration is unbounded, so
-            # a queued wait could outlive the tool deadline and commit late.
-            # Losing a best-effort receipt is cheaper than reporting a timeout
-            # for an export that succeeded, which invites a duplicate re-run.
-            with get_database(read_only=False, max_wait=0) as db:
+            # The whole open-and-write sits inside the barrier, the same one
+            # local.py and sheets.py put their publish step in. Every other
+            # write in a tool body proves it cannot commit late via
+            # tool_timeout_seconds >= the write-lock wait; this one opens
+            # after publication, whose duration is unbounded, so that proof
+            # does not reach it. Nor would bounding the lock wait alone:
+            # write_lock shells out to `ps` before its first attempt, and a
+            # successful open runs migrations before the connection registers
+            # for interrupt — both outside max_wait. The barrier covers all of
+            # it, refusing to start once the request has ended and holding the
+            # timeout handler until a started write finishes.
+            with (
+                publication_barrier(current_request_lifetime()),
+                get_database(read_only=False) as db,
+            ):
                 AuditService(db).record_audit_event(
                     action="export.run",
                     # No app.* row backs an export, so the target names the
@@ -298,6 +326,14 @@ class ExportService:
                         "destination_kind": destination.kind,
                         "format": receipt.format,
                         "redaction_mode": receipt.redaction_mode,
+                        # What was exported, not just where it went. A Sheets
+                        # export has no artifact_name, so for a report this is
+                        # the only thing telling two runs apart.
+                        "subject_kind": receipt.subject.get("kind"),
+                        "report_id": receipt.subject.get("report_id"),
+                        "parameters_fingerprint": _parameters_fingerprint(
+                            receipt.subject.get("parameters")
+                        ),
                         # File name, never the full path: R9 forbids
                         # persisting local paths, and a real export directory
                         # embeds the OS username. The row identifies what an

@@ -375,6 +375,12 @@ id, name and kind, format, redaction mode, Sheets identity, row counts, and
 checksums, and identifies a local artifact by **file name only** — never its
 full path, which keeps the rule above intact.
 
+It also carries the subject: kind, report id, and a truncated hash of the
+report's parameter binding. The binding's *values* stay out — the audit log is
+durable and re-served by `system_audit` long after the artifact is gone — but
+without the hash two runs of one report are indistinguishable, since equal row
+counts do not imply equal parameters and a Sheets export has no file name.
+
 The row answers *what an export produced*, not *where the file is now*. It is
 deliberately not a locator: `ExportDestinationsRepo.set_local` can repoint a
 saved destination's root under the same name, and `remove` deletes the

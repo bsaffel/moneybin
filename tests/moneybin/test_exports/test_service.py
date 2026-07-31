@@ -207,16 +207,12 @@ def test_run_releases_read_only_snapshot_before_local_publication(
     # separate write lease for the receipt. Asserting the sequence rather than
     # a single call keeps the real property — no writer lock is ever held
     # across filesystem I/O — falsifiable if the receipt write moves inside.
-    #
-    # max_wait=0 on that second lease is load-bearing. MCPConfig proves a
-    # timed-out worker cannot commit after the caller gave up by requiring
-    # tool_timeout_seconds >= the write-lock wait, and that proof assumes the
-    # write begins when the tool does. This one begins after publication,
-    # whose duration is unbounded, so a queued wait could outlive the tool
-    # deadline and commit late. One non-blocking attempt cannot queue at all.
+    # The write lease keeps the default lock wait: what stops it outliving the
+    # caller is the publication barrier around it, not a shortened wait — see
+    # test_run_skips_the_receipt_write_when_the_request_already_ended.
     assert [opened.kwargs for opened in get_database.call_args_list] == [
         {"read_only": True},
-        {"read_only": False, "max_wait": 0},
+        {"read_only": False},
     ]
     assert result == receipt
 
@@ -278,6 +274,130 @@ def test_run_records_a_discoverable_receipt_in_the_audit_log(
     assert "/exports/archive" not in str(recorded)
     assert recorded["row_counts"] == {"accounts": 3, "transactions": 42}
     assert recorded["checksums"] == {"accounts": "sha-a", "transactions": "sha-b"}
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_records_the_report_subject_without_its_parameter_values(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """A report receipt must say which binding produced it, not what it held.
+
+    Row counts do not distinguish two bindings — the same report over two date
+    ranges can return the same number of rows — and a Sheets export has no
+    ``artifact_name`` at all, so without this the row cannot tell two runs of
+    one report apart. The values themselves stay out: ``app.audit_log`` is
+    durable and re-served by ``system_audit``, unlike the one-time artifact.
+    """
+    from moneybin.services.audit_service import AuditService
+
+    get_database.side_effect = _database_factory(db)
+    destination = _destination("local")
+    receipt = replace(
+        _receipt(destination),
+        export_id="exp-report",
+        subject={
+            "kind": "report",
+            "report_id": "spend_by_category",
+            "parameters": {"start": "2026-01-01", "account_id": "acct-77"},
+        },
+    )
+    publisher_type.return_value.publish.return_value = receipt
+
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        ExportService.run(_command(), actor="mcp:export_run")
+
+    recorded = AuditService(db).list_events(action_pattern="export.run")[0].context_json
+    assert recorded is not None
+    assert recorded["subject_kind"] == "report"
+    assert recorded["report_id"] == "spend_by_category"
+    assert recorded["parameters_fingerprint"] is not None
+    assert "acct-77" not in str(recorded)
+    assert "2026-01-01" not in str(recorded)
+
+
+def test_parameters_fingerprint_separates_bindings_and_ignores_key_order() -> None:
+    """The fingerprint's whole job is telling two bindings apart."""
+    # Tested directly rather than through run(): a single export carries one
+    # binding, so key-order independence has no observable behavioural path.
+    from moneybin.exports.service import (
+        _parameters_fingerprint,  # type: ignore[reportPrivateUsage]
+    )
+
+    one = _parameters_fingerprint({"start": "2026-01-01", "account_id": "acct-77"})
+    reordered = _parameters_fingerprint({
+        "account_id": "acct-77",
+        "start": "2026-01-01",
+    })
+    other = _parameters_fingerprint({"start": "2026-02-01", "account_id": "acct-77"})
+
+    assert one == reordered
+    assert one != other
+    assert _parameters_fingerprint(None) is None
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_skips_the_receipt_write_when_the_request_already_ended(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """A receipt must never commit after its caller was told the tool timed out.
+
+    The write opens *after* publication, so unlike every other write in a tool
+    body it cannot rely on ``tool_timeout_seconds >= the write-lock wait`` to
+    prove it stopped queuing in time — publication's own duration is unbounded.
+    The publication barrier is what bounds it: entering an already-cancelled
+    request raises instead of writing, and entering a live one makes the
+    timeout handler wait rather than return while the write is still running.
+    """
+    from moneybin.services.audit_service import AuditService
+    from moneybin.services.request_lifetime import (
+        RequestLifetime,
+        request_lifetime_scope,
+    )
+
+    # A factory, not one shared context: a single _GeneratorContextManager
+    # cannot be entered twice, so reusing one would make this pass on the
+    # re-entry error instead of on the barrier.
+    get_database.side_effect = _database_factory(db)
+    lifetime = RequestLifetime()
+
+    destination = _destination("local")
+    receipt = replace(_receipt(destination), export_id="exp-cancelled")
+
+    def publish(*_args: object, **_kwargs: object) -> ExportReceipt:
+        # The window this guards: the artifact is on disk, and the tool
+        # deadline fires before the receipt write opens. Cancelling here is
+        # what the decorator's timeout handler does.
+        lifetime.cancel()
+        return receipt
+
+    publisher_type.return_value.publish.side_effect = publish
+
+    with (
+        request_lifetime_scope(lifetime),
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        result = ExportService.run(_command(), actor="mcp:export_run")
+
+    assert result == receipt
+    assert AuditService(db).list_events(action_pattern="export.run") == []
 
 
 @patch("moneybin.exports.local.LocalExportPublisher")
