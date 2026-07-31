@@ -21,6 +21,7 @@ _CHASE_CSV = _FIXTURES / "chase_credit.csv"  # high-confidence known format
 _CITI_CSV = (
     _FIXTURES / "citi_credit.csv"
 )  # split debit/credit (Status,Date,Description,Debit,Credit,Member Name)
+_TILLER_CSV = _FIXTURES / "tiller.csv"  # headers match the built-in `tiller` format
 
 
 def _make_mapping_result(
@@ -31,8 +32,13 @@ def _make_mapping_result(
     sign_needs_confirmation: bool = False,
     sign_convention: str = "negative_is_expense",
     sign_evidence_header: str | None = None,
+    date_format: str | None = "%Y-%m-%d",
 ) -> object:
-    """Return a MappingResult-like object with the given confidence and score."""
+    """Return a MappingResult-like object with the given confidence and score.
+
+    ``date_format=None`` is the detector saying it never read the date column —
+    the case that used to be papered over with a fabricated ``"%Y-%m-%d"``.
+    """
     from moneybin.extractors.tabular.column_mapper import MappingResult
 
     if field_mapping is None:
@@ -44,7 +50,7 @@ def _make_mapping_result(
     return MappingResult(
         field_mapping=field_mapping,
         confidence=confidence,  # type: ignore[arg-type]
-        date_format="%Y-%m-%d",
+        date_format=date_format,
         number_format="us",
         sign_convention=sign_convention,  # type: ignore[arg-type]  # test fixture accepts every supported convention
         sign_needs_confirmation=sign_needs_confirmation,
@@ -52,7 +58,10 @@ def _make_mapping_result(
         is_multi_account=False,
         unmapped_columns=["Balance"],
         flagged_fields=[],
-        sample_values={"transaction_date": ["2026-01-05"], "amount": ["-52.30"]},
+        sample_values={
+            "transaction_date": ["2026-01-05"],
+            "amount": ["-52.30"],
+        },
         score=score,
         missing_required=(),
     )
@@ -173,6 +182,7 @@ def test_reviewed_plan_rejects_parse_or_mapping_drift(
         "rows_skipped_trailing": 0,
         "header_row_looks_like_data": False,
         "header_signature": ["Amount", "Date", "Description"],
+        "flagged_fields": [],
     }
     plan_kwargs.update(plan_overrides)
     reviewed_plan = ReviewedTabularPlan(**plan_kwargs)  # type: ignore[arg-type]  # parametrized valid dataclass fields
@@ -204,6 +214,150 @@ def test_reviewed_plan_rejects_parse_or_mapping_drift(
         )
 
     assert exc.value.code == "import_preview_plan_mismatch"
+
+
+def test_a_missing_required_field_outranks_an_unreadable_date(
+    db: Database, tmp_path: Path
+) -> None:
+    """The reason must name a cause the caller's next action can answer.
+
+    Both unreadable_date actions only remap the date column or supply a
+    format. When another required destination is still missing, neither
+    supplies it, so the caller corrects the date, re-previews, and is refused
+    again — a loop with no instruction that resolves it. unknown_layout's hint
+    asks for the mapping actually needed.
+    """
+    import polars as pl
+
+    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+    from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+    csv_file = tmp_path / "no_amount.csv"
+    csv_file.write_text("Date,Description\nnot-a-date,Coffee\n", encoding="utf-8")
+    reviewed_plan = ReviewedTabularPlan(
+        file_type="csv",
+        delimiter=",",
+        encoding="utf-8",
+        file_size=csv_file.stat().st_size,
+        # transaction_date IS mapped and unreadable, and `amount` is absent.
+        field_mapping={"transaction_date": "Date", "description": "Description"},
+        date_format=None,
+        sign_convention="negative_is_expense",
+        number_format="us",
+        is_multi_account=False,
+        confidence="low",
+        skip_rows=0,
+        has_header=True,
+        rows_in_file=2,
+        rows_skipped_trailing=0,
+        header_row_looks_like_data=False,
+        header_signature=["Date", "Description"],
+        flagged_fields=[],
+    )
+    read_result = type(
+        "ReadResult",
+        (),
+        {
+            "df": pl.DataFrame({"Date": ["not-a-date"], "Description": ["Coffee"]}),
+            "rows_in_file": 2,
+            "header_row_looks_like_data": False,
+        },
+    )()
+
+    with (
+        patch(
+            "moneybin.extractors.tabular.readers.read_file",
+            return_value=read_result,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        ImportService(db).import_file(
+            csv_file,
+            reviewed_plan=reviewed_plan,
+            refresh=False,
+            save_format=False,
+        )
+
+    assert exc.value.outcome.reason == "unknown_layout"
+    assert "amount" in exc.value.outcome.confidence.missing_required
+
+
+def test_a_declined_reviewed_plan_keeps_the_preview_s_flagged_evidence(
+    db: Database, tmp_path: Path
+) -> None:
+    """The refusal must re-score against the flagged set the caller reviewed.
+
+    Regression: the re-score passed an empty flagged list, so a plan the
+    preview scored 0.85 came back as score=1.0 beside tier="low" — an envelope
+    that contradicts itself and names none of the fields that earned the tier,
+    leaving the agent nothing to correct.
+    """
+    import polars as pl
+
+    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+    from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+    csv_file = tmp_path / "flagged.csv"
+    csv_file.write_text(
+        "Date,Description,Amount\n2026-01-05,Coffee,-4.75\n",
+        encoding="utf-8",
+    )
+    reviewed_plan = ReviewedTabularPlan(
+        file_type="csv",
+        delimiter=",",
+        encoding="utf-8",
+        file_size=csv_file.stat().st_size,
+        field_mapping={
+            "transaction_date": "Date",
+            "amount": "Amount",
+            "description": "Description",
+        },
+        date_format="%Y-%m-%d",
+        sign_convention="negative_is_expense",
+        number_format="us",
+        is_multi_account=False,
+        confidence="low",
+        skip_rows=0,
+        has_header=True,
+        rows_in_file=2,
+        rows_skipped_trailing=0,
+        header_row_looks_like_data=False,
+        header_signature=["Amount", "Date", "Description"],
+        flagged_fields=["description"],
+    )
+    read_result = type(
+        "ReadResult",
+        (),
+        {
+            "df": pl.DataFrame({
+                "Date": ["2026-01-05"],
+                "Description": ["Coffee"],
+                "Amount": ["-4.75"],
+            }),
+            "rows_in_file": 2,
+        },
+    )()
+
+    with (
+        patch(
+            "moneybin.extractors.tabular.readers.read_file",
+            return_value=read_result,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        ImportService(db).import_file(
+            csv_file,
+            reviewed_plan=reviewed_plan,
+            refresh=False,
+            save_format=False,
+        )
+
+    confidence = exc.value.outcome.confidence
+    assert confidence.tier == "low"
+    # A complete mapping with a readable date and a flagged field scores 0.85;
+    # dropping the flagged set re-scores it as a clean 1.0.
+    assert confidence.score == 0.85
+    assert confidence.flagged == ("description",)
 
 
 def test_reimport_writes_single_accepted_source_native_link(
@@ -417,6 +571,536 @@ class TestTabularConfirmationFlow:
             )
         assert result.import_id is not None
 
+    def test_confirm_refuses_a_plan_whose_date_column_was_never_read(
+        self, db: Database
+    ) -> None:
+        """confirm=True must not resolve a plan the loader parses to zero rows.
+
+        Regression: resolve_or_confirm's Accept branch only special-cases `low`,
+        so a medium plan whose date column header-matched but whose values
+        detect_date_format could not read resolved unconditionally, and a
+        fabricated "%Y-%m-%d" carried it into the loader — every row dropped
+        while the import reported success. Live via
+        `moneybin import confirm <file> --accept`.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=undated,
+        ):
+            with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+                ImportService(db).import_file(
+                    _STANDARD_CSV,
+                    account_name="test",
+                    refresh=False,
+                    confirm=True,
+                )
+        outcome = exc_info.value.outcome
+        # The date column IS mapped; its values are what nothing could read, so
+        # the refusal names the one recovery that changes them.
+        assert outcome.reason == "unreadable_date"
+        # Keep the detected tier: filing a medium failure under "low" would
+        # contradict the preview the caller already holds.
+        assert outcome.confidence.tier == "medium"
+
+    def test_first_contact_xlsx_reports_the_structural_cause(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A headerless XLSX sets the flag on first contact — no skip_rows needed.
+
+        _read_excel computes header_row_looks_like_data unconditionally,
+        because pl.read_excel always consumes row 0 as the header. resolve_or_
+        confirm then refuses the forced-low tier with its own generic reason
+        and raises before the convergence guard, so every surface prescribed a
+        mapping retry for the one cause no mapping answers. (An earlier round
+        of this PR asserted first contact could never set the flag — true for
+        the CSV reader, wrong for Excel.)
+        """
+        import openpyxl
+
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["2026-07-01", -4.50, "Coffee"])
+        ws.append(["2026-07-02", 100.00, "Salary"])
+        xlsx = tmp_path / "headerless.xlsx"
+        wb.save(xlsx)
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                xlsx,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                save_format=False,
+            )
+
+        assert exc_info.value.outcome.reason == "header_row_consumed"
+
+    def test_a_saved_format_cannot_commit_a_consumed_header_row(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The structural gate must cover the branch where the flag can be set.
+
+        `header_row_looks_like_data` is computed only for an explicit
+        `skip_rows` (readers.py — auto-detection never picks a data-looking
+        row), so the only branch that can see it true is `elif matched_format:`,
+        which asserts confidence="high" and commits. `--format <saved>` on a
+        file whose post-skip header line is a transaction therefore imported a
+        plan with one record already consumed as column names, while
+        `import_preview` refuses the same plan. No caller input clears it:
+        resolve_or_confirm honours an Override at every tier by design, and no
+        column mapping un-consumes a header row.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        # Row 1 is a preamble the format skips; row 2 then becomes the header
+        # and is itself a transaction.
+        csv = tmp_path / "preamble_then_data.csv"
+        csv.write_text(
+            "Statement export\n2026-01-05,-4.50,Coffee\n2026-01-06,100.00,Payroll\n",
+            encoding="utf-8",
+        )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="skiprows_fixture",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=",",
+                encoding="utf-8",
+                header_signature=["2026-01-05", "-4.50", "Coffee"],
+                field_mapping={
+                    "transaction_date": "2026-01-05",
+                    "amount": "-4.50",
+                    "description": "Coffee",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                skip_rows=1,
+            ),
+            actor="test",
+        )
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="skiprows_fixture",
+                save_format=False,
+            )
+
+        assert exc_info.value.outcome.reason == "header_row_consumed"
+
+    def test_a_consumed_header_refusal_counts_as_a_revalidation_failure(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A refusal must not first record the saved format as a silent reuse.
+
+        The guard sits on the matched_format path, so placing it after the
+        metrics block counted a mastery KPI (IMPORT_KNOWN_FORMAT_REUSE_TOTAL)
+        for a layout that then refused, and filed the decline under
+        resolved.confidence — hardcoded "high" on that branch — while the
+        envelope said low. IMPORT_REVALIDATION_FAILURE_TOTAL was declared for
+        exactly this guard and went unincremented.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.metrics.observations import MetricObservations
+        from moneybin.metrics.registry import (
+            IMPORT_KNOWN_FORMAT_REUSE_TOTAL,
+            IMPORT_REVALIDATION_FAILURE_TOTAL,
+        )
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "preamble_metrics.csv"
+        csv.write_text(
+            "Statement export\n2026-01-05,-4.50,Coffee\n2026-01-06,100.00,Payroll\n",
+            encoding="utf-8",
+        )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="skiprows_metrics",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=",",
+                encoding="utf-8",
+                header_signature=["2026-01-05", "-4.50", "Coffee"],
+                field_mapping={
+                    "transaction_date": "2026-01-05",
+                    "amount": "-4.50",
+                    "description": "Coffee",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                skip_rows=1,
+            ),
+            actor="test",
+        )
+
+        observations = MetricObservations()
+        reuse_before = IMPORT_KNOWN_FORMAT_REUSE_TOTAL.labels(
+            channel="tabular"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        fail_before = IMPORT_REVALIDATION_FAILURE_TOTAL.labels(
+            channel="tabular"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+
+        with pytest.raises(ImportConfirmationRequiredError):
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="skiprows_metrics",
+                save_format=False,
+                emit_metrics=False,
+                observations=observations,
+            )
+        # The disposition the real MCP caller uses on this path: it wraps the
+        # channel call in `except BaseException: db.rollback();
+        # observations.flush("rollback")`. Flushing "commit" here asserted
+        # against a disposition no caller ever reaches on a refusal, so the
+        # test stayed green while the metrics were being discarded.
+        observations.flush("rollback")
+
+        assert (
+            IMPORT_REVALIDATION_FAILURE_TOTAL.labels(channel="tabular")._value.get()  # type: ignore[reportPrivateUsage]
+            == fail_before + 1
+        )
+        # The refusal must not have been counted as a successful reuse.
+        assert (
+            IMPORT_KNOWN_FORMAT_REUSE_TOTAL.labels(channel="tabular")._value.get()  # type: ignore[reportPrivateUsage]
+            == reuse_before
+        )
+
+    def test_an_override_cannot_resolve_an_unreadable_date_column(
+        self, db: Database
+    ) -> None:
+        """The unreadable-date gate must sit ahead of resolve_or_confirm.
+
+        An Override short-circuits resolve_or_confirm at *every* tier, including
+        low, so a gate placed inside it would never see this case: a mapping
+        correction that does not fix the date column would still load zero rows.
+        map_columns applies overrides before detecting the format, so a genuine
+        correction clears this on its own.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=undated,
+        ):
+            with pytest.raises(ImportConfirmationRequiredError):
+                ImportService(db).import_file(
+                    _STANDARD_CSV,
+                    account_name="test",
+                    refresh=False,
+                    overrides={"description": "Description"},
+                )
+
+    def test_an_explicit_date_format_recovers_a_layout_the_detector_cannot_read(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """--date-format is the documented escape hatch; the gate must not eat it.
+
+        Regression: the unreadable-date gate raised before import_file applied
+        date_format_override, so `moneybin import files <file> --confirm
+        --date-format %Y%m%d` refused a file that imported before this PR.
+        %Y%m%d is genuinely absent from _DATE_FORMATS, so the override is the
+        only way such a file gets in at all. (`--date-format` lives on `import
+        files`; `import confirm` does not take one.)
+        """
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "compact-dates.csv"
+        csv.write_text(
+            "Date,Description,Amount\n20260105,Coffee,-4.50\n20260212,Deposit,100.00\n"
+        )
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=undated,
+        ):
+            result = ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                date_format="%Y%m%d",
+            )
+        assert result.import_id is not None
+
+    def test_a_dirty_prefix_does_not_refuse_a_file_the_format_reads(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The gate must read the column, not collect_samples' 20-row head.
+
+        A sample answers "what does this look like"; this gate answers "does
+        this format read the column". Validating the head made a run of
+        malformed leading values refuse a file whose remaining rows parse
+        fine — and the transform would have imported them, counting the bad
+        ones in rows_rejected.
+        """
+        from moneybin.services.import_service import ImportService
+
+        rows = ["Date,Description,Amount"]
+        rows += [f"not-a-date,Row{i},-1.00" for i in range(11)]
+        rows += [f"2026010{i % 9 + 1},Row{i},-2.00" for i in range(200)]
+        csv = tmp_path / "dirty_prefix.csv"
+        csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=undated,
+        ):
+            result = ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                date_format="%Y%m%d",
+            )
+
+        assert result.import_id is not None
+
+    def test_a_refused_date_override_records_no_success_metrics(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A refusal must not leave a confirmation on the dashboards.
+
+        The gate sat below the success counters, and on the CLI path
+        `observations` is None — so those mutations apply immediately and no
+        rollback undoes them. A refused import reported an accepted or
+        overridden confirmation that never loaded anything.
+        """
+        from moneybin.errors import UserError
+        from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "compact.csv"
+        csv.write_text(
+            "Date,Description,Amount\n20260105,Coffee,-4.50\n20260212,Rent,-9.00\n",
+            encoding="utf-8",
+        )
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        before = {
+            outcome: IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="tabular", tier="medium", outcome=outcome
+            )._value.get()  # type: ignore[reportPrivateUsage]
+            for outcome in ("accepted", "overridden")
+        }
+
+        with (
+            patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=undated,
+            ),
+            pytest.raises(UserError),
+        ):
+            # CLI shape: no observations buffer, so counters apply immediately.
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                date_format="%d/%m/%Y",
+            )
+
+        for outcome, prior in before.items():
+            assert (
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="tabular", tier="medium", outcome=outcome
+                )._value.get()  # type: ignore[reportPrivateUsage]
+                == prior
+            ), outcome
+
+    def test_a_date_format_override_that_cannot_read_the_column_is_refused(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Honouring the override must not reopen the zero-row hole behind it.
+
+        Skipping the gate whenever date_format_override is set would let a wrong
+        format through to the loader, which drops every row and reports success
+        — the same silent failure from the other side. The override is held to
+        the parse bar the detector applies to its own candidates.
+        """
+        from moneybin import error_codes
+        from moneybin.errors import UserError
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "compact-dates.csv"
+        csv.write_text(
+            "Date,Description,Amount\n20260105,Coffee,-4.50\n20260212,Deposit,100.00\n"
+        )
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=undated,
+        ):
+            with pytest.raises(UserError) as exc_info:
+                ImportService(db).import_file(
+                    csv,
+                    account_name="test",
+                    refresh=False,
+                    confirm=True,
+                    date_format="%d/%m/%Y",
+                )
+        assert exc_info.value.code == error_codes.IMPORT_INVALID_DATE_FORMAT
+
+    def test_a_date_format_override_is_validated_when_a_known_format_matched(
+        self, db: Database
+    ) -> None:
+        """The parse check must not live in the first-contact branch alone.
+
+        Regression: validation sat inside the no-matched-format branch, but the
+        override is honored for *every* branch by the dataclasses.replace that
+        rebuilds ResolvedMapping. tiller.csv's headers match the built-in
+        `tiller` format, so a bare `moneybin import files <file> --confirm
+        --date-format %Y%m%d` — no --format flag needed — skipped the check
+        entirely and carried an unreadable format into the transform, which
+        dropped every row while the import reported success.
+        """
+        from moneybin import error_codes
+        from moneybin.errors import UserError
+        from moneybin.services.import_service import ImportService
+
+        with pytest.raises(UserError) as exc_info:
+            ImportService(db).import_file(
+                _TILLER_CSV,  # Date column is %m/%d/%Y; %Y%m%d reads none of it
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                date_format="%Y%m%d",
+            )
+        assert exc_info.value.code == error_codes.IMPORT_INVALID_DATE_FORMAT
+
+    def test_a_buffered_successful_detection_reaches_the_histogram(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The other half of "all detections" — successes, not just refusals.
+
+        Tagging the observation `rollback` fixed the refusal path and broke
+        this one: a buffered caller flushes "commit" on success, and flush()
+        discards every item whose disposition does not match. That moved the
+        bias from "successes only" to "failures only" rather than removing it.
+        """
+        from moneybin.metrics.observations import MetricObservations
+        from moneybin.metrics.registry import IMPORT_DETECTION_SCORE
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "clean.csv"
+        csv.write_text(
+            "Date,Description,Amount\n"
+            "2026-01-05,Coffee,-4.50\n"
+            "2026-01-06,Payroll,100.00\n",
+            encoding="utf-8",
+        )
+        observations = MetricObservations()
+        before = IMPORT_DETECTION_SCORE._sum.get()  # type: ignore[reportPrivateUsage]
+
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            emit_metrics=False,
+            observations=observations,
+        )
+        observations.flush("commit")
+
+        assert result.import_id is not None
+        after = IMPORT_DETECTION_SCORE._sum.get()  # type: ignore[reportPrivateUsage]
+        assert after > before, "a successful detection never reached the histogram"
+
+    def test_an_unreadable_date_still_reaches_the_calibration_histogram(
+        self, db: Database
+    ) -> None:
+        """The refusal must not drop its score from IMPORT_DETECTION_SCORE.
+
+        The histogram is the primary calibration signal for the confidence
+        bands. An early exit that records the declined confirmation but skips
+        the observation biases every future threshold toward layouts that
+        happened to succeed.
+        """
+        from moneybin.metrics.observations import MetricObservations
+        from moneybin.metrics.registry import IMPORT_DETECTION_SCORE
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        observations = MetricObservations()
+        before = IMPORT_DETECTION_SCORE._sum.get()  # type: ignore[reportPrivateUsage]
+        with (
+            patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=undated,
+            ),
+            pytest.raises(ImportConfirmationRequiredError),
+        ):
+            ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                emit_metrics=False,
+                observations=observations,
+            )
+
+        # The disposition the real MCP caller uses on this path: it wraps the
+        # channel call in `except BaseException: db.rollback();
+        # observations.flush("rollback")`. Flushing "commit" here asserted
+        # against a disposition no caller ever reaches on a refusal, so the
+        # test stayed green while the metrics were being discarded.
+        observations.flush("rollback")
+        assert (
+            IMPORT_DETECTION_SCORE._sum.get()  # type: ignore[reportPrivateUsage]
+            == before + 0.75
+        )
+
     def test_partial_mapping_override_loads(self, db: Database) -> None:
         """overrides= acts as Override signal; partial-merge resolves -> data loads."""
         from moneybin.services.import_service import ImportService
@@ -439,7 +1123,7 @@ class TestTabularConfirmationFlow:
     ) -> None:
         """Layouts with debit_amount + credit_amount (no single 'amount') must validate.
 
-        _score_mapping treats debit_amount + credit_amount as satisfying the
+        score_mapping treats debit_amount + credit_amount as satisfying the
         amount requirement (returns score=1.0), so _import_tabular must pass
         the matching required_fields tuple to resolve_or_confirm instead of
         the literal ('transaction_date', 'amount', 'description') — otherwise

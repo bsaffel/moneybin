@@ -16,6 +16,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
@@ -90,20 +91,21 @@ def _sign_sidecar_actions(
         sign_convention_effect,
     )
 
+    quoted = shlex.quote(str(moved_path))
     if prior_sign is None:
         return [
-            f"If it IS a credit card: moneybin import files {moved_path} "
+            f"If it IS a credit card: moneybin import files {quoted} "
             "--confirm (records charges as expenses, payments as credits).",
             f"If it is NOT a credit card: moneybin import files "
-            f"{moved_path} --sign negative_is_expense (records amounts "
+            f"{quoted} --sign negative_is_expense (records amounts "
             "exactly as printed).",
         ]
     accepted = proposed_sign or "the re-derived convention"
     return [
         f"Accept the change — {sign_convention_effect(accepted)}: "
-        f"moneybin import files {moved_path} --confirm.",
+        f"moneybin import files {quoted} --confirm.",
         f"Keep the previous convention — {sign_convention_effect(prior_sign)}: "
-        f"moneybin import files {moved_path} --sign {prior_sign}.",
+        f"moneybin import files {quoted} --sign {prior_sign}.",
     ]
 
 
@@ -884,6 +886,14 @@ class InboxService:
         (``sign_sample_rows``) so the flip is visible before anyone ratifies it.
         Mirrors the MCP ``_sign_confirm_actions`` treatment.
         """
+        from moneybin.services.import_confirmation import (  # noqa: PLC0415  # avoid an import cycle at module scope
+            header_row_consumed_recovery,
+            unreadable_date_recovery,
+        )
+
+        # Every suggested command interpolates this path; a pending file under
+        # "Bank Exports/" otherwise emits a command the reader cannot paste.
+        quoted_path = shlex.quote(str(moved_path))
         sidecar = moved_path.with_name(moved_path.name + ".pending.yml")
         if reason == "sign_convention":
             # "magic stays visible": a whole-ledger sign inversion the user can't
@@ -929,18 +939,45 @@ class InboxService:
                 f"--account-binding {key}=<account_id|new>" for key in keys
             )
             actions.append(
-                f"moneybin import confirm {moved_path} --accept {bindings} "
+                f"moneybin import confirm {quoted_path} --accept {bindings} "
                 "(adopt existing accounts, or 'new' to mint distinct ones; "
                 "supply every source key in this one command)"
             )
             if len(keys) == 1:
                 actions.append(
-                    f"moneybin import confirm {moved_path} --accept "
+                    f"moneybin import confirm {quoted_path} --accept "
                     "--account-name <name> (name a new account directly)"
                 )
             actions.append(
                 "Or move the file into inbox/<account-slug>/ and re-run sync "
                 "(the subfolder names the account)."
+            )
+        elif reason == "header_row_consumed":
+            # Nothing to run: no --accept, --mapping, or --date-format touches
+            # a row already consumed as column names. The file stays in
+            # pending/ until the source (or the saved format's skip_rows) is
+            # corrected, which is the honest instruction.
+            actions.append(header_row_consumed_recovery())
+        elif reason == "unreadable_date":
+            # Two halves, and only one stays inside the inbox lifecycle. A
+            # wrong-column correction runs through `import confirm`, which
+            # archives on success. An unrecognized format needs --date-format,
+            # which only `import files` carries — and that command does not
+            # call archive_confirmed_file, so the file and this sidecar stay
+            # in pending/ and the next sync re-processes a finished item. Say
+            # so rather than leaving the user to discover it.
+            actions.append(
+                f"moneybin import confirm {quoted_path} "
+                "--mapping transaction_date=<source_column> (if a status "
+                "column claimed the date alias — this path archives the file "
+                "on success)"
+            )
+            actions.append(unreadable_date_recovery(str(moved_path)))
+            actions.append(
+                "If you recover via `import files --date-format`, delete this "
+                f"sidecar and move {moved_path.name} out of pending/ "
+                "afterwards — that command does not archive, so the next sync "
+                "would process it again."
             )
         else:
             account_suffix = f" --account-name {account_hint}" if account_hint else ""
@@ -949,11 +986,11 @@ class InboxService:
             # same outcome. Override is always available as a recovery path.
             if tier != "low":
                 actions.append(
-                    f"moneybin import confirm {moved_path} --accept{account_suffix} "
+                    f"moneybin import confirm {quoted_path} --accept{account_suffix} "
                     "(accept the proposed mapping as-is)"
                 )
             actions.append(
-                f"moneybin import confirm {moved_path} "
+                f"moneybin import confirm {quoted_path} "
                 f"--mapping <dest_field>=<source_column>{account_suffix} "
                 "(partial-merge override; repeatable)"
             )

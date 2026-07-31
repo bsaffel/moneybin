@@ -11,6 +11,8 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from moneybin.extractors.tabular.formats import (
         ConfidenceType,
         NumberFormatType,
@@ -40,9 +42,59 @@ _DATE_FORMATS: list[str] = [
 
 _MIN_YEAR = 1970
 
+# Share of non-empty values a detected candidate must read. This is a
+# confidence bar for *guessing*: the detector picks among candidates with no
+# input from the caller, so it should only choose one that reads almost
+# everything.
+_MIN_PARSE_RATE = 0.9
+
+# The bar a caller-supplied --date-format clears instead. Deliberately lower,
+# because it answers a different question: not "am I confident enough to pick
+# this unasked" but "does this format read the column at all". The transform
+# imports valid rows and records the rest in rows_rejected, which `import
+# status` surfaces — so partial parsing is a visible outcome, and holding an
+# explicit override to the detector's bar made a file with 8 good dates in 10
+# unimportable by either route. Below a majority the format is more likely
+# wrong than the data dirty, which is the zero-row import this gate exists to
+# stop.
+_MIN_OVERRIDE_PARSE_RATE = 0.5
+
 
 def _max_year() -> int:
     return datetime.now().year + 1
+
+
+def format_parses(values: "Sequence[str | None]", fmt: str) -> bool:
+    """Report whether `fmt` reads enough of `values` to be usable.
+
+    The detector carries a fixed candidate list, so a real format it has no
+    entry for (`%Y%m%d`) can only arrive as a caller override. Checking it here
+    keeps that escape hatch from becoming a second route to a zero-row import:
+    a format nothing parses is refused rather than carried into the loader.
+
+    Held to `_MIN_OVERRIDE_PARSE_RATE`, not the detector's own bar — see that
+    constant for why the two differ. A file whose date column is merely dirty
+    still imports, with the unparsed rows counted in `rows_rejected`.
+    """
+    clean = [value.strip() for value in values if value and value.strip()]
+    if not clean:
+        return False
+    parsed = 0
+    for value in clean:
+        try:
+            datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+        except re.error:
+            # strptime compiles the format into a regex, so a format that
+            # repeats a directive ("%Y %Y") fails as a duplicate group name —
+            # re.error, which is NOT a ValueError. Catching only ValueError let
+            # a malformed caller format escape this check and surface as an
+            # internal traceback instead of IMPORT_INVALID_DATE_FORMAT. No
+            # value can rescue the format, so stop rather than retry each one.
+            return False
+        parsed += 1
+    return parsed / len(clean) >= _MIN_OVERRIDE_PARSE_RATE
 
 
 def detect_date_format(
@@ -78,7 +130,7 @@ def detect_date_format(
                 continue
         parse_rate = parse_count / len(clean) if clean else 0
         range_score = reasonable_count / max(parse_count, 1)
-        if parse_rate >= 0.9:
+        if parse_rate >= _MIN_PARSE_RATE:
             scores.append((fmt, parse_rate, range_score))
             # Early exit on perfect match with unambiguous format
             if (

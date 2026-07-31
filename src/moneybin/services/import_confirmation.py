@@ -15,13 +15,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from moneybin.extractors.confidence import Confidence
+from moneybin.extractors.confidence import Confidence, Tier
+from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 from moneybin.services.account_resolution_types import AccountProposalDict
 
 Channel = Literal["tabular", "gsheet", "pdf"]
 ActorKind = Literal["human", "agent"]
 ConfirmationReason = Literal[
-    "unknown_layout", "validation_failure", "account_confirmation", "sign_convention"
+    "unknown_layout",
+    "validation_failure",
+    "account_confirmation",
+    "sign_convention",
+    "unreadable_date",
+    "header_row_consumed",
 ]
 ConfirmationOutcome = Literal["accepted", "overridden", "declined"]
 
@@ -143,6 +149,22 @@ class ConfirmationRequired:
     already accepted; the caller ratifies the account binding via
     `account_proposals`.
 
+    `reason='header_row_consumed'` narrows `unknown_layout` to the one cause
+    no caller input can answer: the first row was read as column names but
+    parses as a transaction, so a real record is already gone. It exists
+    because `resolve_or_confirm` honours an `Override` at every tier by
+    design — the caller's column correction outranks a low score — and that
+    is right for a mapping problem and wrong for this one, which no column
+    correction touches. Surfaces route it to source repair, not a retry.
+
+    `reason='unreadable_date'` narrows `unknown_layout` to one cause: a
+    `transaction_date` column is mapped and nothing could read its values.
+    It exists so a surface can name the two fixes that work — remap the
+    column, or supply `--date-format` — instead of a generic accept hint,
+    which returns to this same gate. It is NOT raised when no date column is
+    mapped at all; that stays `unknown_layout`, where a mapping override is
+    the only recovery and no date format would help.
+
     `account_proposals` carries the `AccountProposal.to_dict()` payload for
     each detected source account whose resolution needs ratification — weak
     candidates to choose among, or a no-candidate proposal for the bare
@@ -217,6 +239,131 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
     }
 
 
+def unreadable_date_recovery(file_path: str) -> str:
+    """Name both recoveries for a date column nothing could parse.
+
+    Lives here, beside the reason it answers, because four surfaces need the
+    identical sentence — the CLI's three confirmation handlers and the inbox
+    sidecar. It must name *both*, because `unreadable_date` covers two
+    different mistakes. The detector may have read the right column and carry
+    no candidate for its format, which only `--date-format` fixes. Or a status
+    column ("Pending"/"Cleared") claimed the date alias while the real dates
+    sit in an unmapped column — there `map_columns` re-runs detection against
+    whatever an override names, so a plain column correction recovers the file
+    and `--date-format` aimed at the wrong column would just be refused again.
+    Mirrors the MCP hint in import_tools.py; keep the two in step.
+    """
+    import shlex
+
+    # Quoted like every other suggested command in the CLI: a bank export
+    # lands in "Bank Exports/" often enough that an unquoted path makes the
+    # prescribed recovery uncopyable exactly when the user needs it.
+    quoted = shlex.quote(file_path)
+    return (
+        "No date format could be read from the mapped date column. If the "
+        "wrong column is mapped — a status column can claim the date alias "
+        "while the real dates sit in an unmapped one — re-run with `--mapping "
+        "transaction_date=<source_column>`, which re-runs detection against "
+        f"that column; `moneybin import preview {quoted}` names the file's "
+        "columns. If the mapped column is right and its format is simply "
+        "unrecognized, no mapping can change that: re-run `moneybin import "
+        f"files {quoted} --confirm --date-format <strptime>`."
+    )
+
+
+def classify_unconfirmable_plan(
+    *,
+    header_row_looks_like_data: bool,
+    date_format: str | None,
+    field_mapping: dict[str, str],
+    flagged_fields: list[str],
+) -> ConfirmationReason:
+    """Name the cause a caller's next action has to answer.
+
+    One rule, because it was implemented three times and corrected one site
+    at a time: the service's reviewed-plan replay, its first-contact branch,
+    and the MCP preview action builder all decide which recovery to offer for
+    the same staged plan, and every divergence between them shipped a hint
+    that could not resolve the refusal it accompanied.
+
+    Precedence is by what the caller can actually do:
+
+    1. A consumed header row — no input touches it, so it outranks everything.
+    2. A missing required destination — the date recoveries remap a column or
+       supply a format, and neither supplies a field that is absent.
+    3. An unreadable date on a *mapped* column — remap it or name its format.
+    4. Otherwise a plain mapping correction.
+    """
+    from moneybin.extractors.tabular.column_mapper import score_mapping
+
+    if header_row_looks_like_data:
+        return "header_row_consumed"
+    _, missing_required = score_mapping(field_mapping, flagged_fields, date_format)
+    if missing_required:
+        return "unknown_layout"
+    if date_format is None and "transaction_date" in field_mapping:
+        return "unreadable_date"
+    return "unknown_layout"
+
+
+def header_row_consumed_recovery() -> str:
+    """The consumed-header recovery, for the CLI and the inbox sidecar.
+
+    Identical substance to the MCP wording below and deliberately adjacent to
+    it: there is no command to offer on either surface, because MoneyBin
+    exposes no skip-rows override. Only the closing sentence differs, since a
+    CLI reader re-runs a command rather than re-previewing through a tool.
+    """
+    return (
+        "This file's first row was read as column names, but it parses as a "
+        "transaction — a real record was consumed as the header. No --mapping "
+        "or --override correction can recover it, and MoneyBin exposes no "
+        "skip-rows override. Add a header row to the source file, or correct "
+        "the saved format's skip_rows, then import it again."
+    )
+
+
+def header_row_consumed_recovery_mcp() -> str:
+    """The only honest recovery when a transaction was read as the header.
+
+    Takes no file path because there is no command to run: MoneyBin exposes
+    no skip-rows override (`skip_rows` is only ever written from detection),
+    so every mapping retry restages the same unconfirmable plan. Shared by
+    the preview- and confirm-side action builders — keeping one text per
+    state is what stops the two from drifting, which they did for three
+    consecutive review rounds.
+    """
+    return (
+        "This file's first row was read as column names, but it parses as a "
+        "transaction — a real record was consumed as the header. No column "
+        "correction can recover it, and MoneyBin exposes no skip-rows "
+        "override. Add a header row to the source file and preview it again."
+    )
+
+
+def unreadable_date_recovery_mcp(file_path: str) -> str:
+    """The same two recoveries as above, in MCP's idiom.
+
+    Kept adjacent to the CLI wording on purpose: this claim has drifted three
+    times across the surfaces that print it, each time by fixing one copy and
+    leaving a sibling asserting the opposite. The *substance* — remap the
+    column, or supply a format, and never claim one is impossible — is what
+    must stay identical; only the command names differ. MCP exposes no
+    date-format parameter, so that branch names the CLI.
+    """
+    return (
+        "This mapping is not confirmable as staged: no date format could "
+        "be read from the mapped date column. If the wrong column is "
+        f"mapped, use import_preview(file_path={file_path!r}, "
+        "mapping={'transaction_date': '<source_column>'}); "
+        "data.sample_values and data.unmapped_columns name the file's "
+        "columns. If the column is right and its format is simply "
+        "unrecognized, no mapping correction can change that — import "
+        "it with `moneybin import files <file> --confirm --date-format "
+        "<strptime>`."
+    )
+
+
 class ImportConfirmationRequiredError(Exception):
     """Raised when an import cannot proceed without explicit confirmation.
 
@@ -268,6 +415,142 @@ def resolve_amount_shape(
         and "amount" not in proposed_keys
     )
     return ("debit_amount", "credit_amount") if proposed_is_split else ("amount",)
+
+
+def tabular_required_fields(
+    *,
+    proposed_keys: set[str] | frozenset[str],
+    override_keys: set[str] | frozenset[str],
+) -> tuple[str, ...]:
+    """The tabular channel's required destinations for the post-merge amount shape.
+
+    The one place the channel's required set lives, so adding a field (or an
+    amount shape) doesn't mean hunting every caller that pre-validates.
+    """
+    amount_fields = resolve_amount_shape(
+        proposed_keys=proposed_keys, override_keys=override_keys
+    )
+    return ("transaction_date", *amount_fields, "description")
+
+
+def coerce_sign_convention(
+    *,
+    field_mapping: dict[str, str],
+    detected: SignConventionType,
+) -> SignConventionType:
+    """Keep sign_convention consistent with the amount shape actually mapped.
+
+    A split rule against a single ``amount`` mapping rejects every row, and a
+    single-amount rule against a debit/credit pair does the same — so an
+    override that swaps the shape must not carry the detector's convention
+    forward. Every path that merges an override onto a detected mapping calls
+    this; skipping it produces a plan that parses to zero rows and still
+    reports success.
+    """
+    resolved_is_split = (
+        "debit_amount" in field_mapping and "credit_amount" in field_mapping
+    )
+    detected_is_split = detected == "split_debit_credit"
+    if resolved_is_split and not detected_is_split:
+        return "split_debit_credit"
+    if not resolved_is_split and detected_is_split:
+        # The detector's split-only convention no longer applies. Fall back to
+        # the default; callers can still pass an explicit sign override.
+        return "negative_is_expense"
+    return detected
+
+
+def coerce_number_format(
+    *,
+    field_mapping: dict[str, str],
+    sample_values: dict[str, list[str | None]] | dict[str, list[str]],
+    detected: NumberFormatType,
+) -> NumberFormatType:
+    """Keep number_format consistent with the amount shape actually mapped.
+
+    Sibling of ``coerce_sign_convention`` and called from the same places, for
+    the same reason. ``map_columns`` derives the format from ``amount`` and
+    only falls back to ``debit_amount``, so an override that swaps a detected
+    single-amount layout to a debit/credit pair leaves the format derived from
+    the column it just retired. A US-formatted loser beside European survivors
+    silently parses ``1.234,56`` as ``1.23456`` — and the wrong format is then
+    saved for every later import of that layout.
+
+    Re-derives from the surviving amount column, pooling both halves of a
+    split pair. Pooling is not an optimization: ``collect_samples`` takes the
+    first rows unfiltered, and each row of a debit/credit layout fills only one
+    side, so a sample window that happens to be all credits leaves
+    ``debit_amount`` a non-empty list of blanks. Reading the first *present*
+    destination would hand that to ``detect_number_format``, which finds
+    nothing parseable and returns its own ``us`` default — the wrong answer,
+    never having looked at the column holding the values. The two halves are
+    the same currency and locale by construction, so pooling them is also
+    strictly more signal than either alone.
+
+    Keeps ``detected`` when nothing parseable survives, since a guess from
+    blanks is worse than the detector's answer.
+    """
+    from moneybin.extractors.tabular.date_detection import detect_number_format
+
+    sources = (
+        ("amount",) if "amount" in field_mapping else ("debit_amount", "credit_amount")
+    )
+    usable: list[str | None] = []
+    for dest in sources:
+        if dest not in field_mapping:
+            continue
+        for value in sample_values.get(dest) or ():
+            if value is not None and str(value).strip():
+                usable.append(str(value))
+    if not usable:
+        return detected
+    return detect_number_format(usable)
+
+
+def coerce_confidence_tier(
+    *,
+    field_mapping: dict[str, str],
+    detected_flagged: list[str],
+    override_keys: set[str],
+    date_format: str | None,
+    structural_red_flag: bool,
+    t_high: float,
+    t_med: float,
+) -> Tier:
+    """Re-band a merged mapping instead of asserting a tier for it.
+
+    Third sibling of ``coerce_sign_convention`` / ``coerce_number_format``:
+    an override answers only for the fields it names, so the merged plan has
+    to be re-scored rather than declared. The predecessor asserted ``high``
+    whenever a hand-kept list of exceptions was empty, and that list was
+    reported incomplete twice — first missing the structural red flag and the
+    unreadable date, then missing a *second* required field still weakly
+    matched, which promoted an untouched weak match to the one tier eligible
+    for agent self-accept.
+
+    Lives here rather than in the MCP adapter because it is a domain decision,
+    and ``test_adapters_dont_bypass_service_layer`` enforces that boundary —
+    it failed the moment the scoring call was written into the tool wrapper.
+    """
+    from moneybin.extractors.confidence import resolve_tier
+    from moneybin.extractors.tabular.column_mapper import score_mapping
+
+    # A flag counts only while the destination it names survives into the
+    # merged mapping. An amount-shape swap retires `amount` without naming it
+    # as an override key, so a flag left on it would otherwise keep scoring
+    # against a field the corrected plan no longer has.
+    remaining = [
+        flag
+        for flag in detected_flagged
+        if flag not in override_keys and flag in field_mapping
+    ]
+    score, _ = score_mapping(field_mapping, remaining, date_format)
+    return resolve_tier(
+        score,
+        t_high=t_high,
+        t_med=t_med,
+        structural_red_flag=structural_red_flag,
+    )
 
 
 def validate_partial_mapping(

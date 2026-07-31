@@ -380,7 +380,9 @@ class ReviewedTabularPlan:
     encoding: str
     file_size: int
     field_mapping: dict[str, str]
-    date_format: str
+    date_format: str | None
+    """None when the detector could not read the date column. Never a
+    fabricated default — that replays as a silent zero-row import."""
     sign_convention: SignConventionType
     number_format: NumberFormatType
     is_multi_account: bool
@@ -391,6 +393,10 @@ class ReviewedTabularPlan:
     rows_skipped_trailing: int
     header_row_looks_like_data: bool
     header_signature: list[str]
+    flagged_fields: list[str]
+    """Fields the preview flagged as weakly matched. Required, not defaulted:
+    an absent value re-scores as a clean mapping, which is how a flagged 0.85
+    plan came to report score=1.0 beside its own "low" tier."""
 
     def to_dict(self) -> dict[str, Any]:
         """Return the canonical JSON-ready representation."""
@@ -402,6 +408,45 @@ class ReviewedTabularPlan:
         from pydantic import TypeAdapter
 
         return TypeAdapter(cls).validate_python(value)
+
+
+def _validate_date_format_override(
+    df: Any,
+    field_mapping: dict[str, str],
+    date_format_override: str | None,
+) -> None:
+    """Refuse a caller date format that cannot read the mapped date column.
+
+    An unreadable strptime string is not a slow failure: the transform drops
+    every row it cannot parse and the import reports success with
+    rows_loaded=0. Called from two points because it must run *before* any
+    success metric on whichever branch reaches it — the first-contact branch
+    records an accepted/overridden confirmation before the branches converge,
+    and on the CLI path `observations` is None, so that counter applies
+    immediately and no rollback undoes it.
+
+    Reads the WHOLE column, not collect_samples' 20-row head: a sample answers
+    "what does this look like", this answers "does this format read the
+    column", and a dirty prefix must not refuse a file whose remaining rows
+    parse.
+    """
+    if date_format_override is None:
+        return
+    import polars as pl
+
+    from moneybin.extractors.tabular.date_detection import format_parses
+
+    date_column = field_mapping.get("transaction_date")
+    if date_column is None or date_column not in df.columns:
+        return
+    if format_parses(df[date_column].cast(pl.Utf8).to_list(), date_format_override):
+        return
+    raise UserError(
+        f"Date format {date_format_override!r} could not read the "
+        f"{date_column!r} column. Importing with it would drop most rows. "
+        "Check the format against the column's own values.",
+        code=error_codes.IMPORT_INVALID_DATE_FORMAT,
+    )
 
 
 def _validate_explicit_tabular_sign_shape(
@@ -1418,6 +1463,114 @@ class ImportService:
                     "The reviewed import mapping references unavailable columns.",
                     code=error_codes.IMPORT_PREVIEW_PLAN_MISMATCH,
                 )
+            if reviewed_plan.confidence == "low" or reviewed_plan.date_format is None:
+                # Req 4: low is never auto-acceptable, even replayed from a
+                # staged preview — and a plan whose date format was never
+                # detected parses to zero rows whatever tier it carries.
+                # Without this gate the transform stage silently drops every
+                # row it can't parse and the confirm "succeeds" with
+                # rows_loaded=0 and no error. A corrected mapping requires a
+                # fresh preview (Req 8) — mapping=... on import_preview, not a
+                # mutated confirm call.
+                from moneybin.config import get_settings
+                from moneybin.extractors.confidence import Confidence, resolve_tier
+                from moneybin.extractors.tabular.column_mapper import (
+                    collect_samples,
+                    score_mapping,
+                )
+                from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+                from moneybin.services.import_confirmation import (
+                    ConfirmationRequired,
+                    ImportConfirmationRequiredError,
+                    ProposedMapping,
+                    classify_unconfirmable_plan,
+                )
+
+                # The plan persists the tier, not the score, so re-score from
+                # the mapping rather than inventing a number: score_mapping is
+                # the canonical emitter, and it names the *missing half* of a
+                # partial debit/credit pair instead of the contradictory
+                # "amount". Feed it the preview's own flagged set — dropping it
+                # re-scores a flagged 0.85 plan as a clean 1.0, so the refusal
+                # would report score=1.0 beside tier="low" and name none of the
+                # fields that earned the tier.
+                score, missing_required = score_mapping(
+                    reviewed_plan.field_mapping,
+                    list(reviewed_plan.flagged_fields),
+                    reviewed_plan.date_format,
+                )
+                # Report the tier the preview already showed rather than a flat
+                # "low": an undetected date format alone scores 0.75 (medium),
+                # and filing that under low contradicts the agent's own preview
+                # and skews the buckets the confidence bands are tuned from. A
+                # persisted "low" is kept as-is — a structural red flag pins the
+                # tier regardless of score, and re-scoring cannot recover it.
+                bands = get_settings().import_.confidence
+                declined_tier = (
+                    "low"
+                    if reviewed_plan.confidence == "low"
+                    else resolve_tier(score, t_high=bands.t_high, t_med=bands.t_med)
+                )
+                mapped_columns = set(reviewed_plan.field_mapping.values())
+                plan_samples = {
+                    dest: [
+                        value
+                        for value in collect_samples(df, column)
+                        if value is not None
+                    ]
+                    for dest, column in reviewed_plan.field_mapping.items()
+                }
+                record_counter(
+                    IMPORT_CONFIRMATIONS_TOTAL,
+                    labels={
+                        "channel": "tabular",
+                        "tier": declined_tier,
+                        "outcome": "declined",
+                    },
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                    disposition="rollback",
+                )
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        confidence=Confidence(
+                            score=score,
+                            tier=declined_tier,
+                            flagged=tuple(reviewed_plan.flagged_fields),
+                            missing_required=missing_required,
+                        ),
+                        # Name the file's own columns: the recovery hint tells
+                        # the agent to send mapping={dest: source_column}, so an
+                        # envelope with no column names forces it to guess.
+                        proposed=ProposedMapping(
+                            field_mapping=dict(reviewed_plan.field_mapping),
+                            sample_values=plan_samples,
+                            unmapped_columns=tuple(
+                                column
+                                for column in df.columns
+                                if column not in mapped_columns
+                            ),
+                        ),
+                        samples=plan_samples,
+                        # Narrow the reason to the cause, so a surface can name
+                        # the recovery that actually applies. Structural first:
+                        # a consumed header row outranks any mapping question,
+                        # since no caller input touches it. Then an unreadable
+                        # date, but only when the column IS mapped and its
+                        # *values* are the problem — with no date column at all,
+                        # --date-format is useless and a mapping override is
+                        # the real recovery.
+                        reason=classify_unconfirmable_plan(
+                            header_row_looks_like_data=(
+                                reviewed_plan.header_row_looks_like_data
+                            ),
+                            date_format=reviewed_plan.date_format,
+                            field_mapping=reviewed_plan.field_mapping,
+                            flagged_fields=list(reviewed_plan.flagged_fields),
+                        ),
+                    )
+                )
             resolved = ResolvedMapping(
                 field_mapping=dict(reviewed_plan.field_mapping),
                 date_format=reviewed_plan.date_format,
@@ -1453,6 +1606,9 @@ class ImportService:
                 ImportConfirmationRequiredError,
                 Override,
                 ProposedMapping,
+                classify_unconfirmable_plan,
+                coerce_number_format,
+                coerce_sign_convention,
                 resolve_or_confirm,
             )
 
@@ -1484,22 +1640,94 @@ class ImportService:
                 signal = None
 
             # Required fields depend on the EFFECTIVE amount shape after the
-            # override resolves the single/split contention. Both this
-            # pre-compute and validate_partial_mapping's merge logic call
-            # resolve_amount_shape so a future shape addition only updates
-            # one place.
+            # override resolves the single/split contention, so this
+            # pre-compute and validate_partial_mapping's merge logic must
+            # agree — both route through resolve_amount_shape.
             from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
-            from moneybin.services.import_confirmation import resolve_amount_shape
+            from moneybin.services.import_confirmation import (
+                tabular_required_fields,
+            )
 
-            amount_required = resolve_amount_shape(
+            required_fields = tabular_required_fields(
                 proposed_keys=set(proposed.field_mapping.keys()),
                 override_keys=set(overrides.keys()) if overrides else set(),
             )
-            required_fields = (
-                "transaction_date",
-                *amount_required,
-                "description",
+            # Every detection belongs in the histogram — the ones that never
+            # reach resolve_or_confirm below *and* the ones that import
+            # cleanly. The bands are tuned from this distribution, so dropping
+            # either end biases it. This sits before the gates, so it is the
+            # one metric here on a path that can end both ways: a buffered
+            # caller flushes "commit" on success and "rollback" on the refusal
+            # those gates raise, and flush() discards whatever does not match.
+            # Queue both, and exactly one lands. The unbuffered path emits
+            # directly, so it records once or it would double-count.
+            if observations is not None:
+                for disposition in ("commit", "rollback"):
+                    record_observation(
+                        IMPORT_DETECTION_SCORE,
+                        confidence.score,
+                        labels={},
+                        emit_metrics=emit_metrics,
+                        observations=observations,
+                        disposition=disposition,
+                    )
+            else:
+                record_observation(
+                    IMPORT_DETECTION_SCORE,
+                    confidence.score,
+                    labels={},
+                    emit_metrics=emit_metrics,
+                    observations=None,
+                )
+
+            # An explicit --date-format is the documented way in for a real
+            # format the detector carries no candidate for (%Y%m%d), so its
+            # presence — not the detector's silence — decides whether this plan
+            # has a date format at all. Override first, matching the precedence
+            # the replace below applies. Whether it can actually *read* the
+            # column is checked once down there, where every branch honours it;
+            # a second check here would be a second gate to keep in step.
+            # Ahead of resolve_or_confirm, which records an accepted or
+            # overridden confirmation below — a counter the CLI path applies
+            # immediately, so a later refusal cannot take it back.
+            _validate_date_format_override(
+                df, mapping_result.field_mapping, date_format_override
             )
+            date_format_effective = date_format_override or mapping_result.date_format
+            if date_format_effective is None:
+                # A date column nothing could parse makes the plan unloadable at
+                # any tier: the transform drops every row and the import reports
+                # success. This gates *ahead* of resolve_or_confirm because an
+                # Override short-circuits there at every tier, including low.
+                # map_columns already applied `overrides`, so a correction that
+                # names a parseable date column clears this on its own re-run.
+                record_counter(
+                    IMPORT_CONFIRMATIONS_TOTAL,
+                    labels={
+                        "channel": "tabular",
+                        "tier": confidence.tier,
+                        "outcome": "declined",
+                    },
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                    disposition="rollback",
+                )
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        confidence=confidence,
+                        proposed=proposed,
+                        # See the reviewed-plan branch: a file with no date
+                        # column mapped is a mapping problem, not a format one.
+                        reason=classify_unconfirmable_plan(
+                            header_row_looks_like_data=False,
+                            date_format=None,
+                            field_mapping=proposed.field_mapping,
+                            flagged_fields=list(mapping_result.flagged_fields),
+                        ),
+                        samples=dict(proposed.sample_values),
+                    )
+                )
             outcome = resolve_or_confirm(
                 channel="tabular",
                 confidence=confidence,
@@ -1510,14 +1738,6 @@ class ImportService:
                 signal=signal,
                 self_accept_enabled=settings.import_.self_accept_high,
                 actor_kind=actor_kind,
-            )
-
-            record_observation(
-                IMPORT_DETECTION_SCORE,
-                confidence.score,
-                labels={},
-                emit_metrics=emit_metrics,
-                observations=observations,
             )
 
             if isinstance(outcome, ConfirmationRequired):
@@ -1531,7 +1751,30 @@ class ImportService:
                     emit_metrics=emit_metrics,
                     observations=observations,
                 )
-                raise ImportConfirmationRequiredError(outcome)
+                # resolve_or_confirm refuses a low tier with its own generic
+                # reason, and a consumed header row is what pinned the tier —
+                # so re-classify before raising, or every surface prescribes a
+                # mapping retry for the one cause no mapping answers. Reached
+                # by a headerless XLSX on first contact: pl.read_excel always
+                # eats row 0 as the header, so _read_excel sets the flag with
+                # no explicit skip_rows involved.
+                raise ImportConfirmationRequiredError(
+                    dataclasses.replace(
+                        outcome,
+                        reason=classify_unconfirmable_plan(
+                            header_row_looks_like_data=(
+                                read_result.header_row_looks_like_data
+                            ),
+                            date_format=mapping_result.date_format,
+                            field_mapping=outcome.proposed.field_mapping
+                            if isinstance(outcome.proposed, ProposedMapping)
+                            else dict(mapping_result.field_mapping),
+                            flagged_fields=list(mapping_result.flagged_fields),
+                        ),
+                    )
+                    if outcome.reason == "unknown_layout"
+                    else outcome
+                )
 
             if outcome.self_accepted:
                 record_counter(
@@ -1569,32 +1812,22 @@ class ImportService:
                     observations=observations,
                 )
 
-            # Coerce sign_convention based on the resolved amount shape so an
-            # override that swaps single ⇄ split doesn't carry a stale
-            # detector-derived convention into transform_dataframe (split
-            # rule against a single ``amount`` mapping rejects every row,
-            # and vice versa). Detector-derived sign for the resolved shape
-            # is preserved when the override didn't change the shape.
-            resolved_has_split = (
-                "debit_amount" in outcome.field_mapping
-                and "credit_amount" in outcome.field_mapping
+            resolved_sign = coerce_sign_convention(
+                field_mapping=outcome.field_mapping,
+                detected=mapping_result.sign_convention,
             )
-            detector_was_split = mapping_result.sign_convention == "split_debit_credit"
-            if resolved_has_split and not detector_was_split:
-                resolved_sign = "split_debit_credit"
-            elif not resolved_has_split and detector_was_split:
-                # Split → single: detector's split-only convention is no
-                # longer valid. Fall back to the default
-                # ``negative_is_expense``; callers can pass --sign to
-                # override if their export uses a different convention.
-                resolved_sign = "negative_is_expense"
-            else:
-                resolved_sign = mapping_result.sign_convention
+            # Same trigger as the sign coercion above: an override can retire
+            # the very column map_columns derived the number format from.
+            resolved_number_format = coerce_number_format(
+                field_mapping=outcome.field_mapping,
+                sample_values=mapping_result.sample_values,
+                detected=mapping_result.number_format,
+            )
             resolved = ResolvedMapping(
                 field_mapping=outcome.field_mapping,
-                date_format=mapping_result.date_format or "%Y-%m-%d",
+                date_format=date_format_effective,
                 sign_convention=resolved_sign,
-                number_format=mapping_result.number_format,
+                number_format=resolved_number_format,
                 is_multi_account=mapping_result.is_multi_account,
                 confidence=confidence.tier,
             )
@@ -1610,6 +1843,94 @@ class ImportService:
                     f"Proceeding with '{resolved.sign_convention}' — "
                     "use --sign to override if expense amounts look wrong."
                 )
+
+        # Covers the branches that reach here without one — the first-contact
+        # branch validates earlier, before it records a confirmation outcome.
+        _validate_date_format_override(df, resolved.field_mapping, date_format_override)
+
+        # All three branches converge here, and it sits ABOVE the success
+        # metrics below, because a refusal must not first record a silent
+        # format reuse.
+        #
+        # Which branch actually reaches it depends on the reader. For CSV the
+        # flag is computed only for an explicit skip_rows, so it can only be
+        # true when a saved or built-in format supplied the skip — the
+        # `elif matched_format:` branch, which asserts confidence="high" and
+        # would otherwise commit. For XLSX `_read_excel` computes it
+        # unconditionally, because pl.read_excel always consumes row 0 as the
+        # header; a first-contact headerless sheet therefore sets it too, and
+        # resolve_or_confirm refuses that at `low` before reaching here — the
+        # re-classification above the raise is what routes it correctly. The
+        # reviewed-plan branch refuses earlier with the same reason.
+        #
+        # No caller input clears it: a mapping override cannot un-consume a
+        # header row, and resolve_or_confirm honours an Override at every tier
+        # by design.
+        if read_result.header_row_looks_like_data:
+            # Confidence is imported at module scope, but a sibling branch
+            # imports it locally, which makes the name function-local here.
+            from moneybin.extractors.confidence import Confidence
+            from moneybin.extractors.tabular.column_mapper import collect_samples
+            from moneybin.metrics.registry import (
+                IMPORT_CONFIRMATIONS_TOTAL,
+                IMPORT_REVALIDATION_FAILURE_TOTAL,
+            )
+            from moneybin.services.import_confirmation import (
+                ConfirmationRequired,
+                ImportConfirmationRequiredError,
+                ProposedMapping,
+            )
+
+            gate_samples = {
+                dest: [v for v in collect_samples(df, column) if v is not None]
+                for dest, column in resolved.field_mapping.items()
+                if column in df.columns
+            }
+            # This IS the replay guard the registry says the counter waits on:
+            # a saved layout that no longer reads its own file. Record it as
+            # such, and label the decline with the tier the envelope carries —
+            # the matched_format branch hardcodes resolved.confidence="high",
+            # so using it here would file a low-tier refusal under high.
+            record_counter(
+                IMPORT_REVALIDATION_FAILURE_TOTAL,
+                labels={"channel": "tabular"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+                disposition="rollback",
+            )
+            record_counter(
+                IMPORT_CONFIRMATIONS_TOTAL,
+                labels={
+                    "channel": "tabular",
+                    "tier": "low",
+                    "outcome": "declined",
+                },
+                emit_metrics=emit_metrics,
+                observations=observations,
+                disposition="rollback",
+            )
+            raise ImportConfirmationRequiredError(
+                ConfirmationRequired(
+                    channel="tabular",
+                    confidence=Confidence(
+                        score=0.0,
+                        tier="low",
+                        flagged=(),
+                        missing_required=(),
+                    ),
+                    proposed=ProposedMapping(
+                        field_mapping=dict(resolved.field_mapping),
+                        sample_values=gate_samples,
+                        unmapped_columns=tuple(
+                            c
+                            for c in df.columns
+                            if c not in resolved.field_mapping.values()
+                        ),
+                    ),
+                    reason="header_row_consumed",
+                    samples=gate_samples,
+                )
+            )
 
         # Record format match and detection confidence metrics
         if matched_format:
