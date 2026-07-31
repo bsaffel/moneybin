@@ -1008,6 +1008,11 @@ def import_preview_coarse(
     data = TypeAdapter(dict[str, Any]).validate_python(wire["data"])
     pending_id = "pending"
     expires_wire = expires_at.isoformat()
+    # Confirm rejects both of these outright, so the correction hint below has
+    # to survive the preview_id rewrite at the end of this function.
+    plan_is_unconfirmable = reviewed_plan is not None and (
+        reviewed_plan["confidence"] == "low" or reviewed_plan["date_format"] is None
+    )
     if isinstance(response.data, ImportPreviewPayload):
         payload: ImportPreviewCoarsePayload = ImportTabularPreviewCoarsePayload(
             **data,
@@ -1024,11 +1029,7 @@ def import_preview_coarse(
                 "'<source_column>'}) to correct it; data.sample_values and "
                 "data.unmapped_columns name the file's columns.",
             ]
-            if reviewed_plan is not None
-            and (
-                reviewed_plan["confidence"] == "low"
-                or reviewed_plan["date_format"] is None
-            )
+            if plan_is_unconfirmable
             else [
                 "Use import_confirm(preview_id=...) before the preview expires.",
             ]
@@ -1097,10 +1098,14 @@ def import_preview_coarse(
         update={"preview_id": preview_id},
     )
     if isinstance(final_payload, ImportTabularPreviewCoarsePayload):
-        actions = [
-            f"Use import_confirm(preview_id='{preview_id}') before the preview "
-            "expires.",
-        ]
+        # Only a confirmable plan gains anything from naming the real
+        # preview_id; overwriting unconditionally discarded the correction hint
+        # and sent the agent to a confirm call guaranteed to be refused.
+        if not plan_is_unconfirmable:
+            actions = [
+                f"Use import_confirm(preview_id='{preview_id}') before the preview "
+                "expires.",
+            ]
     elif isinstance(final_payload, ImportPdfBridgePreviewPayload):
         actions = [
             f"Use import_confirm(preview_id='{preview_id}', "
@@ -1975,16 +1980,20 @@ def _import_confirm_coarse_confirmation_actions(
             "ask the human to approve the inversion again."
         )
     if outcome.reason == "account_confirmation":
-        bindings = {
-            str(proposal.get("source_account_key", "")): "<account_id|new>"
-            for proposal in outcome.account_proposals
-        }
+        # Never interpolate source_account_key here. It is the native OFX/Plaid
+        # identifier (ACCOUNT_IDENTIFIER -> CRITICAL), and _import_dynamic_envelope
+        # redacts `data` only — a key named in this prose ships unmasked.
+        # account_bindings still matches on the raw key, which the agent cannot
+        # see, so multi-account binding is a CLI capability until a non-sensitive
+        # proposal handle exists.
         actions.append(
             f"Use import_confirm(preview_id={preview_id!r}, "
-            "account_name='<name>') for a single known account, or "
-            f"import_confirm(preview_id={preview_id!r}, "
-            f"account_bindings={bindings!r}) to bind every detected account; "
-            "source keys are in data.account_proposals[].source_account_key."
+            "account_name='<name>') to bind the single account this file "
+            f"belongs to. {len(outcome.account_proposals)} source account(s) "
+            "were detected; data.account_proposals[] describes them with "
+            "identifiers masked. Binding several accounts at once keys on the "
+            "unmasked source key, so it runs from the CLI: `moneybin import "
+            "confirm <file> --account-binding <source_key>=<account_id|new>`."
         )
         return actions
     actions.append(

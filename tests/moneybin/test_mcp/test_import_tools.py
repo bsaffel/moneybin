@@ -2378,6 +2378,107 @@ async def test_import_confirm_coarse_gates_low_confidence_reviewed_plan(
     assert data.samples, "samples must show what each mapped column contains"
 
 
+async def test_refusing_an_unreadable_date_reports_the_tier_the_preview_showed(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A medium plan refused for its date column stays medium in the refusal.
+
+    Regression: the refusal hardcoded tier="low" and a low Confidence. An
+    undetected date format alone scores 0.75 (medium), so the confirm response
+    contradicted the preview the agent was holding and dropped a medium failure
+    into the low calibration bucket the confidence bands are tuned from.
+    """
+    from moneybin.privacy.payloads.imports import ImportConfirmRequiredPayload
+
+    csv = tmp_path / "unreadable_dates.csv"
+    csv.write_text(
+        "Date,Description,Amount\n"
+        "not-a-date,Coffee,-4.50\n"
+        "also-not-a-date,Deposit,100.00\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(file_path=str(csv))
+    assert preview.data.confidence == "medium", preview.data.confidence
+
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+
+    data = confirmed.data
+    assert isinstance(data, ImportConfirmRequiredPayload)
+    assert data.reason == "unknown_layout"
+    assert data.tier == "medium", data.tier
+
+
+async def test_preview_keeps_the_correction_hint_for_an_unconfirmable_plan(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The preview_id rewrite must not discard the correction hint.
+
+    Regression: the final ImportTabularPreviewCoarsePayload branch rebuilt
+    actions[] unconditionally so it could name the real preview_id, overwriting
+    the correction hint with "Use import_confirm(preview_id=...)" — the one call
+    confirm is guaranteed to refuse for this plan. The agent burned a round trip
+    plus a full re-parse to be told what the preview already knew.
+    """
+    csv = tmp_path / "notes.csv"
+    csv.write_text(
+        "Notes,Reference\n"
+        "Some transaction narrative text here,REF001\n"
+        "Another narrative description entry,REF002\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(file_path=str(csv))
+
+    assert preview.data.confidence == "low"
+    hint = " ".join(preview.actions)
+    assert "import_preview(" in hint, hint
+    assert "mapping=" in hint, hint
+    assert "import_confirm(" not in hint, hint
+
+
+async def test_account_confirmation_hint_never_names_the_raw_source_key(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """actions[] is not redacted, so it must not carry ACCOUNT_IDENTIFIER.
+
+    Regression: the hint interpolated account_bindings={<raw source key>: ...}
+    built from the unredacted outcome. _import_dynamic_envelope calls
+    redact_typed on `data` only, so the native OFX/Plaid key shipped verbatim in
+    prose beside its own masked copy in data.account_proposals[].
+    """
+    from moneybin.privacy.payloads.imports import ImportConfirmRequiredPayload
+
+    csv = tmp_path / "statement.csv"
+    csv.write_text(
+        "Date,Description,Amount\n2026-07-01,Coffee,-4.50\n2026-07-02,Deposit,100.00\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(file_path=str(csv))
+    confirmed = await import_confirm_coarse(preview_id=preview.data.preview_id)
+
+    data = confirmed.data
+    assert isinstance(data, ImportConfirmRequiredPayload)
+    assert data.reason == "account_confirmation"
+    joined = " ".join(confirmed.actions)
+    # The old hint embedded a literal dict keyed by the raw source key.
+    assert "account_bindings={" not in joined, joined
+    masked = data.account_proposals[0].get("source_account_key", "")
+    last_four = masked.removeprefix("****")
+    assert last_four, f"fixture gave no maskable key: {masked!r}"
+    assert last_four not in joined, joined
+
+
 async def test_import_status_coarse_defaults_to_all_sections(
     mcp_db: object,
 ) -> None:
@@ -3070,15 +3171,20 @@ class TestImportFilesConfirmationRequired:
         assert "account_bindings=" not in joined
         assert "mapping={" not in joined
 
-    async def test_account_confirmation_action_binds_every_account(
+    async def test_account_confirmation_action_accounts_for_every_account(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        """Bind every account by re-confirming the SAME preview_id.
+        """Account for every detected account without naming a raw source key.
 
         account_confirmation is the one reason resolvable in place — the column
         mapping is already settled, so the hint must re-call import_confirm on
-        the same preview rather than send the agent back for a fresh one. The
-        binding is all-or-nothing: every detected source key appears.
+        the same preview rather than send the agent back for a fresh one.
+
+        This test previously asserted that every raw source key appeared in the
+        hint, which pinned a leak in place: source_account_key is
+        ACCOUNT_IDENTIFIER (CRITICAL) and actions[] is never redacted. The hint
+        now reports how many accounts were detected and leaves their identifiers
+        to the masked data.account_proposals[].
         """
         from moneybin.mcp.tools.import_tools import (
             _import_confirm_coarse_confirmation_actions,  # pyright: ignore[reportPrivateUsage]
@@ -3099,8 +3205,10 @@ class TestImportFilesConfirmationRequired:
         )
 
         joined = " ".join(actions)
-        assert "'bare-abc123': '<account_id|new>'" in joined
-        assert "'bare-def456': '<account_id|new>'" in joined
+        assert "bare-abc123" not in joined, joined
+        assert "bare-def456" not in joined, joined
+        # Both accounts are still accounted for, by count rather than by key.
+        assert "2 source account(s)" in joined, joined
         assert "import_confirm(preview_id='pv_123'" in joined
         # The mapping is settled — do not send the agent back for a new preview.
         assert "import_preview(" not in joined

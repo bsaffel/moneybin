@@ -388,6 +388,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read (#372).** `import_confirm` replayed a staged preview whose column mapping
   scored low — or whose date format was never detected — straight into the
   loader, which parsed zero rows and returned a successful import of nothing.
+  `moneybin import confirm <file> --accept` had the same hole on first contact:
+  a date column that matched by header but whose values nothing could parse
+  scored medium, which `--accept` resolved unconditionally.
   Both cases now return `confirmation_required` carrying the file's own column
   names and sample values, and name the recovery path: `import_preview` with a
   `mapping` override stages a corrected preview to confirm instead. An override

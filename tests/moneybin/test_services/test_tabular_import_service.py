@@ -31,8 +31,13 @@ def _make_mapping_result(
     sign_needs_confirmation: bool = False,
     sign_convention: str = "negative_is_expense",
     sign_evidence_header: str | None = None,
+    date_format: str | None = "%Y-%m-%d",
 ) -> object:
-    """Return a MappingResult-like object with the given confidence and score."""
+    """Return a MappingResult-like object with the given confidence and score.
+
+    ``date_format=None`` is the detector saying it never read the date column —
+    the case that used to be papered over with a fabricated ``"%Y-%m-%d"``.
+    """
     from moneybin.extractors.tabular.column_mapper import MappingResult
 
     if field_mapping is None:
@@ -44,7 +49,7 @@ def _make_mapping_result(
     return MappingResult(
         field_mapping=field_mapping,
         confidence=confidence,  # type: ignore[arg-type]
-        date_format="%Y-%m-%d",
+        date_format=date_format,
         number_format="us",
         sign_convention=sign_convention,  # type: ignore[arg-type]  # test fixture accepts every supported convention
         sign_needs_confirmation=sign_needs_confirmation,
@@ -416,6 +421,74 @@ class TestTabularConfirmationFlow:
                 confirm=True,
             )
         assert result.import_id is not None
+
+    def test_confirm_refuses_a_plan_whose_date_column_was_never_read(
+        self, db: Database
+    ) -> None:
+        """confirm=True must not resolve a plan the loader parses to zero rows.
+
+        Regression: resolve_or_confirm's Accept branch only special-cases `low`,
+        so a medium plan whose date column header-matched but whose values
+        detect_date_format could not read resolved unconditionally, and a
+        fabricated "%Y-%m-%d" carried it into the loader — every row dropped
+        while the import reported success. Live via
+        `moneybin import confirm <file> --accept`.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=undated,
+        ):
+            with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+                ImportService(db).import_file(
+                    _STANDARD_CSV,
+                    account_name="test",
+                    refresh=False,
+                    confirm=True,
+                )
+        outcome = exc_info.value.outcome
+        assert outcome.reason == "unknown_layout"
+        # Keep the detected tier: filing a medium failure under "low" would
+        # contradict the preview the caller already holds.
+        assert outcome.confidence.tier == "medium"
+
+    def test_an_override_cannot_resolve_an_unreadable_date_column(
+        self, db: Database
+    ) -> None:
+        """The unreadable-date gate must sit ahead of resolve_or_confirm.
+
+        An Override short-circuits resolve_or_confirm at *every* tier, including
+        low, so a gate placed inside it would never see this case: a mapping
+        correction that does not fix the date column would still load zero rows.
+        map_columns applies overrides before detecting the format, so a genuine
+        correction clears this on its own.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=undated,
+        ):
+            with pytest.raises(ImportConfirmationRequiredError):
+                ImportService(db).import_file(
+                    _STANDARD_CSV,
+                    account_name="test",
+                    refresh=False,
+                    overrides={"description": "Description"},
+                )
 
     def test_partial_mapping_override_loads(self, db: Database) -> None:
         """overrides= acts as Override signal; partial-merge resolves -> data loads."""

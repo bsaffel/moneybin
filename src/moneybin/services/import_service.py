@@ -1429,7 +1429,8 @@ class ImportService:
                 # rows_loaded=0 and no error. A corrected mapping requires a
                 # fresh preview (Req 8) — mapping=... on import_preview, not a
                 # mutated confirm call.
-                from moneybin.extractors.confidence import Confidence
+                from moneybin.config import get_settings
+                from moneybin.extractors.confidence import Confidence, resolve_tier
                 from moneybin.extractors.tabular.column_mapper import (
                     collect_samples,
                     score_mapping,
@@ -1448,6 +1449,18 @@ class ImportService:
                 score, missing_required = score_mapping(
                     reviewed_plan.field_mapping, [], reviewed_plan.date_format
                 )
+                # Report the tier the preview already showed rather than a flat
+                # "low": an undetected date format alone scores 0.75 (medium),
+                # and filing that under low contradicts the agent's own preview
+                # and skews the buckets the confidence bands are tuned from. A
+                # persisted "low" is kept as-is — a structural red flag pins the
+                # tier regardless of score, and re-scoring cannot recover it.
+                bands = get_settings().import_.confidence
+                declined_tier = (
+                    "low"
+                    if reviewed_plan.confidence == "low"
+                    else resolve_tier(score, t_high=bands.t_high, t_med=bands.t_med)
+                )
                 mapped_columns = set(reviewed_plan.field_mapping.values())
                 plan_samples = {
                     dest: [
@@ -1461,7 +1474,7 @@ class ImportService:
                     IMPORT_CONFIRMATIONS_TOTAL,
                     labels={
                         "channel": "tabular",
-                        "tier": "low",
+                        "tier": declined_tier,
                         "outcome": "declined",
                     },
                     emit_metrics=emit_metrics,
@@ -1473,7 +1486,7 @@ class ImportService:
                         channel="tabular",
                         confidence=Confidence(
                             score=score,
-                            tier="low",
+                            tier=declined_tier,
                             flagged=(),
                             missing_required=missing_required,
                         ),
@@ -1572,6 +1585,32 @@ class ImportService:
                 proposed_keys=set(proposed.field_mapping.keys()),
                 override_keys=set(overrides.keys()) if overrides else set(),
             )
+            if mapping_result.date_format is None:
+                # A date column nothing could parse makes the plan unloadable at
+                # any tier: the transform drops every row and the import reports
+                # success. This gates *ahead* of resolve_or_confirm because an
+                # Override short-circuits there at every tier, including low.
+                # map_columns already applied `overrides`, so a correction that
+                # names a parseable date column clears this on its own re-run.
+                record_counter(
+                    IMPORT_CONFIRMATIONS_TOTAL,
+                    labels={
+                        "channel": "tabular",
+                        "tier": confidence.tier,
+                        "outcome": "declined",
+                    },
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                )
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        confidence=confidence,
+                        proposed=proposed,
+                        reason="unknown_layout",
+                        samples=dict(proposed.sample_values),
+                    )
+                )
             outcome = resolve_or_confirm(
                 channel="tabular",
                 confidence=confidence,
@@ -1647,7 +1686,7 @@ class ImportService:
             )
             resolved = ResolvedMapping(
                 field_mapping=outcome.field_mapping,
-                date_format=mapping_result.date_format or "%Y-%m-%d",
+                date_format=mapping_result.date_format,
                 sign_convention=resolved_sign,
                 number_format=mapping_result.number_format,
                 is_multi_account=mapping_result.is_multi_account,
