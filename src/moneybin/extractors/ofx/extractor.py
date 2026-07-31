@@ -359,6 +359,7 @@ class OFXExtractor:
         *,
         import_id: str,
         source_origin: str,
+        source_bytes: bytes | None = None,
     ) -> dict[str, pl.DataFrame]:
         """Extract all data from an OFX/QFX/QBO file.
 
@@ -368,6 +369,11 @@ class OFXExtractor:
                 Stamped on every row in every returned DataFrame.
             source_origin: Institution slug resolved by the caller (service layer).
                 Stamped on transactions.
+            source_bytes: Contents the caller already read from ``file_path``.
+                Pass the same buffer that produced the batch's digest so the
+                loaded rows and the recorded content identity describe one
+                version of the file; omit it and the path is read again here,
+                leaving a window a synced folder can rewrite.
 
         Returns:
             dict with DataFrames for institutions, accounts, transactions, balances.
@@ -382,8 +388,10 @@ class OFXExtractor:
         logger.info(f"Extracting data from OFX file: {file_path}")
 
         try:
-            with open(file_path, "rb") as f:
-                content = f.read().decode("utf-8", errors="replace")
+            if source_bytes is None:
+                with open(file_path, "rb") as f:
+                    source_bytes = f.read()
+            content = source_bytes.decode("utf-8", errors="replace")
             if "�" in content:
                 logger.warning(
                     f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: "

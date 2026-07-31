@@ -290,3 +290,47 @@ class TestImportOFXPermissionDenied:
         assert classified is not None
         assert classified.code == "infra_permission_denied"
         assert classified.hint is not None
+
+
+class TestExtractionParsesTheHashedBytes:
+    """The digest and the loaded rows must describe one version of the file."""
+
+    def test_a_rewrite_after_the_read_does_not_reach_the_loaded_rows(
+        self, db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A synced folder replacing the file mid-import must not split identity.
+
+        The service reads the file once, hashes those bytes, and stamps the
+        digest on the batch. Reopening the path to extract puts a window between
+        the two: a file that changes inside it is recorded as version A and
+        loaded as version B, so B's rows land under A's content identity and a
+        later genuine import of B is dismissed as a duplicate. Rewriting the
+        file the instant the digest is taken makes that window deterministic.
+        """
+        from moneybin.services import import_service as import_service_module
+
+        original = Path("tests/fixtures/ofx/sample_minimal.ofx").read_bytes()
+        replacement = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx").read_bytes()
+        target = tmp_path / "statement.ofx"
+        target.write_bytes(original)
+
+        real_source_sha256 = import_service_module.source_sha256
+
+        def _rewrite_then_hash(path: Path, source_bytes: bytes | None) -> str:
+            target.write_bytes(replacement)
+            return real_source_sha256(path, source_bytes)
+
+        monkeypatch.setattr(import_service_module, "source_sha256", _rewrite_then_hash)
+
+        ImportService(db).import_file(target, refresh=False)
+
+        loaded = {
+            row[0]
+            for row in db.execute(
+                "SELECT source_transaction_id FROM raw.ofx_transactions"
+            ).fetchall()
+        }
+        # Hand-derived from sample_minimal.ofx: two <FITID> elements. The
+        # replacement carries SHAREDFITID999/UNIQUEFITID001, so either file is
+        # unambiguous in the result.
+        assert loaded == {"FITID001", "FITID002"}

@@ -1072,6 +1072,11 @@ class ImportService:
                 canonical_path,
                 import_id=import_id,
                 source_origin=source_origin,
+                # The bytes `digest` was taken from, not a fresh read: a file
+                # replaced in between would be recorded as one version and
+                # loaded as another, so a later genuine import of the new
+                # version reads as a duplicate of the old.
+                source_bytes=raw,
             )
         except Exception:
             import_log.finalize_import(
