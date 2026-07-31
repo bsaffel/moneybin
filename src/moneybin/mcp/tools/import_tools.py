@@ -1048,6 +1048,24 @@ def import_preview_coarse(
                 "skip-rows override. Add a header row to the source file and "
                 "preview it again.",
             ]
+        elif reviewed_plan is not None and reviewed_plan["date_format"] is None:
+            # A mapping= retry cannot change date_format, so when the column is
+            # already mapped and its *values* are what the detector can't read
+            # (a real format it carries no candidate for, e.g. %Y%m%d), the
+            # mapping hint restages the same unconfirmable preview forever. MCP
+            # takes no date-format parameter; the CLI's --date-format is the
+            # only surface that can change the date representation.
+            actions = [
+                "This mapping is not confirmable as staged: no date format could "
+                "be read from the mapped date column. If the wrong column is "
+                f"mapped, use import_preview(file_path={file_path!r}, "
+                "mapping={'transaction_date': '<source_column>'}); "
+                "data.sample_values and data.unmapped_columns name the file's "
+                "columns. If the column is right and its format is simply "
+                "unrecognized, no mapping correction can change that — import "
+                "it with `moneybin import files <file> --confirm --date-format "
+                "<strptime>`.",
+            ]
         else:
             actions = [
                 "This mapping is not confirmable as staged. Use import_preview("

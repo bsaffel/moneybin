@@ -401,7 +401,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the tier the detector actually scored, instead of reporting high confidence
   beside a preview that says it is not confirmable. When the header row itself
   was a transaction, the preview now says so and points at the source file:
-  no column correction recovers a record consumed as column names.
+  no column correction recovers a record consumed as column names. A date
+  column the detector carries no candidate for is still importable through
+  `moneybin import files <file> --confirm --date-format <strptime>`; that
+  override is now checked against the column's own values first, so a format
+  that cannot read the file is refused rather than loading nothing.
 - **A card imported from both a PDF statement and a bank file no longer loads
   twice (#371).** PDF import built its account key as a string and skipped the
   identity resolver every other source uses, so the same card arriving as a PDF

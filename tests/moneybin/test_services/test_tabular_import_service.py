@@ -32,11 +32,14 @@ def _make_mapping_result(
     sign_convention: str = "negative_is_expense",
     sign_evidence_header: str | None = None,
     date_format: str | None = "%Y-%m-%d",
+    date_samples: list[str] | None = None,
 ) -> object:
     """Return a MappingResult-like object with the given confidence and score.
 
     ``date_format=None`` is the detector saying it never read the date column —
     the case that used to be papered over with a fabricated ``"%Y-%m-%d"``.
+    ``date_samples`` are the values a supplied ``--date-format`` is checked
+    against, so they must match the file the test actually imports.
     """
     from moneybin.extractors.tabular.column_mapper import MappingResult
 
@@ -57,7 +60,12 @@ def _make_mapping_result(
         is_multi_account=False,
         unmapped_columns=["Balance"],
         flagged_fields=[],
-        sample_values={"transaction_date": ["2026-01-05"], "amount": ["-52.30"]},
+        sample_values={
+            "transaction_date": date_samples
+            if date_samples is not None
+            else ["2026-01-05"],
+            "amount": ["-52.30"],
+        },
         score=score,
         missing_required=(),
     )
@@ -489,6 +497,121 @@ class TestTabularConfirmationFlow:
                     refresh=False,
                     overrides={"description": "Description"},
                 )
+
+    def test_an_explicit_date_format_recovers_a_layout_the_detector_cannot_read(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """--date-format is the documented escape hatch; the gate must not eat it.
+
+        Regression: the unreadable-date gate raised before import_file applied
+        date_format_override, so `moneybin import files <file> --confirm
+        --date-format %Y%m%d` refused a file that imported before this PR.
+        %Y%m%d is genuinely absent from _DATE_FORMATS, so the override is the
+        only way such a file gets in at all. (`--date-format` lives on `import
+        files`; `import confirm` does not take one.)
+        """
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "compact-dates.csv"
+        csv.write_text(
+            "Date,Description,Amount\n20260105,Coffee,-4.50\n20260212,Deposit,100.00\n"
+        )
+        undated = _make_mapping_result(
+            score=0.75,
+            confidence="medium",
+            date_format=None,
+            date_samples=["20260105", "20260212"],
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=undated,
+        ):
+            result = ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                date_format="%Y%m%d",
+            )
+        assert result.import_id is not None
+
+    def test_a_date_format_override_that_cannot_read_the_column_is_refused(
+        self, db: Database
+    ) -> None:
+        """Honouring the override must not reopen the zero-row hole behind it.
+
+        Skipping the gate whenever date_format_override is set would let a wrong
+        format through to the loader, which drops every row and reports success
+        — the same silent failure from the other side. The override is held to
+        the parse bar the detector applies to its own candidates.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        undated = _make_mapping_result(
+            score=0.75,
+            confidence="medium",
+            date_format=None,
+            date_samples=["20260105", "20260212"],
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=undated,
+        ):
+            with pytest.raises(ImportConfirmationRequiredError):
+                ImportService(db).import_file(
+                    _STANDARD_CSV,
+                    account_name="test",
+                    refresh=False,
+                    confirm=True,
+                    date_format="%d/%m/%Y",
+                )
+
+    def test_an_unreadable_date_still_reaches_the_calibration_histogram(
+        self, db: Database
+    ) -> None:
+        """The refusal must not drop its score from IMPORT_DETECTION_SCORE.
+
+        The histogram is the primary calibration signal for the confidence
+        bands. An early exit that records the declined confirmation but skips
+        the observation biases every future threshold toward layouts that
+        happened to succeed.
+        """
+        from moneybin.metrics.observations import MetricObservations
+        from moneybin.metrics.registry import IMPORT_DETECTION_SCORE
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        observations = MetricObservations()
+        before = IMPORT_DETECTION_SCORE._sum.get()  # type: ignore[reportPrivateUsage]
+        with (
+            patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=undated,
+            ),
+            pytest.raises(ImportConfirmationRequiredError),
+        ):
+            ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                emit_metrics=False,
+                observations=observations,
+            )
+
+        observations.flush("commit")
+        assert (
+            IMPORT_DETECTION_SCORE._sum.get()  # type: ignore[reportPrivateUsage]
+            == before + 0.75
+        )
 
     def test_partial_mapping_override_loads(self, db: Database) -> None:
         """overrides= acts as Override signal; partial-merge resolves -> data loads."""

@@ -1529,6 +1529,7 @@ class ImportService:
             )
         else:
             from moneybin.config import get_settings
+            from moneybin.extractors.tabular.date_detection import format_parses
             from moneybin.metrics.registry import (
                 IMPORT_CONFIRMATIONS_TOTAL,
                 IMPORT_DETECTION_SCORE,
@@ -1585,7 +1586,34 @@ class ImportService:
                 proposed_keys=set(proposed.field_mapping.keys()),
                 override_keys=set(overrides.keys()) if overrides else set(),
             )
-            if mapping_result.date_format is None:
+            # Every detection belongs in the histogram, including the ones that
+            # never reach resolve_or_confirm below — the bands are tuned from
+            # this distribution, and dropping the failures biases it toward
+            # layouts that happened to work.
+            record_observation(
+                IMPORT_DETECTION_SCORE,
+                confidence.score,
+                labels={},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+
+            # An explicit --date-format is the documented way in for a real
+            # format the detector carries no candidate for (%Y%m%d). Honour it,
+            # but hold it to the bar a detected candidate clears: waving it
+            # through unchecked would reopen the zero-row import from the other
+            # side, since import_file applies the override downstream of here.
+            date_format_effective = mapping_result.date_format
+            if date_format_override is not None:
+                date_format_effective = (
+                    date_format_override
+                    if format_parses(
+                        mapping_result.sample_values.get("transaction_date", ()),
+                        date_format_override,
+                    )
+                    else None
+                )
+            if date_format_effective is None:
                 # A date column nothing could parse makes the plan unloadable at
                 # any tier: the transform drops every row and the import reports
                 # success. This gates *ahead* of resolve_or_confirm because an
@@ -1621,14 +1649,6 @@ class ImportService:
                 signal=signal,
                 self_accept_enabled=settings.import_.self_accept_high,
                 actor_kind=actor_kind,
-            )
-
-            record_observation(
-                IMPORT_DETECTION_SCORE,
-                confidence.score,
-                labels={},
-                emit_metrics=emit_metrics,
-                observations=observations,
             )
 
             if isinstance(outcome, ConfirmationRequired):
@@ -1686,7 +1706,7 @@ class ImportService:
             )
             resolved = ResolvedMapping(
                 field_mapping=outcome.field_mapping,
-                date_format=mapping_result.date_format,
+                date_format=date_format_effective,
                 sign_convention=resolved_sign,
                 number_format=mapping_result.number_format,
                 is_multi_account=mapping_result.is_multi_account,

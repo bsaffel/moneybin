@@ -5,8 +5,34 @@ from decimal import Decimal
 from moneybin.extractors.tabular.date_detection import (
     detect_date_format,
     detect_number_format,
+    format_parses,
     parse_amount_str,
 )
+
+
+class TestFormatParses:
+    """Tests for validating a caller-supplied date format against real values."""
+
+    def test_accepts_a_format_the_detector_does_not_carry(self) -> None:
+        """%Y%m%d is absent from _DATE_FORMATS but is a real bank date format."""
+        values: list[str | None] = ["20260105", "20260212", "20260331"]
+        assert format_parses(values, "%Y%m%d") is True
+
+    def test_rejects_a_format_that_cannot_read_the_column(self) -> None:
+        values: list[str | None] = ["20260105", "20260212", "20260331"]
+        assert format_parses(values, "%d/%m/%Y") is False
+
+    def test_holds_an_override_to_the_detector_s_own_parse_bar(self) -> None:
+        """Below 90% parsed is a reject, matching detect_date_format's threshold."""
+        # 8 of 10 parse — over half, under the bar the detector accepts at.
+        values = ["20260105"] * 8 + ["not-a-date"] * 2
+        assert format_parses(values, "%Y%m%d") is False
+        assert format_parses(["20260105"] * 9 + ["not-a-date"], "%Y%m%d") is True
+
+    def test_no_values_to_check_is_not_a_pass(self) -> None:
+        """Fail closed: an unverifiable override must not clear the gate."""
+        assert format_parses([], "%Y%m%d") is False
+        assert format_parses([None, "", "   "], "%Y%m%d") is False
 
 
 class TestDetectDateFormat:

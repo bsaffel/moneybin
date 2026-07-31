@@ -11,6 +11,8 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from moneybin.extractors.tabular.formats import (
         ConfidenceType,
         NumberFormatType,
@@ -40,9 +42,35 @@ _DATE_FORMATS: list[str] = [
 
 _MIN_YEAR = 1970
 
+# Share of non-empty values a format must read to be considered viable. Applied
+# both to the detector's own candidates and to a caller-supplied override, so
+# an explicit --date-format clears exactly the bar a guess would have to.
+_MIN_PARSE_RATE = 0.9
+
 
 def _max_year() -> int:
     return datetime.now().year + 1
+
+
+def format_parses(values: "Sequence[str | None]", fmt: str) -> bool:
+    """Report whether `fmt` reads enough of `values` to be usable.
+
+    The detector carries a fixed candidate list, so a real format it has no
+    entry for (`%Y%m%d`) can only arrive as a caller override. Checking it here
+    keeps that escape hatch from becoming a second route to a zero-row import:
+    a format nothing parses is refused rather than carried into the loader.
+    """
+    clean = [value.strip() for value in values if value and value.strip()]
+    if not clean:
+        return False
+    parsed = 0
+    for value in clean:
+        try:
+            datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+        parsed += 1
+    return parsed / len(clean) >= _MIN_PARSE_RATE
 
 
 def detect_date_format(
@@ -78,7 +106,7 @@ def detect_date_format(
                 continue
         parse_rate = parse_count / len(clean) if clean else 0
         range_score = reasonable_count / max(parse_count, 1)
-        if parse_rate >= 0.9:
+        if parse_rate >= _MIN_PARSE_RATE:
             scores.append((fmt, parse_rate, range_score))
             # Early exit on perfect match with unambiguous format
             if (

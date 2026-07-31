@@ -2481,6 +2481,39 @@ async def test_override_keeps_the_detector_tier_when_the_date_is_unreadable(
     assert "not confirmable as staged" in hint, hint
 
 
+async def test_unreadable_date_hint_names_a_recovery_that_can_change_the_format(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A mapping= retry cannot change date_format, so it must not be the only hint.
+
+    When the date column is already mapped correctly but carries a real format
+    the detector has no candidate for (%Y%m%d), every mapping= retry restages
+    the same unconfirmable preview. MCP exposes no date-format parameter, so
+    the recovery that actually works is the CLI's --date-format — which lives
+    on `import files`, not `import confirm`. Naming the wrong command would
+    strand the agent exactly as thoroughly as naming no command.
+    """
+    csv = tmp_path / "compact-dates.csv"
+    csv.write_text(
+        "Date,Description,Amount\n20260105,Coffee,-4.50\n20260212,Deposit,100.00\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(file_path=str(csv))
+
+    assert preview.data.date_format is None
+    assert preview.data.header_row_looks_like_data is False
+    hint = " ".join(preview.actions)
+    assert "moneybin import files" in hint, hint
+    assert "--date-format" in hint, hint
+    # `import confirm` takes --accept but no --date-format; naming it would
+    # send the agent to a flag that does not exist on that command.
+    assert "import confirm" not in hint, hint
+    assert "import_confirm(" not in hint, hint
+
+
 async def test_structural_red_flag_hint_does_not_prescribe_a_mapping_retry(
     mcp_db: object,
     tmp_path: Path,
