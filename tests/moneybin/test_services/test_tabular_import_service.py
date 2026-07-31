@@ -610,6 +610,45 @@ class TestTabularConfirmationFlow:
         # contradict the preview the caller already holds.
         assert outcome.confidence.tier == "medium"
 
+    def test_first_contact_xlsx_reports_the_structural_cause(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A headerless XLSX sets the flag on first contact — no skip_rows needed.
+
+        _read_excel computes header_row_looks_like_data unconditionally,
+        because pl.read_excel always consumes row 0 as the header. resolve_or_
+        confirm then refuses the forced-low tier with its own generic reason
+        and raises before the convergence guard, so every surface prescribed a
+        mapping retry for the one cause no mapping answers. (An earlier round
+        of this PR asserted first contact could never set the flag — true for
+        the CSV reader, wrong for Excel.)
+        """
+        import openpyxl
+
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["2026-07-01", -4.50, "Coffee"])
+        ws.append(["2026-07-02", 100.00, "Salary"])
+        xlsx = tmp_path / "headerless.xlsx"
+        wb.save(xlsx)
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                xlsx,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                save_format=False,
+            )
+
+        assert exc_info.value.outcome.reason == "header_row_consumed"
+
     def test_a_saved_format_cannot_commit_a_consumed_header_row(
         self, db: Database, tmp_path: Path
     ) -> None:

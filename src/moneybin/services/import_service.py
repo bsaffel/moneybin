@@ -1751,7 +1751,30 @@ class ImportService:
                     emit_metrics=emit_metrics,
                     observations=observations,
                 )
-                raise ImportConfirmationRequiredError(outcome)
+                # resolve_or_confirm refuses a low tier with its own generic
+                # reason, and a consumed header row is what pinned the tier —
+                # so re-classify before raising, or every surface prescribes a
+                # mapping retry for the one cause no mapping answers. Reached
+                # by a headerless XLSX on first contact: pl.read_excel always
+                # eats row 0 as the header, so _read_excel sets the flag with
+                # no explicit skip_rows involved.
+                raise ImportConfirmationRequiredError(
+                    dataclasses.replace(
+                        outcome,
+                        reason=classify_unconfirmable_plan(
+                            header_row_looks_like_data=(
+                                read_result.header_row_looks_like_data
+                            ),
+                            date_format=mapping_result.date_format,
+                            field_mapping=outcome.proposed.field_mapping
+                            if isinstance(outcome.proposed, ProposedMapping)
+                            else dict(mapping_result.field_mapping),
+                            flagged_fields=list(mapping_result.flagged_fields),
+                        ),
+                    )
+                    if outcome.reason == "unknown_layout"
+                    else outcome
+                )
 
             if outcome.self_accepted:
                 record_counter(
@@ -1825,18 +1848,24 @@ class ImportService:
         # branch validates earlier, before it records a confirmation outcome.
         _validate_date_format_override(df, resolved.field_mapping, date_format_override)
 
-        # All three branches converge here, which is the only place this gate
-        # covers every one of them — and it sits ABOVE the success metrics
-        # below, because a refusal must not first record a silent format reuse.
-        # The flag is computed only for an explicit skip_rows (readers.py:
-        # auto-detection never picks a data-looking row), so it can only be
-        # true when a saved or built-in format supplied the skip — and that is
-        # exactly the `elif matched_format:` branch, which asserts
-        # confidence="high" and commits. The reviewed-plan branch already
-        # refuses earlier with the same reason; first contact never sets the
-        # flag at all. No caller input clears it: a mapping override cannot
-        # un-consume a header row, and resolve_or_confirm honours an Override
-        # at every tier by design.
+        # All three branches converge here, and it sits ABOVE the success
+        # metrics below, because a refusal must not first record a silent
+        # format reuse.
+        #
+        # Which branch actually reaches it depends on the reader. For CSV the
+        # flag is computed only for an explicit skip_rows, so it can only be
+        # true when a saved or built-in format supplied the skip — the
+        # `elif matched_format:` branch, which asserts confidence="high" and
+        # would otherwise commit. For XLSX `_read_excel` computes it
+        # unconditionally, because pl.read_excel always consumes row 0 as the
+        # header; a first-contact headerless sheet therefore sets it too, and
+        # resolve_or_confirm refuses that at `low` before reaching here — the
+        # re-classification above the raise is what routes it correctly. The
+        # reviewed-plan branch refuses earlier with the same reason.
+        #
+        # No caller input clears it: a mapping override cannot un-consume a
+        # header row, and resolve_or_confirm honours an Override at every tier
+        # by design.
         if read_result.header_row_looks_like_data:
             # Confidence is imported at module scope, but a sibling branch
             # imports it locally, which makes the name function-local here.
