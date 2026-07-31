@@ -123,7 +123,10 @@ modes, both observed:
 
 Prefer an identifier the system already minted (`export_id`, `operation_id`)
 or a content checksum over anything derived from user input: both discriminate
-at least as well and disclose nothing. Origin: PR #374, where a receipt's
+at least as well without digesting a binding the user chose. A minted id
+discloses nothing; a checksum over a very small result stays guessable by the
+rule above, so prefer it to a parameter hash rather than reading it as inert.
+Origin: PR #374, where a receipt's
 parameter fingerprint was added, found to leak on one path and collapse on the
 other, and removed — the export id and checksums already did the job.
 
