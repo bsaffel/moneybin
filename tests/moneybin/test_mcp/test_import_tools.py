@@ -754,6 +754,42 @@ async def test_import_confirm_ignores_format_created_after_preview(
     }
 
 
+async def test_preview_override_rereads_number_format_from_the_kept_columns(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """An override that retires `amount` must not keep that column's format.
+
+    map_columns derives number_format from `amount` (falling back only to
+    `debit_amount`), so a file whose US-formatted `Amount` column loses to a
+    European debit/credit pair staged `us` against `1.234,56` values — a
+    silent 1000x error on every row, persisted into the saved format.
+    """
+    csv = tmp_path / "mixed_formats.csv"
+    csv.write_text(
+        "Date,Amount,Soll,Haben,Description\n"
+        '2026-01-05,"1,234.56","1.234,56","0,00",Coffee\n'
+        '2026-01-06,"2,500.00","2.500,00","0,00",Rent\n'
+        '2026-01-07,"3,750.25","3.750,25","0,00",Payroll\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    plain = await import_preview_coarse(file_path=str(csv))
+    assert plain.data.number_format == "us", plain.data.number_format
+
+    corrected = await import_preview_coarse(
+        file_path=str(csv),
+        mapping={"debit_amount": "Soll", "credit_amount": "Haben"},
+    )
+
+    assert "amount" not in corrected.data.mapping, corrected.data.mapping
+    assert corrected.data.number_format != "us", (
+        "number_format still reflects the retired Amount column"
+    )
+
+
 async def test_import_preview_refuses_a_mapping_override_on_a_pdf(
     mcp_db: object,
     tmp_path: Path,

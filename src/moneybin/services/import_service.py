@@ -1560,6 +1560,7 @@ class ImportService:
                 ImportConfirmationRequiredError,
                 Override,
                 ProposedMapping,
+                coerce_number_format,
                 coerce_sign_convention,
                 resolve_or_confirm,
             )
@@ -1721,11 +1722,18 @@ class ImportService:
                 field_mapping=outcome.field_mapping,
                 detected=mapping_result.sign_convention,
             )
+            # Same trigger as the sign coercion above: an override can retire
+            # the very column map_columns derived the number format from.
+            resolved_number_format = coerce_number_format(
+                field_mapping=outcome.field_mapping,
+                sample_values=mapping_result.sample_values,
+                detected=mapping_result.number_format,
+            )
             resolved = ResolvedMapping(
                 field_mapping=outcome.field_mapping,
                 date_format=date_format_effective,
                 sign_convention=resolved_sign,
-                number_format=mapping_result.number_format,
+                number_format=resolved_number_format,
                 is_multi_account=mapping_result.is_multi_account,
                 confidence=confidence.tier,
             )

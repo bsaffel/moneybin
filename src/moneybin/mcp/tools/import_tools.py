@@ -747,6 +747,7 @@ def _import_preview_tabular(
     from moneybin.extractors.tabular.readers import read_file
     from moneybin.services.import_confirmation import (
         MappingValidationError,
+        coerce_number_format,
         coerce_sign_convention,
         tabular_required_fields,
         validate_partial_mapping,
@@ -771,6 +772,7 @@ def _import_preview_tabular(
     confidence = mapping_result.confidence
     sample_values = mapping_result.sample_values
     sign_convention = mapping_result.sign_convention
+    number_format = mapping_result.number_format
     if mapping:
         required_fields = tabular_required_fields(
             proposed_keys=set(field_mapping.keys()),
@@ -810,6 +812,11 @@ def _import_preview_tabular(
         sign_convention = coerce_sign_convention(
             field_mapping=field_mapping, detected=sign_convention
         )
+        number_format = coerce_number_format(
+            field_mapping=field_mapping,
+            sample_values=sample_values,
+            detected=number_format,
+        )
         # A caller-validated override resolves the ambiguity the detector
         # couldn't (Req 11) — carry it forward as ratified, not the raw
         # detector score. Matches resolve_or_confirm's Override -> Resolved.
@@ -839,7 +846,7 @@ def _import_preview_tabular(
             mapping=field_mapping,
             confidence=confidence,
             date_format=mapping_result.date_format,
-            number_format=mapping_result.number_format,
+            number_format=number_format,
             sign_convention=sign_convention,
             is_multi_account=mapping_result.is_multi_account,
             unmapped_columns=unmapped_columns,

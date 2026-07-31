@@ -397,6 +397,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   updating.
 
 ### Fixed
+- **A mapping override that switches to debit/credit columns no longer keeps
+  the discarded column's number format (#372).** The detector reads the number
+  format from the single `amount` column, so correcting a layout to a
+  `debit_amount`/`credit_amount` pair left the format derived from the column
+  the correction retired. A US-formatted `Amount` beside European split columns
+  parsed `1.234,56` as `1.23456` — wrong by three orders of magnitude, with no
+  error — and saved that format for later imports of the same layout. Both the
+  MCP preview and the CLI first-contact path now re-read the format from the
+  surviving amount columns.
 - **An import no longer reports success on a statement MoneyBin could not
   read (#372).** `import_confirm` replayed a staged preview whose column mapping
   scored low — or whose date format was never detected — straight into the

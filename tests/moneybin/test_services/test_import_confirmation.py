@@ -583,6 +583,63 @@ class TestResolveOrConfirm:
         assert "not in the source" in out.error_message
 
 
+class TestCoerceNumberFormat:
+    """Keeping number_format in step with the amount shape actually mapped."""
+
+    def test_a_swap_to_split_columns_re_reads_the_format(self) -> None:
+        """map_columns reads the format from `amount`, which an override retires.
+
+        Regression: an override swapping a detected single-amount layout to a
+        debit/credit pair left the format derived from the discarded column.
+        A US-formatted loser beside European survivors parses `1.234,56` as
+        `1.23456` — wrong by three orders of magnitude, silently — and the
+        format is then saved for every later import of that layout.
+        """
+        from moneybin.services.import_confirmation import coerce_number_format
+
+        assert (
+            coerce_number_format(
+                field_mapping={
+                    "transaction_date": "Date",
+                    "debit_amount": "Soll",
+                    "credit_amount": "Haben",
+                },
+                sample_values={
+                    "amount": ["1,234.56"],  # the retired US column
+                    "debit_amount": ["1.234,56"],
+                    "credit_amount": ["2.500,00"],
+                },
+                detected="us",
+            )
+            == "european"
+        )
+
+    def test_an_unchanged_single_amount_keeps_its_format(self) -> None:
+        from moneybin.services.import_confirmation import coerce_number_format
+
+        assert (
+            coerce_number_format(
+                field_mapping={"amount": "Amount"},
+                sample_values={"amount": ["1,234.56"]},
+                detected="us",
+            )
+            == "us"
+        )
+
+    def test_no_samples_keeps_the_detector_s_answer(self) -> None:
+        """Fail soft: a guess from nothing is worse than what the detector read."""
+        from moneybin.services.import_confirmation import coerce_number_format
+
+        assert (
+            coerce_number_format(
+                field_mapping={"debit_amount": "Soll"},
+                sample_values={},
+                detected="european",
+            )
+            == "european"
+        )
+
+
 class TestUnreadableDateRecovery:
     """The recovery text four surfaces print verbatim."""
 

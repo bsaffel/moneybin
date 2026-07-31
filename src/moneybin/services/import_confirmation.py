@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from moneybin.extractors.confidence import Confidence
-from moneybin.extractors.tabular.formats import SignConventionType
+from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 from moneybin.services.account_resolution_types import AccountProposalDict
 
 Channel = Literal["tabular", "gsheet", "pdf"]
@@ -378,6 +378,38 @@ def coerce_sign_convention(
         # The detector's split-only convention no longer applies. Fall back to
         # the default; callers can still pass an explicit sign override.
         return "negative_is_expense"
+    return detected
+
+
+def coerce_number_format(
+    *,
+    field_mapping: dict[str, str],
+    sample_values: dict[str, list[str | None]] | dict[str, list[str]],
+    detected: NumberFormatType,
+) -> NumberFormatType:
+    """Keep number_format consistent with the amount shape actually mapped.
+
+    Sibling of ``coerce_sign_convention`` and called from the same places, for
+    the same reason. ``map_columns`` derives the format from ``amount`` and
+    only falls back to ``debit_amount``, so an override that swaps a detected
+    single-amount layout to a debit/credit pair leaves the format derived from
+    the column it just retired. A US-formatted loser beside European survivors
+    silently parses ``1.234,56`` as ``1.23456`` — and the wrong format is then
+    saved for every later import of that layout.
+
+    Re-derives from the surviving amount column. Keeps ``detected`` when no
+    samples are available, since a guess from nothing is worse than the
+    detector's answer.
+    """
+    from moneybin.extractors.tabular.date_detection import detect_number_format
+
+    for dest in ("amount", "debit_amount", "credit_amount"):
+        if dest not in field_mapping:
+            continue
+        values = sample_values.get(dest)
+        if not values:
+            continue
+        return detect_number_format([str(v) if v is not None else None for v in values])
     return detected
 
 
