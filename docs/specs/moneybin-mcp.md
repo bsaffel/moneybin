@@ -185,7 +185,14 @@ stays below the 50-tool hard limit:
   catalog report to a named local or Sheets destination. Every call supplies
   `redaction_mode`; omission elicits a choice where supported and otherwise
   returns a structured refusal. `redacted` is the safe default, never a saved
-  destination preference.
+  destination preference. Each successful run records its receipt — export id,
+  destination, format, artifact paths, row counts, and checksums — to
+  `app.audit_log` under action `export.run`, so a later turn or session
+  recovers it with `system_audit()` instead of relying on the one-time return
+  value. That write opens its own connection after publication returns, so no
+  writer lock is held across filesystem or Sheets I/O. The published artifact
+  is permanent: `system_audit_undo` refuses the row because its target lies
+  outside the repository-owned `app.*` surface.
 - `exports_set` asserts one named local or Sheets destination's typed target
   state. It shares the same service/repository owners as
   `moneybin export destination ...`; removing configuration never deletes

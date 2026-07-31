@@ -138,7 +138,6 @@ class ExportService:
         on_destination_resolved: Callable[[ExportDestination], None] | None = None,
     ) -> ExportReceipt:
         """Snapshot under a read lease, then publish after releasing DuckDB."""
-        _ = actor
         requested_destination_kind = command.destination_reference.partition(":")[0]
         labels = {
             "subject_kind": _bounded_label(command.subject_kind, _SUBJECT_KINDS),
@@ -236,10 +235,54 @@ class ExportService:
             raise
         else:
             EXPORT_RUNS_TOTAL.labels(**labels, outcome="success").inc()
+            cls._record_receipt(receipt, actor=actor)
             return receipt
         finally:
             EXPORT_DURATION_SECONDS.labels(**labels).observe(
                 perf_counter() - started_at
+            )
+
+    @classmethod
+    def _record_receipt(cls, receipt: ExportReceipt, *, actor: str) -> None:
+        """Persist one receipt so a later turn or session can still find it.
+
+        Opens its own short write transaction *after* publication returns. The
+        read-only snapshot lease is already released by this point, so the
+        writer lock is never held across filesystem or Sheets I/O — the
+        property #349 exists to protect.
+        """
+        from moneybin.database import get_database  # noqa: PLC0415
+        from moneybin.services.audit_service import AuditService  # noqa: PLC0415
+
+        destination = receipt.destination
+        with get_database(read_only=False) as db:
+            AuditService(db).record_audit_event(
+                action="export.run",
+                # No app.* row backs an export, so the target names the export
+                # itself. undo_dispatch refuses targets outside the repo-owned
+                # app.* surface, which is what keeps a published artifact from
+                # ever appearing undoable via system_audit_undo.
+                target=(None, None, receipt.export_id),
+                before=None,
+                after=None,
+                actor=actor,
+                context={
+                    "destination_name": destination.name,
+                    "destination_kind": destination.kind,
+                    "format": receipt.format,
+                    "redaction_mode": receipt.redaction_mode,
+                    "artifact_path": (
+                        str(receipt.artifact_path) if receipt.artifact_path else None
+                    ),
+                    "compressed_artifact_path": (
+                        str(receipt.compressed_artifact_path)
+                        if receipt.compressed_artifact_path
+                        else None
+                    ),
+                    "sheets_identity": receipt.sheets_identity,
+                    "row_counts": dict(receipt.row_counts),
+                    "checksums": dict(receipt.checksums),
+                },
             )
 
     def resolve_destination(self, reference: str) -> ExportDestination:

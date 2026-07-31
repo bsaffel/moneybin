@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from collections.abc import Callable, Generator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, cast
@@ -109,8 +110,22 @@ def _command_from_request(request: ExportRequest) -> ExportCommand:
 
 
 @contextmanager
-def _database_context(db: Database):
+def _database_context(db: Database) -> Generator[Database]:
     yield db
+
+
+def _database_factory(db: Database) -> Callable[..., AbstractContextManager[Database]]:
+    """Hand each ``get_database()`` call its own one-shot context.
+
+    ``run`` opens the read-only snapshot lease and then, after publication, a
+    separate short write lease to record the receipt. A single shared
+    ``_GeneratorContextManager`` cannot be entered twice.
+    """
+
+    def _open(*_args: object, **_kwargs: object) -> AbstractContextManager[Database]:
+        return _database_context(db)
+
+    return _open
 
 
 def _histogram_count(metric: Any) -> float:
@@ -187,8 +202,67 @@ def test_run_releases_read_only_snapshot_before_local_publication(
     ):
         result = ExportService.run(_command(), actor="test")
 
-    get_database.assert_called_once_with(read_only=True)
+    # Two distinct leases, in this order: the read-only snapshot lease (closed
+    # before publication — `publish` above asserts `active is False`), then a
+    # separate write lease for the receipt. Asserting the sequence rather than
+    # a single call keeps the real property — no writer lock is ever held
+    # across filesystem I/O — falsifiable if the receipt write moves inside.
+    assert [opened.kwargs for opened in get_database.call_args_list] == [
+        {"read_only": True},
+        {"read_only": False},
+    ]
     assert result == receipt
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_records_a_discoverable_receipt_in_the_audit_log(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """A completed export leaves a receipt a later turn or session can find.
+
+    `export_run`'s description promises "recovery uses the returned artifact or
+    Sheets receipt", but the receipt was returned exactly once and persisted
+    nowhere, so no query path to it existed afterwards (testing.md X.6).
+    """
+    from moneybin.services.audit_service import AuditService
+
+    context = get_database.return_value
+    context.__enter__.return_value = db
+    context.__exit__.return_value = None
+
+    destination = _destination("local")
+    receipt = replace(
+        _receipt(destination),
+        export_id="exp-abc123",
+        artifact_path=Path("/exports/archive/bundle.csv"),
+        row_counts={"accounts": 3, "transactions": 42},
+        checksums={"accounts": "sha-a", "transactions": "sha-b"},
+    )
+    publisher_type.return_value.publish.return_value = receipt
+
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        ExportService.run(_command(), actor="mcp:export_run")
+
+    events = AuditService(db).list_events(action_pattern="export.run")
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.actor == "mcp:export_run"
+    assert event.target_id == "exp-abc123"
+    recorded = event.context_json or {}
+    assert recorded["artifact_path"] == "/exports/archive/bundle.csv"
+    assert recorded["row_counts"] == {"accounts": 3, "transactions": 42}
+    assert recorded["checksums"] == {"accounts": "sha-a", "transactions": "sha-b"}
 
 
 @patch("moneybin.config.get_settings")
@@ -268,7 +342,7 @@ def test_run_records_failed_duration_with_fixed_invalid_label_values(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
@@ -306,7 +380,7 @@ def test_run_records_success_outcome(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
@@ -341,7 +415,7 @@ def test_run_prepares_and_publishes_one_local_bundle(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
@@ -395,7 +469,7 @@ def test_run_prepares_and_publishes_one_sheets_report(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
@@ -477,7 +551,7 @@ def test_run_rejects_impossible_combinations_before_preparing_or_writing(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
@@ -633,7 +707,7 @@ def test_run_rejects_file_local_destination_before_preparing_or_writing(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,

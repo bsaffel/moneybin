@@ -1,5 +1,5 @@
 {
-  "sha256": "d0b4478596117a5ef40243ae0886261c6a83ce5a426b76139ac7b26b8de07acc",
+  "sha256": "95a836981a07c8b89b2c39b54f2907ac638db4ad90f7ce6ab89863762b7413f3",
   "tool_count": 49,
   "tools": [
     {
@@ -503,7 +503,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Publish one canonical bundle or registered report to a named local or Sheets destination. This is one discrete delivery event, so retries may create another immutable local artifact. Redaction must be selected for this run; omission elicits redacted (default) versus unredacted and refuses when elicitation is unavailable. Returns receipt identity, row counts, output classes, and checksums. Writes no app.* state; recovery uses the returned artifact or Sheets receipt.",
+        "description": "Publish one canonical bundle or registered report to a named local or Sheets destination. This is one discrete delivery event, so retries may create another immutable local artifact. Redaction must be selected for this run; omission elicits redacted (default) versus unredacted and refuses when elicitation is unavailable. Returns receipt identity, row counts, output classes, and checksums, and records that receipt to app.audit_log so a later turn or session can recover it with system_audit(); the published artifact is permanent \u2014 no revert.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -642,12 +642,12 @@
         },
         "name": "export_run"
       },
-      "description_bytes": 469,
+      "description_bytes": 547,
       "input_schema_bytes": 1400,
       "name": "export_run",
       "other_bytes": 61,
       "output_schema_bytes": 0,
-      "total_bytes": 2067
+      "total_bytes": 2148
     },
     {
       "annotation_bytes": 88,
@@ -4999,5 +4999,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 53045
+  "total_bytes": 53126
 }
