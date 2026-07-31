@@ -261,6 +261,9 @@ def test_run_records_a_discoverable_receipt_in_the_audit_log(
     assert event.target_id == "exp-abc123"
     recorded = event.context_json or {}
     assert recorded["artifact_name"] == "bundle.csv"
+    # The name a destination is known by is mutable; its id is not. Both are
+    # recorded so the row still identifies the target after a rename.
+    assert recorded["destination_id"] == "local-1"
     # export.md R9 forbids persisting full local paths: a real export
     # directory is ~/Documents/MoneyBin/<profile>/exports and embeds the OS
     # username. Asserted across the whole context, not just the one key, so

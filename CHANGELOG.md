@@ -392,8 +392,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   manifest, had no recovery path at all. Each successful run now records that
   receipt to the audit log under action `export.run`; read it back with
   `system_audit` or `moneybin system audit`. The artifact is named, never
-  path-qualified, so the audit log stays free of local filesystem layout. The
-  published artifact itself stays permanent and is not undoable.
+  path-qualified, so the audit log stays free of local filesystem layout — the
+  record tells you what a run produced, and its checksums confirm a file on
+  disk is that artifact. The published artifact itself stays permanent and is
+  not undoable.
 - **A card imported from both a PDF statement and a bank file no longer loads
   twice (#371).** PDF import built its account key as a string and skipped the
   identity resolver every other source uses, so the same card arriving as a PDF

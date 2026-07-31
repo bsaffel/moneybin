@@ -279,16 +279,22 @@ class ExportService:
                     after=None,
                     actor=actor,
                     context={
+                        # The id as well as the name: a destination can be
+                        # renamed, so the name alone stops identifying the
+                        # target it had at publication time.
+                        "destination_id": destination.destination_id,
                         "destination_name": destination.name,
                         "destination_kind": destination.kind,
                         "format": receipt.format,
                         "redaction_mode": receipt.redaction_mode,
                         # File name, never the full path: R9 forbids
                         # persisting local paths, and a real export directory
-                        # embeds the OS username. The name resolves against
-                        # destination_name's configured root, so recovery
-                        # survives without putting the environment in
-                        # queryable state.
+                        # embeds the OS username. The row identifies what an
+                        # export produced; it does not promise to re-locate
+                        # the file, because a destination root can be
+                        # repointed or removed after publication. The
+                        # checksums are what confirm a candidate file is this
+                        # artifact.
                         "artifact_name": (
                             receipt.artifact_path.name
                             if receipt.artifact_path
