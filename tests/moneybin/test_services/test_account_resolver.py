@@ -642,6 +642,40 @@ def test_propose_surfaces_fallback_pick_list_at_gate(db: Database) -> None:
     assert {c.account_id for c in proposal.candidates} == {"acct_a"}
 
 
+def test_reissue_signal_outranks_the_fallback_pick_list(db: Database) -> None:
+    """When both could fire at the gate, the reissue signal is what surfaces.
+
+    ``_find_candidates`` tries reissue before fallback and short-circuits, so a
+    targeted guess beats a blind everyone-at-this-bank list. Nothing pinned that
+    ordering: every other ``fallback=True`` test sets ``last_four=None``, which
+    makes ``_reissue_candidates`` unable to fire at all, so the two were never
+    eligible in the same call.
+
+    This fixture makes both eligible and only both — same institution, so
+    fallback applies; last-fours present on both sides and differing, so reissue
+    applies; and a dissimilar display name so the fuzzy signal stays silent.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_a",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    resolver = AccountResolver(db, actor="system")
+    proposal = resolver.propose(
+        _src(
+            account_name="replacement card ending 5678",
+            last_four="5678",
+            institution="chase",
+        ),
+        fallback=True,
+    )
+    assert [c.signal for c in proposal.candidates] == ["institution_reissue"]
+    assert {c.account_id for c in proposal.candidates} == {"acct_a"}
+
+
 def test_propose_no_fallback_by_default_keeps_multi_account_mint_silent(
     db: Database,
 ) -> None:

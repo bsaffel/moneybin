@@ -63,7 +63,7 @@ from moneybin.services.import_confirmation import (
     SignConventionProposal,
 )
 from moneybin.services.refresh import refresh as _refresh
-from moneybin.utils.file import file_sha256
+from moneybin.utils.file import file_sha256, source_sha256
 
 logger = logging.getLogger(__name__)
 
@@ -1991,7 +1991,7 @@ class ImportService:
             account_names=sorted(acct_id_to_name.values()),
             format_name=matched_format.name if matched_format else None,
             format_source=format_source,
-            file_sha256=file_sha256(file_path),
+            file_sha256=source_sha256(file_path, source_bytes),
         )
         result.import_id = import_id
 
@@ -2560,7 +2560,7 @@ class ImportService:
             source_type="pdf",
             source_origin=resolved_alias,
             account_names=[resolved_alias],
-            file_sha256=file_sha256(canonical),
+            file_sha256=source_sha256(canonical, source_bytes),
         )
         result.import_id = import_id
 
@@ -3177,7 +3177,7 @@ class ImportService:
             source_type="pdf",
             source_origin=resolved_alias,
             account_names=[resolved_alias],
-            file_sha256=file_sha256(canonical),
+            file_sha256=source_sha256(canonical, source_bytes),
         )
         result.import_id = import_id
 

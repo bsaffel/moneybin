@@ -86,6 +86,21 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def source_sha256(path: Path, source_bytes: bytes | None) -> str:
+    """Digest of the bytes an import actually parsed.
+
+    A caller handed an immutable snapshot — the persisted-preview confirm flow
+    is the one that does — must record *that* snapshot's digest. Re-reading the
+    path would tag the batch with whatever happens to be on disk at write time,
+    which is precisely what a content identity exists to rule out. Chunked and
+    whole-buffer hashing agree, so the two branches are interchangeable for
+    identical content.
+    """
+    if source_bytes is not None:
+        return hashlib.sha256(source_bytes).hexdigest()
+    return file_sha256(path)
+
+
 def _files_are_identical(file1: Path, file2: Path) -> bool:
     """Check if two files have identical content.
 

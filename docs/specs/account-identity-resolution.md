@@ -227,7 +227,7 @@ provisional_account_id TEXT  NOT NULL,     -- the just-minted source account und
 candidate_account_id   TEXT  NOT NULL,     -- an existing canonical account proposed as the same
 confidence_score       DECIMAL(5, 4),
 match_signals          TEXT,               -- JSON-encoded (per match_decisions convention):
-                                           --   which weak signal matched + its value (institution_last4 / name)
+                                           --   which weak signal matched + its value (institution_last4 / name / institution_reissue)
 status                 TEXT  NOT NULL,     -- pending | accepted | rejected | reversed
 decided_by             TEXT  NOT NULL,     -- auto | user
 match_reason           TEXT,
@@ -237,8 +237,9 @@ reversed_by            TEXT
 ```
 
 - **Candidate signals are not stored on `account_links`.** `institution_last4`
-  (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`) and
-  `account_name` are *weak signals* the resolver computes live and matches
+  (OFX `RIGHT(number,4)`, Plaid `mask`, tabular `account_number_masked`),
+  `account_name`, and `institution_reissue` (same institution, both sides carry
+  a last-four and they differ) are *weak signals* the resolver computes live and matches
   against **existing accounts' `last_four` / `institution_name` / `display_name`
   on `core.dim_accounts`** (durably present there — captured at mint, Decision 7).
   A match produces a `pending` decision row recording which signal fired. Weak

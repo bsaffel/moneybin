@@ -88,7 +88,9 @@ class _Candidate:
     """
 
     account_id: str
-    signal: str  # "institution_last4" | "name" | "institution" | "fallback"
+    # "institution_last4" | "name" | "institution_reissue" | "institution" |
+    # "fallback" — the last two are the gate's last-resort pick-list.
+    signal: str
     value: str
     confidence: float
 
