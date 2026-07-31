@@ -384,9 +384,16 @@ def find_existing_import(
     source file may be long gone. Once a row has a real digest, content alone
     identifies it: reusing one filename across months is ordinary, and matching
     such a row on path would reject a genuinely new statement as already
-    imported. A NULL is a wildcard in neither direction — a caller's real digest
-    never matches a legacy row, and a caller with no digest never collapses two
-    of them.
+    imported.
+
+    That fallback retires per path. Nothing backfills a legacy NULL — a
+    ``--force`` re-import writes a new digest-backed row *beside* the legacy one
+    — so left live it would answer for its path forever and reject every later
+    statement saved to a reused download target. A digest-backed batch at the
+    same path means content is available there, which subsumes it.
+
+    A NULL is a wildcard in neither direction: a caller with no digest never
+    collapses two legacy rows at different paths.
 
     Excludes 'reverted' and 'failed' rows. Returns 'importing' batches too
     so callers can distinguish a successful prior import from a crashed
@@ -397,14 +404,24 @@ def find_existing_import(
         SELECT import_id, status
         FROM {IMPORT_LOG.full_name}
         WHERE (
-                (source_file = ? AND file_sha256 IS NULL)
+                (
+                  source_file = ?
+                  AND file_sha256 IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM {IMPORT_LOG.full_name} AS digested
+                    WHERE digested.source_file = ?
+                      AND NOT digested.file_sha256 IS NULL
+                      AND digested.status NOT IN ('reverted', 'failed')
+                  )
+                )
              OR (? IS NOT NULL AND file_sha256 = ?)
           )
           AND status NOT IN ('reverted', 'failed')
         ORDER BY started_at DESC
         LIMIT 1
         """,
-        [source_file, file_sha256, file_sha256],
+        [source_file, source_file, file_sha256, file_sha256],
     ).fetchone()
     if row is None:
         return None
