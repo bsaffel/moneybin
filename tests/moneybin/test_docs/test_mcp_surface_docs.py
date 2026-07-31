@@ -1406,6 +1406,21 @@ def test_governing_spec_records_runtime_facts_without_promotion_claim() -> None:
         "host-native deferral: not_observed",
     ):
         assert fact in text
+
+    # The same paragraph's delta and token estimate were the only figures in it
+    # nobody derived, and both drifted stale across three merged PRs while the
+    # byte count and SHA above stayed correct. Deriving all four closes that gap.
+    # ceil(bytes/4) is the deterministic method scripts/mcp_eval.py validates
+    # contract-fixture captures against.
+    baseline_bytes = json.loads(BASELINE_SNAPSHOT.read_text())["total_bytes"]
+    delta = baseline_bytes - snapshot["total_bytes"]
+    for derived in (
+        f"-{delta:,} bytes",
+        f"(-{delta / baseline_bytes * 100:.1f}%)",
+        f"{(snapshot['total_bytes'] + 3) // 4:,} metadata tokens",
+    ):
+        assert derived in text
+
     assert "**Status:** in-progress" in text
     assert "**Status:** implemented" not in text
     assert "pre-cutover registry" in text
