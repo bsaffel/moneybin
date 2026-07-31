@@ -273,14 +273,20 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |         names `refresh run`. A failed apply exits 1 in both output modes --
 |   |   |         the rows are already committed, so the retry is a bare `refresh
 |   |   |         run`, never a re-pull against the provider's rate limit.
-|   |   +-- set <security> <date> <price> [--currency CUR] [--note TEXT]
+|   |   +-- set <security> <date> <price> [--currency CUR] [--note TEXT] [--refresh]
 |   |   |         Record your own price. Outranks every provider close for that date
 |   |   |         and leaves other dates untouched. A non-positive price is refused:
 |   |   |         a worthless position is a ledger event, not a zero price.
-|   |   +-- delete <security> <date> [--currency CUR]
+|   |   |         Crosses the same app/core boundary `pull` does -- the mark lands in
+|   |   |         app.security_price_overrides while holdings value from core -- so it
+|   |   |         carries the same --refresh flag, the same `refresh run` hint, and the
+|   |   |         same non-zero exit on a failed apply.
+|   |   +-- delete <security> <date> [--currency CUR] [--refresh]
 |   |   |         Remove a mark, returning that date to provider-derived valuation.
 |   |   |         Load-bearing, not CRUD symmetry -- `set` can only change the number,
-|   |   |         so without this a mark is unreachable once written.
+|   |   |         so without this a mark is unreachable once written. --refresh behaves
+|   |   |         as on `set`, but is skipped when no mark existed to remove: nothing
+|   |   |         changed, so there is nothing to propagate.
 |   |   +-- list <security> [--since DATE] [--source SRC] [--output json] [--quiet]
 |   |   |         The resolved series, newest first: the winning close and its source
 |   |   |         per date, not every observation that competed for it.

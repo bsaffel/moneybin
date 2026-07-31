@@ -7,8 +7,10 @@ the service layer and test argument parsing, exit codes, and output shape.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.investments.security_links import app
@@ -220,6 +222,52 @@ class TestSecurityLinksSet:
         mock_accept.assert_called_once_with(
             "dec001", into="sec001aabbcc", decided_by="user"
         )
+
+    @patch("moneybin.cli.commands.investments.security_links.get_database")
+    @patch("moneybin.services.security_links_service.SecurityLinksService.accept")
+    def test_accepting_a_feed_key_does_not_claim_a_merge(
+        self,
+        mock_accept: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Binding a symbol deletes nothing; saying "merged" describes another act.
+
+        The same command accepts both kinds, so a fixed success line is wrong for
+        one of them — and the one it was wrong about is the non-destructive one,
+        which reads as though the user had just combined two securities.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_accept.return_value = "bound"
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(
+                app, ["set", "dec001", "--accept", "--into", "sec001aabbcc"]
+            )
+
+        assert result.exit_code == 0
+        assert "bound to sec001aabbcc" in caplog.text
+        assert "merged" not in caplog.text
+
+    @patch("moneybin.cli.commands.investments.security_links.get_database")
+    @patch("moneybin.services.security_links_service.SecurityLinksService.accept")
+    def test_accepting_an_identity_decision_still_says_merged(
+        self,
+        mock_accept: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The destructive outcome must stay legible as destructive."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_accept.return_value = "merged"
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(
+                app, ["set", "dec001", "--accept", "--into", "sec001aabbcc"]
+            )
+
+        assert result.exit_code == 0
+        assert "merged into sec001aabbcc" in caplog.text
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
     @patch("moneybin.services.security_links_service.SecurityLinksService.reject_merge")

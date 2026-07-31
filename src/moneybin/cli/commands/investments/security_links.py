@@ -1,4 +1,11 @@
-"""investments securities links — review-queue commands for security identity merges.
+"""investments securities links — review-queue commands for security ref decisions.
+
+The queue holds two kinds of question that look alike to a reviewer and resolve
+oppositely. An **identity** ref (``plaid_security_id``) asks whether two catalog
+rows are one instrument; accepting MERGES and deletes the provisional. A
+**feed-key** ref (``tiingo_ticker``, ``coingecko_slug``) asks whether a
+market-data symbol names this security; accepting BINDS and deletes nothing.
+`set --accept` routes on ref_kind and reports which one ran.
 
 Subcommands: pending, set, history.
 Mirrors `merchants links` (M1T) — thin wrappers over SecurityLinksService.
@@ -26,7 +33,7 @@ from moneybin.protocol.envelope import build_envelope
 from moneybin.services.security_links_service import SecurityLinksService
 
 app = typer.Typer(
-    help="Review security identity merge proposals",
+    help="Review security identity merges and price-feed key proposals",
     no_args_is_help=True,
 )
 logger = logging.getLogger(__name__)
@@ -160,11 +167,19 @@ def links_set(
         with get_database(read_only=False) as db:
             svc = SecurityLinksService(db, actor="cli")
             if accept:
-                svc.accept(decision_id, into=into or "", decided_by="user")
+                outcome = svc.accept(decision_id, into=into or "", decided_by="user")
             else:
                 svc.reject_merge(decision_id, decided_by="user")
+                outcome = None
 
-    action = f"merged into {into}" if accept else "rejected"
+    # The queue mixes two kinds of question and the service picks the mechanism,
+    # so the word for it comes back from there. A fixed "merged" told the user
+    # two securities had been combined when accepting a feed key only creates a
+    # link and deletes nothing.
+    if outcome is None:
+        action = "rejected"
+    else:
+        action = f"{'bound to' if outcome == 'bound' else 'merged into'} {into}"
     logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
 
 

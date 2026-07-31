@@ -708,19 +708,23 @@ def test_a_zero_priced_ledger_event_never_becomes_a_close(db: Database) -> None:
     """Zero is the value 'an unpriced holding is NULL, never zero' exists to refuse.
 
     raw.security_prices and app.security_price_overrides both CHECK (close > 0), but
-    core.fct_investment_transactions.price carries no such constraint — a vesting
-    grant or a stock dividend legitimately records price 0. Unioned unfiltered, that
-    zero becomes the resolved close and values the whole position at nothing while
-    reporting valuation_status 'valued'. The ledger event itself is legitimate and
-    must survive; only the price observation is refused.
+    core.fct_investment_transactions.price carries no such constraint — a stock
+    dividend legitimately records price 0. Unioned unfiltered, that zero becomes the
+    resolved close and values the whole position at nothing while reporting
+    valuation_status 'valued'. The ledger event itself is legitimate and must
+    survive; only the price observation is refused.
+
+    The type must be one `trade_implied` already admits. A transfer or a dividend is
+    refused by `type IN ('buy', 'sell', 'reinvest')` whatever its price, so it would
+    leave `AND t.price > 0` free to be deleted with this test still green.
     """
     _seed_security(db, security_id="privateco00001")
     _insert_manual_trade(
         db,
-        txn_id="vest_1",
+        txn_id="stock_dividend_1",
         security_id="privateco00001",
         price="0",
-        txn_type="transfer_in",
+        txn_type="reinvest",
     )
 
     with sqlmesh_context(db) as ctx:
@@ -733,6 +737,53 @@ def test_a_zero_priced_ledger_event_never_becomes_a_close(db: Database) -> None:
 
     resolved = db.execute("SELECT COUNT(*) FROM core.fct_security_prices").fetchone()
     assert resolved is not None and resolved[0] == 0
+
+
+@pytest.mark.slow
+def test_a_dividend_rate_never_becomes_the_resolved_close(db: Database) -> None:
+    """The headline fix, asserted on rows rather than on the SQL's vocabulary.
+
+    A dividend carries a security AND a price — a per-share DISTRIBUTION RATE,
+    not a traded price. Admitting it publishes a $0.91 dividend as a $290 ETF's
+    newest close, and `dim_holdings.latest_price` orders by price_date DESC with
+    no source filter, so that $0.91 becomes the position's whole valuation.
+
+    The sibling test derives the admissible type set from
+    `investment_service._AMOUNT_REQUIRED` and asserts the filter text matches it.
+    That catches the vocabulary drifting; it cannot catch the filter being
+    dropped, reordered, or applied to the wrong CTE. This seeds both events and
+    reads the resolved series.
+    """
+    _seed_security(db, security_id="vti00000000001")
+    _insert_manual_trade(
+        db,
+        txn_id="buy_1",
+        security_id="vti00000000001",
+        price="290.00",
+        trade_date="2026-07-15",
+        txn_type="buy",
+    )
+    # Later than the buy, so if it were admitted it would win the date ordering
+    # and become the position's newest close — the exact failure being refused.
+    _insert_manual_trade(
+        db,
+        txn_id="div_1",
+        security_id="vti00000000001",
+        price="0.91",
+        trade_date="2026-07-16",
+        txn_type="dividend",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        "SELECT price_date, close FROM core.fct_security_prices "
+        "WHERE security_id = 'vti00000000001' ORDER BY price_date"
+    ).fetchall()
+    assert rows == [(date(2026, 7, 15), Decimal("290.0000000000"))], (
+        "the dividend's per-share rate is not a market close"
+    )
 
 
 @pytest.mark.slow

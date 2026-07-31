@@ -240,6 +240,18 @@ class _Derivation:
     provider_name: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _Binding:
+    """An accepted feed-key link, paired with who decided it.
+
+    ``decided_by`` is not incidental: only an auto-derived key may be retired
+    when the catalog moves, so every staleness judgement needs it.
+    """
+
+    ref_value: str
+    decided_by: str
+
+
 class PriceService:
     """Refreshes stored prices for held securities."""
 
@@ -327,6 +339,9 @@ class PriceService:
         unpriced: list[UnpricedSecurity] = []
         queued = 0
         by_source: dict[str, list[tuple[HeldSecurity, str]]] = {}
+        # Sources whose key derivation hit a whole-batch condition, keyed to the
+        # message that says how to fix it.
+        derivation_failures: dict[str, str] = {}
 
         for security in held:
             source_type, adapter = self._route(security)
@@ -338,7 +353,40 @@ class PriceService:
                     source_type=source_type, outcome="skipped"
                 ).inc()
                 continue
-            derivation = self._feed_key(security, source_type, adapter)
+            if source_type in derivation_failures:
+                # Already answered for this source. Asking again buys the same
+                # error and spends another request — and on a rate limit, deepens
+                # the very limit that caused it.
+                unpriced.append(
+                    UnpricedSecurity(security.security_id, "price_feed_error")
+                )
+                PRICE_REFRESH_SECURITIES_TOTAL.labels(
+                    source_type=source_type, outcome="failed"
+                ).inc()
+                continue
+            try:
+                derivation = self._feed_key(security, source_type, adapter)
+            except PriceFeedError as exc:
+                # Deriving a key can call the provider — Tiingo's metadata lookup
+                # — so the same whole-batch conditions that `adapter.fetch()`
+                # raises reach this loop too, and on a first pull, when nothing
+                # is bound yet, this is where a missing token surfaces first.
+                # Uncontained it leaves pull() before `_store()` ever runs,
+                # discarding the rows of every source that needed no credential.
+                # The message is not logged: only the count and the condition
+                # are, per the no-PII rule.
+                logger.warning(
+                    f"{source_type} feed-key derivation failed "
+                    f"({type(exc).__name__}) — other sources continue"
+                )
+                derivation_failures[source_type] = str(exc)
+                unpriced.append(
+                    UnpricedSecurity(security.security_id, "price_feed_error")
+                )
+                PRICE_REFRESH_SECURITIES_TOTAL.labels(
+                    source_type=source_type, outcome="failed"
+                ).inc()
+                continue
             if derivation.ref_value is None:
                 PRICE_REFRESH_SECURITIES_TOTAL.labels(
                     source_type=source_type, outcome="skipped"
@@ -432,6 +480,15 @@ class PriceService:
                 PRICE_REFRESH_SECURITIES_TOTAL.labels(
                     source_type=source_type, outcome=outcome
                 ).inc()
+
+        # A source can fail at derivation, at fetch, or both. Report it once,
+        # preferring the fetch message already collected: contained failures are
+        # only useful if the remedy still reaches the user.
+        failed_sources.extend(
+            FailedSource(source_type, message)
+            for source_type, message in derivation_failures.items()
+            if all(failed.source_type != source_type for failed in failed_sources)
+        )
 
         written = self._store(observations)
         priced_securities = {
@@ -596,7 +653,7 @@ class PriceService:
         bound = self._bound_ref(security.security_id, ref_kind, source_type)
         if bound is not None:
             if not self._binding_is_stale(security, source_type, bound):
-                return _Derivation(ref_value=bound)
+                return _Derivation(ref_value=bound.ref_value)
             # The catalog value this key was derived from has since changed, so
             # the binding now points at a different company's series. Retire it
             # through the audited path before re-deriving; leaving it accepted
@@ -714,21 +771,27 @@ class PriceService:
 
     def _bound_ref(
         self, security_id: str, ref_kind: str, source_type: str
-    ) -> str | None:
-        """The accepted ref bound to this security, or ``None``.
+    ) -> _Binding | None:
+        """The accepted binding for this security, or ``None``.
 
         The reverse of ``SecurityLinksRepo.lookup``, which answers ref → security.
+        ``decided_by`` travels with the value because staleness depends on it: a
+        caller that cannot see who decided cannot tell a moved catalog value from
+        a deliberate override. Ordered so a user's decision outranks an auto one,
+        and by ``ref_value`` after that, so the answer never depends on storage
+        order if both ever exist.
         """
         try:
             row = self._db.execute(
-                f"SELECT ref_value FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef constant
+                f"SELECT ref_value, decided_by FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef constant
                 "WHERE status = 'accepted' AND security_id = ? AND ref_kind = ? "
-                "AND source_type = ? LIMIT 1",
+                "AND source_type = ? "
+                "ORDER BY decided_by = 'auto', ref_value LIMIT 1",
                 [security_id, ref_kind, source_type],
             ).fetchone()
         except duckdb.CatalogException:
             return None
-        return str(row[0]) if row is not None else None
+        return _Binding(str(row[0]), str(row[1])) if row is not None else None
 
     def _catalog_ref(self, security: HeldSecurity, source_type: str) -> str | None:
         """The catalog value a feed key for this source is derived from."""
@@ -739,20 +802,24 @@ class PriceService:
         )
 
     def _binding_is_stale(
-        self, security: HeldSecurity, source_type: str, bound: str
+        self, security: HeldSecurity, source_type: str, bound: _Binding
     ) -> bool:
         """Whether an auto-derived binding no longer matches the catalog it came from.
 
         Only ``auto`` bindings are checked. A user-confirmed binding deliberately
         may differ from the ticker — provider symbol formats diverge from ours
         (``BRK.B`` against ``BRK-B``), and overriding that would re-ask a question
-        the user already answered.
+        the user already answered. It would also strand the pull: retirement can
+        only reverse an ``auto`` row, so calling a user row stale retires nothing
+        and then re-derives, leaving two accepted rows for one ref_kind.
         """
+        if bound.decided_by != "auto":
+            return False
         catalog = self._catalog_ref(security, source_type)
         if catalog is None:
             # Nothing to compare against. The binding is the only key there is.
             return False
-        return catalog.strip().upper() != bound.strip().upper()
+        return catalog.strip().upper() != bound.ref_value.strip().upper()
 
     def _retire_stale_binding(
         self, security_id: str, ref_kind: str, source_type: str

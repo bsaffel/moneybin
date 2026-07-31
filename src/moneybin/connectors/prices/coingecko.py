@@ -35,7 +35,7 @@ from decimal import Decimal
 import httpx
 
 from moneybin.connectors.prices._http import DEFAULT_TIMEOUT, fetch_json
-from moneybin.connectors.prices.errors import PriceFeedError
+from moneybin.connectors.prices.errors import PriceFeedAuthError, PriceFeedError
 from moneybin.connectors.prices.protocol import (
     PriceFetchFailure,
     PriceFetchResult,
@@ -86,6 +86,14 @@ class CoinGeckoPriceAdapter:
                     params=params,
                     sleep=self._sleep,
                 )
+            except PriceFeedAuthError:
+                # Matches the Tiingo adapter. The keyless tier needs no
+                # credential today, so this cannot fire yet — but if CoinGecko
+                # ever answers 401/403 (a paid tier, or throttling that reuses
+                # those codes), it is wrong for every coin in the batch, and
+                # walking the rest only burns the rate limit before failing
+                # identically. Whole-batch conditions propagate.
+                raise
             except PriceFeedError as exc:
                 failures.append(PriceFetchFailure(ref.provider_security_key, str(exc)))
                 continue

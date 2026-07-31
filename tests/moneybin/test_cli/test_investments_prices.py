@@ -157,3 +157,159 @@ class TestPricesPullRefresh:
 
         assert result.exit_code == 0
         assert json.loads(result.output)["data"]["refreshed"] is False
+
+
+def _patched_resolve():
+    return patch(
+        "moneybin.services.price_service.PriceService.resolve_security",
+        return_value="sec_privateco",
+    )
+
+
+class TestPriceMarkRefresh:
+    """`set` and `delete` cross the same raw/core boundary `pull` does.
+
+    A mark lands in `app.security_price_overrides`; `core.fct_security_prices` is
+    a SQLMesh model built from it. So a corrective mark reports `✅ Marked` while
+    `prices list` and every holdings valuation keep serving the price the user
+    just overrode — indefinitely, until some unrelated refresh happens to run.
+    That is the failure `pull` already has both remedies for, and these commands
+    are the ones a user reaches for precisely *because* a price is wrong.
+    """
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
+    def test_set_names_the_command_that_makes_the_mark_visible(
+        self, _set: MagicMock, _resolve: MagicMock, _db: MagicMock
+    ) -> None:
+        result = runner.invoke(app, ["set", "PRIVCO", "2026-07-30", "42.50"])
+
+        assert result.exit_code == 0
+        assert _REFRESH_HINT in result.output
+
+    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
+    def test_set_refresh_rebuilds_only_the_transform_step(
+        self,
+        _set: MagicMock,
+        _resolve: MagicMock,
+        _db: MagicMock,
+        mock_refresh: MagicMock,
+    ) -> None:
+        """Same reasoning as `pull`: a mark cannot affect a transaction-side stage."""
+        mock_refresh.return_value = RefreshResult(applied=True, duration_seconds=1.5)
+
+        result = runner.invoke(
+            app, ["set", "PRIVCO", "2026-07-30", "42.50", "--refresh"]
+        )
+
+        assert result.exit_code == 0
+        assert mock_refresh.call_count == 1
+        assert mock_refresh.call_args.kwargs["steps"] == ["transform"]
+        assert _REFRESH_HINT not in result.output
+
+    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
+    def test_a_failed_apply_after_set_exits_nonzero(
+        self,
+        _set: MagicMock,
+        _resolve: MagicMock,
+        _db: MagicMock,
+        mock_refresh: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The mark is committed; only the propagation failed, so retry the apply."""
+        mock_refresh.return_value = RefreshResult(
+            applied=False, duration_seconds=None, error="model VTI not found"
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = runner.invoke(
+                app, ["set", "PRIVCO", "2026-07-30", "42.50", "--refresh"]
+            )
+
+        assert result.exit_code == 1
+        assert "model VTI not found" in caplog.text
+        assert _REFRESH_HINT in caplog.text
+
+    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch("moneybin.services.price_service.PriceService.set_mark", return_value=None)
+    def test_set_json_carries_the_refresh_outcome(
+        self,
+        _set: MagicMock,
+        _resolve: MagicMock,
+        _db: MagicMock,
+        mock_refresh: MagicMock,
+    ) -> None:
+        """An agent gets the same signal the text hint gives a human."""
+        mock_refresh.return_value = RefreshResult(applied=True, duration_seconds=1.5)
+
+        result = runner.invoke(
+            app,
+            ["set", "PRIVCO", "2026-07-30", "42.50", "--refresh", "--output", "json"],
+        )
+
+        assert result.exit_code == 0
+        assert json.loads(result.output)["data"]["refreshed"] is True
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch(
+        "moneybin.services.price_service.PriceService.delete_mark", return_value=True
+    )
+    def test_delete_names_the_command_that_returns_the_date_to_provider_pricing(
+        self, _delete: MagicMock, _resolve: MagicMock, _db: MagicMock
+    ) -> None:
+        """Removing a mark changes the resolved series exactly as writing one does."""
+        result = runner.invoke(app, ["delete", "PRIVCO", "2026-07-30"])
+
+        assert result.exit_code == 0
+        assert _REFRESH_HINT in result.output
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch(
+        "moneybin.services.price_service.PriceService.delete_mark", return_value=False
+    )
+    def test_a_delete_that_removed_nothing_suggests_nothing(
+        self, _delete: MagicMock, _resolve: MagicMock, _db: MagicMock
+    ) -> None:
+        """No row removed means core is already current — the hint would be noise.
+
+        Mirrors `test_a_pull_that_wrote_nothing_suggests_nothing`.
+        """
+        result = runner.invoke(app, ["delete", "PRIVCO", "2026-07-30"])
+
+        assert result.exit_code == 0
+        assert _REFRESH_HINT not in result.output
+
+    @patch("moneybin.services.refresh.refresh")
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    @_patched_resolve()
+    @patch(
+        "moneybin.services.price_service.PriceService.delete_mark", return_value=False
+    )
+    def test_a_delete_that_removed_nothing_does_not_pay_for_an_apply(
+        self,
+        _delete: MagicMock,
+        _resolve: MagicMock,
+        _db: MagicMock,
+        mock_refresh: MagicMock,
+    ) -> None:
+        """Nothing changed, so --refresh has nothing to propagate.
+
+        Unlike `pull --refresh`, which stays unconditional because an earlier
+        pull may have been left unapplied, a no-op delete cannot have stranded
+        anything: the mark it would have removed was never there.
+        """
+        result = runner.invoke(app, ["delete", "PRIVCO", "2026-07-30", "--refresh"])
+
+        assert result.exit_code == 0
+        assert mock_refresh.call_count == 0

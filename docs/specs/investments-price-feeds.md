@@ -1212,6 +1212,10 @@ investment/report integration. The first-available floor was dropped as a no-op
   on the V034/V035 idiom, guarding the two independently so the migration stays
   idempotent on a database where only one has been widened; both schema DDL files
   carry the same widened CHECKs for fresh installs.
+- `src/moneybin/sql/migrations/V043__create_app_security_price_overrides.py` (C.2)
+  — the existing-database path for `app.security_price_overrides`. The schema DDL
+  above creates it on a fresh install; without this migration a database created
+  before C.2 has no table for `investments prices set` to write to.
 
 ### Files to modify
 

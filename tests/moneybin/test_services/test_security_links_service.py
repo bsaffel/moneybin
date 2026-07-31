@@ -1238,6 +1238,56 @@ def test_accepting_a_feed_key_keeps_the_security(db: Database) -> None:
     assert _security_exists(db, security)
 
 
+def test_accept_reports_binding_a_feed_key_as_a_bind(db: Database) -> None:
+    """The caller cannot see which mechanism ran, and the two are opposite.
+
+    ``accept`` routes on ref_kind, so a surface that reports one fixed outcome
+    tells the user it merged two securities when it only created a link. The
+    routing decision is the service's; the word for it has to come back with it
+    rather than be re-derived from ``_FEED_KEY_REF_KINDS`` in every adapter.
+    """
+    security = _mint(db, name="BHP Group Ltd", created_by="user")
+    decision_id = _feed_key_decision(db, security_id=security)
+
+    outcome = SecurityLinksService(db).accept(decision_id, into=security)
+
+    assert outcome == "bound"
+
+
+def test_accept_reports_merging_an_identity_decision_as_a_merge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The other half of the same contract."""
+    outcome = SecurityLinksService(db).accept(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert outcome == "merged"
+
+
+def test_accept_merge_refuses_a_feed_key_decision_called_directly(
+    db: Database,
+) -> None:
+    """The lower-level method must defend itself, not rely on the router.
+
+    ``accept``'s ref_kind dispatch is what keeps a feed key out of the merge
+    path today, so every existing test proves the *router* is right. A caller
+    that reaches ``accept_merge`` another way — a future surface, a batch
+    helper — would destroy the security the user was trying to price. The
+    refusal is structural (a feed key has no accepted binding to move, which is
+    why it was queued), and this pins it as a guarantee rather than a
+    side effect.
+    """
+    security = _mint(db, name="BHP Group Ltd", created_by="user")
+    decision_id = _feed_key_decision(db, security_id=security)
+
+    with pytest.raises(UserError) as caught:
+        SecurityLinksService(db).accept_merge(decision_id, into=security)
+
+    assert caught.value.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
+    assert _security_exists(db, security), "the security must survive the refusal"
+
+
 def test_an_identity_decision_still_takes_the_merge_path(
     db: Database, merge_setup: dict[str, str]
 ) -> None:

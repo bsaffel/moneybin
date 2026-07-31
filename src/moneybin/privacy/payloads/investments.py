@@ -730,6 +730,12 @@ class InvestmentPriceMarkPayload:
     quote_currency: Annotated[str, DataClass.CURRENCY]
     close: Annotated[Decimal | None, DataClass.AGGREGATE]
     removed: Annotated[bool, DataClass.AGGREGATE]
+    # Whether the mark reached core. Same reason as InvestmentPricePullPayload:
+    # the write lands in app.security_price_overrides and every consumer reads
+    # core.fct_security_prices, so without this an agent cannot tell a corrected
+    # valuation from one still serving the price the user just overrode.
+    refreshed: Annotated[bool, DataClass.AGGREGATE] = False
+    refresh_error: Annotated[str | None, DataClass.AGGREGATE] = None
 
 
 @dataclass(frozen=True, slots=True)

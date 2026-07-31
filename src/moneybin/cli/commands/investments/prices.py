@@ -68,6 +68,26 @@ def _report_refresh_failure(error: str | None) -> None:
     raise typer.Exit(1)
 
 
+def _echo_refresh_hint(what: str, *, stale: bool) -> None:
+    """Name the apply that makes a just-written price visible.
+
+    Every write in this group lands in raw or app while every consumer reads
+    ``core.fct_security_prices``, so without this a user who writes and
+    immediately lists sees the pre-write series with nothing explaining why.
+    One construction for all three commands: the boundary is the same, and two
+    hint strings for one condition drift.
+
+    Silent when the command already propagated the change, and when nothing
+    changed — a hint naming work with no effect is noise.
+    """
+    if not stale:
+        return
+    typer.echo(
+        f"💡 {what} once the models rebuild — run 'moneybin refresh run', "
+        "or pass --refresh next time"
+    )
+
+
 def _parse_date(value: str, flag: str) -> date:
     """Parse an ISO date, exiting 2 on a usage error rather than raising."""
     try:
@@ -175,15 +195,10 @@ def investments_prices_pull(
                 f"👀 {result.queued_for_review} feed key(s) need review — "
                 "run 'moneybin investments securities links pending'"
             )
-        # Closes land in raw; holdings value from core. Say so, or a user who
-        # pulls and immediately lists sees the pre-pull series with nothing
-        # explaining why. Silent when nothing new landed, and when --refresh
-        # already propagated it — a failed apply reports through its own path.
-        if result.rows_written and refreshed is None:
-            typer.echo(
-                "💡 These closes value holdings once the models rebuild — "
-                "run 'moneybin refresh run', or pull with --refresh next time"
-            )
+        _echo_refresh_hint(
+            "These closes value holdings",
+            stale=bool(result.rows_written) and refreshed is None,
+        )
     # A whole-source failure no longer aborts the run, so it has to be visible
     # here or the only trace is every one of that source's securities reporting
     # 'price_feed_error' with nothing saying what to fix. stderr because it is a
@@ -208,6 +223,11 @@ def investments_prices_set(
     note: str | None = typer.Option(
         None, "--note", help="Why this price was set (e.g. a 409A valuation)"
     ),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help="Rebuild the price models so the mark values holdings right away",
+    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Record your own price for one security and date.
@@ -219,6 +239,9 @@ def investments_prices_set(
     A non-positive price is refused: a worthless position is a ledger event — a
     disposal or write-off — not a zero price. Admitting zero would make
     "worthless" and "unknown" two states every downstream total must tell apart.
+
+    The mark lands in app; holdings value from core. Pass --refresh to rebuild
+    the models in the same command, or run 'moneybin refresh run' afterwards.
     """
     parsed_date = _parse_date(price_date, "DATE")
     parsed_price = _parse_amount(price)
@@ -226,6 +249,7 @@ def investments_prices_set(
         cli_actor="investments_prices_set",
         payload_type=InvestmentPriceMarkPayload,
     ):
+        from moneybin.services import refresh as refresh_module  # noqa: PLC0415
         from moneybin.services.price_service import build_price_service  # noqa: PLC0415
 
         with get_database(read_only=False) as db:
@@ -238,6 +262,9 @@ def investments_prices_set(
                 quote_currency=currency,
                 note=note,
             )
+            refreshed = (
+                refresh_module.refresh(db, steps=["transform"]) if refresh else None
+            )
 
     payload = InvestmentPriceMarkPayload(
         security_id=security_id,
@@ -245,15 +272,20 @@ def investments_prices_set(
         quote_currency=currency.upper(),
         close=parsed_price,
         removed=False,
+        refreshed=bool(refreshed and refreshed.applied),
+        refresh_error=refreshed.error if refreshed else None,
     )
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(data=payload), output, cli_actor="investments_prices_set"
         )
+        _report_refresh_failure(payload.refresh_error)
         return
     typer.echo(
         f"✅ Marked {security_id} at {parsed_price} {currency.upper()} on {parsed_date}"
     )
+    _echo_refresh_hint("This mark values holdings", stale=refreshed is None)
+    _report_refresh_failure(payload.refresh_error)
 
 
 @app.command("delete")
@@ -265,6 +297,11 @@ def investments_prices_delete(
         ..., help="Date of the mark to remove (YYYY-MM-DD)"
     ),
     currency: str = typer.Option("USD", "--currency", help="ISO-4217 quote currency"),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help="Rebuild the price models so the removal values holdings right away",
+    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Remove a price mark, returning that date to provider-derived valuation.
@@ -273,12 +310,16 @@ def investments_prices_delete(
     row for its date, and 'set' can only change the number, so without this a
     mark is unreachable once written. Removing one is permanent — the audit log
     records it, but the previous value is not restored by re-running anything.
+
+    The removal lands in app; holdings value from core. Pass --refresh to rebuild
+    the models in the same command, or run 'moneybin refresh run' afterwards.
     """
     parsed_date = _parse_date(price_date, "DATE")
     with handle_cli_errors(
         cli_actor="investments_prices_delete",
         payload_type=InvestmentPriceMarkPayload,
     ):
+        from moneybin.services import refresh as refresh_module  # noqa: PLC0415
         from moneybin.services.price_service import build_price_service  # noqa: PLC0415
 
         with get_database(read_only=False) as db:
@@ -287,6 +328,15 @@ def investments_prices_delete(
             removed = service.delete_mark(
                 security_id, parsed_date, quote_currency=currency
             )
+            # Gated on `removed`, unlike `pull --refresh`. A pull stays
+            # unconditional because an earlier pull may have been left
+            # unapplied; a delete that removed nothing cannot have stranded
+            # anything, so an apply here would be pure cost.
+            refreshed = (
+                refresh_module.refresh(db, steps=["transform"])
+                if refresh and removed
+                else None
+            )
 
     payload = InvestmentPriceMarkPayload(
         security_id=security_id,
@@ -294,11 +344,14 @@ def investments_prices_delete(
         quote_currency=currency.upper(),
         close=None,
         removed=removed,
+        refreshed=bool(refreshed and refreshed.applied),
+        refresh_error=refreshed.error if refreshed else None,
     )
     if output == OutputFormat.JSON:
         render_or_json(
             build_envelope(data=payload), output, cli_actor="investments_prices_delete"
         )
+        _report_refresh_failure(payload.refresh_error)
         return
     if removed:
         typer.echo(f"✅ Removed the mark on {security_id} for {parsed_date}")
@@ -306,6 +359,11 @@ def investments_prices_delete(
         # Not an error: the end state the caller wanted already holds. Saying so
         # keeps "the override is gone" from reading as "your mark was deleted".
         typer.echo(f"No mark existed for {security_id} on {parsed_date}")
+    _echo_refresh_hint(
+        "This date returns to provider pricing",
+        stale=removed and refreshed is None,
+    )
+    _report_refresh_failure(payload.refresh_error)
 
 
 @app.command("list")

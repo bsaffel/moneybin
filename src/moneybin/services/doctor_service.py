@@ -1344,10 +1344,15 @@ class DoctorService:
                     f"{len(rows)} security(s) have two price feeds disagreeing "
                     f"by more than {pct}% on the same date and currency — one "
                     "of them is wrong, and valuation picks a winner by source "
-                    "rank without flagging the conflict; compare the series "
-                    "with `moneybin investments prices list <security> "
-                    "--source <feed>` and record a mark with `moneybin "
-                    "investments prices set` if the winning feed is the wrong one"
+                    "rank without flagging the conflict; compare the competing "
+                    'quotes with `moneybin db query "SELECT price_date, '
+                    "source_type, close FROM prep.stg_security_prices WHERE "
+                    "security_id = '<id>' ORDER BY price_date DESC\"` — the "
+                    "losing quote never reaches `investments prices list`, "
+                    "which reads the already-resolved series, and staging is "
+                    "outside the schemas `sql query` can read — then record a "
+                    "mark with `moneybin investments prices set` if the winning "
+                    "feed is the wrong one"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
             )

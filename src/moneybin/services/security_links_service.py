@@ -38,7 +38,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 import duckdb
 
@@ -78,6 +78,11 @@ _SelectionSet = dict[str, list[tuple[str, Decimal]]]
 # appears here: a new adapter whose ref_kind is missing would silently route its
 # decisions into the merge path and destroy the security they were meant to price.
 _FEED_KEY_REF_KINDS = frozenset({"tiingo_ticker", "coingecko_slug"})
+
+# What an accepted decision actually did. A feed key BINDS (creates a link,
+# touches nothing else); an identity ref MERGES (re-points every reference and
+# deletes the provisional). Surfaces report the two differently.
+AcceptOutcome = Literal["bound", "merged"]
 
 
 @dataclass(frozen=True)
@@ -319,7 +324,7 @@ class SecurityLinksService:
         into: str,
         decided_by: str = "user",
         verify_accept: Callable[[SecurityLinkAcceptImpact], None] | None = None,
-    ) -> None:
+    ) -> AcceptOutcome:
         """Accept one pending decision by whichever mechanism its ref_kind needs.
 
         The queue holds two kinds of question that look identical to a reviewer
@@ -342,14 +347,21 @@ class SecurityLinksService:
         same ("yes, this pairing is right"), and the pending queue mixes both
         kinds, so asking the caller to pick the mechanism would leak an
         implementation detail into the surface.
+
+        Returns which mechanism ran. The caller cannot see the routing and the
+        two outcomes are opposite, so a surface that assumed one would tell the
+        user it merged two securities when it only created a link. Re-deriving
+        it from ``_FEED_KEY_REF_KINDS`` in each adapter would put the routing
+        rule in two places instead.
         """
         decision = self._require_pending(decision_id)
         if str(decision["ref_kind"]) in _FEED_KEY_REF_KINDS:
             self.accept_feed_key(decision_id, into=into, decided_by=decided_by)
-            return
+            return "bound"
         self.accept_merge(
             decision_id, into=into, decided_by=decided_by, verify_accept=verify_accept
         )
+        return "merged"
 
     def accept_feed_key(
         self,

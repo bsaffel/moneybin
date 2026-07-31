@@ -92,9 +92,15 @@ class _FakeTiingo:
         # A whole-batch condition — auth, rate limit, unreachable — as opposed to
         # fail_keys, which models one security the provider could not answer for.
         self.raises: Exception | None = None
+        # The same condition raised during key *derivation* instead of the fetch.
+        # A missing token takes this shape on a first pull, when no security has
+        # a binding yet and every one of them needs a metadata round-trip.
+        self.raises_on_metadata: Exception | None = None
 
     def fetch_metadata(self, ticker: str) -> TickerMetadata | None:
         self.metadata_calls.append(ticker)
+        if self.raises_on_metadata is not None:
+            raise self.raises_on_metadata
         return self.metadata.get(ticker)
 
     def fetch(
@@ -587,6 +593,35 @@ def test_correcting_a_typod_ticker_stops_the_old_symbols_prices(
     assert [ref.provider_security_key for ref in tiingo.fetched] == ["AAPU"]
 
 
+def test_a_user_confirmed_binding_is_never_treated_as_stale(db: Database) -> None:
+    """Provider symbol formats diverge from ours, and the user already settled it.
+
+    ``BRK-B`` against a ``BRK.B`` catalog ticker is the exact case
+    ``_binding_is_stale``'s own docstring says is allowed. Comparing the strings
+    without consulting ``decided_by`` calls it stale anyway; retirement is scoped
+    to ``auto`` so it retires nothing, and execution falls through to re-derive —
+    leaving two accepted rows under one ref_kind. ``_bound_ref``'s unordered
+    ``LIMIT 1`` can return either one afterwards, so a later pull can silently
+    resume pricing from the symbol the user overrode.
+    """
+    _seed_security(db, security_id="s_brk", name="Berkshire Hathaway", ticker="BRK.B")
+    _hold(db, "s_brk")
+    db.execute(
+        f"INSERT INTO {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef constant
+        "(link_id, security_id, ref_kind, ref_value, source_type, status, "
+        "decided_by, decided_at) VALUES (?, ?, ?, ?, ?, 'accepted', 'user', "
+        "CURRENT_TIMESTAMP)",
+        ["l_brk", "s_brk", "tiingo_ticker", "BRK-B", "tiingo"],
+    )
+    tiingo = _FakeTiingo(metadata={"BRK.B": TickerMetadata("Berkshire Hathaway", None)})
+
+    _service(db, tiingo).pull()
+
+    assert _links(db) == [(TIINGO_REF_KIND, "BRK-B", "s_brk")]
+    assert [ref.provider_security_key for ref in tiingo.fetched] == ["BRK-B"]
+    assert tiingo.metadata_calls == []
+
+
 def test_a_queued_review_records_what_the_provider_said_not_the_catalog(
     db: Database,
 ) -> None:
@@ -981,6 +1016,62 @@ def test_a_failed_source_reports_the_message_that_says_how_to_fix_it(
     assert [(f.source_type, f.message) for f in result.failed_sources] == [
         ("tiingo", "No Tiingo API token is stored")
     ]
+
+
+def test_an_auth_failure_deriving_a_feed_key_keeps_the_other_sources_rows(
+    db: Database,
+) -> None:
+    """A pull derives keys before it fetches, and derivation asks Tiingo too.
+
+    ``_feed_key`` reaches ``fetch_metadata`` for any security with no accepted
+    binding — the state every security is in on a first run, which is exactly
+    when no token is stored. That raises in the loop *above* the per-source
+    containment, so nothing catches it before it leaves ``pull()`` and
+    ``_store()`` never runs. CoinGecko needs no token and was never asked for
+    one, so its rows must survive.
+    """
+    _seed_security(db, security_id="s_eq", name="Apple Inc", ticker="AAPL")
+    _seed_security(
+        db,
+        security_id="s_btc",
+        name="Bitcoin",
+        security_type="crypto",
+        coingecko_id="bitcoin",
+    )
+    _hold(db, "s_eq")
+    _hold(db, "s_btc")
+    tiingo = _FakeTiingo()
+    tiingo.raises_on_metadata = PriceFeedAuthError("No Tiingo API token is stored")
+
+    result = _service(db, tiingo, _FakeCoinGecko()).pull()
+
+    assert result.rows_written == 1
+    assert result.securities_priced == 1
+    assert [(f.source_type, f.message) for f in result.failed_sources] == [
+        ("tiingo", "No Tiingo API token is stored")
+    ]
+
+
+def test_a_derivation_failure_is_not_re_asked_for_every_security(
+    db: Database,
+) -> None:
+    """An auth failure answers for the whole source, not for the one security.
+
+    ``errors.py`` calls these whole-batch conditions. Re-deriving per security
+    spends one doomed request each, and on a rate-limit error deepens the very
+    limit that caused it.
+    """
+    for index in range(3):
+        _seed_security(
+            db, security_id=f"s{index}", name=f"Company {index}", ticker=f"TCK{index}"
+        )
+        _hold(db, f"s{index}")
+    tiingo = _FakeTiingo()
+    tiingo.raises_on_metadata = PriceFeedAuthError("No Tiingo API token is stored")
+
+    _service(db, tiingo).pull()
+
+    assert tiingo.metadata_calls == ["TCK0"]
 
 
 def test_a_feed_key_already_bound_to_another_security_does_not_abort_the_pull(
