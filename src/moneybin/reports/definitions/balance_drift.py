@@ -5,6 +5,7 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -153,18 +154,25 @@ def balance_drift(
         FROM {REPORTS_BALANCE_DRIFT.full_name}
         WHERE 1=1
     """  # noqa: S608  # TableRef interpolation
-    params: list[object] = []
+    params: list[Binding] = []
     if account:
         sql += " AND account_id = ?"
         # Bind the filter to the resolved account_id (free-text → id at the
         # boundary; raises on ambiguity) per the identifiers rule.
-        params.append(AccountService(db).resolve_strict(account))
+        #
+        # R9's worked example: the *parameter* is declared
+        # ACCOUNT_IDENTIFIER — free text a user typed — while the *binding* is a
+        # minted opaque surrogate, RECORD_ID. Neither class describes the other's
+        # value, so the class travels with the binding.
+        params.append(
+            Binding(AccountService(db).resolve_strict(account), DataClass.RECORD_ID)
+        )
     if status != "all":
         sql += " AND status = ?"
-        params.append(status)
+        params.append(Binding(status, DataClass.TXN_TYPE))
     if since:
         sql += " AND assertion_date >= ?"
-        params.append(since)
+        params.append(Binding(since, DataClass.TXN_DATE))
     # Interleave the currencies rather than ranking their magnitudes together.
     # The framework truncates with `records[:max_rows]`, so a global
     # `ORDER BY drift_abs DESC` lets one high-denomination currency fill the cap

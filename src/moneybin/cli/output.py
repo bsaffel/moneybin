@@ -52,6 +52,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+CLI_MAX_ROWS = 1_000_000
+"""Rows a CLI report run may return.
+
+The CLI is an operator/agent surface and a report's own LIMIT params (`top`,
+etc.) are what bound a result in practice, so this sits far above anything a
+terminal renders. It is a cap all the same: `reports run --help` names it, built
+from this constant, and the text renderer says so whenever it bites.
+
+Here rather than in `cli_register`, which is the module that generates report
+commands: the help string is built at import time, and `reports run` defers that
+import to keep sqlglot off the CLI cold-start path. It had been defined twice
+with `networth` reaching across for the copy it liked.
+"""
+
 UNKNOWN_CURRENCY = "n/a"
 """Printed in the currency slot when the ledger does not know the currency.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -171,16 +172,20 @@ def spending_trend(
         FROM {REPORTS_SPENDING_TREND.full_name}
         WHERE 1=1
     """  # noqa: S608  # TableRef interpolation
-    params: list[object] = []
+    # Each binding declares the class of the value it carries (R9). The class is
+    # read off the binding by the provenance renderer, which cannot recover it
+    # from the signature: these appends are conditional, so binding N is not a
+    # fixed offset into the parameter list.
+    params: list[Binding] = []
     if from_month:
         ranked += " AND year_month >= substr(?, 1, 7)"
-        params.append(from_month)
+        params.append(Binding(from_month, DataClass.TXN_DATE))
     if to_month:
         ranked += " AND year_month <= substr(?, 1, 7)"
-        params.append(to_month)
+        params.append(Binding(to_month, DataClass.TXN_DATE))
     if category:
         ranked += " AND category = ?"
-        params.append(category)
+        params.append(Binding(category, DataClass.CATEGORY))
 
     # Spend still ranks only within a currency — comparing total_spend across
     # denominations would order by exchange-rate scale rather than by spending.

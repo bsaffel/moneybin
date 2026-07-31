@@ -17,6 +17,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -105,9 +106,9 @@ def _build_spec(
 
 
 def test_report_query_is_frozen_with_sql_and_params() -> None:
-    rq = ReportQuery("SELECT ?", [3])
+    rq = ReportQuery("SELECT ?", [Binding(3, DataClass.AGGREGATE)])
     assert rq.sql == "SELECT ?"
-    assert list(rq.params) == [3]
+    assert list(rq.params) == [Binding(3, DataClass.AGGREGATE)]
     with pytest.raises(AttributeError):
         rq.sql = "x"  # type: ignore[misc]  # frozen
 
@@ -290,6 +291,7 @@ def test_build_spec_rejects_non_reports_view() -> None:
 def test_build_spec_accepts_custom_table_ref() -> None:
     view = TableRef("reports", "sample")
     spec = _build_spec(view=view, domain="merchants")
+    assert spec.view is not None
     assert spec.view.full_name == "reports.sample"
     assert spec.domain == "merchants"
 

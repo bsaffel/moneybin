@@ -195,11 +195,13 @@ def test_prepare_bundle_builds_the_closed_typed_canonical_snapshot(
     assert first.created_at.tzinfo is UTC
     assert first.manifest["created_at"] == first.created_at.isoformat()
     assert first.manifest["subject"] == {"kind": "bundle"}
-    assert all(table.source.schema == "core" for table in first.tables)
-    assert all(
-        not table.source.full_name.startswith(("raw.", "app.", "prep.", "meta."))
-        for table in first.tables
-    )
+    # Every bundle table reads one fixed catalog relation. `source` is optional
+    # only for a query-time report with no single source view; this tier must
+    # keep naming a real `core.*` relation.
+    assert all(table.source is not None for table in first.tables)
+    sources = [table.source.full_name for table in first.tables if table.source]
+    assert len(sources) == len(first.tables)
+    assert all(name.startswith("core.") for name in sources)
 
     transactions = next(table for table in first.tables if table.name == "transactions")
     accounts = next(table for table in first.tables if table.name == "accounts")

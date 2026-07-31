@@ -11,6 +11,100 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Save your own reports (M2P.2).** `moneybin reports create <name> --sql "..."`
+  turns a query into a durable report that behaves like a shipped one: it appears
+  in `reports list`, runs through `reports run` or `moneybin export report`, and
+  is masked by the same rules. You never declare privacy classes — MoneyBin reads
+  them off the SQL at save time and stores them, so a routing number in your own
+  report is masked exactly as it is in a built-in. If an upstream column is later
+  reclassified as more sensitive, the saved report notices and masks that column
+  rather than serving the stale class, and the response says so
+  (`summary.degraded`) rather than masking silently — including on the plain-text
+  path, where `reports run` prints the reason under the table, alongside the
+  `reports explain` command that names every column's derived class whenever any
+  column masked, instead of leaving a bare `*****` for the reader to interpret.
+  An exported artifact records
+  the same verdict in its provenance receipt, so a file opened months later still
+  distinguishes columns masked by drift from columns that were empty at source.
+  `reports set --archive`
+  hides a report from `reports list` without retiring it — an archived report
+  still runs, exports, and explains by id or name, and
+  `reports list --include-archived` shows it marked as archived. `reports set`
+  re-derives on any SQL or
+  parameter change; `reports delete` is undoable through `system audit undo`;
+  `reports reclassify` lowers one column's masking floor on an explicit human
+  confirmation, and its audit row records whether that confirmation came from the
+  prompt or from `--yes`. That confirmation names the class the report's SQL
+  derives *right now* — `'spend' from txn_amount to aggregate` — so an upstream
+  reclassification cannot turn an approval you read one way into a permanent
+  downgrade of something else, and the approval is refused if the class moves
+  between the question and the write. A blank `--reason` is refused: it is the
+  only durable record of why the floor was lowered, and both it and the set of
+  downgrades a report accumulates are length-bounded, since every later edit
+  copies them into its audit record. `reports set --clear-params`
+  drops every declared parameter, which is the only way to move a parameterized
+  report to SQL with no placeholders left: omitting `--param` means "leave the
+  declarations alone", every occurrence of the flag requires a value, and a
+  declaration the new SQL no longer interpolates is refused.
+
+  Because the SQL is yours, two boundaries treat it as data rather than as text
+  to echo. A `redacted` export withholds it — the receipt carries `sql: null`
+  while keeping `lineage`, `parameter_classes`, and `output_classes`, so what the
+  export read stays auditable without republishing a literal your rows would have
+  masked; the unredacted artifact still carries the statement. Every name you
+  wrote goes with it — columns and parameters alike are published as
+  `redacted_column_1` / `redacted_parameter_1`, and the drift note reports its
+  reason code rather than naming the columns that moved. A name is your own text
+  and can carry a literal on its own (`SELECT 1 AS "021000021"`), so a redacted
+  artifact withholds all of them rather than guessing which are safe; the class
+  of each column and the query's lineage stay in the receipt. And when an
+  upstream rename invalidates a stored query, `reports run` and `export report`
+  report `report_query_execution_failed` and name the likely cause instead of
+  surfacing a DuckDB binder error, which quotes the statement it failed to bind.
+  The log keeps the exception type and a SHA-256 digest of the query, and a
+  report whose stored SQL a later release can no longer parse says so by
+  exception type rather than repeating the fragment it choked on. A parameter
+  your query *returns* (`SELECT $acct AS acct`) is masked like the filter value
+  it is, rather than published in the clear because no column backs it.
+
+  `reports run` caps a text run at 1,000,000 rows, which `--limit --help` now
+  states and the table says whenever it bites — a truncated financial answer
+  never renders as a complete one. A `reports reclassify` approval is also
+  re-checked against current policy on every re-derivation, so a release that
+  raises the class you downgraded *to* retires the approval and masks the column
+  rather than serving it under a floor nobody would grant today. It covers the one
+  column you confirmed and nothing else: if anything else about the report's
+  classification has drifted since it was saved — another output column, or one of
+  its filter parameters — the downgrade is refused and names what moved, so
+  approving one thing cannot quietly store a change to another. Save the report
+  again and the approval goes through.
+
+  The same rule covers every name you choose, not only the SQL. A report's name,
+  its output aliases, and its declared parameter names never enter a log record:
+  each site logs the report id with a count or a class and echoes the detail to
+  the terminal, because `SanitizedLogFormatter` masks account numbers and dollar
+  amounts by pattern and cannot recognize `amazon_spend`. A test enumerates the
+  shape across the reports surface so a new log line cannot reintroduce it. (#367)
+- **Every report can show its work: `moneybin reports explain <handle>` (M2I).**
+  Returns the query in two forms — the executed form with parameters rendered as
+  literals, and the stored template — plus each output column's privacy class and
+  which upstream column it descends from, the tables it reads, when its
+  classification was last derived, and whether it can be promoted to a
+  materialized view (with the reason when it cannot). Works for built-in,
+  extension, and saved reports alike, and runs nothing. A parameter classed above
+  the lowest tier keeps its placeholder in the executed form: rendering is not
+  execution, so it gets no redaction pass and must not publish a value the report's
+  own rows would mask.
+  All seven `reports` verbs are CLI-only; the MCP registry gains no tools.
+  (#367)
+- **Report listings now show the handle you type.** The report catalog entry
+  carries `name` beside `report_id`, and `reports list` leads with it. Those two
+  differ for every tier: a built-in's id is namespaced (`core:networth`) and a
+  saved report's is minted (`user:r` plus twelve hex characters), while the CLI
+  command, `reports run`, `reports explain`, and `export report` all accept the
+  name. Publishing only the id left the one string those commands take
+  undiscoverable once the create response scrolled away. Applies to the MCP
+  `reports` catalog too. (#367)
 - **A profile can now declare its home currency (M1K.1).** `moneybin profile set
   home_currency EUR` records which currency the profile treats as home;
   `moneybin profile show` lists it under `Settings (database)`, separate from the
@@ -291,7 +385,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - **An import no longer reports success on a statement MoneyBin could not
-  read.** `import_confirm` replayed a staged preview whose column mapping
+  read (#372).** `import_confirm` replayed a staged preview whose column mapping
   scored low — or whose date format was never detected — straight into the
   loader, which parsed zero rows and returned a successful import of nothing.
   Both cases now return `confirmation_required` carrying the file's own column
@@ -301,6 +395,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   also retires the detector's sign rule, which would otherwise have rejected
   every row; an override that leaves a header row consumed as data still holds
   the confirmation gate open rather than reporting high confidence.
+- **A card imported from both a PDF statement and a bank file no longer loads
+  twice (#371).** PDF import built its account key as a string and skipped the
+  identity resolver every other source uses, so the same card arriving as a PDF
+  and as OFX had nothing to be matched against and both halves loaded. PDF now
+  resolves through the same ladder, and the resulting link is scoped to the
+  issuer rather than the filename, so consecutive statements of one card land on
+  one account instead of a fresh account per file.
+- **Statements that print the card number in groups keep their last four
+  digits (#371).** Metadata capture stopped at the first whitespace-delimited
+  token, so `Account Number: XXXX XXXX XXXX 1234` yielded the bare mask `XXXX` —
+  an account key carrying no digits at all — and an unmasked
+  `1234 5678 9012 3456` yielded `1234`, reporting the *leading* four as the last
+  four. The whole grouped number is captured and reduced to its trailing four.
+  Masks also normalise, so one card whose statements render `****1234` and
+  `xxxx1234` no longer keys two different ways. Institution account tokens that
+  are not digit/mask runs (`ACCT-9Z`, `123-ABC-456`) are captured whole rather
+  than truncated to a leading digit group.
+
+  **Upgrading — revert before re-importing.** Statements already imported under
+  the old key need `moneybin import revert <import_id>` *first*, then a fresh
+  import. Do not simply re-import: the corrected key feeds both the
+  `raw.tabular_transactions` primary key and the `transaction_id` content hash,
+  so the new rows do not collide with the old ones — they land alongside them
+  and double the statement. Reverting first is also what clears the stale
+  per-file link scope; a re-import on its own leaves the old rows, and the
+  transactions they carry, uncanonicalized. `moneybin import history` lists the
+  import IDs.
 - **Picking tax lots no longer reports success on a write nothing will read.**
   `moneybin investments lots select` and `investments_lots_select` accepted a
   lot selection for any security, but the cost-basis engine reads
@@ -314,6 +435,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stay removable. The security → account-default → FIFO election chain moved
   into one shared resolver, so the method a selection is checked against is the
   method the disposal replays under.
+- **A query that measured a masked column answered "This is a MoneyBin bug".**
+  `sql_query` and a saved report both classify an expression by the column it
+  reads, so `SELECT length(last_four) …` kept the account-number class and reached
+  a mask that measures its input — `len()` on an integer, raising from inside
+  redaction. Nothing leaked, because the failure happened before any row was
+  returned, but the query could not be answered on any surface and a report saved
+  that way was creatable and permanently unrunnable. Values that are not text now
+  mask whole (`*****`) rather than partially, which is stronger than the mask it
+  replaces: there are no last four digits to keep in a value that is not text. A
+  redacted export of such a report declares the type the mask produced rather than
+  the one it replaced, so its Parquet file and its manifest agree. (#367)
 - **"Transforms up to date" now accounts for everything you can add, not just
   accounts.** The staleness flag on `system_status` and `moneybin transform
   status` watched three account tables out of the seventeen a refresh reads, so
@@ -562,6 +694,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reach the model provider as-is, and there is no consent gate yet.
 
 ### Security
+- **Fixed an under-classification leak that returned a bank routing number in
+  the clear through `sql_query` / `moneybin sql query` via `INTERSECT`.** The
+  set-operation fix in #330 treated `INTERSECT` like `EXCEPT` — values from the
+  left branch only, since the right operand filters rather than contributes. That
+  holds for `EXCEPT` and not for `INTERSECT`: a row survives an `INTERSECT` only
+  when the value is present on both sides, so the value it returns is the right
+  operand's as much as the left's. `SELECT '021000021' AS v INTERSECT SELECT
+  routing_number FROM core.dim_accounts` classified the column from the left
+  branch alone (`TXN_TYPE`, LOW), returned the real `routing_number` unmasked,
+  and so confirmed a guessed value. Both operands are now classified, `EXCEPT`
+  still takes the left branch alone, and the asymmetry is pinned by one test per
+  operator. (#367)
 - **Fixed a redaction bypass that returned a bank routing number in the clear
   through `sql_query` / `moneybin sql query` via `PRAGMA storage_info`.**
   DuckDB reports per-segment `stats` for each column, and for a text column

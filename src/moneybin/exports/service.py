@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from time import perf_counter
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from pydantic import JsonValue
 
@@ -40,6 +40,7 @@ from moneybin.metrics.registry import EXPORT_DURATION_SECONDS, EXPORT_RUNS_TOTAL
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
     get_report_catalog,
+    report_tier,
 )
 from moneybin.reports._framework.contract import ReportSpec
 from moneybin.reports._framework.execute import redact_report_parameters
@@ -56,6 +57,13 @@ if TYPE_CHECKING:
     from moneybin.exports.sheets import SheetsAuthorization
     from moneybin.exports.workbook_roles import WorkbookRolePermit
     from moneybin.services.audit_service import AuditEvent
+
+
+#: Stems of the positional names a redacted export publishes in place of a
+#: user-authored column alias or parameter name. Positional rather than
+#: class-derived so no two can collide on one name.
+_REDACTED_COLUMN_NAME: Final = "redacted_column"
+_REDACTED_PARAMETER_NAME: Final = "redacted_parameter"
 
 
 class _SheetsPublisher(Protocol):
@@ -483,7 +491,8 @@ class ExportService:
         redaction_mode: RedactionMode = "redacted",
     ) -> PreparedExport:
         """Prepare exactly one catalog report under one output policy."""
-        catalog = self._report_catalog or get_report_catalog()
+        # `db` spans the user tier: a saved report is exportable by construction.
+        catalog = self._report_catalog or get_report_catalog(self._db)
         spec, execution = catalog.execute_raw(
             self._db,
             report_id=report_id,
@@ -492,9 +501,16 @@ class ExportService:
             # caps never limit durable export contents.
             limit=None,
         )
+        # Only a saved report's names and SQL are the author's own text, and only a
+        # redacted artifact has to withhold them. One predicate for both: they are
+        # withheld for the same reason, so they cannot disagree about the tier.
+        withhold_authored = redaction_mode == "redacted" and report_tier(spec) == "user"
+        published = _published_names(
+            execution.columns, stem=_REDACTED_COLUMN_NAME, withhold=withhold_authored
+        )
         columns = tuple(
             PreparedColumn(
-                name=name,
+                name=published[name],
                 duckdb_type=duckdb_type,
                 data_class=execution.output_classes[name],
             )
@@ -509,7 +525,7 @@ class ExportService:
             for record in execution.records
         )
         source = (
-            spec.view
+            _report_spec_source(spec)
             if isinstance(spec, ReportSpec)
             else _service_report_source(spec.name, execution.provenance)
         )
@@ -520,33 +536,74 @@ class ExportService:
             rows=rows,
             checksum_sha256=prepared_table_checksum(columns, rows),
         )
+        status = catalog.status(execution.report_id)
         parameters = spec.params if isinstance(spec, ReportSpec) else spec.parameters
+        parameter_classes_by_name = {
+            parameter.name: parameter.data_class for parameter in parameters
+        }
+        published_parameters = _published_names(
+            tuple(parameter_classes_by_name),
+            stem=_REDACTED_PARAMETER_NAME,
+            withhold=withhold_authored,
+        )
         parameter_classes = {
-            parameter.name: parameter.data_class.value for parameter in parameters
+            published_parameters[name]: data_class.value
+            for name, data_class in parameter_classes_by_name.items()
         }
         snapshot_parameters: Mapping[str, object]
+        receipt_sql: str | None
         if redaction_mode == "redacted":
-            snapshot_parameters = redact_report_parameters(
-                spec,
-                execution.parameters,
-            )
+            # Keyed by declared name, exactly as `redact_report_parameters` reads
+            # its own class map, so an undeclared key is an invariant violation
+            # here rather than a name that quietly keeps itself.
+            snapshot_parameters = {
+                published_parameters[name]: value
+                for name, value in redact_report_parameters(
+                    spec,
+                    execution.parameters,
+                ).items()
+            }
+            # A saved report's SQL is user-authored, so a critical literal can sit
+            # inline in the statement (`WHERE routing_number = '021000021'`) rather
+            # than in a parameter this redacts. `apply_export_redaction` transforms
+            # table rows only, so a verbatim receipt would republish in the manifest
+            # exactly what the redacted policy was chosen to withhold.
+            #
+            # The user tier only, on the same reasoning as the names above: a
+            # built-in's SQL is repo-authored and reviewed, keeps its values in
+            # bindings the receipt redacts separately, and is already public in the
+            # repo — so withholding it discloses nothing and costs the receipt the
+            # one field that makes the artifact reproducible.
+            receipt_sql = None if withhold_authored else execution.sql
         else:
             snapshot_parameters = execution.parameters
+            receipt_sql = execution.sql
         receipt = ReportExportReceipt(
             report_id=execution.report_id,
             parameters=snapshot_parameters,
             parameter_classes=parameter_classes,
-            sql=execution.sql,
+            sql=receipt_sql,
             lineage=execution.provenance,
             output_classes={
-                name: data_class.value
+                published[name]: data_class.value
                 for name, data_class in execution.output_classes.items()
             },
-            # The current ReportSpec exposes neither field. Keep that absence
-            # explicit instead of inferring verification state from provenance.
+            # The current ReportSpec exposes neither field, and both want the
+            # stored row rather than the catalog. Keep that absence explicit
+            # instead of inferring verification state from provenance.
             freshness=None,
             graduation_eligibility=None,
             semantics=cast(dict[str, object], asdict(execution.semantics)),
+            # Drift, unlike freshness, is already in hand: the catalog carries
+            # R4's verdict for every user-tier row it built.
+            degraded=status.degraded,
+            # The drift sentence names the columns that moved, and those are the
+            # author's own — the same text the header rename and the withheld SQL
+            # keep out of a redacted artifact. The code says a stale class map
+            # from an unreadable row without repeating any of them.
+            degraded_reason=(
+                status.degraded_code if withhold_authored else status.degraded_reason
+            ),
         )
         tables = (table,)
         snapshot = PreparedExport(
@@ -568,6 +625,53 @@ class ExportService:
             ),
         )
         return apply_export_redaction(snapshot, redaction_mode)
+
+
+def _published_names(
+    names: Sequence[str], *, stem: str, withhold: bool
+) -> dict[str, str]:
+    """Map each user-authored name to the one a redacted artifact may publish.
+
+    A saved report's names are its author's text, so
+    ``routing_number AS "021000021"`` puts a critical literal in the artifact
+    header, the data-dictionary entry, and the receipt's class-map key, and
+    ``WHERE routing_number = $acct_021000021`` puts one in the receipt's parameter
+    keys and the subject. Redaction transforms *values*, so every one of them
+    survives — the same disclosure the withheld receipt SQL exists to prevent.
+
+    **Every** authored name is withheld, not only those whose own value is
+    masked. Keying on the value was the obvious rule and it leaks:
+    ``SELECT 1 AS "021000021"`` carries the literal beside a published ``1``, so
+    the name's sensitivity is plainly not a function of the column it labels. A
+    name is arbitrary user text, MoneyBin cannot classify arbitrary text — the
+    reason ``catalog.py`` withholds a report's name wholesale from its collision
+    warning rather than judging it — and a redacted artifact outlives the session
+    that produced it.
+
+    ``withhold`` is false for anything but a redacted user-tier export: a
+    ``builtin`` or ``extension`` name is repo-authored and describes the column or
+    filter rather than a value, and an unredacted artifact publishes the values
+    anyway. Renaming is positional, so the result is unique by construction —
+    these names are dict keys downstream, in ``redact_records``, the receipt, and
+    the subject, and two sharing one would collapse into a single entry.
+    """
+    if not withhold:
+        return {name: name for name in names}
+    return {name: f"{stem}_{position}" for position, name in enumerate(names, start=1)}
+
+
+def _report_spec_source(spec: ReportSpec) -> TableRef | None:
+    """Return the ``reports.*`` view a report reads, or ``None`` if it has none.
+
+    A dynamic report's ``view`` is ``None``: it is evaluated at query time over
+    whatever ``core``/``app`` tables its SQL names, so no single source view
+    exists. Pass that through rather than synthesizing one — the pre-existing
+    ``_service_report_source`` fallback ends at ``TableRef("reports", name)``,
+    which here would write a view that does not exist into the manifest, and
+    provenance that cannot be checked is worse than none. Nothing is lost: the
+    complete read-table set is carried by the receipt's ``lineage``.
+    """
+    return spec.view
 
 
 def _service_report_source(name: str, provenance: tuple[str, ...]) -> TableRef:

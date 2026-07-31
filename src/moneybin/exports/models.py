@@ -153,6 +153,19 @@ class ReportExportReceipt:
     freshness: Mapping[str, object] | None
     graduation_eligibility: bool | None
     semantics: Mapping[str, object]
+    degraded: bool = False
+    degraded_reason: str | None = None
+    """Whether the report served a stale class map, and R4's reason if it did.
+
+    Named after ``ReportStatus`` / ``DynamicReport`` / the run envelope rather
+    than folded into ``freshness``: one drift signal travelling under one pair of
+    names across every surface. ``freshness`` asks the richer question
+    (fingerprint, ``updated_at``) that only the stored row can answer.
+
+    Load-bearing in the artifact because a degraded report *exports* — masking
+    more than declared is not an availability failure. Without this the file's
+    masked columns are indistinguishable from columns that were empty at source.
+    """
 
     def as_mapping(self) -> dict[str, object]:
         """Return metadata for the snapshot's deep-freezing receipt boundary."""
@@ -166,4 +179,6 @@ class ReportExportReceipt:
             "freshness": self.freshness,
             "graduation_eligibility": self.graduation_eligibility,
             "semantics": dict(self.semantics),
+            "degraded": self.degraded,
+            "degraded_reason": self.degraded_reason,
         }

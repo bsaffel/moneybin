@@ -5,6 +5,7 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -180,4 +181,5 @@ def large_transactions(
         WHERE rank_in_currency <= ?
         ORDER BY rank_in_currency, currency_code
     """  # noqa: S608  # TableRef + LARGE_TXN_ANOMALIES allowlists
-    return ReportQuery(sql, [top])
+    # The binding declares the class of the value it carries (R9).
+    return ReportQuery(sql, [Binding(top, DataClass.AGGREGATE)])

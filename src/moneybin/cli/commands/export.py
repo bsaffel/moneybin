@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import json
 import sys
-import types
 import typing
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, cast, get_args, get_origin
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import typer
-from pydantic import JsonValue, TypeAdapter, ValidationError
+from pydantic import JsonValue
 
 from moneybin import error_codes
 from moneybin.cli.output import (
@@ -100,79 +98,6 @@ def _redaction_mode(*, unredacted: bool, yes: bool) -> RedactionMode:
         err=True,
     )
     raise typer.Exit(1)
-
-
-def _annotation_accepts_container(annotation: object) -> bool:
-    """Return whether JSON container syntax is meaningful for a parameter."""
-    origin = get_origin(annotation)
-    if origin in (list, dict):
-        return True
-    if origin in (typing.Union, types.UnionType):
-        return any(_annotation_accepts_container(arm) for arm in get_args(annotation))
-    return False
-
-
-def _annotation_accepts_none(annotation: object) -> bool:
-    """Return whether the declared report parameter accepts JSON null."""
-    origin = get_origin(annotation)
-    return annotation is type(None) or (
-        origin in (typing.Union, types.UnionType) and type(None) in get_args(annotation)
-    )
-
-
-def _parse_parameter_value(raw: str, annotation: object) -> JsonValue:
-    """Apply the report parameter's declared type to one CLI string value."""
-    adapter = TypeAdapter(Any if annotation is None else annotation)
-    try:
-        if _annotation_accepts_container(annotation):
-            parsed = json.loads(raw)
-            return cast(JsonValue, adapter.validate_python(parsed))
-        if raw == "null" and _annotation_accepts_none(annotation):
-            return cast(JsonValue, adapter.validate_python(None))
-        return cast(JsonValue, adapter.validate_strings(raw))
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise typer.BadParameter(
-            f"report parameter value {raw!r} does not match {annotation}",
-            param_hint="--param",
-        ) from exc
-
-
-def _parse_report_parameters(
-    report_id: str,
-    raw_parameters: list[str] | None,
-) -> dict[str, JsonValue]:
-    """Parse repeated key=value options through catalog parameter annotations."""
-    from moneybin.reports._framework.catalog import (  # noqa: PLC0415
-        ServiceReportSpec,
-        get_report_catalog,
-    )
-
-    catalog = get_report_catalog()
-    spec = catalog.resolve(report_id)
-    declared = spec.parameters if isinstance(spec, ServiceReportSpec) else spec.params
-    annotations = {parameter.name: parameter.annotation for parameter in declared}
-    supplied: dict[str, JsonValue] = {}
-    for raw in raw_parameters or []:
-        name, separator, value = raw.partition("=")
-        if separator != "=" or not name:
-            raise typer.BadParameter(
-                "report parameters must use key=value",
-                param_hint="--param",
-            )
-        if name in supplied:
-            raise typer.BadParameter(
-                f"report parameter {name!r} was supplied more than once",
-                param_hint="--param",
-            )
-        annotation = annotations.get(name, str)
-        supplied[name] = _parse_parameter_value(value, annotation)
-
-    _, validated = catalog.resolve_request(
-        report_id=report_id,
-        parameters=supplied,
-        limit=0,
-    )
-    return validated
 
 
 def _validate_delivery_options(
@@ -412,11 +337,22 @@ def export_report(
     output: OutputFormat = output_option,
 ) -> None:
     """Export one catalog report and typed parameter binding."""
+    from moneybin.cli.report_params import parse_report_parameters  # noqa: PLC0415
+    from moneybin.reports._framework.catalog import (  # noqa: PLC0415
+        open_report_catalog,
+    )
+
     with handle_cli_errors(
         cli_actor="export_report",
         payload_type=ExportReceiptOutput,
     ):
-        parameters = _parse_report_parameters(report_id, parameter)
+        # The catalog needs the database to span the user tier, so a saved report
+        # is exportable by the same call a built-in is. The export itself opens
+        # its own connection; each is short-lived by design. Binding a *built-in*
+        # needs no database at all, so a missing one must not turn a mistyped
+        # report id into advice to run `db init`.
+        with open_report_catalog() as (catalog, _):
+            parameters = parse_report_parameters(catalog, report_id, parameter)
     _run_export(
         subject_kind="report",
         report_id=report_id,

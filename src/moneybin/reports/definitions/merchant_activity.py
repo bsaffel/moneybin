@@ -5,6 +5,7 @@ from __future__ import annotations
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
@@ -144,4 +145,4 @@ def merchant_activity(
         WHERE rank_in_currency <= ?
         ORDER BY rank_in_currency, currency_code
     """  # noqa: S608  # TableRef + MERCHANTS_SORTS allowlists
-    return ReportQuery(sql, [top])
+    return ReportQuery(sql, [Binding(top, DataClass.AGGREGATE)])

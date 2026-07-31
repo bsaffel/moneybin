@@ -42,11 +42,13 @@ coverage catalog.
 
 As implemented in July 2026, the map contains:
 
-- 48 non-exempt capability rows covering all 49 standard MCP tools.
-- 178 implemented Typer paths, including hidden compatibility aliases, with
+- 49 non-exempt capability rows covering all 49 standard MCP tools. `reports`
+  serves two capabilities — the catalog read and report execution — under one
+  tool identity.
+- 185 implemented Typer paths, including hidden compatibility aliases, with
   exact equality against the live command tree after explicit unimplemented
   stubs are removed.
-- 7 policy-exempt rows.
+- 10 policy-exempt rows.
 - 9 reserved Typer paths that are still explicit `_not_implemented` stubs.
 
 The stub list is executable, not documentary: every excluded path is invoked
@@ -59,7 +61,9 @@ is added.
 | Family | Standard MCP boundary | Representative CLI paths | Outcome |
 |---|---|---|---|
 | System and audit | `system_status`, `system_audit`, `system_audit_undo` | `system status`, `system audit *`, `transactions matches undo` | Same health state, audit history, and reversible operation |
-| Reports | `reports` | `reports networth`, `reports spending`, and other registered reports | Same catalog runner, rows, period, provenance, and truncation |
+| Reports | `reports` | `reports list`, `reports run`, `reports networth`, `reports spending`, and other registered reports | Same catalog runner, rows, period, provenance, and truncation across the built-in, extension, and user tiers |
+| Saved-report lifecycle | none — `admission-pending` | `reports create`, `reports set`, `reports delete`, `reports reclassify` | Same audited `app.user_reports` row, derived class map, and human-confirmed downgrade |
+| Report verification | none — `admission-pending` | `reports explain` | Same query in both provenance forms, per-column class provenance, lineage, drift freshness, and graduation eligibility for every tier |
 | Export delivery | `export_run` | `export bundle`, `export report` | Same `ExportService.run` subject, named destination, redaction mode, format, row counts, checksums, receipt identity, and safe failures |
 | Export destination target state | `exports_set`; readiness through `system_status(sections=["exports"])` | `export destination list`, `export destination add local`, `export destination add sheets`, `export destination remove` | Same `ExportService`/repository-owned named destination readiness and typed local or Sheets state |
 | Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert` | `accounts list/get/summary/set`, `accounts balance *` | Same account projections, settings, observations, and assertions |
@@ -111,6 +115,15 @@ Only these categories are allowed:
 | `operator-territory` | Local database/process/server/profile/bootstrap or physical filesystem control |
 | `granular-operator-debug` | Surgical pipeline, metrics, log, synthetic-data, or local redaction inspection |
 | `protocol-only` | Machine-to-machine payload mechanics with no useful human command |
+| `admission-pending` | The capability is a legitimate MCP candidate whose bounded-registry admission record is not yet complete, so it has no public tool name |
+
+The first four are permanent policy exceptions: nothing about them is expected
+to change. `admission-pending` is the one temporary category, and it says so —
+the capability ships on the CLI while the registry-budget record in
+[`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md) is outstanding. It
+exists because forcing such a row into `operator-territory` would record a
+reason that is not the real one, in an artifact CI checks. A row carrying it
+must name the spec requirement that owes the admission record.
 
 Every exempt row still names its owning service callable and observable
 outcome. OAuth or browser interaction alone is not an exemption: an MCP agent
