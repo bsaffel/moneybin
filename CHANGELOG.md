@@ -384,6 +384,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **A replacement card no longer becomes a second account without asking.** A
+  reissued card changes its last four digits by definition, so the
+  institution+last-four match cannot fire, and on the PDF path the account name
+  is the filename, so the name match misses too — the replacement minted a fresh
+  account with no confirm and no review entry, splitting one card's history
+  across two accounts. A same-institution account whose last four differs now
+  surfaces as a low-confidence review proposal, never an automatic merge.
 - **An OFX file you renamed or moved is no longer re-imported as a new one.**
   Duplicate detection compared the file's *path*, so a second download saved as
   `statement (1).qfx`, or a statement filed out of Downloads before importing,
