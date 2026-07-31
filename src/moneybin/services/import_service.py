@@ -63,6 +63,7 @@ from moneybin.services.import_confirmation import (
     SignConventionProposal,
 )
 from moneybin.services.refresh import refresh as _refresh
+from moneybin.utils.file import file_sha256
 
 logger = logging.getLogger(__name__)
 
@@ -917,23 +918,6 @@ class ImportService:
         result = ImportResult(file_path=str(canonical_path), file_type="ofx")
         _t0 = time.monotonic()
 
-        # Re-import detection
-        if not force:
-            existing = import_log.find_existing_import(self._db, str(canonical_path))
-            if existing:
-                existing_id, existing_status = existing
-                if existing_status == "importing":
-                    raise ValueError(
-                        f"A prior import of this file is in-progress or was "
-                        f"interrupted (import_id {existing_id[:8]}..., "
-                        f"status=importing). If the previous run crashed, pass "
-                        f"--force to start a new batch."
-                    )
-                raise ValueError(
-                    f"File already imported (import_id {existing_id[:8]}...). "
-                    f"Use --force to re-import."
-                )
-
         # Parse once for institution resolution; the extractor parses again
         # internally. These files are small — the duplicate parse is fine and
         # avoids leaking a parser-internal type into the extractor signature.
@@ -958,6 +942,32 @@ class ImportService:
                 f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: "
                 f"{canonical_path.name}"
             )
+
+        # Re-import detection: content first, path as the fallback for batches
+        # imported before file_sha256 existed. Placed here rather than at the
+        # top of the method for two reasons — the read above has already proven
+        # the file readable (so hashing can't raise a denial the guarded read
+        # was supposed to classify), and institution resolution below may
+        # *prompt*, which a file we're about to reject should never trigger.
+        digest = file_sha256(canonical_path)
+        if not force:
+            existing = import_log.find_existing_import(
+                self._db, str(canonical_path), file_sha256=digest
+            )
+            if existing:
+                existing_id, existing_status = existing
+                if existing_status == "importing":
+                    raise ValueError(
+                        f"A prior import of this file is in-progress or was "
+                        f"interrupted (import_id {existing_id[:8]}..., "
+                        f"status=importing). If the previous run crashed, pass "
+                        f"--force to start a new batch."
+                    )
+                raise ValueError(
+                    f"File already imported (import_id {existing_id[:8]}...). "
+                    f"Use --force to re-import."
+                )
+
         content = preprocess_ofx_content(content)
         try:
             parsed_ofx: Any = ofxparse.OfxParser.parse(  # type: ignore[reportUnknownMemberType]
@@ -1001,6 +1011,7 @@ class ImportService:
             source_type="ofx",
             source_origin=source_origin,
             account_names=account_ids,
+            file_sha256=digest,
         )
         result.import_id = import_id
 
@@ -1980,6 +1991,7 @@ class ImportService:
             account_names=sorted(acct_id_to_name.values()),
             format_name=matched_format.name if matched_format else None,
             format_source=format_source,
+            file_sha256=file_sha256(file_path),
         )
         result.import_id = import_id
 
@@ -2548,6 +2560,7 @@ class ImportService:
             source_type="pdf",
             source_origin=resolved_alias,
             account_names=[resolved_alias],
+            file_sha256=file_sha256(canonical),
         )
         result.import_id = import_id
 
@@ -3164,6 +3177,7 @@ class ImportService:
             source_type="pdf",
             source_origin=resolved_alias,
             account_names=[resolved_alias],
+            file_sha256=file_sha256(canonical),
         )
         result.import_id = import_id
 

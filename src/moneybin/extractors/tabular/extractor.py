@@ -105,6 +105,7 @@ class TabularExtractor:
         account_names: list[str],
         format_name: str | None = None,
         format_source: str | None = None,
+        file_sha256: str | None = None,
     ) -> str:
         """Create an import batch record. Delegates to import_log module."""
         return import_log.begin_import(
@@ -115,6 +116,7 @@ class TabularExtractor:
             account_names=account_names,
             format_name=format_name,
             format_source=format_source,
+            file_sha256=file_sha256,
         )
 
     def load_transactions(self, df: pl.DataFrame) -> int:

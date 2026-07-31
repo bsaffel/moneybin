@@ -153,6 +153,30 @@ class TestImportOFXBatchLifecycle:
         with pytest.raises(ValueError, match="already imported"):
             service.import_file(fixture, refresh=False)
 
+    def test_reimport_of_a_renamed_copy_raises(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Same bytes, new path — the browser's "(1)" copy is not a new document.
+
+        Path-only matching let this through as a fresh batch, and the import
+        then re-asked which account the file belongs to. A different answer
+        re-keys every row (transaction ids embed ``account_id``), so both
+        answers survive dedup and the statement double-counts.
+        """
+        fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
+        if not fixture.exists():
+            pytest.fail(
+                "Sample OFX fixture missing at tests/fixtures/ofx/sample_minimal.ofx"
+            )
+        renamed = tmp_path / "sample_minimal (1).ofx"
+        renamed.write_bytes(fixture.read_bytes())
+
+        service = ImportService(db)
+        service.import_file(fixture, refresh=False)
+
+        with pytest.raises(ValueError, match="already imported"):
+            service.import_file(renamed, refresh=False)
+
     def test_reimport_with_force_creates_new_batch(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
         if not fixture.exists():

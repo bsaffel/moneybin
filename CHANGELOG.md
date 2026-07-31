@@ -384,6 +384,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **An OFX file you renamed or moved is no longer re-imported as a new one.**
+  Duplicate detection compared the file's *path*, so a second download saved as
+  `statement (1).qfx`, or a statement filed out of Downloads before importing,
+  read as a brand-new file. Every import batch — OFX, CSV/Excel, and PDF — now
+  records a SHA-256 of the file's bytes, and OFX duplicate detection matches on
+  content first, path second. Batches imported before this change keep matching
+  on path alone, because their source file may be long gone. A file whose bytes
+  changed is still a new import: this recognizes the same document, not the same
+  name. CSV/Excel and PDF have no duplicate check at either level — `--force` is
+  OFX-only — so re-importing one still creates a second batch; row-level dedup,
+  not the import log, is what keeps the totals right there.
 - **A card imported from both a PDF statement and a bank file no longer loads
   twice (#371).** PDF import built its account key as a string and skipped the
   identity resolver every other source uses, so the same card arriving as a PDF

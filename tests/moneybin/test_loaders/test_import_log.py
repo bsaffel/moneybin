@@ -141,6 +141,100 @@ class TestFindExistingImport:
         assert result is None
 
 
+class TestFindExistingImportByContent:
+    """A moved, renamed, or re-downloaded copy is still the same document.
+
+    Path-only matching misses the ordinary cases: the browser saving a second
+    download as ``statement (1).pdf``, or the user filing the statement out of
+    Downloads before importing. Both land as a fresh batch, and the import then
+    re-asks which account the statement belongs to — a second decision point on
+    a document already answered, where a different answer re-keys every row.
+    """
+
+    _DIGEST = "a" * 64
+    _OTHER_DIGEST = "b" * 64
+
+    def test_matches_a_renamed_copy_by_content(self, db: Database) -> None:
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/statement.pdf",  # noqa: S108  # test fixture path
+            source_type="pdf",
+            source_origin="chase",
+            account_names=["sapphire"],
+            file_sha256=self._DIGEST,
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Statements/2026-06 chase.pdf",  # noqa: S108  # test fixture path
+            file_sha256=self._DIGEST,
+        )
+        assert result == (import_id, "complete")
+
+    def test_does_not_match_different_content_at_a_new_path(self, db: Database) -> None:
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/june.pdf",  # noqa: S108  # test fixture path
+            source_type="pdf",
+            source_origin="chase",
+            account_names=["sapphire"],
+            file_sha256=self._DIGEST,
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/july.pdf",  # noqa: S108  # test fixture path
+            file_sha256=self._OTHER_DIGEST,
+        )
+        assert result is None
+
+    def test_a_real_digest_never_matches_a_row_imported_before_the_column(
+        self, db: Database
+    ) -> None:
+        """Batches predating file_sha256 carry NULL — not a wildcard."""
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/legacy.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/legacy-copy.ofx",  # noqa: S108  # test fixture path
+            file_sha256=self._DIGEST,
+        )
+        assert result is None
+
+    def test_an_unknown_digest_does_not_collapse_two_legacy_rows(
+        self, db: Database
+    ) -> None:
+        """NULL == NULL must not match: a caller with no digest matches on path only."""
+        import_id = import_log.begin_import(
+            db,
+            source_file="/tmp/Downloads/legacy.ofx",  # noqa: S108  # test fixture path
+            source_type="ofx",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=1, rows_imported=1
+        )
+        result = import_log.find_existing_import(
+            db,
+            "/tmp/Downloads/unrelated.ofx",  # noqa: S108  # test fixture path
+            file_sha256=None,
+        )
+        assert result is None
+
+
 class TestBeginImportValidatesSourceType:
     """begin_import raises ValueError for unrecognized source_type values."""
 
