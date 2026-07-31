@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from collections.abc import Callable, Generator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, cast
@@ -10,7 +11,7 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
-from moneybin.database import Database
+from moneybin.database import Database, DatabaseLockError
 from moneybin.errors import UserError
 from moneybin.exports.models import (
     ExportCommand,
@@ -109,8 +110,22 @@ def _command_from_request(request: ExportRequest) -> ExportCommand:
 
 
 @contextmanager
-def _database_context(db: Database):
+def _database_context(db: Database) -> Generator[Database]:
     yield db
+
+
+def _database_factory(db: Database) -> Callable[..., AbstractContextManager[Database]]:
+    """Hand each ``get_database()`` call its own one-shot context.
+
+    ``run`` opens the read-only snapshot lease and then, after publication, a
+    separate short write lease to record the receipt. A single shared
+    ``_GeneratorContextManager`` cannot be entered twice.
+    """
+
+    def _open(*_args: object, **_kwargs: object) -> AbstractContextManager[Database]:
+        return _database_context(db)
+
+    return _open
 
 
 def _histogram_count(metric: Any) -> float:
@@ -143,6 +158,15 @@ def test_export_metrics_are_registered_with_bounded_labels() -> None:
         "format",
         "destination_kind",
         "redaction_mode",
+    )
+    receipt_failures = getattr(metrics_registry, "EXPORT_RECEIPT_FAILURES_TOTAL", None)
+    assert receipt_failures is not None
+    # `reason` carries the exception *type* name, never its message: a lock or
+    # attach failure's message embeds the database path, and an unbounded
+    # label value is a cardinality bomb as well as a disclosure.
+    assert receipt_failures._labelnames == (  # type: ignore[reportPrivateUsage]
+        "destination_kind",
+        "reason",
     )
 
 
@@ -187,8 +211,394 @@ def test_run_releases_read_only_snapshot_before_local_publication(
     ):
         result = ExportService.run(_command(), actor="test")
 
-    get_database.assert_called_once_with(read_only=True)
+    # Two distinct leases, in this order: the read-only snapshot lease (closed
+    # before publication — `publish` above asserts `active is False`), then a
+    # separate write lease for the receipt. Asserting the sequence rather than
+    # a single call keeps the real property — no writer lock is ever held
+    # across filesystem I/O — falsifiable if the receipt write moves inside.
+    # The write lease keeps the default lock wait: what stops it outliving the
+    # caller is the publication barrier around it, not a shortened wait — see
+    # test_run_skips_the_receipt_write_when_the_request_already_ended.
+    assert [opened.kwargs for opened in get_database.call_args_list] == [
+        {"read_only": True},
+        {"read_only": False},
+    ]
     assert result == receipt
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_records_a_discoverable_receipt_in_the_audit_log(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """A completed export leaves a receipt a later turn or session can find.
+
+    `export_run`'s description promises "recovery uses the returned artifact or
+    Sheets receipt", but the receipt was returned exactly once and persisted
+    nowhere, so no query path to it existed afterwards (testing.md X.6).
+    """
+    from moneybin.services.audit_service import AuditService
+
+    context = get_database.return_value
+    context.__enter__.return_value = db
+    context.__exit__.return_value = None
+
+    destination = _destination("local")
+    receipt = replace(
+        _receipt(destination),
+        export_id="exp-abc123",
+        artifact_path=Path("/exports/archive/bundle.csv"),
+        row_counts={"accounts": 3, "transactions": 42},
+        checksums={"accounts": "sha-a", "transactions": "sha-b"},
+    )
+    publisher_type.return_value.publish.return_value = receipt
+
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        ExportService.run(_command(), actor="mcp:export_run")
+
+    events = AuditService(db).list_events(action_pattern="export.run")
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.actor == "mcp:export_run"
+    assert event.target_id == "exp-abc123"
+    recorded = event.context_json or {}
+    assert recorded["artifact_name"] == "bundle.csv"
+    # The name a destination is known by is mutable; its id is not. Both are
+    # recorded so the row still identifies the target after a rename.
+    assert recorded["destination_id"] == "local-1"
+    # export.md R9 forbids persisting full local paths: a real export
+    # directory is ~/Documents/MoneyBin/<profile>/exports and embeds the OS
+    # username. Asserted across the whole context, not just the one key, so
+    # the guard survives a future field carrying the directory back in.
+    assert "/exports/archive" not in str(recorded)
+    assert recorded["row_counts"] == {"accounts": 3, "transactions": 42}
+    assert recorded["checksums"] == {"accounts": "sha-a", "transactions": "sha-b"}
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_records_the_report_subject_without_its_parameter_values(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """A report receipt says *which report* ran, and nothing about its binding.
+
+    ``app.audit_log`` is durable and re-served by ``system_audit`` long after
+    the one-time artifact is gone, so no parameter value — and no derivative of
+    one — belongs in it. An earlier revision hashed the binding to tell two runs
+    apart; it was removed rather than keyed. For a redacted export the hash
+    covered already-masked values, so two bindings sharing a mask collapsed to
+    one fingerprint; for an unredacted one it was an unkeyed digest of a
+    low-entropy binding, which is a verifier for guessing it. What distinguishes
+    two runs instead is already here and stronger: ``export_id`` is unique per
+    run, and ``checksums`` differ whenever the exported content does.
+    """
+    from moneybin.services.audit_service import AuditService
+
+    get_database.side_effect = _database_factory(db)
+    destination = _destination("local")
+    receipt = replace(
+        _receipt(destination),
+        export_id="exp-report",
+        subject={
+            "kind": "report",
+            "report_id": "spend_by_category",
+            "parameters": {"start": "2026-01-01", "account_id": "acct-77"},
+        },
+    )
+    publisher_type.return_value.publish.return_value = receipt
+
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        ExportService.run(_command(), actor="mcp:export_run")
+
+    recorded = AuditService(db).list_events(action_pattern="export.run")[0].context_json
+    assert recorded is not None
+    assert recorded["subject_kind"] == "report"
+    assert recorded["report_id"] == "spend_by_category"
+    assert "acct-77" not in str(recorded)
+    assert "2026-01-01" not in str(recorded)
+    # No derivative of the binding either. Asserted by key rather than by
+    # scanning for a digest, so re-adding the field fails here even when its
+    # hash happens to contain no substring the checks above would catch.
+    assert "parameters_fingerprint" not in recorded
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_export_receipt_refuses_undo_with_a_legible_target(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """Refusing to undo a published export must say *what* it refuses.
+
+    A published artifact can never be withdrawn, so the refusal itself is
+    correct and load-bearing. But ``UndoService`` builds that message from the
+    row's ``(target_schema, target_table)``, and a null pair renders as the
+    bare ``"."`` — ``_row_targets`` coalesces each null to ``""``. Every other
+    outside-``app.*`` audit row (``import_service``'s ``("raw", "pdf_seeds")``)
+    keeps a real pair precisely so this message stays readable.
+    """
+    from moneybin.services.audit_service import AuditService
+    from moneybin.services.undo_service import UndoService
+
+    get_database.side_effect = _database_factory(db)
+    destination = _destination("local")
+    receipt = replace(_receipt(destination), export_id="exp-undo")
+    publisher_type.return_value.publish.return_value = receipt
+
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        ExportService.run(_command(), actor="mcp:export_run")
+
+    event = AuditService(db).list_events(action_pattern="export.run")[0]
+    # Drive the real refusal rather than asserting on the stored tuple: the
+    # garbling happens in UndoService's message construction, so a test that
+    # only read the row back would pass with the bug in place.
+    with pytest.raises(UserError) as refusal:
+        UndoService(db).undo(event.operation_id, actor="mcp:system_audit_undo")
+
+    assert "export.run" in str(refusal.value)
+    # The exact garbled rendering a null pair produces, pinned so a revert to
+    # `(None, None, ...)` fails here rather than only weakening the message.
+    assert "touched .," not in str(refusal.value)
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_skips_the_receipt_write_when_the_request_already_ended(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """A receipt must never commit after its caller was told the tool timed out.
+
+    The write opens *after* publication, so unlike every other write in a tool
+    body it cannot rely on ``tool_timeout_seconds >= the write-lock wait`` to
+    prove it stopped queuing in time — publication's own duration is unbounded.
+    The publication barrier is what bounds it: entering an already-cancelled
+    request raises instead of writing, and entering a live one makes the
+    timeout handler wait rather than return while the write is still running.
+    """
+    from moneybin.services.audit_service import AuditService
+    from moneybin.services.request_lifetime import (
+        RequestLifetime,
+        request_lifetime_scope,
+    )
+
+    # A factory, not one shared context: a single _GeneratorContextManager
+    # cannot be entered twice, so reusing one would make this pass on the
+    # re-entry error instead of on the barrier.
+    get_database.side_effect = _database_factory(db)
+    lifetime = RequestLifetime()
+
+    destination = _destination("local")
+    receipt = replace(_receipt(destination), export_id="exp-cancelled")
+
+    def publish(*_args: object, **_kwargs: object) -> ExportReceipt:
+        # The window this guards: the artifact is on disk, and the tool
+        # deadline fires before the receipt write opens. Cancelling here is
+        # what the decorator's timeout handler does.
+        lifetime.cancel()
+        return receipt
+
+    publisher_type.return_value.publish.side_effect = publish
+
+    with (
+        request_lifetime_scope(lifetime),
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        result = ExportService.run(_command(), actor="mcp:export_run")
+
+    assert result == receipt
+    assert AuditService(db).list_events(action_pattern="export.run") == []
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_binds_the_receipt_write_to_an_explicit_publication_lifetime(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """An explicit ``publication_lifetime`` must bound the receipt write too.
+
+    ``run`` resolves ``publication_lifetime or current_request_lifetime()`` once
+    and hands that to both publish steps. A receipt write that re-derived the
+    ambient lifetime instead would silently get ``None`` here — no ambient scope
+    is installed — and a no-op barrier, so the write this test cancels would
+    commit anyway. The parameter exists for callers that own their own
+    lifetime; the barrier is worth nothing to them if only two of the three
+    steps honour it.
+    """
+    from moneybin.services.audit_service import AuditService
+    from moneybin.services.request_lifetime import RequestLifetime
+
+    get_database.side_effect = _database_factory(db)
+    lifetime = RequestLifetime()
+
+    destination = _destination("local")
+    receipt = replace(_receipt(destination), export_id="exp-explicit-lifetime")
+
+    def publish(*_args: object, **_kwargs: object) -> ExportReceipt:
+        lifetime.cancel()
+        return receipt
+
+    publisher_type.return_value.publish.side_effect = publish
+
+    # Deliberately no request_lifetime_scope: the ambient lifetime stays None so
+    # only the explicit argument can carry the cancellation through.
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        result = ExportService.run(
+            _command(), actor="mcp:export_run", publication_lifetime=lifetime
+        )
+
+    assert result == receipt
+    assert AuditService(db).list_events(action_pattern="export.run") == []
+
+
+@patch("moneybin.exports.sheets.SheetsExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_records_a_sheets_receipt_with_its_workbook_identity(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """Sheets is the destination the audit row is the *only* recovery path for.
+
+    A local export leaves an artifact on disk to find; a Sheets export leaves
+    nothing outside the workbook, which is why the missing receipt was worth
+    fixing at all. The write path has no kind-specific branching, so this
+    asserts the end state rather than a separate mechanism: the row carries the
+    workbook identity and no local-artifact names.
+    """
+    from moneybin.services.audit_service import AuditService
+
+    get_database.side_effect = _database_factory(db)
+
+    destination = _destination("sheets")
+    receipt = replace(
+        _receipt(destination),
+        export_id="exp-sheets-1",
+        sheets_identity="spreadsheet-1/MB_bundle",
+    )
+    publisher_type.return_value.publish.return_value = receipt
+
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+    ):
+        ExportService.run(_command(destination_kind="sheets"), actor="mcp:export_run")
+
+    events = AuditService(db).list_events(action_pattern="export.run")
+
+    assert len(events) == 1
+    recorded = events[0].context_json or {}
+    assert events[0].target_id == "exp-sheets-1"
+    assert recorded["destination_kind"] == "sheets"
+    assert recorded["sheets_identity"] == "spreadsheet-1/MB_bundle"
+    assert recorded["artifact_name"] is None
+    assert recorded["compressed_artifact_name"] is None
+
+
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_returns_the_receipt_when_the_audit_write_cannot_open(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failed receipt write must not turn a published export into an error.
+
+    The receipt write opens its own connection *after* the artifact is already
+    on disk (or in Sheets), so it can fail on its own — a writer still holding
+    the lock past ``get_database``'s write-lock wait, or an attach error —
+    while the export it describes is already irreversible. (The mock below
+    fails on the first attempt; production retries to that deadline first.)
+    Propagating it would report failure for an irreversible success and lose
+    the caller's only copy of the receipt, inviting a re-run that publishes a
+    second artifact. Fail loudly in the log, not in the return value.
+
+    What reaches the log is bounded too: a lock or attach failure carries the
+    database path in its message, and ``SanitizedLogFormatter`` masks amounts
+    and account numbers, not filesystem paths.
+    """
+    failures = metrics_registry.EXPORT_RECEIPT_FAILURES_TOTAL.labels(
+        destination_kind="local", reason="DatabaseLockError"
+    )
+    before = failures._value.get()  # type: ignore[reportPrivateUsage]
+    read_lease = _database_context(db)
+    locked = DatabaseLockError("/Users/someone/Documents/MoneyBin/main.duckdb held")
+    get_database.side_effect = [read_lease, locked]
+
+    destination = _destination("local")
+    receipt = replace(_receipt(destination), export_id="exp-locked")
+    publisher_type.return_value.publish.return_value = receipt
+
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+        caplog.at_level("ERROR"),
+    ):
+        result = ExportService.run(_command(), actor="mcp:export_run")
+
+    assert result == receipt
+    assert "exp-locked" in caplog.text
+    assert "DatabaseLockError" in caplog.text
+    # The type and origin are useful; the message is not worth the path it
+    # carries. Asserting the absence keeps a later switch back to
+    # logger.exception (which appends both message and traceback) failing.
+    assert "/Users/someone" not in caplog.text
+    # A swallowed failure must leave a countable trace. Without this the only
+    # way to learn how often receipts silently fail to record is log-scraping,
+    # and the export itself still reports outcome="success" — correctly, since
+    # the artifact really was published.
+    assert failures._value.get() == before + 1  # type: ignore[reportPrivateUsage]
 
 
 @patch("moneybin.config.get_settings")
@@ -268,7 +678,7 @@ def test_run_records_failed_duration_with_fixed_invalid_label_values(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
@@ -306,7 +716,7 @@ def test_run_records_success_outcome(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
@@ -341,7 +751,7 @@ def test_run_prepares_and_publishes_one_local_bundle(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
@@ -395,7 +805,7 @@ def test_run_prepares_and_publishes_one_sheets_report(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
@@ -477,7 +887,7 @@ def test_run_rejects_impossible_combinations_before_preparing_or_writing(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
@@ -633,7 +1043,7 @@ def test_run_rejects_file_local_destination_before_preparing_or_writing(
     with (
         patch(
             "moneybin.database.get_database",
-            return_value=_database_context(db),
+            side_effect=_database_factory(db),
         ),
         patch.object(
             ExportService,
