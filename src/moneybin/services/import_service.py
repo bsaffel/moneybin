@@ -410,6 +410,45 @@ class ReviewedTabularPlan:
         return TypeAdapter(cls).validate_python(value)
 
 
+def _validate_date_format_override(
+    df: Any,
+    field_mapping: dict[str, str],
+    date_format_override: str | None,
+) -> None:
+    """Refuse a caller date format that cannot read the mapped date column.
+
+    An unreadable strptime string is not a slow failure: the transform drops
+    every row it cannot parse and the import reports success with
+    rows_loaded=0. Called from two points because it must run *before* any
+    success metric on whichever branch reaches it — the first-contact branch
+    records an accepted/overridden confirmation before the branches converge,
+    and on the CLI path `observations` is None, so that counter applies
+    immediately and no rollback undoes it.
+
+    Reads the WHOLE column, not collect_samples' 20-row head: a sample answers
+    "what does this look like", this answers "does this format read the
+    column", and a dirty prefix must not refuse a file whose remaining rows
+    parse.
+    """
+    if date_format_override is None:
+        return
+    import polars as pl
+
+    from moneybin.extractors.tabular.date_detection import format_parses
+
+    date_column = field_mapping.get("transaction_date")
+    if date_column is None or date_column not in df.columns:
+        return
+    if format_parses(df[date_column].cast(pl.Utf8).to_list(), date_format_override):
+        return
+    raise UserError(
+        f"Date format {date_format_override!r} could not read the "
+        f"{date_column!r} column. Importing with it would drop most rows. "
+        "Check the format against the column's own values.",
+        code=error_codes.IMPORT_INVALID_DATE_FORMAT,
+    )
+
+
 def _validate_explicit_tabular_sign_shape(
     field_mapping: dict[str, str],
     sign: SignConventionType,
@@ -1634,6 +1673,12 @@ class ImportService:
             # the replace below applies. Whether it can actually *read* the
             # column is checked once down there, where every branch honours it;
             # a second check here would be a second gate to keep in step.
+            # Ahead of resolve_or_confirm, which records an accepted or
+            # overridden confirmation below — a counter the CLI path applies
+            # immediately, so a later refusal cannot take it back.
+            _validate_date_format_override(
+                df, mapping_result.field_mapping, date_format_override
+            )
             date_format_effective = date_format_override or mapping_result.date_format
             if date_format_effective is None:
                 # A date column nothing could parse makes the plan unloadable at
@@ -1760,6 +1805,10 @@ class ImportService:
                     f"Proceeding with '{resolved.sign_convention}' — "
                     "use --sign to override if expense amounts look wrong."
                 )
+
+        # Covers the branches that reach here without one — the first-contact
+        # branch validates earlier, before it records a confirmation outcome.
+        _validate_date_format_override(df, resolved.field_mapping, date_format_override)
 
         # All three branches converge here, which is the only place this gate
         # covers every one of them — and it sits ABOVE the success metrics
@@ -1888,27 +1937,6 @@ class ImportService:
                 f"Valid values: {list(get_args(NumberFormatType))}.",
                 code=error_codes.IMPORT_INVALID_NUMBER_FORMAT,
             )
-        # Every branch above reaches the same `date_format=date_format_override`
-        # replace below, so this is the one place that sees the override applied
-        # — a saved or header-matched format lands here as surely as a fresh
-        # detection. An unreadable strptime string is not a slow failure: the
-        # transform drops every row it cannot parse and the import reports
-        # success with rows_loaded=0. Hold it to the bar a detected candidate
-        # clears rather than trusting that the caller typed it correctly.
-        if date_format_override is not None:
-            from moneybin.extractors.tabular.column_mapper import collect_samples
-            from moneybin.extractors.tabular.date_detection import format_parses
-
-            date_column = resolved.field_mapping.get("transaction_date")
-            if date_column in df.columns and not format_parses(
-                collect_samples(df, date_column), date_format_override
-            ):
-                raise UserError(
-                    f"Date format {date_format_override!r} could not read the "
-                    f"{date_column!r} column. Importing with it would drop every "
-                    "row. Check the format against the column's own values.",
-                    code=error_codes.IMPORT_INVALID_DATE_FORMAT,
-                )
         if sign:
             _validate_explicit_tabular_sign_shape(
                 resolved.field_mapping,

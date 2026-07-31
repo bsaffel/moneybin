@@ -757,6 +757,95 @@ class TestTabularConfirmationFlow:
             )
         assert result.import_id is not None
 
+    def test_a_dirty_prefix_does_not_refuse_a_file_the_format_reads(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The gate must read the column, not collect_samples' 20-row head.
+
+        A sample answers "what does this look like"; this gate answers "does
+        this format read the column". Validating the head made a run of
+        malformed leading values refuse a file whose remaining rows parse
+        fine — and the transform would have imported them, counting the bad
+        ones in rows_rejected.
+        """
+        from moneybin.services.import_service import ImportService
+
+        rows = ["Date,Description,Amount"]
+        rows += [f"not-a-date,Row{i},-1.00" for i in range(11)]
+        rows += [f"2026010{i % 9 + 1},Row{i},-2.00" for i in range(200)]
+        csv = tmp_path / "dirty_prefix.csv"
+        csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=undated,
+        ):
+            result = ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                date_format="%Y%m%d",
+            )
+
+        assert result.import_id is not None
+
+    def test_a_refused_date_override_records_no_success_metrics(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A refusal must not leave a confirmation on the dashboards.
+
+        The gate sat below the success counters, and on the CLI path
+        `observations` is None — so those mutations apply immediately and no
+        rollback undoes them. A refused import reported an accepted or
+        overridden confirmation that never loaded anything.
+        """
+        from moneybin.errors import UserError
+        from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "compact.csv"
+        csv.write_text(
+            "Date,Description,Amount\n20260105,Coffee,-4.50\n20260212,Rent,-9.00\n",
+            encoding="utf-8",
+        )
+        undated = _make_mapping_result(
+            score=0.75, confidence="medium", date_format=None
+        )
+        before = {
+            outcome: IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="tabular", tier="medium", outcome=outcome
+            )._value.get()  # type: ignore[reportPrivateUsage]
+            for outcome in ("accepted", "overridden")
+        }
+
+        with (
+            patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=undated,
+            ),
+            pytest.raises(UserError),
+        ):
+            # CLI shape: no observations buffer, so counters apply immediately.
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                date_format="%d/%m/%Y",
+            )
+
+        for outcome, prior in before.items():
+            assert (
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="tabular", tier="medium", outcome=outcome
+                )._value.get()  # type: ignore[reportPrivateUsage]
+                == prior
+            ), outcome
+
     def test_a_date_format_override_that_cannot_read_the_column_is_refused(
         self, db: Database, tmp_path: Path
     ) -> None:
