@@ -21,7 +21,7 @@ mutation shape for the same reason.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -121,6 +121,7 @@ class SecurityPriceRepo(BaseRepo):
         close: Decimal,
         note: str | None,
         actor: str,
+        created_at: datetime | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent:
@@ -131,20 +132,29 @@ class SecurityPriceRepo(BaseRepo):
         a correction does not erase when the mark was first authored;
         ``updated_at`` refreshes via ``NOW()`` (DuckDB parses
         ``CURRENT_TIMESTAMP`` as an identifier inside ``DO UPDATE``).
+
+        ``created_at`` is for RELOCATION ONLY — a caller moving an existing mark
+        between securities, which the merge does as delete-then-set. That pair
+        never reaches the ``ON CONFLICT`` branch above, so the guarantee in the
+        previous paragraph would not otherwise cover it, and the moved row would
+        claim to have been authored at merge time while the delete's ``before``
+        payload still records when the user actually typed it. Leave it ``None``
+        when authoring a mark: an ordinary ``set`` is either a first write or a
+        correction, and both take the row's real times.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row(security_id, price_date, quote_currency)
             self._db.execute(
                 f"""
                 INSERT INTO {SECURITY_PRICE_OVERRIDES.full_name}
-                    (security_id, price_date, quote_currency, close, note)
-                VALUES (?, ?, ?, ?, ?)
+                    (security_id, price_date, quote_currency, close, note, created_at)
+                VALUES (?, ?, ?, ?, ?, COALESCE(?::TIMESTAMP, NOW()))
                 ON CONFLICT (security_id, price_date, quote_currency) DO UPDATE SET
                     close = excluded.close,
                     note = excluded.note,
                     updated_at = NOW()
                 """,  # noqa: S608  # TableRef + parameterized values
-                [security_id, price_date, quote_currency, close, note],
+                [security_id, price_date, quote_currency, close, note, created_at],
             )
             after = self._fetch_row(security_id, price_date, quote_currency)
             return self._emit_audit(

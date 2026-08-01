@@ -362,7 +362,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rather than appearing in both series at once. Recording a mark for a date two
   feeds disagreed on now settles that date and clears it from `system doctor`,
   which previously kept reporting the same disagreement after you followed its
-  own advice. (#373)
+  own advice. CoinGecko quotes about 60 of ISO-4217's ~180 currencies, and a
+  holding denominated in one of the other 120 no longer costs you every other
+  coin's prices: that holding reports its own failure and the rest of the batch
+  still refreshes. A price mark moved onto the surviving security by a merge
+  keeps the date you authored it instead of being restamped with the merge
+  time. (#373)
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.

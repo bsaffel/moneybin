@@ -18,6 +18,7 @@ from moneybin.connectors.prices.errors import (
     PriceFeedAuthError,
     PriceFeedNotFoundError,
     PriceFeedRateLimitError,
+    PriceFeedRequestRejectedError,
     PriceFeedUnreachableError,
 )
 
@@ -89,9 +90,19 @@ def _raise_for_status(response: httpx.Response) -> None:
             f"price feed rejected the credential ({response.status_code})"
         )
     if response.status_code == 404:
-        # The only status that describes one security rather than the run.
+        # Describes one security rather than the run: the provider answered, and
+        # its answer is that it does not know this symbol.
         raise PriceFeedNotFoundError(
             f"price feed does not know this symbol ({response.status_code})"
+        )
+    if response.status_code == 400:
+        # Also potentially about one security: the request itself was malformed.
+        # Whether that is per-security depends on whether the caller varies a
+        # parameter per security, so only the adapters that do catch this — see
+        # PriceFeedRequestRejectedError. The provider's own explanation is not
+        # quoted: a 400 body routinely echoes the request that produced it.
+        raise PriceFeedRequestRejectedError(
+            f"price feed rejected the request ({response.status_code})"
         )
     if response.status_code >= 400:
         raise PriceFeedAPIError(f"price feed returned {response.status_code}")

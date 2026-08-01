@@ -22,6 +22,7 @@ from moneybin.connectors.prices.errors import (
     PriceFeedAPIError,
     PriceFeedNotFoundError,
     PriceFeedRateLimitError,
+    PriceFeedRequestRejectedError,
     PriceFeedUnreachableError,
 )
 
@@ -80,13 +81,12 @@ def test_a_body_that_is_not_json_names_the_status_not_the_body() -> None:
 
 @respx.mock
 def test_an_unknown_symbol_is_typed_apart_from_a_broken_provider() -> None:
-    """404 is the one status an adapter may answer for a single security.
+    """404 is one of two statuses an adapter may answer for a single security.
 
-    Every other typed error is a whole-batch condition (see errors.py), so the
-    adapters decide containment on the exception type alone. If a 404 arrived as
-    the same PriceFeedAPIError a 500 does, either the provider being down reads
-    as 'this symbol has no coverage' or one unknown ticker aborts the batch —
-    the type is what keeps those apart.
+    Adapters decide containment on the exception type alone (see errors.py). If a
+    404 arrived as the same PriceFeedAPIError a 500 does, either the provider
+    being down reads as 'this symbol has no coverage' or one unknown ticker
+    aborts the batch — the type is what keeps those apart.
     """
     respx.get(url__startswith=_URL).mock(
         return_value=httpx.Response(404, json={"detail": "Error: Ticker not found"})
@@ -100,6 +100,36 @@ def test_an_unknown_symbol_is_typed_apart_from_a_broken_provider() -> None:
     )
     assert "404" in str(caught.value)
     assert _TOKEN not in str(caught.value)
+
+
+@respx.mock
+def test_a_rejected_request_is_typed_apart_and_never_quotes_what_it_sent() -> None:
+    """400 is the second per-security status, and the likeliest to echo the request.
+
+    A provider explaining WHY a request was malformed tends to quote the request
+    back — which for these adapters carries the credential in a header or the
+    query string. So this branch is doubly constrained: it must be typed apart
+    from PriceFeedAPIError so a CoinGecko adapter can contain it per coin, and it
+    must say nothing beyond the status, exactly like the non-JSON-body branch.
+    """
+    respx.get(url__startswith=_URL).mock(
+        return_value=httpx.Response(
+            400, json={"error": f"invalid vs_currency in request token={_TOKEN}"}
+        )
+    )
+
+    with (
+        httpx.Client() as client,
+        pytest.raises(PriceFeedRequestRejectedError) as caught,
+    ):
+        _fetch(client)
+
+    assert not isinstance(caught.value, PriceFeedAPIError), (
+        "a rejected request must not be catchable as the generic API error"
+    )
+    assert "400" in str(caught.value)
+    assert _TOKEN not in str(caught.value)
+    assert "vs_currency" not in str(caught.value)
 
 
 @respx.mock

@@ -975,9 +975,15 @@ class SecurityLinksService:
         the repo's audited primitives and their full-row capture; the two events
         thread onto the merge's ``parent_audit_id`` and reverse in order, so an
         undo puts the mark back on the provisional.
+
+        That spelling costs one thing an UPDATE would have kept for free, so the
+        original ``created_at`` is carried across explicitly: the pair never hits
+        ``set``'s ``ON CONFLICT`` branch, and letting the insert default stamp the
+        merge time would rewrite when the user authored a number they typed months
+        earlier — while the delete event sitting beside it still records the truth.
         """
         rows = self._db.execute(
-            f"SELECT price_date, quote_currency, close, note "  # noqa: S608  # TableRef constant
+            f"SELECT price_date, quote_currency, close, note, created_at "  # noqa: S608  # TableRef constant
             f"FROM {SECURITY_PRICE_OVERRIDES.full_name} WHERE security_id = ? "
             "ORDER BY price_date, quote_currency",
             [provisional],
@@ -1000,7 +1006,7 @@ class SecurityLinksService:
                 code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
             )
         marks = SecurityPriceRepo(self._db)
-        for price_date, quote_currency, close, note in rows:
+        for price_date, quote_currency, close, note, created_at in rows:
             marks.delete(
                 provisional,
                 price_date,
@@ -1016,6 +1022,7 @@ class SecurityLinksService:
                 close=close,
                 note=note,
                 actor=self._actor,
+                created_at=created_at,
                 parent_audit_id=parent_audit_id,
                 in_outer_txn=True,
             )

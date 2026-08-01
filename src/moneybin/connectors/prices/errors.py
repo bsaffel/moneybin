@@ -3,16 +3,17 @@
 The CLI's handle_cli_errors and the MCP decorator map these to user-facing
 messages via classify_user_error, which returns any UserError unchanged.
 
-All but one of these are whole-batch conditions: the credential, the quota, the
+Most of these are whole-batch conditions: the credential, the quota, the
 connection, and the provider's health answer for every security in the run, so
 they leave by exception and PriceService contains them per source.
 
-PriceFeedNotFoundError is the single per-security exception — the provider
-answered, and its answer is that it does not know this symbol. An adapter
-catches that one and reports a PriceFetchFailure, so a refresh over 40
-securities that loses 2 still writes the other 38.
+Two are per-security. PriceFeedNotFoundError is the provider answering that it
+does not know this symbol; PriceFeedRequestRejectedError is the provider
+answering that this request's own parameters are wrong. An adapter catches those
+and reports a PriceFetchFailure, so a refresh over 40 securities that loses 2
+still writes the other 38.
 
-Adapters decide containment on the type alone, which is why the two cases need
+Adapters decide containment on the type alone, which is why these cases need
 separate types rather than one status-carrying error: a 404 and a 500 are both
 "a 4xx/5xx arrived", but treating them alike either reports a broken provider as
 "this security has no coverage" or lets one unknown ticker abort the batch.
@@ -51,8 +52,23 @@ class PriceFeedNotFoundError(PriceFeedError):
     """
 
 
+class PriceFeedRequestRejectedError(PriceFeedError):
+    """The provider rejected this request's parameters (400) — per-security.
+
+    Deliberately not a PriceFeedAPIError, for the same reason as
+    PriceFeedNotFoundError: adapters catch this to record a per-security failure,
+    and inheriting from the generic API error would make that catch swallow a 500.
+
+    Only an adapter that sends a PER-SECURITY parameter should catch it. That is
+    CoinGecko, whose vs_currency comes from the security's own currency_code, and
+    not Tiingo, whose query parameters are the same for every security in the run
+    so a 400 there really is the whole batch. Catching it in the wrong adapter
+    turns one batch-wide mistake into N identical requests against the quota.
+    """
+
+
 class PriceFeedAPIError(PriceFeedError):
-    """A provider response that is not auth, rate limit, not-found, or unreachable."""
+    """A provider response that is not auth, rate limit, not-found, rejected, or unreachable."""
 
 
 class PriceFeedWindowUnsupportedError(PriceFeedError):

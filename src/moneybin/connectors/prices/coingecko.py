@@ -37,6 +37,7 @@ import httpx
 from moneybin.connectors.prices._http import DEFAULT_TIMEOUT, fetch_json
 from moneybin.connectors.prices.errors import (
     PriceFeedNotFoundError,
+    PriceFeedRequestRejectedError,
     PriceFeedWindowUnsupportedError,
 )
 from moneybin.connectors.prices.protocol import (
@@ -89,14 +90,27 @@ class CoinGeckoPriceAdapter:
                     params=params,
                     sleep=self._sleep,
                 )
-            except PriceFeedNotFoundError as exc:
-                # Matches the Tiingo adapter: a slug CoinGecko does not know is
-                # the one condition about this coin alone. Everything else — an
-                # exhausted keyless quota, an unreachable host, a 5xx, or a
-                # 401/403 if CoinGecko ever reuses those codes for a paid tier —
-                # is wrong for every coin in the batch, and walking the rest only
-                # burns the rate limit before failing identically. Whole-batch
-                # conditions propagate to PriceService's per-source containment.
+            except (PriceFeedNotFoundError, PriceFeedRequestRejectedError) as exc:
+                # Two conditions here are about this coin alone, one more than the
+                # Tiingo adapter contains. A slug CoinGecko does not know is the
+                # obvious one. The second is a rejected request, because unlike
+                # Tiingo — whose query parameters are built once for the whole run
+                # — this loop builds params per ref, and vs_currency is the
+                # security's own currency_code. CoinGecko quotes far fewer codes
+                # than ISO-4217 defines and nothing on the pull path validates the
+                # difference, so treating that 400 as whole-batch left every OTHER
+                # crypto position unpriced over one coin's currency.
+                #
+                # Everything else — an exhausted keyless quota, an unreachable
+                # host, a 5xx, or a 401/403 if CoinGecko ever reuses those codes
+                # for a paid tier — is wrong for every coin in the batch, and
+                # walking the rest only burns the rate limit before failing
+                # identically. Those propagate to PriceService's per-source
+                # containment. The residual cost of this split: a 400 caused by
+                # the batch-wide `days` parameter now costs one request per coin
+                # instead of one. That parameter is derived internally from an
+                # already-validated window, so it is a far smaller exposure than
+                # the per-coin currency it replaces.
                 failures.append(PriceFetchFailure(ref.provider_security_key, str(exc)))
                 continue
             priced = self._observations(ref, body, start, end)

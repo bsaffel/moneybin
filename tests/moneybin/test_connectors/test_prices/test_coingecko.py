@@ -327,6 +327,38 @@ def test_one_unknown_coin_does_not_lose_the_rest_of_the_batch() -> None:
     assert [f.provider_security_key for f in result.failures] == ["nosuchcoin"]
 
 
+def test_one_unsupported_quote_currency_does_not_lose_the_rest_of_the_batch() -> None:
+    """``vs_currency`` is per-coin, so CoinGecko rejecting one must not end the run.
+
+    This adapter builds ``params`` INSIDE the loop from ``ref.quote_currency``,
+    unlike the Tiingo adapter, whose query parameters are batch-wide and whose
+    only per-security value rides in the URL path. So the shared reasoning "a
+    non-404 answer is wrong for every coin" does not survive here: CoinGecko
+    quotes roughly 60 of ISO-4217's ~180 codes, a holding's currency comes
+    straight from ``app.securities.currency_code`` with no validation on the pull
+    path, and a 400 about ONE coin's currency was aborting the whole source —
+    leaving every other crypto position unpriced with an error naming none of it.
+    """
+    with respx.mock:
+        respx.get(_chart_route("bitcoin")).mock(
+            return_value=httpx.Response(
+                200, json=_prices([(_midnight_ms(date(2026, 7, 25)), "64000.10")])
+            )
+        )
+        respx.get(_chart_route("ethereum")).mock(
+            return_value=httpx.Response(400, json={"error": "invalid vs_currency"})
+        )
+
+        result = CoinGeckoPriceAdapter().fetch(
+            [_ref("bitcoin"), _ref("ethereum", currency="XPF")],
+            date(2026, 7, 24),
+            date(2026, 7, 24),
+        )
+
+    assert [obs.provider_security_key for obs in result.observations] == ["bitcoin"]
+    assert [f.provider_security_key for f in result.failures] == ["ethereum"]
+
+
 def test_a_rate_limit_stops_the_batch_instead_of_spending_it_on_every_coin() -> None:
     """The keyless tier's quota is shared, so continuing only deepens the limit.
 

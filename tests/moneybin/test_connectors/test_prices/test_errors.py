@@ -10,6 +10,7 @@ from moneybin.connectors.prices.errors import (
     PriceFeedError,
     PriceFeedNotFoundError,
     PriceFeedRateLimitError,
+    PriceFeedRequestRejectedError,
     PriceFeedUnreachableError,
     PriceFeedWindowUnsupportedError,
 )
@@ -21,9 +22,14 @@ _SUBCLASSES = (
     PriceFeedUnreachableError,
     PriceFeedRateLimitError,
     PriceFeedNotFoundError,
+    PriceFeedRequestRejectedError,
     PriceFeedAPIError,
     PriceFeedWindowUnsupportedError,
 )
+
+# The types an adapter may contain as a per-security failure. Both must stay
+# outside PriceFeedAPIError's subtree; see the test below.
+_PER_SECURITY = (PriceFeedNotFoundError, PriceFeedRequestRejectedError)
 
 
 class TestPriceFeedErrorHierarchy:
@@ -44,14 +50,21 @@ class TestPriceFeedErrorHierarchy:
         for cls in _SUBCLASSES:
             assert issubclass(cls, PriceFeedError)
 
-    def test_a_not_found_is_not_catchable_as_the_generic_api_error(self) -> None:
-        """Adapters branch on the type: not-found is contained, everything else propagates.
+    def test_a_contained_error_is_not_catchable_as_the_generic_api_error(self) -> None:
+        """Adapters branch on the type: these are contained, everything else propagates.
 
-        If PriceFeedNotFoundError ever became a PriceFeedAPIError, both adapters'
-        `except PriceFeedNotFoundError` would start swallowing 5xx responses as
-        per-security failures — silently restoring the bug this split removed.
+        If either per-security type ever became a PriceFeedAPIError, the adapters'
+        `except` clause would start swallowing 5xx responses as per-security
+        failures — silently restoring the bug this split removed. Asserted over
+        the whole set rather than one member, so a type added to _PER_SECURITY
+        without the same guarantee fails here instead of shipping unchecked.
         """
-        assert not issubclass(PriceFeedNotFoundError, PriceFeedAPIError)
+        for cls in _PER_SECURITY:
+            assert not issubclass(cls, PriceFeedAPIError)
+
+    def test_every_per_security_type_is_a_real_member_of_the_hierarchy(self) -> None:
+        """_PER_SECURITY names types this module already covers, not stale ones."""
+        assert set(_PER_SECURITY) <= set(_SUBCLASSES)
 
     def test_price_feed_error_subclasses_user_error(self) -> None:
         """PriceFeedError is a subclass of UserError."""

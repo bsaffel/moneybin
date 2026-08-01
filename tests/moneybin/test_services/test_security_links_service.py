@@ -12,7 +12,7 @@ remap reads are fabricated here.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -1158,6 +1158,43 @@ def test_price_mark_repoint_undoes_with_the_rest_of_the_merge(
     UndoService(db).undo(op, actor="cli")
 
     assert _mark_owner(db) == merge_setup["provisional"]
+
+
+def _mark_created_at(db: Database, security_id: str, *, day: str = "2026-06-30") -> Any:
+    row = db.execute(
+        "SELECT created_at FROM app.security_price_overrides "
+        "WHERE security_id = ? AND price_date = ?",
+        [security_id, date.fromisoformat(day)],
+    ).fetchone()
+    return None if row is None else row[0]
+
+
+def test_a_repointed_price_mark_keeps_its_original_authoring_time(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Moving a mark between securities is not re-authoring it.
+
+    ``SecurityPriceRepo.set`` documents that ``created_at`` survives an update so
+    a correction cannot erase when the mark was first written. The merge moves a
+    mark by delete-then-set, which makes the ``ON CONFLICT`` branch unreachable —
+    so the insert default stamped the merge time and the guarantee held for every
+    path except this one. The audit trail then disagrees with the row: the delete
+    event captures a ``before`` created months ago and the row that replaces it
+    claims to have been authored during the merge.
+    """
+    _mark(db, merge_setup["provisional"])
+    authored = datetime(2026, 1, 15, 9, 30, 0)
+    db.execute(
+        "UPDATE app.security_price_overrides SET created_at = ? WHERE security_id = ?",
+        [authored, merge_setup["provisional"]],
+    )
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _mark_owner(db) == merge_setup["survivor"]
+    assert _mark_created_at(db, merge_setup["survivor"]) == authored
 
 
 def test_a_colliding_price_mark_blocks_the_merge(
