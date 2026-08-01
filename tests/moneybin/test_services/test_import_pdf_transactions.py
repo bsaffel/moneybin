@@ -31,6 +31,7 @@ from moneybin.services.import_confirmation import (
     SignConventionProposal,
 )
 from moneybin.services.import_service import ImportService
+from tests.moneybin.db_helpers import create_core_tables
 from tests.moneybin.pdf_statement_fixtures import (
     write_card_statement_pdf,
     write_checking_statement_pdf,
@@ -2020,3 +2021,121 @@ def test_pdf_second_statement_does_not_re_ask(
             next_pdf, refresh=False, confirm=True, actor_kind="human"
         )
     assert result.transactions == 2
+
+
+@pytest.mark.integration
+def test_account_id_pin_teaches_the_statements_own_key(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Pinning with --account-id must teach the key the statement derives on its own.
+
+    ``account_id_override`` replaces the source-native key with the canonical id,
+    so the ladder wrote only ``<canonical> -> <canonical>``. The key the document
+    actually yields ("chase_1234") was never linked, so the *next* statement of
+    the same card — imported without the pin, as any drop-folder or inbox run
+    would — found no link and minted a second account for the same card.
+
+    The pin must write both links: the canonical self-map the staging JOIN needs,
+    and the statement's own derived key pointing at the same account.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+        )
+
+    linked = dict(
+        db.execute(
+            "SELECT ref_value, account_id FROM app.account_links "
+            "WHERE ref_kind='source_native' AND status='accepted'"
+        ).fetchall()
+    )
+    # Both keys resolve to the pinned account: the canonical self-map, and the
+    # key this statement derives without the pin.
+    assert linked == {
+        "acct_pinned01": "acct_pinned01",
+        "chase_1234": "acct_pinned01",
+    }
+
+
+@pytest.mark.integration
+def test_account_id_pin_does_not_repoint_an_existing_key(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """The forward-teaching link never steals a key already bound elsewhere.
+
+    If "chase_1234" is already accepted onto another account, pinning a statement
+    to a different account must not re-point it. Re-pointing is an explicit,
+    surfaced operation, never an import-time side effect. The import proceeds on
+    the pin the caller gave; only the extra teaching link is skipped.
+    """
+    create_core_tables(db)
+    for account_id, name in (
+        ("acct_pinned01", "Chase Card"),
+        ("acct_other01", "Other"),
+    ):
+        db.conn.execute(
+            "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+            [account_id, name],
+        )
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    # First: bind chase_1234 to acct_other01 through the real gate-answer path.
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
+    key = exc.value.outcome.account_proposals[0]["source_account_key"]
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: "acct_other01"},
+        )
+
+    # Now pin a statement of the same card to a DIFFERENT account.
+    other_pdf = tmp_path / "statement_pinned.pdf"
+    other_pdf.write_bytes(b"%PDF-1.4 fake pinned")
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        result = svc.import_file(
+            other_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+        )
+    assert result.transactions == 2
+
+    linked = dict(
+        db.execute(
+            "SELECT ref_value, account_id FROM app.account_links "
+            "WHERE ref_kind='source_native' AND status='accepted'"
+        ).fetchall()
+    )
+    # chase_1234 keeps its original binding; the pin still self-maps.
+    assert linked["chase_1234"] == "acct_other01"
+    assert linked["acct_pinned01"] == "acct_pinned01"

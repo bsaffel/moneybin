@@ -115,6 +115,16 @@ class SourceAccount:
     of ``"new"``. Still idempotent on re-import (adopts an existing
     source_native above)."""
 
+    unpinned_account_key: str | None = None
+    """The key this source would derive on its own, when ``explicit_account_id``
+    has replaced ``source_account_key`` with the canonical id.
+
+    A pin that links only the canonical id teaches the resolver nothing about the
+    document: the next import of the same source, without the pin, derives this
+    key, finds no link, and mints a second account for the same thing. Recording
+    it alongside the pin is what makes the pin stick. Never re-points a key
+    already bound elsewhere — see ``AccountResolver._run_ladder``."""
+
 
 @dataclass(frozen=True)
 class ResolvedAccount:

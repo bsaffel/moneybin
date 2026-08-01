@@ -841,22 +841,26 @@ def _pdf_source_account(
         # the transactions path; this guards a hand-built RouteDecision.
         raise ValueError("PDF routing returned outcome='transactions' but fp is None")
     issuer_slug = slugify(decision.fp.get("issuer", "unknown"))
+    # Mask the captured account identifier BEFORE slugifying it into the
+    # source-native key. The captured value may be a full unmasked institution
+    # account number ("Account Number: 123456789"), and storing that verbatim
+    # leaks it through every downstream surface that treats account_id as an
+    # opaque identifier.
+    masked_acct = _to_account_number_mask(decision.metadata.account_id)
+    derived_key = (
+        f"{issuer_slug}_{slugify(masked_acct)}" if masked_acct else resolved_alias
+    )
     if account_id_override:
         # Explicit override — agents/users can pin a statement whose text omits
         # an account anchor to an existing dim_accounts row instead of accepting
-        # the filename-derived alias and creating a fresh entry.
+        # the filename-derived alias and creating a fresh entry. The derived key
+        # rides along as unpinned_account_key so the pin also teaches the
+        # resolver what this document yields on its own; without that, the next
+        # unpinned statement of the same card mints a second account.
         native_key = account_id_override
         masked_acct = None
     else:
-        # Mask the captured account identifier BEFORE slugifying it into the
-        # source-native key. The captured value may be a full unmasked
-        # institution account number ("Account Number: 123456789"), and storing
-        # that verbatim leaks it through every downstream surface that treats
-        # account_id as an opaque identifier.
-        masked_acct = _to_account_number_mask(decision.metadata.account_id)
-        native_key = (
-            f"{issuer_slug}_{slugify(masked_acct)}" if masked_acct else resolved_alias
-        )
+        native_key = derived_key
     return SourceAccount(
         source_type="pdf",
         source_origin=issuer_slug,
@@ -868,6 +872,7 @@ def _pdf_source_account(
         # inventing a strong match.
         last_four=_last4_from_account_number(masked_acct),
         explicit_account_id=account_id_override,
+        unpinned_account_key=derived_key if account_id_override else None,
     )
 
 
