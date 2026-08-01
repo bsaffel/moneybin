@@ -1887,3 +1887,136 @@ def test_confirming_a_sign_flipping_repair_lets_it_land(
     )
 
     assert result.transactions == 2
+
+
+@pytest.mark.integration
+def test_pdf_import_gates_account_identity_before_begin_import(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """A PDF statement's account identity gets a pre-load confirm, like every channel.
+
+    The gap PR #375 named and left open, and this session's primary target:
+    ``_import_pdf_transactions`` called ``resolve()`` directly, so a statement
+    minted a new account — or adopted an existing one on a weak
+    institution+last4 signal — with nothing ever surfaced. A wrong silent *merge*
+    is the expensive case: it is hard to notice and hard to undo.
+
+    The gate belongs after the sign gate and before ``begin_import``, the
+    position the sign gate already established: a confirmation is not a failed
+    import, so it must not strand an ``import_log`` row in "importing" or leave
+    a "failed" row for an import that never started.
+    """
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
+
+    outcome = exc.value.outcome
+    assert outcome.reason == "account_confirmation"
+    assert outcome.channel == "pdf"
+    # The issuer-slug + masked-account native key is what the user binds.
+    assert [p["source_account_key"] for p in outcome.account_proposals] == [
+        "chase_1234"
+    ]
+    # Nothing loaded, no batch opened, no link written, no recipe saved.
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
+    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.pdf_formats") == 0
+
+
+@pytest.mark.integration
+def test_pdf_binding_new_mints_and_loads(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Answering the PDF gate with `new` mints the account and completes the import."""
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
+    key = exc.value.outcome.account_proposals[0]["source_account_key"]
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        result = svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: "new"},
+        )
+    assert result.transactions == 2
+    row = db.execute(
+        "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+        "AND ref_value=? AND status='accepted'",
+        [key],
+    ).fetchone()
+    assert row is not None and row[0]
+
+
+@pytest.mark.integration
+def test_pdf_second_statement_does_not_re_ask(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Next month's statement of the same card imports silently.
+
+    The identity scope is the issuer slug, deliberately identical across every
+    statement of one card, so the second statement hits ``source_native`` and
+    passes the gate without a confirm. This is the property that keeps the
+    gate's volume tied to new account identities rather than to statements —
+    a per-statement confirm would be a design failure.
+    """
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
+    key = exc.value.outcome.account_proposals[0]["source_account_key"]
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: "new"},
+        )
+
+    # Next month: same card, different statement period and balances.
+    next_doc = _standard_doc(opening="1100.00", closing="1200.00")
+    next_pdf = tmp_path / "statement_february.pdf"
+    next_pdf.write_bytes(b"%PDF-1.4 fake february")
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=next_doc,
+    ):
+        result = svc.import_file(
+            next_pdf, refresh=False, confirm=True, actor_kind="human"
+        )
+    assert result.transactions == 2

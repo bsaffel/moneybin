@@ -809,6 +809,68 @@ def _apply_account_bindings(
     return bound
 
 
+def _pdf_source_account(
+    decision: "RouteDecision",
+    *,
+    resolved_alias: str,
+    account_id_override: str | None,
+) -> SourceAccount:
+    """Derive the account identity a PDF statement presents, without resolving.
+
+    Shared by the confirm gate (which runs before ``begin_import``) and the
+    resolve pass in ``_import_pdf_transactions``, so the identity the user
+    ratifies is exactly the one bound.
+
+    The source-native key is issuer-slug-prefixed so the same masked suffix
+    ("...1234") from two different banks doesn't collide on one
+    core.dim_accounts row. Its scope (``source_origin``) is the issuer slug and
+    must be IDENTICAL across every statement of one card: the strong-ref lookup
+    and the staging JOINs both key on (source_type, source_origin, ref_value), so
+    a per-file value would make each statement miss its own prior link and mint a
+    fresh account every month — and, now, re-ask the confirm every month.
+    Deliberately NOT matched_format_name: that is None on first contact and set
+    from the second statement on, so it differs across exactly the two imports
+    this needs to unify. ``resolved_alias`` stays the per-file scope for
+    raw.import_log and the raw.pdf_<alias> view, which are genuinely per-document
+    and which revert depends on.
+    """
+    from moneybin.utils import slugify
+
+    if decision.fp is None:
+        # Defensive: route_pdf_import attaches fp on every outcome that reaches
+        # the transactions path; this guards a hand-built RouteDecision.
+        raise ValueError("PDF routing returned outcome='transactions' but fp is None")
+    issuer_slug = slugify(decision.fp.get("issuer", "unknown"))
+    if account_id_override:
+        # Explicit override — agents/users can pin a statement whose text omits
+        # an account anchor to an existing dim_accounts row instead of accepting
+        # the filename-derived alias and creating a fresh entry.
+        native_key = account_id_override
+        masked_acct = None
+    else:
+        # Mask the captured account identifier BEFORE slugifying it into the
+        # source-native key. The captured value may be a full unmasked
+        # institution account number ("Account Number: 123456789"), and storing
+        # that verbatim leaks it through every downstream surface that treats
+        # account_id as an opaque identifier.
+        masked_acct = _to_account_number_mask(decision.metadata.account_id)
+        native_key = (
+            f"{issuer_slug}_{slugify(masked_acct)}" if masked_acct else resolved_alias
+        )
+    return SourceAccount(
+        source_type="pdf",
+        source_origin=issuer_slug,
+        source_account_key=native_key,
+        account_name=resolved_alias,
+        institution=decision.fp.get("issuer") or None,
+        # None for a digits-free token ("xxxx"), which correctly denies the
+        # institution+last4 signal and routes to name review rather than
+        # inventing a strong match.
+        last_four=_last4_from_account_number(masked_acct),
+        explicit_account_id=account_id_override,
+    )
+
+
 def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccount]:
     """Enumerate the account identities an OFX file presents, without resolving.
 
@@ -2767,6 +2829,7 @@ class ImportService:
         *,
         save_format: bool = True,
         account_id: str | None = None,
+        account_bindings: dict[str, str] | None = None,
         source_bytes: bytes | None = None,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
@@ -2811,6 +2874,8 @@ class ImportService:
             account_id: Pin the rows to an existing ``dim_accounts`` row when
                 the statement carries no account anchor (mirrors the tabular
                 and deterministic-PDF ``account_id`` semantics).
+            account_bindings: Answers to a prior account-confirmation gate,
+                keyed by the statement's source-native account key.
             source_bytes: Immutable PDF object captured by the preview.
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
@@ -2930,6 +2995,26 @@ class ImportService:
         #    route_forced_recipe attaches both recipe and fp on that outcome —
         #    so begin_import's row can't be stranded in "importing".
         resolved_alias = _pdf_alias(canonical)
+
+        # Account-identity gate, same position as the deterministic path's: after
+        # routing settles, before begin_import. A bridge recipe is agent-authored,
+        # so the account identity it implies is no more ratified than a
+        # deterministic one — and an agent must never self-pick an identity.
+        self._gate_account_proposals(
+            AccountResolver(self._db, actor="system"),
+            _apply_account_bindings(
+                [
+                    _pdf_source_account(
+                        decision,
+                        resolved_alias=resolved_alias,
+                        account_id_override=account_id,
+                    )
+                ],
+                account_bindings or {},
+            ),
+            channel="pdf",
+        )
+
         result = ImportResult(file_path=str(canonical), file_type="pdf")
         import_id = import_log.begin_import(
             self._db,
@@ -2953,6 +3038,7 @@ class ImportService:
             doc=doc,
             save_format=save_format,
             account_id_override=account_id,
+            account_bindings=account_bindings,
             rung="bridge",
             in_outer_txn=in_outer_txn,
             emit_metrics=emit_metrics,
@@ -3382,6 +3468,7 @@ class ImportService:
         actor_kind: "ActorKind" = "human",
         sign: str | None = None,
         confirm: bool = False,
+        account_bindings: dict[str, str] | None = None,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
@@ -3422,6 +3509,9 @@ class ImportService:
                 without this, the import falls back to the filename-derived
                 alias and creates a new ``dim_accounts`` row. Mirrors the
                 tabular path's ``account_id`` semantics.
+            account_bindings: Answers to a prior account-confirmation gate,
+                keyed by the statement's source-native account key: an existing
+                account_id to adopt, or "new".
             actor_kind: 'agent' when a driving agent that can fulfill a bridge
                 extraction is present (MCP, agent-driven CLI) — enables bridge
                 escalation. 'human'/default keeps the Phase 2a seed fallback.
@@ -3547,6 +3637,27 @@ class ImportService:
         ):
             result.sign_override_replayed = True
 
+        # Account-identity gate, in the position the sign gate above established:
+        # after routing settles, before begin_import. Only the transactions path
+        # resolves an account identity — a seeded document writes no link, so
+        # there is nothing to ratify. The identity scope is the issuer slug, so
+        # this asks once per card, not once per statement.
+        if decision.outcome == "transactions":
+            self._gate_account_proposals(
+                AccountResolver(self._db, actor="system"),
+                _apply_account_bindings(
+                    [
+                        _pdf_source_account(
+                            decision,
+                            resolved_alias=resolved_alias,
+                            account_id_override=account_id,
+                        )
+                    ],
+                    account_bindings or {},
+                ),
+                channel="pdf",
+            )
+
         # Committing to a write — open the import_log row now.
         import_id = import_log.begin_import(
             self._db,
@@ -3572,6 +3683,7 @@ class ImportService:
                 doc=doc,
                 save_format=save_format,
                 account_id_override=account_id,
+                account_bindings=account_bindings,
                 sign_override=sign,
                 in_outer_txn=in_outer_txn,
                 emit_metrics=emit_metrics,
@@ -3665,6 +3777,7 @@ class ImportService:
         doc: "PdfDocument",
         save_format: bool = True,
         account_id_override: str | None = None,
+        account_bindings: dict[str, str] | None = None,
         rung: Literal["deterministic", "bridge"] = "deterministic",
         sign_override: str | None = None,
         in_outer_txn: bool = False,
@@ -3700,7 +3813,6 @@ class ImportService:
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
         from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
-        from moneybin.utils import slugify
 
         if decision.recipe is None:
             # Should never happen: route_pdf_import only emits outcome="transactions"
@@ -3709,68 +3821,36 @@ class ImportService:
                 "PDF routing returned outcome='transactions' but recipe is None"
             )
 
-        # Account ID: prefix with issuer slug so the same masked suffix
-        # (e.g. "...1234") from two different banks doesn't collide on a
-        # single core.dim_accounts row. Reuse the fingerprint already
-        # computed by route_pdf_import (attached to RouteDecision) instead
-        # of recomputing it here.
-        if decision.fp is None:
-            # Defensive: route_pdf_import attaches fp on every outcome that
-            # reaches this method; this branch is a guard against future
-            # callers that build a RouteDecision by hand.
+        # The same derivation the confirm gate ran before begin_import, with the
+        # caller's binding answer folded in, so the identity the user ratified is
+        # exactly the one bound here.
+        source_account = _apply_account_bindings(
+            [
+                _pdf_source_account(
+                    decision,
+                    resolved_alias=resolved_alias,
+                    account_id_override=account_id_override,
+                )
+            ],
+            account_bindings or {},
+        )[0]
+        account_id = source_account.source_account_key
+        # Identity scope (issuer slug) and fingerprint, both used further down for
+        # the raw account row and the format-recipe save. Read off the derivation
+        # above rather than recomputed, so there is one source of truth.
+        identity_origin = source_account.source_origin
+        fp = decision.fp
+        if fp is None:  # pragma: no cover — _pdf_source_account already raised
             raise ValueError(
                 "PDF routing returned outcome='transactions' but fp is None"
             )
-        fp = decision.fp
-        issuer_slug = slugify(fp.get("issuer", "unknown"))
-        # Identity scope for the source-native key. It must be IDENTICAL across
-        # every statement of one card, because the strong-ref lookup and the
-        # staging JOINs both key on (source_type, source_origin, ref_value) — a
-        # per-file value makes each statement miss its own prior link and mint a
-        # fresh account every month. This is the same exporter/format-identity
-        # rule the tabular path applies (see the derivation comment there); do
-        # NOT swap it back to the filename alias.
-        #
-        # Deliberately NOT matched_format_name: that is None on first contact and
-        # populated from the second statement on, so it would differ across
-        # exactly the two imports this needs to unify.
-        #
-        # `resolved_alias` stays the per-file scope for raw.import_log and the
-        # raw.pdf_<alias> view — those are genuinely per-document and revert
-        # depends on them.
-        identity_origin = issuer_slug
-        account_id: str
-        # Explicit account override takes precedence — agents/users can
-        # pin a PDF whose statement omits an account anchor to an existing
-        # dim_accounts row instead of accepting the filename-derived alias
-        # and creating a fresh dim_accounts entry.
-        if account_id_override:
-            account_id = account_id_override
-            masked_acct = None
-        else:
-            # Mask the captured account identifier BEFORE slugifying it into
-            # the source-native account key. The captured value may be a full
-            # unmasked institution account number ("Account Number: 123456789"),
-            # and storing that verbatim into raw.tabular_transactions.account_id
-            # / raw.tabular_accounts.account_id leaks it through every
-            # downstream surface that treats account_id as an opaque identifier.
-            masked_acct = _to_account_number_mask(decision.metadata.account_id)
-            if masked_acct:
-                account_id = f"{issuer_slug}_{slugify(masked_acct)}"
-            else:
-                # Fallback: routing requires metadata for reconciliation, but
-                # guard against a future path that relaxes that constraint.
-                account_id = resolved_alias
 
-        # The value above is a source-NATIVE key (DP-1), exactly like the
-        # tabular path's — never a canonical account id. Registering it with
+        # That key is a source-NATIVE key (DP-1), exactly like the tabular
+        # path's — never a canonical account id. Registering it with
         # AccountResolver is what writes the native->canonical mapping staging
         # joins on. Skipping that step let the raw key flow into dim_accounts as
         # an account in its own right, so the same card arriving from a second
         # source had nothing to be proposed against and both halves loaded.
-        # last_four is None for a digits-free token ("xxxx"), which correctly
-        # denies the institution+last4 signal and routes to name review rather
-        # than inventing a strong match.
         # Guarded like the OFX resolver loop: this runs after begin_import() but
         # outside the ingestion try below, so an unhandled raise here (e.g.
         # _write_native_mapping's conflict guard) would strand import_log at
@@ -3781,18 +3861,7 @@ class ImportService:
                 actor="system",
                 emit_metrics=emit_metrics,
                 observations=observations,
-            ).resolve(
-                SourceAccount(
-                    source_type="pdf",
-                    source_origin=identity_origin,
-                    source_account_key=account_id,
-                    account_name=resolved_alias,
-                    institution=fp.get("issuer") or None,
-                    last_four=_last4_from_account_number(masked_acct),
-                    explicit_account_id=account_id_override,
-                ),
-                in_outer_txn=in_outer_txn,
-            )
+            ).resolve(source_account, in_outer_txn=in_outer_txn)
         except Exception:
             try:
                 import_log.finalize_import(
@@ -4488,6 +4557,7 @@ class ImportService:
                 actor_kind=actor_kind,
                 sign=sign,
                 confirm=confirm,
+                account_bindings=account_bindings,
                 in_outer_txn=in_outer_txn,
                 emit_metrics=emit_metrics,
                 observations=observations,
