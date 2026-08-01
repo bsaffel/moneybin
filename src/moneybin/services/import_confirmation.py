@@ -19,7 +19,7 @@ from moneybin.extractors.confidence import Confidence, Tier
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 from moneybin.services.account_resolution_types import AccountProposalDict
 
-Channel = Literal["tabular", "gsheet", "pdf"]
+Channel = Literal["tabular", "gsheet", "pdf", "ofx"]
 ActorKind = Literal["human", "agent"]
 ConfirmationReason = Literal[
     "unknown_layout",

@@ -809,6 +809,52 @@ def _apply_account_bindings(
     return bound
 
 
+def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccount]:
+    """Enumerate the account identities an OFX file presents, without resolving.
+
+    Reads the parsed ofxparse object rather than the extractor's DataFrame so it
+    can run *before* ``begin_import`` — the confirm gate has to stop the import
+    before any batch is opened or any row is ingested.
+
+    One list serves both the gate and the resolve pass. Deriving them separately
+    would let the gate propose one identity while resolve binds another; the
+    field derivation is shared with the extractor (``none_if_blank``,
+    ``ofx_account_type``) for the same reason.
+    """
+    from moneybin.extractors.institution_resolution import slug_for_fid
+    from moneybin.extractors.ofx.extractor import none_if_blank, ofx_account_type
+
+    accounts: list[SourceAccount] = []
+    for account in parsed_ofx.accounts:
+        acctid: str | None = account.account_id
+        if not acctid:
+            continue
+        routing = none_if_blank(account.routing_number)
+        institution = account.institution
+        fid = none_if_blank(institution.fid if institution else None)
+        accounts.append(
+            SourceAccount(
+                source_type="ofx",
+                source_origin=source_origin,
+                source_account_key=acctid,
+                account_name=f"{source_origin} {ofx_account_type(account) or ''}".strip(),
+                # full_number is a strong ref ONLY when institution/routing-scoped
+                # (contains ':'); a bare number is demoted to a candidate signal.
+                account_number=f"{routing}:{acctid}" if routing else None,
+                last_four=acctid[-4:],
+                # The FID slug, not source_origin. source_origin comes from <ORG>,
+                # which is a routing code for some issuers ("B1" = Chase), and it
+                # must stay untouched because downstream identity keys on it.
+                # Matching needs the same canonical slug
+                # core.dim_accounts.institution_slug carries, so resolve it from
+                # the FID and fall back to source_origin when the FID is
+                # unregistered.
+                institution=slug_for_fid(fid) or source_origin,
+            )
+        )
+    return accounts
+
+
 class ImportService:
     """Orchestrates the full file import pipeline.
 
@@ -929,6 +975,7 @@ class ImportService:
         institution: str | None = None,
         force: bool = False,
         interactive: bool = False,
+        account_bindings: dict[str, str] | None = None,
     ) -> ImportResult:
         """Import an OFX/QFX/QBO file via the shared import-batch pipeline.
 
@@ -940,19 +987,22 @@ class ImportService:
                 The previous batch is left in place; this creates a new batch.
             interactive: If True, prompt for institution when the chain yields
                 nothing. False for --yes, MCP, and scripts.
+            account_bindings: Answers to a prior account-confirmation gate, keyed
+                by OFX ``<ACCTID>``: an existing account_id to adopt, or "new".
 
         Returns:
             ImportResult with summary.
 
         Raises:
             ValueError: On re-import without force, or when institution can't be derived.
+            ImportConfirmationRequiredError: When an account identity in the file
+                is not yet ratified. Raised before any batch is opened.
         """
         import ofxparse  # type: ignore[import-untyped]
 
         from moneybin.extractors.institution_resolution import (
             InstitutionResolutionError,
             resolve_institution,
-            slug_for_fid,
         )
         from moneybin.extractors.ofx import OFXExtractor
         from moneybin.extractors.ofx.extractor import preprocess_ofx_content
@@ -1051,6 +1101,17 @@ class ImportService:
             ).inc()
             raise ValueError(str(e)) from e
 
+        # Enumerate the account identities this file presents and gate on any
+        # that aren't ratified yet — BEFORE begin_import, so a gated import opens
+        # no batch, ingests no rows, and writes no links. An OFX <ACCTID> is a
+        # stable institution-assigned key, so the answer binds for good: the next
+        # import of the same account adopts via source_native without re-asking.
+        resolver = AccountResolver(self._db, actor="system")
+        source_accounts = _apply_account_bindings(
+            _ofx_source_accounts(parsed_ofx, source_origin), account_bindings or {}
+        )
+        self._gate_account_proposals(resolver, source_accounts, channel="ofx")
+
         # OFX <ACCTID> values are institution-assigned account numbers, not
         # display names. We pass them through to import_log as-is — the
         # naming asymmetry with tabular's account_names is intentional and
@@ -1125,37 +1186,11 @@ class ImportService:
         # raw.ofx_accounts.account_id still holds the source-native ACCTID. Runs
         # after the raw load so links exist iff their raw account rows landed; a
         # separate try/except finalizes 'failed' rather than leaving the batch
-        # stuck in 'importing'.
+        # stuck in 'importing'. Resolves the SAME list the gate proposed, so the
+        # identity confirmed above is exactly the one bound here.
         try:
-            resolver = AccountResolver(self._db, actor="system")
-            for row in data["accounts"].iter_rows(named=True):
-                acctid: str | None = row["account_id"]
-                if not acctid:
-                    continue
-                routing = row.get("routing_number")
-                # full_number is a strong ref ONLY when institution/routing-scoped
-                # (contains ':'); a bare number is demoted to a candidate signal.
-                scoped_number = f"{routing}:{acctid}" if routing else None
-                resolved_account = resolver.resolve(
-                    SourceAccount(
-                        source_type="ofx",
-                        source_origin=source_origin,
-                        source_account_key=acctid,
-                        account_name=f"{source_origin} "
-                        f"{row.get('account_type') or ''}".strip(),
-                        account_number=scoped_number,
-                        last_four=acctid[-4:],
-                        # The FID slug, not source_origin. source_origin comes
-                        # from <ORG>, which is a routing code for some issuers
-                        # ("B1" = Chase), and it must stay untouched because
-                        # downstream identity keys on it. Matching needs the
-                        # same canonical slug core.dim_accounts.institution_slug
-                        # carries, so resolve it from the FID and fall back to
-                        # source_origin when the FID is unregistered.
-                        institution=slug_for_fid(row.get("institution_fid"))
-                        or source_origin,
-                    )
-                )
+            for src in source_accounts:
+                resolved_account = resolver.resolve(src)
                 ACCOUNT_LINK_OUTCOMES_TOTAL.labels(
                     result=resolved_account.outcome
                 ).inc()
@@ -4410,7 +4445,11 @@ class ImportService:
 
         if file_type == "ofx":
             return self._import_ofx(
-                path, institution=institution, force=force, interactive=interactive
+                path,
+                institution=institution,
+                force=force,
+                interactive=interactive,
+                account_bindings=account_bindings,
             )
         if file_type == "tabular":
             return self._import_tabular(

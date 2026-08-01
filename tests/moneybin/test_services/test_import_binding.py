@@ -17,6 +17,7 @@ from moneybin.services.import_service import ImportService
 from tests.moneybin.db_helpers import create_core_tables
 
 _STANDARD_CSV = Path(__file__).parents[2] / "fixtures" / "tabular" / "standard.csv"
+_MINIMAL_OFX = Path(__file__).parents[2] / "fixtures" / "ofx" / "sample_minimal.ofx"
 
 
 def _seed_existing_account(db: Database, *, account_id: str, display_name: str) -> None:
@@ -792,3 +793,96 @@ def test_rekey_bare_proposals_repoints_to_moved_path(tmp_path: Path) -> None:
     assert proposals[0]["source_account_key"] != orig_key  # stem changed
     assert proposals[0]["source_account_key"].startswith("statement-1-")
     assert proposals[1]["source_account_key"] == "wf-checking"  # untouched
+
+
+# --- the gate reaches every channel, not just tabular ---------------------
+
+
+def test_ofx_import_gates_before_raw_ingest(
+    db: Database,
+) -> None:
+    """OFX resolves account identity with a pre-load confirm, like every channel.
+
+    The gap PR #375 named and left open: ``_import_ofx`` ran the resolver *after*
+    ``ingest_dataframe``, so an OFX file bound its account identity — minting or
+    adopting — with no confirm at all, and the rows were already in raw by the
+    time anything was written. Only the tabular path stopped and asked.
+
+    The gate must raise before ``begin_import``, so a gated OFX import leaves no
+    ``raw.import_log`` row either: an import that never started should not appear
+    in history as a failure.
+    """
+    create_core_tables(db)
+    svc = ImportService(db)
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True, actor_kind="human")
+    outcome = exc.value.outcome
+    assert outcome.reason == "account_confirmation"
+    assert outcome.channel == "ofx"
+    # The OFX <ACCTID> is the bindable source key.
+    assert [p["source_account_key"] for p in outcome.account_proposals] == ["1111"]
+    # Nothing loaded, nothing linked, no batch opened.
+    for table, expected in (
+        ("raw.ofx_transactions", 0),
+        ("raw.ofx_accounts", 0),
+        ("app.account_links", 0),
+        ("raw.import_log", 0),
+    ):
+        n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # fixed table list, not user input
+        assert n is not None and n[0] == expected, table
+
+
+def test_ofx_binding_new_mints_and_loads(
+    db: Database,
+) -> None:
+    """Answering the OFX gate with `new` mints the account and completes the import."""
+    create_core_tables(db)
+    svc = ImportService(db)
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True, actor_kind="human")
+    key = exc.value.outcome.account_proposals[0]["source_account_key"]
+
+    result = svc.import_file(
+        _MINIMAL_OFX,
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        account_bindings={key: "new"},
+    )
+    assert result.transactions == 2
+    row = db.execute(
+        "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+        "AND ref_value=? AND status='accepted'",
+        [key],
+    ).fetchone()
+    assert row is not None and row[0]
+
+
+def test_ofx_reimport_does_not_re_ask(
+    db: Database,
+) -> None:
+    """A remembered binding never re-asks — the confirm costs one answer, once.
+
+    The second import hits ``source_native`` in the resolution ladder, so the
+    proposal comes back ``adopted_via='source_native'`` and ``requires_confirm``
+    is False. This is what keeps the gate's volume tied to new identities rather
+    than to files.
+    """
+    create_core_tables(db)
+    svc = ImportService(db)
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True, actor_kind="human")
+    key = exc.value.outcome.account_proposals[0]["source_account_key"]
+    svc.import_file(
+        _MINIMAL_OFX,
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        account_bindings={key: "new"},
+    )
+    # Same file again (force, since re-import detection is a separate mechanism):
+    # no second confirm, because the identity is already bound.
+    result = svc.import_file(
+        _MINIMAL_OFX, refresh=False, confirm=True, actor_kind="human", force=True
+    )
+    assert result.transactions == 2
