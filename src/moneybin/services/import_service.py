@@ -10,7 +10,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -58,8 +58,10 @@ from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_confirmation import (
     ActorKind,
+    Channel,
     ConfirmationRequired,
     ImportConfirmationRequiredError,
+    ProposedMapping,
     SignConventionProposal,
 )
 from moneybin.services.refresh import refresh as _refresh
@@ -1255,7 +1257,9 @@ class ImportService:
         resolver: AccountResolver,
         source_accounts: list[SourceAccount],
         *,
-        resolved_mapping: dict[str, str],
+        channel: Channel,
+        resolved_mapping: dict[str, str] | None = None,
+        fallback_keys: Collection[str] = (),
     ) -> None:
         """Surface an unratified account identity for confirmation before load.
 
@@ -1280,35 +1284,42 @@ class ImportService:
         non-human early return, under which agent-driven imports bound accounts
         with no confirm at all — the path most likely to run unattended and
         least likely to have a wrong binding noticed.
+
+        ``fallback_keys`` names the source keys that get ``propose(fallback=True)``
+        — a decision-support pick-list of existing accounts instead of an empty
+        ``candidates``. Only the bare single-account tabular import opts in: it
+        has genuinely no identity signal, so an empty pick-list would force the
+        user to type a raw account id. Every other source leaves it off, because
+        a named account that matches nothing should mint, not be offered an
+        unrelated list.
         """
+        wanted_fallback = set(fallback_keys)
         proposals: list[AccountProposalDict] = []
         for src in source_accounts:
             # A bound account (explicit_account_id / force_standalone) is already
             # decided; only unratified accounts gate.
             if src.explicit_account_id or src.force_standalone:
                 continue
-            proposal = resolver.propose(src)
+            proposal = resolver.propose(
+                src, fallback=src.source_account_key in wanted_fallback
+            )
             if proposal.requires_confirm:
                 proposals.append(proposal.to_dict())
         if not proposals:
             return
         from moneybin.extractors.confidence import Confidence
-        from moneybin.services.import_confirmation import (
-            ConfirmationRequired,
-            ImportConfirmationRequiredError,
-            ProposedMapping,
-        )
 
         raise ImportConfirmationRequiredError(
             ConfirmationRequired(
-                channel="tabular",
-                # The column layout is already resolved; only the account
-                # identity is in question. high/1.0 reflects the settled mapping.
+                channel=channel,
+                # The layout is already settled (tabular: the column mapping
+                # resolved; ofx/pdf: nothing to map). Only the account identity
+                # is in question, so high/1.0 is honest.
                 confidence=Confidence(
                     score=1.0, tier="high", flagged=(), missing_required=()
                 ),
                 proposed=ProposedMapping(
-                    field_mapping=resolved_mapping,
+                    field_mapping=resolved_mapping or {},
                     sample_values={},
                     unmapped_columns=(),
                 ),
@@ -2120,6 +2131,8 @@ class ImportService:
         # native key) WITHOUT resolving, so the account-binding gate can run
         # between enumeration and the writing resolve() pass.
         source_accounts: list[SourceAccount] = []
+        # Source keys whose gate offers a fallback pick-list (see the bare branch).
+        fallback_keys: set[str] = set()
         if account_id:
             account_ids: str | list[str] = account_id
             acct_id_to_name[account_id] = account_name or account_id
@@ -2237,48 +2250,16 @@ class ImportService:
                 last_four=number_last4_by_key.get(native_key),
             )
             source_accounts.append(bare_src)
-            # No binding answer yet → surface the no-candidate account
-            # confirmation (no rows load). A later import_confirm with
-            # --account-binding <native_key>=<account_id|new> re-enters here and
-            # proceeds through Phase 2; --account-name re-enters the branch above.
-            # Elicit only when genuinely unknown: no confirm answer at all AND no
-            # prior accepted source_native for this exact content. Use `not
-            # bindings` (not `native_key not in bindings`) so a binding with a
-            # MISTYPED key doesn't silently re-elicit — it falls through to the
-            # Phase-2 known_keys check below, which fails loud ("magic stays
-            # visible"). An exact-same-file re-import adopts via resolve() Step-1
-            # without re-prompting (idempotency, not a filename guess).
-            if not bindings and not resolver.source_native_exists(
-                source_type, source_origin, native_key
-            ):
-                from moneybin.extractors.confidence import Confidence
-                from moneybin.services.import_confirmation import (
-                    ConfirmationRequired,
-                    ImportConfirmationRequiredError,
-                    ProposedMapping,
-                )
-
-                # propose() (read-only) surfaces a fallback pick-list of existing
-                # accounts so the gate isn't an empty candidates: [] forcing a raw
-                # account_id; matches the multi-account gate's shape.
-                raise ImportConfirmationRequiredError(
-                    ConfirmationRequired(
-                        channel="tabular",
-                        # Layout is settled; only the account identity is open.
-                        confidence=Confidence(
-                            score=1.0, tier="high", flagged=(), missing_required=()
-                        ),
-                        proposed=ProposedMapping(
-                            field_mapping=dict(resolved.field_mapping),
-                            sample_values={},
-                            unmapped_columns=(),
-                        ),
-                        reason="account_confirmation",
-                        account_proposals=[
-                            resolver.propose(bare_src, fallback=True).to_dict()
-                        ],
-                    )
-                )
+            # This source has no identity signal at all, so its gate offers a
+            # fallback pick-list of existing accounts rather than an empty
+            # candidates: [] that would force the user to type a raw account_id.
+            # The gate itself is the shared one in Phase 2 — a binding answer
+            # (--account-binding <native_key>=<account_id|new>) re-enters here,
+            # binds in Phase 2, and passes through; a MISTYPED binding key fails
+            # loud on the known_keys check rather than silently re-eliciting; and
+            # an exact-same-file re-import adopts via the resolver's source_native
+            # step without re-prompting (idempotency, not a filename guess).
+            fallback_keys.add(native_key)
 
         # Phase 2 — apply explicit bindings, then gate on weak account proposals.
         # The gate raises ImportConfirmationRequiredError (no rows load) for an
@@ -2303,7 +2284,9 @@ class ImportService:
         self._gate_account_proposals(
             resolver,
             source_accounts,
+            channel="tabular",
             resolved_mapping=dict(resolved.field_mapping),
+            fallback_keys=fallback_keys,
         )
 
         # Phase 3 — resolve (writes native->canonical mapping + pending decisions),

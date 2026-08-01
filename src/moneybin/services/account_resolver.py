@@ -419,9 +419,10 @@ class AccountResolver:
     ) -> bool:
         """True if an accepted ``source_native`` link already maps this exact key.
 
-        Used by the bare-file import path to detect an exact-same-file re-import
-        (content-derived key already seen) and adopt via the Step-1 ladder
-        without re-prompting. Read-only.
+        Read-only probe. The import path no longer calls it: the confirm gate now
+        asks ``propose()``, whose Step-1 ladder answers the same question and
+        strictly more of it (persistent_token and scoped full_number adopt too).
+        Kept as the narrow "has this exact key been bound?" query.
         """
         row = self._db.execute(
             f"SELECT 1 FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
