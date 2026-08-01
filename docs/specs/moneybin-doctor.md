@@ -84,7 +84,7 @@ reports the position.
 
 | Name | What it checks |
 |---|---|
-| `investment_price_disagreement` | Two provider feeds holding closes for the same security, date, and quote currency that differ by more than `investments.price_disagreement_tolerance_pct`. Resolution picks a winner by source rank; this is where that choice becomes visible instead of silent. |
+| `investment_price_disagreement` | Two provider feeds holding closes for the same security, date, and quote currency that differ by more than `investments.price_disagreement_tolerance_pct`. Resolution picks a winner by source rank; this is where that choice becomes visible instead of silent. Recording a mark for that grain settles it and drops it from the check. |
 | `investment_unpriced_holdings` | Open positions whose `valuation_status` is `unpriced` — no usable price, so they report no market value and are absent from every total that sums one. |
 | `investment_stale_prices` | Open positions whose `valuation_status` is `carried_forward` and whose close is older than its security type allows. The threshold resolves per type through `moneybin.staleness` — 4 days for exchange-traded, 1 for crypto, `investments.price_staleness_default_days` for a type the table does not name. |
 | `investment_unmapped_price_source` | Price rows whose `source_type` `prep.stg_security_prices` has no `ref_kind` mapping for, detected as rows with an accepted matching binding that still never reach staging. |

@@ -222,6 +222,12 @@ def _parse_bar(bar: object) -> tuple[date, Decimal] | None:
     raw_close = fields.get("close")
     if not isinstance(raw_date, str) or not isinstance(raw_close, Decimal | int):
         return None
+    # `bool` is a subclass of `int`, so the check above admits JSON `true` and
+    # `Decimal(True)` is 1 — a plausible-looking close that clears `> 0` below
+    # and squats its key on the append-only table. CoinGecko's parser excludes
+    # booleans on both its fields; this is the same exclusion.
+    if isinstance(raw_close, bool):
+        return None
     close = Decimal(raw_close)
     # raw.security_prices CHECKs close > 0 and is append-only with
     # on_conflict="ignore", so a zero row would squat its primary key and every

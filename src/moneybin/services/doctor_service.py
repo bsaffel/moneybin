@@ -1317,6 +1317,15 @@ class DoctorService:
         providers grows and an enumeration can only go stale in the direction
         that hides disagreements; the derived sources are excluded structurally
         by reading staging instead.
+
+        A grain the user has already marked is excluded, because reading staging
+        means the competing rows survive the correction that settled them. The
+        mark fixes the winner in ``core``, `prep` keeps both provider closes, and
+        without this the check would report the same disagreement on every run
+        forever — after following its own remediation, with nothing left to do.
+        The exclusion matches the mark's full key (security, date, currency), not
+        the security: a mark settles the date it names, and silencing a security
+        outright would hide the wrong-key binding this check exists to catch.
         """
         name = "investment_price_disagreement"
         tolerance = get_settings().investments.price_disagreement_tolerance_pct / 100
@@ -1331,6 +1340,13 @@ class DoctorService:
                   AND b.quote_currency = a.quote_currency
                   AND b.source_type > a.source_type
                 WHERE ABS(a.close - b.close) / ((a.close + b.close) / 2) > ?
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM app.security_price_overrides AS o
+                    WHERE o.security_id = a.security_id
+                      AND o.price_date = a.price_date
+                      AND o.quote_currency = a.quote_currency
+                  )
                 ORDER BY a.security_id
                 """,  # noqa: S608  # fixed view name + bound parameter, no user input
                 [tolerance],
@@ -1359,7 +1375,8 @@ class DoctorService:
                     "which reads the already-resolved series, and staging is "
                     "outside the schemas `sql query` can read — then record a "
                     "mark with `moneybin investments prices set` if the winning "
-                    "feed is the wrong one"
+                    "feed is the wrong one, which settles that date and drops it "
+                    "from this check"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
             )

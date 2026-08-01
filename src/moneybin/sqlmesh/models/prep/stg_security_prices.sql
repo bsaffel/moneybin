@@ -26,14 +26,32 @@ MODEL (
    so its observations must stay dropped; restoring them would reinstate exactly the
    valuation the user rejected.
 
-   The price_date bound is not optional. A rename frees the old symbol, and tickers get
-   recycled — whoever lists under FB next binds it accepted. Without the bound the
-   retired link would go on claiming every future FB close, valuing this security from a
-   different company's series: the precise failure retiring the binding existed to
-   prevent. Observations dated before the retirement resolve through it; nothing after
-   does. The 'auto' literal is pinned to price_service._AUTO_REVERSAL by
+   ONE KEY, ONE OWNER PER DATE. A provider key is not owned by a security outright, only
+   for an interval, because a rename frees the old symbol and tickers get recycled —
+   whoever lists under FB next binds it accepted. So each link owns the closes from its
+   predecessor's retirement up to its own, and the handover CTE below is what supplies
+   that lower edge. Both bounds are load-bearing and neither is redundant with the other:
+
+     - Without the UPPER bound, a retired link keeps claiming every future FB close and
+       values its security from a different company's series — the precise failure that
+       retiring the binding existed to prevent.
+     - Without the LOWER bound, the next owner's accepted link claims every close stored
+       before it ever listed. Those are the previous owner's rows, which its own retired
+       link still resolves, so ONE raw observation becomes TWO securities' price history
+       rather than merely going missing. The same gap lets a key retired twice — bound,
+       retired, rebound, retired again — resolve its earliest rows through both retired
+       links at once, duplicating them under a single security.
+
+   A user reversal deliberately creates no handover edge. It means the pairing was never
+   real, so it transfers nothing: the next holder is the rightful owner of the whole
+   series, not just of the part after a boundary that describes a mistake. That is also
+   why the handover CTE filters on reversed_by rather than on status alone.
+
+   Every 'auto' literal here is pinned to price_service._AUTO_REVERSAL by
    test_price_service.py::test_the_staging_model_retires_the_actor_this_service_writes,
-   because a silent drift here reads as "this security has no history".
+   which fails if the two arms ever name different actors — a silent drift in the join
+   arm reads as "this security has no history", and one in the handover CTE silently
+   turns a user's rejection into a transfer of ownership.
 
    COVERAGE — read this before adding a price adapter. The CASE below maps three
    sources: 'plaid', 'tiingo', and 'coingecko'. That is the complete set that resolves
@@ -70,6 +88,22 @@ MODEL (
    write, so a zero or negative close can never reach this view — the guard lives at the
    write boundary of the append-only source, not as a read-time filter that could mask a
    bad row already stored. */
+WITH handover AS (
+  SELECT
+    link.link_id,
+    MAX(prior.reversed_at)::DATE AS owned_from
+  FROM app.security_links AS link
+  JOIN app.security_links AS prior
+    ON prior.source_type = link.source_type
+    AND prior.ref_kind = link.ref_kind
+    AND prior.ref_value = link.ref_value
+    AND prior.link_id <> link.link_id
+    AND prior.status = 'reversed'
+    AND prior.reversed_by = 'auto'
+    AND prior.reversed_at <= link.decided_at
+  GROUP BY
+    link.link_id
+)
 SELECT
   links.security_id AS security_id,
   p.provider_security_key,
@@ -93,6 +127,12 @@ JOIN app.security_links AS links
     WHEN 'coingecko'
     THEN 'coingecko_slug'
   END
+LEFT JOIN handover AS h
+  ON h.link_id = links.link_id
+WHERE
+  (
+    h.owned_from IS NULL OR p.price_date >= h.owned_from
+  )
   AND (
     links.status = 'accepted'
     OR (

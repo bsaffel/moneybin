@@ -850,14 +850,33 @@ class PriceService:
             if stale:
                 # The catalog value this key was derived from has moved, so the old
                 # binding now points at a different company's series and must go.
-                # Retiring it here rather than before the derivation is the whole
-                # point: it is the ONLY key pricing this security, and every way
-                # deriving a replacement can fail — no provider coverage for the new
-                # symbol, a transient metadata error, an ambiguous match queued for
-                # review — would otherwise leave the security with no accepted link
-                # at all, so a holding valued yesterday goes silently unpriced. Doing
-                # it immediately before the insert still leaves exactly one accepted
-                # link per ref_kind, which is what the retirement exists to preserve.
+                # It is retired HERE — after a replacement has been derived, and not
+                # before — because it is the only key pricing this security, and
+                # every way the DERIVATION can fail (no provider coverage for the
+                # new symbol, a transient metadata error, an ambiguous match queued
+                # for review) would otherwise strand a holding that was valued
+                # yesterday with no accepted link and nothing saying why.
+                #
+                # The INSERT below can still fail, and then this security really is
+                # left with zero accepted links. That is deliberate, not a gap in
+                # the reasoning above, and the fix is not to reorder:
+                #
+                #   - Retiring buys nothing toward the insert succeeding —
+                #     `_guard_uniqueness` keys on (source_type, ref_kind, ref_value),
+                #     so freeing the OLD key cannot clear a conflict on the NEW one.
+                #   - Keeping a known-stale key is worse than holding none. It
+                #     prices this security from a symbol its own catalog row no
+                #     longer claims, and it goes on blocking the security that
+                #     legitimately holds that key from ever binding it.
+                #   - Unpriced is visible and recoverable; mispriced is neither. The
+                #     caller reports `feed_key_bound_elsewhere`, the held-but-
+                #     unpriced check surfaces it, and the next pull re-derives.
+                #   - Insert-then-retire also widens the crash window from "no
+                #     accepted link, rebuilt by the next pull" to "two accepted
+                #     links for one ref_kind, permanent" — and prep resolves both,
+                #     so the security would carry another company's closes as its
+                #     own. Pinned by
+                #     test_a_stale_binding_is_retired_even_when_its_replacement_collides.
                 self._retire_stale_binding(security.security_id, ref_kind, source_type)
             try:
                 self._links.insert(

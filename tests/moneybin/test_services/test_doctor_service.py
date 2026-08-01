@@ -2070,6 +2070,68 @@ def test_price_disagreement_passes_within_tolerance(
     assert result.affected_ids == []
 
 
+def _mark(
+    db: Database,
+    *,
+    security_id: str,
+    close: str = "212.55",
+    price_date: str = "2026-07-23",
+    currency: str = "USD",
+) -> None:
+    """The user's own price for one grain — what this check tells them to record."""
+    db.execute(
+        "INSERT INTO app.security_price_overrides "
+        "(security_id, price_date, quote_currency, close) VALUES (?, ?::DATE, ?, ?)",
+        [security_id, price_date, currency, close],
+    )
+
+
+@pytest.mark.unit
+def test_price_disagreement_clears_once_the_user_records_a_mark(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The remediation this check prints must actually clear it.
+
+    A mark fixes the resolved winner in `core`, but the competing provider rows
+    it was recorded to settle stay in `prep` forever — so a check reading staging
+    unconditionally goes on reporting a disagreement the user has already
+    adjudicated, on every run, with no remaining action. A finding that cannot
+    be cleared teaches the reader to ignore the whole report.
+    """
+    _price_staging_ddl(db)
+    _stage_price(db, security_id="sec_1", close="212.55", source="tiingo")
+    _stage_price(db, security_id="sec_1", close="19.40", source="plaid")
+    _mark(db, security_id="sec_1")
+
+    result = _investment_result(db, monkeypatch, "investment_price_disagreement")
+
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_price_disagreement_still_warns_on_a_date_the_mark_does_not_cover(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mark settles its own date, not the security.
+
+    Paired with the test above deliberately: an exclusion keyed on `security_id`
+    alone passes that one and fails this one, and it would silence every future
+    disagreement for a security the moment one date was corrected — including a
+    feed key bound to the wrong security, which is what this check exists to
+    catch.
+    """
+    _price_staging_ddl(db)
+    _stage_price(db, security_id="sec_1", close="212.55", source="tiingo")
+    _stage_price(db, security_id="sec_1", close="19.40", source="plaid")
+    _mark(db, security_id="sec_1", price_date="2026-07-22")
+
+    result = _investment_result(db, monkeypatch, "investment_price_disagreement")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["sec_1"]
+
+
 @pytest.mark.unit
 def test_price_disagreement_ignores_a_different_quote_currency(
     db: Database, monkeypatch: pytest.MonkeyPatch

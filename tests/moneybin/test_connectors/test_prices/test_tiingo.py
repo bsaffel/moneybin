@@ -52,7 +52,7 @@ def _adapter(token: str | None = _TOKEN) -> TiingoPriceAdapter:
 def _bar(
     *,
     day: str = "2026-07-23T00:00:00.000Z",
-    close: float = 212.55,
+    close: float | bool = 212.55,
     adj_close: float = 205.30,
 ) -> dict[str, object]:
     """One recorded end-of-day bar. adjClose deliberately differs from close."""
@@ -260,6 +260,30 @@ def test_a_nonpositive_close_never_becomes_an_observation() -> None:
             200,
             json=[
                 _bar(day="2026-07-22T00:00:00.000Z", close=0.0),
+                _bar(day="2026-07-23T00:00:00.000Z", close=212.55),
+            ],
+        )
+    )
+
+    result = _adapter().fetch([_ref()], _START, _END)
+
+    assert [obs.price_date for obs in result.observations] == [date(2026, 7, 23)]
+
+
+@respx.mock
+def test_a_boolean_close_never_becomes_an_observation() -> None:
+    """`bool` is a subclass of `int`, so a type check alone lets JSON `true` in.
+
+    `Decimal(True)` is `1`, and raw.security_prices is append-only: a $1 close
+    stored for a date squats that primary key, so every later correct close for
+    the same date is dropped by on_conflict="ignore". The value is plausible
+    enough to survive the `> 0` check and wrong by orders of magnitude.
+    """
+    respx.get(_prices_route()).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                _bar(day="2026-07-22T00:00:00.000Z", close=True),
                 _bar(day="2026-07-23T00:00:00.000Z", close=212.55),
             ],
         )

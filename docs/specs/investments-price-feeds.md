@@ -309,13 +309,25 @@ revalidated: a user-confirmed key may deliberately differ from the ticker, since
 provider symbol formats diverge from ours (`BRK.B` against `BRK-B`), and
 overriding that would re-ask a settled question.
 
-**Retirement happens after the replacement exists, not before.** The stale
+**Retirement happens after the replacement is derived, not before.** The stale
 binding is the only key pricing that security, so reversing it first turns every
-way the replacement can fail — no provider coverage for the new symbol, a
+way the *derivation* can fail — no provider coverage for the new symbol, a
 transient metadata error, an ambiguous match routed to review — into a holding
 that was valued yesterday and is unpriced today. The retirement therefore runs
 immediately before the replacement is inserted, which still leaves exactly one
 accepted link per `ref_kind`.
+
+The *insert* can still fail, when another security already holds the derived key,
+and that security is then left with no accepted link at all. This is deliberate.
+Retiring cannot help the insert succeed — uniqueness is keyed on
+`(source_type, ref_kind, ref_value)`, so freeing the old key does not clear a
+conflict on the new one — and keeping a key the catalog has moved away from is
+worse than holding none: it prices this security from a symbol it no longer
+claims, and blocks the security that legitimately holds that key from binding it.
+Unpriced is reported (`feed_key_bound_elsewhere`, then the held-but-unpriced
+check) and the next pull re-derives; mispriced is silent. Inserting first and
+retiring on success would also change the crash window from one accepted link
+missing to two present, and `prep` resolves both.
 
 **A retired key keeps resolving its own history.** `prep.stg_security_prices`
 joins `app.security_links` to turn a provider key back into a `security_id`, so
@@ -323,12 +335,28 @@ admitting only `accepted` rows would drop every close stored under the old symbo
 out of prep and out of `core.fct_security_prices` — an ordinary ticker rename
 erasing the entire pre-rename series, with no error. The join therefore also
 matches a `reversed` row whose `reversed_by` is `auto`, for observations dated
-before its `reversed_at`. Both halves carry weight. `reversed_by` separates
-bookkeeping from judgement: a user's reversal says the pairing was wrong, so its
-closes must stay dropped. The date bound handles ticker recycling — the rename
-frees the old symbol, and whoever lists under it next binds it accepted, so an
-unbounded retired link would go on claiming those closes and value this security
-from a different company's series.
+before its `reversed_at`. `reversed_by` separates bookkeeping from judgement: a
+user's reversal says the pairing was wrong, so its closes must stay dropped.
+
+**A provider key is owned for an interval, not outright.** A rename frees the old
+symbol and tickers get recycled, so a key can pass through several securities.
+Each link therefore resolves the closes from its predecessor's retirement up to
+its own — the upper bound from its own `reversed_at`, the lower one from the
+latest `auto` retirement of the same `(source_type, ref_kind, ref_value)` decided
+before it. Both edges are load-bearing:
+
+- Without the upper bound, a retired link keeps claiming every later close and
+  values its security from the next listing's series.
+- Without the lower bound, the next owner's accepted link claims the closes
+  stored before it ever listed. The previous owner's retired link still resolves
+  those same rows, so one observation becomes **two** securities' price history
+  rather than merely going missing. The same gap lets one key retired twice —
+  bound, retired, rebound, retired again — resolve its earliest closes through
+  both retired links, duplicating them under a single security.
+
+A user reversal creates no handover edge. It says the pairing was never real, so
+it transfers nothing: the next holder owns the whole series, not just the part
+after a boundary that describes someone's mistake.
 
 **The exchange comparison is deliberately weak.** Either label absent does not
 contradict — an absent signal never votes — and a label that prefixes the other
@@ -666,6 +694,17 @@ over that and could only go stale in the direction that *hides* disagreements,
 by omitting a provider added later. Reading the resolved fact table instead
 would not work at all: it has already collapsed each conflicting pair to its
 rank winner, so the disagreement is no longer visible there.
+
+**A marked grain stops being reported.** Reading staging is also what makes the
+competing rows outlive the correction that settled them: a mark fixes the winner
+in `core`, while both provider closes stay in `prep` permanently. The check
+therefore skips any `(security_id, price_date, quote_currency)` carrying a row in
+`app.security_price_overrides`. Without that, following the check's own printed
+remediation leaves it firing on every subsequent run with nothing left to do, and
+a finding that cannot be cleared teaches the reader to skip the report. The
+exclusion matches the mark's full key rather than the security, because a mark
+settles the date it names — silencing a security outright would hide exactly the
+wrong-key binding the check exists to catch.
 
 **Default tolerance: 2.0%.** Sized to the failure the check actually catches — a
 feed key bound to the wrong security, which yields order-of-magnitude

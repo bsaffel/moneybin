@@ -1808,6 +1808,67 @@ def test_a_stale_binding_is_retired_once_its_replacement_is_derived(
     assert _links(db) == [(TIINGO_REF_KIND, "META", "s1")]
 
 
+def test_a_stale_binding_is_retired_even_when_its_replacement_collides(
+    db: Database,
+) -> None:
+    """Zero accepted links is the RIGHT outcome here, and the only tested one.
+
+    Deliberately the exception to the two tests above. Those keep a stale binding
+    while the replacement is underivable; this one derives a replacement and then
+    loses the race for it, so the retirement has already run and the security ends
+    up with no accepted link at all.
+
+    Keeping the old key instead would be worse in both directions: it prices this
+    security from a symbol its own catalog row no longer claims, and — because
+    `_guard_uniqueness` keys on (source_type, ref_kind, ref_value) — it goes on
+    blocking the security that legitimately holds that key. Unpriced is visible
+    (`feed_key_bound_elsewhere`, then the held-but-unpriced check); mispriced is
+    not. Reordering to insert-then-retire also widens the crash window from "no
+    accepted link, rebuilt by the next pull" to "two accepted links, permanent".
+
+    Routed through CoinGecko because Tiingo cannot reach it: `_ticker_is_shared`
+    refuses to derive a key for a ticker two catalog rows carry, so the collision
+    is settled before the insert. `app.securities.coingecko_id` has no such guard.
+    """
+    _seed_security(
+        db,
+        security_id="s_holder",
+        name="Bitcoin",
+        security_type="crypto",
+        coingecko_id="bitcoin",
+    )
+    _hold(db, "s_holder")
+    SecurityLinksRepo(db).insert(
+        security_id="s_holder",
+        ref_kind=COINGECKO_REF_KIND,
+        ref_value="bitcoin",
+        source_type=COINGECKO_SOURCE_TYPE,
+        decided_by="auto",
+        actor="system",
+    )
+    _seed_security(
+        db,
+        security_id="s_renamed",
+        name="Bitcoin",
+        security_type="crypto",
+        coingecko_id="bitcoin",
+    )
+    _hold(db, "s_renamed")
+    SecurityLinksRepo(db).insert(
+        security_id="s_renamed",
+        ref_kind=COINGECKO_REF_KIND,
+        ref_value="btc-legacy-slug",
+        source_type=COINGECKO_SOURCE_TYPE,
+        decided_by="auto",
+        actor="system",
+    )
+
+    result = _service(db, _FakeTiingo(), _FakeCoinGecko()).pull()
+
+    assert _links(db) == [(COINGECKO_REF_KIND, "bitcoin", "s_holder")]
+    assert [u.reason for u in result.unpriced] == ["feed_key_bound_elsewhere"]
+
+
 def test_the_staging_model_retires_the_actor_this_service_writes() -> None:
     """One actor name, written in Python and matched in SQL, must not drift.
 

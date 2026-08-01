@@ -355,7 +355,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   under the old symbol keep valuing that security instead of disappearing from
   reports, and the old key is retired only once a replacement is in hand — a
   provider that cannot answer for the new symbol no longer leaves the holding
-  unpriced. (#373)
+  unpriced. Because ticker symbols get reused, a feed key now belongs to one
+  security only for the stretch it was bound: the next security to list under a
+  recycled symbol values itself from that symbol's closes going forward, not from
+  the previous company's earlier prices — which stay with the previous company
+  rather than appearing in both series at once. Recording a mark for a date two
+  feeds disagreed on now settles that date and clears it from `system doctor`,
+  which previously kept reporting the same disagreement after you followed its
+  own advice. (#373)
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.

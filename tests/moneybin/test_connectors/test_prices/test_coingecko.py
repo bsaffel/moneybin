@@ -280,6 +280,31 @@ def test_a_nonpositive_price_never_becomes_an_observation() -> None:
     assert [obs.price_date for obs in result.observations] == [date(2026, 7, 24)]
 
 
+def test_a_boolean_price_never_becomes_an_observation() -> None:
+    """The twin of the Tiingo case: `bool` is an `int`, so `true` parses as 1.
+
+    This adapter already excludes it. The exclusion left no behavioural trace,
+    though — deleting it kept every other test in this module green — so the
+    guard needed its own fixture to mean anything.
+    """
+    body = {
+        "prices": [
+            [_midnight_ms(date(2026, 7, 24)), True],
+            [_midnight_ms(date(2026, 7, 25)), 64000.10],
+        ],
+        "market_caps": [],
+        "total_volumes": [],
+    }
+    with respx.mock:
+        respx.get(_chart_route()).mock(return_value=httpx.Response(200, json=body))
+
+        result = CoinGeckoPriceAdapter().fetch(
+            [_ref()], date(2026, 7, 22), date(2026, 7, 24)
+        )
+
+    assert [obs.price_date for obs in result.observations] == [date(2026, 7, 24)]
+
+
 def test_one_unknown_coin_does_not_lose_the_rest_of_the_batch() -> None:
     """A slug CoinGecko does not know must not discard the coins that resolved."""
     with respx.mock:

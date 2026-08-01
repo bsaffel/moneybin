@@ -78,7 +78,7 @@ def close_source_ctes() -> set[str]:
 
 
 def historical_reversal_actor() -> str:
-    """The ``reversed_by`` value the staging join still resolves observations for.
+    """The ``reversed_by`` value the staging model treats as a retirement.
 
     A retired feed key and a user-rejected one are both ``status = 'reversed'``,
     and only ``reversed_by`` separates them: retirement is bookkeeping after a
@@ -88,17 +88,32 @@ def historical_reversal_actor() -> str:
     the service writes it from ``price_service._AUTO_REVERSAL``. Parsing it back
     out is what stops the two from drifting into silently resurrecting — or
     silently erasing — a price series.
+
+    Two predicates name it — the join arm that resolves a retired key's own
+    history, and the handover CTE that hands the interval after a retirement to
+    the next owner. Returning a single value asserts they agree, because they
+    fail in opposite directions: the join arm drifting reads as "this security
+    has no history", while the handover CTE drifting turns a *user's* rejection
+    into a transfer of ownership, giving the next holder a series the user
+    disowned. A model that deliberately wants two different actors has made a
+    design change this helper should stop.
     """
     sql = MODEL_PATH.read_text()
-    literal = re.search(r"links\.reversed_by\s*=\s*'([^']+)'", sql)
-    assert literal is not None, (
-        f"no `links.reversed_by = '...'` predicate found in {MODEL_PATH.name}; "
+    literals = set(re.findall(r"\breversed_by\s*=\s*'([^']+)'", sql))
+    assert literals, (
+        f"no `reversed_by = '...'` predicate found in {MODEL_PATH.name}; "
         "either the retired-link arm was dropped — which erases a renamed "
         "security's price history from core — or it no longer discriminates "
         "retirement from a user's rejection, which resurrects prices the user "
         "rejected"
     )
-    return literal.group(1)
+    assert len(literals) == 1, (
+        f"{MODEL_PATH.name} names more than one reversal actor {sorted(literals)}; "
+        "the retired-history arm and the handover CTE must agree on which "
+        "reversal transfers ownership, or one of them is silently reading a "
+        "user's rejection as a rename"
+    )
+    return literals.pop()
 
 
 def ref_kind_mapping() -> dict[str, str]:

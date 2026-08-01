@@ -41,16 +41,31 @@ def _accept_link(
     canonical_id: str,
     ref_kind: str = "plaid_security_id",
     source_type: str = "plaid",
+    link_id: str | None = None,
+    decided_on: str | None = None,
 ) -> None:
+    """Accept one binding. `link_id` and `decided_on` separate successive owners.
+
+    A recycled key carries more than one link, so the two must be addressable
+    apart; `decided_on` is what orders them, because the model hands each link
+    the interval starting at the retirement that preceded its own decision.
+    """
     db.execute(
         """
         INSERT INTO app.security_links
             (link_id, security_id, ref_kind, ref_value, source_type,
              status, decided_by, decided_at)
         VALUES (?, ?, ?, ?, ?, 'accepted', 'auto',
-                CURRENT_TIMESTAMP)
+                COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [f"link_{key}", canonical_id, ref_kind, key, source_type],
+        [
+            link_id or f"link_{key}",
+            canonical_id,
+            ref_kind,
+            key,
+            source_type,
+            f"{decided_on} 00:00:00" if decided_on else None,
+        ],
     )
 
 
@@ -198,15 +213,22 @@ def test_non_positive_close_is_rejected(db: Database) -> None:
         _insert_price(db, key="sec_vti", close="-5.00", price_date="2026-07-17")
 
 
-def _retire_link(db: Database, *, key: str, on: str, by: str = "auto") -> None:
-    """Reverse an accepted link the way a retirement or a rejection leaves it."""
+def _retire_link(
+    db: Database, *, key: str, on: str, by: str = "auto", link_id: str | None = None
+) -> None:
+    """Reverse one accepted link the way a retirement or a rejection leaves it.
+
+    Addressed by `link_id`, not `ref_value`: a recycled key carries several
+    links, and matching on the key would retire the successor along with the
+    predecessor.
+    """
     db.execute(
         """
         UPDATE app.security_links
         SET status = 'reversed', reversed_at = ?::TIMESTAMP, reversed_by = ?
-        WHERE ref_value = ?
+        WHERE link_id = ?
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [f"{on} 00:00:00", by, key],
+        [f"{on} 00:00:00", by, link_id or f"link_{key}"],
     )
 
 
@@ -276,6 +298,149 @@ def test_an_auto_retired_link_does_not_claim_later_observations(db: Database) ->
         ).fetchall()
     ]
     assert dates == ["2026-07-10"]
+
+
+def _owners(db: Database) -> list[tuple[str, str]]:
+    """Every (security, date) pair staging resolves, so a double claim shows up."""
+    return [
+        (str(row[0]), str(row[1]))
+        for row in db.execute(
+            "SELECT security_id, price_date FROM prep.stg_security_prices "
+            "ORDER BY price_date, security_id"
+        ).fetchall()
+    ]
+
+
+@pytest.mark.slow
+def test_a_recycled_key_does_not_claim_the_previous_owners_history(
+    db: Database,
+) -> None:
+    """The new owner of a freed ticker owns it from the handover, not from birth.
+
+    The retired link keeps resolving its own pre-rename closes, so an accepted
+    arm with no lower bound does not merely misfile those rows — it resolves
+    them a SECOND time, and one raw observation becomes two securities' price
+    history. Asserting the whole (security, date) set rather than a count is
+    what makes the duplicate visible.
+    """
+    _insert_price(
+        db, key="FB", close="180.00", source="tiingo", price_date="2026-07-10"
+    )
+    _insert_price(db, key="FB", close="9.99", source="tiingo", price_date="2026-07-20")
+    _accept_link(
+        db,
+        key="FB",
+        canonical_id="canonmeta000001",
+        ref_kind="tiingo_ticker",
+        source_type="tiingo",
+        link_id="link_fb_old",
+        decided_on="2026-07-01",
+    )
+    _retire_link(db, key="FB", on="2026-07-15", link_id="link_fb_old")
+    _accept_link(
+        db,
+        key="FB",
+        canonical_id="canonnewco00001",
+        ref_kind="tiingo_ticker",
+        source_type="tiingo",
+        link_id="link_fb_new",
+        decided_on="2026-07-16",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    assert _owners(db) == [
+        ("canonmeta000001", "2026-07-10"),
+        ("canonnewco00001", "2026-07-20"),
+    ]
+
+
+@pytest.mark.slow
+def test_a_key_retired_twice_resolves_each_interval_once(db: Database) -> None:
+    """Two retirements on one key partition its history; they must not overlap.
+
+    A ticker can move away and come back, leaving one security holding two
+    retired links on the same key. Each resolves everything before its own
+    retirement, so without a lower bound the later link re-claims the earlier
+    link's rows and the security's own history doubles under it — invisible in
+    a count of distinct securities, and wrong in every valuation.
+    """
+    _insert_price(
+        db, key="FB", close="180.00", source="tiingo", price_date="2026-07-10"
+    )
+    _insert_price(db, key="FB", close="9.99", source="tiingo", price_date="2026-07-20")
+    _accept_link(
+        db,
+        key="FB",
+        canonical_id="canonmeta000001",
+        ref_kind="tiingo_ticker",
+        source_type="tiingo",
+        link_id="link_fb_first",
+        decided_on="2026-07-01",
+    )
+    _retire_link(db, key="FB", on="2026-07-15", link_id="link_fb_first")
+    _accept_link(
+        db,
+        key="FB",
+        canonical_id="canonmeta000001",
+        ref_kind="tiingo_ticker",
+        source_type="tiingo",
+        link_id="link_fb_second",
+        decided_on="2026-07-16",
+    )
+    _retire_link(db, key="FB", on="2026-07-25", link_id="link_fb_second")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    assert _owners(db) == [
+        ("canonmeta000001", "2026-07-10"),
+        ("canonmeta000001", "2026-07-20"),
+    ]
+
+
+@pytest.mark.slow
+def test_a_user_reversal_hands_the_next_owner_the_whole_series(db: Database) -> None:
+    """A rejection transfers nothing, so it must not bound the next owner below.
+
+    The user's reversal says the pairing was never real. The closes stored under
+    that key were therefore always the next holder's, not split at a boundary
+    that only describes someone's mistake — so the handover CTE filters on
+    `reversed_by`, not on `status` alone. This is the case that separates the
+    two: an arm keyed on `status = 'reversed'` passes every other test here.
+    """
+    _insert_price(
+        db, key="FB", close="180.00", source="tiingo", price_date="2026-07-10"
+    )
+    _insert_price(db, key="FB", close="9.99", source="tiingo", price_date="2026-07-20")
+    _accept_link(
+        db,
+        key="FB",
+        canonical_id="canonmeta000001",
+        ref_kind="tiingo_ticker",
+        source_type="tiingo",
+        link_id="link_fb_rejected",
+        decided_on="2026-07-01",
+    )
+    _retire_link(db, key="FB", on="2026-07-15", by="user", link_id="link_fb_rejected")
+    _accept_link(
+        db,
+        key="FB",
+        canonical_id="canonnewco00001",
+        ref_kind="tiingo_ticker",
+        source_type="tiingo",
+        link_id="link_fb_rightful",
+        decided_on="2026-07-16",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    assert _owners(db) == [
+        ("canonnewco00001", "2026-07-10"),
+        ("canonnewco00001", "2026-07-20"),
+    ]
 
 
 @pytest.mark.slow
