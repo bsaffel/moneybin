@@ -267,7 +267,10 @@ def _sign_confirm_actions(
 
 
 def import_files(
-    paths: list[str], refresh: bool = True, force: bool = False
+    paths: list[str],
+    refresh: bool = True,
+    force: bool = False,
+    account_bindings: dict[str, str] | None = None,
 ) -> ResponseEnvelope[ImportFilesPayload]:
     """Import one or more financial data files into MoneyBin.
 
@@ -288,6 +291,12 @@ def import_files(
             indicate the pending state, and a later refresh_run or
             refresh call will catch the data up.
         force: If True, re-import files already in the import log.
+        account_bindings: Answer to an account_confirmation this tool
+            previously returned, mapping each proposed source_account_key to
+            an existing account_id, or the literal "new" to mint a fresh
+            account. Single-path only. This is how OFX and PDF imports ratify
+            an account identity; a tabular file answers through import_confirm
+            instead, because its confirmation also stages a column mapping.
 
     Returns:
         Envelope with data containing imported/failed/total counts,
@@ -302,6 +311,17 @@ def import_files(
 
     # Validate all paths upfront so a bad path fails before any service call.
     validated = [_validate_file_path(p) for p in paths]
+
+    # A source_account_key is only unambiguous within one file, and the batch
+    # path can't route bindings per-file. Refuse rather than drop them: an agent
+    # whose answer is silently ignored gets the same account_confirmation back
+    # and loops.
+    if account_bindings and len(validated) != 1:
+        raise UserError(
+            "account_bindings answers one file's account confirmation; call "
+            "import_files with a single path.",
+            code=error_codes.INFRA_INVALID_INPUT,
+        )
 
     # For single-path batches, call import_file (not import_files) so
     # ImportConfirmationRequiredError bubbles up — the batch variant catches
@@ -328,6 +348,7 @@ def import_files(
                     refresh=False,
                     force=force,
                     actor_kind="agent",
+                    account_bindings=account_bindings,
                 )
                 loaded_import_id = one.import_id
                 # Include PDFs only when the deterministic path produced rows —

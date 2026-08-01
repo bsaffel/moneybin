@@ -3404,6 +3404,65 @@ class TestImportFilesConfirmationRequired:
         # batches stay at "low"; any pending file bumps the batch to "medium".
         assert result.summary.sensitivity == "medium"
 
+    async def test_account_bindings_reach_the_service(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """import_files carries the gate answer through to the service.
+
+        OFX and PDF have no staged preview, so import_confirm cannot take their
+        account confirmation — it requires a preview_id, refuses channel "ofx"
+        outright, and rejects account_bindings for PDF. import_files is
+        therefore the answer path for both, and the parameter has to reach
+        ImportService or the agent's answer is silently dropped.
+        """
+        ofx_file = tmp_path / "statements" / "statement.ofx"
+        ofx_file.parent.mkdir(parents=True)
+        ofx_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(ofx_file), file_type="ofx", transactions=2
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            import_files(
+                paths=[str(ofx_file)],
+                refresh=False,
+                account_bindings={"1111": "new"},
+            )
+        assert mock_service.import_file.call_args.kwargs["account_bindings"] == {
+            "1111": "new"
+        }
+
+    async def test_account_bindings_refused_for_a_multi_path_batch(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A source key is unambiguous only within one file — refuse, don't drop.
+
+        The batch path can't route bindings per-file. Silently ignoring them
+        would hand the agent the same account_confirmation back on every retry.
+        """
+        first = tmp_path / "statements" / "a.ofx"
+        first.parent.mkdir(parents=True)
+        first.touch()
+        second = tmp_path / "statements" / "b.ofx"
+        second.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        with pytest.raises(UserError) as exc:
+            import_files(
+                paths=[str(first), str(second)],
+                account_bindings={"1111": "new"},
+            )
+        assert "single path" in str(exc.value)
+
     async def test_confirmation_actions_route_through_the_staged_preview(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:

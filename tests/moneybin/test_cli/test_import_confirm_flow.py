@@ -355,6 +355,49 @@ class TestImportFilesConfirmFlow:
         # the layout is settled and --accept without a binding loops the gate).
         assert not any("--mapping" in a for a in payload["actions"])
 
+    def test_ofx_account_confirmation_names_a_command_that_runs(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """An OFX gate must name `import files`, not `import confirm`.
+
+        `import confirm` consumes a staged preview and requires --accept or
+        --mapping — neither exists for OFX, which has no column mapping and no
+        preview. Naming it would hand the user a command that bounces with a
+        usage error. The sign gate already established `import files <path>
+        <flags>` as the non-tabular recovery shape.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        outcome = ConfirmationRequired(
+            channel="ofx",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("1111")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(app, ["files", str(ofx_file), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+        assert "moneybin import files" in recovery
+        assert "import confirm" not in recovery
+        assert "1111=<account_id|new>" in recovery
+        # --accept is a mapping ratification; OFX has no mapping to ratify.
+        assert "--accept" not in recovery
+
     def test_account_confirmation_tty_renders_proposals(
         self,
         mock_db: MagicMock,

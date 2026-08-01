@@ -205,6 +205,17 @@ def import_files_command(
         "-n",
         help="Account name for single-account tabular files. Single-file mode only.",
     ),
+    account_binding: list[str] = typer.Option(
+        None,
+        "--account-binding",
+        help=(
+            "Answer an account confirmation: source_key=ACCOUNT_ID|new, "
+            "repeatable. This is how OFX and PDF imports ratify an account "
+            "identity; a tabular file answers through 'import confirm' instead, "
+            "because its confirmation also stages a column mapping. "
+            "Single-file mode only."
+        ),
+    ),
     format_name: str | None = typer.Option(
         None,
         "--format",
@@ -330,6 +341,7 @@ def import_files_command(
     # --mapping is an alias for --override; merge both into one dict.
     combined_override = list(override or []) + list(mapping or [])
     overrides = _parse_overrides(combined_override or None)
+    account_bindings = _parse_account_bindings(list(account_binding or []) or None)
     interactive = not yes and sys.stdin.isatty()
 
     # Single-file mode (`len(file_paths) == 1`) always uses import_file
@@ -357,6 +369,7 @@ def import_files_command(
             )
         )
         or overrides is not None
+        or account_bindings is not None
         or yes
         or no_row_limit
         or no_size_limit
@@ -454,6 +467,7 @@ def import_files_command(
                             "auto_accept": yes,
                             "confirm": confirm,
                             "actor_kind": "human",
+                            "account_bindings": account_bindings,
                         }
                         if confirm_sign:
                             import_kwargs["human_sign_confirmation"] = True
@@ -918,13 +932,32 @@ def _account_recovery_command(
     confirm_sign: bool = False,
     sign: SignConventionType | None = None,
 ) -> str:
-    """Reproduce a tabular confirmation while adding unresolved account bindings."""
+    """Name the command that answers this account confirmation, per channel.
+
+    Tabular answers through ``import confirm``: its confirmation also stages a
+    column mapping, so the whole request has to be replayed losslessly. OFX and
+    PDF have no mapping to stage and no preview to consume — ``import confirm``
+    would reject them — so they answer on ``import files`` itself, the same
+    entry-command shape the sign gate's recovery already uses for PDF.
+    """
     bindings = dict(account_bindings or {})
     for proposal in outcome.account_proposals:
         source_key = str(proposal["source_account_key"])
         bindings.setdefault(source_key, "<account_id|new>")
     if not bindings:
         bindings["<source_key>"] = "<account_id|new>"
+
+    if outcome.channel in ("ofx", "pdf"):
+        import shlex  # noqa: PLC0415
+
+        parts = ["moneybin", "import", "files", file_path_str]
+        if account_id is not None:
+            parts.extend(("--account-id", account_id))
+        for source_key, target in bindings.items():
+            parts.extend(("--account-binding", f"{source_key}={target}"))
+        if not save_format:
+            parts.append("--no-save-format")
+        return shlex.join(parts)
 
     return _tabular_confirmation_command(
         file_path_str,
