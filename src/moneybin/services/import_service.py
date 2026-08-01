@@ -1257,11 +1257,22 @@ class ImportService:
         *,
         resolved_mapping: dict[str, str],
     ) -> None:
-        """Surface weak account-merge candidates for confirmation before load.
+        """Surface an unratified account identity for confirmation before load.
 
-        When an unbound source account resolves to weak merge candidate(s),
-        raise ``ImportConfirmationRequiredError`` (no rows load) so the caller
-        ratifies the account identity — adopt a candidate or declare ``"new"``.
+        Propose-then-bind: ``propose()`` is read-only, so an unratified identity
+        raises ``ImportConfirmationRequiredError`` (no rows load, no links
+        written) and the caller answers with an ``account_bindings`` entry —
+        adopt an existing id, or declare ``"new"``. Only then does ``resolve()``
+        write anything.
+
+        The predicate is ``AccountProposal.requires_confirm`` in full, both
+        clauses. Weak merge candidates surface, and so does a first-contact mint
+        (``is_new`` with no ``adopted_via``) — minting an account is a visible
+        moment, and the clause had no consumer, so every channel minted
+        silently. A remembered binding never re-asks: the second import of the
+        same source hits ``source_native`` in the resolution ladder, sets
+        ``adopted_via``, and passes straight through. The confirm therefore
+        costs one answer per new account identity, once, not one per file.
 
         Actor-independent by design: an agent never self-picks an account
         identity. It receives the same pre-load stop as a human, surfaced as a
@@ -1273,11 +1284,11 @@ class ImportService:
         proposals: list[AccountProposalDict] = []
         for src in source_accounts:
             # A bound account (explicit_account_id / force_standalone) is already
-            # decided; only ambiguous unbound accounts gate.
+            # decided; only unratified accounts gate.
             if src.explicit_account_id or src.force_standalone:
                 continue
             proposal = resolver.propose(src)
-            if proposal.candidates:
+            if proposal.requires_confirm:
                 proposals.append(proposal.to_dict())
         if not proposals:
             return

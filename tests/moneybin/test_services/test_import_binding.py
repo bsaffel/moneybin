@@ -90,6 +90,39 @@ def test_agent_import_gates_on_weak_account_candidate(
     assert n is not None and n[0] == 0
 
 
+def test_first_contact_mint_gates_with_no_candidates(
+    db: Database,
+) -> None:
+    """Minting a brand-new account is a visible moment, not a silent side effect.
+
+    The book is empty, so the candidate pass finds nothing and the proposal is
+    ``is_new`` with ``adopted_via=None`` — the second clause of
+    ``AccountProposal.requires_confirm``, which had no consumer. The gate tested
+    ``candidates`` alone, so this import minted an account and loaded rows
+    without ever asking, on every channel.
+    """
+    create_core_tables(db)
+    svc = ImportService(db)
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking",
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+        )
+    outcome = exc.value.outcome
+    assert outcome.reason == "account_confirmation"
+    proposals = outcome.account_proposals
+    assert [p["source_account_key"] for p in proposals] == ["wf-checking"]
+    # The clause under test: nothing to merge against, and it still gates.
+    assert proposals[0]["candidates"] == []
+    assert proposals[0]["is_new"] is True
+    assert proposals[0]["requires_confirm"] is True
+    n = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+    assert n is not None and n[0] == 0
+
+
 def test_masked_label_reaches_resolver_as_clean_name(
     db: Database,
 ) -> None:
