@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import replace
 from decimal import Decimal
 from functools import cmp_to_key
@@ -103,6 +104,7 @@ from moneybin.services.matching_service import MatchingService
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.mutation_context import current_operation_id
 from moneybin.services.review_decisions_service import (
+    IDENTITY_BLAST_RADIUS_CATEGORIES,
     IdentityDecisionPlan,
     ReviewDecisionsService,
 )
@@ -1068,6 +1070,47 @@ def reviews_decide_coarse(
     )
 
 
+#: How each blast-radius category is named in the prompt a human ratifies.
+#:
+#: Presentation, so it lives here rather than beside the category constant in the
+#: service — but it must stay in step with it, which
+#: ``test_every_blast_radius_category_has_a_prompt_label`` asserts by set
+#: equality. A category counted in the digest but absent from this map would be
+#: bound into the approval and left out of the sentence explaining it.
+IDENTITY_BLAST_RADIUS_LABELS: dict[str, tuple[str, str]] = {
+    "accounts": ("account", "accounts"),
+    "merchants": ("merchant", "merchants"),
+    "securities": ("security", "securities"),
+    "transactions": ("transaction", "transactions"),
+    "lots": ("tax lot", "tax lots"),
+    "price_marks": ("price mark you set by hand", "price marks you set by hand"),
+}
+
+
+def _identity_confirm_message(blast_radius: Mapping[str, int]) -> str:
+    """Prompt text naming what this batch moves, and how much of it.
+
+    The elicitation shows this string and nothing else — the binding's counts are
+    a digest the human never reads — so a category missing from here is a
+    mutation nobody was told about. Zero-count categories are omitted rather than
+    listed as zeros: a bind that touches one security should not read as a batch
+    reaching into accounts and merchants it never opens.
+    """
+    moved = [
+        f"{count} {IDENTITY_BLAST_RADIUS_LABELS[key][0 if count == 1 else 1]}"
+        for key in IDENTITY_BLAST_RADIUS_CATEGORIES
+        if (count := blast_radius.get(key, 0))
+    ]
+    return (
+        "Confirm this complete identity-decision batch. Accepted links can merge "
+        "account histories, merchant attribution, or security lots — including "
+        "any price marks you set by hand, which move onto the survivor — or bind "
+        "a price-feed symbol without merging anything; every decision in the "
+        "ordered batch will commit together.\n\n"
+        f"This batch touches: {', '.join(moved) if moved else 'no rows'}."
+    )
+
+
 def _identity_binding(
     decisions: list[IdentityDecisionRequest],
     plan: IdentityDecisionPlan,
@@ -1088,7 +1131,7 @@ def _identity_binding(
         key: len({
             entity_id for item in plan.items for entity_id in item.affected_ids[key]
         })
-        for key in ("accounts", "merchants", "securities", "transactions", "lots")
+        for key in IDENTITY_BLAST_RADIUS_CATEGORIES
     }
     return ConfirmationBinding(
         arguments=arguments,
@@ -1154,11 +1197,7 @@ async def identity_links_decide_coarse(
     if plan.destructive:
         grant = await grant_confirmation_or_raise(
             binding=binding if confirmation_token is None else None,
-            message=(
-                "Confirm this complete identity-decision batch. Accepted links "
-                "can merge account histories, merchant attribution, or security "
-                "lots; every decision in the ordered batch will commit together."
-            ),
+            message=_identity_confirm_message(binding.blast_radius),
             confirmation_token=confirmation_token,
         )
     live = await asyncio.to_thread(
@@ -1208,8 +1247,13 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         identity_links_decide_coarse,
         "identity_links_decide",
         "Atomically accept or reject account, merchant, and security identity "
-        "link decisions. Any accepted merge confirms the exact normalized full "
-        "batch and complete live before-state; reject-only batches do not prompt.",
+        "link decisions. Accepting a security decision either merges two "
+        "instruments' tax lots, manual events, and price marks, or only binds a "
+        "price-feed symbol to a security, which deletes nothing and moves no "
+        "row; the confirmation prompt names which one and counts every category "
+        "it moves. Any accepted merge or bind confirms the exact normalized "
+        "full batch and complete live before-state; reject-only batches do not "
+        "prompt.",
         privacy_actor="identity_links_decide",
     )
 

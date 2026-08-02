@@ -143,7 +143,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "transactions_annotate": (3_457, 3_653),
     "transactions_categorize_rules_set": (3_043, 2_670),
     "reviews_decide": (2_480, 2_566),
-    "identity_links_decide": (2_848, 5_762),
+    "identity_links_decide": (3_124, 5_762),
     "taxonomy_set": (3_480, 3_223),
     "privacy_consent_set": (1_217, 2_188),
 }

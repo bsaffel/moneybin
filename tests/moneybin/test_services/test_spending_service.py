@@ -22,24 +22,22 @@ def empty_db(db: Database) -> Database:
 
 @pytest.fixture()
 def spending_db(db: Database) -> Database:
-    """Return a Database with core + app tables and test transactions seeded.
-
-    Dates are derived from ``CURRENT_DATE``, never written as literals.
-    ``by_category`` filters on a wall-clock window
-    (``transaction_year_month >= CURRENT_DATE - INTERVAL n months``), so a pinned
-    fixture is a time bomb: these tests passed for months and then failed once the
-    2026-03/04 literals aged out of the three-month window, for a reason that had
-    nothing to do with the code. Moving the literals forward only re-arms it.
-
-    The two offsets are 40 days apart because 30 is not enough — the earlier date
-    can be the 1st and the later the 31st of one 31-day month, putting both in the
-    same ``transaction_year_month`` and breaking ``months >= 2``. At 40 days apart
-    that is arithmetically impossible, and 50 days back still lands inside a
-    three-month window on every possible run date.
-    """
+    """Return a Database with core + app tables and test transactions seeded."""
     conn = db.conn
     create_core_tables_raw(conn)
 
+    # Two months of transactions, anchored to CURRENT_DATE rather than to literal
+    # dates. by_category() filters on
+    # `transaction_year_month >= strftime(CURRENT_DATE - INTERVAL '3 months')`, so a
+    # hardcoded fixture silently ages out of its own window and the assertions below
+    # start reporting an empty breakdown — a failure with no bug behind it, arriving
+    # on a calendar boundary rather than on a commit. The previous fixture sat in
+    # 2026-03/2026-04 and expired at the 2026-08-01 UTC month rollover.
+    #
+    # The anchors are the two PRECEDING months, never the current one: that keeps
+    # every row in the past (a fixture dated into the future is its own puzzle) and
+    # still leaves a full month of margin before the three-month floor. Every derived
+    # part column is computed from the same date so they cannot drift apart.
     conn.execute("""
         INSERT INTO core.fct_transactions (
             transaction_id, account_id, transaction_date, amount,
@@ -50,17 +48,18 @@ def spending_db(db: Database) -> Database:
             transaction_day_of_week, transaction_year_month, transaction_year_quarter
         )
         SELECT
-            t.txn_id, 'A1', t.txn_date, t.amount, ABS(t.amount), t.direction,
-            t.description, t.txn_type, false, 'USD', 'ofx',
+            t.txn_id, 'A1', t.txn_date, t.amount,
+            ABS(t.amount), t.direction, t.description,
+            t.txn_type, false, 'USD', 'ofx',
             t.txn_date, CURRENT_TIMESTAMP,
             YEAR(t.txn_date), MONTH(t.txn_date), DAY(t.txn_date),
-            ISODOW(t.txn_date), strftime(t.txn_date, '%Y-%m'),
-            YEAR(t.txn_date) || '-Q' || QUARTER(t.txn_date)
+            DAYOFWEEK(t.txn_date), STRFTIME(t.txn_date, '%Y-%m'),
+            STRFTIME(t.txn_date, '%Y') || '-Q' || CAST(QUARTER(t.txn_date) AS VARCHAR)
         FROM (VALUES
-            ('T1', CURRENT_DATE - 10, -50.00, 'expense', 'Coffee', 'DEBIT'),
-            ('T2', CURRENT_DATE - 10, 5000.00, 'income', 'Payroll', 'CREDIT'),
-            ('T3', CURRENT_DATE - 50, -200.00, 'expense', 'Groceries', 'DEBIT'),
-            ('T4', CURRENT_DATE - 50, 5000.00, 'income', 'Payroll', 'CREDIT')
+            ('T1', (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL 1 MONTH + INTERVAL 9 DAY)::DATE, -50.00, 'expense', 'Coffee', 'DEBIT'),
+            ('T2', (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL 1 MONTH + INTERVAL 14 DAY)::DATE, 5000.00, 'income', 'Payroll', 'CREDIT'),
+            ('T3', (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL 2 MONTH + INTERVAL 9 DAY)::DATE, -200.00, 'expense', 'Groceries', 'DEBIT'),
+            ('T4', (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL 2 MONTH + INTERVAL 19 DAY)::DATE, 5000.00, 'income', 'Payroll', 'CREDIT')
         ) AS t(txn_id, txn_date, amount, direction, description, txn_type)
     """)  # noqa: S608  # test input, not executing SQL
 

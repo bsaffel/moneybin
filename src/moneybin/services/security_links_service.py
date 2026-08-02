@@ -13,17 +13,20 @@ Within ONE transaction it re-points ``app.lot_selections`` at the survivor
 re-points every accepted provider ref off the provisional security, re-points
 every manual ledger row carrying the provisional's ``security_id`` directly
 (``raw.manual_investment_transactions`` — user state resolved at entry, with no
-link-table indirection), resolves the decision (auto-rejecting the ref's sibling
-candidates), and deletes the provisional catalog row. A selection that cannot be
-deterministically remapped BLOCKS the merge (``UserError``) rather than silently
-downgrading a specific-ID election to FIFO on the next rebuild.
+link-table indirection), re-points the user's ``app.security_price_overrides``
+marks, resolves the decision (auto-rejecting the ref's sibling candidates), and
+deletes the provisional catalog row. A selection that cannot be deterministically
+remapped BLOCKS the merge (``UserError``) rather than silently downgrading a
+specific-ID election to FIFO on the next rebuild; so does a price mark that
+would collide with one the survivor already holds.
 
 The cascade's contract: after the merge, NOTHING still references the deleted
-catalog row. Atomicity is the correctness bar — a half-applied merge (links
-re-pointed but lot selections stranded, or the catalog row deleted while a
-manual event still points at it) leaves cost basis silently wrong with no error
-raised and no doctor check to catch it. A failed merge is retryable; a
-half-merge is not detectable.
+catalog row. That means every link-free reference — lot selections, manual
+events, price marks — not only the ones a link table would carry. Atomicity is
+the correctness bar: a half-applied merge (links re-pointed but lot selections
+stranded, or the catalog row deleted while a manual event still points at it)
+leaves cost basis silently wrong with no error raised and no doctor check to
+catch it. A failed merge is retryable; a half-merge is not detectable.
 
 ``actor`` is the audit surface (``cli``/``mcp``); ``decided_by`` is the domain
 column (``user``/``auto``). The caller supplies both.
@@ -35,7 +38,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 import duckdb
 
@@ -51,6 +54,7 @@ from moneybin.repositories.manual_investment_transactions_repo import (
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.repositories.security_price_repo import SecurityPriceRepo
 from moneybin.tables import (
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
@@ -58,12 +62,27 @@ from moneybin.tables import (
     SECURITIES,
     SECURITY_LINK_DECISIONS,
     SECURITY_LINKS,
+    SECURITY_PRICE_OVERRIDES,
 )
 
 logger = logging.getLogger(__name__)
 
 # (lot_id, quantity) pairs keyed by disposal — the shape LotSelectionsRepo takes.
 _SelectionSet = dict[str, list[tuple[str, Decimal]]]
+
+# Refs that name a market-data symbol rather than a second catalog row for one
+# instrument. Accepting one BINDS the feed; accepting an identity ref MERGES two
+# securities — opposite operations behind one reviewer intent, which is why
+# `accept` routes on this set. Kept in step with what PriceService actually
+# queues by test_price_service.py, which asserts every ref_kind the service files
+# appears here: a new adapter whose ref_kind is missing would silently route its
+# decisions into the merge path and destroy the security they were meant to price.
+_FEED_KEY_REF_KINDS = frozenset({"tiingo_ticker", "coingecko_slug"})
+
+# What an accepted decision actually did. A feed key BINDS (creates a link,
+# touches nothing else); an identity ref MERGES (re-points every reference and
+# deletes the provisional). Surfaces report the two differently.
+AcceptOutcome = Literal["bound", "merged"]
 
 
 @dataclass(frozen=True)
@@ -267,8 +286,23 @@ class SecurityLinksService:
                 "manual_investment_transactions": len(
                     self._manual_events.list_ids_for_security(provisional)
                 ),
+                "security_price_overrides": self._mark_count(provisional),
             },
         )
+
+    def _mark_count(self, security_id: str) -> int:
+        """User price marks the merge will move — part of its blast radius.
+
+        Counted here because the confirm preview binds approval to this figure:
+        a row the merge mutates but the preview omits is a write the user never
+        agreed to.
+        """
+        row = self._db.execute(
+            f"SELECT COUNT(*) FROM {SECURITY_PRICE_OVERRIDES.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE security_id = ?",
+            [security_id],
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
 
     def _security_display(self, security_id: str) -> tuple[str | None, str | None]:
         """(ticker, name) for ``security_id`` from ``app.securities``; ``(None, None)`` if absent."""
@@ -282,6 +316,199 @@ class SecurityLinksService:
     # ------------------------------------------------------------------
     # Mutations
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def binds_a_feed_key(ref_kind: str) -> bool:
+        """Whether accepting this ref binds a price feed rather than merging identities.
+
+        Public because the coarse batch preflight has to route the same way
+        ``accept`` does, one step earlier. Re-deriving the rule from
+        ``_FEED_KEY_REF_KINDS`` at that second call site is exactly how the coarse
+        path came to run every accept through the merge preflight while the
+        fine-grained one routed correctly.
+        """
+        return ref_kind in _FEED_KEY_REF_KINDS
+
+    def _require_bindable(
+        self,
+        decision: dict[str, Any],
+        *,
+        decision_id: str,
+        into: str,
+    ) -> None:
+        """Refusals shared by the feed-key preflight and the bind that follows it."""
+        if into != decision["candidate_security_id"]:
+            raise UserError(
+                "into does not match the candidate named in decision "
+                f"{decision_id!r}; pass the decision's own "
+                "candidate_security_id as a confirming safety check.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        if not self._security_exists(into):
+            raise UserError(
+                f"Security {into!r} no longer exists, so a price feed cannot "
+                "be bound to it.",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+
+    def bind_impact(self, decision_id: str, *, into: str) -> None:
+        """Preflight an accepted feed-key decision before a batch's first write.
+
+        The merge path exposes ``accept_impact`` so a batch discovers its refusals
+        before mutating anything; this is that step for a bind. It previews no rows
+        because a bind mutates none — it creates the link that did not exist — so it
+        asserts only what ``accept_feed_key`` asserts, through the same helper, and
+        the guard cannot drift from the write it guards.
+        """
+        decision = self._require_pending(decision_id)
+        self._require_bindable(decision, decision_id=decision_id, into=into)
+
+    def accept(
+        self,
+        decision_id: str,
+        *,
+        into: str,
+        decided_by: str = "user",
+        verify_accept: Callable[[SecurityLinkAcceptImpact], None] | None = None,
+        in_outer_txn: bool = False,
+    ) -> AcceptOutcome:
+        """Accept one pending decision by whichever mechanism its ref_kind needs.
+
+        The queue holds two kinds of question that look identical to a reviewer
+        and are structurally opposite to resolve:
+
+        - An **identity** ref (``plaid_security_id``, ``institution_security_id``)
+          asks whether two catalog rows are one instrument. Accepting MERGES —
+          re-points every reference onto the survivor and deletes the provisional.
+        - A **feed-key** ref (``tiingo_ticker``, ``coingecko_slug``) asks whether
+          a market-data symbol names this security. Accepting BINDS — it creates
+          the link that did not exist, and touches nothing else.
+
+        Routing every acceptance through the merge path made feed-key decisions
+        unacceptable by construction: the merge requires an accepted binding to
+        move, and a feed key has none — that absence is exactly why PriceService
+        queued it. The decision stayed pending forever and the security stayed
+        unpriced with no way to resolve it.
+
+        One entry point rather than two commands: the reviewer's intent is the
+        same ("yes, this pairing is right"), and the pending queue mixes both
+        kinds, so asking the caller to pick the mechanism would leak an
+        implementation detail into the surface.
+
+        Returns which mechanism ran. The caller cannot see the routing and the
+        two outcomes are opposite, so a surface that assumed one would tell the
+        user it merged two securities when it only created a link. Re-deriving
+        it from ``_FEED_KEY_REF_KINDS`` in each adapter would put the routing
+        rule in two places instead.
+
+        ``in_outer_txn`` lets the coarse batch enter through this same router
+        rather than calling ``accept_merge`` directly. That call is what made the
+        batch surface merge-only while this one routed correctly.
+        """
+        decision = self._require_pending(decision_id)
+        if self.binds_a_feed_key(str(decision["ref_kind"])):
+            self.accept_feed_key(
+                decision_id,
+                into=into,
+                decided_by=decided_by,
+                in_outer_txn=in_outer_txn,
+            )
+            return "bound"
+        self.accept_merge(
+            decision_id,
+            into=into,
+            decided_by=decided_by,
+            verify_accept=verify_accept,
+            in_outer_txn=in_outer_txn,
+        )
+        return "merged"
+
+    def accept_feed_key(
+        self,
+        decision_id: str,
+        *,
+        into: str,
+        decided_by: str = "user",
+        in_outer_txn: bool = False,
+        verify_accept: Callable[[], None] | None = None,
+    ) -> None:
+        """Bind a reviewed market-data symbol to the security under review.
+
+        Not a merge: no catalog row is deleted and no lot, manual event, or price
+        mark moves. The binding simply did not exist — ``PriceService`` refused to
+        create it silently because the symbol was ambiguous or the provider's
+        metadata disagreed — and the reviewer is supplying the certainty the
+        derivation lacked.
+
+        In ONE transaction: mark the decision accepted (its audit id parents the
+        binding, so the pair undoes together), insert the accepted link, and
+        auto-reject the ref's sibling candidates — accepting one answers them all.
+
+        ``verify_accept`` is the confirmation-grant check, and it runs HERE rather
+        than in the caller for the reason ``mcp.md`` gives: a grant is verified
+        against live state inside the same write transaction, immediately before
+        the first mutation, never verified ahead of a transaction opened
+        afterwards. The gap matters because of the sibling auto-reject below —
+        a candidate queued for this ref between an outside check and this
+        transaction would be rejected by a bind whose approved blast radius never
+        counted it. It takes no argument because the radius a feed-key bind
+        confirms is the caller's to recompute; the service only guarantees WHEN.
+
+        Raises ``UserError`` when the decision is unknown or not pending, when
+        ``into`` does not match the decision's own ``candidate_security_id`` (the
+        same confirming safety check the merge path applies), or when that
+        security no longer exists.
+        """
+        if not in_outer_txn:
+            self._db.begin()
+        try:
+            decision = self._require_pending(decision_id)
+            self._require_bindable(decision, decision_id=decision_id, into=into)
+            if verify_accept is not None:
+                verify_accept()
+            event = self._decisions.update_status(
+                decision_id,
+                status="accepted",
+                decided_by=decided_by,
+                actor=self._actor,
+                in_outer_txn=True,
+            )
+            self._links.insert(
+                security_id=into,
+                ref_kind=str(decision["ref_kind"]),
+                ref_value=str(decision["ref_value"]),
+                source_type=str(decision["source_type"]),
+                decided_by=decided_by,
+                actor=self._actor,
+                parent_audit_id=event.audit_id,
+                in_outer_txn=True,
+            )
+            self._reject_pending_siblings(
+                decision,
+                exclude=decision_id,
+                decided_by=decided_by,
+                parent_audit_id=event.audit_id,
+            )
+            if not in_outer_txn:
+                self._db.commit()
+        except BaseException:
+            if not in_outer_txn:
+                self._db.rollback()
+            raise
+        if in_outer_txn:
+            return
+
+        SECURITY_LINK_DECISION_OUTCOMES_TOTAL.labels(outcome="accepted").inc()
+        logger.info(
+            f"feed key bound: decision={decision_id} security={into} "
+            f"ref_kind={decision['ref_kind']}"
+        )
+
+        from moneybin.services.security_resolver import (  # noqa: PLC0415
+            refresh_security_link_pending_gauge,
+        )
+
+        refresh_security_link_pending_gauge(self._db)
 
     def reject_merge(
         self,
@@ -377,14 +604,18 @@ class SecurityLinksService:
         6. Re-point every ``raw.manual_investment_transactions`` row that carries
            the provisional's ``security_id`` — the ledger's other, link-free
            reference to the catalog (see :meth:`_repoint_manual_events`).
-        7. Auto-reject the ref's sibling pending candidates — accepting one answers
+        7. Re-point the user's ``app.security_price_overrides`` marks — the
+           fourth link-free reference (see :meth:`_repoint_price_marks`).
+        8. Auto-reject the ref's sibling pending candidates — accepting one answers
            them all, so a tie resolves in a single review action.
-        8. Delete the provisional ``created_by='plaid'`` catalog row.
+        9. Delete the provisional ``created_by='plaid'`` catalog row.
 
-        Steps 4-8 must succeed or fail together: a merge that re-points the link
-        but strands a lot selection silently corrupts cost basis, and one that
+        Steps 4-9 must succeed or fail together: a merge that re-points the link
+        but strands a lot selection silently corrupts cost basis, one that
         deletes the catalog row but strands a manual event splits the
-        instrument's position across a live security and a dead one.
+        instrument's position across a live security and a dead one, and one
+        that strands a price mark silently stops the user's own valuation from
+        applying.
 
         Raises ``UserError`` when:
         - ``decision_id`` is unknown (MUTATION_NOT_FOUND) or not ``pending``
@@ -437,7 +668,7 @@ class SecurityLinksService:
                 )
             if self._security_created_by(provisional) != "plaid":
                 # SecuritiesRepo.delete enforces the same rule at the LAST
-                # write of the cascade (step 7); this pre-write check moves
+                # write of the cascade (step 9); this pre-write check moves
                 # the refusal ahead of the first write, per "Plan (and
                 # validate) BEFORE the first write" below.
                 raise UserError(
@@ -484,6 +715,9 @@ class SecurityLinksService:
             manual_repointed = self._repoint_manual_events(
                 provisional, survivor, parent_audit_id=parent_audit_id
             )
+            marks_repointed = self._repoint_price_marks(
+                provisional, survivor, parent_audit_id=parent_audit_id
+            )
             self._reject_pending_siblings(
                 decision,
                 exclude=decision_id,
@@ -510,7 +744,8 @@ class SecurityLinksService:
             f"security merge accepted: decision={decision_id} "
             f"provisional={provisional} survivor={survivor} "
             f"disposals_remapped={len(plan)} "
-            f"manual_events_repointed={manual_repointed}"
+            f"manual_events_repointed={manual_repointed} "
+            f"price_marks_repointed={marks_repointed}"
         )
 
         # Accepting changed the pending count (the named decision plus its
@@ -524,6 +759,29 @@ class SecurityLinksService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def decision_ids_for_ref(
+        self, *, ref_kind: str, ref_value: str, source_type: str
+    ) -> tuple[str, ...]:
+        """Pending decisions competing for one provider ref, in id order.
+
+        Accepting any one of them resolves the whole group — the winner is
+        accepted and its siblings auto-rejected — so this names every row a
+        confirmation is about to decide, and its length is the count the blast
+        radius states.
+
+        Ids rather than a count, because the count is not an identity. Reject a
+        sibling and let a later pull queue a different one, and the total is
+        unchanged: a grant bound to the number alone still verifies, and the
+        accept then auto-rejects a decision the user was never shown. Read-only.
+        """
+        rows = self._db.execute(
+            f"SELECT decision_id FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE status = 'pending' AND ref_kind = ? AND ref_value = ? "
+            "AND source_type = ? ORDER BY decision_id",
+            [ref_kind, ref_value, source_type],
+        ).fetchall()
+        return tuple(str(row[0]) for row in rows)
 
     def _require_pending(self, decision_id: str) -> dict[str, Any]:
         """Fetch the decision, or raise ``UserError`` unless it is pending."""
@@ -688,7 +946,7 @@ class SecurityLinksService:
         restricts a manual entry to ``created_by='user'`` catalog rows in the
         first place.
 
-        Left behind, those rows would point at the catalog id step 7 deletes:
+        Left behind, those rows would point at the catalog id step 9 deletes:
         ``core.fct_investment_lots`` would keep building lots under a security
         that no longer exists while the Plaid side moved to the survivor, so the
         user's single real position is split across a live security and a dead
@@ -712,6 +970,82 @@ class SecurityLinksService:
                 in_outer_txn=True,
             )
         return len(source_ids)
+
+    def _repoint_price_marks(
+        self, provisional: str, survivor: str, *, parent_audit_id: str | None
+    ) -> int:
+        """Move the user's own price marks onto the survivor.
+
+        ``app.security_price_overrides.security_id`` is the FOURTH link-free
+        reference to ``app.securities``, beside lot selections, links, and manual
+        events. No FK constrains it, so step 9's catalog delete leaves the mark
+        behind rather than failing: ``core.fct_security_prices`` keeps unioning it
+        under the dead id, ``core.dim_holdings`` joins it to nothing, and the
+        surviving position quietly falls back to provider pricing — the user's
+        explicit valuation stops applying with no warning on any surface.
+
+        Refuses when a mark on each side shares a ``(price_date,
+        quote_currency)``. The composite primary key admits only one, and choosing
+        between two numbers the user typed is not a decision this merge can make
+        silently — the same reasoning that makes an unremappable lot selection
+        block rather than guess.
+
+        Spelled as delete-then-set rather than a primary-key update so it reuses
+        the repo's audited primitives and their full-row capture; the two events
+        thread onto the merge's ``parent_audit_id`` and reverse in order, so an
+        undo puts the mark back on the provisional.
+
+        That spelling costs one thing an UPDATE would have kept for free, so the
+        original ``created_at`` is carried across explicitly: the pair never hits
+        ``set``'s ``ON CONFLICT`` branch, and letting the insert default stamp the
+        merge time would rewrite when the user authored a number they typed months
+        earlier — while the delete event sitting beside it still records the truth.
+        """
+        rows = self._db.execute(
+            f"SELECT price_date, quote_currency, close, note, created_at "  # noqa: S608  # TableRef constant
+            f"FROM {SECURITY_PRICE_OVERRIDES.full_name} WHERE security_id = ? "
+            "ORDER BY price_date, quote_currency",
+            [provisional],
+        ).fetchall()
+        if not rows:
+            return 0
+        clash = self._db.execute(
+            f"SELECT COUNT(*) FROM {SECURITY_PRICE_OVERRIDES.full_name} AS a "  # noqa: S608  # TableRef constant
+            f"JOIN {SECURITY_PRICE_OVERRIDES.full_name} AS b "
+            "ON b.price_date = a.price_date AND b.quote_currency = a.quote_currency "
+            "WHERE a.security_id = ? AND b.security_id = ?",
+            [provisional, survivor],
+        ).fetchone()
+        if clash is not None and int(clash[0]) > 0:
+            raise UserError(
+                "Both securities carry a price mark for the same date and "
+                "currency, and only one can survive the merge. Delete the mark "
+                "you do not want with 'moneybin investments prices delete', then "
+                "accept this decision again.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+        marks = SecurityPriceRepo(self._db)
+        for price_date, quote_currency, close, note, created_at in rows:
+            marks.delete(
+                provisional,
+                price_date,
+                str(quote_currency),
+                actor=self._actor,
+                parent_audit_id=parent_audit_id,
+                in_outer_txn=True,
+            )
+            marks.set(
+                survivor,
+                price_date,
+                str(quote_currency),
+                close=close,
+                note=note,
+                actor=self._actor,
+                created_at=created_at,
+                parent_audit_id=parent_audit_id,
+                in_outer_txn=True,
+            )
+        return len(rows)
 
     def _repoint_links(
         self,

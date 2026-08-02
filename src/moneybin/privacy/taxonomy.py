@@ -481,6 +481,21 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "reversed_by": DataClass.TXN_TYPE,
     },
+    ("app", "security_price_overrides"): {
+        "security_id": DataClass.RECORD_ID,
+        # price_date names the day the user chose to value the position, not a
+        # day they traded: a mark exists precisely where no execution does.
+        "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
+        "quote_currency": DataClass.CURRENCY,
+        # A mark is a number the user wrote — a 409A valuation, a private-company
+        # estimate — so it is a personal financial fact, not a market observation
+        # that happens to be stored locally. It matches the tier of
+        # core.fct_security_prices.close, which this table feeds.
+        "close": DataClass.TXN_AMOUNT,
+        "note": DataClass.USER_NOTE,
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "seed_source_priority"): {
         "priority": DataClass.AGGREGATE,
         "source_type": DataClass.TXN_TYPE,
@@ -805,15 +820,29 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     },
     ("core", "fct_security_prices"): {
         "security_id": DataClass.RECORD_ID,
-        # A market close is public reference data (what a security's price WAS
-        # on a date) — not a personal fact about the user, unlike
-        # fct_investment_transactions.price which is what the user actually
-        # paid. Neither this row nor its date names an account or a quantity
-        # held, so both get the same LOW-tier public-reference treatment as
-        # dim_securities.ticker/name rather than TXN_AMOUNT/TXN_DATE.
-        "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
+        # price_date carries the same problem as close, one column over. With a
+        # 'trade_implied' row it is literally fct_investment_transactions
+        # .trade_date — the day the user traded — so a LOW tier here returns the
+        # security and the date of a personal execution as public data, and it
+        # does so even for a query that omits close entirely. Raising close
+        # protects the amount, not the fact of the trade.
+        "price_date": DataClass.TXN_DATE,
         "quote_currency": DataClass.CURRENCY,
-        "close": DataClass.AGGREGATE,
+        # close does NOT. A provider close alone would be public reference data,
+        # but this column is the resolved winner across three sources: with a
+        # 'trade_implied' row it is literally fct_investment_transactions.price —
+        # the user's own fill — and with an 'override' row it is a valuation the
+        # user authored. `sql_query` serves core, so a LOW tier here advertises
+        # and returns a personal transaction amount as public data.
+        #
+        # Classified by the strictest value the column can carry rather than by
+        # source, because CLASSIFICATION maps a column to one class and cannot
+        # vary per row. That costs the provider closes a tier they do not need;
+        # the alternative — splitting user-derived closes into their own column
+        # or model so the provider series can return to LOW — is a core schema
+        # change, deliberately not made under a review fix. Held by
+        # test_a_resolved_close_is_never_less_sensitive_than_what_flows_into_it.
+        "close": DataClass.TXN_AMOUNT,
         "source_type": DataClass.TXN_TYPE,
         "price_basis": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,

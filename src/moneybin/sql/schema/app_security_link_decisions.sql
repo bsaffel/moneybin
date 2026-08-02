@@ -8,12 +8,12 @@
    SecurityLinkDecisionsRepo (Invariant 10). */
 CREATE TABLE IF NOT EXISTS app.security_link_decisions (
     decision_id VARCHAR NOT NULL,              -- uuid4[:12]
-    ref_kind VARCHAR NOT NULL                  -- provider-ref kind under review
-        CHECK (ref_kind IN ('plaid_security_id', 'institution_security_id')),
+    ref_kind VARCHAR NOT NULL                  -- provider-ref kind under review; an ambiguous market-feed key derivation (tiingo_ticker, coingecko_slug) queues here rather than binding silently
+        CHECK (ref_kind IN ('plaid_security_id', 'institution_security_id', 'tiingo_ticker', 'coingecko_slug')),
     ref_value VARCHAR NOT NULL,                -- the unbound provider ref under review
     source_type VARCHAR NOT NULL,              -- issuing provider
-    provider_ticker VARCHAR,                   -- Plaid ticker_symbol (reviewer display + match basis)
-    provider_name VARCHAR,                     -- Plaid security name
+    provider_ticker VARCHAR,                   -- the PROVIDER's symbol, never the catalog's (reviewer display + match basis): Plaid ticker_symbol, or the symbol a market feed was queried by. NULL when the provider was never consulted (a ticker ambiguous inside our own catalog is refused before any round-trip)
+    provider_name VARCHAR,                     -- the PROVIDER's name for that symbol. Writing the catalog's own name here shows the reviewer two identical names and hides the divergence under review
     candidate_security_id VARCHAR NOT NULL,    -- existing app.securities entry proposed as merge survivor
     confidence_score DECIMAL(5, 4),            -- match confidence (0-1)
     match_signals JSON,                        -- which signal fired + value (match_decisions convention)

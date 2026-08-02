@@ -88,7 +88,8 @@ from moneybin.services.entity_reference import (
     resolve_entity_reference,
 )
 from moneybin.services.investment_service import InvestmentService
-from moneybin.services.security_links_service import (
+from moneybin.services.security_links_service import (  # noqa: I001
+    _FEED_KEY_REF_KINDS,  # pyright: ignore[reportPrivateUsage]  # the routing set
     SecurityLinkAcceptImpact,
     SecurityLinksService,
 )
@@ -560,7 +561,14 @@ def investments_lots_select(
 def investments_securities_links_pending() -> ResponseEnvelope[
     SecurityLinksPendingPayload
 ]:
-    """List pending security merge decisions, grouped by provider ref.
+    """List pending security identity and price-feed decisions, grouped by provider ref.
+
+    Two kinds share this queue. An identity decision proposes MERGING a
+    provisional security into a catalog entry — it deletes a row and re-points
+    tax lots. A price-feed decision only proposes BINDING a provider's market-data
+    symbol (`tiingo_ticker`, `coingecko_id`) to a security so its closes value the
+    position; nothing is fused, nothing is deleted, and no lot moves. A group with
+    no `provider_ticker`/`provider_name` side is a feed-key binding.
 
     Returns the review queue of provider refs (a Plaid `plaid_security_id`
     or `institution_security_id`) with candidate merge-survivor proposals.
@@ -587,7 +595,9 @@ def investments_securities_links_pending() -> ResponseEnvelope[
         total_count=n_pending,
         actions=[
             "Use identity_links_decide with kind='security_link', "
-            "decision='accept', decision_id, and target_id to merge",
+            "decision='accept', decision_id, and target_id to apply the "
+            "decision — a merge for an identity proposal, a price-feed "
+            "binding for a feed-key one",
             "Use identity_links_decide with kind='security_link', "
             "decision='reject', and decision_id to keep it distinct",
         ],
@@ -607,8 +617,41 @@ class _MergeProposal:
     candidate_ticker: str | None
     candidate_name: str | None
     match_reason: str | None
-    provisional_security_id: str
+    # None for a feed-key bind: there is no provisional security to merge away,
+    # which is exactly what distinguishes it from an identity merge.
+    provisional_security_id: str | None
     blast_radius: dict[str, int]
+    is_feed_key: bool
+    # The exact pending decisions an accept resolves. Empty for a merge, whose
+    # binding is already pinned to the two security ids it fuses.
+    sibling_decision_ids: tuple[str, ...] = ()
+
+
+def _feed_key_bind_scope(
+    service: SecurityLinksService, decision: dict[str, Any]
+) -> tuple[tuple[str, ...], dict[str, int]]:
+    """What a feed-key bind decides: the ref's pending ids, and the row counts.
+
+    Both ends of one confirmation compute this — the proposal states it, the
+    commit recomputes it before verifying the grant — so it has to be one
+    expression over one set of inputs or a ratified bind can stop matching its
+    own prompt. Scoped to the full ``(source_type, ref_kind, ref_value)`` key
+    ``_reject_pending_siblings`` rejects on; ``pending()`` groups by
+    ``(ref_kind, ref_value)`` alone, so counting a group would overstate the
+    radius for a symbol two feeds serve.
+
+    The ids go into the binding and the count into the radius, because they
+    answer different questions: how much this touches, and exactly which rows.
+    A grant carrying only the count is satisfied by any group of the same size,
+    so a sibling rejected and replaced between prompt and submit is auto-rejected
+    by an approval that never named it.
+    """
+    ids = service.decision_ids_for_ref(
+        ref_kind=str(decision["ref_kind"]),
+        ref_value=str(decision["ref_value"]),
+        source_type=str(decision["source_type"]),
+    )
+    return ids, {"security_links": 1, "security_link_decisions": len(ids)}
 
 
 def _load_pending_proposal(decision_id: str) -> _MergeProposal:
@@ -619,10 +662,29 @@ def _load_pending_proposal(decision_id: str) -> _MergeProposal:
         for group in groups:
             for candidate in group.candidates:
                 if candidate.decision_id == decision_id:
-                    impact = service.accept_impact(
-                        decision_id,
-                        into=candidate.candidate_security_id,
-                    )
+                    is_feed_key = group.ref_kind in _FEED_KEY_REF_KINDS
+                    if is_feed_key:
+                        # accept_impact answers "what does this merge touch", and
+                        # raises when no accepted binding exists to move. A feed
+                        # key has none by construction, so the merge preview is
+                        # both unreachable and the wrong question: binding creates
+                        # one link and resolves the ref's decisions, full stop.
+                        decision = service.decision_by_id(decision_id)
+                        # pending() returned this id from this same connection.
+                        if decision is None:  # pragma: no cover
+                            break
+                        provisional = None
+                        sibling_ids, blast_radius = _feed_key_bind_scope(
+                            service, decision
+                        )
+                    else:
+                        impact = service.accept_impact(
+                            decision_id,
+                            into=candidate.candidate_security_id,
+                        )
+                        provisional = impact.provisional_security_id
+                        blast_radius = impact.blast_radius
+                        sibling_ids = ()
                     return _MergeProposal(
                         decision_id=decision_id,
                         ref_kind=group.ref_kind,
@@ -633,8 +695,10 @@ def _load_pending_proposal(decision_id: str) -> _MergeProposal:
                         candidate_ticker=candidate.candidate_ticker,
                         candidate_name=candidate.candidate_name,
                         match_reason=candidate.match_reason,
-                        provisional_security_id=impact.provisional_security_id,
-                        blast_radius=impact.blast_radius,
+                        provisional_security_id=provisional,
+                        blast_radius=blast_radius,
+                        is_feed_key=is_feed_key,
+                        sibling_decision_ids=sibling_ids,
                     )
     raise UserError(
         f"No pending security merge decision '{decision_id}'.",
@@ -643,14 +707,36 @@ def _load_pending_proposal(decision_id: str) -> _MergeProposal:
     )
 
 
+# The two acceptances a security-link decision can commit. They are NOT the same
+# mutation: a merge deletes a catalog row and re-points tax lots, while a bind
+# only records which provider symbol prices a security. Every agent-facing
+# description of this decision must cover both — an accept documented solely as a
+# merge overstates what a feed-key decision does and deters confirming it.
+FEED_KEY_BIND_KIND = "security_feed_key_bind"
+IDENTITY_MERGE_KIND = "security_identity_merge"
+
+
 def _security_link_binding(
     *,
     decision_id: str,
     candidate_security_id: str,
-    provisional_security_id: str,
+    provisional_security_id: str | None,
     blast_radius: dict[str, int],
+    sibling_decision_ids: tuple[str, ...] = (),
 ) -> ConfirmationBinding:
-    """Bind approval without exposing the raw provider reference."""
+    """Bind approval without exposing the raw provider reference.
+
+    ``operation_kind`` distinguishes the two acceptances, so a grant issued for a
+    feed-key bind can never be replayed against a merge: they touch different
+    rows and only one deletes a security.
+
+    A bind's siblings are named in ``resolved_ids`` rather than left to the
+    radius count, because accepting one auto-rejects all of them: bound to the
+    count alone, a group whose membership changed between prompt and submit
+    still verifies, and the accept then rejects a decision the user never saw.
+    A merge needs no such list — its binding already pins both security ids.
+    """
+    is_feed_key = provisional_security_id is None
     return ConfirmationBinding(
         arguments={
             "decision_id": decision_id,
@@ -658,14 +744,42 @@ def _security_link_binding(
             "into": candidate_security_id,
         },
         resolved_ids=(
-            provisional_security_id,
-            candidate_security_id,
+            (candidate_security_id, *sibling_decision_ids)
+            if is_feed_key
+            else (provisional_security_id, candidate_security_id)
         ),
         actor="mcp",
         profile=get_settings().profile,
         authorization_context="local-profile",
-        operation_kind="security_identity_merge",
+        operation_kind=(FEED_KEY_BIND_KIND if is_feed_key else IDENTITY_MERGE_KIND),
         blast_radius=blast_radius,
+    )
+
+
+def _feed_key_confirm_message(p: _MergeProposal) -> str:
+    """Prompt text a human reads before a market-data symbol is bound.
+
+    Deliberately NOT the merge prompt: nothing is fused, nothing is deleted, and
+    no tax lot moves. What is at stake is which company's closes will value this
+    position — so the prompt names the provider's own answer for the symbol,
+    which is the evidence the automatic derivation refused to act on.
+    """
+    return (
+        "Confirm a price-feed binding (this decides which prices value a "
+        "position).\n\n"
+        f"BIND — {p.ref_kind}={p.ref_value}\n"
+        f"  the provider calls it: {p.provider_name or '(unknown)'}\n\n"
+        f"TO — security_id {p.candidate_security_id}:\n"
+        f"  ticker {p.candidate_ticker or '(none)'} · "
+        f"name {p.candidate_name or '(none)'}\n\n"
+        f"Queued on: {p.match_reason or 'unspecified'}. MoneyBin binds a feed key "
+        "silently only when the symbol names one catalog entry AND the provider "
+        "agrees about its exchange and issuer — this one failed that test.\n\n"
+        "Accepting stores the binding and prices this security from that symbol "
+        "on every later refresh. No security is deleted and no tax lot moves. If "
+        "the symbol names a different company, the position will be valued at "
+        "that company's price. Reversible via system_audit_undo(operation_id).\n\n"
+        "Accept this binding?"
     )
 
 
@@ -675,7 +789,20 @@ def _confirm_message(p: _MergeProposal) -> str:
     Names BOTH sides — the provisional is identified by its provider ref (the
     catalog id it will be deleted under is an implementation detail the review
     queue does not surface) — plus the reason the resolver refused to decide.
+
+    The price-mark clause is stated either way, never appended only when the
+    count is non-zero: ``accept_merge`` re-points the user's own valuations
+    alongside the lots, and a prompt silent on them reads as "not applicable"
+    rather than "none". ``accept_impact`` already counts them for the digest;
+    this is the sentence that puts the same number in front of a human.
     """
+    marks = p.blast_radius.get("security_price_overrides", 0)
+    mark_clause = (
+        f"Your own valuations move with them: {marks} price mark"
+        f"{'' if marks == 1 else 's'} you set by hand will price the survivor."
+        if marks
+        else "You have set no price mark on the provisional, so none move."
+    )
     return (
         "Confirm a security merge (this fuses two instruments' tax lots).\n\n"
         f"MERGE AWAY — provisional, provider ref {p.ref_kind}={p.ref_value}:\n"
@@ -689,8 +816,10 @@ def _confirm_message(p: _MergeProposal) -> str:
         "match, not a certain one.\n\n"
         "Accepting re-points every accepted provider ref, tax-lot selection, "
         "and manual investment ledger row onto the survivor, then deletes the "
-        "provisional catalog row. If these are not the same instrument, cost "
-        "basis and every later realized gain will be wrong. Reversible via "
+        "provisional catalog row. "
+        f"{mark_clause} "
+        "If these are not the same instrument, cost basis and every later "
+        "realized gain will be wrong. Reversible via "
         "system_audit_undo(operation_id).\n\n"
         "Accept this merge?"
     )
@@ -714,7 +843,45 @@ def _apply_accept(
         )
 
     with get_database(read_only=False) as db:
-        SecurityLinksService(db, actor="mcp").accept_merge(
+        service = SecurityLinksService(db, actor="mcp")
+        decision = service.decision_by_id(decision_id)
+        if decision is not None and str(decision["ref_kind"]) in _FEED_KEY_REF_KINDS:
+            # The merge branch's verify_accept re-derives the MERGE impact; a
+            # feed-key bind has no such impact, but it still has a blast radius —
+            # the sibling candidates its accept auto-rejects — and that radius is
+            # live state, so it is recomputed INSIDE accept_feed_key's transaction
+            # rather than here. mcp.md forbids verifying and then opening a
+            # separate mutation transaction: a sibling queued in that gap would be
+            # rejected by a bind the user approved without it. The grant is
+            # checked against the binding the prompt was issued for, which
+            # recorded operation_kind 'security_feed_key_bind' and cannot satisfy
+            # a merge grant.
+            def verify_bind() -> None:
+                live = service.decision_by_id(decision_id)
+                if live is None:  # pragma: no cover — _require_pending ran first
+                    raise UserError(
+                        f"No pending decision found for id {decision_id!r}.",
+                        code=error_codes.MUTATION_NOT_FOUND,
+                    )
+                sibling_ids, radius = _feed_key_bind_scope(service, live)
+                grant.verify(
+                    _security_link_binding(
+                        decision_id=decision_id,
+                        candidate_security_id=into,
+                        provisional_security_id=None,
+                        blast_radius=radius,
+                        sibling_decision_ids=sibling_ids,
+                    )
+                )
+
+            service.accept_feed_key(
+                decision_id,
+                into=into,
+                decided_by="user",
+                verify_accept=verify_bind,
+            )
+            return
+        service.accept_merge(
             decision_id,
             into=into,
             decided_by="user",
@@ -762,14 +929,22 @@ async def investments_securities_links_set(
       candidate answers only that pairing, not whether another candidate is
       the correct match).
 
-    A merge fuses two instruments' tax lots: it re-points every accepted
+    Accepting commits ONE of two mutations, and the confirmation prompt names
+    which. A merge fuses two instruments' tax lots: it re-points every accepted
     provider ref and lot selection onto the survivor and DELETES the
     provisional catalog row. If they are not the same instrument, cost basis
-    and every later realized gain are wrong.
+    and every later realized gain are wrong. A price-feed binding is the
+    cheaper one — it records that a provider's market-data symbol
+    (`tiingo_ticker`, `coingecko_id`) prices this security, so no row is
+    deleted, no lot moves, and the worst case is a position valued from the
+    wrong company's closes until the binding is undone.
 
-    Mutation surface: writes app.security_link_decisions + app.security_links
-    + app.lot_selections + raw.manual_investment_transactions + app.securities
-    (deletes the merged-away provisional row on accept). Revert with
+    Mutation surface: writes app.security_link_decisions + app.security_links;
+    a merge also writes app.lot_selections + raw.manual_investment_transactions
+    + app.security_price_overrides (your hand-set valuations move onto the
+    survivor) + app.securities (deleting the merged-away provisional row). A
+    feed-key binding touches none of those — no catalog row, no lot, no mark.
+    Revert with
     system_audit_undo(operation_id) — the whole cascade is one audited operation
     and reverses atomically; find the operation_id via system_audit. Find pending
     decisions with investments_securities_links_pending.
@@ -825,8 +1000,13 @@ async def investments_securities_links_set(
                 candidate_security_id=into,
                 provisional_security_id=proposal.provisional_security_id,
                 blast_radius=proposal.blast_radius,
+                sibling_decision_ids=proposal.sibling_decision_ids,
             )
-            message = _confirm_message(proposal)
+            message = (
+                _feed_key_confirm_message(proposal)
+                if proposal.is_feed_key
+                else _confirm_message(proposal)
+            )
         else:
             binding = None
             message = ""

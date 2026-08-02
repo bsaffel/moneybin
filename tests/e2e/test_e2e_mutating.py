@@ -1527,6 +1527,113 @@ class TestSecurityLinksMutating:
     and mutual-exclusion guard the way the `merchants links` e2e tests do.
     """
 
+    def test_investments_prices_set_then_delete_round_trips(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """A mark can be written and then removed, returning the date to feeds.
+
+        `delete` is load-bearing rather than CRUD symmetry: an override outranks
+        every provider close for its date and `set` can only change the number, so
+        without this the date could never return to provider-derived valuation.
+        """
+        env = make_workflow_env_fast(
+            tmp_path, "prices-roundtrip", _mutating_profile_template
+        )
+        add = run_cli(
+            "investments",
+            "securities",
+            "add",
+            "--name",
+            "Private Placement A",
+            "--type",
+            "other",
+            env=env,
+        )
+        add.assert_success()
+
+        marked = run_cli(
+            "investments",
+            "prices",
+            "set",
+            "Private Placement A",
+            "2026-06-30",
+            "42.50",
+            "--note",
+            "409A valuation",
+            env=env,
+        )
+        marked.assert_success()
+
+        removed = run_cli(
+            "investments",
+            "prices",
+            "delete",
+            "Private Placement A",
+            "2026-06-30",
+            env=env,
+        )
+        removed.assert_success()
+
+        again = run_cli(
+            "investments",
+            "prices",
+            "delete",
+            "Private Placement A",
+            "2026-06-30",
+            env=env,
+        )
+        again.assert_success()
+        assert "No mark existed" in again.stdout
+
+    def test_investments_prices_set_refuses_a_zero_price(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """The never-zero rule must hold on the user-controlled path too.
+
+        A worthless position is a ledger event — a disposal or write-off — not a
+        zero price, which would make worthless and unknown two states every
+        downstream total has to tell apart.
+        """
+        env = make_workflow_env_fast(
+            tmp_path, "prices-zero", _mutating_profile_template
+        )
+        add = run_cli(
+            "investments",
+            "securities",
+            "add",
+            "--name",
+            "Private Placement B",
+            "--type",
+            "other",
+            env=env,
+        )
+        add.assert_success()
+
+        result = run_cli(
+            "investments",
+            "prices",
+            "set",
+            "Private Placement B",
+            "2026-06-30",
+            "0",
+            env=env,
+        )
+        assert result.exit_code != 0
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_investments_prices_set_rejects_a_malformed_date(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """A bad date is a usage error (exit 2), not a runtime failure."""
+        env = make_workflow_env_fast(
+            tmp_path, "prices-baddate", _mutating_profile_template
+        )
+        result = run_cli(
+            "investments", "prices", "set", "AAPL", "30-06-2026", "42.50", env=env
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
     def test_investments_securities_links_set_not_found(
         self, _mutating_profile_template: Path, tmp_path: Path
     ) -> None:

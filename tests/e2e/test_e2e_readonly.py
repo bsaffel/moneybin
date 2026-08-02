@@ -538,6 +538,36 @@ class TestDBReadOnlyCommands:
         assert "decisions" in envelope["data"]
         assert isinstance(envelope["data"]["decisions"], list)
 
+    # ── investments prices (read-only) ─────────────────────────────────────
+
+    def test_investments_prices_list_unknown_security_exits_nonzero(
+        self, e2e_profile: dict[str, str]
+    ) -> None:
+        """An unresolvable reference is a user error, not an empty result.
+
+        Returning nothing would read as "this security has no prices" when the
+        security itself does not exist.
+        """
+        result = run_cli(
+            "investments", "prices", "list", "NOSUCHTICKER", env=e2e_profile
+        )
+        assert result.exit_code != 0
+
+    def test_investments_prices_list_rejects_a_malformed_since(
+        self, e2e_profile: dict[str, str]
+    ) -> None:
+        """A bad --since is a usage error (exit 2), distinct from a runtime failure."""
+        result = run_cli(
+            "investments",
+            "prices",
+            "list",
+            "AAPL",
+            "--since",
+            "last-tuesday",
+            env=e2e_profile,
+        )
+        assert result.exit_code == 2
+
     # ── investments securities links (read-only) ───────────────────────────
 
     def test_investments_securities_links_pending(

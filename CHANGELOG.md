@@ -286,6 +286,93 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   receipts identify the selected format, bundle/report Sheets metadata remain
   independently verifiable, and cancellable publication runs without holding
   the global DuckDB writer lock over filesystem or Google API I/O.
+- **Independent price feeds for held securities.** `moneybin investments prices pull`
+  refreshes closes from Tiingo (equities, ETFs, and mutual fund NAVs) and CoinGecko
+  (crypto), so a position values from a source other than the broker that reports
+  it. Fetch scope comes from open positions rather than the whole catalog. A feed
+  key binds silently only when the symbol names one catalog entry and the provider
+  agrees about its exchange and issuer name; anything ambiguous is queued for
+  review instead, because a ticker is not an identifier — the same symbol names
+  different securities across exchanges and gets recycled after a delisting.
+  `investments prices set` records your own price for a security and date, which
+  outranks every provider close for that date; `investments prices delete` returns
+  the date to provider-derived valuation; `investments prices list` shows the
+  resolved series with the source that won each date. A non-positive mark is
+  refused — a worthless position is a ledger event, not a zero price. Store the
+  Tiingo token with `investments prices token`; CoinGecko needs no credential.
+  `moneybin system doctor` gains four checks over the price series: two feeds
+  quoting the same security, date, and currency more than 2% apart (one of them
+  is wrong, and valuation picks a winner by rank without saying so); held
+  positions carrying no usable price, which report no market value and are
+  absent from every total that sums one; positions still valued from a close
+  older than their security type allows — four days for a stock, one for crypto
+  — so a holding no feed covers can no longer sit in your net worth at a price
+  nobody has confirmed in years; and price rows whose source the
+  pipeline cannot resolve, which are discarded before they can value anything.
+  One source failing does not cost you the others: a missing Tiingo token still
+  refreshes crypto, and the refresh names the source that failed and why. Prices
+  implied by your own ledger now come only from executions — a dividend's
+  per-share rate is no longer read as that security's market close. Accepting a
+  queued feed key binds it (`moneybin investments securities links set <id>
+  --accept --into <security>`); accepting an identity decision still merges the
+  two securities, and the confirmation you are shown says which one it is.
+  Pulled closes reach your holdings once the models rebuild: pass
+  `--refresh` to do it in the same command, or run `moneybin refresh run`
+  afterwards — the pull names the step rather than leaving new rows silently
+  unreachable. `set` and `delete` cross that same boundary and carry the same
+  `--refresh` flag and hint, so correcting a wrong price cannot report success
+  while every total keeps showing the value you just overrode. A failed rebuild
+  exits non-zero and tells you to retry the rebuild alone, since the closes are
+  already stored and re-pulling would spend the provider's rate limit
+  re-fetching them. A mark takes the currency the position is actually held in
+  rather than assuming dollars, and asks when a security is held in two — a
+  price only values a holding quoted in the same currency, so a fixed default
+  reported success on a mark that valued nothing. When a provider is rate-limited
+  or down, the refresh says so instead of reporting your holdings as unsupported,
+  and stops asking that provider rather than spending the rest of the quota
+  confirming the same failure. `--currency` must be a real ISO-4217 code and a
+  price must be a finite number: `USDX` and `NaN` are refused up front rather
+  than stored as a mark that quietly matches no position. A `--note` is bounded
+  at 2,000 characters, the same limit every other note in MoneyBin carries.
+  Prices in
+  `core.fct_security_prices` are now treated as your own financial data rather
+  than public reference data, because that column can carry the exact price you
+  paid or a valuation you wrote yourself. A crypto `--since` reaching further
+  back than CoinGecko's keyless tier serves is refused, naming the earliest date
+  it can return — it previously narrowed the window to 365 days and reported a
+  full backfill — and equities still pull over the window you asked for. In the
+  review queue, accepting a price-feed symbol through `identity_links_decide`
+  now binds it instead of failing with "nothing to merge away", and the
+  confirmation you read before a security merge names and counts every category
+  it moves — including the price marks you set by hand — instead of listing tax
+  lots alone. Binding a feed key no longer reports that security's whole ledger
+  as affected: it creates one link and moves nothing, so it says so. A `--since`
+  after the last complete day is refused before any request, rather than reaching
+  the providers as an inverted range and coming back as a feed outage. A price
+  outside what the stored column can represent is refused as a usage error rather
+  than rounding on the way in, so the price echoed back is the price stored. When
+  a ticker rename retires an auto-derived feed key, the closes already stored
+  under the old symbol keep valuing that security instead of disappearing from
+  reports, and the old key is retired only once a replacement is in hand — a
+  provider that cannot answer for the new symbol no longer leaves the holding
+  unpriced. Because ticker symbols get reused, a feed key now belongs to one
+  security only for the stretch it was bound: the next security to list under a
+  recycled symbol values itself from that symbol's closes going forward, not from
+  the previous company's earlier prices — which stay with the previous company
+  rather than appearing in both series at once. Recording a mark for a date two
+  feeds disagreed on now settles that date and clears it from `system doctor`,
+  which previously kept reporting the same disagreement after you followed its
+  own advice. CoinGecko quotes about 60 of ISO-4217's ~180 currencies, and a
+  holding denominated in one of the other 120 no longer costs you every other
+  coin's prices: that holding reports its own failure and the rest of the batch
+  still refreshes. A price mark moved onto the surviving security by a merge
+  keeps the date you authored it instead of being restamped with the merge
+  time. A provider close too large for the stored column is reported against its
+  own security rather than ending the refresh and discarding every security
+  priced alongside it. Pulls now measure the last complete day in UTC, the day
+  the providers themselves close on, so a machine east of UTC no longer asks for
+  a day that has not finished and one west of UTC no longer skips a day that
+  has. (#373)
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.

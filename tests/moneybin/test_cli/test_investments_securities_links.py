@@ -7,8 +7,10 @@ the service layer and test argument parsing, exit codes, and output shape.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.investments.security_links import app
@@ -198,13 +200,19 @@ class TestSecurityLinksSet:
     """Tests for `investments securities links set`."""
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
-    @patch("moneybin.services.security_links_service.SecurityLinksService.accept_merge")
-    def test_set_accept_calls_accept_merge(
+    @patch("moneybin.services.security_links_service.SecurityLinksService.accept")
+    def test_set_accept_dispatches_on_the_decisions_own_kind(
         self,
         mock_accept: MagicMock,
         mock_get_db: MagicMock,
     ) -> None:
-        """--accept --into calls accept_merge with into= and decided_by='user'."""
+        """--accept --into calls `accept`, which routes merge vs feed-key bind.
+
+        Not `accept_merge` directly: the queue mixes identity decisions (accepting
+        merges two catalog rows) with price-feed decisions (accepting binds a
+        symbol), and routing every acceptance through the merge path made the
+        latter impossible to accept at all.
+        """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
 
         result = runner.invoke(
@@ -214,6 +222,71 @@ class TestSecurityLinksSet:
         mock_accept.assert_called_once_with(
             "dec001", into="sec001aabbcc", decided_by="user"
         )
+
+    @patch("moneybin.cli.commands.investments.security_links.get_database")
+    @patch("moneybin.services.security_links_service.SecurityLinksService.accept")
+    def test_accepting_a_feed_key_does_not_claim_a_merge(
+        self,
+        mock_accept: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Binding a symbol deletes nothing; saying "merged" describes another act.
+
+        The same command accepts both kinds, so a fixed success line is wrong for
+        one of them — and the one it was wrong about is the non-destructive one,
+        which reads as though the user had just combined two securities.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_accept.return_value = "bound"
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(
+                app, ["set", "dec001", "--accept", "--into", "sec001aabbcc"]
+            )
+
+        assert result.exit_code == 0
+        assert "bound to sec001aabbcc" in caplog.text
+        assert "merged" not in caplog.text
+
+    @patch("moneybin.cli.commands.investments.security_links.get_database")
+    @patch("moneybin.services.security_links_service.SecurityLinksService.accept")
+    def test_accepting_an_identity_decision_still_says_merged(
+        self,
+        mock_accept: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The destructive outcome must stay legible as destructive."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_accept.return_value = "merged"
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(
+                app, ["set", "dec001", "--accept", "--into", "sec001aabbcc"]
+            )
+
+        assert result.exit_code == 0
+        assert "merged into sec001aabbcc" in caplog.text
+
+    def test_set_help_states_both_outcomes_of_accepting(self) -> None:
+        """`--into` is the only confirmation, so --help carries the blast radius.
+
+        The command is non-interactive by design, which leaves this text as the
+        whole warning. It described every acceptance as a merge that re-points
+        lots and marks and then deletes a catalog row — the opposite of what a
+        feed-key accept does, told to the user at the one moment they could
+        still stop. The post-command message already distinguishes the two; by
+        then the write has happened.
+        """
+        result = runner.invoke(app, ["set", "--help"])
+        help_text = " ".join(result.output.split())
+
+        assert result.exit_code == 0
+        assert "MERGES" in help_text
+        assert "BINDS" in help_text
+        assert "deletes the provisional catalog row" in help_text
+        assert "Nothing is re-pointed and nothing is deleted" in help_text
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
     @patch("moneybin.services.security_links_service.SecurityLinksService.reject_merge")
@@ -254,7 +327,7 @@ class TestSecurityLinksSet:
         assert result.exit_code == 2
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
-    @patch("moneybin.services.security_links_service.SecurityLinksService.accept_merge")
+    @patch("moneybin.services.security_links_service.SecurityLinksService.accept")
     def test_set_accept_wrong_into_surfaces_user_error(
         self,
         mock_accept: MagicMock,

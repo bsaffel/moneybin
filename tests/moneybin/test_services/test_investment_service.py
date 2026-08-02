@@ -14,6 +14,7 @@ strongly-identified security must be referenced by its identifier).
 
 from __future__ import annotations
 
+import math
 from datetime import date
 from decimal import Decimal
 from typing import Any, NamedTuple
@@ -24,6 +25,7 @@ from prometheus_client import REGISTRY
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.metrics.registry import PRICE_STALENESS_DAYS
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.services.investment_service import (
@@ -1750,6 +1752,117 @@ class TestListEvents:
         _seed_read_fixtures(db)
         with pytest.raises(SecurityResolutionError):
             db_service(db).list_events(security_ref="nothing-matches-this")
+
+
+def _staleness_gauge() -> float:
+    return REGISTRY.get_sample_value("moneybin_price_staleness_days") or 0.0
+
+
+def _resolution_status(status: str) -> float:
+    return (
+        REGISTRY.get_sample_value(
+            "moneybin_price_resolution_status_total", {"status": status}
+        )
+        or 0.0
+    )
+
+
+class TestHoldingsMetrics:
+    """The two portfolio-wide valuation instruments and their filter guard."""
+
+    _ROWS = [
+        _Holding(
+            security_id="sec_1",
+            market_value="2700.00",
+            price_date="2026-07-15",
+            price_source="plaid",
+            days_since_observed="2",
+            valuation_status="valued",
+        ),
+        _Holding(
+            security_id="sec_2",
+            market_value="500.00",
+            price_date="2026-07-09",
+            price_source="tiingo",
+            days_since_observed="9",
+            valuation_status="carried_forward",
+        ),
+    ]
+
+    def test_an_unfiltered_read_publishes_the_stalest_age(self, db: Database) -> None:
+        _seed_read_fixtures(db)
+        _replace_holdings_view(db, self._ROWS)
+
+        db_service(db).holdings()
+
+        assert _staleness_gauge() == 9
+
+    def test_an_unfiltered_read_counts_every_valuation_status(
+        self, db: Database
+    ) -> None:
+        _seed_read_fixtures(db)
+        _replace_holdings_view(db, self._ROWS)
+        before = (_resolution_status("valued"), _resolution_status("carried_forward"))
+
+        db_service(db).holdings()
+
+        assert _resolution_status("valued") - before[0] == 1
+        assert _resolution_status("carried_forward") - before[1] == 1
+
+    def test_a_portfolio_with_no_priced_position_does_not_read_as_fresh(
+        self, db: Database
+    ) -> None:
+        """Zero is the healthiest value this gauge can hold, so absence must not use it.
+
+        `days_since_observed` is 0 on a same-day close, so publishing 0 for "no
+        position carries a market value" makes a total pricing outage — an
+        expired token, every feed key broken, a fresh profile — indistinguishable
+        from a perfectly fresh portfolio. An alert of the shape
+        `moneybin_price_staleness_days > 4` then cannot fire in the one case the
+        gauge exists to expose. NaN is the Prometheus convention for no-data, and
+        it matches `max_days_since_observed`, which already reports None for the
+        identical empty set.
+        """
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    market_value=None,
+                    price_date=None,
+                    price_source=None,
+                    days_since_observed=None,
+                    valuation_status="unpriced",
+                )
+            ],
+        )
+        PRICE_STALENESS_DAYS.set(0)
+
+        result = db_service(db).holdings()
+
+        assert result.max_days_since_observed is None
+        assert math.isnan(_staleness_gauge())
+
+    def test_a_filtered_read_publishes_nothing(self, db: Database) -> None:
+        """Both instruments describe the portfolio, so a filtered read must not set them.
+
+        Recording one would make the exported value depend on whichever filter
+        the last caller happened to pass: asking for one recently-priced position
+        would publish its age as the age of every number in net worth, and the
+        stale position it excluded would vanish from the status counts. The
+        adversarial partner to the two tests above — same fixture, same service,
+        only the filter differs.
+        """
+        _seed_read_fixtures(db)
+        _replace_holdings_view(db, self._ROWS)
+        PRICE_STALENESS_DAYS.set(0)
+        before = _resolution_status("valued")
+
+        db_service(db).holdings(security_ref="sec_1")
+
+        assert _staleness_gauge() == 0
+        assert _resolution_status("valued") - before == 0
 
 
 class TestHoldings:

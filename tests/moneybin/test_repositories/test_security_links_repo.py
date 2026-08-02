@@ -23,13 +23,18 @@ from moneybin.repositories.security_link_decisions_repo import (
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 
 
-def _bind(repo: SecurityLinksRepo, ref: str = "sec_plaid_1", sid: str = "cat000000001"):
+def _bind(
+    repo: SecurityLinksRepo,
+    ref: str = "sec_plaid_1",
+    sid: str = "cat000000001",
+    decided_by: str = "auto",
+):
     return repo.insert(
         security_id=sid,
         ref_kind="plaid_security_id",
         ref_value=ref,
         source_type="plaid",
-        decided_by="auto",
+        decided_by=decided_by,
         actor="system",
     )
 
@@ -115,10 +120,23 @@ def test_repoint_leaves_exactly_one_accepted_plus_reversed_history(
     assert counts == {"accepted": 1, "reversed": 2}
 
 
-def test_repoint_records_caller_decided_by_not_auto(db: Database) -> None:
-    """The new accepted row's decided_by reflects who repointed it.
+def test_repoint_carries_the_bindings_own_provenance_not_the_merges(
+    db: Database,
+) -> None:
+    """The moved row keeps `auto`; the merge's actor lands on the reversal.
 
-    A user decision, not the original binding's 'auto' provenance.
+    This assertion is inverted from what it was. `decided_by` answers who
+    decided that this ref names this instrument, and a merge moves the ref
+    without re-answering that — but the row was being re-stamped with the
+    merge's actor, so every auto-derived binding became a user one on its way
+    across. PriceService._binding_is_stale re-derives only `auto` rows, so a
+    feed key whose ticker later diverged from the catalog was never retired
+    again, for the life of the binding and with nothing in the output to show
+    for it.
+
+    Both halves are asserted together deliberately: preserving provenance must
+    not cost the audit trail the identity of whoever performed the merge, and a
+    test that checked only the accepted row would not notice if it did.
     """
     repo = SecurityLinksRepo(db)
     event = _bind(repo)  # decided_by="auto"
@@ -129,11 +147,39 @@ def test_repoint_records_caller_decided_by_not_auto(db: Database) -> None:
         link_id=link_id, new_security_id="cat000000009", decided_by="user", actor="user"
     )
 
-    new_row = db.execute(
+    moved = db.execute(
         "SELECT decided_by FROM app.security_links "
         "WHERE ref_value = 'sec_plaid_1' AND status = 'accepted'"
     ).fetchone()
-    assert new_row == ("user",)
+    reversed_row = db.execute(
+        "SELECT reversed_by FROM app.security_links "
+        "WHERE ref_value = 'sec_plaid_1' AND status = 'reversed'"
+    ).fetchone()
+    assert moved == ("auto",)
+    assert reversed_row == ("user",)
+
+
+def test_repoint_keeps_a_user_confirmed_binding_user_decided(db: Database) -> None:
+    """The rule is preservation, not a blanket `auto`.
+
+    Paired with the case above: an implementation that hardcoded `auto` on the
+    moved row would satisfy it and silently discard a user's confirmation,
+    putting a symbol the user deliberately kept back under auto re-derivation.
+    """
+    repo = SecurityLinksRepo(db)
+    event = _bind(repo, decided_by="user")
+    link_id = event.target_id
+    assert link_id is not None
+
+    repo.repoint(
+        link_id=link_id, new_security_id="cat000000009", decided_by="user", actor="user"
+    )
+
+    moved = db.execute(
+        "SELECT decided_by FROM app.security_links "
+        "WHERE ref_value = 'sec_plaid_1' AND status = 'accepted'"
+    ).fetchone()
+    assert moved == ("user",)
 
 
 def test_repoint_preserves_original_decided_at_on_reversed_row(db: Database) -> None:

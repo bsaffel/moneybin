@@ -69,6 +69,7 @@ if TYPE_CHECKING:
         SecuritiesResult,
         SecurityRow,
     )
+    from moneybin.services.price_service import PricesResult
     from moneybin.services.security_links_service import (
         PendingSecurityLinkGroup,
     )
@@ -665,4 +666,114 @@ class SecurityLinksHistoryPayload:
         """Build the history payload from ``SecurityLinksService.history()`` rows."""
         return cls(
             decisions=[SecurityLinkHistoryRow.from_decision_row(r) for r in rows]
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentPricePullPayload:
+    """Payload for ``investments_prices_pull`` — counts plus what stayed unpriced.
+
+    Deliberately carries no price and no security identifier beyond the id: a
+    refresh summary is about coverage, not about what anything is worth.
+    """
+
+    rows_written: Annotated[int, DataClass.AGGREGATE]
+    observations: Annotated[int, DataClass.AGGREGATE]
+    securities_priced: Annotated[int, DataClass.AGGREGATE]
+    queued_for_review: Annotated[int, DataClass.AGGREGATE]
+    unpriced: list[InvestmentUnpricedEntry]
+    failed_sources: list[InvestmentFailedSourceEntry]
+    # Whether these rows reached core. A pull writes raw.security_prices; every
+    # consumer reads core.fct_security_prices. Without this an agent cannot tell
+    # a current valuation from one that predates the closes it just fetched.
+    refreshed: Annotated[bool, DataClass.AGGREGATE] = False
+    refresh_error: Annotated[str | None, DataClass.AGGREGATE] = None
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentUnpricedEntry:
+    """One held security a refresh could not price, and why."""
+
+    security_id: Annotated[str, DataClass.RECORD_ID]
+    reason: Annotated[str, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentFailedSourceEntry:
+    """One price source that failed as a whole, and the message to act on.
+
+    A whole-source failure no longer aborts the refresh, so it needs somewhere to
+    be seen: without this the run reports every one of that source's securities
+    unpriced and never says the token was missing. ``message`` is safe to carry —
+    ``PriceFeedError`` is documented as whole-batch conditions only, so it names
+    a provider and a condition, never a security or a holding.
+    """
+
+    source_type: Annotated[str, DataClass.TXN_TYPE]
+    message: Annotated[str, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentPriceMarkPayload:
+    """Payload for ``investments_prices_set`` / ``_delete`` — the mark's identity.
+
+    ``close`` is TXN_AMOUNT, matching the registry entries for
+    ``app.security_price_overrides.close`` and ``core.fct_security_prices.close``.
+    A mark is a number the user wrote — a 409A valuation, a private-company
+    estimate — so it is a personal financial fact, not a market observation that
+    happens to be stored locally. ``market_value`` (quantity x close) reveals
+    position size on top of that and stays BALANCE on the holdings payload.
+    """
+
+    security_id: Annotated[str, DataClass.RECORD_ID]
+    price_date: Annotated[date, DataClass.TIMESTAMP_OBSERVABILITY]
+    quote_currency: Annotated[str, DataClass.CURRENCY]
+    close: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
+    removed: Annotated[bool, DataClass.AGGREGATE]
+    # Whether the mark reached core. Same reason as InvestmentPricePullPayload:
+    # the write lands in app.security_price_overrides and every consumer reads
+    # core.fct_security_prices, so without this an agent cannot tell a corrected
+    # valuation from one still serving the price the user just overrode.
+    refreshed: Annotated[bool, DataClass.AGGREGATE] = False
+    refresh_error: Annotated[str | None, DataClass.AGGREGATE] = None
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentPriceRow:
+    """One resolved price in an ``investments_prices_list`` result.
+
+    ``close`` is the resolved winner across provider, override, and trade-implied
+    sources, so it carries the tier of the strictest of those — see
+    ``core.fct_security_prices.close`` in the registry.
+    """
+
+    price_date: Annotated[date, DataClass.TIMESTAMP_OBSERVABILITY]
+    quote_currency: Annotated[str, DataClass.CURRENCY]
+    close: Annotated[Decimal, DataClass.TXN_AMOUNT]
+    source_type: Annotated[str, DataClass.TXN_TYPE]
+    price_basis: Annotated[str, DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class InvestmentPricesPayload:
+    """Payload for ``investments_prices_list`` — the resolved series, newest first."""
+
+    security_id: Annotated[str, DataClass.RECORD_ID]
+    rows: list[InvestmentPriceRow]
+
+    @classmethod
+    def from_result(cls, result: PricesResult) -> InvestmentPricesPayload:
+        """Map the service result onto the classified payload."""
+        return cls(
+            security_id=result.security_id,
+            rows=[
+                InvestmentPriceRow(
+                    price_date=row.price_date,
+                    quote_currency=row.quote_currency,
+                    close=row.close,
+                    source_type=row.source_type,
+                    price_basis=row.price_basis,
+                )
+                for row in result.rows
+            ],
         )

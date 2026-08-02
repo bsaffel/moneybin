@@ -739,12 +739,12 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + dedup_reconciliation + categorization + 28 app.* integrity
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 29 app.* integrity
     # checks (audit coverage for user_categories / category_overrides /
     # gsheet_connections / user_merchants / categorization_rules / proposed_rules /
     # transaction_categories / account_settings / balance_assertions / budgets /
     # tabular_formats / match_decisions / imports / import_previews / pdf_formats /
-    # securities /
+    # securities / security_price_overrides (M1J.3 C.2) /
     # lot_selections + user_categories uniqueness + user_merchants orphans +
     # proposed_rules->rule FK + transaction_categories->fct FK +
     # account_settings->dim_accounts FK + balance_assertions->dim_accounts FK +
@@ -755,13 +755,16 @@ def test_run_all_returns_expected_invariants(
     # audit coverage (M1S) + 9 investment reconciliation checks (T17: staging
     # rejects, opening-lot review, unmodeled legs, holdings divergence,
     # source overlap, unresolved securities, conflicting security refs,
-    # unreported holdings, phantom holdings) + sqlmesh_model_presence
-    # (registered-but-unbuilt models) + currency_integrity (M1K.1 Req 6:
-    # unknown-currency rows, then merely-mixed currency) + profile_settings
-    # audit coverage (M1K.1 Req 4) + user_reports audit coverage (M2P.2) +
-    # duplicate_account_overlap (one account imported under two identities —
-    # invisible to the matcher, which blocks candidate pairs on account_id).
-    assert len(report.invariants) == 51
+    # unreported holdings, phantom holdings) + 4 investment price checks
+    # (M1J.3 C.2: price disagreement, unpriced holdings, stale prices,
+    # unmapped price source)
+    # + sqlmesh_model_presence (registered-but-unbuilt models) +
+    # currency_integrity (M1K.1 Req 6: unknown-currency rows, then merely-mixed
+    # currency) + profile_settings audit coverage (M1K.1 Req 4) + user_reports
+    # audit coverage (M2P.2) + duplicate_account_overlap (one account imported
+    # under two identities — invisible to the matcher, which blocks candidate
+    # pairs on account_id).
+    assert len(report.invariants) == 56
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -826,7 +829,7 @@ def test_doctor_audit_coverage_matches_the_repo_registry(
 ) -> None:
     """Every repo either has an audit-coverage invariant or an explicit reason.
 
-    The ``len(report.invariants) == 48`` assertion above is one-sided: it fires
+    The ``len(report.invariants)`` assertion above is one-sided: it fires
     when you *add* an invariant and never when you *forget* one, so a new repo
     could ship with its writes unverified and the suite would stay green. This
     compares the live discovered repo set against the live invariant names.
@@ -1897,6 +1900,9 @@ def test_investment_checks_skip_when_views_absent(
         "investment_unresolved_securities",
         "investment_unreported_holdings",
         "investment_phantom_holdings",
+        "investment_price_disagreement",
+        "investment_unpriced_holdings",
+        "investment_unmapped_price_source",
     ):
         assert _investment_result(db, monkeypatch, name).status == "skipped"
 
@@ -1927,6 +1933,10 @@ def test_run_all_includes_investment_checks(
     assert "investment_unresolved_securities" in names
     assert "investment_unreported_holdings" in names
     assert "investment_phantom_holdings" in names
+    assert "investment_price_disagreement" in names
+    assert "investment_unpriced_holdings" in names
+    assert "investment_stale_prices" in names
+    assert "investment_unmapped_price_source" in names
 
 
 @pytest.mark.integration
@@ -1978,6 +1988,9 @@ def test_investment_checks_bind_to_real_transform_output(db: Database) -> None:
         "investment_unresolved_securities",
         "investment_unreported_holdings",
         "investment_phantom_holdings",
+        "investment_price_disagreement",
+        "investment_unpriced_holdings",
+        "investment_unmapped_price_source",
     }
     by_name = {r.name: r for r in report.invariants}
     missing = investment_names - by_name.keys()
@@ -1989,6 +2002,519 @@ def test_investment_checks_bind_to_real_transform_output(db: Database) -> None:
         f"investment check(s) skipped against a real transform — the SQL is "
         f"not actually bound to the real schema: {skipped}"
     )
+
+
+# --- C.2 price checks -------------------------------------------------------
+
+
+def _price_staging_ddl(db: Database) -> None:
+    """The provider-observation view the disagreement check compares across."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_security_prices ("
+        "security_id VARCHAR, provider_security_key VARCHAR, price_date DATE, "
+        "quote_currency VARCHAR, source_type VARCHAR, source_origin VARCHAR, "
+        "close DECIMAL(28, 10), price_basis VARCHAR)"
+    )
+
+
+def _stage_price(
+    db: Database,
+    *,
+    security_id: str,
+    close: str,
+    source: str,
+    price_date: str = "2026-07-23",
+    currency: str = "USD",
+    key: str | None = None,
+) -> None:
+    db.execute(
+        "INSERT INTO prep.stg_security_prices VALUES (?, ?, ?::DATE, ?, ?, '', ?, 'raw')",
+        [
+            security_id,
+            key or f"{source}_{security_id}",
+            price_date,
+            currency,
+            source,
+            close,
+        ],
+    )
+
+
+@pytest.mark.unit
+def test_price_disagreement_warns_when_two_feeds_diverge(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two providers pricing one security on one date must agree; one is wrong.
+
+    The failure this catches is a feed key bound to the wrong security, which
+    produces a difference far beyond any timing or venue effect.
+    """
+    _price_staging_ddl(db)
+    _stage_price(db, security_id="sec_1", close="212.55", source="tiingo")
+    _stage_price(db, security_id="sec_1", close="19.40", source="plaid")
+
+    result = _investment_result(db, monkeypatch, "investment_price_disagreement")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["sec_1"]
+
+
+@pytest.mark.unit
+def test_price_disagreement_passes_within_tolerance(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two feeds agreeing to within the tolerance is the ordinary case, not a finding."""
+    _price_staging_ddl(db)
+    _stage_price(db, security_id="sec_1", close="100.00", source="tiingo")
+    _stage_price(db, security_id="sec_1", close="100.90", source="plaid")
+
+    result = _investment_result(db, monkeypatch, "investment_price_disagreement")
+
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def _mark(
+    db: Database,
+    *,
+    security_id: str,
+    close: str = "212.55",
+    price_date: str = "2026-07-23",
+    currency: str = "USD",
+) -> None:
+    """The user's own price for one grain — what this check tells them to record."""
+    db.execute(
+        "INSERT INTO app.security_price_overrides "
+        "(security_id, price_date, quote_currency, close) VALUES (?, ?::DATE, ?, ?)",
+        [security_id, price_date, currency, close],
+    )
+
+
+@pytest.mark.unit
+def test_price_disagreement_clears_once_the_user_records_a_mark(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The remediation this check prints must actually clear it.
+
+    A mark fixes the resolved winner in `core`, but the competing provider rows
+    it was recorded to settle stay in `prep` forever — so a check reading staging
+    unconditionally goes on reporting a disagreement the user has already
+    adjudicated, on every run, with no remaining action. A finding that cannot
+    be cleared teaches the reader to ignore the whole report.
+    """
+    _price_staging_ddl(db)
+    _stage_price(db, security_id="sec_1", close="212.55", source="tiingo")
+    _stage_price(db, security_id="sec_1", close="19.40", source="plaid")
+    _mark(db, security_id="sec_1")
+
+    result = _investment_result(db, monkeypatch, "investment_price_disagreement")
+
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_price_disagreement_still_warns_on_a_date_the_mark_does_not_cover(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mark settles its own date, not the security.
+
+    Paired with the test above deliberately: an exclusion keyed on `security_id`
+    alone passes that one and fails this one, and it would silence every future
+    disagreement for a security the moment one date was corrected — including a
+    feed key bound to the wrong security, which is what this check exists to
+    catch.
+    """
+    _price_staging_ddl(db)
+    _stage_price(db, security_id="sec_1", close="212.55", source="tiingo")
+    _stage_price(db, security_id="sec_1", close="19.40", source="plaid")
+    _mark(db, security_id="sec_1", price_date="2026-07-22")
+
+    result = _investment_result(db, monkeypatch, "investment_price_disagreement")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["sec_1"]
+
+
+@pytest.mark.unit
+def test_price_disagreement_ignores_a_different_quote_currency(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ADR and its ordinary listing are two prices for two currencies, not a conflict.
+
+    quote_currency is in the key precisely so both survive; comparing across it
+    would report every dual-currency security as permanently disagreeing.
+    """
+    _price_staging_ddl(db)
+    _stage_price(db, security_id="sec_1", close="212.55", source="tiingo")
+    _stage_price(db, security_id="sec_1", close="19.40", source="plaid", currency="HKD")
+
+    result = _investment_result(db, monkeypatch, "investment_price_disagreement")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_price_disagreement_ignores_a_different_date(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A security that moved between two dates is not two feeds disagreeing."""
+    _price_staging_ddl(db)
+    _stage_price(db, security_id="sec_1", close="212.55", source="tiingo")
+    _stage_price(
+        db, security_id="sec_1", close="19.40", source="plaid", price_date="2026-07-22"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_price_disagreement")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_price_disagreement_ignores_one_source_reporting_twice(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One feed is not in disagreement with itself.
+
+    A single provider can hold two rows for one security and date through
+    distinct source_origins — two Plaid items both reporting the same security.
+    That is a duplicate, which the source-overlap check owns; comparing them
+    here would report a feed against itself.
+    """
+    _price_staging_ddl(db)
+    _stage_price(db, security_id="sec_1", close="212.55", source="plaid", key="a")
+    _stage_price(db, security_id="sec_1", close="19.40", source="plaid", key="b")
+
+    result = _investment_result(db, monkeypatch, "investment_price_disagreement")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_price_disagreement_respects_the_configured_tolerance(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The threshold is a config field, not a literal buried in the SQL."""
+    monkeypatch.setenv("MONEYBIN_INVESTMENTS__PRICE_DISAGREEMENT_TOLERANCE_PCT", "0.5")
+    _price_staging_ddl(db)
+    _stage_price(db, security_id="sec_1", close="100.00", source="tiingo")
+    _stage_price(db, security_id="sec_1", close="100.90", source="plaid")
+
+    result = _investment_result(db, monkeypatch, "investment_price_disagreement")
+
+    assert result.status == "warn", (
+        "a 0.9% spread must fire once the tolerance is tightened to 0.5% — the "
+        "same fixture passes at the 2.0% default"
+    )
+
+
+def _unpriced_holdings_ddl(db: Database) -> None:
+    """Only the columns the check reads, per the phantom-holdings precedent."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "quantity DECIMAL(28,10), valuation_status VARCHAR)"
+    )
+
+
+@pytest.mark.unit
+def test_unpriced_holdings_warns_on_a_position_with_no_usable_price(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unpriced position reads blank forever and nothing else surfaces it."""
+    _unpriced_holdings_ddl(db)
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('acc_1', 'sec_1', 10, 'unpriced'), "
+        "('acc_1', 'sec_2', 5, 'valued')"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_unpriced_holdings")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["sec_1"]
+
+
+@pytest.mark.unit
+def test_unpriced_holdings_does_not_claim_a_withheld_position(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'withheld' also publishes no value, but wants a share count reconciled.
+
+    Routing it here would send the user to add a price feed for a position whose
+    price was never the problem.
+    """
+    _unpriced_holdings_ddl(db)
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('acc_1', 'sec_1', 10, 'withheld')"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_unpriced_holdings")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_unpriced_holdings_does_not_claim_a_carried_forward_position(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A carried-forward price is a usable price; staleness is the surface for its age."""
+    _unpriced_holdings_ddl(db)
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('acc_1', 'sec_1', 10, 'carried_forward')"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_unpriced_holdings")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_unpriced_holdings_reports_one_security_held_in_two_accounts_once(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The remedy is per security — bind a feed key or record a mark — not per position."""
+    _unpriced_holdings_ddl(db)
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('acc_1', 'sec_1', 10, 'unpriced'), "
+        "('acc_2', 'sec_1', 3, 'unpriced')"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_unpriced_holdings")
+
+    assert result.affected_ids == ["sec_1"]
+
+
+def _stale_prices_ddl(db: Database) -> None:
+    """Only the columns the check reads, per the phantom-holdings precedent."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "quantity DECIMAL(28,10), valuation_status VARCHAR, "
+        "days_since_observed INTEGER)"
+    )
+    db.execute(
+        "CREATE TABLE core.dim_securities (security_id VARCHAR, security_type VARCHAR)"
+    )
+
+
+def _hold_at_age(
+    db: Database,
+    *,
+    security_id: str,
+    days: int | None,
+    security_type: str,
+    status: str = "carried_forward",
+) -> None:
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('acc_1', ?, 10, ?, ?)",
+        [security_id, status, days],
+    )
+    db.execute(
+        "INSERT INTO core.dim_securities VALUES (?, ?)", [security_id, security_type]
+    )
+
+
+@pytest.mark.unit
+def test_stale_prices_warns_when_a_close_outlives_its_type_threshold(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A feedless position keeps its last close forever and says nothing.
+
+    ``carried_forward`` publishes a market_value the reader treats as current,
+    and the unpriced check deliberately skips it because "its age the staleness
+    surface carries" — this is that surface.
+    """
+    _stale_prices_ddl(db)
+    _hold_at_age(db, security_id="sec_1", days=400, security_type="equity")
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["sec_1"]
+
+
+@pytest.mark.unit
+def test_stale_prices_absorbs_an_ordinary_weekend(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Markets close ~114 days a year; firing on that trains the reader to ignore it."""
+    _stale_prices_ddl(db)
+    _hold_at_age(db, security_id="sec_1", days=3, security_type="equity")
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_stale_prices_holds_crypto_to_its_own_tighter_threshold(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One global threshold cannot be right for both.
+
+    Both positions are the same 2 days old, so only a per-type threshold can
+    separate them: crypto trades continuously and yesterday's close is already
+    the stalest thing worth having, while 2 days on an equity is a weekend.
+    """
+    _stale_prices_ddl(db)
+    _hold_at_age(db, security_id="sec_coin", days=2, security_type="crypto")
+    _hold_at_age(db, security_id="sec_stock", days=2, security_type="equity")
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["sec_coin"]
+
+
+@pytest.mark.unit
+def test_stale_prices_falls_back_to_the_configured_default(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`cash` and `other` are unnamed on purpose and take the global default."""
+    monkeypatch.setenv("MONEYBIN_INVESTMENTS__PRICE_STALENESS_DEFAULT_DAYS", "10")
+    _stale_prices_ddl(db)
+    _hold_at_age(db, security_id="sec_1", days=11, security_type="other")
+    _hold_at_age(db, security_id="sec_2", days=9, security_type="other")
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["sec_1"]
+
+
+@pytest.mark.unit
+def test_stale_prices_does_not_claim_an_unpriced_position(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing was ever observed, so there is no age — that is the other check's."""
+    _stale_prices_ddl(db)
+    _hold_at_age(
+        db, security_id="sec_1", days=None, security_type="equity", status="unpriced"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_stale_prices_reports_one_security_held_in_two_accounts_once(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The remedy is per security — add a feed or record a mark — not per position."""
+    _stale_prices_ddl(db)
+    _hold_at_age(db, security_id="sec_1", days=400, security_type="equity")
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('acc_2', 'sec_1', 3, "
+        "'carried_forward', 400)"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_stale_prices")
+
+    assert result.affected_ids == ["sec_1"]
+
+
+def _unmapped_source_fixture(db: Database, *, source: str, staged: bool) -> None:
+    """A raw price row with an accepted, matching binding — staged or not."""
+    _price_staging_ddl(db)
+    db.execute(
+        "INSERT INTO raw.security_prices (provider_security_key, price_date, "
+        "quote_currency, source_type, source_origin, close, price_basis) "
+        "VALUES ('VTI', DATE '2026-07-23', 'USD', ?, '', 214.55, 'raw')",
+        [source],
+    )
+    db.execute(
+        "INSERT INTO app.security_links (link_id, security_id, ref_kind, ref_value, "
+        "source_type, status, decided_by, decided_at) VALUES "
+        "(?, 'sec_1', 'plaid_security_id', 'VTI', ?, 'accepted', 'auto', CURRENT_TIMESTAMP)",
+        [f"link_{source}", source],
+    )
+    if staged:
+        _stage_price(db, security_id="sec_1", close="214.55", source=source, key="VTI")
+
+
+@pytest.mark.unit
+def test_unmapped_price_source_warns_when_a_bound_row_never_stages(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The binding is accepted and matches, so only the ref_kind CASE can be dropping it.
+
+    This is the exact defect that made C.2 inert: PriceService wrote tiingo rows
+    for a commit while prep.stg_security_prices mapped only 'plaid', and the
+    INNER JOIN discarded every one of them with no error and no counter.
+    """
+    _unmapped_source_fixture(db, source="yahoo", staged=False)
+
+    result = _investment_result(db, monkeypatch, "investment_unmapped_price_source")
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["yahoo"]
+
+
+@pytest.mark.unit
+def test_unmapped_price_source_passes_when_the_row_stages(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mapped source resolving normally is the ordinary case."""
+    _unmapped_source_fixture(db, source="plaid", staged=True)
+
+    result = _investment_result(db, monkeypatch, "investment_unmapped_price_source")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_unmapped_price_source_ignores_a_row_the_ownership_interval_excluded(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absent from staging is not the same question as absent from the CASE.
+
+    `prep.stg_security_prices` bounds each key to the interval its current link
+    owns, so a close predating a handover — the previous owner of a recycled
+    ticker — never stages, by design. Its source is mapped and staging other
+    rows normally; a row-wise correlation read that one gap as a broken CASE and
+    told the user to add a mapping that already exists.
+    """
+    _unmapped_source_fixture(db, source="plaid", staged=True)
+    db.execute(
+        "INSERT INTO raw.security_prices (provider_security_key, price_date, "
+        "quote_currency, source_type, source_origin, close, price_basis) "
+        "VALUES ('FB', DATE '2019-01-02', 'USD', 'plaid', '', 131.09, 'raw')"
+    )
+    db.execute(
+        "INSERT INTO app.security_links (link_id, security_id, ref_kind, ref_value, "
+        "source_type, status, decided_by, decided_at) VALUES "
+        "('link_fb', 'sec_2', 'plaid_security_id', 'FB', 'plaid', 'accepted', "
+        "'auto', CURRENT_TIMESTAMP)"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_unmapped_price_source")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_unmapped_price_source_ignores_a_row_with_no_accepted_binding(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unbound observation waits in raw and reappears once its security binds.
+
+    That is a different condition with a different remedy, and it is routine
+    during ingestion — the extractor writes prices before the resolver runs. The
+    accepted-binding clause is what separates a broken mapping from a pending
+    one; without it this check would fire on every ordinary first pull.
+    """
+    _price_staging_ddl(db)
+    db.execute(
+        "INSERT INTO raw.security_prices (provider_security_key, price_date, "
+        "quote_currency, source_type, source_origin, close, price_basis) "
+        "VALUES ('VTI', DATE '2026-07-23', 'USD', 'plaid', '', 214.55, 'raw')"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_unmapped_price_source")
+
+    assert result.status == "pass"
 
 
 @pytest.mark.unit

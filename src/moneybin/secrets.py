@@ -28,6 +28,10 @@ GSHEET_WRITE_REFRESH_TOKEN_KEY = "gsheet:write_refresh_token"  # noqa: S105  # k
 GSHEET_WRITE_ACCESS_TOKEN_KEY = "gsheet:write_access_token"  # noqa: S105  # keyring lookup name, not a secret value
 GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY = "gsheet:write_access_token_expires_at"  # noqa: S105  # keyring lookup name, not a secret value
 
+# Market-data price feeds. Only Tiingo needs a credential — CoinGecko's keyless
+# tier serves the endpoint this codebase uses.
+TIINGO_API_TOKEN_KEY = "tiingo:api_token"  # noqa: S105  # keyring lookup name, not a secret value
+
 
 def _resolve_service_name(profile: str | None) -> str:
     """Resolve the keychain service name for a profile.
