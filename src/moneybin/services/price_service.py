@@ -1257,6 +1257,9 @@ def _names_agree(catalog: str, provider: str) -> bool:
     into an unconditional pass and leaves the exchange test authorizing the
     binding alone. So an empty side falls back to the literal names, which still
     agree when they are the same string, and otherwise refuses.
+
+    A differing share class is decided before the fuzzy test, which cannot see it
+    — see ``_discriminators_differ``.
     """
     if _normalized_name(catalog) == _normalized_name(provider):
         return True
@@ -1265,8 +1268,29 @@ def _names_agree(catalog: str, provider: str) -> bool:
         return False
     if left == right:
         return True
+    if _discriminators_differ(left, right):
+        return False
     ratio = difflib.SequenceMatcher(None, " ".join(left), " ".join(right)).ratio()
     return ratio >= _NAME_AGREEMENT_CUTOFF
+
+
+def _discriminators_differ(left: list[str], right: list[str]) -> bool:
+    """Whether the two token lists disagree on any single-character token.
+
+    Share class is what a single character carries here: "class" is itself a
+    corporate suffix, so "Class A" reduces to a bare "a". One character inside a
+    twenty-character string moves SequenceMatcher's ratio by about 0.05 — well
+    inside the cutoff — so without this the fuzzy test reads two share classes of
+    one issuer as one security. They are not: Berkshire's A and B differ by three
+    orders of magnitude, so binding across them prices the holding wrongly and
+    keeps doing so, silently, on every later refresh.
+
+    Length one rather than two deliberately. "cl" abbreviates the marker word
+    itself, and refusing on a two-character difference would split "CL B" from
+    "Class B" — the same class written two ways — and put ordinary securities in
+    the review queue forever.
+    """
+    return any(len(token) == 1 for token in set(left) ^ set(right))
 
 
 def _normalized_name(name: str) -> str:

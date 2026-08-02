@@ -429,6 +429,95 @@ def test_a_missing_corporate_suffix_is_not_a_divergence(db: Database) -> None:
     assert _decisions(db) == []
 
 
+def test_a_share_class_difference_routes_to_review(db: Database) -> None:
+    """Two share classes of one issuer are different securities at different prices.
+
+    "Class" is itself a corporate suffix, so the only thing telling BRK.A from
+    BRK.B survives tokenization as a bare "a" against a bare "b" — one character
+    inside twenty, which the ratio scores 0.95 and reads as agreement. Binding on
+    that prices a Class B holding at the Class A close, and Berkshire's two
+    classes differ by roughly three orders of magnitude.
+
+    A ticker resolving to the wrong share class is exactly the recycled- or
+    mistyped-symbol case the three-signal gate exists to catch, so it belongs in
+    the queue rather than in a silent binding.
+    """
+    _seed_security(
+        db, security_id="s1", name="Berkshire Hathaway Class B", ticker="BRK.B"
+    )
+    _hold(db, "s1")
+    tiingo = _FakeTiingo(
+        metadata={"BRK.B": TickerMetadata("Berkshire Hathaway Class A", None)}
+    )
+
+    _service(db, tiingo).pull()
+
+    assert _links(db) == []
+    assert [reason for _, _, reason in _decisions(db)] == ["name_divergence"]
+
+
+def test_a_matching_share_class_still_binds(db: Database) -> None:
+    """The discriminator must refuse a DIFFERENCE, not the presence of a class.
+
+    Paired with the divergence above deliberately: a check that refused whenever
+    either name carried a class token would pass that test and fail this one, and
+    would strand every share-class security in the review queue permanently.
+    """
+    _seed_security(
+        db, security_id="s1", name="Berkshire Hathaway Class B", ticker="BRK.B"
+    )
+    _hold(db, "s1")
+    tiingo = _FakeTiingo(
+        metadata={"BRK.B": TickerMetadata("Berkshire Hathaway Inc Class B", None)}
+    )
+
+    _service(db, tiingo).pull()
+
+    assert _links(db) == [("tiingo_ticker", "BRK.B", "s1")]
+    assert _decisions(db) == []
+
+
+def test_an_abbreviated_class_marker_still_binds(db: Database) -> None:
+    """An abbreviated marker and a spelled-out one name the same share class.
+
+    Pins the discriminator at length one. Widening it to two would catch "cl"
+    here and refuse — putting every security whose broker abbreviates the marker
+    word into the queue permanently, which is the noise the whole suffix list
+    exists to prevent.
+    """
+    _seed_security(db, security_id="s1", name="Berkshire Hathaway CL B", ticker="BRK.B")
+    _hold(db, "s1")
+    tiingo = _FakeTiingo(
+        metadata={"BRK.B": TickerMetadata("Berkshire Hathaway Class B", None)}
+    )
+
+    _service(db, tiingo).pull()
+
+    assert _links(db) == [("tiingo_ticker", "BRK.B", "s1")]
+    assert _decisions(db) == []
+
+
+def test_a_class_only_the_provider_names_routes_to_review(db: Database) -> None:
+    """A discriminator on one side alone is still an unanswered question.
+
+    A catalog name that omits the class says nothing about which class the
+    ticker holds, so there is no agreement to bind on — only an absence. Pins
+    the comparison as symmetric: reading the catalog's tokens alone would find
+    nothing missing here and bind on a 0.95 ratio, which is exactly how a BRK.B
+    holding ends up priced at the Class A close.
+    """
+    _seed_security(db, security_id="s1", name="Berkshire Hathaway", ticker="BRK.B")
+    _hold(db, "s1")
+    tiingo = _FakeTiingo(
+        metadata={"BRK.B": TickerMetadata("Berkshire Hathaway Class A", None)}
+    )
+
+    _service(db, tiingo).pull()
+
+    assert _links(db) == []
+    assert [reason for _, _, reason in _decisions(db)] == ["name_divergence"]
+
+
 def test_a_security_with_no_ticker_queues_nothing(db: Database) -> None:
     """No match at all means nothing to propose, so no queue row."""
     _seed_security(db, security_id="s1", name="Private Placement A")
