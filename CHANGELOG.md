@@ -395,18 +395,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   asked you in place on spreadsheet and AI-extracted-PDF imports.
 
 ### Changed
-- **Every import now asks which account a file belongs to, before it loads
-  anything.** Previously only CSV/Excel stopped to ask; OFX and PDF resolved
-  and bound the account on their own, so the one moment MoneyBin could be
-  wrong about *whose* transactions these are went by unseen. All three
-  channels now stop on an unrecognized account and show what they found —
-  including the existing accounts they think it might be — and load nothing
-  until you answer. Answer with `--account-binding REF=ACCOUNT_ID` (or
-  `=new` to keep it separate) on `moneybin import files`, or the
-  `account_bindings` parameter on the `import_files` and `import_confirm`
-  tools. Pinning up front with `--account-id` / `--account-name` still skips
-  the question entirely, and a statement for an account you have already
-  confirmed is still silent — you answer once per account, not once per file.
+- **Every import now stops before it merges a file into an account you already
+  have.** Previously only CSV/Excel stopped to ask; OFX and PDF resolved and
+  bound the account on their own, so the one moment MoneyBin could be wrong
+  about *whose* transactions these are went by unseen. All three channels now
+  stop when a file could plausibly be an existing account — showing which ones
+  — and load nothing until you answer. Answer with
+  `--account-binding REF=ACCOUNT_ID` (or `=new` to keep it separate) on
+  `moneybin import files`, or the `account_bindings` parameter on the
+  `import_files` and `import_confirm` tools. Pinning up front with
+  `--account-id` / `--account-name` still skips the question entirely, and a
+  statement for an account you have already confirmed is still silent — you
+  answer once per account, not once per file.
+
+  **A file that matches nothing is not a question, so it is not asked.** Its
+  account is created and named back to you instead: `👀 Created account:
+  sample_bank CHECKING (e3a84714695d)`, with the rename and merge commands on
+  the next line. The same pair of fields arrives as `accounts_created` on
+  `--output json`, on the `import_files` per-file rows, and on
+  `import_confirm`. Asking here charged one confirmation per file on a first
+  import, each with exactly one answer available. The exception is a bare
+  Date/Description/Amount CSV: it states no account at all, so the only name
+  available is the filename, and MoneyBin asks rather than guessing.
 
   Each account the gate shows is labeled `@0`, `@1`, … for the file in front
   of you, and that label is what `REF` takes — the account's own key works
@@ -427,9 +437,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   queue still exists and is still filled by account sync.
 
   *Upgrading:* nothing to migrate, and no re-import is needed. Scripted
-  imports of OFX or PDF files for accounts MoneyBin has not seen before will
+  imports of OFX or PDF files that resemble an account you already have will
   now stop and ask; add `--account-binding` (or an `--account-id` pin) to
-  those calls. A known account keeps importing unattended.
+  those calls. A known account, and a genuinely new one, keep importing
+  unattended.
 - **BREAKING for anything branching on an error `code`: 104 code values were
   renamed.** They were raised from tool paths without ever being declared in
   the taxonomy, so they had never been reviewed for shape; each now carries the
