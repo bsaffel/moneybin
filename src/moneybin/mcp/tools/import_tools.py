@@ -2353,12 +2353,14 @@ def import_files_coarse(
     paths: list[str],
     refresh: bool = True,
     force: bool = False,
+    account_bindings: dict[str, str] | None = None,
 ) -> ResponseEnvelope[ImportFilesPayload]:
     """Import files while keeping actions inside the staged-import cohort."""
     response = import_files(
         paths=paths,
         refresh=refresh,
         force=force,
+        account_bindings=account_bindings,
     )
     actions = list(response.actions)
     for row in response.data.files:

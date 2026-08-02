@@ -3627,6 +3627,44 @@ class TestImportFilesConfirmationRequired:
         assert "import_confirm(file_path=" not in joined
         assert "accept=True" not in joined
 
+    async def test_import_files_coarse_forwards_account_bindings(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The registered tool must accept the account answer, not just the builder.
+
+        ``import_files_coarse`` is what the MCP surface registers as
+        ``import_files``; the inner ``import_files`` is an unregistered builder.
+        A parameter added only to the builder is invisible to every caller and
+        absent from the published schema, so an agent that hits an account gate
+        on the one tool that raises it has no way to answer.
+        """
+        csv_file = tmp_path / "statements" / "txns.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file), file_type="csv", transactions=2
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            await import_files_coarse(
+                paths=[str(csv_file)], account_bindings={"checking": "new"}
+            )
+
+        assert mock_service.import_file.call_args.kwargs["account_bindings"] == {
+            "checking": "new"
+        }
+
     async def test_import_files_builds_no_confirm_hint_of_its_own(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:

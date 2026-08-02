@@ -1,5 +1,5 @@
 {
-  "sha256": "680d669c296a4d6463953096cc1efe392d433785c4aa5538dd0341dbd2e13205",
+  "sha256": "d79ddc8fa30af1ff7a0bb0dc078326e4a3917c8f5be260f3d6a796bc76b90ca1",
   "tool_count": 49,
   "tools": [
     {
@@ -1589,6 +1589,20 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "account_bindings": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "force": {
               "default": false,
               "type": "boolean"
@@ -1617,11 +1631,11 @@
         "name": "import_files"
       },
       "description_bytes": 25,
-      "input_schema_bytes": 220,
+      "input_schema_bytes": 341,
       "name": "import_files",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 437
+      "total_bytes": 558
     },
     {
       "annotation_bytes": 91,
@@ -5013,5 +5027,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 54280
+  "total_bytes": 54401
 }

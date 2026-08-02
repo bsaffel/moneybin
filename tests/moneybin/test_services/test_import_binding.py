@@ -8,6 +8,7 @@ account_bindings resolution map through the real import_file pipeline.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -504,7 +505,7 @@ def test_account_gate_counts_a_proposed_confirmation_on_every_channel(
     db: Database,
     fixture: Path,
     channel: str,
-    import_kwargs: dict[str, str],
+    import_kwargs: dict[str, Any],
 ) -> None:
     """Every channel's account gate is counted, labelled by that channel.
 
