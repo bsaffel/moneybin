@@ -351,6 +351,80 @@
     "exemption": null
   },
   {
+    "capability_id": "investments.prices.refresh",
+    "mcp_tools": [],
+    "cli_commands": [
+      "investments prices pull"
+    ],
+    "service_methods": [
+      "moneybin.services.price_service.PriceService.pull"
+    ],
+    "observable_outcomes": [
+      "held securities reach the same stored price coverage, with ambiguous feed keys queued for review rather than bound"
+    ],
+    "exemption": {
+      "surface": "cli",
+      "category": "granular-operator-debug",
+      "reason": "An observation-grain price capability stays unnamed until it passes tool admission; the valuation it produces is already surfaced by investments(view=\"holdings\"), so no agent outcome is missing."
+    }
+  },
+  {
+    "capability_id": "investments.prices.mark",
+    "mcp_tools": [],
+    "cli_commands": [
+      "investments prices set",
+      "investments prices delete"
+    ],
+    "service_methods": [
+      "moneybin.services.price_service.PriceService.set_mark",
+      "moneybin.services.price_service.PriceService.delete_mark"
+    ],
+    "observable_outcomes": [
+      "one audited user price mark reaches the same present or absent state for a security, date, and currency"
+    ],
+    "exemption": {
+      "surface": "cli",
+      "category": "granular-operator-debug",
+      "reason": "Paired with investments.prices.refresh: the observation grain these write is not yet an admitted MCP capability, and the resulting valuation is surfaced on holdings."
+    }
+  },
+  {
+    "capability_id": "investments.prices.read",
+    "mcp_tools": [],
+    "cli_commands": [
+      "investments prices list"
+    ],
+    "service_methods": [
+      "moneybin.services.price_service.PriceService.list_prices"
+    ],
+    "observable_outcomes": [
+      "the resolved price series for one security returns the same winning close and source per date"
+    ],
+    "exemption": {
+      "surface": "cli",
+      "category": "granular-operator-debug",
+      "reason": "Observation-grain read behind the same unadmitted capability as investments.prices.refresh."
+    }
+  },
+  {
+    "capability_id": "investments.prices.credential",
+    "mcp_tools": [],
+    "cli_commands": [
+      "investments prices token"
+    ],
+    "service_methods": [
+      "moneybin.secrets.SecretStore.set_key"
+    ],
+    "observable_outcomes": [
+      "the Tiingo API token reaches the same profile-scoped keychain entry"
+    ],
+    "exemption": {
+      "surface": "cli",
+      "category": "secret-material",
+      "reason": "An API credential must never enter an LLM context window."
+    }
+  },
+  {
     "capability_id": "transactions.read",
     "mcp_tools": [
       "transactions"

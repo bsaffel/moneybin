@@ -253,13 +253,74 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |                                     the manually-maintained securities catalog. Defined in
 |                                     investments-data-model.md (Pillars A+B, implemented).
 |                                     Positions carry market value from the broker-supplied close
-|                                     (Pillar C.1); net-worth integration awaits Pillar D.
+|                                     (Pillar C.1) plus external feeds and user marks (C.2);
+|                                     net-worth integration awaits Pillar D.
 |   +-- add                        -- Record an investment event (buy/sell/dividend/transfer/...)
 |   +-- list                       -- List ledger events
 |   +-- holdings                   -- Current positions (cost basis + market value, unrealized gain, price age)
 |   +-- lots [--open|--all]        -- Tax lots with remaining quantity + basis
 |   |   +-- select <disposal_id> --lot <lot_id>:<qty> [--lot ...]  -- Replace lot selection (declarative set; multi-lot)
 |   +-- gains                      -- Realized gain/loss (the 1099-B surface)
+|   +-- prices                     -- Market prices for held securities (Pillar C.2)
+|   |   +-- pull [--security REF]... [--since DATE] [--refresh]
+|   |   |         Refresh stored closes for held positions from the configured feeds.
+|   |   |         Fetch scope comes from open positions, not the whole catalog. A feed
+|   |   |         key that cannot be derived with confidence is queued for review
+|   |   |         rather than bound to a guess -- a ticker is not an identifier.
+|   |   |         Closes land in raw.security_prices and holdings value from core, so
+|   |   |         a pull alone changes no reported value. --refresh rebuilds the
+|   |   |         transform step in the same command; without it the success line
+|   |   |         names `refresh run`. A failed apply exits 1 in both output modes --
+|   |   |         the rows are already committed, so the retry is a bare `refresh
+|   |   |         run`, never a re-pull against the provider's rate limit.
+|   |   |         --since further back than 365 days is refused for crypto, naming the
+|   |   |         earliest date CoinGecko's keyless tier serves: narrowing the window
+|   |   |         silently returned one year and reported a full backfill. The refusal
+|   |   |         is per source, so equities still pull over the window you asked for.
+|   |   |         --since after the last complete day is refused before any request:
+|   |   |         a pull never asks for today's in-progress close, so `start > end`
+|   |   |         reached Tiingo as an inverted range and CoinGecko as an empty
+|   |   |         match, and every held security came back as a feed failure.
+|   |   +-- set <security> <date> <price> [--currency CUR] [--note TEXT] [--refresh]
+|   |   |         Record your own price. Outranks every provider close for that date
+|   |   |         and leaves other dates untouched. A non-positive price is refused:
+|   |   |         a worthless position is a ledger event, not a zero price.
+|   |   |         Crosses the same app/core boundary `pull` does -- the mark lands in
+|   |   |         app.security_price_overrides while holdings value from core -- so it
+|   |   |         carries the same --refresh flag, the same `refresh run` hint, and the
+|   |   |         same non-zero exit on a failed apply.
+|   |   |         --currency defaults to the currency the position is held in, not a
+|   |   |         fixed USD: core.dim_holdings values a position only where the price's
+|   |   |         quote_currency matches the position's currency_code, so a fixed
+|   |   |         default wrote a mark, reported success, and valued nothing for every
+|   |   |         non-USD holding. Refused when nothing is held or two denominations
+|   |   |         are in use -- ambiguity asks rather than guesses. An explicit
+|   |   |         --currency must be an ISO-4217 code: `USDX` would store and match
+|   |   |         no position, so it exits 1 rather than reporting a mark that
+|   |   |         values nothing. A non-finite PRICE (`NaN`, `Infinity`) exits 2.
+|   |   |         --note is bounded at NOTE_MAX_LEN (2,000) characters and may not be
+|   |   |         blank: DuckDB VARCHAR is unbounded, and every later correction copies
+|   |   |         the note into its audit before/after image, so one oversized string
+|   |   |         is stored repeatedly rather than once. Omit the flag for no note.
+|   |   |         PRICE must fit DECIMAL(28,10) -- at most 18 digits before the point
+|   |   |         and 10 after. Finer precision rounds on the way in, so the number
+|   |   |         stored would differ from the one echoed back; below 1e-10 it rounds
+|   |   |         to zero and trips the table's CHECK (close > 0) as an untyped DuckDB
+|   |   |         error. Both are refused here as usage errors instead.
+|   |   +-- delete <security> <date> [--currency CUR] [--refresh]
+|   |   |         Remove a mark, returning that date to provider-derived valuation.
+|   |   |         Load-bearing, not CRUD symmetry -- `set` can only change the number,
+|   |   |         so without this a mark is unreachable once written. --refresh behaves
+|   |   |         as on `set`, but is skipped when no mark existed to remove: nothing
+|   |   |         changed, so there is nothing to propagate. --currency derives
+|   |   |         identically to `set` -- a delete defaulting to USD could not reach a
+|   |   |         mark `set` was right to write in EUR.
+|   |   +-- list <security> [--since DATE] [--source SRC] [--output json] [--quiet]
+|   |   |         The resolved series, newest first: the winning close and its source
+|   |   |         per date, not every observation that competed for it.
+|   |   +-- token [--token VALUE]
+|   |             Store the Tiingo API token in the OS keychain. CLI-only under the
+|   |             secret-material exemption; prompts without echo when --token is omitted.
 |   +-- securities                 -- Security catalog
 |       +-- list / add / set       -- Manage catalog (set carries --method per-security override)
 |       +-- links                  -- Review security identity merge proposals (M1G.4 Task 12)

@@ -1,4 +1,11 @@
-"""investments securities links — review-queue commands for security identity merges.
+"""investments securities links — review-queue commands for security ref decisions.
+
+The queue holds two kinds of question that look alike to a reviewer and resolve
+oppositely. An **identity** ref (``plaid_security_id``) asks whether two catalog
+rows are one instrument; accepting MERGES and deletes the provisional. A
+**feed-key** ref (``tiingo_ticker``, ``coingecko_slug``) asks whether a
+market-data symbol names this security; accepting BINDS and deletes nothing.
+`set --accept` routes on ref_kind and reports which one ran.
 
 Subcommands: pending, set, history.
 Mirrors `merchants links` (M1T) — thin wrappers over SecurityLinksService.
@@ -26,7 +33,7 @@ from moneybin.protocol.envelope import build_envelope
 from moneybin.services.security_links_service import SecurityLinksService
 
 app = typer.Typer(
-    help="Review security identity merge proposals",
+    help="Review security identity merges and price-feed key proposals",
     no_args_is_help=True,
 )
 logger = logging.getLogger(__name__)
@@ -108,12 +115,15 @@ def links_set(
     accept: bool = typer.Option(
         False,
         "--accept",
-        help="Accept: merge the provisional security into the decision's candidate",
+        help=(
+            "Accept: an identity ref merges into the candidate, "
+            "a feed-key ref only binds the symbol to it"
+        ),
     ),
     reject: bool = typer.Option(
         False,
         "--reject",
-        help="Reject: keep the provisional security as its own distinct instrument",
+        help="Reject: no merge and no binding; the pairing is not re-proposed",
     ),
     into: str | None = typer.Option(
         None,
@@ -124,20 +134,33 @@ def links_set(
         ),
     ),
 ) -> None:
-    """Accept (merge) or reject a pending security merge decision.
+    """Accept or reject a pending security-link decision.
 
     Pass exactly one of:
-      --accept --into <candidate_security_id>   merge into this candidate
-      --reject                                  keep the provisional security;
-                                                 this pairing is not re-proposed
+      --accept --into <candidate_security_id>   act on this candidate
+      --reject                                  refuse the pairing;
+                                                 it is not re-proposed
 
-    A merge re-points every accepted provider ref and tax lot onto the
-    candidate in one transaction — review the candidate's ticker, name, and
-    Reason in `investments securities links pending` before accepting.
+    What accepting does depends on the decision's ref_kind, shown in the group
+    header of `investments securities links pending`:
+
+    An identity ref (plaid_security_id) MERGES. It re-points every accepted
+    provider ref, tax lot, manual investment ledger row, and price mark you set
+    by hand onto the candidate in one transaction, then deletes the provisional
+    catalog row.
+
+    A feed-key ref (tiingo_ticker, coingecko_slug) BINDS. It records that the
+    symbol prices this security, so later pulls fetch under that key. Nothing
+    is re-pointed and nothing is deleted.
+
+    Review the candidate's ticker, name, and Reason in
+    `investments securities links pending` before accepting. There is no
+    interactive prompt: `--into` is the confirmation, so this help text is the
+    only place the blast radius is stated.
     `--into` must equal the decision's own candidate_security_id: on a tied
     group the resolver files one decision per candidate, so this is the
-    confirming check that stops a mistyped or stale decision_id from
-    merging into the wrong security.
+    confirming check that stops a mistyped or stale decision_id from acting on
+    the wrong security.
 
     Examples:
       investments securities links set dec001 --accept --into sec001aabbcc
@@ -160,11 +183,19 @@ def links_set(
         with get_database(read_only=False) as db:
             svc = SecurityLinksService(db, actor="cli")
             if accept:
-                svc.accept_merge(decision_id, into=into or "", decided_by="user")
+                outcome = svc.accept(decision_id, into=into or "", decided_by="user")
             else:
                 svc.reject_merge(decision_id, decided_by="user")
+                outcome = None
 
-    action = f"merged into {into}" if accept else "rejected"
+    # The queue mixes two kinds of question and the service picks the mechanism,
+    # so the word for it comes back from there. A fixed "merged" told the user
+    # two securities had been combined when accepting a feed key only creates a
+    # link and deletes nothing.
+    if outcome is None:
+        action = "rejected"
+    else:
+        action = f"{'bound to' if outcome == 'bound' else 'merged into'} {into}"
     logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
 
 

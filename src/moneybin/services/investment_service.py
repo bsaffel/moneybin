@@ -60,6 +60,8 @@ from moneybin.investments.cost_basis import (
 )
 from moneybin.metrics.registry import (
     INVESTMENT_EVENTS_RECORDED_TOTAL,
+    PRICE_RESOLUTION_STATUS_TOTAL,
+    PRICE_STALENESS_DAYS,
     SECURITY_RESOLUTION_OUTCOMES_TOTAL,
 )
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
@@ -1849,6 +1851,23 @@ class InvestmentService:
             # treating them as two would suppress a total that is safe to publish.
             code = row.currency_code.upper()
             by_currency[code] = by_currency.get(code, Decimal("0")) + row.market_value
+        # Only an unfiltered read describes the portfolio, and both instruments
+        # here are portfolio-wide by definition. Recording a filtered read would
+        # make the exported value depend on whichever filter the last caller
+        # happened to pass — `--security AAPL` would publish that one position's
+        # age as the age of every number in net worth.
+        if account_id is None and security_id is None:
+            for row in holding_rows:
+                PRICE_RESOLUTION_STATUS_TOTAL.labels(status=row.valuation_status).inc()
+            # NaN, not 0, when nothing is priced. days_since_observed is 0 on a
+            # same-day close, so 0 would make a total pricing outage read as a
+            # perfectly fresh portfolio and leave a `> N days` alert unable to
+            # fire in the one case this gauge exists to expose. NaN is
+            # Prometheus's no-data convention and agrees with
+            # max_days_since_observed, which reports None for the same empty set.
+            PRICE_STALENESS_DAYS.set(
+                max(observed_ages) if observed_ages else float("nan")
+            )
         return HoldingsResult(
             rows=holding_rows,
             warnings=warnings,

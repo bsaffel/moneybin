@@ -206,6 +206,16 @@ GSHEET_RECONNECT_ARGUMENT_CONFLICT = "gsheet_reconnect_argument_conflict"
 
 
 # ---------------------------------------------------------------------------
+# Price feeds — market data providers (Tiingo, CoinGecko)
+# ---------------------------------------------------------------------------
+# Distinct from sync_* (mediated account providers): a price feed carries no
+# account credential and no PII, only public market data. Like sync_ and
+# gsheet_, a taxonomy-completeness prefix rather than a recovery code.
+
+PRICE_FEED_ERROR = "price_feed_error"
+
+
+# ---------------------------------------------------------------------------
 # SQL — ad-hoc read-only query surface (sql_query / sql_schema)
 # ---------------------------------------------------------------------------
 
@@ -255,6 +265,9 @@ INVESTMENT_DATE_RANGE_INVALID = "investment_date_range_invalid"
 INVESTMENT_DATES_NOT_ALLOWED = "investment_dates_not_allowed"
 INVESTMENT_METHOD_NOT_SPECIFIC = "investment_method_not_specific"
 INVESTMENT_OPEN_ONLY_NOT_ALLOWED = "investment_open_only_not_allowed"
+INVESTMENT_PRICE_MARK_CURRENCY_AMBIGUOUS = "investment_price_mark_currency_ambiguous"
+INVESTMENT_PRICE_MARK_CURRENCY_INVALID = "investment_price_mark_currency_invalid"
+INVESTMENT_PRICE_MARK_UNREPRESENTABLE = "investment_price_mark_unrepresentable"
 INVESTMENT_SECURITY_NOT_BOUND = "investment_security_not_bound"
 INVESTMENT_SECURITY_NOT_IN_CATALOG = "investment_security_not_in_catalog"
 

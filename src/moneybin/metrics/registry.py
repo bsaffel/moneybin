@@ -667,6 +667,45 @@ PRICE_ROWS_WRITTEN_TOTAL = Counter(
     ["source_type"],
 )
 
+PRICE_REFRESH_DURATION_SECONDS = Histogram(
+    "moneybin_price_refresh_duration_seconds",
+    # A refresh reaches the network, so latency is the signal that a provider is
+    # degrading before it starts failing outright.
+    "Duration of one price adapter's fetch (seconds), by source_type",
+    ["source_type"],
+)
+
+PRICE_REFRESH_SECURITIES_TOTAL = Counter(
+    "moneybin_price_refresh_securities_total",
+    # Partial success is the normal shape of a refresh: some securities price,
+    # some have no feed key, some fail at the provider. Without this the split
+    # exists only in a CLI string nobody records.
+    "Securities per price refresh by source_type and outcome "
+    "(written / failed / skipped)",
+    ["source_type", "outcome"],
+)
+
+PRICE_RESOLUTION_STATUS_TOTAL = Counter(
+    "moneybin_price_resolution_status_total",
+    # A rise in the 'unpriced' share is the first sign a feed stopped matching
+    # securities. Recorded per full holdings read, so read it as a ratio between
+    # statuses over a window, not as an absolute count of positions.
+    "Holdings valuation outcomes by status (valued / carried_forward / "
+    "unpriced / unreconstructable / withheld)",
+    ["status"],
+)
+
+PRICE_STALENESS_DAYS = Gauge(
+    "moneybin_price_staleness_days",
+    # One number answering "how old is the oldest price my net worth rests on".
+    # Scoped to positions that actually publish a figure: an unpriced position
+    # has no age, and counting it as infinitely stale would bury the real answer.
+    # NaN when NO position carries one — a total outage must not read as 0, which
+    # is what a same-day close reports and therefore the healthiest value here.
+    "Largest days_since_observed across held securities carrying a market value; "
+    "NaN when none do",
+)
+
 SECURITY_LINK_OUTCOMES_TOTAL = Counter(
     "moneybin_security_link_outcomes_total",
     "SecurityResolver ladder outcomes per resolved security",

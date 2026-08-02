@@ -47,6 +47,7 @@ from moneybin.tables import (
     SECURITIES,
     SECURITY_LINK_DECISIONS,
     SECURITY_LINKS,
+    SECURITY_PRICE_OVERRIDES,
     TRANSACTION_CATEGORIES,
     USER_MERCHANTS,
 )
@@ -72,6 +73,23 @@ class OrdinaryDecisionPlanItem:
     merchant_id: str | None = None
     match_text: str | None = None
     merchant_group_key: tuple[str, str, str | None] | None = None
+
+
+#: Every blast-radius category an identity confirmation reports, named once.
+#:
+#: The confirm binding indexes ``affected_ids`` by exactly this set, so the two
+#: lists have to agree: a preparer that omits a key raises at confirmation time,
+#: and a category added to a preparer but not here is a mutation the prompt
+#: silently drops. ``price_marks`` was the second kind — the merge moved every
+#: override while the prompt counted only the first five.
+IDENTITY_BLAST_RADIUS_CATEGORIES = (
+    "accounts",
+    "merchants",
+    "securities",
+    "transactions",
+    "lots",
+    "price_marks",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -569,6 +587,7 @@ class ReviewDecisionsService:
                 "securities": (),
                 "transactions": transactions,
                 "lots": (),
+                "price_marks": (),
             },
         )
 
@@ -653,6 +672,7 @@ class ReviewDecisionsService:
                 "securities": (),
                 "transactions": (),
                 "lots": (),
+                "price_marks": (),
             },
         )
 
@@ -675,6 +695,9 @@ class ReviewDecisionsService:
             """,  # noqa: S608  # TableRef constant + parameterized values
             [decision["ref_kind"], decision["ref_value"], decision["source_type"]],
         ).fetchone()
+        binds_a_feed_key = SecurityLinksService.binds_a_feed_key(
+            str(decision["ref_kind"])
+        )
         source_id = str(binding[0]) if binding is not None else request.decision_id
         candidate_id = str(decision["candidate_security_id"])
         target_id = request.target_id or candidate_id
@@ -697,7 +720,19 @@ class ReviewDecisionsService:
             )
         else:
             changed = True
-            if request.decision == "accept":
+            if request.decision == "accept" and binds_a_feed_key:
+                # A feed key has no accepted binding to move — that absence is why
+                # PriceService queued it — so the merge preflight would refuse it
+                # with "nothing to merge away" and the batch would never reach the
+                # bind. Source and target are both the candidate: a bind creates the
+                # link that did not exist and re-points nothing.
+                service.bind_impact(
+                    request.decision_id,
+                    into=cast(str, request.target_id),
+                )
+                source_id = candidate_id
+                target_id = candidate_id
+            elif request.decision == "accept":
                 impact = service.accept_impact(
                     request.decision_id,
                     into=cast(str, request.target_id),
@@ -756,6 +791,39 @@ class ReviewDecisionsService:
             )
         ]
         material_accept = changed and request.decision == "accept"
+        # A bind creates one link and re-points nothing, so it moves no event, no
+        # lot, and no mark: EVERY re-pointing category below gates on this flag,
+        # not just the last one. Claiming the candidate's ledger for a bind is
+        # wrong twice over — it contradicts the mutation contract the prompt
+        # states, and because these counts are part of the digest the approval is
+        # bound to, an unrelated refresh between preview and commit then
+        # invalidates a grant for rows the bind never touches.
+        #
+        # `before_state` gates on the same flag for the same reason. It reads no
+        # core table, but a bind's `source_id` IS the surviving candidate, so
+        # snapshotting its marks captures a security's whole valuation history
+        # that `accept_feed_key` never touches — and a mark the user edits
+        # between elicitation and submit then rejects the batch as mismatched on
+        # state the bind has nothing to do with. A merge does move these rows
+        # (`_repoint_price_marks`), so there they belong in the snapshot.
+        #
+        # `securities` deliberately stays on material_accept: a bind does affect
+        # one security — it becomes priceable — and reporting a wholly empty
+        # blast radius for a write would understate it.
+        material_merge = material_accept and not binds_a_feed_key
+        marks = (
+            _query_json_rows(
+                self._db,
+                f"""
+                SELECT * FROM {SECURITY_PRICE_OVERRIDES.full_name}
+                WHERE security_id = ?
+                ORDER BY price_date, quote_currency
+                """,  # noqa: S608  # TableRef constant + parameterized value
+                [source_id],
+            )
+            if material_merge
+            else []
+        )
         core_transactions = (
             _query_ids(
                 self._db,
@@ -767,7 +835,7 @@ class ReviewDecisionsService:
                 """,  # noqa: S608  # TableRef constant + parameterized value
                 [source_id],
             )
-            if material_accept
+            if material_merge
             else ()
         )
         manual_transactions = (
@@ -784,7 +852,7 @@ class ReviewDecisionsService:
                 """,  # noqa: S608  # TableRef constant + parameterized value
                 [source_id],
             )
-            if material_accept
+            if material_merge
             else ()
         )
         transactions = tuple(dict.fromkeys((*core_transactions, *manual_transactions)))
@@ -799,7 +867,7 @@ class ReviewDecisionsService:
                 """,  # noqa: S608  # TableRef constant + parameterized value
                 [source_id],
             )
-            if material_accept
+            if material_merge
             else ()
         )
         return IdentityDecisionPlanItem(
@@ -821,6 +889,7 @@ class ReviewDecisionsService:
                 "securities": securities,
                 "manual_investment_transactions": manual,
                 "lot_selections": selections,
+                "security_price_overrides": marks,
             }),
             affected_ids={
                 "accounts": (),
@@ -830,6 +899,12 @@ class ReviewDecisionsService:
                 else (),
                 "transactions": transactions,
                 "lots": lots,
+                "price_marks": tuple(
+                    f"{row['security_id']}|{row['price_date']}|{row['quote_currency']}"
+                    for row in marks
+                )
+                if material_merge
+                else (),
             },
         )
 
@@ -984,7 +1059,10 @@ class ReviewDecisionsService:
                         in_outer_txn=True,
                     )
                 elif request.decision == "accept":
-                    security_service.accept_merge(
+                    # Routes on the service's own predicate rather than the plan
+                    # item, so the commit and the preflight that bound the user's
+                    # approval cannot disagree about which mutation runs.
+                    security_service.accept(
                         request.decision_id,
                         into=cast(str, request.target_id),
                         decided_by=decided_by,

@@ -115,3 +115,43 @@ async def test_every_tool_name_matches_anthropic_openai_pattern() -> None:
         f"Tool names violate ^[a-zA-Z0-9_-]{{1,64}}$ (Anthropic/OpenAI "
         f"frontend regex): {bad}"
     )
+
+
+async def test_identity_decide_description_covers_both_security_acceptances() -> None:
+    """`identity_links_decide` must not describe every accept as a merge.
+
+    A security-link decision commits one of two materially different mutations,
+    and the accept path picks between them by ``operation_kind``. A merge deletes
+    a catalog row and re-points tax lots; a feed-key bind only records which
+    provider symbol prices a security — nothing is fused and nothing is deleted.
+    Documenting the tool solely as a merge overstates the feed-key case, which
+    deters an agent from confirming a decision that is in fact cheap and
+    reversible.
+
+    Derived from the two operation kinds rather than a prose literal, so adding a
+    third acceptance fails here instead of shipping undocumented.
+    """
+    from moneybin.mcp.server import mcp
+    from moneybin.mcp.tools.investments import FEED_KEY_BIND_KIND, IDENTITY_MERGE_KIND
+
+    kind_terms = {
+        FEED_KEY_BIND_KIND: ("bind", "binding"),
+        IDENTITY_MERGE_KIND: ("merge", "merges", "merging"),
+    }
+
+    tool = next(
+        t
+        for t in await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
+        if t.name == "identity_links_decide"
+    )
+    description = (tool.description or "").lower()
+
+    undescribed = [
+        kind
+        for kind, terms in kind_terms.items()
+        if not any(term in description for term in terms)
+    ]
+    assert not undescribed, (
+        f"identity_links_decide never names the {undescribed} acceptance(s), so "
+        f"an agent cannot tell what accepting actually does: {description!r}"
+    )

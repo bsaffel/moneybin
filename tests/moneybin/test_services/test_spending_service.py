@@ -26,7 +26,18 @@ def spending_db(db: Database) -> Database:
     conn = db.conn
     create_core_tables_raw(conn)
 
-    # Insert test transactions spanning 2 months
+    # Two months of transactions, anchored to CURRENT_DATE rather than to literal
+    # dates. by_category() filters on
+    # `transaction_year_month >= strftime(CURRENT_DATE - INTERVAL '3 months')`, so a
+    # hardcoded fixture silently ages out of its own window and the assertions below
+    # start reporting an empty breakdown — a failure with no bug behind it, arriving
+    # on a calendar boundary rather than on a commit. The previous fixture sat in
+    # 2026-03/2026-04 and expired at the 2026-08-01 UTC month rollover.
+    #
+    # The anchors are the two PRECEDING months, never the current one: that keeps
+    # every row in the past (a fixture dated into the future is its own puzzle) and
+    # still leaves a full month of margin before the three-month floor. Every derived
+    # part column is computed from the same date so they cannot drift apart.
     conn.execute("""
         INSERT INTO core.fct_transactions (
             transaction_id, account_id, transaction_date, amount,
@@ -35,11 +46,21 @@ def spending_db(db: Database) -> Database:
             source_extracted_at, loaded_at,
             transaction_year, transaction_month, transaction_day,
             transaction_day_of_week, transaction_year_month, transaction_year_quarter
-        ) VALUES
-        ('T1', 'A1', '2026-04-10', -50.00, 50.00, 'expense', 'Coffee', 'DEBIT', false, 'USD', 'ofx', '2026-04-10', CURRENT_TIMESTAMP, 2026, 4, 10, 3, '2026-04', '2026-Q2'),
-        ('T2', 'A1', '2026-04-15', 5000.00, 5000.00, 'income', 'Payroll', 'CREDIT', false, 'USD', 'ofx', '2026-04-15', CURRENT_TIMESTAMP, 2026, 4, 15, 1, '2026-04', '2026-Q2'),
-        ('T3', 'A1', '2026-03-10', -200.00, 200.00, 'expense', 'Groceries', 'DEBIT', false, 'USD', 'ofx', '2026-03-10', CURRENT_TIMESTAMP, 2026, 3, 10, 1, '2026-03', '2026-Q1'),
-        ('T4', 'A1', '2026-03-20', 5000.00, 5000.00, 'income', 'Payroll', 'CREDIT', false, 'USD', 'ofx', '2026-03-20', CURRENT_TIMESTAMP, 2026, 3, 20, 4, '2026-03', '2026-Q1')
+        )
+        SELECT
+            t.txn_id, 'A1', t.txn_date, t.amount,
+            ABS(t.amount), t.direction, t.description,
+            t.txn_type, false, 'USD', 'ofx',
+            t.txn_date, CURRENT_TIMESTAMP,
+            YEAR(t.txn_date), MONTH(t.txn_date), DAY(t.txn_date),
+            DAYOFWEEK(t.txn_date), STRFTIME(t.txn_date, '%Y-%m'),
+            STRFTIME(t.txn_date, '%Y') || '-Q' || CAST(QUARTER(t.txn_date) AS VARCHAR)
+        FROM (VALUES
+            ('T1', (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL 1 MONTH + INTERVAL 9 DAY)::DATE, -50.00, 'expense', 'Coffee', 'DEBIT'),
+            ('T2', (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL 1 MONTH + INTERVAL 14 DAY)::DATE, 5000.00, 'income', 'Payroll', 'CREDIT'),
+            ('T3', (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL 2 MONTH + INTERVAL 9 DAY)::DATE, -200.00, 'expense', 'Groceries', 'DEBIT'),
+            ('T4', (DATE_TRUNC('month', CURRENT_DATE) - INTERVAL 2 MONTH + INTERVAL 19 DAY)::DATE, 5000.00, 'income', 'Payroll', 'CREDIT')
+        ) AS t(txn_id, txn_date, amount, direction, description, txn_type)
     """)  # noqa: S608  # test input, not executing SQL
 
     # Insert transaction_categories for by_category tests

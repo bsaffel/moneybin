@@ -16,6 +16,11 @@ from moneybin.errors import RecoveryAction
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
 from moneybin.metrics.registry import PROFILE_CURRENCIES, UNKNOWN_CURRENCY_ROWS
 from moneybin.sqlmesh_registry import model_presence
+from moneybin.staleness import (
+    SECURITY_TYPE_STALENESS_DAYS,
+    is_stale,
+    resolve_threshold_days,
+)
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
@@ -28,6 +33,7 @@ from moneybin.tables import (
     CATEGORY_OVERRIDES,
     DIM_ACCOUNTS,
     DIM_HOLDINGS,
+    DIM_SECURITIES,
     FCT_BALANCES,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
@@ -47,6 +53,8 @@ from moneybin.tables import (
     PROPOSED_RULES,
     SECURITIES,
     SECURITY_LINKS,
+    SECURITY_PRICE_OVERRIDES,
+    SECURITY_PRICES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
@@ -68,6 +76,14 @@ _BALANCE_ASSERTIONS_PK_EXPR = (
     f"CAST({exp.to_identifier('assertion_date', quoted=True).sql('duckdb')} AS VARCHAR)"
 )
 
+# app.security_price_overrides keys on (security_id, price_date, quote_currency);
+# mirrors SecurityPriceRepo._target_id.
+_SECURITY_PRICE_OVERRIDES_PK_EXPR = (
+    f"{exp.to_identifier('security_id', quoted=True).sql('duckdb')} || '|' || "
+    f"CAST({exp.to_identifier('price_date', quoted=True).sql('duckdb')} AS VARCHAR)"
+    f" || '|' || {exp.to_identifier('quote_currency', quoted=True).sql('duckdb')}"
+)
+
 # Raw-interpolated SQL expressions allowed in `_run_app_audit_coverage`. Both
 # `updated_expr` and `pk_expr` are spliced into SQL unsanitized (a multi-column
 # expression can't be sqlglot-quoted as a single identifier), so each must be a
@@ -75,7 +91,10 @@ _BALANCE_ASSERTIONS_PK_EXPR = (
 # code-supplied-literal contract per `.claude/rules/security.md` (allowlist
 # dynamic SQL), closing the door before a future caller passes a tainted value.
 _ALLOWED_UPDATED_EXPRS = frozenset({"GREATEST(decided_at, reversed_at)"})
-_ALLOWED_PK_EXPRS = frozenset({_BALANCE_ASSERTIONS_PK_EXPR})
+_ALLOWED_PK_EXPRS = frozenset({
+    _BALANCE_ASSERTIONS_PK_EXPR,
+    _SECURITY_PRICE_OVERRIDES_PK_EXPR,
+})
 
 _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
 
@@ -220,6 +239,10 @@ class DoctorService:
             self._run_investment_conflicting_security_refs(),
             self._run_investment_unreported_holdings(),
             self._run_investment_phantom_holdings(),
+            self._run_investment_price_disagreement(),
+            self._run_investment_unpriced_holdings(),
+            self._run_investment_stale_prices(),
+            self._run_investment_unmapped_price_source(),
         ]
         raw_invariants = [
             *sqlmesh_results,
@@ -327,7 +350,8 @@ class DoctorService:
         ``tabular_formats``, ``match_decisions``, ``imports``, the
         account-identity tables ``account_links``, ``account_link_decisions``,
         ``transaction_id_aliases``, and the investments tables ``securities``,
-        ``lot_selections``); later repository PRs append one coverage call per
+        ``lot_selections``, ``security_price_overrides``); later repository PRs
+        append one coverage call per
         newly-wrapped table plus that table's FK/orphan specifics.
 
         This is **not** yet every repo-wrapped table: twelve tables have a repo
@@ -374,6 +398,12 @@ class DoctorService:
                 BALANCE_ASSERTIONS,
                 "account_id",
                 pk_expr=_BALANCE_ASSERTIONS_PK_EXPR,
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                SECURITY_PRICE_OVERRIDES,
+                "security_id",
+                pk_expr=_SECURITY_PRICE_OVERRIDES_PK_EXPR,
                 full=full,
             ),
             self._run_app_audit_coverage(BUDGETS, "budget_id", full=full),
@@ -1263,6 +1293,294 @@ class DoctorService:
                     "the missing disposal"
                 ),
                 affected_ids=[f"{r[0]}:{r[1]}" for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_price_disagreement(self) -> InvariantResult:
+        """Two provider feeds holding materially different closes for one security-date.
+
+        Two sources agreeing is uninteresting; two disagreeing means one is
+        wrong, and resolution picks a winner by rank without saying so. This is
+        where that inference becomes visible.
+
+        Reads ``prep.stg_security_prices`` rather than the resolved fact table
+        for two reasons: the fact table has already collapsed the pair to one
+        winner, and staging carries provider observations *only*. Overrides and
+        trade-implied prices are derived at model build and never land in
+        ``raw.security_prices``, so they cannot reach this comparison — which is
+        the point. Both are *expected* to differ from a provider close (an
+        override exists to correct one; a trade-implied price reflects one
+        execution's size and spread), so including them would raise a standing
+        warning on every ordinary correction and every intraday fill.
+
+        Deliberately not scoped to an enumerated provider list. The set of
+        providers grows and an enumeration can only go stale in the direction
+        that hides disagreements; the derived sources are excluded structurally
+        by reading staging instead.
+
+        A grain the user has already marked is excluded, because reading staging
+        means the competing rows survive the correction that settled them. The
+        mark fixes the winner in ``core``, `prep` keeps both provider closes, and
+        without this the check would report the same disagreement on every run
+        forever — after following its own remediation, with nothing left to do.
+        The exclusion matches the mark's full key (security, date, currency), not
+        the security: a mark settles the date it names, and silencing a security
+        outright would hide the wrong-key binding this check exists to catch.
+        """
+        name = "investment_price_disagreement"
+        tolerance = get_settings().investments.price_disagreement_tolerance_pct / 100
+        try:
+            rows = self._db.execute(
+                """
+                SELECT DISTINCT a.security_id
+                FROM prep.stg_security_prices AS a
+                JOIN prep.stg_security_prices AS b
+                  ON b.security_id = a.security_id
+                  AND b.price_date = a.price_date
+                  AND b.quote_currency = a.quote_currency
+                  AND b.source_type > a.source_type
+                WHERE ABS(a.close - b.close) / ((a.close + b.close) / 2) > ?
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM app.security_price_overrides AS o
+                    WHERE o.security_id = a.security_id
+                      AND o.price_date = a.price_date
+                      AND o.quote_currency = a.quote_currency
+                  )
+                ORDER BY a.security_id
+                """,  # noqa: S608  # fixed view name + bound parameter, no user input
+                [tolerance],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — staging view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"price staging view unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            pct = get_settings().investments.price_disagreement_tolerance_pct
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} security(s) have two price feeds disagreeing "
+                    f"by more than {pct}% on the same date and currency — one "
+                    "of them is wrong, and valuation picks a winner by source "
+                    "rank without flagging the conflict; compare the competing "
+                    'quotes with `moneybin db query "SELECT price_date, '
+                    "source_type, close FROM prep.stg_security_prices WHERE "
+                    "security_id = '<id>' ORDER BY price_date DESC\"` — the "
+                    "losing quote never reaches `investments prices list`, "
+                    "which reads the already-resolved series, and staging is "
+                    "outside the schemas `sql query` can read — then record a "
+                    "mark with `moneybin investments prices set` if the winning "
+                    "feed is the wrong one, which settles that date and drops it "
+                    "from this check"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_unpriced_holdings(self) -> InvariantResult:
+        """Open positions carrying no usable price on the current valuation date.
+
+        ``valuation_status`` already records this per position, but only where
+        someone is already looking at that position — nothing surfaces it in the
+        place users go to ask "is anything wrong with my data?". A position whose
+        feed key never bound simply reads blank forever.
+
+        Scoped to ``unpriced`` alone. ``withheld`` also publishes no value, but
+        its remedy is reconciling a share count, not adding a price source, and
+        routing it here would send the user to fix something that was never
+        broken. ``carried_forward`` has a usable price whose age the staleness
+        surface carries.
+
+        Reported per security rather than per position: the remedy — bind a feed
+        key or record a mark — applies to the security, so one holding in three
+        accounts is one piece of work, not three.
+        """
+        name = "investment_unpriced_holdings"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT security_id
+                FROM {DIM_HOLDINGS.full_name}
+                WHERE valuation_status = 'unpriced'
+                ORDER BY security_id
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"holdings view unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} held security(s) have no usable price, so "
+                    "their positions report no market value at all and are "
+                    "absent from every total that sums one — no provider "
+                    "covers them, or their feed key never bound; run "
+                    "`moneybin investments prices pull` and review anything it "
+                    "queues, or record a valuation with "
+                    "`moneybin investments prices set`"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_stale_prices(self) -> InvariantResult:
+        """Positions valued from a close older than its security type allows.
+
+        The surface ``_run_investment_unpriced_holdings`` defers to when it skips
+        ``carried_forward``. Without it a feedless position keeps its last
+        observed close indefinitely — a years-old ``trade_implied`` purchase
+        price — and is summed into portfolio totals as though it were current.
+        Nothing else says otherwise: ``holdings`` publishes
+        ``max_days_since_observed`` as a number rather than a warning, precisely
+        so that reporting an age is not mistaken for judging one.
+
+        Scoped to ``carried_forward``. ``valued`` means the close is dated today
+        and can never be stale; ``unpriced`` and ``withheld`` publish no value,
+        and their remedies — a price source, a reconciled share count — are owned
+        by their own checks.
+
+        The threshold resolves per security type rather than globally: markets
+        close ~114 days a year, so an equity threshold tight enough to catch a
+        neglected crypto position would fire on most days for most users and
+        train the reader to ignore every staleness warning. Comparison lives in
+        Python rather than SQL because ``moneybin.staleness`` is the shared
+        vocabulary `asset-tracking.md` values appraisals against too, and one
+        rule with two implementations is how the two drift.
+        """
+        name = "investment_stale_prices"
+        default_days = get_settings().investments.price_staleness_default_days
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT h.security_id,
+                       COALESCE(s.security_type, 'other') AS security_type,
+                       MAX(h.days_since_observed) AS days_since_observed
+                FROM {DIM_HOLDINGS.full_name} AS h
+                LEFT JOIN {DIM_SECURITIES.full_name} AS s
+                  ON s.security_id = h.security_id
+                WHERE h.valuation_status = 'carried_forward'
+                  AND h.days_since_observed IS NOT NULL
+                GROUP BY h.security_id, s.security_type
+                ORDER BY h.security_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core views absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"holdings view unavailable: {e}",
+                affected_ids=[],
+            )
+        stale = [
+            str(security_id)
+            for security_id, security_type, days in rows
+            if is_stale(
+                int(days),
+                resolve_threshold_days(
+                    str(security_type),
+                    type_defaults=SECURITY_TYPE_STALENESS_DAYS,
+                    global_default=default_days,
+                ),
+            )
+        ]
+        if stale:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(stale)} held security(s) are valued from a close older "
+                    "than their type allows, so their market values and every "
+                    "total that sums them are carried forward from a price that "
+                    "may no longer hold — run `moneybin investments prices pull` "
+                    "to refresh them, or record a current valuation with "
+                    "`moneybin investments prices set` for a security no "
+                    "provider covers"
+                ),
+                affected_ids=stale,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_unmapped_price_source(self) -> InvariantResult:
+        """Price rows whose ``source_type`` the staging view cannot resolve.
+
+        ``prep.stg_security_prices`` maps each ``source_type`` to a ``ref_kind``
+        through a CASE, then INNER JOINs on the result. An unmapped source makes
+        that CASE return NULL, the comparison UNKNOWN, and the join drop the row
+        — silently, and permanently: unlike an unresolved binding, no number of
+        later accepted bindings will ever surface it, because the failure is in
+        the mapping rather than the binding. C.2 shipped a writer one commit
+        ahead of its mapping and every row it wrote in between was discarded
+        this way, which is why this check exists.
+
+        The accepted-binding join is what separates the two conditions without
+        parsing the model's SQL. A row reaching this query already has an
+        accepted binding whose ``source_type`` and ``ref_value`` match the
+        staging join exactly, so ``ref_kind`` is the only remaining condition
+        that can be failing. Without that clause the check would fire on every
+        ordinary first pull, since the Plaid extractor writes prices during
+        ingestion, before the resolver has minted a canonical security.
+
+        The staging test asks whether the SOURCE stages at all, not whether this
+        row did. An unmapped ``source_type`` is a property of the CASE, so it
+        costs the source every row it will ever write. Correlating row-by-row
+        instead read a second, unrelated exclusion as the same failure:
+        ``prep.stg_security_prices`` also bounds each key to the interval its
+        current link owns, so a close predating a key's handover to a new owner
+        — or postdating an automatic retirement — is absent from staging by
+        design, and the row-wise form reported its source as unmapped when the
+        CASE arm exists and is correct. What that costs: a mapped source whose
+        entire staging output is empty for some other reason still reports here.
+        """
+        name = "investment_unmapped_price_source"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT p.source_type
+                FROM {SECURITY_PRICES.full_name} AS p
+                JOIN {SECURITY_LINKS.full_name} AS l
+                  ON l.status = 'accepted'
+                  AND l.source_type = p.source_type
+                  AND l.ref_value = p.provider_security_key
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM prep.stg_security_prices AS s
+                    WHERE s.source_type = p.source_type
+                )
+                ORDER BY p.source_type
+                """  # noqa: S608  # TableRef constants + fixed view name, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — staging view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"price staging view unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} price source(s) write rows that resolve to "
+                    "nothing: their securities are bound, but "
+                    "prep.stg_security_prices has no ref_kind mapping for the "
+                    "source, so every observation is discarded and no holding "
+                    "is valued from it — this cannot be fixed by accepting "
+                    "bindings and needs the source added to that model's "
+                    "ref_kind CASE"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 

@@ -59,7 +59,7 @@ Each audit returns the offending `transaction_id` (or `debit_transaction_id` for
 
 ### Investment reconciliation (M1G.4)
 
-Eight checks covering the Plaid investment ledger. They split into two families: **refusals surfaced** (staging declined to guess and filed the row for review — these must be visible, not silently dropped) and **divergence from the broker** (MoneyBin's derived position disagrees with what the provider reports).
+Nine checks covering the Plaid investment ledger. They split into two families: **refusals surfaced** (staging declined to guess and filed the row for review — these must be visible, not silently dropped) and **divergence from the broker** (MoneyBin's derived position disagrees with what the provider reports).
 
 | Name | What it checks |
 |---|---|
@@ -71,8 +71,75 @@ Eight checks covering the Plaid investment ledger. They split into two families:
 | `investment_phantom_holdings` | Open lots MoneyBin holds that the broker's newest snapshot no longer reports. Keyed on the per-pull holdings-snapshot receipt (below), not on the presence of holdings rows. |
 | `investment_unresolved_securities` | Ledger rows whose provider security key never resolved to a canonical security. These are dropped from cost basis entirely, so they must not stay silent. |
 | `investment_source_overlap` | Accounts carrying both manual and Plaid investment history, where double-counting is possible. |
+| `investment_conflicting_security_refs` | One provider security bound to two different canonical securities. The resolver refuses to repoint either binding on its own — a repoint is a reviewed merge, never a sync-time side effect — so it logs and moves on, which made the conflict visible only to whoever was reading server logs. |
 
 **The phantom check depends on `raw.plaid_investment_holdings_snapshots`.** Holdings *rows* cannot distinguish "this item reported and holds nothing" from "this item never reported" — an item whose pull returns an empty holdings array writes no rows at all, so a newest-snapshot join keyed on those rows silently keeps the last non-empty snapshot from an earlier pull. That reads a fully-liquidated broker as still holding its old positions: the largest possible net-worth overstatement, and precisely the phantom this check exists to catch. The receipt is written per (item, pull) **even when zero positions come back**, and both `core.dim_holdings` and this check derive "newest snapshot" from it.
+
+### Investment pricing (M1J.3 C.2)
+
+Four checks covering the price series holdings are valued from. C.2 is the
+first phase in which one security can carry more than one price source, and the
+first in which a price can come from somewhere other than the broker that
+reports the position.
+
+| Name | What it checks |
+|---|---|
+| `investment_price_disagreement` | Two provider feeds holding closes for the same security, date, and quote currency that differ by more than `investments.price_disagreement_tolerance_pct`. Resolution picks a winner by source rank; this is where that choice becomes visible instead of silent. Recording a mark for that grain settles it and drops it from the check. |
+| `investment_unpriced_holdings` | Open positions whose `valuation_status` is `unpriced` — no usable price, so they report no market value and are absent from every total that sums one. |
+| `investment_stale_prices` | Open positions whose `valuation_status` is `carried_forward` and whose close is older than its security type allows. The threshold resolves per type through `moneybin.staleness` — 4 days for exchange-traded, 1 for crypto, `investments.price_staleness_default_days` for a type the table does not name. |
+| `investment_unmapped_price_source` | Price rows whose `source_type` `prep.stg_security_prices` has no `ref_kind` mapping for, detected as rows with an accepted matching binding that still never reach staging. |
+
+**`investment_stale_prices` is the only surface that judges a price's age.**
+`core.dim_holdings` publishes `days_since_observed` and `holdings` publishes
+`max_days_since_observed`, both as numbers rather than warnings — a boolean flag
+on every position would fire on the ~114 days a year markets are closed. Per-type
+thresholds are what make a warning affordable, and this check is where they
+apply. Without it a feedless position keeps a years-old `trade_implied` purchase
+price indefinitely and is summed into portfolio totals as though it were current,
+which is why `investment_unpriced_holdings` deliberately scopes to `unpriced`
+alone and leaves `carried_forward` here.
+
+**The disagreement check reads `prep.stg_security_prices`, not the resolved fact
+table.** The fact table has already collapsed each conflicting pair to one
+winner, so the disagreement is no longer visible there. Staging also carries
+provider observations *only* — overrides and trade-implied prices are derived at
+model build and never land in `raw.security_prices` — which is what restricts
+the comparison to sources that are supposed to agree. Both derived sources are
+*expected* to differ from a provider close: an override exists precisely to
+correct one, and a trade-implied price reflects a single execution's size and
+spread rather than the day's close. Comparing them would raise a standing
+warning on every ordinary correction and every intraday fill.
+
+The tolerance is sized to the failure the check actually catches — a feed key
+bound to the wrong security, which produces order-of-magnitude differences — not
+to the precision two correct feeds agree to. Legitimate differences exist and
+must not fire: a broker strikes its crypto valuation at its own snapshot time
+while CoinGecko's is a 00:00 UTC close, so a volatile day separates two correct
+figures by more than a percent.
+
+**`investment_unmapped_price_source` detects a mapping failure without parsing
+the model's SQL.** `prep.stg_security_prices` resolves each `source_type` to a
+`ref_kind` through a CASE and INNER JOINs on the result, so an unmapped source
+makes the CASE return NULL, the comparison UNKNOWN, and the join drop the row —
+with no error and no counter. That drop is permanent rather than deferred:
+unlike an unresolved binding, which waits in raw and reappears once its security
+binds, no number of later accepted bindings will ever surface it, because the
+failure is in the mapping rather than the binding.
+
+The check separates those two conditions with an accepted-binding join. A row it
+reports already has an accepted binding whose `source_type` and `ref_value`
+match the staging join exactly, leaving `ref_kind` as the only condition that
+can still be failing. Without that clause the check would fire on every ordinary
+first pull, since the Plaid extractor writes prices during ingestion, before the
+resolver has minted a canonical security.
+
+This check exists because the failure it describes shipped: C.2 added a writer
+for `tiingo` and `coingecko` rows one commit ahead of the staging mapping, and
+every row written in between was discarded silently. A build-time guard in
+`tests/moneybin/test_services/test_price_service.py` now asserts every
+`source_type` `PriceService` writes appears in the CASE; this check is the
+run-time half, covering rows already written and sources no Python constant
+names.
 
 ### Dropped invariant
 

@@ -27,6 +27,7 @@ VALID_PREFIXES = (
     "infra_",
     "sync_",
     "gsheet_",
+    "price_feed_",
     "sql_",
     "account_",
     "entity_",

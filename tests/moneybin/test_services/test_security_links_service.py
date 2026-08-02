@@ -12,12 +12,13 @@ remap reads are fabricated here.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.investments.cost_basis import compute_lot_id
@@ -26,6 +27,7 @@ from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.repositories.security_price_repo import SecurityPriceRepo
 from moneybin.services.mutation_context import operation
 from moneybin.services.security_links_service import (
     SecurityLinkAcceptImpact,
@@ -126,9 +128,15 @@ def _manual_security_id(
     return None if row is None else row[0]
 
 
-def _accepted_binding(db: Database, ref_value: str = _REF_VALUE) -> str | None:
+def _accepted_binding(
+    db: Database,
+    ref_value: str = _REF_VALUE,
+    *,
+    ref_kind: str = _REF_KIND,
+    source_type: str = "plaid",
+) -> str | None:
     return SecurityLinksRepo(db).lookup(
-        ref_kind=_REF_KIND, ref_value=ref_value, source_type="plaid"
+        ref_kind=ref_kind, ref_value=ref_value, source_type=source_type
     )
 
 
@@ -199,6 +207,7 @@ def test_accept_impact_counts_every_row_the_merge_will_mutate(
         actor="cli",
     )
     _add_manual_event(db, security_id=provisional)
+    _mark(db, provisional)
 
     impact = SecurityLinksService(db).accept_impact(
         merge_setup["decision_id"],
@@ -213,6 +222,7 @@ def test_accept_impact_counts_every_row_the_merge_will_mutate(
         "security_link_decisions": 2,
         "lot_selections": 1,
         "manual_investment_transactions": 1,
+        "security_price_overrides": 1,
     }
 
 
@@ -231,6 +241,7 @@ def test_accept_verifier_receives_live_impact_and_failure_rolls_back(
             "security_link_decisions": 1,
             "lot_selections": 0,
             "manual_investment_transactions": 0,
+            "security_price_overrides": 0,
         }
         decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
         assert decision is not None and decision["status"] == "pending"
@@ -1086,3 +1097,291 @@ def test_pending_candidate_with_deleted_security_has_no_ticker_or_name(
 
 def test_pending_empty_when_no_decisions(db: Database) -> None:
     assert SecurityLinksService(db).pending() == []
+
+
+# ------------------------------------------------------- price-mark repoint
+
+
+def _mark(
+    db: Database, security_id: str, *, day: str = "2026-06-30", close: str = "42.50"
+) -> None:
+    SecurityPriceRepo(db).set(
+        security_id,
+        date.fromisoformat(day),
+        "USD",
+        close=Decimal(close),
+        note=None,
+        actor="cli",
+    )
+
+
+def _mark_owner(db: Database, *, day: str = "2026-06-30") -> str | None:
+    row = db.execute(
+        "SELECT security_id FROM app.security_price_overrides WHERE price_date = ?",
+        [date.fromisoformat(day)],
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def test_accept_repoints_price_marks_onto_survivor(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """A user's explicit price is a fourth link-free reference to the catalog.
+
+    ``app.security_price_overrides.security_id`` sits alongside lot selections,
+    links, and manual events, and the merge moved only the first three. Deleting
+    the provisional catalog row leaves the mark keyed to a dead security:
+    ``fct_security_prices`` keeps emitting it, ``dim_holdings`` joins it to
+    nothing, and the surviving position silently drops back to provider pricing.
+    """
+    _mark(db, merge_setup["provisional"])
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _mark_owner(db) == merge_setup["survivor"]
+
+
+def test_price_mark_repoint_undoes_with_the_rest_of_the_merge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The mark repoint rides the merge's operation_id — a partial undo is a defect."""
+    _mark(db, merge_setup["provisional"])
+
+    with operation() as op:
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+    assert _mark_owner(db) == merge_setup["survivor"]
+
+    UndoService(db).undo(op, actor="cli")
+
+    assert _mark_owner(db) == merge_setup["provisional"]
+
+
+def _mark_created_at(db: Database, security_id: str, *, day: str = "2026-06-30") -> Any:
+    row = db.execute(
+        "SELECT created_at FROM app.security_price_overrides "
+        "WHERE security_id = ? AND price_date = ?",
+        [security_id, date.fromisoformat(day)],
+    ).fetchone()
+    return None if row is None else row[0]
+
+
+def test_a_repointed_price_mark_keeps_its_original_authoring_time(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Moving a mark between securities is not re-authoring it.
+
+    ``SecurityPriceRepo.set`` documents that ``created_at`` survives an update so
+    a correction cannot erase when the mark was first written. The merge moves a
+    mark by delete-then-set, which makes the ``ON CONFLICT`` branch unreachable —
+    so the insert default stamped the merge time and the guarantee held for every
+    path except this one. The audit trail then disagrees with the row: the delete
+    event captures a ``before`` created months ago and the row that replaces it
+    claims to have been authored during the merge.
+    """
+    _mark(db, merge_setup["provisional"])
+    authored = datetime(2026, 1, 15, 9, 30, 0)
+    db.execute(
+        "UPDATE app.security_price_overrides SET created_at = ? WHERE security_id = ?",
+        [authored, merge_setup["provisional"]],
+    )
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _mark_owner(db) == merge_setup["survivor"]
+    assert _mark_created_at(db, merge_setup["survivor"]) == authored
+
+
+def test_a_colliding_price_mark_blocks_the_merge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Two marks for one date cannot both survive a composite primary key.
+
+    Picking a winner would silently discard a number the user typed. The merge
+    already refuses when a lot selection cannot be deterministically remapped;
+    this is the same condition on the same transaction, so it takes the same
+    answer — refuse, and leave both marks for the user to resolve.
+    """
+    _mark(db, merge_setup["provisional"], close="42.50")
+    _mark(db, merge_setup["survivor"], close="43.10")
+
+    with pytest.raises(UserError) as caught:
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+
+    assert caught.value.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
+    assert _security_exists(db, merge_setup["provisional"])
+
+
+# --------------------------------------------------------- feed-key decisions
+
+
+def _feed_key_decision(db: Database, *, security_id: str) -> str:
+    """A pending tiingo_ticker decision — the shape PriceService queues."""
+    event = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind="tiingo_ticker",
+        ref_value="BHP",
+        source_type="tiingo",
+        candidate_security_id=security_id,
+        provider_ticker="BHP",
+        provider_name="Bharat Heavy Electricals",
+        match_reason="name_divergence",
+        actor="system",
+    )
+    assert event.target_id is not None
+    return event.target_id
+
+
+def test_a_feed_key_decision_can_be_accepted(db: Database) -> None:
+    """A queue that cannot be drained is worse than no queue.
+
+    `accept_merge` requires an accepted binding for the ref to move onto the
+    survivor. A feed-key decision never has one — that absence is precisely WHY
+    PriceService queued it — so routing one through the merge path raises "has
+    nothing to merge away" and the security stays unpriced forever, with the
+    review row stuck pending. Accepting a feed key CREATES the binding.
+    """
+    security = _mint(db, name="BHP Group Ltd", created_by="user")
+    decision_id = _feed_key_decision(db, security_id=security)
+
+    SecurityLinksService(db).accept(decision_id, into=security)
+
+    assert (
+        _accepted_binding(db, "BHP", ref_kind="tiingo_ticker", source_type="tiingo")
+        == security
+    )
+    decision = SecurityLinkDecisionsRepo(db).fetch_by_id(decision_id)
+    assert decision is not None and decision["status"] == "accepted"
+
+
+def test_accepting_a_feed_key_keeps_the_security(db: Database) -> None:
+    """Binding a price feed is not a merge — nothing is deleted or re-pointed.
+
+    The merge path ends by DELETEing the provisional catalog row. Reaching it
+    with a feed-key decision would destroy the very security the user is trying
+    to price.
+    """
+    security = _mint(db, name="BHP Group Ltd", created_by="user")
+    decision_id = _feed_key_decision(db, security_id=security)
+
+    SecurityLinksService(db).accept(decision_id, into=security)
+
+    assert _security_exists(db, security)
+
+
+def test_a_feed_key_grant_is_verified_inside_the_write_transaction(
+    db: Database,
+) -> None:
+    """The bind path must check its grant where the merge path does — in the txn.
+
+    ``mcp.md`` requires a confirmation grant be verified "against live state
+    inside the same write transaction, immediately before the first mutation" and
+    forbids verifying and then opening a separate one. ``accept_merge`` obeys via
+    ``verify_accept``; the feed-key branch verified in the MCP layer and *then*
+    called this method, which opens its own transaction. Anything that queued a
+    sibling candidate for this ref in the gap would be auto-rejected by a bind the
+    user approved when that row was not part of its blast radius.
+
+    Asserting the callback sees pre-mutation state is what distinguishes "inside
+    the transaction, before the first write" from merely "called at some point" —
+    a callback invoked after ``update_status`` would observe 'accepted' here.
+    """
+    security = _mint(db, name="BHP Group Ltd", created_by="user")
+    decision_id = _feed_key_decision(db, security_id=security)
+    verified = False
+
+    def refuse() -> None:
+        nonlocal verified
+        verified = True
+        live = SecurityLinkDecisionsRepo(db).fetch_by_id(decision_id)
+        assert live is not None and live["status"] == "pending"
+        assert (
+            _accepted_binding(db, "BHP", ref_kind="tiingo_ticker", source_type="tiingo")
+            is None
+        )
+        raise UserError("Confirmation mismatch", code="mutation_confirmation_mismatch")
+
+    with pytest.raises(UserError, match="Confirmation mismatch"):
+        SecurityLinksService(db).accept_feed_key(
+            decision_id, into=security, verify_accept=refuse
+        )
+
+    assert verified
+    live = SecurityLinkDecisionsRepo(db).fetch_by_id(decision_id)
+    assert live is not None and live["status"] == "pending"
+    assert (
+        _accepted_binding(db, "BHP", ref_kind="tiingo_ticker", source_type="tiingo")
+        is None
+    )
+
+
+def test_accept_reports_binding_a_feed_key_as_a_bind(db: Database) -> None:
+    """The caller cannot see which mechanism ran, and the two are opposite.
+
+    ``accept`` routes on ref_kind, so a surface that reports one fixed outcome
+    tells the user it merged two securities when it only created a link. The
+    routing decision is the service's; the word for it has to come back with it
+    rather than be re-derived from ``_FEED_KEY_REF_KINDS`` in every adapter.
+    """
+    security = _mint(db, name="BHP Group Ltd", created_by="user")
+    decision_id = _feed_key_decision(db, security_id=security)
+
+    outcome = SecurityLinksService(db).accept(decision_id, into=security)
+
+    assert outcome == "bound"
+
+
+def test_accept_reports_merging_an_identity_decision_as_a_merge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The other half of the same contract."""
+    outcome = SecurityLinksService(db).accept(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert outcome == "merged"
+
+
+def test_accept_merge_refuses_a_feed_key_decision_called_directly(
+    db: Database,
+) -> None:
+    """The lower-level method must defend itself, not rely on the router.
+
+    ``accept``'s ref_kind dispatch is what keeps a feed key out of the merge
+    path today, so every existing test proves the *router* is right. A caller
+    that reaches ``accept_merge`` another way — a future surface, a batch
+    helper — would destroy the security the user was trying to price. The
+    refusal is structural (a feed key has no accepted binding to move, which is
+    why it was queued), and this pins it as a guarantee rather than a
+    side effect.
+    """
+    security = _mint(db, name="BHP Group Ltd", created_by="user")
+    decision_id = _feed_key_decision(db, security_id=security)
+
+    with pytest.raises(UserError) as caught:
+        SecurityLinksService(db).accept_merge(decision_id, into=security)
+
+    assert caught.value.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
+    assert _security_exists(db, security), "the security must survive the refusal"
+
+
+def test_an_identity_decision_still_takes_the_merge_path(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The dispatcher must not turn a merge into a bare binding.
+
+    The adversarial partner to the two tests above: same entry point, and the
+    provisional catalog row must still be merged away.
+    """
+    SecurityLinksService(db).accept(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert not _security_exists(db, merge_setup["provisional"])
+    assert _accepted_binding(db) == merge_setup["survivor"]

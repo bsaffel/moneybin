@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS app.assets (
     disposal_date DATE,                                 -- Date the asset was sold or disposed; NULL if still owned
     disposal_amount DECIMAL(18, 2),                     -- Sale price or settlement amount; NULL if still owned
     liability_account_id VARCHAR,                       -- Optional FK to core.dim_accounts (mortgage, auto loan); informational only
-    staleness_threshold_days INTEGER,                   -- Per-asset staleness override in days; NULL falls back to type/global default
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE, -- Whether this asset contributes to net worth calculations
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the asset record was created
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP  -- When the asset record was last modified; service layer must set explicitly on UPDATE (DuckDB has no ON UPDATE trigger)
@@ -214,19 +213,34 @@ GROUP BY balance_date
 
 ### Global override
 
-A new field in `MoneyBinSettings`:
+A nested settings block, matching every other domain block on
+`MoneyBinSettings` (`doctor`, `matching`, `investments`, …):
 
 ```python
-asset_staleness_default_days: int = (
-    180  # Global fallback when no per-type or per-asset threshold is set
-)
+class AssetsSettings(BaseModel):
+    valuation_staleness_default_days: int = 180
 ```
+
+Reached as `MoneyBinSettings.assets.valuation_staleness_default_days`, env var
+`MONEYBIN_ASSETS__VALUATION_STALENESS_DEFAULT_DAYS`. An earlier draft of this
+spec put a flat `asset_staleness_default_days` on the root; that would have been
+the only un-nested domain setting in the file.
 
 ### Resolution order
 
-1. `app.assets.staleness_threshold_days` (per-asset override)
-2. Per-type default from the table above
-3. `MoneyBinSettings.asset_staleness_default_days` (global config)
+1. Per-type default from the table above
+2. `MoneyBinSettings.assets.valuation_staleness_default_days` (global config)
+
+Resolve through `moneybin.staleness.resolve_threshold_days`, passing this
+domain's type table and global default; judge with
+`moneybin.staleness.is_stale`. `investments-price-feeds.md` implemented that
+helper first and physical assets inherit it — one rule, two callers, so a change
+to the comparison cannot land in one domain and miss the other.
+
+An earlier draft specified an innermost `app.assets.staleness_threshold_days`
+per-asset override, and carried the column in the `app.assets` DDL above. Both
+are removed. That tier is deliberately unbuilt in both domains until a user asks
+for it; adding the nullable column later is an additive migration.
 
 ### Where staleness surfaces
 

@@ -44,7 +44,7 @@ from moneybin.privacy.payloads.investments import (
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.investment_service import InvestmentService
 
-from . import lots, securities
+from . import lots, prices, securities
 
 logger = logging.getLogger(__name__)
 
@@ -349,4 +349,5 @@ def investments_gains(
 
 
 app.add_typer(lots.app, name="lots")
+app.add_typer(prices.app, name="prices")
 app.add_typer(securities.app, name="securities")
