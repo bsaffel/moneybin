@@ -5,11 +5,46 @@ import pytest
 from moneybin.config import MatchingSettings
 from moneybin.database import Database
 from moneybin.matching.scoring import (
+    _BOILERPLATE_TOKENS,  # pyright: ignore[reportPrivateUsage]  # pinned by set equality below
     CandidatePair,
     compute_confidence,
     get_candidates_cross_source,
     get_candidates_within_source,
 )
+
+
+def test_boilerplate_vocabulary_is_pinned_by_set_equality() -> None:
+    """Every token here removes evidence from the auto-merge gate — pin the set.
+
+    A membership check would pass while the set silently grew, and each addition
+    widens what merges without review: a word listed here can no longer be the
+    sole thing two sources agree on. Equality forces a deliberate edit here when
+    the vocabulary changes, and the change lands in one reviewable diff.
+    """
+    assert _BOILERPLATE_TOKENS == {
+        "ACH",
+        "ATM",
+        "AUTHORIZED",
+        "CARD",
+        "CHECK",
+        "CREDIT",
+        "DEBIT",
+        "DEPOSIT",
+        "EFT",
+        "ELECTRONIC",
+        "FEE",
+        "PAYMENT",
+        "POS",
+        "PURCHASE",
+        "RECURRING",
+        "TRANSACTION",
+        "TRANSFER",
+        "WITHDRAWAL",
+    }
+    assert all(token.isupper() and token.isalpha() for token in _BOILERPLATE_TOKENS), (
+        "tokens are compared against an upper-cased, whitespace-collapsed "
+        "description and inlined into SQL as literals"
+    )
 
 
 def _insert_unioned_row(
@@ -684,6 +719,89 @@ class TestGetCandidatesCrossSource:
         )
         assert len(candidates) == 1
         assert candidates[0].confidence_score < 0.95
+
+    def test_boilerplate_only_description_is_not_agreement(
+        self, unioned_table: Database
+    ) -> None:
+        """A description made only of transaction-type words identifies no merchant.
+
+        Containment asks whether one string sits inside another, never whether the
+        shared text is worth anything. `DEBIT` sits inside most card descriptions,
+        so a source rendering a row as bare boilerplate would agree with an
+        unrelated transaction that merely collided on amount inside the window —
+        and merge it silently, which is the costliest direction to be wrong.
+
+        Isolation: both sides are non-empty (so the blank guard cannot claim this)
+        and containment genuinely holds (so the unrelated-descriptions case cannot
+        either). Only the boilerplate test can keep this pair out of auto-merge.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-47.50",
+            description="DEBIT",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-18",
+            amount="-47.50",
+            description="DEBIT CARD PURCHASE AMAZON MKTPL*NQ9RG3UP2",
+            source_type="csv",
+            source_origin="chase",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=5,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].confidence_score < 0.95
+
+    def test_boilerplate_beside_a_merchant_token_still_agrees(
+        self, unioned_table: Database
+    ) -> None:
+        """One merchant word is enough — the guard rejects only pure boilerplate.
+
+        Sources prepend their own transaction-type words to a real merchant string,
+        so requiring the contained side to be free of boilerplate would reject the
+        agreements this gate exists to find. It must reject only the side that
+        carries nothing else.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-47.50",
+            description="POS AMAZON",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-18",
+            amount="-47.50",
+            description="POS AMAZON MKTPL*NQ9RG3UP2 SEATTLE WA",
+            source_type="csv",
+            source_origin="chase",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=5,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].confidence_score >= 0.95
 
     def test_candidate_carries_source_file(self, unioned_table: Database) -> None:
         """Candidates expose source_file on both sides for the cardinality guard."""

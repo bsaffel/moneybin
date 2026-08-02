@@ -53,8 +53,9 @@ fires as designed (279 @ `source_count = 2`).
 **Auto-merge on description agreement.** For the **cross-source tier only**, a
 pair auto-merges when one description **contains** the other, after
 normalization (case-fold, collapse internal whitespace runs, trim), with both
-sides non-empty. The date gap no longer gates anything — it only modulates the
-score below the floor.
+sides non-empty and the **contained** side carrying at least one token that is
+not transaction-type boilerplate. The date gap no longer gates anything — it only
+modulates the score below the floor.
 
 Containment is the literal mechanism: sources carry a shared merchant string,
 truncate it at different lengths, and wrap it in their own preamble and trailing
@@ -122,6 +123,31 @@ the other, **with both sides required non-empty**. That non-empty requirement is
 load-bearing, not defensive: `contains(x, '')` is `TRUE`, so a source that omits
 descriptions would otherwise agree with every row it met and merge an entire
 account silently.
+
+**The contained side must also carry a merchant token** (`_BOILERPLATE_TOKENS`,
+`_carries_a_merchant_token()`). Containment asks whether one string sits inside
+another, never whether the shared text means anything, and the empty description
+is only the extreme case of that: `DEBIT` sits inside most card descriptions, so
+a source rendering a row as bare boilerplate would agree with an unrelated row
+that merely collided on amount inside the window. The contained side *is* the
+shared evidence, so it is the side tested. One non-boilerplate token is enough —
+sources routinely prepend their own transaction-type words to a real merchant
+string (`POS AMAZON` inside `POS AMAZON MKTPL*… SEATTLE WA` is a genuine
+agreement), so rejecting any description merely *containing* boilerplate would
+throw away the matches this gate exists to find.
+
+The vocabulary is hand-maintained and pinned by **set equality**, not membership:
+every token added to it removes evidence from the gate and widens what merges
+without review, so the change has to land as a deliberate edit in one reviewable
+diff. A length floor was considered and rejected on the numbers — `PURCHASE` is
+8 characters and `TASKAPP` is 7, so the boilerplate is *longer* than the real
+merchant token and length cannot separate them.
+
+Known limit: a boilerplate word MoneyBin has not seen reopens the hole quietly.
+The durable form is a selectivity floor — reject a fragment contained in many
+other rows on the same account, since boilerplate matches dozens and a merchant
+string matches one or two — which needs measurement against real data before it
+can replace the list.
 
 Normalization is `_normalized_description()` in `scoring.py` — case-fold,
 collapse internal whitespace runs, trim. Deliberately *only* canonicalization:
@@ -222,7 +248,10 @@ descriptions sharing nothing) must not.
 - **Unit** (`tests/moneybin/matching/`): the agreement floor lifts
   low-similarity pairs ≥ threshold at every date gap the window admits and
   preserves description ordering; disagreeing pairs stay below the floor even on
-  the same day; a blank description is not agreement; the floor does not reach
+  the same day; a blank description is not agreement; a boilerplate-only
+  contained side is not agreement, while one merchant token beside boilerplate
+  still is; the boilerplate vocabulary is pinned by set equality; the floor does
+  not reach
   Tier 2b (same fixture, opposite outcome); an auto-merge records
   `descriptions_agree`; the cardinality guard pairs N duplicates 1:1 (including
   with equal scores) and still collapses distinct-file N-way groups.

@@ -48,6 +48,51 @@ def _normalized_description(column: str) -> str:
     return f"REGEXP_REPLACE(UPPER(TRIM(COALESCE({column}, ''))), '\\s+', ' ', 'g')"
 
 
+# Words describing *what kind* of movement a row is, never *who* was paid.
+# Containment on these alone is not merchant evidence: `DEBIT` sits inside most
+# card descriptions, so a source that renders a row as bare boilerplate would
+# agree with any unrelated row it happened to collide with on amount inside the
+# window — and auto-merge it, destroying a real transaction with no review entry.
+# Single tokens, because the test splits on whitespace: `ACH DEBIT` is covered by
+# ACH plus DEBIT. Adding a token here widens what merges silently, so the set is
+# pinned by equality in test_scoring.py rather than by a membership check.
+_BOILERPLATE_TOKENS = frozenset({
+    "ACH",
+    "ATM",
+    "AUTHORIZED",
+    "CARD",
+    "CHECK",
+    "CREDIT",
+    "DEBIT",
+    "DEPOSIT",
+    "EFT",
+    "ELECTRONIC",
+    "FEE",
+    "PAYMENT",
+    "POS",
+    "PURCHASE",
+    "RECURRING",
+    "TRANSACTION",
+    "TRANSFER",
+    "WITHDRAWAL",
+})
+
+
+def _carries_a_merchant_token(normalized: str) -> str:
+    """SQL expression: this description has at least one non-boilerplate token.
+
+    One merchant word is enough. Sources prepend their own transaction-type words
+    to a real merchant string, so rejecting any description that *contains*
+    boilerplate would throw away the agreements this gate exists to find; only a
+    description carrying nothing else is uninformative.
+    """
+    tokens = ", ".join(f"'{token}'" for token in sorted(_BOILERPLATE_TOKENS))
+    return (
+        f"len(list_filter(string_split({normalized}, ' '), "
+        f"token -> NOT list_contains([{tokens}], token))) > 0"
+    )
+
+
 @dataclass(frozen=True)
 class CandidatePair:
     """A scored candidate pair from blocking + scoring."""
@@ -195,6 +240,8 @@ def _get_candidates(
     table = quote_table_ref(table)
     norm_a = _normalized_description("a.description")
     norm_b = _normalized_description("b.description")
+    merchant_a = _carries_a_merchant_token(norm_a)
+    merchant_b = _carries_a_merchant_token(norm_b)
 
     # Manual-source exemption: per transaction-curation spec Req 6, manual rows
     # are excluded as candidates in *either* direction — never matched against
@@ -226,12 +273,15 @@ def _get_candidates(
             -- Both sides must be non-empty: contains(x, '') is TRUE, so a source
             -- that omits descriptions would otherwise agree with every row it met
             -- and merge an entire account silently.
+            -- The *contained* side is the shared evidence, so it is the side that
+            -- must carry a merchant token. An empty description is the extreme
+            -- case of the same defect; bare boilerplate is the merely-generic one.
             (
                 {norm_a} <> ''
                 AND {norm_b} <> ''
                 AND (
-                    contains({norm_a}, {norm_b})
-                    OR contains({norm_b}, {norm_a})
+                    (contains({norm_a}, {norm_b}) AND {merchant_b})
+                    OR (contains({norm_b}, {norm_a}) AND {merchant_a})
                 )
             ) AS desc_agree
         FROM {table} AS a

@@ -331,7 +331,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   between genuinely different merchants, while pairs whose descriptions already
   agreed sat in the review queue because the card had posted a day late. A pair
   now auto-merges when one description contains the other, at any gap inside the
-  window. Which existing duplicates merge and which go to review both change on
+  window — provided the shared text carries something more than transaction-type
+  boilerplate, since `DEBIT` sits inside most card descriptions and identifies no
+  merchant. Which existing duplicates merge and which go to review both change on
   the next `refresh`. `matching.date_window_days` is shared with transfer
   detection, so its new default widens that candidate window too.
 - **Every cross-source duplicate candidate now reaches the review queue (#377).**
