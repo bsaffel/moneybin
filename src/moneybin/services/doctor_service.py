@@ -1530,6 +1530,17 @@ class DoctorService:
         that can be failing. Without that clause the check would fire on every
         ordinary first pull, since the Plaid extractor writes prices during
         ingestion, before the resolver has minted a canonical security.
+
+        The staging test asks whether the SOURCE stages at all, not whether this
+        row did. An unmapped ``source_type`` is a property of the CASE, so it
+        costs the source every row it will ever write. Correlating row-by-row
+        instead read a second, unrelated exclusion as the same failure:
+        ``prep.stg_security_prices`` also bounds each key to the interval its
+        current link owns, so a close predating a key's handover to a new owner
+        — or postdating an automatic retirement — is absent from staging by
+        design, and the row-wise form reported its source as unmapped when the
+        CASE arm exists and is correct. What that costs: a mapped source whose
+        entire staging output is empty for some other reason still reports here.
         """
         name = "investment_unmapped_price_source"
         try:
@@ -1545,10 +1556,6 @@ class DoctorService:
                     SELECT 1
                     FROM prep.stg_security_prices AS s
                     WHERE s.source_type = p.source_type
-                      AND s.source_origin = p.source_origin
-                      AND s.provider_security_key = p.provider_security_key
-                      AND s.price_date = p.price_date
-                      AND s.quote_currency = UPPER(p.quote_currency)
                 )
                 ORDER BY p.source_type
                 """  # noqa: S608  # TableRef constants + fixed view name, no user input

@@ -119,7 +119,7 @@ class TiingoPriceAdapter:
                 # PriceService, which contains them per source.
                 failures.append(PriceFetchFailure(ref.provider_security_key, str(exc)))
                 continue
-            priced = self._observations(ref, bars)
+            priced = self._observations(ref, bars, start, end)
             if not priced:
                 # An empty series for a security the caller believes it holds is
                 # the signal that drives the held-but-unpriced doctor check —
@@ -181,8 +181,18 @@ class TiingoPriceAdapter:
                 "'moneybin investments prices token'."
             ) from exc
 
-    def _observations(self, ref: SecurityRef, bars: object) -> list[PriceObservation]:
-        """Turn a recorded end-of-day series into stored-shape rows."""
+    def _observations(
+        self, ref: SecurityRef, bars: object, start: date, end: date
+    ) -> list[PriceObservation]:
+        """Turn a recorded end-of-day series into stored-shape rows.
+
+        Bars outside the requested window are dropped even though `startDate`
+        and `endDate` were sent. `raw.security_prices` is append-only and
+        inserts on_conflict='ignore', so one bar arriving early for today — a
+        partial, still-moving quote — would take today's key permanently and
+        every settled close for that date afterwards would be discarded in
+        silence. The CoinGecko adapter filters for the same reason.
+        """
         if not isinstance(bars, list):
             logger.warning(
                 f"Tiingo returned {type(bars).__name__}, not a series, for one security"
@@ -195,6 +205,8 @@ class TiingoPriceAdapter:
             if parsed is None:
                 continue
             price_date, close = parsed
+            if not start <= price_date <= end:
+                continue
             rows.append(
                 PriceObservation(
                     provider_security_key=ref.provider_security_key,

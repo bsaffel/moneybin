@@ -65,45 +65,62 @@ def test_classification_registry_has_no_stale_app_or_core_columns(
     )
 
 
-# Each CTE unioned into core.fct_security_prices.close, mapped to the column
-# whose value it carries through verbatim. ``None`` marks a provider feed: a
-# market close is public reference data, with no column of the user's own behind
-# it. Held to the model by set equality below, never trusted as a standing list.
-_CLOSE_SOURCES: dict[str, tuple[str, str, str] | None] = {
-    "provider": None,
-    "marks": ("app", "security_price_overrides", "close"),
-    "trade_implied": ("core", "fct_investment_transactions", "price"),
+# Each resolved column of core.fct_security_prices, mapped to the column each
+# unioned CTE carries into it verbatim. ``None`` marks a provider feed: a market
+# close and the calendar date it closed on are public reference data, with no
+# column of the user's own behind either. Held to the model by set equality
+# below, never trusted as a standing list.
+#
+# Both columns are listed because a resolved row leaks through whichever one a
+# query selects. Classifying `close` alone left `price_date` LOW, so a projection
+# of security_id + price_date + source_type still returned the security and day
+# of a personal execution as public data.
+_RESOLVED_SOURCES: dict[str, dict[str, tuple[str, str, str] | None]] = {
+    "close": {
+        "provider": None,
+        "marks": ("app", "security_price_overrides", "close"),
+        "trade_implied": ("core", "fct_investment_transactions", "price"),
+    },
+    "price_date": {
+        "provider": None,
+        "marks": ("app", "security_price_overrides", "price_date"),
+        "trade_implied": ("core", "fct_investment_transactions", "trade_date"),
+    },
 }
 
 
-def test_every_close_contributor_is_accounted_for() -> None:
-    """The mapping above must equal the model's union, not merely overlap it.
+@pytest.mark.parametrize("resolved", sorted(_RESOLVED_SOURCES))
+def test_every_union_contributor_is_accounted_for(resolved: str) -> None:
+    """Each mapping above must equal the model's union, not merely overlap it.
 
     A subset check would pass while a fourth source went unclassified, which is
     the exact way this problem arrived: `trade_implied` joined the union and the
     classification below it was never revisited.
     """
-    assert close_source_ctes() == set(_CLOSE_SOURCES)
+    assert close_source_ctes() == set(_RESOLVED_SOURCES[resolved])
 
 
-def test_a_resolved_close_is_never_less_sensitive_than_what_flows_into_it() -> None:
-    """`close` must carry the tier of the strictest value it can hold.
+@pytest.mark.parametrize("resolved", sorted(_RESOLVED_SOURCES))
+def test_a_resolved_column_is_never_less_sensitive_than_its_sources(
+    resolved: str,
+) -> None:
+    """Every resolved column must carry the tier of the strictest value it holds.
 
-    `sql_query` serves `core`, so it advertises and returns whatever tier this
-    column declares. With a `trade_implied` row the value IS
-    `fct_investment_transactions.price` — the user's own fill — and with an
-    `override` row it is a valuation the user authored. Classifying the resolved
-    column below its sources would return a personal transaction amount as
-    low-sensitivity public data.
+    `sql_query` serves `core`, so it advertises and returns whatever tier each
+    column declares — and a caller chooses which columns to select. With a
+    `trade_implied` row `close` IS `fct_investment_transactions.price` and
+    `price_date` IS its `trade_date`; with an `override` row `close` is a
+    valuation the user authored. Classifying either below its sources returns
+    personal transaction data as low-sensitivity public data.
     """
-    close = CLASSIFICATION[("core", "fct_security_prices")]["close"]
-    for cte, source in sorted(_CLOSE_SOURCES.items()):
+    declared = CLASSIFICATION[("core", "fct_security_prices")][resolved]
+    for cte, source in sorted(_RESOLVED_SOURCES[resolved].items()):
         if source is None:
             continue
         schema, table, column = source
         contributor = CLASSIFICATION[(schema, table)][column]
-        assert close.tier >= contributor.tier, (
-            f"core.fct_security_prices.close is {close.tier.name}, below the "
-            f"{contributor.tier.name} of {schema}.{table}.{column}, which the "
+        assert declared.tier >= contributor.tier, (
+            f"core.fct_security_prices.{resolved} is {declared.tier.name}, below "
+            f"the {contributor.tier.name} of {schema}.{table}.{column}, which the "
             f"`{cte}` branch copies into it verbatim"
         )

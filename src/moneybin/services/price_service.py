@@ -81,6 +81,11 @@ _TIINGO_SECURITY_TYPES = frozenset({"equity", "etf", "mutual_fund", "bond"})
 # strings name the same issuer?") must not have two different answers.
 _NAME_AGREEMENT_CUTOFF = 0.85
 
+# A share class written as a letter followed by digits: "Class A1", "Class R6".
+# No English word takes that shape, so matching it cannot swallow an abbreviation
+# the way a plain length test would — see _discriminators_differ.
+_CLASS_LABEL = re.compile(r"^[a-z]\d{1,2}$")
+
 # Corporate-form suffixes carry no identifying information: "Apple Inc." and
 # "Apple Inc" are one issuer, and confirming that difference is exactly the queue
 # noise the spec forbids.
@@ -1289,8 +1294,19 @@ def _discriminators_differ(left: list[str], right: list[str]) -> bool:
     itself, and refusing on a two-character difference would split "CL B" from
     "Class B" — the same class written two ways — and put ordinary securities in
     the review queue forever.
+
+    Length alone therefore misses the numbered classes: "Class A1" against
+    "Class A2", "Class R5" against "Class R6". Those are as distinct as A and B
+    and differ by one character in a long string, so the fuzzy test clears them
+    just as easily. _CLASS_LABEL admits them by shape instead of by length — a
+    letter followed by digits is never a word, so it cannot catch "cl" the way
+    widening the length test would. Alphabetic multi-character classes ("Inv"
+    against "Ins", "I" against "II") remain outside both tests.
     """
-    return any(len(token) == 1 for token in set(left) ^ set(right))
+    return any(
+        len(token) == 1 or _CLASS_LABEL.match(token) is not None
+        for token in set(left) ^ set(right)
+    )
 
 
 def _normalized_name(name: str) -> str:

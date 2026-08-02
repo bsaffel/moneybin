@@ -456,6 +456,61 @@ def test_a_share_class_difference_routes_to_review(db: Database) -> None:
     assert [reason for _, _, reason in _decisions(db)] == ["name_divergence"]
 
 
+def test_a_numbered_share_class_difference_also_routes_to_review(db: Database) -> None:
+    """A class label is not always one character: R5 and R6 are different funds.
+
+    Retirement share classes ("R1".."R6") and numbered institutional classes
+    ("A1"/"A2") differ by a single character in a long, otherwise identical
+    name, so the ratio clears them exactly as "Class A" against "Class B" does —
+    but the length-one test cannot see a two-character token, and the fuzzy
+    branch then binds the wrong class's ticker and prices the holding from it on
+    every later refresh.
+
+    Fixtured separately from the Berkshire case because neither catches the
+    other: that one has a one-character difference this rule ignores, this one a
+    two-character difference the length test ignores.
+    """
+    _seed_security(
+        db, security_id="s1", name="American Funds Growth Fund Class R6", ticker="RGAGX"
+    )
+    _hold(db, "s1")
+    tiingo = _FakeTiingo(
+        metadata={"RGAGX": TickerMetadata("American Funds Growth Fund Class R5", None)}
+    )
+
+    _service(db, tiingo).pull()
+
+    assert _links(db) == []
+    assert [reason for _, _, reason in _decisions(db)] == ["name_divergence"]
+
+
+def test_a_matching_numbered_share_class_still_binds(db: Database) -> None:
+    """The shape test must refuse a DIFFERENCE, not the presence of a number.
+
+    Without this pair, refusing on every numbered token would pass the
+    divergence test above and strand every R-class fund in the queue forever.
+
+    The provider name carries one extra word rather than only a corporate
+    suffix, deliberately. A suffix-only difference tokenizes to the same list
+    and returns agreement before the discriminator is consulted, so the fixture
+    would assert nothing about the rule it is named for.
+    """
+    _seed_security(
+        db, security_id="s1", name="American Funds Growth Fund Class R6", ticker="RGAGX"
+    )
+    _hold(db, "s1")
+    tiingo = _FakeTiingo(
+        metadata={
+            "RGAGX": TickerMetadata("American Funds Growth Fund America Class R6", None)
+        }
+    )
+
+    _service(db, tiingo).pull()
+
+    assert _links(db) == [("tiingo_ticker", "RGAGX", "s1")]
+    assert _decisions(db) == []
+
+
 def test_a_matching_share_class_still_binds(db: Database) -> None:
     """The discriminator must refuse a DIFFERENCE, not the presence of a class.
 

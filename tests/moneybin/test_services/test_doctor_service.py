@@ -2460,6 +2460,36 @@ def test_unmapped_price_source_passes_when_the_row_stages(
 
 
 @pytest.mark.unit
+def test_unmapped_price_source_ignores_a_row_the_ownership_interval_excluded(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absent from staging is not the same question as absent from the CASE.
+
+    `prep.stg_security_prices` bounds each key to the interval its current link
+    owns, so a close predating a handover — the previous owner of a recycled
+    ticker — never stages, by design. Its source is mapped and staging other
+    rows normally; a row-wise correlation read that one gap as a broken CASE and
+    told the user to add a mapping that already exists.
+    """
+    _unmapped_source_fixture(db, source="plaid", staged=True)
+    db.execute(
+        "INSERT INTO raw.security_prices (provider_security_key, price_date, "
+        "quote_currency, source_type, source_origin, close, price_basis) "
+        "VALUES ('FB', DATE '2019-01-02', 'USD', 'plaid', '', 131.09, 'raw')"
+    )
+    db.execute(
+        "INSERT INTO app.security_links (link_id, security_id, ref_kind, ref_value, "
+        "source_type, status, decided_by, decided_at) VALUES "
+        "('link_fb', 'sec_2', 'plaid_security_id', 'FB', 'plaid', 'accepted', "
+        "'auto', CURRENT_TIMESTAMP)"
+    )
+
+    result = _investment_result(db, monkeypatch, "investment_unmapped_price_source")
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
 def test_unmapped_price_source_ignores_a_row_with_no_accepted_binding(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

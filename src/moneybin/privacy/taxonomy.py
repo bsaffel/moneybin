@@ -483,8 +483,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     },
     ("app", "security_price_overrides"): {
         "security_id": DataClass.RECORD_ID,
-        # price_date names the date a mark applies to, which carries the same
-        # public-reference shape as core.fct_security_prices.price_date.
+        # price_date names the day the user chose to value the position, not a
+        # day they traded: a mark exists precisely where no execution does.
         "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
         "quote_currency": DataClass.CURRENCY,
         # A mark is a number the user wrote — a 409A valuation, a private-company
@@ -819,10 +819,13 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     },
     ("core", "fct_security_prices"): {
         "security_id": DataClass.RECORD_ID,
-        # price_date stays LOW: it names a calendar date a price applies to, not
-        # a date the user transacted, so it keeps the public-reference treatment
-        # of dim_securities.ticker/name rather than TXN_DATE.
-        "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
+        # price_date carries the same problem as close, one column over. With a
+        # 'trade_implied' row it is literally fct_investment_transactions
+        # .trade_date — the day the user traded — so a LOW tier here returns the
+        # security and the date of a personal execution as public data, and it
+        # does so even for a query that omits close entirely. Raising close
+        # protects the amount, not the fact of the trade.
+        "price_date": DataClass.TXN_DATE,
         "quote_currency": DataClass.CURRENCY,
         # close does NOT. A provider close alone would be public reference data,
         # but this column is the resolved winner across three sources: with a

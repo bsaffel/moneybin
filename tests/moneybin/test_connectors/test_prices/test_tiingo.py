@@ -307,6 +307,33 @@ def test_it_reads_a_bare_iso_date_as_well_as_a_timestamp() -> None:
 
 
 @respx.mock
+def test_a_bar_outside_the_requested_window_is_discarded() -> None:
+    """`startDate`/`endDate` are a request, and storing an overshoot is permanent.
+
+    `raw.security_prices` is append-only and inserts on_conflict='ignore', so a
+    bar arriving for a date past `endDate` — today's partial, still-moving quote
+    — takes that date's key for good, and the settled close that follows is
+    dropped in silence. The window is re-checked here rather than trusted, the
+    same way the CoinGecko adapter filters its response.
+    """
+    respx.get(_prices_route()).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                _bar(day="2026-07-25T00:00:00.000Z"),
+                _bar(day="2026-07-21T00:00:00.000Z"),
+                _bar(day="2026-07-23T00:00:00.000Z"),
+            ],
+        )
+    )
+
+    result = _adapter().fetch([_ref()], _START, _END)
+
+    assert [obs.price_date for obs in result.observations] == [date(2026, 7, 23)]
+    assert not result.failures
+
+
+@respx.mock
 def test_an_empty_series_is_a_failure_naming_the_security() -> None:
     """A held security no feed covers must be surfaced, not silently skipped.
 
