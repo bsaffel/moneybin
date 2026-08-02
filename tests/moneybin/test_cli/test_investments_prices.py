@@ -21,7 +21,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin import error_codes
-from moneybin.cli.commands.investments.prices import app
+from moneybin.cli.commands.investments.prices import PriceSourceChoice, app
 from moneybin.errors import UserError
 from moneybin.services.price_service import PullResult
 from moneybin.services.refresh import RefreshResult
@@ -488,3 +488,59 @@ class TestPriceArgumentParsing:
 
         assert result.exit_code == 2
         assert not db.called
+
+
+class TestPriceSourceFilter:
+    """`--source` names a closed set, so an unknown value is a usage error.
+
+    `list_prices` filters on equality. An unrecognized source therefore matches
+    no row and returns an ordinary empty series at exit 0 — the same answer a
+    real source with no stored closes gives. That is the one reply a typo must
+    not be able to counterfeit, because it reads as evidence about the security
+    rather than about the command.
+    """
+
+    def test_the_choices_are_the_sources_the_price_fact_can_produce(self) -> None:
+        """Set equality, because both directions of drift are silent.
+
+        A source that wins dates in `core.fct_security_prices` but is missing
+        here is a series the user can no longer ask for; a spelling that drifts
+        from the stored value filters to nothing while still exiting 0. The
+        walk below derives its expectation from this enum, so it cannot see
+        either — it proves the gate opens, not that it opens on the right five.
+        """
+        assert {choice.value for choice in PriceSourceChoice} == {
+            "plaid",
+            "tiingo",
+            "coingecko",
+            "override",
+            "trade_implied",
+        }
+
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    def test_list_refuses_a_source_outside_the_set(self, db: MagicMock) -> None:
+        result = runner.invoke(app, ["list", "PRIVCO", "--source", "tiingoo"])
+
+        assert result.exit_code == 2
+        assert not db.called, "a usage error must not open the database"
+
+    @patch("moneybin.services.price_service.build_price_service")
+    @patch("moneybin.cli.commands.investments.prices.get_database")
+    def test_list_accepts_every_source_it_documents(
+        self, _db: MagicMock, build: MagicMock
+    ) -> None:
+        """A gate that refused all five would pass the typo test above.
+
+        Walks the whole enum rather than sampling one member, so a source
+        dropped from the choices — or misspelled in it — fails here instead of
+        becoming a filter the user can no longer ask for.
+        """
+        service = build.return_value
+        service.resolve_security.return_value = "s1"
+        service.list_prices.return_value.rows = []
+
+        for choice in PriceSourceChoice:
+            result = runner.invoke(app, ["list", "PRIVCO", "--source", choice.value])
+
+            assert result.exit_code == 0, choice.value
+            assert service.list_prices.call_args.kwargs["source_type"] == choice.value

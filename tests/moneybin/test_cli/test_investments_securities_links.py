@@ -269,6 +269,25 @@ class TestSecurityLinksSet:
         assert result.exit_code == 0
         assert "merged into sec001aabbcc" in caplog.text
 
+    def test_set_help_states_both_outcomes_of_accepting(self) -> None:
+        """`--into` is the only confirmation, so --help carries the blast radius.
+
+        The command is non-interactive by design, which leaves this text as the
+        whole warning. It described every acceptance as a merge that re-points
+        lots and marks and then deletes a catalog row — the opposite of what a
+        feed-key accept does, told to the user at the one moment they could
+        still stop. The post-command message already distinguishes the two; by
+        then the write has happened.
+        """
+        result = runner.invoke(app, ["set", "--help"])
+        help_text = " ".join(result.output.split())
+
+        assert result.exit_code == 0
+        assert "MERGES" in help_text
+        assert "BINDS" in help_text
+        assert "deletes the provisional catalog row" in help_text
+        assert "Nothing is re-pointed and nothing is deleted" in help_text
+
     @patch("moneybin.cli.commands.investments.security_links.get_database")
     @patch("moneybin.services.security_links_service.SecurityLinksService.reject_merge")
     def test_set_reject_calls_reject_merge(

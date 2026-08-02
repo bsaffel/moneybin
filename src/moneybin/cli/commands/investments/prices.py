@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 
 import typer
 
@@ -48,6 +49,23 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 logger = logging.getLogger(__name__)
+
+
+class PriceSourceChoice(StrEnum):
+    """The sources that can win a date in ``core.fct_security_prices``.
+
+    Rejecting an unknown source at parse time surfaces a usage error (exit 2).
+    Without it ``--source tiingoo`` reaches ``list_prices``' equality predicate
+    and returns an ordinary empty series — indistinguishable from a security
+    that genuinely has no Tiingo close, which is the one answer a typo must
+    never be able to fake.
+    """
+
+    PLAID = "plaid"
+    TIINGO = "tiingo"
+    COINGECKO = "coingecko"
+    OVERRIDE = "override"
+    TRADE_IMPLIED = "trade_implied"
 
 
 def _report_refresh_failure(error: str | None) -> None:
@@ -404,10 +422,10 @@ def investments_prices_list(
     since: str | None = typer.Option(
         None, "--since", help="Only show prices from this ISO date forward"
     ),
-    source: str | None = typer.Option(
+    source: PriceSourceChoice | None = typer.Option(
         None,
         "--source",
-        help="Filter by source_type: plaid, tiingo, coingecko, override, trade_implied",
+        help="Filter by the source that supplied each close",
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
@@ -427,7 +445,13 @@ def investments_prices_list(
         with get_database(read_only=True) as db:
             service = build_price_service(db, actor="investments_prices_list")
             security_id = service.resolve_security(security)
-            result = service.list_prices(security_id, since=start, source_type=source)
+            result = service.list_prices(
+                security_id,
+                since=start,
+                # StrEnum members compare equal to their string values, but the
+                # service takes ``str | None`` and binds it as a query parameter.
+                source_type=source.value if source is not None else None,
+            )
 
     if output == OutputFormat.JSON:
         render_or_json(

@@ -115,12 +115,15 @@ def links_set(
     accept: bool = typer.Option(
         False,
         "--accept",
-        help="Accept: merge the provisional security into the decision's candidate",
+        help=(
+            "Accept: an identity ref merges into the candidate, "
+            "a feed-key ref only binds the symbol to it"
+        ),
     ),
     reject: bool = typer.Option(
         False,
         "--reject",
-        help="Reject: keep the provisional security as its own distinct instrument",
+        help="Reject: no merge and no binding; the pairing is not re-proposed",
     ),
     into: str | None = typer.Option(
         None,
@@ -131,24 +134,33 @@ def links_set(
         ),
     ),
 ) -> None:
-    """Accept (merge) or reject a pending security merge decision.
+    """Accept or reject a pending security-link decision.
 
     Pass exactly one of:
-      --accept --into <candidate_security_id>   merge into this candidate
-      --reject                                  keep the provisional security;
-                                                 this pairing is not re-proposed
+      --accept --into <candidate_security_id>   act on this candidate
+      --reject                                  refuse the pairing;
+                                                 it is not re-proposed
 
-    A merge re-points every accepted provider ref, tax lot, manual investment
-    ledger row, and price mark you set by hand onto the candidate in one
-    transaction, then deletes the provisional catalog row — review the
-    candidate's ticker, name, and Reason in
+    What accepting does depends on the decision's ref_kind, shown in the group
+    header of `investments securities links pending`:
+
+    An identity ref (plaid_security_id) MERGES. It re-points every accepted
+    provider ref, tax lot, manual investment ledger row, and price mark you set
+    by hand onto the candidate in one transaction, then deletes the provisional
+    catalog row.
+
+    A feed-key ref (tiingo_ticker, coingecko_slug) BINDS. It records that the
+    symbol prices this security, so later pulls fetch under that key. Nothing
+    is re-pointed and nothing is deleted.
+
+    Review the candidate's ticker, name, and Reason in
     `investments securities links pending` before accepting. There is no
     interactive prompt: `--into` is the confirmation, so this help text is the
     only place the blast radius is stated.
     `--into` must equal the decision's own candidate_security_id: on a tied
     group the resolver files one decision per candidate, so this is the
-    confirming check that stops a mistyped or stale decision_id from
-    merging into the wrong security.
+    confirming check that stops a mistyped or stale decision_id from acting on
+    the wrong security.
 
     Examples:
       investments securities links set dec001 --accept --into sec001aabbcc
