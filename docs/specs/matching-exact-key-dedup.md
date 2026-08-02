@@ -88,7 +88,10 @@ live data, both halves turned out to be wrong:
   On the card above it split 349 candidate pairs into **346 auto-merge / 3
   review**, where the 346 are exactly the genuine duplicates and the 3 are
   exactly the false amount-collisions (two different merchants that happened to
-  charge the same amount within the window). Confirmed on a second account with
+  charge the same amount within the window). **These counts measure containment
+  alone**, before the merchant-token requirement below was added; that guard can
+  only move pairs from auto-merge to review, so 346 is an upper bound and the
+  split has not been re-measured. Confirmed on a second account with
   a different source pair (csv↔ofx rather than pdf↔ofx): 168 auto-merge, 12
   review, with 191 of 201 previously-scored pairs byte-identical.
 
