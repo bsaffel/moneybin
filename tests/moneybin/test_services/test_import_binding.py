@@ -370,13 +370,18 @@ def test_account_bindings_rejects_empty_value(db: Database, bad_value: str) -> N
     assert n is not None and n[0] == 0
 
 
-def test_metadata_not_captured_for_pending_provisional(
+def test_metadata_not_captured_for_an_adopted_account(
     db: Database,
 ) -> None:
-    """Metadata for an unbound account that resolves to pending_review is dropped.
+    """Metadata is dropped when the import adopts an account instead of minting.
 
-    Writing settings to a provisional id that a later merge re-points would
-    orphan them — capture is reserved for genuinely-new mints.
+    Capture is reserved for genuinely-new mints; an adopted account already has
+    its own settings and must not have them overwritten by whatever the file
+    happened to say. The sibling case the guard also covers — a pending_review
+    provisional, whose id a later merge re-points — is no longer reachable from
+    an import: the gate answers every weak candidate before ``resolve()`` runs,
+    so the candidate pass never fires here. It stays guarded because the same
+    ``resolve()`` serves the ungated sync and backfill callers.
     """
     _seed_existing_account(db, account_id="wf_existing01", display_name="WF Checking")
     ImportService(db).import_file(
@@ -384,10 +389,10 @@ def test_metadata_not_captured_for_pending_provisional(
         account_name="WF Checking",
         refresh=False,
         confirm=True,
-        actor_kind="agent",  # no gate; the csv mints a pending provisional
+        actor_kind="human",
+        account_bindings={"wf-checking": "wf_existing01"},
         account_metadata={"wf-checking": {"display_name": "Renamed"}},
     )
-    # The account resolved to a pending_review provisional, so no settings.
     n = db.execute("SELECT COUNT(*) FROM app.account_settings").fetchone()
     assert n is not None and n[0] == 0
 
@@ -422,26 +427,102 @@ def test_pending_gauge_counts_distinct_provisionals(
     assert gauge == 1.0
 
 
-def test_import_emits_account_link_metrics(
+def test_resolve_emits_account_link_metrics(
     db: Database,
 ) -> None:
-    """A queued candidate observes confidence and refreshes the pending gauge."""
+    """A queued candidate observes confidence and refreshes the pending gauge.
+
+    Driven through ``AccountResolver`` directly rather than an import: after the
+    propose-then-bind inversion the gate answers every weak candidate before
+    ``resolve()`` runs, so no import path reaches the candidate pass. The
+    surviving producers are the Plaid sync resolver and the link backfill, which
+    resolve without a gate — this is their wiring.
+    """
     from prometheus_client import REGISTRY
+
+    from moneybin.services.account_resolution_types import SourceAccount
+    from moneybin.services.account_resolver import AccountResolver
 
     _seed_existing_account(db, account_id="wf_existing01", display_name="WF Checking")
     before = REGISTRY.get_sample_value("moneybin_account_link_confidence_count") or 0.0
-    ImportService(db).import_file(
-        _STANDARD_CSV,
-        account_name="WF Checking",
-        refresh=False,
-        confirm=True,
-        actor_kind="agent",  # loads + queues so resolve() observes confidence
+    resolved = AccountResolver(db, actor="system").resolve(
+        SourceAccount(
+            source_type="plaid",
+            source_origin="wells_fargo",
+            source_account_key="plaid-token-1",
+            account_name="WF Checking",
+        )
     )
+    assert resolved.outcome == "pending_review"
     after = REGISTRY.get_sample_value("moneybin_account_link_confidence_count") or 0.0
     assert after > before  # at least one candidate confidence observed
     # Gauge was just refreshed from this DB's live pending count (one proposal).
     gauge = REGISTRY.get_sample_value("moneybin_account_link_review_pending")
     assert gauge == 1.0
+
+
+def test_account_gate_observes_the_confidence_of_every_candidate_it_surfaces(
+    db: Database,
+) -> None:
+    """The gate carries the confidence signal the pending queue used to emit.
+
+    ``resolve()`` observed candidate confidence as it queued. The inversion put
+    a gate in front of that, so imports now surface the same candidates and
+    never queue — the histogram has to be fed where the decision is made or the
+    interactive path goes dark.
+    """
+    from prometheus_client import REGISTRY
+
+    _seed_existing_account(db, account_id="wf_existing01", display_name="WF Checking")
+    before = REGISTRY.get_sample_value("moneybin_account_link_confidence_count") or 0.0
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking",
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+        )
+    surfaced = sum(len(p["candidates"]) for p in exc.value.outcome.account_proposals)
+    assert surfaced > 0
+    after = REGISTRY.get_sample_value("moneybin_account_link_confidence_count") or 0.0
+    assert after == before + surfaced
+    # Nothing was queued, so the review gauge stays where it was.
+    assert db.execute("SELECT COUNT(*) FROM app.account_link_decisions").fetchone() == (
+        0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("fixture", "channel", "import_kwargs"),
+    [
+        (_STANDARD_CSV, "tabular", {"account_name": "WF Checking"}),
+        (_MINIMAL_OFX, "ofx", {}),
+    ],
+)
+def test_account_gate_counts_a_proposed_confirmation_on_every_channel(
+    db: Database,
+    fixture: Path,
+    channel: str,
+    import_kwargs: dict[str, str],
+) -> None:
+    """Every channel's account gate is counted, labelled by that channel.
+
+    Without this the confirm the user actually sees is invisible to
+    observability, and there is no way to tell an unattended agent stalling on
+    account identity from one that never imported.
+    """
+    from prometheus_client import REGISTRY
+
+    create_core_tables(db)
+    labels = {"channel": channel, "tier": "high", "outcome": "proposed"}
+    before = REGISTRY.get_sample_value("moneybin_import_confirmations_total", labels)
+    with pytest.raises(ImportConfirmationRequiredError):
+        ImportService(db).import_file(
+            fixture, refresh=False, confirm=True, actor_kind="human", **import_kwargs
+        )
+    after = REGISTRY.get_sample_value("moneybin_import_confirmations_total", labels)
+    assert after == (before or 0.0) + 1
 
 
 def test_bare_single_account_surfaces_account_confirmation(

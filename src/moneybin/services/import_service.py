@@ -1362,6 +1362,8 @@ class ImportService:
         channel: Channel,
         resolved_mapping: dict[str, str] | None = None,
         fallback_keys: Collection[str] = (),
+        emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> None:
         """Surface an unratified account identity for confirmation before load.
 
@@ -1394,6 +1396,12 @@ class ImportService:
         user to type a raw account id. Every other source leaves it off, because
         a named account that matches nothing should mint, not be offered an
         unrelated list.
+
+        Metrics are emitted here rather than left to ``resolve()``. The gate
+        answers every weak candidate before resolution runs, so no import
+        reaches ``resolve()``'s candidate pass any more — the confidence
+        histogram it used to feed would read zero for the interactive path.
+        ``disposition="rollback"`` because raising is this call's success case.
         """
         wanted_fallback = set(fallback_keys)
         proposals: list[AccountProposalDict] = []
@@ -1410,6 +1418,30 @@ class ImportService:
         if not proposals:
             return
         from moneybin.extractors.confidence import Confidence
+        from moneybin.metrics.registry import (
+            ACCOUNT_LINK_CONFIDENCE,
+            IMPORT_CONFIRMATIONS_TOTAL,
+        )
+
+        for surfaced in proposals:
+            for candidate in surfaced["candidates"]:
+                record_observation(
+                    ACCOUNT_LINK_CONFIDENCE,
+                    candidate["confidence"],
+                    labels={},
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                    disposition="rollback",
+                )
+        record_counter(
+            IMPORT_CONFIRMATIONS_TOTAL,
+            # tier mirrors the Confidence below: the layout is settled, only the
+            # account identity is open.
+            labels={"channel": channel, "tier": "high", "outcome": "proposed"},
+            emit_metrics=emit_metrics,
+            observations=observations,
+            disposition="rollback",
+        )
 
         raise ImportConfirmationRequiredError(
             ConfirmationRequired(
@@ -2389,6 +2421,8 @@ class ImportService:
             channel="tabular",
             resolved_mapping=dict(resolved.field_mapping),
             fallback_keys=fallback_keys,
+            emit_metrics=emit_metrics,
+            observations=observations,
         )
 
         # Phase 3 — resolve (writes native->canonical mapping + pending decisions),
@@ -3018,6 +3052,8 @@ class ImportService:
                 account_bindings or {},
             ),
             channel="pdf",
+            emit_metrics=emit_metrics,
+            observations=observations,
         )
 
         result = ImportResult(file_path=str(canonical), file_type="pdf")
@@ -3661,6 +3697,8 @@ class ImportService:
                     account_bindings or {},
                 ),
                 channel="pdf",
+                emit_metrics=emit_metrics,
+                observations=observations,
             )
 
         # Committing to a write — open the import_log row now.
