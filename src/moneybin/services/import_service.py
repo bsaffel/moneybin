@@ -769,6 +769,66 @@ def _validate_account_metadata(metadata: dict[str, dict[str, str]] | None) -> No
         )
 
 
+_PROPOSAL_REF_PREFIX = "@"
+
+
+def proposal_ref(index: int) -> str:
+    """Positional referent for the ``index``-th source account in a file.
+
+    Every channel derives ``source_account_key`` from file content — an OFX
+    ``<ACCTID>``, a PDF's issuer+last4, a tabular account-name column — and that
+    key is an ACCOUNT_IDENTIFIER, so any masking surface hands it back as
+    ``****1234``. A caller reading the gate through one of those surfaces can
+    see the proposal but cannot reproduce the key needed to answer it.
+
+    This names the account by position instead, which discloses nothing and is
+    reproducible from the same bytes on the answering call. It is a referent for
+    one exchange, not an identifier: MoneyBin already knows which account is
+    which, so the caller only has to point at one of the ones it just listed.
+
+    ``@`` rather than ``#`` because a binding is typed at a shell prompt —
+    ``--account-binding #0=new`` starts a comment and drops the rest of the
+    line.
+    """
+    return f"{_PROPOSAL_REF_PREFIX}{index}"
+
+
+def _resolve_binding_targets(
+    source_accounts: list[SourceAccount], bindings: dict[str, str]
+) -> list[str | None]:
+    """Per-source-account binding target, accepting a raw key or a positional ref.
+
+    Raises when the two forms name one account with different targets: choosing
+    a winner would bind an account to one of two ids the caller asked for, and
+    the caller would never learn which — the unrecoverable-by-surprise merge
+    this gate exists to prevent.
+
+    Also raises on a ref outside the file's account list. Left unchecked it
+    reads as "no binding for this account", so the import re-gates and tells the
+    caller nothing about why their answer did not take.
+    """
+    refs = {key for key in bindings if key.startswith(_PROPOSAL_REF_PREFIX)}
+    valid = {proposal_ref(index) for index in range(len(source_accounts))}
+    if unknown := sorted(refs - valid):
+        raise ValueError(
+            f"account_bindings names {', '.join(unknown)}, but this file has "
+            f"{len(source_accounts)} account(s): "
+            f"{', '.join(sorted(valid)) or 'none'}."
+        )
+    targets: list[str | None] = []
+    for index, src in enumerate(source_accounts):
+        by_key = bindings.get(src.source_account_key)
+        by_ref = bindings.get(proposal_ref(index))
+        if by_key is not None and by_ref is not None and by_key != by_ref:
+            raise ValueError(
+                f"account_bindings has conflicting values for the same account: "
+                f"{proposal_ref(index)}={by_ref!r} and its source key "
+                f"={by_key!r}. Send one."
+            )
+        targets.append(by_key if by_key is not None else by_ref)
+    return targets
+
+
 def _apply_account_bindings(
     source_accounts: list[SourceAccount], bindings: dict[str, str]
 ) -> list[SourceAccount]:
@@ -779,15 +839,18 @@ def _apply_account_bindings(
     canonical ``account_id`` to adopt (``explicit_account_id``). Unbound
     accounts pass through unchanged so the gate can still surface them.
 
+    A binding is keyed by either the raw ``source_account_key`` or the
+    positional ``proposal_ref`` the gate surfaced — see :func:`proposal_ref`.
+
     Raises ``ValueError`` on an empty binding value — ``explicit_account_id=""``
     is falsy and would silently fall through to a fresh mint as if no binding
     were given, discarding the caller's intent ("magic stays visible").
     """
     if not bindings:
         return source_accounts
+    targets = _resolve_binding_targets(source_accounts, bindings)
     bound: list[SourceAccount] = []
-    for src in source_accounts:
-        target = bindings.get(src.source_account_key)
+    for src, target in zip(source_accounts, targets, strict=True):
         if target is None:
             bound.append(src)
         elif target == "new":
@@ -1405,7 +1468,11 @@ class ImportService:
         """
         wanted_fallback = set(fallback_keys)
         proposals: list[AccountProposalDict] = []
-        for src in source_accounts:
+        # enumerate over the FULL list, not the surfaced subset: the answering
+        # call applies bindings before this gate runs, so it can only index the
+        # file's own accounts. Numbering what gets surfaced would shift every
+        # ref as soon as one account resolved strongly.
+        for index, src in enumerate(source_accounts):
             # A bound account (explicit_account_id / force_standalone) is already
             # decided; only unratified accounts gate.
             if src.explicit_account_id or src.force_standalone:
@@ -1414,7 +1481,7 @@ class ImportService:
                 src, fallback=src.source_account_key in wanted_fallback
             )
             if proposal.requires_confirm:
-                proposals.append(proposal.to_dict())
+                proposals.append(proposal.to_dict(proposal_ref=proposal_ref(index)))
         if not proposals:
             return
         from moneybin.extractors.confidence import Confidence
@@ -2404,7 +2471,13 @@ class ImportService:
         # wrong thing invisibly ("magic stays visible").
         known_keys = {s.source_account_key for s in source_accounts}
         for label, keyed in (
-            ("account_bindings", bindings),
+            # A binding may also name an account by its positional proposal_ref;
+            # _apply_account_bindings validates those, and reports an out-of-range
+            # one against the file's account count rather than its source keys.
+            (
+                "account_bindings",
+                {k for k in bindings if not k.startswith(_PROPOSAL_REF_PREFIX)},
+            ),
             ("account_metadata", account_metadata or {}),
         ):
             unknown_keys = set(keyed) - known_keys

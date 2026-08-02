@@ -7,6 +7,7 @@ account_bindings resolution map through the real import_file pipeline.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -860,14 +861,14 @@ def test_rekey_bare_proposals_repoints_to_moved_path(tmp_path: Path) -> None:
             is_new=True,
             candidates=(),
             adopted_via=None,
-        ).to_dict(),
+        ).to_dict(proposal_ref="@0"),
         AccountProposal(
             source_account_key="wf-checking",  # a real data-derived key
             proposed_account_id=None,
             is_new=True,
             candidates=(),
             adopted_via=None,
-        ).to_dict(),
+        ).to_dict(proposal_ref="@1"),
     ]
     rekey_bare_proposals_for_path(proposals, moved)
 
@@ -968,3 +969,171 @@ def test_ofx_reimport_does_not_re_ask(
         _MINIMAL_OFX, refresh=False, confirm=True, actor_kind="human", force=True
     )
     assert result.transactions == 2
+
+
+# --- positional proposal refs --------------------------------------------
+# The binding map is keyed on source_account_key, which every channel derives
+# from file *content* (OFX <ACCTID>, PDF issuer+last4, tabular's account-name
+# column). That key is an ACCOUNT_IDENTIFIER, so any masking surface hands it
+# back as ****1234 and a caller reading the gate cannot reproduce it. The
+# proposal therefore also carries a positional referent — "@0" is the file's
+# first source account — which names nothing about the account and is
+# reproducible from the same bytes on the answering call.
+
+
+def _pdf_fixture(tmp_path: Path) -> Path:
+    from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
+
+    return write_card_statement_pdf(tmp_path)
+
+
+def _standard_csv(_tmp: Path) -> Path:
+    return _STANDARD_CSV
+
+
+def _minimal_ofx(_tmp: Path) -> Path:
+    return _MINIMAL_OFX
+
+
+@pytest.mark.parametrize(
+    ("channel", "make_file", "import_kwargs"),
+    [
+        ("tabular", _standard_csv, {"account_name": "WF Checking"}),
+        ("ofx", _minimal_ofx, {}),
+        ("pdf", _pdf_fixture, {}),
+    ],
+)
+def test_a_positional_ref_answers_the_gate_on_every_channel(
+    db: Database,
+    tmp_path: Path,
+    channel: str,
+    make_file: Callable[[Path], Path],
+    import_kwargs: dict[str, Any],
+) -> None:
+    """Every channel's gate offers a ref, and binding by it loads the file.
+
+    This is the uniformity assertion: the three channels differ only in the
+    content they start from, so one referent has to work identically on all of
+    them. Parametrized rather than split so a channel that grows its own
+    binding vocabulary fails here.
+    """
+    create_core_tables(db)
+    svc = ImportService(db)
+    path = make_file(tmp_path)
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(path, refresh=False, confirm=True, **import_kwargs)
+    proposal = exc.value.outcome.account_proposals[0]
+    assert proposal["proposal_ref"] == "@0", proposal
+
+    # Answering by the ref alone — never naming source_account_key — loads.
+    svc.import_file(
+        path,
+        refresh=False,
+        confirm=True,
+        account_bindings={"@0": "new"},
+        **import_kwargs,
+    )
+    linked = db.execute(
+        "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native'"
+    ).fetchone()
+    assert linked is not None and linked[0] >= 1, f"{channel}: no link written"
+
+
+def _two_account_csv(tmp_path: Path) -> Path:
+    """A CSV whose two accounts are named by a column, not by the caller."""
+    path = tmp_path / "two_accounts.csv"
+    path.write_text(
+        "Date,Description,Amount,Account Name\n"
+        "2026-01-15,Coffee Shop,-12.50,Checking\n"
+        "2026-01-17,Groceries,-85.30,Savings\n"
+    )
+    return path
+
+
+def test_the_ref_indexes_the_files_accounts_in_order(
+    db: Database, tmp_path: Path
+) -> None:
+    """Refs number the file's own account list, and every one of them binds.
+
+    The answering call applies bindings *before* the gate runs, so it cannot
+    know which accounts would have been surfaced. Numbering the surfaced subset
+    instead would shift every ref the moment one account resolved strongly,
+    binding the caller's answer onto the wrong account — silently, which is the
+    failure this whole gate exists to prevent.
+    """
+    create_core_tables(db)
+    svc = ImportService(db)
+    csv_path = _two_account_csv(tmp_path)
+    with pytest.raises(ImportConfirmationRequiredError) as first:
+        svc.import_file(csv_path, refresh=False, confirm=True)
+    refs = [p["proposal_ref"] for p in first.value.outcome.account_proposals]
+    assert refs == ["@0", "@1"], refs
+
+    svc.import_file(
+        csv_path,
+        refresh=False,
+        confirm=True,
+        account_bindings={"@0": "new", "@1": "new"},
+    )
+    names = {
+        r[0]
+        for r in db.execute(
+            "SELECT ref_value FROM app.account_links WHERE ref_kind = 'source_native'"
+        ).fetchall()
+    }
+    assert len(names) == 2, names
+
+
+def test_a_raw_source_key_still_binds(db: Database) -> None:
+    """The ref is additive — the CLI's existing key= form keeps working."""
+    create_core_tables(db)
+    svc = ImportService(db)
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True)
+    key = exc.value.outcome.account_proposals[0]["source_account_key"]
+
+    svc.import_file(
+        _MINIMAL_OFX, refresh=False, confirm=True, account_bindings={key: "new"}
+    )
+    linked = db.execute(
+        "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native'"
+    ).fetchone()
+    assert linked is not None and linked[0] == 1
+
+
+def test_an_out_of_range_ref_is_refused(db: Database) -> None:
+    """A ref past the end of a 1-account file is an error, not a silent no-op.
+
+    Left unchecked it falls through as "no binding for this account" and the
+    import re-gates, telling the caller nothing about why their answer did not
+    take.
+    """
+    create_core_tables(db)
+    with pytest.raises(ValueError, match="@7"):
+        ImportService(db).import_file(
+            _MINIMAL_OFX, refresh=False, confirm=True, account_bindings={"@7": "new"}
+        )
+
+
+def test_a_ref_and_a_raw_key_disagreeing_on_one_account_is_refused(
+    db: Database,
+) -> None:
+    """Two answers for one account must not resolve by precedence.
+
+    Picking a winner silently binds an account to one of two ids the caller
+    asked for — the unrecoverable-by-surprise merge this gate exists to stop.
+    """
+    create_core_tables(db)
+    svc = ImportService(db)
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True)
+    key = exc.value.outcome.account_proposals[0]["source_account_key"]
+
+    with pytest.raises(ValueError, match="conflicting"):
+        svc.import_file(
+            _MINIMAL_OFX,
+            refresh=False,
+            confirm=True,
+            account_bindings={key: "new", "@0": "acct-other"},
+        )

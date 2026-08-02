@@ -19,6 +19,7 @@ class AccountProposalDict(TypedDict):
     """Serialized shape of one ``AccountProposal`` (``account_proposals`` entry)."""
 
     source_account_key: str
+    proposal_ref: str
     proposed_account_id: str | None
     is_new: bool
     adopted_via: str | None
@@ -67,14 +68,19 @@ class AccountProposal:
         """True when the proposal must be shown to the user before import proceeds."""
         return bool(self.candidates) or (self.is_new and self.adopted_via is None)
 
-    def to_dict(self) -> AccountProposalDict:
+    def to_dict(self, *, proposal_ref: str) -> AccountProposalDict:
         """Serialise to a typed dict for surface display.
 
         Includes opaque ids, display_name, confidence, and signal.
         Never exposes ref_value or other PII-bearing fields.
+
+        ``proposal_ref`` is supplied by the caller rather than held on the
+        proposal: it names this account's position in the file being imported,
+        which is a fact about that import, not about the resolver's verdict.
         """
         return {
             "source_account_key": self.source_account_key,
+            "proposal_ref": proposal_ref,
             "proposed_account_id": self.proposed_account_id,
             "is_new": self.is_new,
             "adopted_via": self.adopted_via,

@@ -21,12 +21,15 @@ def test_account_proposal_round_trips_to_dict() -> None:
         adopted_via=None,
     )
     assert proposal.requires_confirm is True
-    d = proposal.to_dict()
+    d = proposal.to_dict(proposal_ref="@0")
     assert d["proposed_account_id"] == "def456"
     assert isinstance(d["candidates"], list)
     assert d["candidates"][0]["signal"] == "institution_last4"
     # to_dict must not expose ref_value / raw PII
     assert "ref_value" not in d["candidates"][0]
+    # The caller's positional referent rides through unchanged — it is the only
+    # key in the payload a masking surface leaves readable.
+    assert d["proposal_ref"] == "@0"
 
 
 def test_strong_adoption_does_not_require_confirm() -> None:

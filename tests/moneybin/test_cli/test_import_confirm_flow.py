@@ -50,7 +50,7 @@ def _account_proposal_dict(source_account_key: str) -> AccountProposalDict:
                 signal="name",
             ),
         ),
-    ).to_dict()
+    ).to_dict(proposal_ref="@0")
 
 
 def _make_import_result(**kwargs: Any) -> ImportResult:
