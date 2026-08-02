@@ -74,6 +74,8 @@ Three details are load-bearing:
 
 Remedy: `moneybin accounts links run` raises a proposal for existing accounts, `accounts links pending` shows it, `accounts links set <decision_id> --into <account_id>` merges. Deciding the proposal standalone leaves the warning in place.
 
+**The remedy is not guaranteed to reach this check's pairs.** `AccountLinksService.run()` delegates to `AccountResolver.propose_existing()`, which searches institution+last-four and fuzzy name only — never the transaction-overlap signal this invariant measures. A pair flagged here was flagged *because* identity resolution failed to bind it, so `run()` can legitimately write zero decisions and leave `pending` empty. Closing that gap — materializing a detected overlap pair as a review decision, or accepting two account ids directly — is tracked as follow-up work, not shipped here.
+
 **`categorization_coverage`** — What percentage of non-transfer transactions have a category. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
 
 ### Investment reconciliation (M1G.4)

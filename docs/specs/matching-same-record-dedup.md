@@ -31,10 +31,16 @@ This spec covers pillars A (same-record dedup) and C (golden-record merge rules)
 1. Transactions from different sources that describe the same real-world event resolve to one gold record in `core.fct_transactions`.
 2. The matcher matches within the same source type only for Tier 2b (overlapping statements without source-native IDs). Within-source matches require high confidence — no review queue. Two rows from the same source with different `source_transaction_id` values are always treated as distinct transactions (Tier 2a handles those deterministically).
 3. Each source row participates in at most one match (1:1 bipartite assignment).
-4. Matches are scored with a confidence value. Three tiers determine behavior:
+4. Matches are scored with a confidence value, and behavior depends on the tier:
    - `>= high_confidence_threshold` (default 0.95): auto-merge, logged, reversible
-   - `>= review_threshold` (default 0.70): queued for user review
-   - `< review_threshold`: dropped (logged for debugging, not surfaced)
+   - **Tier 3, below that threshold:** queued for user review. `review_threshold`
+     no longer gates Tier 3 — every surviving cross-source pair is reviewable,
+     because dropping one is its own silent action: the duplicate stays in the
+     ledger and nobody is told. Superseded by
+     [`matching-exact-key-dedup.md`](matching-exact-key-dedup.md).
+   - **Tier 2b, below that threshold:** discarded, since a false positive would
+     silently drop a real transaction and there is no review queue for
+     within-source overlaps.
 5. Thresholds are configurable via Pydantic settings.
 6. All match decisions (auto and user) are persisted in `app.match_decisions` with confidence score, signals used, decider, and timestamp.
 7. Any auto-merge can be reversed. After reversal, re-running the matcher re-proposes (does not re-apply) the same pair.
@@ -196,7 +202,8 @@ Tier 2b runs first so that within-source duplicates are resolved before Tier 3 s
 SQL query against prep views. Returns pairs where:
 - `account_id` matches exactly
 - `amount` matches exactly (to the penny, same-currency only)
-- `transaction_date` within `±date_window_days` (default 3)
+- `transaction_date` within `±date_window_days` (default 5 — weekend and holiday
+  card posting lag; see [`matching-exact-key-dedup.md`](matching-exact-key-dedup.md))
 - **Tier 2b:** same `source_origin` and `source_type`, different `source_file`, no `source_transaction_id` on at least one row (rows with source-native IDs are already handled by Tier 2a)
 - **Tier 3:** different `source_type` OR different `source_origin` (cross-source matching)
 
@@ -221,13 +228,11 @@ When multiple candidates compete (e.g., two CSV rows could match the same OFX ro
 
 ### Match decision persistence
 
-Every scored pair above `review_threshold` is written to `app.match_decisions`:
+Every scored Tier 3 pair is written to `app.match_decisions`:
 - `>= high_confidence_threshold`: `match_status = 'accepted'`, `decided_by = 'auto'`
-- `>= review_threshold` (Tier 3 only): `match_status = 'pending'`, `decided_by = 'auto'`
+- below it: `match_status = 'pending'`, `decided_by = 'auto'` — no lower cutoff
 
 Tier 2b writes only high-confidence matches (`match_tier = '2b'`). Pairs below `high_confidence_threshold` are discarded — no review queue for within-source overlaps, since a false positive would silently drop a real transaction.
-
-Tier 3 pairs below `review_threshold` are not persisted (logged at DEBUG level only).
 
 ## Golden-Record Merge Rules
 
@@ -319,8 +324,8 @@ proposals with `reviews(kind="matches", status="pending")`, applies an exact
 ```python
 class MatchingSettings(BaseModel):
     high_confidence_threshold: float = 0.95
-    review_threshold: float = 0.70
-    date_window_days: int = 3
+    review_threshold: float = 0.70  # Tier 2b only; Tier 3 reviews every pair
+    date_window_days: int = 5
     source_priority: list[str] = [
         "plaid",
         "csv",

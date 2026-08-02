@@ -157,10 +157,10 @@ class TransactionMatcher:
         )
         component_edges.extend(tier_2b_edges)
 
-        # Tier 3: cross-source. Passing high_confidence_threshold enables
-        # exact-key auto-merge: a date_distance=0 pair scores at/above the
-        # threshold regardless of description similarity (assign_components'
-        # source_file guard keeps N true duplicates paired 1:1).
+        # Tier 3: cross-source. Passing high_confidence_threshold enables the
+        # agreement floor: a pair whose descriptions agree scores at/above the
+        # threshold at any gap inside the window, regardless of similarity
+        # (assign_components' source_file guard keeps N true duplicates 1:1).
         tier_3_edges = self._run_tier(
             tier="3",
             candidates_fn=lambda: get_candidates_cross_source(

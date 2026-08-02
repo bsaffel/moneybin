@@ -317,9 +317,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   counterpart within five days on a sibling account at the same institution,
   and names the pair with its overlap percentage. Transfers between two
   accounts at one bank do not trigger it — amount equality carries the sign.
-  Fix a flagged pair with `accounts links run`, then `accounts links pending`.
+  Try `accounts links run` on a flagged pair, then `accounts links pending`.
+  Identity resolution matches on institution+last-four and name similarity, not
+  on transaction overlap, so a flagged pair may raise no proposal — that same
+  binding failure is what split the account in the first place.
 
 ### Changed
+- **Cross-source duplicates now auto-merge on description agreement rather than
+  on the calendar date, and the candidate window widens from 3 days to 5
+  (#377).** Previously any pair landing on the same day merged silently no
+  matter how differently the two sources described it, and a pair one day apart
+  did not. Both halves were wrong: the same-day band held amount collisions
+  between genuinely different merchants, while pairs whose descriptions already
+  agreed sat in the review queue because the card had posted a day late. A pair
+  now auto-merges when one description contains the other, at any gap inside the
+  window. Which existing duplicates merge and which go to review both change on
+  the next `refresh`. `matching.date_window_days` is shared with transfer
+  detection, so its new default widens that candidate window too.
+- **Every cross-source duplicate candidate now reaches the review queue (#377).**
+  Pairs scoring below `matching.review_threshold` used to be dropped and logged
+  at DEBUG — the duplicate stayed in the ledger and nobody was told. Expect the
+  pending-review count to rise on the first `refresh` after upgrading; the pairs
+  were always there.
+- **An account minted without a last four now proposes into the identity review
+  queue instead of appearing silently (#377).** Such an account cannot
+  participate in last-four resolution at all, so its silence was never evidence
+  that it was a distinct account. Cash accounts, manually created accounts, and
+  sources that never publish the digits will each raise one proposal to confirm
+  or dismiss.
 - **BREAKING for anything branching on an error `code`: 104 code values were
   renamed.** They were raised from tool paths without ever being declared in
   the taxonomy, so they had never been reviewed for shape; each now carries the

@@ -111,8 +111,9 @@ class TestComputeConfidence:
         bands = MatchingSettings()
         # Up to the shipped default window. The margin narrows as the window
         # widens, so this holds for supported configurations rather than for
-        # every conceivable one — see test_shipped_defaults_keep_every_date_gap
-        # _in_review, which pins the same property against the live defaults.
+        # every conceivable one — see test_closeness_alone_never_reaches_auto_
+        # merge in test_config_matching.py, which pins the same property
+        # against the live defaults.
         for window in (1, 2, 3, 4, 5):
             for days in range(1, window + 1):
                 score = compute_confidence(
