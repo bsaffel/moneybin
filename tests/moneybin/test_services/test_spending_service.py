@@ -22,11 +22,24 @@ def empty_db(db: Database) -> Database:
 
 @pytest.fixture()
 def spending_db(db: Database) -> Database:
-    """Return a Database with core + app tables and test transactions seeded."""
+    """Return a Database with core + app tables and test transactions seeded.
+
+    Dates are derived from ``CURRENT_DATE``, never written as literals.
+    ``by_category`` filters on a wall-clock window
+    (``transaction_year_month >= CURRENT_DATE - INTERVAL n months``), so a pinned
+    fixture is a time bomb: these tests passed for months and then failed once the
+    2026-03/04 literals aged out of the three-month window, for a reason that had
+    nothing to do with the code. Moving the literals forward only re-arms it.
+
+    The two offsets are 40 days apart because 30 is not enough — the earlier date
+    can be the 1st and the later the 31st of one 31-day month, putting both in the
+    same ``transaction_year_month`` and breaking ``months >= 2``. At 40 days apart
+    that is arithmetically impossible, and 50 days back still lands inside a
+    three-month window on every possible run date.
+    """
     conn = db.conn
     create_core_tables_raw(conn)
 
-    # Insert test transactions spanning 2 months
     conn.execute("""
         INSERT INTO core.fct_transactions (
             transaction_id, account_id, transaction_date, amount,
@@ -35,11 +48,20 @@ def spending_db(db: Database) -> Database:
             source_extracted_at, loaded_at,
             transaction_year, transaction_month, transaction_day,
             transaction_day_of_week, transaction_year_month, transaction_year_quarter
-        ) VALUES
-        ('T1', 'A1', '2026-04-10', -50.00, 50.00, 'expense', 'Coffee', 'DEBIT', false, 'USD', 'ofx', '2026-04-10', CURRENT_TIMESTAMP, 2026, 4, 10, 3, '2026-04', '2026-Q2'),
-        ('T2', 'A1', '2026-04-15', 5000.00, 5000.00, 'income', 'Payroll', 'CREDIT', false, 'USD', 'ofx', '2026-04-15', CURRENT_TIMESTAMP, 2026, 4, 15, 1, '2026-04', '2026-Q2'),
-        ('T3', 'A1', '2026-03-10', -200.00, 200.00, 'expense', 'Groceries', 'DEBIT', false, 'USD', 'ofx', '2026-03-10', CURRENT_TIMESTAMP, 2026, 3, 10, 1, '2026-03', '2026-Q1'),
-        ('T4', 'A1', '2026-03-20', 5000.00, 5000.00, 'income', 'Payroll', 'CREDIT', false, 'USD', 'ofx', '2026-03-20', CURRENT_TIMESTAMP, 2026, 3, 20, 4, '2026-03', '2026-Q1')
+        )
+        SELECT
+            t.txn_id, 'A1', t.txn_date, t.amount, ABS(t.amount), t.direction,
+            t.description, t.txn_type, false, 'USD', 'ofx',
+            t.txn_date, CURRENT_TIMESTAMP,
+            YEAR(t.txn_date), MONTH(t.txn_date), DAY(t.txn_date),
+            ISODOW(t.txn_date), strftime(t.txn_date, '%Y-%m'),
+            YEAR(t.txn_date) || '-Q' || QUARTER(t.txn_date)
+        FROM (VALUES
+            ('T1', CURRENT_DATE - 10, -50.00, 'expense', 'Coffee', 'DEBIT'),
+            ('T2', CURRENT_DATE - 10, 5000.00, 'income', 'Payroll', 'CREDIT'),
+            ('T3', CURRENT_DATE - 50, -200.00, 'expense', 'Groceries', 'DEBIT'),
+            ('T4', CURRENT_DATE - 50, 5000.00, 'income', 'Payroll', 'CREDIT')
+        ) AS t(txn_id, txn_date, amount, direction, description, txn_type)
     """)  # noqa: S608  # test input, not executing SQL
 
     # Insert transaction_categories for by_category tests
