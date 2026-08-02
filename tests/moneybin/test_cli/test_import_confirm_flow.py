@@ -26,6 +26,7 @@ from moneybin.services.account_resolution_types import (
     AccountProposalDict,
 )
 from moneybin.services.import_confirmation import (
+    Channel,
     ConfirmationRequired,
     ImportConfirmationRequiredError,
     ProposedMapping,
@@ -440,13 +441,20 @@ class TestImportFilesConfirmFlow:
         mocker: Any,
         tmp_path: Path,
     ) -> None:
-        """An OFX gate must name `import files`, not `import confirm`.
+        """An OFX gate names `import confirm`, the same command every gate names.
 
-        `import confirm` consumes a staged preview and requires --accept or
-        --mapping — neither exists for OFX, which has no column mapping and no
-        preview. Naming it would hand the user a command that bounces with a
-        usage error. The sign gate already established `import files <path>
-        <flags>` as the non-tabular recovery shape.
+        The premise this test used to carry — that `import confirm` would
+        bounce an OFX with a usage error — is not true of the CLI. It takes a
+        file path, not a staged preview id (that is the MCP tool), and
+        `moneybin import confirm <file>.ofx --accept` imports. `--accept`
+        ratifies nothing on a channel with no mapping, but it satisfies the
+        command's require-an-action guard, which is exactly the form
+        `InboxService` has always emitted for an account gate on any channel.
+
+        Naming `import files` instead had a cost beyond the second vocabulary:
+        only `import confirm` calls `archive_confirmed_file`, so answering a
+        pending inbox file with `import files` left it in `pending/` to be
+        offered again forever.
         """
         ofx_file = tmp_path / "statement.ofx"
         ofx_file.write_text("OFXHEADER:100\n")
@@ -471,11 +479,69 @@ class TestImportFilesConfirmFlow:
         assert result.exit_code == 0
         payload = json.loads(result.output)
         recovery = next(a for a in payload["actions"] if "--account-binding" in a)
-        assert "moneybin import files" in recovery
-        assert "import confirm" not in recovery
+        assert "moneybin import confirm" in recovery
+        assert "import files" not in recovery
         assert "1111=<account_id|new>" in recovery
-        # --accept is a mapping ratification; OFX has no mapping to ratify.
-        assert "--accept" not in recovery
+        # Required by the command's own guard, and what InboxService emits.
+        assert "--accept" in recovery
+
+    @pytest.mark.parametrize("suffix", [".ofx", ".pdf", ".csv"])
+    def test_the_account_recovery_it_prints_actually_parses(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        suffix: str,
+    ) -> None:
+        """Run the printed command back through the CLI, on every channel.
+
+        The test this sits beside asserted which command was named and never
+        ran it, so its claim that the other one "would bounce with a usage
+        error" went unchecked for as long as it was false. Re-invoking is what
+        makes the assertion about the command rather than about the string.
+        """
+        source = tmp_path / f"statement{suffix}"
+        source.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        channels: dict[str, Channel] = {
+            ".ofx": "ofx",
+            ".pdf": "pdf",
+            ".csv": "tabular",
+        }
+        channel = channels[suffix]
+        outcome = ConfirmationRequired(
+            channel=channel,
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("1111")],
+        )
+        gated = mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        payload = json.loads(
+            runner.invoke(app, ["files", str(source), "--output", "json"]).output
+        )
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+
+        # Strip the surrounding prose, then fill the placeholder as a user would.
+        quoted = recovery[recovery.index("moneybin") : recovery.index("` ")]
+        argv = [a.replace("<account_id|new>", "new") for a in shlex.split(quoted)[1:]]
+        assert argv[0] == "import"
+        gated.side_effect = None
+        gated.return_value = _make_import_result()
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+
+        rerun = runner.invoke(app, argv[1:])
+
+        assert rerun.exit_code == 0, f"{channel}: {rerun.output}"
+        assert gated.call_args.kwargs["account_bindings"] == {"1111": "new"}
 
     def test_account_confirmation_tty_renders_proposals(
         self,

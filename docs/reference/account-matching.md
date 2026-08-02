@@ -161,8 +161,12 @@ the file came through the inbox. That account's own `source_account_key` works
 in the same position. Supply a binding for **every** account the file contains
 in that one command — the gate is all-or-nothing.
 
-OFX and PDF answer on `moneybin import files` instead of `import confirm`:
-neither stages a column mapping, so there is no preview to consume.
+`import confirm` answers the account gate on every file type. OFX and PDF have
+no column mapping to ratify, so `--accept` is a formality there — it satisfies
+the command's require-an-action guard. Use this command rather than re-running
+`import files`: only `import confirm` archives a file out of the inbox's
+`pending/` bucket, so answering a pending file any other way leaves it to be
+offered again on the next sync.
 
 **Human vs. agent — the same gate.** Both are gated: rows don't land until the
 account is bound, and neither self-accepts a weak match. An agent-driven import

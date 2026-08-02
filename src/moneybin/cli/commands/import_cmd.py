@@ -957,7 +957,7 @@ def _tabular_recovery_args(
     return args
 
 
-def _tabular_confirmation_command(
+def _import_confirm_command(
     file_path_str: str,
     *,
     accept: bool,
@@ -970,7 +970,11 @@ def _tabular_confirmation_command(
     account_bindings: dict[str, str] | None,
     account_metadata: dict[str, dict[str, str]] | None,
 ) -> str:
-    """Serialize one public tabular confirmation request losslessly."""
+    """Serialize one public `import confirm` request losslessly.
+
+    Every channel's account and sign recoveries route through here, so the
+    command MoneyBin prints is always the command it would accept back.
+    """
     import shlex  # noqa: PLC0415
 
     parts = ["moneybin", "import", "confirm", file_path_str]
@@ -1010,13 +1014,19 @@ def _account_recovery_command(
     confirm_sign: bool = False,
     sign: SignConventionType | None = None,
 ) -> str:
-    """Name the command that answers this account confirmation, per channel.
+    """Name the command that answers this account confirmation — one, for every channel.
 
-    Tabular answers through ``import confirm``: its confirmation also stages a
-    column mapping, so the whole request has to be replayed losslessly. OFX and
-    PDF have no mapping to stage and no preview to consume — ``import confirm``
-    would reject them — so they answer on ``import files`` itself, the same
-    entry-command shape the sign gate's recovery already uses for PDF.
+    ``import confirm`` on all three. It takes a file path, not a staged preview
+    id (that is the MCP tool), so nothing about OFX or PDF makes it bounce, and
+    ``InboxService`` has always emitted exactly this form for an account gate
+    regardless of channel. ``--accept`` ratifies nothing on a channel with no
+    column mapping; it satisfies the command's require-an-action guard, which is
+    why the inbox's version carries it too.
+
+    OFX and PDF used to be sent to ``import files`` here — a second vocabulary
+    for one question, and worse than cosmetic: only ``import confirm`` calls
+    ``archive_confirmed_file``, so a pending inbox file answered through
+    ``import files`` stayed in ``pending/`` and was offered again on every sync.
     """
     bindings = dict(account_bindings or {})
     for proposal in outcome.account_proposals:
@@ -1025,21 +1035,12 @@ def _account_recovery_command(
     if not bindings:
         bindings["<source_key>"] = "<account_id|new>"
 
-    if outcome.channel in ("ofx", "pdf"):
-        import shlex  # noqa: PLC0415
-
-        parts = ["moneybin", "import", "files", file_path_str]
-        if account_id is not None:
-            parts.extend(("--account-id", account_id))
-        for source_key, target in bindings.items():
-            parts.extend(("--account-binding", f"{source_key}={target}"))
-        if not save_format:
-            parts.append("--no-save-format")
-        return shlex.join(parts)
-
-    return _tabular_confirmation_command(
+    return _import_confirm_command(
         file_path_str,
-        accept=accept,
+        # A channel with no mapping has nothing to ratify, but the command
+        # requires an action; `accept` is False only where a --mapping override
+        # supplies one, which is tabular-only.
+        accept=accept or outcome.channel in ("ofx", "pdf"),
         confirm_sign=confirm_sign,
         sign=sign,
         mapping=mapping,
@@ -1083,7 +1084,7 @@ def _sign_recovery_commands(
     both conventions and what each does.
     """
     if channel == "tabular":
-        approve_command = _tabular_confirmation_command(
+        approve_command = _import_confirm_command(
             file_path_str,
             accept=accept,
             confirm_sign=True,
@@ -1095,7 +1096,7 @@ def _sign_recovery_commands(
             account_bindings=account_bindings,
             account_metadata=account_metadata,
         )
-        native_command = _tabular_confirmation_command(
+        native_command = _import_confirm_command(
             file_path_str,
             accept=accept,
             confirm_sign=False,

@@ -1709,10 +1709,10 @@ class ImportService:
             human_sign_confirmation: Explicit human approval of an inferred
                 tabular sign inversion; independent of mapping acceptance.
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
-            account_bindings: Map of source_account_key -> canonical account_id
-                (adopt) or "new" (mint standalone), ratifying the account-binding
-                confirmation. Unbound accounts with weak candidates gate for a
-                human caller.
+            account_bindings: Map of proposal_ref ("@0") or source_account_key ->
+                canonical account_id (adopt) or "new" (mint standalone),
+                ratifying the account-binding confirmation. An unbound account
+                gates when it carries weak candidates, for every caller.
             account_metadata: Map of source_account_key -> {display_name,
                 account_subtype, last_four, currency_code} captured into
                 app.account_settings for accounts minted this import.
@@ -4626,11 +4626,14 @@ class ImportService:
             human_sign_confirmation: Explicit human approval of an inferred
                 tabular sign inversion; never inferred from ``confirm``.
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
-            account_bindings: Map of source_account_key -> canonical account_id
-                (adopt) or "new" (mint standalone), ratifying the account-binding
-                confirmation for tabular imports.
+            account_bindings: Map of proposal_ref ("@0", the file's first source
+                account) or source_account_key -> canonical account_id (adopt)
+                or "new" (mint standalone), ratifying the account-binding
+                confirmation. Honored on every channel — tabular, OFX and PDF
+                all raise the same gate.
             account_metadata: Map of source_account_key -> settings dict captured
-                for accounts minted this import (tabular).
+                for accounts minted this import. Tabular only; refused with
+                ``import_account_signal_unsupported`` elsewhere.
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
             observations: Buffer observations for a caller-owned transaction.
