@@ -9,6 +9,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.loaders import import_log
 from moneybin.services.import_service import ImportService
+from tests.moneybin.import_helpers import import_answering_gate
 
 
 class TestImportOFXBatchLifecycle:
@@ -22,7 +23,7 @@ class TestImportOFXBatchLifecycle:
             )
 
         service = ImportService(db)
-        result = service.import_file(fixture, refresh=False)
+        result = import_answering_gate(service, fixture, refresh=False)
 
         assert result.transactions > 0
 
@@ -57,7 +58,7 @@ class TestImportOFXBatchLifecycle:
         assert fixture.exists()
 
         service = ImportService(db)
-        service.import_file(fixture, refresh=False)
+        import_answering_gate(service, fixture, refresh=False)
 
         rows = db.execute(
             "SELECT amount FROM raw.ofx_transactions ORDER BY amount"
@@ -100,7 +101,7 @@ class TestImportOFXBatchLifecycle:
             [str(fixture.resolve())],
         )
 
-        ImportService(db).import_file(fixture, refresh=False)
+        import_answering_gate(ImportService(db), fixture, refresh=False)
 
         # The stale plain row is NOT replaced by the suffixed rows (no self-heal).
         stale = db.execute(
@@ -123,7 +124,7 @@ class TestImportOFXBatchLifecycle:
             )
 
         service = ImportService(db)
-        service.import_file(fixture, refresh=False)
+        import_answering_gate(service, fixture, refresh=False)
 
         history = import_log.get_import_history(db, limit=5)
         latest = [h for h in history if h["source_type"] == "ofx"][0]
@@ -148,7 +149,7 @@ class TestImportOFXBatchLifecycle:
             )
 
         service = ImportService(db)
-        service.import_file(fixture, refresh=False)
+        import_answering_gate(service, fixture, refresh=False)
 
         with pytest.raises(ValueError, match="already imported"):
             service.import_file(fixture, refresh=False)
@@ -172,7 +173,7 @@ class TestImportOFXBatchLifecycle:
         renamed.write_bytes(fixture.read_bytes())
 
         service = ImportService(db)
-        service.import_file(fixture, refresh=False)
+        import_answering_gate(service, fixture, refresh=False)
 
         with pytest.raises(ValueError, match="already imported"):
             service.import_file(renamed, refresh=False)
@@ -185,7 +186,7 @@ class TestImportOFXBatchLifecycle:
             )
 
         service = ImportService(db)
-        service.import_file(fixture, refresh=False)
+        import_answering_gate(service, fixture, refresh=False)
         service.import_file(fixture, refresh=False, force=True)
 
         canonical = str(fixture.resolve())
@@ -224,7 +225,7 @@ class TestImportOFXAccountResolution:
                 "Sample OFX fixture missing at tests/fixtures/ofx/sample_minimal.ofx"
             )
 
-        ImportService(db).import_file(fixture, refresh=False)
+        import_answering_gate(ImportService(db), fixture, refresh=False)
 
         native = db.execute(
             """
@@ -322,7 +323,13 @@ class TestExtractionParsesTheHashedBytes:
 
         monkeypatch.setattr(import_service_module, "source_sha256", _rewrite_then_hash)
 
-        ImportService(db).import_file(target, refresh=False)
+        # Bound up front rather than via import_answering_gate: the helper
+        # re-imports to answer, and the second read would see the replacement —
+        # which is the very swap this test exists to keep out of the rows.
+        # "1111" is sample_minimal.ofx's <ACCTID>; the replacement's is 4387.
+        ImportService(db).import_file(
+            target, refresh=False, account_bindings={"1111": "new"}
+        )
 
         loaded = {
             row[0]

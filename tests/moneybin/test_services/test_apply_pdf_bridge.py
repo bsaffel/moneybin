@@ -137,6 +137,25 @@ def _pdf_path(tmp_path: Path) -> Path:
     return path
 
 
+def _apply_bridge(
+    db: Database, file_path: Path, bridge_response: dict[str, Any], **kwargs: Any
+) -> BridgeApplyResult:
+    """Apply a bridge response, answering the account gate for ``_standard_doc``.
+
+    Every document here is the same stub Chase statement, whose account identity
+    is incidental to what these tests assert — so bind it once rather than
+    restate it at twenty call sites. ``chase_1234`` is the source key
+    ``_pdf_source_account`` derives from that fixture's issuer and masked
+    number.
+    """
+    return ImportService(db).apply_pdf_bridge_response(
+        file_path,
+        bridge_response,
+        account_bindings={"chase_1234": "new"},
+        **kwargs,
+    )
+
+
 def _applied_count() -> float:
     return PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="applied")._value.get()  # type: ignore[reportPrivateUsage]
 
@@ -154,9 +173,7 @@ def test_apply_reconciling_response_loads_transactions(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:
     before = _applied_count()
-    result = ImportService(db).apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response()
-    )
+    result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     assert isinstance(result, BridgeApplyResult)
     assert result.outcome == "applied"
@@ -175,9 +192,7 @@ def test_apply_reconciling_response_loads_transactions(
 def test_apply_persists_new_format(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:
-    result = ImportService(db).apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response()
-    )
+    result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     assert result.format_name is not None
     saved = db.conn.execute(
@@ -199,9 +214,7 @@ def test_apply_records_bridge_provenance_on_the_saved_format(
     so without the distinction it would silently discard the anchors the bridge
     round deliberately authored.
     """
-    result = ImportService(db).apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response()
-    )
+    result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     row = db.conn.execute(
         f"SELECT source FROM {PDF_FORMATS.full_name} WHERE name = ?",  # noqa: S608  # TableRef constant, not user input
@@ -213,8 +226,8 @@ def test_apply_records_bridge_provenance_on_the_saved_format(
 def test_apply_save_format_false_skips_persist(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:
-    result = ImportService(db).apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response(), save_format=False
+    result = _apply_bridge(
+        db, _pdf_path(tmp_path), _bridge_response(), save_format=False
     )
 
     assert result.outcome == "applied"
@@ -236,9 +249,7 @@ def test_apply_inverted_recipe_requires_human_confirmation(
     before = PDF_SIGN_GATE_TOTAL.labels(outcome="proposed")._value.get()  # type: ignore[reportPrivateUsage]
 
     with pytest.raises(ImportConfirmationRequiredError) as exc:
-        ImportService(db).apply_pdf_bridge_response(
-            _pdf_path(tmp_path), _bridge_response(recipe=recipe)
-        )
+        _apply_bridge(db, _pdf_path(tmp_path), _bridge_response(recipe=recipe))
 
     from moneybin.services.import_confirmation import SignConventionProposal
 
@@ -259,7 +270,8 @@ def test_apply_inverted_recipe_loads_after_human_confirmation(
     """Only the explicit human-confirmed service path may load an inversion."""
     recipe = {**_valid_recipe_dict(), "sign_convention": "negative_is_income"}
 
-    result = ImportService(db).apply_pdf_bridge_response(
+    result = _apply_bridge(
+        db,
         _pdf_path(tmp_path),
         _bridge_response(recipe=recipe),
         confirm=True,
@@ -288,8 +300,8 @@ def test_marker_backed_inverted_recipe_keeps_polarity_guard_after_confirmation(
     stub_extract[0] = _standard_doc(card_markers=True)
     recipe = {**_valid_recipe_dict(), "sign_convention": "negative_is_income"}
 
-    result = ImportService(db).apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response(recipe=recipe), confirm=True
+    result = _apply_bridge(
+        db, _pdf_path(tmp_path), _bridge_response(recipe=recipe), confirm=True
     )
 
     assert result.format_name is not None
@@ -304,9 +316,7 @@ def test_marker_backed_inverted_recipe_keeps_polarity_guard_after_confirmation(
 def test_apply_writes_revertable_import_log(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:
-    result = ImportService(db).apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response()
-    )
+    result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     log = db.conn.execute(
         "SELECT status, source_type FROM raw.import_log WHERE import_id = ?",
@@ -329,9 +339,7 @@ def test_apply_non_reconciling_response_rejected(
     stub_extract[0] = _standard_doc(opening="1000.00", closing="9999.00")
 
     before_invalid = _invalid_count()
-    result = ImportService(db).apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response()
-    )
+    result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     assert result.outcome == "invalid"
     assert result.reject_reason == "reconciliation_failed"
@@ -351,7 +359,7 @@ def test_apply_invalid_does_not_persist_format(
 ) -> None:
     stub_extract[0] = _standard_doc(opening="1000.00", closing="9999.00")
 
-    ImportService(db).apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
+    _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     rows = db.conn.execute(
         f"SELECT COUNT(*) FROM {PDF_FORMATS.full_name}"  # noqa: S608  # TableRef constant, not user input
@@ -367,9 +375,7 @@ def test_apply_invalid_does_not_persist_format(
 def test_apply_no_divergence_when_agent_rows_match(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:
-    result = ImportService(db).apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response()
-    )
+    result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     assert result.rows_diverged is False
     assert result.expected_row_count == 2
@@ -384,8 +390,8 @@ def test_apply_row_count_divergence_reported_but_still_loads(
     # reconciliation gate runs on the 2 re-executed rows (which tie out),
     # so the load proceeds, but the divergence is surfaced.
     phantom = [{"Date": "01/25/2024", "Description": "Ghost", "Amount": "-5.00"}]
-    result = ImportService(db).apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response(rows=_agent_rows(extra=phantom))
+    result = _apply_bridge(
+        db, _pdf_path(tmp_path), _bridge_response(rows=_agent_rows(extra=phantom))
     )
 
     assert result.outcome == "applied"
@@ -409,7 +415,7 @@ def test_apply_malformed_response_raises_bridge_response_error(
     # Pin the exact type — parse_bridge_response raises BridgeResponseError, not
     # a bare ValueError, so a regression at the raise site is caught.
     with pytest.raises(BridgeResponseError, match="recipe"):
-        ImportService(db).apply_pdf_bridge_response(_pdf_path(tmp_path), {"rows": []})
+        _apply_bridge(db, _pdf_path(tmp_path), {"rows": []})
 
 
 def test_apply_malformed_response_bumps_invalid_metric(
@@ -422,7 +428,7 @@ def test_apply_malformed_response_bumps_invalid_metric(
     # before the reconciliation gate's own invalid bump.
     before = _invalid_count()
     with pytest.raises(BridgeResponseError):
-        ImportService(db).apply_pdf_bridge_response(_pdf_path(tmp_path), {"rows": []})
+        _apply_bridge(db, _pdf_path(tmp_path), {"rows": []})
     assert _invalid_count() == before + 1
 
 
@@ -437,9 +443,7 @@ def test_apply_persists_a_bridge_recipe_unratified(
     """
     import json as _json
 
-    result = ImportService(db).apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response()
-    )
+    result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     assert result.format_name is not None
     row = db.conn.execute(
@@ -465,9 +469,7 @@ def test_apply_rejects_a_response_that_self_grants_sign_ratified(
 
     hijacked = {**_valid_recipe_dict(), "sign_ratified": True}
     with pytest.raises(BridgeResponseError, match="sign_ratified"):
-        ImportService(db).apply_pdf_bridge_response(
-            _pdf_path(tmp_path), _bridge_response(recipe=hijacked)
-        )
+        _apply_bridge(db, _pdf_path(tmp_path), _bridge_response(recipe=hijacked))
 
     formats = db.conn.execute(
         f"SELECT COUNT(*) FROM {PDF_FORMATS.full_name}"  # noqa: S608  # TableRef constant, not user input
@@ -490,9 +492,7 @@ def test_apply_uncompilable_regex_raises_bridge_response_error(
     # PDF import.
     bad = {**_valid_recipe_dict(), "row_split": "["}
     with pytest.raises(BridgeResponseError, match="invalid regex"):
-        ImportService(db).apply_pdf_bridge_response(
-            _pdf_path(tmp_path), _bridge_response(recipe=bad)
-        )
+        _apply_bridge(db, _pdf_path(tmp_path), _bridge_response(recipe=bad))
 
 
 # ---------------------------------------------------------------------------
@@ -510,12 +510,11 @@ def test_apply_bumps_version_when_format_preexists(
     # same-fingerprint statement replays the corrected recipe rather than
     # re-escalating. format_name is reported (the bump persisted) and version
     # increments.
-    svc = ImportService(db)
-    first = svc.apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
+    first = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
     assert first.format_name is not None
     assert first.rows_loaded == 2  # happy-path load works (not silently failing)
 
-    second = svc.apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
+    second = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
     assert second.outcome == "applied"
     assert second.import_id is not None
     # The bump persisted a new recipe version, so format_name is reported (not
@@ -538,17 +537,14 @@ def test_apply_bump_updates_stored_recipe(
     # next replay uses the corrected recipe.
     import json
 
-    svc = ImportService(db)
-    svc.apply_pdf_bridge_response(_pdf_path(tmp_path), _bridge_response())
+    _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     # A detectable, still-reconciling change to the Description field pattern.
     # Date + Amount (what reconciliation reads) are unchanged, so the corrected
     # recipe still ties out and reaches the save branch.
     corrected = _valid_recipe_dict()
     corrected["fields"][1]["pattern"] = r"\S.*"
-    result = svc.apply_pdf_bridge_response(
-        _pdf_path(tmp_path), _bridge_response(recipe=corrected)
-    )
+    result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response(recipe=corrected))
     assert result.format_name is not None
 
     stored = db.conn.execute(
@@ -577,9 +573,7 @@ def test_apply_format_name_none_when_save_fails(
         mp.setattr(
             "moneybin.repositories.pdf_formats_repo.PdfFormatsRepo.save_new", _boom
         )
-        result = ImportService(db).apply_pdf_bridge_response(
-            _pdf_path(tmp_path), _bridge_response()
-        )
+        result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     assert result.outcome == "applied"
     assert result.rows_loaded == 2
@@ -603,9 +597,7 @@ def test_apply_extraction_failure_bumps_failed_metric(
     before = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge")._value.get()  # type: ignore[reportPrivateUsage]
 
     with pytest.raises(ValueError, match="extract"):
-        ImportService(db).apply_pdf_bridge_response(
-            _pdf_path(tmp_path), _bridge_response()
-        )
+        _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     after = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge")._value.get()  # type: ignore[reportPrivateUsage]
     assert after == before + 1
