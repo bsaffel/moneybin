@@ -165,6 +165,12 @@ def test_a_named_first_contact_mint_loads_without_asking(
         ["wf-checking"],
     ).fetchone()
     assert row is not None and row[0]
+    # Reported, not merely allowed through: the account carries the name the
+    # caller gave it, so "WF Checking appeared" is answerable from the result
+    # alone. See test_a_mint_is_reported_on_every_channel for the invariant.
+    assert [(a.account_id, a.display_name) for a in result.accounts_created] == [
+        (row[0], "WF Checking")
+    ]
 
 
 def test_masked_label_reaches_resolver_as_clean_name(
@@ -1173,6 +1179,68 @@ def test_a_mistyped_source_key_is_refused_on_every_channel(
         )
     n = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
     assert n is not None and n[0] == 0, f"{channel}: wrote a link"
+
+
+@pytest.mark.parametrize(
+    ("channel", "make_file", "import_kwargs"),
+    [
+        ("tabular", _standard_csv, {"account_name": "WF Checking"}),
+        ("ofx", _minimal_ofx, {}),
+        ("pdf", _pdf_fixture, {}),
+    ],
+)
+def test_a_mint_is_reported_on_every_channel(
+    db: Database,
+    tmp_path: Path,
+    channel: str,
+    make_file: Callable[[Path], Path],
+    import_kwargs: dict[str, Any],
+) -> None:
+    """An unasked mint has to say what it created — this is what replaced the gate.
+
+    Gating a first-contact mint was the old way of making it visible, and it
+    cost one confirm per file for a question with exactly one legal answer.
+    Dropping that gate is only honest if the result names the accounts the
+    import created; otherwise an account materialises with nothing anywhere
+    pointing at it. Set equality, not a count: reporting an id the import did
+    not bind is as wrong as omitting one it did.
+    """
+    create_core_tables(db)
+    result = ImportService(db).import_file(
+        make_file(tmp_path),
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        **import_kwargs,
+    )
+    bound = {
+        r[0]
+        for r in db.execute(
+            "SELECT account_id FROM app.account_links "
+            "WHERE ref_kind = 'source_native' AND status = 'accepted'"
+        ).fetchall()
+    }
+    assert {a.account_id for a in result.accounts_created} == bound, channel
+    # A name the user can recognise the account by. The id alone is opaque, so
+    # an empty label would report the mint without identifying it.
+    assert all(a.display_name for a in result.accounts_created), channel
+
+
+def test_a_reimport_reports_no_new_account(db: Database) -> None:
+    """Adoption is not creation — only the import that minted names the account.
+
+    Without this the report degenerates into "here are the accounts this file
+    touches", printed on every re-import, and stops meaning anything happened.
+    """
+    create_core_tables(db)
+    svc = ImportService(db)
+    first = svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True)
+    assert len(first.accounts_created) == 1
+
+    # force=True because re-import detection is a separate mechanism; the point
+    # here is that the second resolve adopts via source_native and mints nothing.
+    again = svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True, force=True)
+    assert again.accounts_created == ()
 
 
 def test_an_out_of_range_ref_is_refused(db: Database) -> None:

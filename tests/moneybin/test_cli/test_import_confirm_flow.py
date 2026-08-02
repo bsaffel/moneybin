@@ -31,9 +31,15 @@ from moneybin.services.import_confirmation import (
     ProposedMapping,
     SignConventionProposal,
 )
-from moneybin.services.import_service import BridgeApplyResult, ImportResult
+from moneybin.services.import_service import (
+    BridgeApplyResult,
+    CreatedAccount,
+    ImportResult,
+)
 
 runner = CliRunner()
+
+_MINTED = (CreatedAccount(account_id="acct00000001", display_name="WF Checking"),)
 
 
 def _account_proposal_dict(source_account_key: str) -> AccountProposalDict:
@@ -231,6 +237,79 @@ class TestImportFilesConfirmFlow:
         assert result.exit_code == 0
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["confirm"] is True
+
+    def test_a_created_account_is_named_in_the_json_envelope(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A mint no longer stops the import, so the envelope has to name it.
+
+        Structured, not prose: an agent that just created an account needs to
+        answer "which one, and was that right?" without parsing a log line.
+        """
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(accounts_created=_MINTED),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app, ["files", str(csv_file), "--confirm", "--output", "json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["data"]["files"][0]["accounts_created"] == [
+            {"account_id": "acct00000001", "display_name": "WF Checking"}
+        ]
+
+    def test_a_created_account_is_named_in_text_output(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The human running the bare command sees the account by name.
+
+        The JSON branch alone would leave the default invocation — the one a
+        person actually types — silent about an account that just appeared.
+        """
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(accounts_created=_MINTED),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(app, ["files", str(csv_file), "--confirm"])
+
+        assert result.exit_code == 0
+        assert "WF Checking" in result.output
+
+    def test_an_import_that_created_nothing_says_nothing(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Re-importing into a known account is the common case; keep it quiet.
+
+        A line that prints on every import stops carrying the signal that
+        something new appeared.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app, ["files", str(csv_file), "--confirm", "--output", "json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert "accounts_created" not in payload["data"]["files"][0]
 
     def test_no_confirm_flag_passes_confirm_false(
         self,
@@ -752,6 +831,37 @@ class TestImportConfirmCommand:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["confirm"] is True
         assert call_kwargs.get("actor_kind") == "human"
+
+    def test_confirm_names_the_account_it_created(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Answering the gate is the moment an account is most likely to be new.
+
+        `import confirm` is where a caller lands after binding an identity, so
+        it owes the same report as `import files` — on both output formats.
+        """
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(accounts_created=_MINTED),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        text = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+        assert text.exit_code == 0
+        assert "WF Checking" in text.output
+
+        as_json = runner.invoke(
+            app, ["confirm", str(csv_file), "--accept", "--output", "json"]
+        )
+        assert as_json.exit_code == 0
+        payload = json.loads(as_json.stdout)
+        assert payload["data"]["accounts_created"] == [
+            {"account_id": "acct00000001", "display_name": "WF Checking"}
+        ]
 
     def test_confirm_with_mapping_loads(
         self,

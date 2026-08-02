@@ -86,6 +86,19 @@ class ImportConfirmationAccountCandidate(TypedDict, total=False):
     signal: Annotated[str, DataClass.TXN_TYPE]
 
 
+class ImportCreatedAccount(TypedDict, total=False):
+    """One canonical account an import minted.
+
+    Same two fields, and the same classes, as an existing-account candidate: a
+    minted account is the account a candidate would have been. Never carries
+    ``source_account_key`` — that is the file's native key (an OFX ``<ACCTID>``
+    is an account number), and the opaque ``account_id`` already names the row.
+    """
+
+    account_id: Annotated[str, DataClass.RECORD_ID]
+    display_name: Annotated[str, DataClass.USER_NOTE]
+
+
 class ImportConfirmationAccountProposal(TypedDict, total=False):
     """One source-account resolution proposal."""
 
@@ -154,6 +167,10 @@ class ImportPerFileRow:
     # True when a saved `sign=` override replayed onto this PDF, bypassing the
     # credit-card marker detector for its format.
     sign_override_replayed: Annotated[bool, DataClass.TXN_TYPE] = False
+    # Accounts this file minted. A first-contact mint no longer raises a
+    # confirmation, so this row is where an agent learns an account came into
+    # existence; empty on every re-import, which is the common case.
+    accounts_created: list[ImportCreatedAccount] = field(default_factory=list)
     # Populated only when status == "confirmation_required": typed detector
     # proposal + samples + flagged + missing_required so nested CRITICAL PDF
     # bridge values receive the same redaction as import_preview.
@@ -560,6 +577,8 @@ class ImportTabularConfirmCoarsePayload(BaseModel):
     merged_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
     status: Annotated[Literal["complete"], DataClass.TXN_TYPE] = "complete"
     format_name: Annotated[str | None, DataClass.RECORD_ID] = None
+    accounts_created: list[ImportCreatedAccount] = Field(default_factory=list)
+    """Accounts this confirmed import minted; empty when it adopted existing ones."""
 
 
 class ImportPdfBridgeAppliedPayload(BaseModel):
@@ -576,6 +595,8 @@ class ImportPdfBridgeAppliedPayload(BaseModel):
     merged_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
     status: Annotated[Literal["applied"], DataClass.TXN_TYPE] = "applied"
     format_name: Annotated[str | None, DataClass.RECORD_ID]
+    accounts_created: list[ImportCreatedAccount] = Field(default_factory=list)
+    """Accounts this confirmed import minted; empty when it adopted existing ones."""
 
 
 class ImportPdfSignAppliedPayload(BaseModel):
@@ -591,6 +612,8 @@ class ImportPdfSignAppliedPayload(BaseModel):
     rows_loaded: Annotated[int, DataClass.AGGREGATE]
     status: Annotated[Literal["applied"], DataClass.TXN_TYPE] = "applied"
     format_name: Annotated[str | None, DataClass.RECORD_ID]
+    accounts_created: list[ImportCreatedAccount] = Field(default_factory=list)
+    """Accounts this confirmed import minted; empty when it adopted existing ones."""
 
 
 class ImportPdfBridgeInvalidPayload(BaseModel):

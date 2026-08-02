@@ -32,6 +32,8 @@ from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
     from moneybin.repositories.pdf_formats_repo import PdfFormat
@@ -39,7 +41,11 @@ if TYPE_CHECKING:
         ConfirmationRequired,
         SignConventionProposal,
     )
-    from moneybin.services.import_service import BatchImportResult, ImportResult
+    from moneybin.services.import_service import (
+        BatchImportResult,
+        CreatedAccount,
+        ImportResult,
+    )
 
 
 class _FormatTypeFilter(StrEnum):
@@ -501,29 +507,13 @@ def import_files_command(
                                 )
                             if result.sign_override_replayed:
                                 typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
-                            files_list = [
-                                {
-                                    "path": str(file_paths[0]),
-                                    "status": "imported",
-                                    "source_type": result.file_type,
-                                    "rows_loaded": result.rows_loaded,
-                                    "import_id": result.import_id,
-                                    # Mirror the batch path: JSON-output agents need
-                                    # the structured signal regardless of single vs
-                                    # multi-file invocation.
-                                    "sign_correction_suggested": result.sign_correction_suggested,
-                                    "sign_override_replayed": result.sign_override_replayed,
-                                }
-                            ]
-                            data = {
-                                "imported_count": 1,
-                                "failed_count": 0,
-                                "total_count": 1,
-                                "transforms_applied": refresh
-                                and result.core_tables_rebuilt,
-                                "transforms_duration_seconds": None,
-                                "files": files_list,
-                            }
+                            # Through the batch projector rather than an inline
+                            # dict: the per-file row is a public contract agents
+                            # branch on, and a second copy of it is how
+                            # `error`/`hint` once reached the batch path only.
+                            files_list, data = _batch_payload(
+                                _single_file_success(file_paths[0], result, refresh)
+                            )
                     else:
                         batch_result = svc.import_files(
                             [str(p) for p in file_paths],
@@ -711,6 +701,7 @@ def import_files_command(
                 logger.error(f"   {error}")
             if hint := f.get("hint"):
                 logger.info(f"   {hint}")
+            _echo_accounts_created(f.get("accounts_created") or [])
         if data["transforms_applied"]:
             duration = data["transforms_duration_seconds"]
             if duration is not None:
@@ -755,6 +746,19 @@ def _batch_payload(
             # gap for scripted callers.
             "sign_correction_suggested": r.sign_correction_suggested,
             "sign_override_replayed": r.sign_override_replayed,
+            # Omitted rather than emitted empty: this key means "an account you
+            # have never seen now exists", and a key present on every row stops
+            # reading as news. Same reason `error` and `hint` are conditional.
+            **(
+                {
+                    "accounts_created": [
+                        {"account_id": a.account_id, "display_name": a.display_name}
+                        for a in r.accounts_created
+                    ]
+                }
+                if r.accounts_created
+                else {}
+            ),
             **({"error": r.error} if r.error else {}),
             # Paired with "error" so scripted/agent callers get the same stable
             # code the MCP files[] rows carry.
@@ -785,6 +789,74 @@ def _batch_payload(
     if batch.transforms_error:
         data["transforms_error"] = batch.transforms_error
     return files_list, data
+
+
+def _accounts_created_payload(
+    accounts: Sequence[CreatedAccount],
+) -> list[dict[str, str]]:
+    """Project minted accounts for a JSON envelope."""
+    return [
+        {"account_id": a.account_id, "display_name": a.display_name} for a in accounts
+    ]
+
+
+def _echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
+    """Name the accounts an import created, and how to correct one.
+
+    This is the visible half of "gate the merge, not the mint": a first-contact
+    mint no longer stops the import, so it has to announce itself instead. Both
+    recoveries are named because they are different commands — a wrong *name* is
+    a rename, a wrong *identity* is a merge — and neither is guessable.
+
+    ``typer.echo``, not ``logger.info``: a display_name is whatever the source
+    file called the account (a CSV's account column, an OFX institution + type)
+    and can carry the holder's name, so it must not reach the log pipeline.
+    """
+    if not accounts:
+        return
+    for account in accounts:
+        typer.echo(
+            f"👀 Created account: {account['display_name']} ({account['account_id']})",
+            err=True,
+        )
+    typer.echo(
+        "   Rename with 'moneybin accounts set <account_id> --display-name'; "
+        "if it duplicates an account you already have, "
+        "'moneybin accounts links run' proposes the merge.",
+        err=True,
+    )
+
+
+def _single_file_success(
+    file_path: Path, result: ImportResult, refresh: bool
+) -> BatchImportResult:
+    """Wrap a successful single-file import as the one-file batch it really is.
+
+    Twin of ``_single_file_failure``, and for the same reason: both feed
+    ``_batch_payload`` so `moneybin import files a.csv` and
+    `moneybin import files a.csv b.csv` describe a file identically.
+    """
+    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+        BatchImportResult,
+        PerFileResult,
+    )
+
+    return BatchImportResult(
+        per_file=[
+            PerFileResult(
+                path=str(file_path),
+                status="imported",
+                source_type=result.file_type,
+                rows_loaded=result.rows_loaded,
+                import_id=result.import_id,
+                sign_correction_suggested=result.sign_correction_suggested,
+                sign_override_replayed=result.sign_override_replayed,
+                accounts_created=result.accounts_created,
+            )
+        ],
+        transforms_applied=refresh and result.core_tables_rebuilt,
+        transforms_duration_seconds=None,
+    )
 
 
 def _single_file_failure(file_path: Path, exc: Exception) -> BatchImportResult:
@@ -1686,6 +1758,11 @@ def import_confirm_command(
             # column mapping was actually applied without re-detecting.
             "merged_mapping": dict(result.field_mapping or {}),
         }
+        # Same omit-when-empty rule as the files[] rows: present means news.
+        if result.accounts_created:
+            data["accounts_created"] = _accounts_created_payload(
+                result.accounts_created
+            )
         actions = [
             f"Use 'moneybin import revert {result.import_id}' to undo this import.",
             "Run 'moneybin transform apply' to rebuild derived tables.",
@@ -1706,6 +1783,7 @@ def import_confirm_command(
             f"✅ Imported {file_path.name}: {result.rows_loaded} rows "
             f"(import_id: {result.import_id})"
         )
+        _echo_accounts_created(_accounts_created_payload(result.accounts_created))
         if result.sign_correction_suggested:
             typer.echo(
                 "⚠️  Sign convention may be inverted (running balance suggests "

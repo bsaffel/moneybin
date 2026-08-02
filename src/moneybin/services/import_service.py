@@ -52,6 +52,7 @@ from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
 from moneybin.services.account_resolution_types import (
     AccountProposalDict,
+    ResolvedAccount,
     SourceAccount,
 )
 from moneybin.services.account_resolver import AccountResolver
@@ -68,6 +69,36 @@ from moneybin.services.refresh import refresh as _refresh
 from moneybin.utils.file import source_sha256
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class CreatedAccount:
+    """One canonical account an import minted.
+
+    The visible half of "gate the merge, not the mint": a first-contact mint no
+    longer stops the import, so the import has to say what it created. Both
+    fields are safe to show — ``account_id`` is an opaque uuid4[:12], and
+    ``display_name`` is the source's own label for the account (the tabular
+    account column, ``<institution> <type>`` for OFX, the document alias for
+    PDF), never its ``source_account_key``, which is an account number on
+    several channels.
+    """
+
+    account_id: str
+    display_name: str
+
+
+def _created_account(
+    src: SourceAccount, resolved: ResolvedAccount
+) -> CreatedAccount | None:
+    """The account this resolve minted, or None when it adopted an existing one.
+
+    One definition of "created" for all three channels, so a new channel cannot
+    report a different set than the one it bound.
+    """
+    if resolved.outcome != "minted_new":
+        return None
+    return CreatedAccount(account_id=resolved.account_id, display_name=src.account_name)
 
 
 @dataclass
@@ -91,6 +122,14 @@ class ImportResult:
     replay is surfaced rather than applied silently."""
     import_id: str | None = None
     """UUID of the raw.import_log row this import created."""
+    accounts_created: tuple[CreatedAccount, ...] = ()
+    """Canonical accounts this import minted; empty when every account was adopted.
+
+    Populated at each channel's ``resolve()`` pass, filtered to
+    ``outcome == "minted_new"`` — the same filter ``_capture_new_account_metadata``
+    uses, and for the same reason: a ``pending_review`` provisional is
+    ``is_new`` too, but a later accept abandons its id, so reporting it would
+    name an account the user can never find."""
     pdf_format_name: str | None = None
     """Name a PDF recipe was actually persisted under, or None if not saved
     (save_format off, or save_new skipped/failed). Set only on a confirmed
@@ -211,6 +250,12 @@ class PerFileResult:
     sign_override_replayed: bool = False
     """Mirrors ``ImportResult.sign_override_replayed`` for batch imports — a saved
     `sign=` override replayed onto this file, bypassing the card-marker detector."""
+
+    accounts_created: tuple[CreatedAccount, ...] = ()
+    """Mirrors ``ImportResult.accounts_created`` for batch imports.
+
+    Per file, not per batch: a ten-file import that mints one account has to say
+    which file brought it."""
 
     confirmation_payload: dict[str, object] | None = None
     """Populated only when status == 'confirmation_required': detector proposal
@@ -355,6 +400,10 @@ class BridgeApplyResult:
     actual_row_count: int
     rows_diverged: bool
     reject_reason: str | None = None
+    accounts_created: tuple[CreatedAccount, ...] = ()
+    """Mirrors ``ImportResult.accounts_created`` — the bridge is an import path
+    like any other, and its caller never sees the underlying ``ImportResult``.
+    Always empty on ``outcome='invalid'``: nothing loaded, so nothing minted."""
 
 
 @dataclass(frozen=True)
@@ -1329,11 +1378,15 @@ class ImportService:
         # stuck in 'importing'. Resolves the SAME list the gate proposed, so the
         # identity confirmed above is exactly the one bound here.
         try:
+            created: list[CreatedAccount] = []
             for src in source_accounts:
                 resolved_account = resolver.resolve(src)
                 ACCOUNT_LINK_OUTCOMES_TOTAL.labels(
                     result=resolved_account.outcome
                 ).inc()
+                if minted := _created_account(src, resolved_account):
+                    created.append(minted)
+            result.accounts_created = tuple(created)
         except Exception:
             import_log.finalize_import(
                 self._db,
@@ -2510,6 +2563,7 @@ class ImportService:
         # Phase 3 — resolve (writes native->canonical mapping + pending decisions),
         # then capture any caller-supplied metadata for accounts minted this import.
         metadata = account_metadata or {}
+        created: list[CreatedAccount] = []
         for src in source_accounts:
             resolved_account = resolver.resolve(src, in_outer_txn=in_outer_txn)
             record_counter(
@@ -2518,6 +2572,8 @@ class ImportService:
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
+            if minted := _created_account(src, resolved_account):
+                created.append(minted)
             meta = metadata.get(src.source_account_key)
             if not meta:
                 continue
@@ -2541,6 +2597,7 @@ class ImportService:
                     "account_metadata ignored: account resolved to "
                     f"{resolved_account.outcome!r}, not a new mint."
                 )
+        result.accounts_created = tuple(created)
 
         # Create import batch
         extractor = TabularExtractor(self._db)
@@ -3196,6 +3253,7 @@ class ImportService:
             actual_row_count=actual_row_count,
             rows_diverged=rows_diverged,
             reject_reason=None,
+            accounts_created=result.accounts_created,
         )
 
     def _gate_pdf_sign_convention(
@@ -4009,6 +4067,8 @@ class ImportService:
             emit_metrics=emit_metrics,
             observations=observations,
         )
+        if minted := _created_account(source_account, resolved_account):
+            result.accounts_created = (minted,)
 
         sign_conv: str = decision.recipe.sign_convention
 
@@ -4735,6 +4795,7 @@ class ImportService:
                         import_id=r.import_id,
                         sign_correction_suggested=r.sign_correction_suggested,
                         sign_override_replayed=r.sign_override_replayed,
+                        accounts_created=r.accounts_created,
                     )
                 )
                 any_succeeded = True

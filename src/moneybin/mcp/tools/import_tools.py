@@ -30,8 +30,13 @@ from pydantic import Field, JsonValue, TypeAdapter
 from moneybin import error_codes
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from moneybin.services.import_confirmation import ConfirmationRequired
-    from moneybin.services.import_service import SavedFormatDeletePlan
+    from moneybin.services.import_service import (
+        CreatedAccount,
+        SavedFormatDeletePlan,
+    )
 
 from moneybin.config import get_settings
 from moneybin.database import get_database
@@ -49,6 +54,7 @@ from moneybin.privacy.payloads.imports import (
     ImportConfirmationPayload,
     ImportConfirmCoarsePayload,
     ImportConfirmRequiredPayload,
+    ImportCreatedAccount,
     ImportFilesPayload,
     ImportFormatInfoPayload,
     ImportFormatRow,
@@ -201,6 +207,42 @@ def _bridge_confirm_action(*, payload_ref: str) -> str:
         "transparency_notice — proceeding surfaces the document to you), "
         "propose a recipe + rows, then call import_confirm(preview_id=..., "
         "bridge_response={'recipe': ..., 'rows': [...]}) to reconcile and load."
+    )
+
+
+def _created_account_rows(
+    accounts: Sequence[CreatedAccount],
+) -> list[ImportCreatedAccount]:
+    """Project the accounts an import minted into the typed envelope rows."""
+    return [
+        ImportCreatedAccount(account_id=a.account_id, display_name=a.display_name)
+        for a in accounts
+    ]
+
+
+def _accounts_created_action(count: int) -> str | None:
+    """Tell the agent an account came into existence, and how to correct it.
+
+    Returns None when nothing was minted. An action emitted on every import is
+    one the agent learns to skip on the import that means it — and re-import,
+    where every account is adopted, is the common case.
+
+    Names no account: the ids and labels are structured data on the result, and
+    ``actions`` is unclassified prose that the redaction pass cannot see.
+
+    The merge recovery points at the CLI because the link-review tools are not
+    in the standard registry — same shape as the sign-override action above,
+    and honest about it rather than naming a tool the agent cannot call.
+    """
+    if not count:
+        return None
+    return (
+        f"This import created {count} new account(s) — see accounts_created in "
+        "the result, and report them to the user: a first-contact account is "
+        "bound without asking. Rename one with accounts_set(account_id=..., "
+        "display_name=...). If one duplicates an account they already have, the "
+        "merge is CLI-only today: `moneybin accounts links run` proposes it and "
+        "`moneybin accounts links set` decides it."
     )
 
 
@@ -487,6 +529,7 @@ def import_files(
                         import_id=one.import_id,
                         sign_correction_suggested=one.sign_correction_suggested,
                         sign_override_replayed=one.sign_override_replayed,
+                        accounts_created=one.accounts_created,
                     )
                 ],
                 transforms_applied=transforms_applied,
@@ -515,6 +558,7 @@ def import_files(
             details=r.details,
             sign_correction_suggested=r.sign_correction_suggested,
             sign_override_replayed=r.sign_override_replayed,
+            accounts_created=_created_account_rows(r.accounts_created),
             confirmation_payload=cast(
                 ImportConfirmationPayload | None, r.confirmation_payload
             ),
@@ -576,6 +620,10 @@ def import_files(
             "decision. Tell the user; change it by re-running via CLI with "
             "`moneybin import files <path> --sign <SignConventionType>`."
         )
+    if minted := _accounts_created_action(
+        sum(len(r.accounts_created) for r in batch.per_file)
+    ):
+        actions.append(minted)
     if not batch.transforms_applied and batch.imported_count > 0:
         actions.append("Run refresh_run when ready to refresh derived tables")
     if batch.transforms_error:
@@ -2289,34 +2337,42 @@ async def import_confirm_coarse(
         rows_loaded = result.transactions
         merged_mapping = dict(result.field_mapping or {})
     if bridge_result is not None:
+        created = _created_account_rows(bridge_result.accounts_created)
         payload: Any = ImportPdfBridgeAppliedPayload(
             preview_id=preview_id,
             import_id=import_id,
             rows_loaded=rows_loaded,
             merged_mapping=merged_mapping,
             format_name=bridge_result.format_name,
+            accounts_created=created,
         )
     elif channel == "pdf":
         if result is None:
             raise RuntimeError("PDF sign import produced no result")
+        created = _created_account_rows(result.accounts_created)
         payload = ImportPdfSignAppliedPayload(
             preview_id=preview_id,
             import_id=import_id,
             rows_loaded=rows_loaded,
             format_name=result.pdf_format_name,
+            accounts_created=created,
         )
     else:
+        created = _created_account_rows(result.accounts_created) if result else []
         payload = ImportTabularConfirmCoarsePayload(
             preview_id=preview_id,
             import_id=import_id,
             rows_loaded=rows_loaded,
             merged_mapping=merged_mapping,
+            accounts_created=created,
         )
     actions = [
         f"Use import_revert(import_id='{import_id}') to undo this import.",
         "Use import_status(sections=['imports'], "
         f"import_id='{import_id}') to verify it.",
     ]
+    if minted := _accounts_created_action(len(created)):
+        actions.insert(0, minted)
     if bridge_result is not None and bridge_result.rows_diverged:
         actions.insert(
             0,

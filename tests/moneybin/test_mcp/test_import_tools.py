@@ -40,7 +40,11 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
 )
-from moneybin.services.import_service import ImportResult, ReviewedTabularPlan
+from moneybin.services.import_service import (
+    BridgeApplyResult,
+    ImportResult,
+    ReviewedTabularPlan,
+)
 from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
 from tests.moneybin.test_mcp.schema_assertions import isolated_server
 
@@ -1235,7 +1239,7 @@ async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
                 evidence=("proposal changed after approval",),
             )
         if channel == "bridge":
-            return SimpleNamespace(
+            return BridgeApplyResult(
                 outcome="applied",
                 import_id=import_id,
                 rows_loaded=1,
@@ -1331,6 +1335,53 @@ async def test_import_confirm_coarse_revalidates_tabular_sign_inside_write_attem
     ] == [False, False, True]
 
 
+async def test_import_confirm_coarse_names_the_account_it_created(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Confirming a preview is the likeliest place a new account appears.
+
+    An agent that just answered an account gate lands here, and the accounts
+    the import minted are exactly what it needs to report back to the user.
+    """
+    from moneybin.services.import_service import CreatedAccount, ImportResult
+
+    csv = tmp_path / "statement.csv"
+    csv.write_text("Date,Description,Amount\n2026-07-01,Coffee,4.50\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        MagicMock(
+            return_value=ImportResult(
+                file_path=str(csv),
+                file_type="tabular",
+                transactions=1,
+                import_id="imp_tabular_mint",
+                accounts_created=(
+                    CreatedAccount(
+                        account_id="acct00000001", display_name="WF Checking"
+                    ),
+                ),
+            )
+        ),
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="WF Checking",
+    )
+
+    assert response.error is None
+    assert response.data.accounts_created == [
+        {"account_id": "acct00000001", "display_name": "WF Checking"}
+    ]
+    joined = " ".join(response.actions or [])
+    assert "accounts_set" in joined
+    assert "moneybin accounts links run" in joined
+
+
 async def test_import_confirm_coarse_revalidates_bridge_sign_inside_write_attempt(
     mcp_db: object,
     tmp_path: Path,
@@ -1350,7 +1401,7 @@ async def test_import_confirm_coarse_revalidates_bridge_sign_inside_write_attemp
         },
     )
     proposal = _coarse_sign_error("pdf")
-    applied = SimpleNamespace(
+    applied = BridgeApplyResult(
         outcome="applied",
         import_id="imp_bridge_sign",
         rows_loaded=1,
@@ -1455,7 +1506,7 @@ async def test_import_confirm_bridge_sign_degraded_client_retries_with_opaque_to
         },
     )
     proposal = _coarse_sign_error("pdf")
-    applied = SimpleNamespace(
+    applied = BridgeApplyResult(
         outcome="applied",
         import_id="imp_bridge_token",
         rows_loaded=1,
@@ -1756,7 +1807,7 @@ async def test_import_confirm_coarse_applies_pdf_bridge_by_preview_id(
             "bridge_payload": {"layout_fingerprint": {"issuer": "Example"}},
         },
     )
-    applied = SimpleNamespace(
+    applied = BridgeApplyResult(
         outcome="applied",
         import_id="imp_pdf",
         rows_loaded=2,
@@ -2320,7 +2371,7 @@ async def test_import_confirm_coarse_forwards_bindings_to_the_bridge_apply(
             "bridge_payload": {},
         },
     )
-    applied = SimpleNamespace(
+    applied = BridgeApplyResult(
         outcome="applied",
         import_id="imp_bridge_bound",
         rows_loaded=1,
@@ -3680,6 +3731,85 @@ class TestImportFilesConfirmationRequired:
         assert mock_service.import_file.call_args.kwargs["account_bindings"] == {
             "checking": "new"
         }
+
+    async def test_import_files_coarse_names_the_account_it_created(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The agent gets the mint as data plus the two ways to correct it.
+
+        A first-contact mint no longer raises a gate, so this row is the only
+        place an agent learns an account came into existence. Prose in
+        ``actions`` would not survive an agent that branches on the payload, and
+        the row alone would not tell it what to do if the account is wrong.
+        """
+        from moneybin.services.import_service import CreatedAccount
+
+        csv_file = tmp_path / "statements" / "txns.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file),
+            file_type="csv",
+            transactions=2,
+            accounts_created=(
+                CreatedAccount(account_id="acct00000001", display_name="WF Checking"),
+            ),
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files_coarse(paths=[str(csv_file)])
+
+        assert result.data.files[0].accounts_created == [
+            {"account_id": "acct00000001", "display_name": "WF Checking"}
+        ]
+        joined = " ".join(result.actions or [])
+        assert "accounts_set" in joined
+        # The merge recovery is CLI-only: the link-review tools are not in the
+        # standard MCP registry, so the action must not name one.
+        assert "moneybin accounts links run" in joined
+
+    async def test_import_files_that_created_nothing_hints_nothing(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The re-import case is the common one — it must not carry the hint.
+
+        An ``actions`` entry about correcting a new account, emitted on every
+        import, trains the agent to ignore it on the one import that means it.
+        """
+        csv_file = tmp_path / "statements" / "txns.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file), file_type="csv", transactions=2
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files_coarse(paths=[str(csv_file)])
+
+        assert result.data.files[0].accounts_created == []
+        assert "created 1 new account" not in " ".join(result.actions or [])
 
     async def test_import_files_builds_no_confirm_hint_of_its_own(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
