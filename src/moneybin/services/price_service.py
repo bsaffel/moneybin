@@ -726,8 +726,12 @@ class PriceService:
                 code=error_codes.INVESTMENT_PRICE_MARK_UNREPRESENTABLE,
             )
         # Magnitude first: quantizing a value this large would itself overflow
-        # the decimal context before the precision check could answer.
-        if close > MAX_STORED_PRICE:
+        # the decimal context before the precision check could answer. Read as an
+        # absolute value, because this runs before the caller's positivity rule —
+        # it has to, since the finite check above cannot follow a `<= 0` on NaN —
+        # so every negative passes through here, and a signed bound would hand
+        # `quantize` the one input it cannot answer.
+        if abs(close) > MAX_STORED_PRICE:
             raise UserError(
                 f"A price mark carries at most {PRICE_WHOLE_DIGITS} digits before "
                 "the decimal point; this price is larger than that.",

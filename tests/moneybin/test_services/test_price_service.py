@@ -1977,6 +1977,39 @@ def test_the_largest_storable_price_is_kept_exactly(db: Database) -> None:
     assert row[0] == MAX_STORED_PRICE
 
 
+def test_an_unstorably_large_negative_price_is_refused_as_a_usage_error(
+    db: Database,
+) -> None:
+    """The magnitude bound has to read the magnitude, sign included.
+
+    Storability is checked before the positivity rule because the finite check
+    inside it must run first — ``Decimal("NaN") <= 0`` raises. A bound written
+    against the signed value therefore lets every negative through to
+    ``close.quantize()``, which needs 29 significant digits for a value this
+    large and raises ``InvalidOperation`` — an untyped arithmetic error where the
+    CLI owes a usage message, on input a user typed.
+
+    The mirror of ``test_a_price_beyond_the_stored_range_is_refused``: same
+    magnitude, opposite sign, and only the sign decides which code path answers.
+    """
+    _seed_security(db, security_id="s1", name="Private Co")
+    service = _service(db, _FakeTiingo())
+
+    with pytest.raises(UserError) as caught:
+        service.set_mark(
+            "s1",
+            date(2026, 6, 30),
+            -(MAX_STORED_PRICE + PRICE_QUANTUM),
+            quote_currency="USD",
+            note=None,
+        )
+
+    assert caught.value.code == error_codes.INVESTMENT_PRICE_MARK_UNREPRESENTABLE
+    count = db.execute("SELECT COUNT(*) FROM app.security_price_overrides").fetchone()
+    assert count is not None
+    assert count[0] == 0
+
+
 # --------------------------------------------------------------------------
 # Retiring a feed key whose catalog value moved
 # --------------------------------------------------------------------------
