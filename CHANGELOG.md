@@ -434,6 +434,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   will see `import_confirm` move band.
 
 ### Fixed
+- **An OFX transaction whose id changed between imports is no longer counted
+  twice.** Some institutions stamp two distinct transactions with one `FITID` —
+  a foreign purchase and its fee, for instance. MoneyBin gives every member of
+  such a collision a content-derived suffix so neither is lost, but a `FITID`
+  that arrives alone in one statement and collides in a later one was written
+  plain the first time and suffixed the second. The plain row could not be
+  overwritten and survived alongside its own replacement: one real transaction,
+  two rows, inflating the balance and the spending. It never looked like a
+  duplicate id, so no uniqueness check caught it. MoneyBin now recognizes the
+  superseded row and drops it during the transform, which repairs existing
+  databases on the next `refresh` and prevents the next occurrence. Nothing is
+  deleted from imported data — a row is only suppressed when a replacement
+  carries identical content, and one whose description drifted between
+  statements is left for duplicate review rather than silently removed.
 - **A replacement card no longer lands as a second account with no trace
   (#375).** A reissued card changes its last four digits by definition, so the
   institution+last-four match cannot fire, and on the PDF path the account name
