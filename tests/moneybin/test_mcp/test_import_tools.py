@@ -2232,6 +2232,18 @@ async def test_import_confirm_coarse_answers_the_pdf_account_gate(
     """
     pdf = write_card_statement_pdf(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # An existing Chase ...1234 account, so this statement's identity is a real
+    # question. Candidates are what gate: a mint with nothing to merge into
+    # proceeds and is reported instead.
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.conn.execute(
+            "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+            "(account_id, display_name, institution_slug, last_four) "
+            "VALUES (?, ?, ?, ?)",
+            ["acct_twin01", "Chase Card", "chase", "1234"],
+        )
     preview_id = _issue_coarse_preview(
         pdf,
         channel="pdf",

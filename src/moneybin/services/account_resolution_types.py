@@ -47,10 +47,21 @@ class AccountProposal:
     """The resolver verdict for one detected source account, surfaced to confirm.
 
     ``requires_confirm`` encodes the surfacing rule structurally: a proposal with
-    weak candidates ALWAYS surfaces; a strong-confirmer adoption (``adopted_via``
-    set, no candidates) never does. A brand-new standalone account (is_new, no
-    adoption, no candidates) also surfaces — minting a new account is a visible
-    moment (spec Decision 7).
+    weak candidates ALWAYS surfaces, and so does a source that stated no
+    identity at all (``identity_unknown``); everything else proceeds. Both are
+    forms of uncertainty. Candidates mean the import is about to adopt or merge
+    onto an account that already exists, on a signal too weak to trust, and a
+    wrong merge is hard to notice and hard to undo. ``identity_unknown`` means
+    the file named no account, so the mint would be under a filename guess.
+    A strong-confirmer adoption (``adopted_via`` set) has no ambiguity, and a
+    mint of a stated identity has nothing to merge into and no other answer
+    available.
+
+    A mint is reported rather than gated. "Magic stays visible" calibrates to
+    the cost of a wrong silent action: a surprise account is visible in the
+    account list and cheap to rename or merge, unlike the silent merge this
+    gate exists to prevent. Gating it made a first import of N files cost N
+    confirms that each had exactly one legal answer.
     """
 
     source_account_key: str
@@ -63,10 +74,21 @@ class AccountProposal:
     """``None`` for a declared-new (force_standalone) proposal — no preview id
     exists; ``resolve()`` mints the real id at commit time."""
 
+    identity_unknown: bool = False
+    """The source stated no account identity at all — a bare
+    Date/Description/Amount CSV. Set by the caller that asked for a fallback
+    pick-list, because only the caller knows the file carried no signal.
+
+    Distinct from "new". Every other mint records an identity the file actually
+    stated (an OFX ``<ACCTID>``, a statement's issuer + last four); this one
+    would mint under the filename stem, which is a guess. Candidates cannot
+    express it: on a first import there is nothing to offer, so the pick-list is
+    empty and the proposal would be indistinguishable from a confident mint."""
+
     @property
     def requires_confirm(self) -> bool:
         """True when the proposal must be shown to the user before import proceeds."""
-        return bool(self.candidates) or (self.is_new and self.adopted_via is None)
+        return bool(self.candidates) or self.identity_unknown
 
     def to_dict(self, *, proposal_ref: str) -> AccountProposalDict:
         """Serialise to a typed dict for surface display.

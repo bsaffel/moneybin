@@ -319,6 +319,11 @@ class AccountResolver:
             is_new=True,
             candidates=candidates,
             adopted_via=None,
+            # Asking for a fallback pick-list IS the caller declaring this source
+            # carried no identity signal. Carry that through: on a first import
+            # the pick-list comes back empty, and without this the proposal would
+            # be indistinguishable from a confident mint and pass unasked.
+            identity_unknown=fallback,
         )
 
     def propose_existing(self, account_id: str) -> AccountProposal | None:
