@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import re
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from moneybin.config import get_settings
 from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.metrics.registry import PROFILE_CURRENCIES, UNKNOWN_CURRENCY_ROWS
 from moneybin.repositories import concrete_repo_classes
@@ -756,14 +758,17 @@ def test_run_all_returns_expected_invariants(
     # unreported holdings, phantom holdings) + sqlmesh_model_presence
     # (registered-but-unbuilt models) + currency_integrity (M1K.1 Req 6:
     # unknown-currency rows, then merely-mixed currency) + profile_settings
-    # audit coverage (M1K.1 Req 4) + user_reports audit coverage (M2P.2).
-    assert len(report.invariants) == 50
+    # audit coverage (M1K.1 Req 4) + user_reports audit coverage (M2P.2) +
+    # duplicate_account_overlap (one account imported under two identities —
+    # invisible to the matcher, which blocks candidate pairs on account_id).
+    assert len(report.invariants) == 51
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
     assert "bridge_transfers_balanced" in names
     assert "sqlmesh_model_presence" in names
     assert "dedup_reconciliation" in names
+    assert "duplicate_account_overlap" in names
     assert "categorization_coverage" in names
     assert "currency_integrity" in names
     assert "app_audit_coverage_user_categories" in names
@@ -2379,3 +2384,225 @@ def test_currency_integrity_counts_past_the_reported_id_cap(
     # The id list stays capped so the envelope does not carry 150 ids.
     assert len(result.affected_ids) == 100
     assert UNKNOWN_CURRENCY_ROWS.labels(grain="transactions")._value.get() == 150  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
+# ---------------------------------------------------------------------------
+# duplicate_account_overlap — one real account imported under two identities
+# ---------------------------------------------------------------------------
+
+
+def _insert_overlap_account(
+    db: Database, account_id: str, *, institution_slug: str
+) -> None:
+    """Insert one core.dim_accounts row carrying an institution slug.
+
+    The `doctor_db` fixture's own ACC1 leaves `institution_slug` NULL, which
+    the check scopes out — these tests supply their own accounts so the
+    fixture's rows cannot contribute to a pair.
+    """
+    db.execute(
+        """
+        INSERT INTO core.dim_accounts (
+            account_id, account_type, institution_name, institution_slug,
+            source_type, source_file, extracted_at, loaded_at, updated_at,
+            display_name, currency_code, archived, include_in_net_worth
+        ) VALUES (?, 'CHECKING', 'Bank', ?, 'ofx', 'a.qfx',
+                  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                  ?, 'USD', FALSE, TRUE)
+        """,  # noqa: S608 — test input, not user data
+        [account_id, institution_slug, account_id],
+    )
+
+
+def _insert_amount_ladder(
+    db: Database,
+    account_id: str,
+    *,
+    rows: int,
+    first_index: int = 1,
+    day_offset: int = 0,
+    sign: int = -1,
+) -> None:
+    """Insert ``rows`` transactions whose amounts and dates are all distinct.
+
+    Row ``i`` (``first_index`` … ``first_index + rows - 1``) carries amount
+    ``sign * i`` on day ``i + day_offset``. Two ladders sharing a
+    ``first_index`` therefore mirror each other exactly, and ladders over
+    disjoint index ranges share no amount and no date.
+    """
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            currency_code, source_type
+        )
+        SELECT ? || '_' || i, ?, DATE '2026-01-01' + CAST(i + ? AS INTEGER),
+               ? * i, 'USD', 'ofx'
+        FROM GENERATE_SERIES(?, ?) AS t(i)
+        """,  # noqa: S608 — test input, not user data
+        [account_id, account_id, day_offset, sign, first_index, first_index + rows - 1],
+    )
+
+
+def _insert_repeated_amount(
+    db: Database, account_id: str, *, rows: int, amount: float
+) -> None:
+    """Insert ``rows`` transactions that all carry the SAME amount, one per day."""
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            currency_code, source_type
+        )
+        SELECT ? || '_r' || i, ?, DATE '2026-01-01' + CAST(i AS INTEGER), ?,
+               'USD', 'ofx'
+        FROM GENERATE_SERIES(1, ?) AS t(i)
+        """,  # noqa: S608 — test input, not user data
+        [account_id, account_id, amount, rows],
+    )
+
+
+def _overlap_result(db: Database, monkeypatch: pytest.MonkeyPatch) -> InvariantResult:
+    """Run the full doctor report (SQLMesh mocked) and return the overlap invariant."""
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    report = DoctorService(db).run_all()
+    return next(r for r in report.invariants if r.name == "duplicate_account_overlap")
+
+
+@pytest.mark.unit
+def test_mirrored_accounts_at_one_institution_warn(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Chase split: every row of one account mirrored on its sibling.
+
+    Offset by exactly `matching.date_window_days` so the check's window bound
+    is inclusive — the live case that motivated this invariant had only 23% of
+    its pairs on an exact date, the rest spread across posting lag.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["DUP_A:DUP_B (100% overlap)"]
+
+
+@pytest.mark.unit
+def test_mirrored_accounts_at_different_institutions_pass(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Identical to the warning case except the slug — isolates the institution gate."""
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="wells")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_one_repeated_amount_is_not_duplication(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Twin savings accounts posting the same interest are fully mirrored, not duplicates.
+
+    Coverage is 100% and every date lines up, so only the distinct-amount floor
+    can reject this — the fixture isolates that floor and nothing else.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts * 2
+    _insert_overlap_account(doctor_db, "TWIN_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "TWIN_B", institution_slug="chase")
+    _insert_repeated_amount(doctor_db, "TWIN_A", rows=rows, amount=0.01)
+    _insert_repeated_amount(doctor_db, "TWIN_B", rows=rows, amount=0.01)
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_a_gap_beyond_the_matcher_window_is_not_overlap(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One day past `matching.date_window_days` — isolates the window bound."""
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days + 1
+    )
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_transfers_between_sibling_accounts_are_not_overlap(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same institution, same dates, same magnitudes — only the sign differs.
+
+    Every same-institution transfer has this shape, so it is the check's most
+    likely false positive. Amount equality carries the sign, which is the one
+    condition this fixture fails.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "XFER_OUT", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "XFER_IN", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "XFER_OUT", rows=rows, sign=-1)
+    _insert_amount_ladder(doctor_db, "XFER_IN", rows=rows, sign=1)
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_partial_overlap_below_the_ratio_passes(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two real accounts sharing some amounts by coincidence — isolates the ratio.
+
+    Both sides clear the distinct-amount floor on their shared rows, so only
+    the coverage ratio can reject them. `total` is the smallest row count whose
+    shared share falls below `duplicate_account_overlap_ratio`.
+    """
+    settings = get_settings()
+    shared = settings.doctor.duplicate_account_min_distinct_amounts
+    total = math.ceil(shared / settings.doctor.duplicate_account_overlap_ratio) + 1
+    private = total - shared
+    _insert_overlap_account(doctor_db, "REAL_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "REAL_B", institution_slug="chase")
+    for account_id, private_base in (("REAL_A", 1000), ("REAL_B", 5000)):
+        _insert_amount_ladder(doctor_db, account_id, rows=shared, first_index=1)
+        _insert_amount_ladder(
+            doctor_db, account_id, rows=private, first_index=private_base
+        )
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"

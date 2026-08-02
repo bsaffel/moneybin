@@ -306,6 +306,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   turns out to have no such question pending, nothing is imported. Previously
   this one case sent you to a terminal, even though the same inversion already
   asked you in place on spreadsheet and AI-extracted-PDF imports.
+- **`moneybin system doctor` now reports one account imported under two
+  identities.** When the same real account arrives from two sources and account
+  identity fails to bind them, every transaction is held twice under two ids —
+  the balance and the spending both read double. Nothing caught it: the
+  transaction matcher only compares pairs within one `account_id`, so it never
+  considered the duplicates, and the raw→core row accounting reconciled
+  perfectly because nothing was lost. The new `duplicate_account_overlap` check
+  warns when a large share of one account's transactions have a same-amount
+  counterpart within five days on a sibling account at the same institution,
+  and names the pair with its overlap percentage. Transfers between two
+  accounts at one bank do not trigger it — amount equality carries the sign.
+  Fix a flagged pair with `accounts links run`, then `accounts links pending`.
 
 ### Changed
 - **BREAKING for anything branching on an error `code`: 104 code values were

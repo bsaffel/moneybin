@@ -55,6 +55,25 @@ Each audit returns the offending `transaction_id` (or `debit_transaction_id` for
 
 **`dedup_reconciliation`** — Cross-layer count check that every imported row which disappears between the unioned staging layer and the core fact table is explained by recorded dedup decisions. The invariant is `raw_total - core_count == dedup_absorbed`, where `raw_total` is the row count of `prep.int_transactions__unioned`, `core_count` is the distinct `transaction_id` count of `core.fct_transactions`, and `dedup_absorbed` is `Σ(group_size - 1)` over every connected component in `prep.int_transactions__matched` — computed as `COUNT(*) - COUNT(DISTINCT match_group_id)` over rows where `match_group_id IS NOT NULL`. This formula is exact for any group topology: N-way merges, cyclic accepted-edge sets (e.g. three edges over a 3-node group still absorbs only 2 rows), and the common 1:1 pair case. `fail` when the counts disagree (a leak: rows vanished without a decision; or an un-applied match: a recorded decision didn't collapse its rows); `skipped` before the first transform (prep/core views absent). See `_run_dedup_reconciliation()` in `src/moneybin/services/doctor_service.py`.
 
+**`duplicate_account_overlap`** — One real account imported under two canonical identities. `warn` when two accounts at the same `institution_slug` mirror each other's transactions; `pass` otherwise; `skipped` before the first transform. Reported once per unordered pair, at the higher of the two directional coverage ratios.
+
+Nothing else in the pipeline can see this failure. The transaction matcher blocks candidate pairs on `account_id`, so a split identity produces no candidate pair at all — not a rejected one. `dedup_reconciliation` reconciles perfectly throughout, because nothing was lost: the same money was counted twice. The account-identity resolver is what should have prevented the split, and by the time the doctor runs, it already didn't.
+
+A pair qualifies when a transaction in one account has a counterpart in the other with the **exact same amount** (sign included) within `matching.date_window_days`, and:
+
+| Condition | Setting | Default | Rejects |
+|---|---|---|---|
+| Coverage of the smaller side | `doctor.duplicate_account_overlap_ratio` | 0.5 | Two real accounts sharing a few amounts by coincidence |
+| Distinct amounts among mirrored rows | `doctor.duplicate_account_min_distinct_amounts` | 10 | Twin savings accounts posting identical interest — 100% mirrored on one amount |
+
+Three details are load-bearing:
+
+- **The window is the matcher's, not exact-date.** On the split that motivated this check, 80 of 346 mirrored pairs (23%) shared a date; the rest were spread across posting lag. An exact-date formulation would have missed it.
+- **Amount equality carries the sign.** A transfer between two accounts at one institution is equal in magnitude and opposite in sign, so the most common same-institution pair shape is excluded without a special case.
+- **`warn`, never `fail`.** Only the user knows whether two accounts at one bank are one account, and merging them is not undone by re-running anything.
+
+Remedy: `moneybin accounts links run` raises a proposal for existing accounts, `accounts links pending` shows it, `accounts links set <decision_id> --into <account_id>` merges. Deciding the proposal standalone leaves the warning in place.
+
 **`categorization_coverage`** — What percentage of non-transfer transactions have a category. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
 
 ### Investment reconciliation (M1G.4)

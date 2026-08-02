@@ -161,7 +161,7 @@ Parameters are declared and bound by name: `--param month:str` at create,
 
 - **Structured logs** — `moneybin logs clean / path / tail`. PII and financial detail are stripped at the formatter layer; see [Threat model](guides/threat-model.md). -> [Observability guide](guides/observability.md)
 - **Prometheus-style metrics** — Per-operation counters and durations, persisted to DuckDB. `moneybin stats`. -> [Observability guide](guides/observability.md)
-- **`moneybin system doctor`** — Read-only pipeline integrity check (FK integrity, sign convention, transfer balance, staging coverage, categorization coverage). Exits 0 on pass / warn, 1 on fail. `--verbose` for affected IDs, `--output json` for agents. MCP exposes the same outcome through `system_status(sections=["doctor"])`. -> [CLI reference](guides/cli-reference.md)
+- **`moneybin system doctor`** — Read-only pipeline integrity check (FK integrity, sign convention, transfer balance, staging coverage, categorization coverage, one account imported under two identities). Exits 0 on pass / warn, 1 on fail. `--verbose` for affected IDs, `--output json` for agents. MCP exposes the same outcome through `system_status(sections=["doctor"])`. -> [CLI reference](guides/cli-reference.md)
 
 ## Extensibility
 

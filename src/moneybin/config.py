@@ -491,6 +491,27 @@ class DoctorSettings(BaseModel):
             "`moneybin system doctor --full` bypasses the cap and scans every row."
         ),
     )
+    duplicate_account_overlap_ratio: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "duplicate_account_overlap warns when this fraction of one "
+            "account's transactions have a same-amount counterpart within the "
+            "matcher's date window on a sibling account at the same "
+            "institution. Below it, the shared rows read as coincidence."
+        ),
+    )
+    duplicate_account_min_distinct_amounts: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Minimum distinct amounts among the mirrored rows before "
+            "duplicate_account_overlap will judge a pair. Two savings accounts "
+            "posting the same interest every month mirror each other perfectly "
+            "on one amount; a duplicated account mirrors many."
+        ),
+    )
 
 
 class MatchingSettings(BaseModel):
