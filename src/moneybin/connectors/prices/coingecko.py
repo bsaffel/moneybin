@@ -237,5 +237,15 @@ def _parse_point(point: object) -> tuple[date, Decimal] | None:
     # would squat its primary key and block every later correction for that date.
     if price <= 0:
         return None
-    boundary = _EPOCH + timedelta(days=raw_ts // _MS_PER_DAY)
-    return boundary - timedelta(days=1), price
+    try:
+        # The stored date is the one the point closes out, per the docstring;
+        # shifting inside the conversion keeps one place that can raise.
+        price_date = _EPOCH + timedelta(days=raw_ts // _MS_PER_DAY - 1)
+    except OverflowError:
+        # The only unusable shape here that raises instead of returning. An
+        # OverflowError is not a PriceFeedError, so PriceService.pull does not
+        # contain it: one out-of-range integer would discard every observation
+        # the run had already gathered, from every source. Tiingo's parser
+        # already returns None on a date it cannot read.
+        return None
+    return price_date, price

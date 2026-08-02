@@ -459,6 +459,46 @@ def test_it_retries_a_rate_limited_coin_then_succeeds() -> None:
     assert slept, "a rate-limited request must back off before retrying"
 
 
+@pytest.mark.parametrize(
+    "bad_ts",
+    [
+        # Both are exact midnight multiples, so each reaches the conversion
+        # instead of being dropped by the granularity check ahead of it.
+        3_000_000 * _DAY_MS,  # a representable day count, but past date.max
+        10**12 * _DAY_MS,  # a day count timedelta itself refuses
+    ],
+)
+def test_a_timestamp_outside_the_date_range_loses_only_its_own_point(
+    bad_ts: int,
+) -> None:
+    """Every other unusable shape returns None; this one raised.
+
+    `PriceService.pull` contains typed `PriceFeedError`s only, so the
+    `OverflowError` escapes the whole run — one out-of-range integer discarding
+    observations already fetched from every source, not just this coin. The two
+    cases raise from different places (`date` arithmetic and `timedelta`'s own
+    day limit), and only a point at exact UTC midnight gets far enough to hit
+    either.
+    """
+    with respx.mock:
+        respx.get(_chart_route()).mock(
+            return_value=httpx.Response(
+                200,
+                json=_prices([
+                    (bad_ts, "64000.10"),
+                    (_midnight_ms(date(2026, 7, 25)), "64000.10"),
+                ]),
+            )
+        )
+
+        result = CoinGeckoPriceAdapter().fetch(
+            [_ref()], date(2026, 7, 22), date(2026, 7, 24)
+        )
+
+    assert [obs.price_date for obs in result.observations] == [date(2026, 7, 24)]
+    assert not result.failures
+
+
 @pytest.mark.parametrize("bad_body", [{"prices": [[123]]}, {"prices": [["x", "y"]]}])
 def test_a_malformed_point_is_a_failure_not_a_crash(
     bad_body: dict[str, object],
