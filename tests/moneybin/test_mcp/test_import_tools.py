@@ -2436,7 +2436,7 @@ async def test_import_confirm_coarse_rejects_every_tabular_account_signal_for_pd
     response = await import_confirm_coarse(preview_id=preview_id, **signal)
 
     assert response.error is not None
-    assert response.error.code == "import_pdf_account_signal_unsupported"
+    assert response.error.code == "import_account_signal_unsupported"
 
 
 async def test_import_preview_coarse_keeps_ofx_on_direct_import_surface(

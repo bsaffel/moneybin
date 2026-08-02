@@ -501,6 +501,62 @@ def _validate_date_format_override(
     )
 
 
+# What each channel's import path can actually forward to the resolver.
+# ``account_bindings`` is absent by design: every channel honors it, because it
+# is the answer to the account gate they all raise.
+_HONORED_ACCOUNT_SIGNALS: dict[str, frozenset[str]] = {
+    "tabular": frozenset({"account_id", "account_name", "account_metadata"}),
+    # OFX names its own accounts (``<ACCTID>``) and a file can carry several,
+    # so a single whole-file pin has no coherent target.
+    "ofx": frozenset(),
+    # A PDF is one statement, so a single pin does have a target; the tabular
+    # naming arguments still bottom out in ``_import_tabular`` only.
+    "pdf": frozenset({"account_id"}),
+}
+
+
+def reject_unhonored_account_signals(
+    file_type: str,
+    *,
+    account_id: str | None = None,
+    account_name: str | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
+) -> None:
+    """Refuse an account signal this channel's import path would discard.
+
+    These arguments used to be accepted and dropped on the channels that never
+    forwarded them, which is the failure that cannot be noticed: the import
+    binds whatever the extractor inferred while the caller believes they chose,
+    and nothing at the call site suggests looking. A wrong account is expensive
+    to find later and expensive to undo.
+
+    Refuses on the first unhonored signal rather than reporting all of them —
+    the caller has to fix one to get to the next, and a channel table beats a
+    list of names for understanding why.
+    """
+    honored = _HONORED_ACCOUNT_SIGNALS.get(file_type)
+    if honored is None:  # pragma: no cover — _detect_file_type raised already
+        return
+    supplied = (
+        ("account_id", account_id),
+        ("account_name", account_name),
+        ("account_metadata", account_metadata),
+    )
+    unhonored = next(
+        (name for name, value in supplied if value and name not in honored), None
+    )
+    if unhonored is None:
+        return
+    accepted = ", ".join(sorted(honored)) or "none"
+    raise UserError(
+        f"{unhonored} is not supported for a {file_type} import — this channel "
+        f"accepts {accepted}. Name the account per detected source account with "
+        "account_bindings instead; the import stops and lists them when it "
+        "cannot resolve one on its own.",
+        code=error_codes.IMPORT_ACCOUNT_SIGNAL_UNSUPPORTED,
+    )
+
+
 def _validate_explicit_tabular_sign_shape(
     field_mapping: dict[str, str],
     sign: SignConventionType,
@@ -4691,6 +4747,12 @@ class ImportService:
             raise FileNotFoundError(f"File not found: {path}")
 
         file_type = _detect_file_type(path)
+        reject_unhonored_account_signals(
+            file_type,
+            account_id=account_id,
+            account_name=account_name,
+            account_metadata=account_metadata,
+        )
         logger.info(f"Importing {_display_label(file_type, path)} file: {path}")
 
         if file_type == "ofx":

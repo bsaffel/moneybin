@@ -158,41 +158,20 @@ def _reject_unsupported_pdf_account_signals(
     account_name: str | None,
     account_metadata: dict[str, dict[str, str]] | None,
 ) -> None:
-    """Refuse account-selection signals no PDF channel can honor.
+    """Refuse account-selection signals the PDF channel cannot honor.
 
-    Both PDF entry points still take only `account_id` for *naming* an account —
-    `_import_pdf` for the deterministic/sign channel and
-    `apply_pdf_bridge_response` for the bridge — so `account_name` and
-    `account_metadata` remain tabular-only and forwarding them is impossible
-    without a service-layer change. Accepting one silently would bind the rows
-    to a statement- or filename-derived account while the caller believes they
-    chose one — the failure is invisible at the call site and expensive to
-    notice later, which is exactly when a loud refusal is worth more than a
-    best-effort guess. Shared by both channels so a new signal cannot be
-    rejected on one and dropped on the other.
-
-    ``account_bindings`` is deliberately NOT here: PDF now stops before load on
-    an unratified account identity, and a binding is the answer. Refusing it
-    would leave the caller in a loop the tool that raised the gate cannot exit.
+    Delegates to the service's channel table, which is the same one
+    ``import_file`` enforces, so this surface and that one cannot disagree about
+    what a PDF accepts. The check lives here as well because the bridge branch
+    never forwards these two arguments to a service call at all — there is no
+    later point at which the service could see them.
     """
-    unsupported = next(
-        (
-            name
-            for name, value in (
-                ("account_name", account_name),
-                ("account_metadata", account_metadata),
-            )
-            if value
-        ),
-        None,
+    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+        reject_unhonored_account_signals,
     )
-    if unsupported is None:
-        return
-    raise UserError(
-        f"{unsupported} is not supported for a PDF — PDF rows resolve the "
-        "account from the statement; pass account_id to pin rows to an existing "
-        "account when there is no anchor.",
-        code=error_codes.IMPORT_PDF_ACCOUNT_SIGNAL_UNSUPPORTED,
+
+    reject_unhonored_account_signals(
+        "pdf", account_name=account_name, account_metadata=account_metadata
     )
 
 

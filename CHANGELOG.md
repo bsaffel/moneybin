@@ -441,6 +441,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now stop and ask; add `--account-binding` (or an `--account-id` pin) to
   those calls. A known account, and a genuinely new one, keep importing
   unattended.
+- **An account you named on a file type that cannot use it is now an error
+  instead of silence.** `--account-name` and `--account-meta` reached only
+  spreadsheet imports, and `--account-id` only spreadsheets and PDFs; passing
+  one with any other file type was accepted and discarded, so the import bound
+  whatever it worked out for itself while you believed you had chosen. Each of
+  those combinations now refuses before anything loads and points at
+  `--account-binding`, which every file type honors. The MCP tools refuse the
+  same combinations, from the same table. (Error code
+  `import_pdf_account_signal_unsupported` is replaced by
+  `import_account_signal_unsupported`, since the refusal is no longer
+  PDF-only.)
 - **BREAKING for anything branching on an error `code`: 104 code values were
   renamed.** They were raised from tool paths without ever being declared in
   the taxonomy, so they had never been reviewed for shape; each now carries the

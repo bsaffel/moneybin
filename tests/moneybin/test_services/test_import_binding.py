@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.services.import_confirmation import ImportConfirmationRequiredError
 from moneybin.services.import_service import ImportService
 from tests.moneybin.db_helpers import create_core_tables
@@ -1241,6 +1242,71 @@ def test_a_reimport_reports_no_new_account(db: Database) -> None:
     # here is that the second resolve adopts via source_native and mints nothing.
     again = svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True, force=True)
     assert again.accounts_created == ()
+
+
+# An account signal each channel's import path cannot forward. The grid is the
+# test: a guard written for one signal silently drops the others, and dropping
+# one binds the rows to whatever the extractor inferred while the caller
+# believes they chose.
+_UNHONORED_SIGNALS = [
+    ("ofx", _minimal_ofx, {"account_id": "acct_existing1"}),
+    ("ofx", _minimal_ofx, {"account_name": "Checking"}),
+    ("ofx", _minimal_ofx, {"account_metadata": {"k": {"display_name": "X"}}}),
+    ("pdf", _pdf_fixture, {"account_name": "Checking"}),
+    ("pdf", _pdf_fixture, {"account_metadata": {"k": {"display_name": "X"}}}),
+]
+
+
+@pytest.mark.parametrize(
+    ("channel", "make_file", "signal"),
+    _UNHONORED_SIGNALS,
+    ids=[f"{c}-{next(iter(s))}" for c, _f, s in _UNHONORED_SIGNALS],
+)
+def test_an_account_signal_the_channel_cannot_honor_is_refused(
+    db: Database,
+    tmp_path: Path,
+    channel: str,
+    make_file: Callable[[Path], Path],
+    signal: dict[str, Any],
+) -> None:
+    """Dropping one silently is the failure that is impossible to notice.
+
+    Each of these reaches only ``_import_tabular`` (``account_id`` also reaches
+    PDF). On the other channels the argument was accepted and discarded, so the
+    import bound the account the extractor inferred while the caller believed
+    they had chosen one — wrong data, no error, and nothing at the call site to
+    suggest looking. ``account_bindings`` is the per-account answer that every
+    channel does honor, so the refusal names it.
+    """
+    create_core_tables(db)
+    with pytest.raises(UserError, match="account_bindings"):
+        ImportService(db).import_file(
+            make_file(tmp_path),
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            **signal,
+        )
+    n = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+    assert n is not None and n[0] == 0, f"{channel}: wrote a link"
+
+
+def test_the_channel_that_honors_a_signal_still_takes_it(db: Database) -> None:
+    """The guard must refuse by channel, not by signal name.
+
+    Without this the parametrized refusals above stay green if the guard grows
+    too broad and starts rejecting tabular's own account arguments.
+    """
+    create_core_tables(db)
+    result = ImportService(db).import_file(
+        _STANDARD_CSV,
+        account_name="WF Checking",
+        account_metadata={"wf-checking": {"last_four": "4267"}},
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+    )
+    assert result.transactions > 0
 
 
 def test_an_out_of_range_ref_is_refused(db: Database) -> None:
