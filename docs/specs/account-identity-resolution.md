@@ -534,11 +534,12 @@ there is no unmasked agent handle, and `****4267` is ambiguous across sources).
   The PII now lives in `app.account_links.ref_value` (masked per-`ref_kind`,
   Decision 2), not in `account_id`.
 - **`import_confirm` gains a per-account binding map** (not a single scalar):
-  `account_bindings = {source_account_key: canonical_account_id | "new"}`. Tiller/
-  Mint-style files carry N accounts; the confirm envelope enumerates the detected
-  source accounts each with a proposal, and the caller returns a map of
-  resolutions (the single-account file is the 1-entry case). Full flow in
-  Decision 7.
+  `account_bindings = {proposal_ref | source_account_key: canonical_account_id |
+  "new"}`. Tiller/Mint-style files carry N accounts; the confirm envelope
+  enumerates the detected source accounts each with a proposal, and the caller
+  returns a map of resolutions (the single-account file is the 1-entry case).
+  Key by `proposal_ref` — `source_account_key` masks on the MCP surface, so a
+  key-only contract is unanswerable there. Full flow in Decision 7.
 
 ## Decision 7 — Import-time UX & AX: detect → confirm → remember
 
@@ -600,25 +601,39 @@ wrong); genuine ambiguity always interrupts. After ratification the binding is
 remembered, so re-imports are silent.
 
 **AX (agent).** The same envelope is the agent's structured contract: per detected
-account an `account_proposal` (`{proposed_account_id, is_new, candidates:[{account_id,
-display_name, confidence, signal}]}`) plus `actions[]`. The agent (a) returns an
-`account_bindings` map to `import_files` or `import_confirm` to bind
-deterministically — preferred, using the Decision-6 handle; or (b) self-accepts
-**only a strong-confirmer adoption** when `self_accept` is enabled for its
-`actor_kind` (both defined in M1H,
+account an `account_proposal` (`{proposal_ref, proposed_account_id, is_new,
+candidates:[{account_id, display_name, confidence, signal}]}`) plus `actions[]`.
+The agent (a) returns an `account_bindings` map to `import_files` or
+`import_confirm` to bind deterministically — preferred, keyed by `proposal_ref`;
+or (b) self-accepts **only a strong-confirmer adoption** when `self_accept` is
+enabled for its `actor_kind` (both defined in M1H,
 [`smart-import-confirmation.md`](smart-import-confirmation.md) §"Agent autonomy &
 recovery"). Leaving the proposal for the account-link queue is no longer an
 option: the import stops until it is answered. The agent
-never disambiguates a masked `****4267`.
+never disambiguates a masked `****4267` — it names the account positionally instead.
 
-**Open AX gap — an agent cannot read the key it must bind.** `account_bindings`
-is keyed by `source_account_key`, which is an `ACCOUNT_IDENTIFIER` (CRITICAL),
-so the MCP envelope masks it: the caller sees `****1234` where the binding
-needs `chase_1234`. Binding is therefore a CLI capability today, and an agent
-that hits the gate can only pin up front with `account_id` or hand the file to
-a human. Closing this means giving each proposal a non-sensitive handle (an
-opaque `proposal_id`) that `account_bindings` accepts alongside the raw key —
-a public-contract addition, and unresolved.
+**`proposal_ref` — the referent that survives the mask.** `source_account_key`
+is an `ACCOUNT_IDENTIFIER` (CRITICAL), so the MCP envelope masks it: the caller
+reads `****1234` where the binding once needed `chase_1234`. Every proposal
+therefore carries `proposal_ref`, a positional referent for the file being
+imported — `@0` is its first source account, `@1` the second — classified
+`RECORD_ID` and left readable. `account_bindings` accepts either form; supplying
+two different answers for one account is an error rather than a precedence rule,
+and a ref past the end of the file is rejected by name.
+
+Three properties are load-bearing:
+
+- **Positions index the file's full account list, not the surfaced subset.**
+  The answering call applies bindings *before* the gate re-runs, so it can only
+  index the accounts the file itself declares. Numbering what got surfaced would
+  shift every ref the moment one account resolved strongly — silently moving an
+  answer onto a different account.
+- **It is a referent for one exchange, not an identifier.** Nothing persists it;
+  it means nothing on a later import, and it is not a handle to store.
+  `proposed_account_id` cannot serve this role: on the mint path it is a preview
+  id that `resolve()` discards.
+- **`@`, not `#`.** A binding is typed at a shell prompt, where
+  `--account-binding #0=new` opens a comment and drops the rest of the line.
 
 **Fallback candidates at the gate (decision support, not auto-merge).** The
 auto-resolve ladder above is unchanged: a bare single-account source with no

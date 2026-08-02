@@ -2256,13 +2256,13 @@ async def test_import_confirm_coarse_answers_the_pdf_account_gate(
     )
     assert gated.data.status == "confirmation_required"
     # The envelope masks source_account_key — it is an ACCOUNT_IDENTIFIER
-    # (CRITICAL). So an agent reading this response cannot recover the key it
-    # would need to bind, which is why multi-account binding is a CLI
-    # capability today. This test drives the tool the way a caller holding the
-    # real key does.
+    # (CRITICAL) — so the key is not what an agent binds on. proposal_ref is:
+    # it rides the same proposal and stays readable, which is what makes this
+    # gate answerable from the response alone.
     assert [p["source_account_key"] for p in gated.data.account_proposals] == [
         "****1234"
     ]
+    assert [p["proposal_ref"] for p in gated.data.account_proposals] == ["@0"]
 
     # 2. Re-approve with the answer in hand. The sign grant is bound to the
     #    canonical arguments, so adding a binding to the old token is a
@@ -2904,8 +2904,12 @@ async def test_account_confirmation_hint_never_names_the_raw_source_key(
     assert isinstance(data, ImportConfirmRequiredPayload)
     assert data.reason == "account_confirmation"
     joined = " ".join(confirmed.actions)
-    # The old hint embedded a literal dict keyed by the raw source key.
-    assert "account_bindings={" not in joined, joined
+    # The old hint embedded a literal dict keyed by the raw source key. A
+    # bindings literal is not itself the leak — what it is keyed by is. Every
+    # one in this prose must open on a positional ref, which discloses nothing
+    # beyond how many accounts a file the caller already holds contains.
+    for fragment in joined.split("account_bindings={")[1:]:
+        assert fragment.startswith(("'@", '"@')), joined
     masked = data.account_proposals[0].get("source_account_key", "")
     last_four = masked.removeprefix("****")
     assert last_four, f"fixture gave no maskable key: {masked!r}"
@@ -3742,6 +3746,51 @@ class TestImportFilesConfirmationRequired:
         assert "import_confirm(preview_id='pv_123'" in joined
         # The mapping is settled — do not send the agent back for a new preview.
         assert "import_preview(" not in joined
+
+    async def test_account_confirmation_action_binds_by_ref_not_by_the_cli(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The hint names the referent the agent can actually read back.
+
+        This used to send the agent to the CLI for anything past one account,
+        because binding keyed on source_account_key and that key masks. The
+        proposal now carries a positional ref that survives the mask, so the
+        multi-account answer belongs on this surface — a hint that still
+        points at the shell describes a limitation that no longer exists.
+        """
+        from moneybin.mcp.tools.import_tools import (
+            _import_confirm_coarse_confirmation_actions,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        outcome = _make_confirmation_error(
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=[
+                {
+                    "source_account_key": "bare-abc123",
+                    "proposal_ref": "@0",
+                    "candidates": [],
+                },
+                {
+                    "source_account_key": "bare-def456",
+                    "proposal_ref": "@1",
+                    "candidates": [],
+                },
+            ],
+        ).outcome
+
+        actions = _import_confirm_coarse_confirmation_actions(
+            "pv_123", str(tmp_path / "bare.csv"), outcome
+        )
+
+        joined = " ".join(actions)
+        assert "account_bindings" in joined, joined
+        assert "proposal_ref" in joined, joined
+        assert "@0" in joined, joined
+        assert "moneybin import" not in joined, joined
+        # Still never the raw key — it is CRITICAL and actions[] is not redacted.
+        assert "bare-abc123" not in joined, joined
 
     async def test_low_tier_envelope_includes_missing_required(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

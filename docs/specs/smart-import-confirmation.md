@@ -271,7 +271,10 @@ flowchart TD
   agent self-accept (`design-principles.md`, "magic stays visible"). OFX gates
   before raw ingest and PDF before `begin_import`, so a gated import loads no
   rows and opens no batch on any channel; the caller answers by re-entering
-  with `account_bindings`. `gsheet` is absent from that list deliberately: it
+  with `account_bindings`, keyed by each proposal's `proposal_ref` (`@0` is the
+  file's first source account) or its raw `source_account_key` — one vocabulary
+  across all three channels, and the ref is the half that survives MCP masking.
+  `gsheet` is absent from that list deliberately: it
   runs no account resolution at all, so its `Channel` value carries only the
   column-mapping facet. The column-mapping and account-binding facets ride
   the same envelope; see

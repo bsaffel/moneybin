@@ -1081,6 +1081,31 @@ class TestImportConfirmCommand:
             "wf-savings": "new",
         }
 
+    def test_account_binding_accepts_a_positional_proposal_ref(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """``@0`` reaches the service intact — the CLI must not eat the sigil.
+
+        The gate surfaces a proposal_ref because source_account_key masks on
+        the MCP side; the CLI answers with the same referent so both surfaces
+        take one vocabulary. Click treats a leading ``@`` as ordinary text,
+        but that is a dependency worth pinning: an argument-file convention
+        here would silently swallow the ref.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            ["confirm", str(csv_file), "--accept", "--account-binding", "@0=new"],
+        )
+
+        assert result.exit_code == 0
+        assert mock_import_file.call_args.kwargs["account_bindings"] == {"@0": "new"}
+
     def test_account_meta_parsed_into_nested_map(
         self,
         mock_db: MagicMock,
@@ -1287,6 +1312,9 @@ class TestImportConfirmCommand:
         assert "Account binding required" in result.output
         assert "wf-checking" in result.output
         assert "cand87654321" in result.output
+        # The ref is what --account-binding's help tells the user to type, so
+        # the gate that demands a binding has to be where they read it.
+        assert "@0" in result.output
 
 
 class TestSignRecoveryDirection:

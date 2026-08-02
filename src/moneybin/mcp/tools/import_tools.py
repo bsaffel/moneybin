@@ -294,11 +294,14 @@ def import_files(
             refresh call will catch the data up.
         force: If True, re-import files already in the import log.
         account_bindings: Answer to an account_confirmation this tool
-            previously returned, mapping each proposed source_account_key to
-            an existing account_id, or the literal "new" to mint a fresh
-            account. Single-path only. This is how OFX and PDF imports ratify
-            an account identity; a tabular file answers through import_confirm
-            instead, because its confirmation also stages a column mapping.
+            previously returned, mapping each proposal's proposal_ref (e.g.
+            "@0" for the file's first source account) to an existing
+            account_id, or the literal "new" to mint a fresh account. The
+            proposal's source_account_key works too, but it masks in the
+            response — bind by ref. Single-path only. This is how OFX and PDF
+            imports ratify an account identity; a tabular file answers through
+            import_confirm instead, because its confirmation also stages a
+            column mapping.
 
     Returns:
         Envelope with data containing imported/failed/total counts,
@@ -2052,18 +2055,18 @@ def _import_confirm_coarse_confirmation_actions(
     if outcome.reason == "account_confirmation":
         # Never interpolate source_account_key here. It is the native OFX/Plaid
         # identifier (ACCOUNT_IDENTIFIER -> CRITICAL), and _import_dynamic_envelope
-        # redacts `data` only — a key named in this prose ships unmasked.
-        # account_bindings still matches on the raw key, which the agent cannot
-        # see, so multi-account binding is a CLI capability until a non-sensitive
-        # proposal handle exists.
+        # redacts `data` only — a key named in this prose ships unmasked. Bind by
+        # proposal_ref instead: it rides the same proposal, survives the mask, and
+        # is what makes this answerable without leaving the surface.
         actions.append(
-            f"Use import_confirm(preview_id={preview_id!r}, "
-            "account_name='<name>') to bind the single account this file "
-            f"belongs to. {len(outcome.account_proposals)} source account(s) "
-            "were detected; data.account_proposals[] describes them with "
-            "identifiers masked. Binding several accounts at once keys on the "
-            "unmasked source key, so it runs from the CLI: `moneybin import "
-            "confirm <file> --account-binding <source_key>=<account_id|new>`."
+            f"Use import_confirm(preview_id={preview_id!r}, account_bindings=..."
+            ") to ratify the account identity. "
+            f"{len(outcome.account_proposals)} source account(s) were detected; "
+            "data.account_proposals[] describes them with identifiers masked. "
+            "Key each binding by that entry's proposal_ref and give an existing "
+            "account_id or the literal 'new' — e.g. account_bindings={'@0': "
+            "'new'}. account_name='<name>' also works when the file holds one "
+            "account."
         )
         return actions
     # Every reason the service narrows gets the same text the preview-side

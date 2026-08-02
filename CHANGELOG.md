@@ -401,12 +401,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wrong about *whose* transactions these are went by unseen. All three
   channels now stop on an unrecognized account and show what they found —
   including the existing accounts they think it might be — and load nothing
-  until you answer. Answer with `--account-binding KEY=ACCOUNT_ID` (or
+  until you answer. Answer with `--account-binding REF=ACCOUNT_ID` (or
   `=new` to keep it separate) on `moneybin import files`, or the
   `account_bindings` parameter on the `import_files` and `import_confirm`
   tools. Pinning up front with `--account-id` / `--account-name` still skips
   the question entirely, and a statement for an account you have already
   confirmed is still silent — you answer once per account, not once per file.
+
+  Each account the gate shows is labeled `@0`, `@1`, … for the file in front
+  of you, and that label is what `REF` takes — the account's own key works
+  too. The labels are why an assistant can answer this at all: the key is an
+  account identifier, so it reaches an assistant masked as `****1234`, and a
+  question you can only answer by typing something you cannot read is not a
+  question. The labels number the file's accounts, so `@0` means the same
+  account whether you answer the first time or the fourth. They are not names
+  to keep: they mean nothing on the next import.
 
   Two behavior changes fall out of this. **An agent no longer gets a
   different answer than you do:** it used to be allowed past this question,

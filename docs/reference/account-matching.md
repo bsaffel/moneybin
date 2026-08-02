@@ -122,25 +122,31 @@ of your existing accounts. Bind it in one command:
 
 ```bash
 # Adopt an existing account, or mint a distinct new one:
-moneybin import confirm <file> --accept --account-binding <source_key>=<account_id|new>
+moneybin import confirm <file> --accept --account-binding @0=<account_id|new>
 
 # Or name a brand-new account directly:
 moneybin import confirm <file> --accept --account-name "WF Business Checking"
 ```
 
-The `<source_key>` comes from the confirmation (and the `.pending.yml` sidecar
-when the file came through the inbox). Supply a binding for **every** account the
-file contains in that one command — the gate is all-or-nothing.
+`@0` is the first account the confirmation listed, `@1` the second — the gate
+prints the label beside each one, and the `.pending.yml` sidecar carries it when
+the file came through the inbox. That account's own `source_account_key` works
+in the same position. Supply a binding for **every** account the file contains
+in that one command — the gate is all-or-nothing.
 
-**Human vs. agent.** A person importing interactively is *gated* — rows don't
-land until the account is bound. An agent-driven import does **not** block: it
-mints a provisional account and files any weak matches into the review queue,
-and it **never self-accepts** a weak match. Either way, you stay in control of
-account identity.
+OFX and PDF answer on `moneybin import files` instead of `import confirm`:
+neither stages a column mapping, so there is no preview to consume.
+
+**Human vs. agent — the same gate.** Both are gated: rows don't land until the
+account is bound, and neither self-accepts a weak match. An agent-driven import
+used to pass through instead, minting a provisional account and filing weak
+matches for later review; it now stops where you would.
 
 The MCP equivalent is the same propose → confirm loop: `import_files` /
 `import_preview` return a confirmation, and `import_confirm(preview_id=..., account_bindings=...)`
-ratifies it.
+ratifies it. Key each binding by the proposal's `proposal_ref` — `@0` is the
+file's first source account. An assistant reads `source_account_key` masked
+(`****1234`), so the ref is the half of the proposal it can name back.
 
 ## Cross-source twins found later: the review queue
 

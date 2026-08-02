@@ -100,8 +100,8 @@ def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
 
 
 def _parse_account_bindings(binding: list[str] | None) -> dict[str, str] | None:
-    """Parse --account-binding source_key=ACCOUNT_ID|new values."""
-    return _parse_kv(binding, flag="--account-binding", fmt="source_key=ACCOUNT_ID|new")
+    """Parse --account-binding REF=ACCOUNT_ID|new values (REF is @0 or a source key)."""
+    return _parse_kv(binding, flag="--account-binding", fmt="REF=ACCOUNT_ID|new")
 
 
 def _parse_account_metadata(
@@ -209,11 +209,12 @@ def import_files_command(
         None,
         "--account-binding",
         help=(
-            "Answer an account confirmation: source_key=ACCOUNT_ID|new, "
-            "repeatable. This is how OFX and PDF imports ratify an account "
-            "identity; a tabular file answers through 'import confirm' instead, "
-            "because its confirmation also stages a column mapping. "
-            "Single-file mode only."
+            "Answer an account confirmation: REF=ACCOUNT_ID|new, repeatable. "
+            "REF is the proposal_ref the gate printed (@0 is the file's first "
+            "source account) or that proposal's source_account_key. This is how "
+            "OFX and PDF imports ratify an account identity; a tabular file "
+            "answers through 'import confirm' instead, because its confirmation "
+            "also stages a column mapping. Single-file mode only."
         ),
     ),
     format_name: str | None = typer.Option(
@@ -852,7 +853,12 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
         return
     typer.echo("\n   Account binding required:", err=err)
     for p in outcome.account_proposals:
-        typer.echo(f"     source key: {p['source_account_key']}", err=err)
+        # Lead with the ref: it is what --account-binding takes on both
+        # surfaces, and the only half of this line an MCP caller can read.
+        typer.echo(
+            f"     {p['proposal_ref']}  source key: {p['source_account_key']}",
+            err=err,
+        )
         for c in p["candidates"]:
             typer.echo(
                 f"       candidate: {c['account_id']}  "
@@ -1324,9 +1330,11 @@ def import_confirm_command(
         "--account-binding",
         help=(
             "Ratify an account_confirmation (repeatable): "
-            "--account-binding source_key=ACCOUNT_ID to adopt an existing "
-            "account, or source_key=new to mint a distinct new account. "
-            "Keys come from confirmation_required account_proposals. On retry, "
+            "--account-binding REF=ACCOUNT_ID to adopt an existing account, or "
+            "REF=new to mint a distinct new account. REF is the proposal_ref "
+            "the gate printed (@0 is the file's first source account) or that "
+            "proposal's source_account_key; both name the same account and "
+            "supplying two different answers for one is an error. On retry, "
             "re-supply ALL bindings — no partial state persists between calls."
         ),
     ),

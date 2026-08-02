@@ -90,6 +90,12 @@ class ImportConfirmationAccountProposal(TypedDict, total=False):
     """One source-account resolution proposal."""
 
     source_account_key: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    # The one key in this proposal a masking surface leaves readable, and
+    # deliberately so: source_account_key is CRITICAL, so an agent reading a
+    # gated response has no other way to name which account it is answering.
+    # A positional referent ("@0") discloses nothing beyond how many accounts
+    # the file the caller already holds contains.
+    proposal_ref: Annotated[str, DataClass.RECORD_ID]
     proposed_account_id: Annotated[str | None, DataClass.RECORD_ID]
     is_new: Annotated[bool, DataClass.TXN_TYPE]
     adopted_via: Annotated[str | None, DataClass.TXN_TYPE]

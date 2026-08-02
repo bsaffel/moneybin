@@ -279,3 +279,43 @@ def test_inbox_drain_renders_account_confirmation_pending(
     assert "--accept --account-binding" in result.stderr
     assert "1 pending" in result.stderr
     assert "--mapping" not in result.stderr
+
+
+def test_inbox_drain_names_each_proposal_by_its_ref(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """The drain listing shows the same referent the confirm gate shows.
+
+    This renderer reads proposals out of a persisted sidecar rather than a
+    ConfirmationRequired, so it is a second hand-rolled view of one object.
+    Two views that describe an account differently is how a user ends up
+    binding by a name only one of them accepts.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        failed=[],
+        pending=[
+            {
+                "filename": "statement.ofx",
+                "channel": "ofx",
+                "tier": "high",
+                "score": 1.0,
+                "reason": "account_confirmation",
+                "moved_to": "pending/2026-05/statement.ofx",
+                "sidecar": "pending/2026-05/statement.ofx.pending.yml",
+                "account_proposals": [
+                    {
+                        "source_account_key": "chase-1234",
+                        "proposal_ref": "@0",
+                        "candidates": [],
+                    }
+                ],
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "@0" in result.stderr, result.stderr
+    assert "chase-1234" in result.stderr, result.stderr
