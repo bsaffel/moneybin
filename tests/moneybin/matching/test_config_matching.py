@@ -77,7 +77,7 @@ class TestTransferSettings:
 
 
 class TestDateWindowBound:
-    """The window may not widen far enough to make a date gap auto-merge."""
+    """The window may not widen far enough for the date alone to auto-merge."""
 
     def test_default_window_spans_a_weekend(self) -> None:
         """Card transactions post after the weekend; 3 days could not reach Tuesday.
@@ -89,27 +89,36 @@ class TestDateWindowBound:
         """
         assert MatchingSettings().date_window_days >= 5
 
-    def test_shipped_defaults_keep_every_date_gap_in_review(self) -> None:
-        """At the shipped defaults, only same-day pairs can auto-merge.
+    def test_closeness_alone_never_reaches_auto_merge(self) -> None:
+        """Proximity is never enough to merge silently — only agreement is.
 
-        Auto-merge belongs to the exact-key path — same account, exact amount,
-        same day — because a wrong silent merge is the hardest inference to
-        notice and undo (design-principles.md). The weighted branch peaks one
-        day apart, so checking that peak against the auto-merge threshold covers
-        every date gap at once.
+        This is the safety property the description-agreement gate rests on.
+        Pairs whose descriptions agree are lifted to auto-merge by the floor;
+        everything else falls to the weighted formula, and that path must stay
+        below the auto-merge threshold no matter how close the dates are. If it
+        could reach the threshold on its own, a disagreeing pair would merge
+        without review purely for landing on a nearby day.
 
-        This is pinned at the DEFAULTS only. The margin narrows as the window
-        widens, so it is a property of the shipped configuration rather than a
-        law of the scoring function.
+        Checking the weighted branch's peak covers every gap at once: it is
+        highest one day apart with identical descriptions.
+
+        Pinned at the DEFAULTS only. The margin narrows as the window widens, so
+        this is a property of the shipped configuration, not a law of the
+        scoring function.
         """
-        from moneybin.matching.scoring import _WEIGHT_DATE, _WEIGHT_DESCRIPTION
+        from moneybin.matching.scoring import (
+            _WEIGHT_DATE,  # pyright: ignore[reportPrivateUsage]  # derive, not literal
+            _WEIGHT_DESCRIPTION,  # pyright: ignore[reportPrivateUsage]  # same
+        )
 
         settings = MatchingSettings()
+        # Derived from the live weights, never a literal, so retuning them here
+        # cannot silently reopen the door this test is holding shut.
         peak = (
             _WEIGHT_DATE * (1.0 - 1.0 / settings.date_window_days) + _WEIGHT_DESCRIPTION
         )
         assert peak < settings.high_confidence_threshold, (
             f"a one-day-apart pair with identical descriptions scores {peak:.4f}, "
             f"at or above the {settings.high_confidence_threshold} auto-merge "
-            "threshold — date-gap pairs would merge without review"
+            "threshold — proximity alone would merge a pair without review"
         )

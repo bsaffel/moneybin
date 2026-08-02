@@ -31,6 +31,23 @@ _WEIGHT_DATE = 0.30
 _WEIGHT_DESCRIPTION = 0.70
 
 
+def _normalized_description(column: str) -> str:
+    """SQL expression canonicalizing a description for the agreement test.
+
+    Case-folds, collapses internal whitespace runs, and trims. Sources pad
+    descriptions to fixed column widths, so the same merchant string arrives with
+    different runs of spaces; without the collapse, two renderings of one
+    transaction fail to relate at all.
+
+    Deliberately *only* canonicalization — no token stripping. Running the
+    categorization normalizer here was measured on live data and rejected: it
+    moved average similarity by +0.011 and produced more low-similarity pairs,
+    because its trailing-location pattern needs a plain capitalized word before
+    the state code and statement layouts do not supply one.
+    """
+    return f"REGEXP_REPLACE(UPPER(TRIM(COALESCE({column}, ''))), '\\s+', ' ', 'g')"
+
+
 @dataclass(frozen=True)
 class CandidatePair:
     """A scored candidate pair from blocking + scoring."""
@@ -47,6 +64,10 @@ class CandidatePair:
     confidence_score: float
     description_a: str
     description_b: str
+    # Whether one description contains the other — the signal that earns a
+    # cross-source auto-merge. Recorded so a silent merge can be explained after
+    # the fact rather than re-derived from the two strings.
+    descriptions_agree: bool = False
     # Source file per side — the cardinality unit for the assign_components guard
     # (two rows from the same file are always distinct txns, never duplicates).
     # None when unknown (e.g. unit-test fixtures); the guard then does not fire.
@@ -62,27 +83,30 @@ def compute_confidence(
     date_distance_days: int,
     description_similarity: float,
     date_window_days: int = 3,
-    exact_key_floor: float | None = None,
+    agreement_floor: float | None = None,
+    descriptions_agree: bool = False,
 ) -> float:
     """Compute a confidence score from matching signals.
 
-    When ``exact_key_floor`` is set and the pair is exact-key
-    (``date_distance_days == 0``), confidence is lifted into
-    ``[exact_key_floor, 1.0]``: same account + exact amount + same day is a
-    near-certain duplicate regardless of how differently two sources render the
-    description (OFX truncates differently from CSV). ``description_similarity``
-    is kept as a monotonic *tiebreaker* — it orders which 1:1 pairing wins in
-    ``assign_components`` — never as an accept/reject gate. For
-    ``date_distance_days > 0`` the floor is ignored and the weighted formula
-    applies, so description still matters when dates differ.
+    When ``agreement_floor`` is set and the two descriptions agree, confidence is
+    lifted into ``[agreement_floor, 1.0]`` so the pair auto-merges. Description
+    agreement — not the date — is what earns a silent merge: blocking has already
+    fixed the account and the exact amount, so description is the only remaining
+    evidence, while a date gap is just posting lag and says nothing about whether
+    two rows are the same transaction.
+
+    ``description_similarity`` stays a monotonic *tiebreaker* above the floor — it
+    orders which 1:1 pairing wins in ``assign_components`` — never an accept/reject
+    gate. Pairs whose descriptions disagree fall through to the weighted formula
+    and land in review, which is where an ambiguous inference belongs.
     """
     date_score = (
         max(0.0, 1.0 - (date_distance_days / date_window_days))
         if date_window_days > 0
         else 1.0
     )
-    if exact_key_floor is not None and date_distance_days == 0:
-        return exact_key_floor + (1.0 - exact_key_floor) * description_similarity
+    if agreement_floor is not None and descriptions_agree:
+        return agreement_floor + (1.0 - agreement_floor) * description_similarity
     return (_WEIGHT_DATE * date_score) + (_WEIGHT_DESCRIPTION * description_similarity)
 
 
@@ -100,9 +124,11 @@ def get_candidates_cross_source(
     Blocking: same account_id, same amount, date within window,
     different source_type OR different source_origin.
 
-    When ``high_confidence_threshold`` is supplied, exact-key pairs
-    (``date_distance == 0``) are scored at/above it so they auto-merge
-    regardless of description similarity (see ``compute_confidence``).
+    When ``high_confidence_threshold`` is supplied, pairs whose descriptions
+    agree — one containing the other, after normalization — are scored at/above it
+    so they auto-merge at any date gap inside the window (see
+    ``compute_confidence``). Pairs whose descriptions disagree keep the weighted
+    formula and land in review.
     """
     return _get_candidates(
         db,
@@ -149,9 +175,12 @@ def _get_candidates(
     high_confidence_threshold: float | None = None,
 ) -> list[CandidatePair]:
     """Internal: run blocking + scoring query for a given tier."""
-    # Exact-key auto-merge is a cross-source-only rule (Tier 3). Within-source
-    # (Tier 2b) keeps the weighted formula so its acceptance is unchanged.
-    exact_key_floor = high_confidence_threshold if tier == "3" else None
+    # Description-agreement auto-merge is a cross-source-only rule (Tier 3).
+    # Across sources each side lists a transaction once, so two agreeing rows are
+    # one transaction rendered twice. Inside one source the rendering is
+    # consistent, so two rows written *differently* are two transactions — the
+    # floor there would silently delete one. Tier 2b keeps the weighted formula.
+    agreement_floor = high_confidence_threshold if tier == "3" else None
     if tier == "2b":
         source_filter = """
             AND a.source_type = b.source_type
@@ -164,6 +193,8 @@ def _get_candidates(
         """
 
     table = quote_table_ref(table)
+    norm_a = _normalized_description("a.description")
+    norm_b = _normalized_description("b.description")
 
     # Manual-source exemption: per transaction-curation spec Req 6, manual rows
     # are excluded as candidates in *either* direction — never matched against
@@ -186,7 +217,23 @@ def _get_candidates(
             jaro_winkler_similarity(
                 COALESCE(a.description, ''),
                 COALESCE(b.description, '')
-            ) AS desc_sim
+            ) AS desc_sim,
+            -- Descriptions agree when one contains the other. That is the literal
+            -- mechanism: sources carry a shared merchant string, truncate it at
+            -- different lengths, and wrap it in their own preamble and trailing
+            -- detail, so the common text is not always at the front. Structural,
+            -- so it needs no similarity cutoff to tune.
+            -- Both sides must be non-empty: contains(x, '') is TRUE, so a source
+            -- that omits descriptions would otherwise agree with every row it met
+            -- and merge an entire account silently.
+            (
+                {norm_a} <> ''
+                AND {norm_b} <> ''
+                AND (
+                    contains({norm_a}, {norm_b})
+                    OR contains({norm_b}, {norm_a})
+                )
+            ) AS desc_agree
         FROM {table} AS a
         JOIN {table} AS b
             ON a.account_id = b.account_id
@@ -244,6 +291,7 @@ def _get_candidates(
             acct,
             date_dist,
             desc_sim,
+            desc_agree,
         ) = row
 
         if excluded_ids and (
@@ -258,7 +306,8 @@ def _get_candidates(
             date_distance_days=int(date_dist),
             description_similarity=float(desc_sim),
             date_window_days=date_window_days,
-            exact_key_floor=exact_key_floor,
+            agreement_floor=agreement_floor,
+            descriptions_agree=bool(desc_agree),
         )
 
         results.append(
@@ -275,6 +324,7 @@ def _get_candidates(
                 confidence_score=confidence,
                 description_a=desc_a or "",
                 description_b=desc_b or "",
+                descriptions_agree=bool(desc_agree),
                 source_file_a=sf_a,
                 source_file_b=sf_b,
             )

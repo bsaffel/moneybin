@@ -205,7 +205,13 @@ class TransactionMatcher:
         """
         if pair.confidence_score >= self._settings.high_confidence_threshold:
             return ("accepted", "auto")
-        if tier == "3" and pair.confidence_score >= self._settings.review_threshold:
+        # Every cross-source pair that survives assignment is reviewable. It has
+        # already cleared same-account, exact-amount, in-window blocking and won a
+        # 1:1 assignment, which is enough evidence to ask about even when the
+        # descriptions disagree. Dropping it instead would be its own silent
+        # action: the duplicate stays in the ledger and nobody is ever told.
+        # assign_components bounds this, so the queue cannot run away.
+        if tier == "3":
             return ("pending", "auto")
         return None
 
@@ -231,6 +237,7 @@ class TransactionMatcher:
             match_signals={
                 "date_distance": pair.date_distance_days,
                 "description_similarity": round(pair.description_similarity, 4),
+                "descriptions_agree": pair.descriptions_agree,
             },
             match_tier=tier,
             match_status=status,
@@ -238,6 +245,7 @@ class TransactionMatcher:
             match_reason=(
                 f"Amount match, {pair.date_distance_days}d apart, "
                 f"desc similarity {pair.description_similarity:.2f}"
+                + (", descriptions agree" if pair.descriptions_agree else "")
             ),
             actor=self._actor,
         )

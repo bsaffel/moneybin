@@ -98,14 +98,15 @@ class TestComputeConfidence:
                     f"{bands.review_threshold}"
                 )
 
-    def test_only_same_day_pairs_can_auto_merge(self) -> None:
-        """Any date gap means review, never a silent merge.
+    def test_the_weighted_path_alone_never_auto_merges(self) -> None:
+        """Without description agreement, no date gap can earn a silent merge.
 
         A wrong silent merge is the hardest inference to notice and undo
-        (design-principles.md), so the auto-merge band is reserved for the one
-        case that is near-certain on its own: same account, exact amount, same
-        day. A pair separated by even one day must land in review no matter how
-        perfectly its descriptions agree.
+        (design-principles.md), so the weighted path — the one a disagreeing
+        pair falls to — must stay under the auto-merge bar at every gap. Pairs
+        that *do* agree are lifted over it by the agreement floor, which this
+        deliberately does not pass; see
+        test_agreeing_descriptions_auto_merge_at_every_date_gap.
         """
         bands = MatchingSettings()
         # Up to the shipped default window. The margin narrows as the window
@@ -146,40 +147,73 @@ class TestComputeConfidence:
                 )
                 assert 0.0 <= score <= 1.0
 
-    def test_exact_key_floor_lifts_low_similarity_above_threshold(self) -> None:
-        """An exact-key (date_distance=0) pair auto-merges regardless of low desc.
+    def test_agreeing_descriptions_auto_merge_at_every_date_gap(self) -> None:
+        """Description agreement, not the date gap, is what earns a silent merge.
 
-        Without the floor, date_distance=0 + desc 0.2 scores 0.30 + 0.70*0.2 = 0.44,
-        well below the 0.95 auto-merge threshold (the OFX-vs-CSV truncation bug).
-        With exact_key_floor=0.95 the score is lifted to >= 0.95 so it auto-merges.
+        Across sources each side lists the same transaction once, so two rows
+        whose descriptions agree are one transaction however differently the
+        two sources dated it. Posting lag is not evidence of distinctness, so
+        every gap the window admits must clear the auto-merge bar.
         """
-        score = compute_confidence(
-            date_distance_days=0, description_similarity=0.2, exact_key_floor=0.95
-        )
-        assert score >= 0.95
+        settings = MatchingSettings()
+        floor = settings.high_confidence_threshold
+        for gap in range(settings.date_window_days + 1):
+            score = compute_confidence(
+                date_distance_days=gap,
+                description_similarity=0.85,
+                date_window_days=settings.date_window_days,
+                agreement_floor=floor,
+                descriptions_agree=True,
+            )
+            assert score >= floor, f"a {gap}-day gap fell below the auto-merge bar"
 
-    def test_exact_key_floor_preserves_description_ordering(self) -> None:
+    def test_disagreeing_descriptions_are_reviewed_even_on_the_same_day(self) -> None:
+        """Landing on the same day is not enough to merge two rows silently.
+
+        Same account and exact amount are already required by blocking, so on a
+        same-day pair the description is the only remaining evidence — and when
+        it disagrees, that is precisely the case a human should see. A wrong
+        silent merge is the hardest inference to notice and undo, so this lands
+        in review rather than either merging or being dropped.
+        """
+        settings = MatchingSettings()
+        score = compute_confidence(
+            date_distance_days=0,
+            description_similarity=0.71,
+            date_window_days=settings.date_window_days,
+            agreement_floor=settings.high_confidence_threshold,
+            descriptions_agree=False,
+        )
+        assert score < settings.high_confidence_threshold
+        assert score >= settings.review_threshold
+
+    def test_agreement_floor_preserves_description_ordering(self) -> None:
         """Description stays a *tiebreaker*: higher similarity ranks higher, both >= floor."""
         high = compute_confidence(
-            date_distance_days=0, description_similarity=0.9, exact_key_floor=0.95
+            date_distance_days=0,
+            description_similarity=0.9,
+            agreement_floor=0.95,
+            descriptions_agree=True,
         )
         low = compute_confidence(
-            date_distance_days=0, description_similarity=0.1, exact_key_floor=0.95
+            date_distance_days=0,
+            description_similarity=0.1,
+            agreement_floor=0.95,
+            descriptions_agree=True,
         )
         assert high > low
         assert low >= 0.95
         assert high <= 1.0
 
-    def test_exact_key_floor_ignored_when_date_distance_nonzero(self) -> None:
-        """The floor applies only to exact-key (date_distance=0) pairs.
-
-        A date_distance>0 pair keeps the weighted formula even when a floor is
-        supplied, so description still gates acceptance when dates differ.
-        """
+    def test_agreement_floor_ignored_when_descriptions_disagree(self) -> None:
+        """A supplied floor does nothing unless the descriptions actually agree."""
         with_floor = compute_confidence(
-            date_distance_days=1, description_similarity=0.2, exact_key_floor=0.95
+            date_distance_days=0,
+            description_similarity=0.2,
+            agreement_floor=0.95,
+            descriptions_agree=False,
         )
-        weighted = compute_confidence(date_distance_days=1, description_similarity=0.2)
+        weighted = compute_confidence(date_distance_days=0, description_similarity=0.2)
         assert with_floor == weighted
         assert with_floor < 0.95
 
@@ -458,14 +492,14 @@ class TestGetCandidatesCrossSource:
         assert pair.date_distance_days == 0
         assert pair.account_id == "acct1"
 
-    def test_exact_key_low_similarity_pair_scores_above_threshold(
+    def test_truncated_description_auto_merges_despite_a_date_gap(
         self, unioned_table: Database
     ) -> None:
-        """Cross-source exact-key twins auto-merge despite divergent descriptions.
+        """One source truncating the other's description is agreement, not conflict.
 
-        OFX truncates descriptions differently from CSV, so jaro_winkler is low,
-        but same account + exact amount + same day is a near-certain duplicate.
-        With high_confidence_threshold passed, the candidate scores >= 0.95.
+        OFX truncates where CSV spells the merchant out, so jaro_winkler alone is
+        low. The dates are deliberately two days apart so the date cannot be the
+        reason this merges — the truncation relationship is doing the work.
         """
         _insert_unioned_row(
             unioned_table,
@@ -481,7 +515,7 @@ class TestGetCandidatesCrossSource:
             unioned_table,
             source_transaction_id="ofx_xyz",
             account_id="acct1",
-            transaction_date="2026-03-15",
+            transaction_date="2026-03-17",
             amount="-42.50",
             description="STARBUCK",
             source_type="ofx",
@@ -494,8 +528,161 @@ class TestGetCandidatesCrossSource:
             high_confidence_threshold=0.95,
         )
         assert len(candidates) == 1
-        assert candidates[0].description_similarity < 0.95  # divergent descriptions
-        assert candidates[0].confidence_score >= 0.95  # but exact-key lifts it
+        assert candidates[0].date_distance_days == 2  # the date is not the evidence
+        assert candidates[0].description_similarity < 0.95  # neither is raw similarity
+        assert candidates[0].confidence_score >= 0.95
+
+    def test_shared_merchant_inside_differing_wrappers_auto_merges(
+        self, unioned_table: Database
+    ) -> None:
+        """The shared part is not always at the front.
+
+        One source prefixes a transaction-type preamble and appends a card
+        reference while the other carries the bare merchant, so the common text
+        sits in the middle of the longer string. A prefix-only rule misses this
+        entirely, yet the two are plainly the same purchase.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-29.00",
+            description="RECURRING PAYMENT AUTHORIZED ON 01/25 TASKAPP TASKAPP.COM DE",
+            source_type="csv",
+            source_origin="wells",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-29.00",
+            description="TASKAPP",
+            source_type="ofx",
+            source_origin="wells_ofx",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].confidence_score >= 0.95
+
+    def test_internal_whitespace_runs_do_not_block_agreement(
+        self, unioned_table: Database
+    ) -> None:
+        """Column-padded spacing is a rendering artifact, not a difference.
+
+        Sources pad descriptions to fixed widths, so the same string arrives with
+        different runs of spaces. Comparing raw text would treat two renderings
+        of one merchant as unrelated.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-22.97",
+            description="UBER   *TRIP",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="pdf_abc",
+            account_id="acct1",
+            transaction_date="2026-03-16",
+            amount="-22.97",
+            description="UBER *TRIP HELP.UBER.COM CA",
+            source_type="pdf",
+            source_origin="chase_pdf",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].confidence_score >= 0.95
+
+    def test_unrelated_same_day_descriptions_do_not_auto_merge(
+        self, unioned_table: Database
+    ) -> None:
+        """Two different merchants that collide on amount and date must not merge.
+
+        Same account, exact amount, same day — everything blocking checks agrees,
+        and only the description dissents. Merging here would silently destroy a
+        real transaction, so the pair has to stay below the auto-merge bar and be
+        offered for review instead.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="AMAZON MKTPL*NQ9RG3UP2",
+            source_type="csv",
+            source_origin="chase",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="LAGARDE FLOWERS",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].confidence_score < 0.95
+
+    def test_blank_description_is_not_agreement(self, unioned_table: Database) -> None:
+        """An empty description is a prefix of every string — and evidence of nothing.
+
+        Left unguarded this is the worst case in the design: a source that omits
+        descriptions would satisfy the prefix relation against every row it met
+        and merge the entire account silently.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="   ",
+            source_type="csv",
+            source_origin="chase",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="STARBUCKS STORE 1234",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].confidence_score < 0.95
 
     def test_candidate_carries_source_file(self, unioned_table: Database) -> None:
         """Candidates expose source_file on both sides for the cardinality guard."""
@@ -589,6 +776,50 @@ class TestGetCandidatesWithinSource:
             unioned_table, table="main._test_unioned", date_window_days=3
         )
         assert len(candidates) == 1
+
+    def test_truncated_description_does_not_auto_merge_within_a_source(
+        self, unioned_table: Database
+    ) -> None:
+        """The description-agreement floor is cross-source only.
+
+        A single source renders a given transaction the same way every time, so
+        two rows it wrote *differently* are evidence of two transactions, not of
+        one transaction described twice. The truncation relationship that earns a
+        silent merge across sources therefore must not earn one inside a source.
+
+        This is the exact fixture that auto-merges under tier 3; if the floor ever
+        leaks into tier 2b, this test is what catches it.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_a",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="STARBUCKS STORE 1234 NEW YORK NY",
+            source_type="csv",
+            source_origin="chase",
+            source_file="jan.csv",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_b",
+            account_id="acct1",
+            transaction_date="2026-03-17",
+            amount="-42.50",
+            description="STARBUCK",
+            source_type="csv",
+            source_origin="chase",
+            source_file="feb.csv",
+        )
+        candidates = get_candidates_within_source(
+            unioned_table, table="main._test_unioned", date_window_days=3
+        )
+        assert len(candidates) == 1
+        assert (
+            candidates[0].confidence_score
+            < MatchingSettings().high_confidence_threshold
+        )
 
     def test_excludes_cross_source_rows(self, unioned_table: Database) -> None:
         """Cross-source pairs should not appear in within-source results."""

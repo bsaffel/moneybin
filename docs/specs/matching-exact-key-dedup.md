@@ -1,7 +1,10 @@
-# Exact-Key Cross-Source Auto-Merge
+# Cross-Source Auto-Merge on Description Agreement
 
-> Last updated: 2026-06-13
+> Last updated: 2026-08-02
 > Status: implemented
+> Filename note: the file is still `matching-exact-key-dedup.md` because
+> CHANGELOG history and five specs link to it. The exact-key rule it was named
+> for was replaced on 2026-08-02 — see [§Decision](#decision-2026-08-02-supersedes-2026-06-13).
 > Address: M1B (matching engine refinement)
 > Parent: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (cross-source dedup, pillar A)
 > Refines: [`matching-nway-dedup.md`](matching-nway-dedup.md) — adds a cardinality guard to its Requirement 2 edge-add rule, and supersedes its "No change to scoring" out-of-scope note for the cross-source tier
@@ -45,42 +48,105 @@ production data does not. [`account-identity-resolution.md`](account-identity-re
 (M1S) makes `account_id` canonical across sources, at which point this auto-merge
 fires as designed (279 @ `source_count = 2`).
 
-## Decision (2026-06-13)
+## Decision (2026-08-02, supersedes 2026-06-13)
 
-**Auto-merge on exact key.** For the **cross-source tier only**, a pair that is
-same `account_id` + exact `amount` + `date_distance = 0` is a near-certain
-duplicate — accept it regardless of description similarity. Description becomes a
-**tiebreaker** (which rows pair), not a **gate** (whether they merge). Chosen
-over "route to review" and "tighter multi-signal guard": across formats the
-description is unreliable in both directions (same merchant looks different;
-different merchants look similar), so no description threshold cleanly separates
-them.
+**Auto-merge on description agreement.** For the **cross-source tier only**, a
+pair auto-merges when one description **contains** the other, after
+normalization (case-fold, collapse internal whitespace runs, trim), with both
+sides non-empty. The date gap no longer gates anything — it only modulates the
+score below the floor.
 
-`date_distance > 0` keeps the weighted formula — when dates differ, description
-still matters.
+Containment is the literal mechanism: sources carry a shared merchant string,
+truncate it at different lengths, and wrap it in their own preamble and trailing
+detail, so the common text is not always at the front. A prefix-only rule was
+implemented first and rejected — it missed real Wells Fargo pairs where the CSV
+prepends a transaction-type preamble (`RECURRING PAYMENT AUTHORIZED ON 01/25
+TASKAPP …` against an OFX `TASKAPP`). The relation is structural, so it needs no
+similarity cutoff to tune.
+
+Every cross-source pair that survives 1:1 assignment and does *not* agree goes
+to **review** — never silently dropped. Blocking has already required the same
+account, an exact amount, and a date inside the window; that is enough evidence
+to ask about, and dropping instead would be its own silent action, leaving a
+duplicate in the ledger nobody is told about.
+
+### Why the 2026-06-13 exact-key rule was replaced
+
+That decision held that `date_distance = 0` made a pair "near-certain" and that
+no description threshold cleanly separates cross-format pairs. Measured against
+live data, both halves turned out to be wrong:
+
+- The same-day band held the **weakest** evidence in the set, not the
+  strongest. On a real card, 22 of the 27 pairs whose descriptions shared
+  nothing sat at `date_distance = 0` — including amount collisions between
+  genuinely different merchants, which the old rule merged silently.
+- Review volume was anti-correlated with real uncertainty: 265 of 266 queued
+  pairs had descriptions already agreeing at 0.90+, while the 22 ambiguous ones
+  bypassed review entirely.
+- Containment *does* separate the population cleanly, and needs no threshold.
+  On the card above it split 349 candidate pairs into **346 auto-merge / 3
+  review**, where the 346 are exactly the genuine duplicates and the 3 are
+  exactly the false amount-collisions (two different merchants that happened to
+  charge the same amount within the window). Confirmed on a second account with
+  a different source pair (csv↔ofx rather than pdf↔ofx): 168 auto-merge, 12
+  review, with 191 of 201 previously-scored pairs byte-identical.
+
+Whitespace collapse is load-bearing, not cosmetic. Two of the five pairs
+containment initially missed differed *only* by internal spacing
+(`UBER   *TRIP` against `UBER *TRIP HELP.UBER.COM CA`) — sources pad
+descriptions to fixed column widths.
+
+Normalizing descriptions first (`normalize_description`) was measured and
+rejected: it moved average similarity by +0.011, left 270 of 349 pairs unequal,
+and produced one *more* sub-0.80 pair than raw text. Its trailing-location
+regex requires a plain capitalized word before the state code, so statement
+layouts like `NETFLIX.COM NETFLIX.COM CA` pass through untouched.
+
+### The cross-source asymmetry
+
+The floor is Tier 3 only. Across sources each side lists a transaction once, so
+two agreeing rows are one transaction rendered twice. Inside one source the
+rendering is consistent, so two rows written *differently* are two
+transactions — granting the floor there would silently delete one. Tier 2b keeps
+the weighted formula unchanged.
 
 ## Mechanisms
 
 Two changes, both scoped to the cross-source tier / shared assignment; transfer
 matching and within-source (Tier 2b) acceptance are unchanged.
 
-### 1. Exact-key confidence floor (`scoring.py`)
+### 1. Description-agreement confidence floor (`scoring.py`)
 
-`compute_confidence(..., exact_key_floor=high_confidence_threshold)` lifts an
-exact-key cross-source pair into `[floor, 1.0]` via
+The blocking query computes `desc_agree` — one normalized description containing
+the other, **with both sides required non-empty**. That non-empty requirement is
+load-bearing, not defensive: `contains(x, '')` is `TRUE`, so a source that omits
+descriptions would otherwise agree with every row it met and merge an entire
+account silently.
+
+Normalization is `_normalized_description()` in `scoring.py` — case-fold,
+collapse internal whitespace runs, trim. Deliberately *only* canonicalization:
+running the categorization normalizer (`normalize_description`) here was
+measured and rejected (see above).
+
+`compute_confidence(..., agreement_floor=high_confidence_threshold,
+descriptions_agree=True)` then lifts the pair into `[floor, 1.0]` via
 `floor + (1 − floor)·description_similarity`:
 
 - The minimum (`description_similarity = 0`) equals `high_confidence_threshold`,
-  so every exact-key pair clears auto-merge — no `_classify_pair` change needed.
+  so every agreeing pair clears auto-merge at any date gap inside the window.
 - The result is **monotonic** in `description_similarity`, so `assign_components`
   still orders true twins ahead of bridge pairs (the tiebreaker).
-- The **persisted** `match_confidence` honestly reflects exact-key certainty
-  (≥ 0.95), not the low jaro score; the raw similarity is still recorded in
-  `match_signals.description_similarity` for audit.
+- `match_signals` records `descriptions_agree` alongside the raw similarity.
+  Auto-merge is the one path with no human in it, so the decision record is the
+  only place its reasoning survives.
 
 The floor is threaded from `MatchingSettings.high_confidence_threshold` (not
 hard-coded) so the two stay coupled if the threshold ever changes. Tier 2b
 passes no floor.
+
+`_classify_pair` accepts at/above the threshold and routes **every** other
+surviving Tier 3 pair to `pending`. `review_threshold` no longer applies to
+Tier 3; `assign_components` bounds the queue, so it cannot run away.
 
 ### 2. Cardinality guard (`assignment.py::assign_components`)
 
@@ -103,26 +169,63 @@ This guard is universally correct for all dedup tiers (it only ever blocks a
 would-be over-collapse) and a no-op for correct N-way collapse, where each
 member comes from a distinct source.
 
-## Precision tradeoff (accepted)
+## Precision
 
-A **lone** exact-key cross-source pair (one csv + one ofx, no competing rows)
-that is actually two *different* merchants — e.g. a $5 coffee in csv and a $5
-donut in ofx on the same day — is indistinguishable from a true cross-format
-duplicate and **will merge**. The cardinality guard cannot help (only one row
-per source). This is the accepted cost of the decision.
+The 2026-06-13 design accepted a known false-merge: a **lone** cross-source pair
+on the same day that is actually two *different* merchants — a $5 coffee in csv
+and a $5 donut in ofx — merged silently, because the cardinality guard cannot
+help when there is only one row per source.
 
-The guard *does* protect the realistic full-dual-import case: when both
-transactions appear in **both** formats (4 rows), they pair 1:1 and stay two
-records. In a real account dual-imported as csv + ofx, every transaction appears
-in both formats, so this is the common shape; the lone asymmetric pair is the
-rare exception.
+Description agreement closes that case. Two different merchants do not contain
+each other's descriptions, so the pair no longer clears the floor; it lands in
+review, where a human sees both and decides. On live data the queue now holds
+exactly the pairs that survive assignment but share no description — the
+confirmed amount collisions.
+
+The cardinality guard remains and still protects the full-dual-import case: when
+both transactions appear in **both** formats (4 rows), they pair 1:1 and stay two
+records.
+
+### Two residual costs, both accepted
+
+**A genuine duplicate rendered with no shared text is reviewed, not merged** — an
+OFX row reading `ACH DEBIT` against a CSV row naming the merchant. Intended: the
+pair is surfaced, not lost, and a wrong silent merge is the harder error to
+notice and undo.
+
+**A lone same-merchant, same-amount pair inside the window merges silently.** Two
+separate $28.10 Trader Joe's trips on consecutive days, one captured by each of
+two sources, are indistinguishable from one transaction posted a day after
+purchase — same account, same amount, agreeing descriptions, one day apart. The
+scorer has no signal that separates them.
+
+Brandon accepted this on 2026-08-02, weighing that posting lag is the far more
+common shape (266 such pairs on live data were all genuine duplicates) against
+the rarer case where two sources each miss a different transaction. This
+**widens** rather than creates the tradeoff: the 2026-06-13 rule already accepted
+it for a lone same-day pair; it now extends across the window.
+
+A coverage-overlap check was considered as a discriminator — "the other source
+covers this date and has no agreeing row on it, so this is a distinct
+transaction" — and rejected on inspection. That condition is precisely what
+posting lag produces, so it cannot separate the two cases; it would break the
+duplicate merges it was meant to preserve. The only remaining idea is
+account-level corroboration (trust gap-merges more on accounts whose sources
+already twin nearly every row); unimplemented, not required by this change.
+
+`dedup-negative-fixture` pins both directions: the Trader Joe's pair merges by
+design, and a SHELL/COSTCO pair (same account, same amount, one day apart,
+descriptions sharing nothing) must not.
 
 ## Testing
 
-- **Unit** (`tests/moneybin/matching/`): exact-key floor lifts low-similarity
-  pairs ≥ threshold and preserves description ordering; `date_distance > 0`
-  still uses the weighted formula; the cardinality guard pairs N duplicates 1:1
-  (including with equal scores) and still collapses distinct-file N-way groups.
+- **Unit** (`tests/moneybin/matching/`): the agreement floor lifts
+  low-similarity pairs ≥ threshold at every date gap the window admits and
+  preserves description ordering; disagreeing pairs stay below the floor even on
+  the same day; a blank description is not agreement; the floor does not reach
+  Tier 2b (same fixture, opposite outcome); an auto-merge records
+  `descriptions_agree`; the cardinality guard pairs N duplicates 1:1 (including
+  with equal scores) and still collapses distinct-file N-way groups.
 - **Scenario** (`tests/scenarios/`):
   - `dedup-cross-format-truncation` (positive) — 4 real deidentified WF
     OFX↔CSV pairs with low description similarity collapse to 4 gold records,
@@ -130,9 +233,12 @@ rare exception.
   - `dedup-overmerge-guard` (negative/precision) — two distinct $5 txns, each in
     both formats (4 rows), stay two records (`source_count = 2` each), never one
     (`source_count = 4`).
-  - `dedup-negative-fixture` reconciled: its former lone exact-key
-    different-merchant case now auto-merges by design and was removed; the
-    realistic precision concern moved to `dedup-overmerge-guard`.
+  - `dedup-negative-fixture` reconciled (2026-08-02): the TRADER JOES pair
+    (same merchant/amount, one day apart) now auto-merges by design, with the
+    justification recorded inline in the YAML; a SHELL/COSTCO pair — same
+    account, same amount, one day apart, descriptions sharing nothing — was
+    added in the same change so the scenario keeps a real negative on the
+    agreement gate rather than only on the amount predicate.
 
 ## Out of scope
 
