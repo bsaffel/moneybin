@@ -150,28 +150,30 @@ def _validate_file_path(file_path: str) -> Path:
 def _reject_unsupported_pdf_account_signals(
     *,
     account_name: str | None,
-    account_bindings: dict[str, str] | None,
     account_metadata: dict[str, dict[str, str]] | None,
 ) -> None:
     """Refuse account-selection signals no PDF channel can honor.
 
-    Both PDF entry points bottom out in a service method that takes only
-    `account_id` — `_import_pdf` for the deterministic/sign channel and
-    `apply_pdf_bridge_response` for the bridge. Every other account signal is
-    tabular-only, so forwarding is not merely unimplemented but impossible
+    Both PDF entry points still take only `account_id` for *naming* an account —
+    `_import_pdf` for the deterministic/sign channel and
+    `apply_pdf_bridge_response` for the bridge — so `account_name` and
+    `account_metadata` remain tabular-only and forwarding them is impossible
     without a service-layer change. Accepting one silently would bind the rows
     to a statement- or filename-derived account while the caller believes they
     chose one — the failure is invisible at the call site and expensive to
     notice later, which is exactly when a loud refusal is worth more than a
     best-effort guess. Shared by both channels so a new signal cannot be
     rejected on one and dropped on the other.
+
+    ``account_bindings`` is deliberately NOT here: PDF now stops before load on
+    an unratified account identity, and a binding is the answer. Refusing it
+    would leave the caller in a loop the tool that raised the gate cannot exit.
     """
     unsupported = next(
         (
             name
             for name, value in (
                 ("account_name", account_name),
-                ("account_bindings", account_bindings),
                 ("account_metadata", account_metadata),
             )
             if value
@@ -1857,6 +1859,7 @@ def _run_import_confirm_attempt(
                         source_bytes=source_bytes,
                         save_format=save_format,
                         account_id=account_id,
+                        account_bindings=account_bindings,
                         actor_kind="agent",
                         confirm=confirm_sign,
                         refresh=False,
@@ -1871,6 +1874,7 @@ def _run_import_confirm_attempt(
                         cast(dict[str, Any], bridge_response),
                         save_format=save_format,
                         account_id=account_id,
+                        account_bindings=account_bindings,
                         source_bytes=source_bytes,
                         in_outer_txn=True,
                         emit_metrics=False,
@@ -2149,7 +2153,6 @@ async def import_confirm_coarse(
     if channel == "pdf":
         _reject_unsupported_pdf_account_signals(
             account_name=account_name,
-            account_bindings=account_bindings,
             account_metadata=account_metadata,
         )
         if pdf_sign:

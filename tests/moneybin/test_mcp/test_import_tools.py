@@ -743,6 +743,7 @@ async def test_import_confirm_ignores_format_created_after_preview(
     confirmed = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
         save_format=False,
     )
 
@@ -1538,7 +1539,14 @@ async def test_import_confirm_token_reconstruction_does_not_double_count_sign_pr
     proposed_before = proposed._value.get()  # type: ignore[attr-defined]  # testing prometheus internals
     confirmed_before = confirmed_metric._value.get()  # type: ignore[attr-defined]  # testing prometheus internals
 
-    required = await import_confirm_coarse(preview_id=preview_id)
+    # The binding rides both calls: the sign grant is bound to the canonical
+    # arguments, and the "confirmed" counter commits with the import, so a call
+    # the account gate stops would discard it. chase_1234 is the source key the
+    # card fixture's issuer and masked number derive.
+    bindings = {"chase_1234": "new"}
+    required = await import_confirm_coarse(
+        preview_id=preview_id, account_bindings=bindings
+    )
 
     assert required.error is not None
     assert required.error.details is not None
@@ -1546,6 +1554,7 @@ async def test_import_confirm_token_reconstruction_does_not_double_count_sign_pr
     confirmed = await import_confirm_coarse(
         preview_id=preview_id,
         confirmation_token=str(required.error.details["confirmation_token"]),
+        account_bindings=bindings,
     )
 
     assert confirmed.error is None
@@ -2122,6 +2131,7 @@ async def test_import_confirm_tabular_transform_failures_observed_after_rollback
     response = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
     )
 
     assert response.error is not None
@@ -2208,14 +2218,129 @@ def test_the_elicitation_prompt_keeps_card_framing_on_first_contact() -> None:
     assert "Approve this sign inversion?" in message
 
 
+async def test_import_confirm_coarse_answers_the_pdf_account_gate(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A PDF confirm must be able to answer the account gate it just raised.
+
+    PDF now stops before load on an unratified account identity, and
+    import_confirm is the tool that surfaces that stop for a previewed PDF. If
+    it also refuses account_bindings the agent is in a loop it cannot exit —
+    the only escape would be abandoning the preview for import_files.
+    """
+    pdf = write_card_statement_pdf(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "sign_convention",
+        },
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation._active_context",
+        MagicMock(return_value=None),
+    )
+
+    # 1. Learn the account key. The sign gate fires first, so this call answers
+    #    nothing; it reports which account is unratified.
+    sign = await import_confirm_coarse(preview_id=preview_id)
+    assert sign.error is not None and sign.error.details is not None
+    gated = await import_confirm_coarse(
+        preview_id=preview_id,
+        confirmation_token=str(sign.error.details["confirmation_token"]),
+    )
+    assert gated.data.status == "confirmation_required"
+    # The envelope masks source_account_key — it is an ACCOUNT_IDENTIFIER
+    # (CRITICAL). So an agent reading this response cannot recover the key it
+    # would need to bind, which is why multi-account binding is a CLI
+    # capability today. This test drives the tool the way a caller holding the
+    # real key does.
+    assert [p["source_account_key"] for p in gated.data.account_proposals] == [
+        "****1234"
+    ]
+
+    # 2. Re-approve with the answer in hand. The sign grant is bound to the
+    #    canonical arguments, so adding a binding to the old token is a
+    #    mismatch by design — the caller re-runs the gate with the binding
+    #    supplied, and that token covers it.
+    bindings = {"chase_1234": "new"}
+    resign = await import_confirm_coarse(
+        preview_id=preview_id, account_bindings=bindings
+    )
+    assert resign.error is not None and resign.error.details is not None
+    answered = await import_confirm_coarse(
+        preview_id=preview_id,
+        confirmation_token=str(resign.error.details["confirmation_token"]),
+        account_bindings=bindings,
+    )
+    assert answered.error is None, answered.error
+    assert answered.data.kind == "pdf_sign_applied"
+    # Rows, not just a clean envelope: the binding has to survive all the way
+    # into the load, which is the hop that silently dropped it.
+    assert answered.data.rows_loaded > 0
+
+
+async def test_import_confirm_coarse_forwards_bindings_to_the_bridge_apply(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The bridge branch forwards the binding too, not only the sign branch.
+
+    Both PDF rungs raise the same account gate, so a binding honored on one and
+    dropped on the other leaves the bridge path unanswerable.
+    """
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {},
+        },
+    )
+    applied = SimpleNamespace(
+        outcome="applied",
+        import_id="imp_bridge_bound",
+        rows_loaded=1,
+        format_name="bridge_recipe",
+        expected_row_count=1,
+        actual_row_count=1,
+        rows_diverged=False,
+        reject_reason=None,
+    )
+    apply = MagicMock(return_value=applied)
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+        apply,
+    )
+
+    confirmed = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response={"recipe": {"version": 1}, "rows": [{}]},
+        account_bindings={"chase_1234": "new"},
+    )
+
+    assert confirmed.error is None, confirmed.error
+    assert apply.call_args.kwargs["account_bindings"] == {"chase_1234": "new"}
+
+
 @pytest.mark.parametrize(
     "signal",
     [
         {"account_name": "Checking"},
-        {"account_bindings": {"stmt-key": "acct_123"}},
         {"account_metadata": {"stmt-key": {"institution": "Chase"}}},
     ],
-    ids=["account_name", "account_bindings", "account_metadata"],
+    ids=["account_name", "account_metadata"],
 )
 async def test_import_confirm_coarse_rejects_every_tabular_account_signal_for_pdf(
     mcp_db: object,
@@ -2223,12 +2348,14 @@ async def test_import_confirm_coarse_rejects_every_tabular_account_signal_for_pd
     monkeypatch: MonkeyPatch,
     signal: dict[str, Any],
 ) -> None:
-    """A PDF preview refuses every tabular account signal, not just account_name.
+    """A PDF preview refuses the tabular account signals no PDF path can honor.
 
-    PDF rows resolve the account from the statement; only account_id pins them
-    to an existing one. Each arm needs its own case — a guard narrowed to the
-    one signal under test would silently drop the other two, binding the
-    statement to whichever account the extractor inferred with no error.
+    ``account_name`` and ``account_metadata`` still bottom out in tabular-only
+    service arguments. ``account_bindings`` used to sit here too and no longer
+    does — the PDF account gate made it the answer, covered above. Each arm
+    needs its own case: a guard narrowed to the one signal under test would
+    silently drop the other, binding the statement to whichever account the
+    extractor inferred with no error.
     """
     pdf = tmp_path / "statement.pdf"
     pdf.write_bytes(b"%PDF fixture")
@@ -2294,6 +2421,7 @@ async def test_import_preview_coarse_mapping_override_corrects_swapped_columns(
     confirmed = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
     )
     assert confirmed.data.status == "complete"
     assert confirmed.data.rows_loaded == 2
@@ -2335,6 +2463,7 @@ async def test_mapping_override_to_single_amount_retires_the_split_sign_rule(
     confirmed = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
     )
     assert confirmed.data.status == "complete"
     assert confirmed.data.rows_loaded == 2
@@ -2447,6 +2576,7 @@ async def test_import_preview_confirm_status_coarse_workflow(
     confirmed = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
     )
     status = await import_status_coarse(
         sections=["imports"],
