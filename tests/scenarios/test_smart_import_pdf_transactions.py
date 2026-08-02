@@ -19,11 +19,7 @@ import yaml
 
 from moneybin.database import Database
 from moneybin.services.import_service import ImportService
-from tests.import_helpers import (
-    apply_bridge_answering_gate,
-    first_contact_bindings,
-    import_answering_gate,
-)
+from tests.import_helpers import apply_bridge_answering_gate, import_answering_gate
 from tests.scenarios._runner import scenario_env
 from tests.scenarios._runner.loader import Scenario
 
@@ -187,20 +183,24 @@ def test_chase_checking_second_import_replays_recipe(tmp_path: Path) -> None:
     with scenario_env(_minimal_scenario("chase-replay")) as (db, _tmp, _env):
         svc = ImportService(db)
 
-        # Answer the first-contact account gate before the capture opens: the
-        # count below is one decision per import, and answering by re-import
-        # would route twice for pdf_first. pdf_second needs no binding — the
-        # first import's source_native link resolves it above the gate.
-        bindings = first_contact_bindings(svc, pdf_first, refresh=False)
-
+        # No account answer needed on either import, which is what keeps the
+        # decision count at one per import. The statement states its own
+        # identity (issuer + last four) and the book is empty, so the first
+        # import mints and reports rather than gating; the second resolves
+        # through the source_native link the first one wrote.
         with patch(
             "moneybin.extractors.pdf.routing.route_pdf_import",
             side_effect=_capturing_route,
         ):
-            result_first = svc.import_file(
-                pdf_first, refresh=False, account_bindings=bindings
-            )
+            result_first = svc.import_file(pdf_first, refresh=False)
             result_second = svc.import_file(pdf_second, refresh=False)
+
+        assert len(result_first.accounts_created) == 1, (
+            "First contact with this card should have minted one account"
+        )
+        assert result_second.accounts_created == (), (
+            "Second statement of the same card must adopt, not mint"
+        )
 
         # First import routed to transactions
         assert result_first.transactions > 0, "First import produced no transactions"

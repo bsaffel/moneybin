@@ -21,6 +21,10 @@ def _first_contact_bindings(exc: ImportConfirmationRequiredError) -> dict[str, s
     Shared by both entry points below so one rule decides what a helper may
     answer on a test's behalf. A proposal carrying merge candidates is never
     answerable here — see ``import_answering_gate``.
+
+    Only reachable now for a source that stated no identity: a stated identity
+    with no candidates mints without gating, so most fixtures never enter this
+    path at all.
     """
     if exc.outcome.reason != "account_confirmation":
         raise exc
@@ -60,24 +64,6 @@ def import_answering_gate(
         return service.import_file(
             file_path, account_bindings=_first_contact_bindings(exc), **kwargs
         )
-
-
-def first_contact_bindings(
-    service: ImportService, file_path: Path, /, **kwargs: Any
-) -> dict[str, str]:
-    """Answer ``file_path``'s account gate without importing it.
-
-    For tests that count per-import work — routing decisions, detection
-    metrics. ``import_answering_gate`` answers by re-importing, so the gated
-    attempt and the answering attempt both do that work and any such count
-    reads one too high. Take the bindings here, then pass them to a single
-    ``import_file`` inside the measured region.
-    """
-    try:
-        service.import_file(file_path, **kwargs)
-    except ImportConfirmationRequiredError as exc:
-        return _first_contact_bindings(exc)
-    raise AssertionError(f"{file_path.name} did not raise an account gate")
 
 
 def apply_bridge_answering_gate(
