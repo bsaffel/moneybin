@@ -433,7 +433,7 @@ next split. That makes an adjusted price unusable as a durable historical fact.
 Adjusted rows are stored, visible, and excluded from valuation with the reason
 recorded, rather than silently valued.
 
-**`close` is classified by source, not by column.** C.1 classified this column
+**`close` is classified by the strictest value it can carry.** C.1 classified this column
 `AGGREGATE` (LOW) on the rationale that a market close is public reference data —
 what a security's price *was* on a date — unlike
 `fct_investment_transactions.price`, which is what the user actually paid. That
@@ -449,15 +449,30 @@ that are personal facts:
   override path was built to serve, so the exposure lands on the people using
   the feature as designed.
 
-A single column-level class cannot express this. Raising the whole column to the
-strictest source masks genuinely public market data and degrades every
-price-bearing report — and over-masking is invisible, since no privacy test
-fails for it (`private/` follow-ups from #340 record three such regressions
-shipping unnoticed). Leaving it LOW knowingly leaks the private-security case.
-So provider rows keep the public class and the two derived sources carry a
-higher one, which requires source-aware classification rather than the static
-column map. Whichever mechanism lands, the PR must include an unaliased
-"ordinary public-price query still works" fixture alongside the masking test.
+A single column-level class cannot express that split. `CLASSIFICATION` maps a
+column to one class and cannot vary per row, so `close` is classified by the
+strictest value it can hold: `TXN_AMOUNT` (HIGH), on both
+`core.fct_security_prices` and `app.security_price_overrides`. That costs the
+provider closes a tier they do not need — a price read reports a
+`summary.sensitivity` of `high` rather than `low`. It buys the guarantee that
+the resolved column never advertises a user's own fill, or a private-company
+mark, as public data.
+
+Two alternatives were weighed and declined. Source-aware classification needs a
+class that varies per row, which no other column in the map does. Splitting
+provider-only closes into their own column or model recovers LOW for the public
+series, but is a core schema change and leaves consumers unioning two columns;
+it stays available if the sensitivity label on price reads ever costs something
+real. Raising the column is reversible in a way a leaked private valuation is
+not.
+
+No report degrades today: only CRITICAL fields are masked, so a HIGH `close` is
+classified rather than transformed.
+`test_a_resolved_close_is_never_less_sensitive_than_what_flows_into_it` holds
+the ordering against the columns that feed it. If a masking transform is ever
+added here, ship an unaliased "an ordinary public-price query still works"
+fixture beside it — no privacy test fails on over-masking, so a mask that
+swallowed the whole provider series would ship green.
 
 ### Extended model: `core.dim_holdings`
 
@@ -1089,24 +1104,15 @@ requires a paired `_delete` for this mutation shape.
 run. `investments holdings` and `investments gains` gain `market_value`,
 `unrealized_gain`, and an as-of column reporting `price_date` and staleness.
 
-**Sensitivity splits by grain, and this section originally over-claimed it.**
-`market_value` is `high` — quantity x close reveals position size, and it is the
-same class of data as the holdings it values. A per-UNIT `close` is not: the
-privacy registry classifies both `core.fct_security_prices.close` and
-`app.security_price_overrides.close` as AGGREGATE, because a market close is
-public reference data about a security rather than a personal fact about the
-user, unlike `core.fct_investment_transactions.price` (what the user actually
-paid). So `investments prices list` derives `low` while `investments holdings`
-stays `high`, and the payloads follow the registry rather than this paragraph's
-earlier blanket claim.
-
-**Still open:** that AGGREGATE classification was decided when `close` was only
-reachable through a resolved model. C.2 gives it a direct user-facing read, and
-the override path can carry a private-company mark — a 409A valuation is not
-public reference data in the way an exchange close is. The registry's own comment
-concedes the source is classified no stricter than the column it feeds. Re-examine
-before launch, and ship an unaliased "an ordinary public-price query still works"
-fixture beside any masking test so the fix cannot over-mask silently.
+**Sensitivity is `high` on both reads.** `market_value` is `high` because
+quantity x close reveals position size — the same class of data as the holdings
+it values. `close` is `high` for the separate reason recorded above: the privacy
+registry classifies `core.fct_security_prices.close` and
+`app.security_price_overrides.close` as `TXN_AMOUNT`, since the resolved column
+carries a `trade_implied` row (the user's own fill) or an `override` row (a
+valuation the user authored) as readily as a provider close, and one column gets
+one class. So `investments prices list` and `investments holdings` both derive
+`high`, and the payloads follow the registry.
 
 ## MCP and report integration
 
