@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from moneybin.services.import_service import ImportService
+from tests.import_helpers import import_answering_gate
 from tests.scenarios._runner.loader import Scenario, SetupSpec
 from tests.scenarios._runner.runner import scenario_env
 
@@ -44,7 +45,7 @@ def test_reimport_identity_follows_content_not_path(tmp_path: Path) -> None:
 
         downloaded = tmp_path / "statement.qfx"
         shutil.copy(_FIXTURES / "wf_checking.qfx", downloaded)
-        svc.import_file(downloaded, refresh=False)
+        import_answering_gate(svc, downloaded, refresh=False)
 
         # Same bytes, second download -> the browser's "(1)" suffix. A path key
         # calls this new and double-imports; content identity recognizes it.
@@ -56,7 +57,7 @@ def test_reimport_identity_follows_content_not_path(tmp_path: Path) -> None:
         # Next month's statement saved over the same filename. A path key
         # refuses this as a duplicate; the bytes say otherwise.
         shutil.copy(_FIXTURES / "wf_savings.qfx", downloaded)
-        svc.import_file(downloaded, refresh=False)
+        import_answering_gate(svc, downloaded, refresh=False)
 
         # Two distinct documents landed, and the redundant download did not.
         digests = db.execute(

@@ -10,7 +10,7 @@ from moneybin.database import Database
 from moneybin.services.import_service import (
     _detect_file_type,  # type: ignore[reportPrivateUsage]  # testing private function
 )
-from tests.moneybin.import_helpers import import_answering_gate
+from tests.import_helpers import import_answering_gate
 
 # ---------------------------------------------------------------------------
 # Helpers

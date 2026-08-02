@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from moneybin.database import Database
-from tests.moneybin.import_helpers import import_answering_gate
+from tests.import_helpers import import_answering_gate
 
 
 def test_multi_account_institution_is_per_account_not_tool_name(

@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from moneybin.services.import_service import ImportService, per_file_failure
-from tests.moneybin.import_helpers import import_answering_gate
+from tests.import_helpers import import_answering_gate
 
 # Stands in for the payee/amount/memo content ofxparse and Polars embed in
 # their exception strings when they choke on a row.

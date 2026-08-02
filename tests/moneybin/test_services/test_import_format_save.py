@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from moneybin.database import Database
-from tests.moneybin.import_helpers import import_answering_gate
+from tests.import_helpers import import_answering_gate
 
 
 def test_autosaved_format_does_not_store_account_name_as_institution(

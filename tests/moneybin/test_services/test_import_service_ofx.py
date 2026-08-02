@@ -9,7 +9,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.loaders import import_log
 from moneybin.services.import_service import ImportService
-from tests.moneybin.import_helpers import import_answering_gate
+from tests.import_helpers import import_answering_gate
 
 
 class TestImportOFXBatchLifecycle:
