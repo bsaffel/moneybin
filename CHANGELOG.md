@@ -367,7 +367,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   coin's prices: that holding reports its own failure and the rest of the batch
   still refreshes. A price mark moved onto the surviving security by a merge
   keeps the date you authored it instead of being restamped with the merge
-  time. (#373)
+  time. A provider close too large for the stored column is reported against its
+  own security rather than ending the refresh and discarding every security
+  priced alongside it. Pulls now measure the last complete day in UTC, the day
+  the providers themselves close on, so a machine east of UTC no longer asks for
+  a day that has not finished and one west of UTC no longer skips a day that
+  has. (#373)
 - **Brokerage positions now carry a market value.** `moneybin investments holdings`
   reports `market_value` and `unrealized_gain` for every position priced by the close
   your broker already sends through `sync pull` — no new network calls, no credentials.

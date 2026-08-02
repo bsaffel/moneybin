@@ -828,19 +828,38 @@ def _apply_accept(
         service = SecurityLinksService(db, actor="mcp")
         decision = service.decision_by_id(decision_id)
         if decision is not None and str(decision["ref_kind"]) in _FEED_KEY_REF_KINDS:
-            # verify_accept re-derives the MERGE impact; a feed-key bind has none
-            # to re-derive. The grant is still checked — against the binding the
-            # prompt was issued for, which recorded operation_kind
-            # 'security_feed_key_bind' and cannot satisfy a merge grant.
-            grant.verify(
-                _security_link_binding(
-                    decision_id=decision_id,
-                    candidate_security_id=into,
-                    provisional_security_id=None,
-                    blast_radius=_feed_key_bind_radius(service, decision),
+            # The merge branch's verify_accept re-derives the MERGE impact; a
+            # feed-key bind has no such impact, but it still has a blast radius —
+            # the sibling candidates its accept auto-rejects — and that radius is
+            # live state, so it is recomputed INSIDE accept_feed_key's transaction
+            # rather than here. mcp.md forbids verifying and then opening a
+            # separate mutation transaction: a sibling queued in that gap would be
+            # rejected by a bind the user approved without it. The grant is
+            # checked against the binding the prompt was issued for, which
+            # recorded operation_kind 'security_feed_key_bind' and cannot satisfy
+            # a merge grant.
+            def verify_bind() -> None:
+                live = service.decision_by_id(decision_id)
+                if live is None:  # pragma: no cover — _require_pending ran first
+                    raise UserError(
+                        f"No pending decision found for id {decision_id!r}.",
+                        code=error_codes.MUTATION_NOT_FOUND,
+                    )
+                grant.verify(
+                    _security_link_binding(
+                        decision_id=decision_id,
+                        candidate_security_id=into,
+                        provisional_security_id=None,
+                        blast_radius=_feed_key_bind_radius(service, live),
+                    )
                 )
+
+            service.accept_feed_key(
+                decision_id,
+                into=into,
+                decided_by="user",
+                verify_accept=verify_bind,
             )
-            service.accept_feed_key(decision_id, into=into, decided_by="user")
             return
         service.accept_merge(
             decision_id,

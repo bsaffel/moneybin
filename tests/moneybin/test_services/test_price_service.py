@@ -8,7 +8,8 @@ rather than any provider's behaviour, which test_connectors/test_prices covers.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+import time as _time
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1150,6 +1151,87 @@ def test_a_close_too_small_to_store_is_dropped_without_losing_the_batch(
 
     assert result.rows_written == 1
     assert [u.reason for u in result.unpriced] == ["close_below_storable_precision"]
+
+
+def test_a_close_too_large_to_store_drops_only_its_own_security(
+    db: Database,
+) -> None:
+    """The magnitude bound is the twin of the precision bound, on the same column.
+
+    ``set_mark`` refuses a close above ``MAX_STORED_PRICE`` outright and checks
+    magnitude BEFORE precision, because quantizing a number that large overflows
+    the decimal context first. The pull path had only the lower half, so an
+    oversized provider close reached frame construction and ``_store()`` — both
+    outside the per-source ``PriceFeedError`` containment — and took down the
+    whole pull, discarding every well-priced security fetched alongside it.
+
+    That is strictly worse than the sub-precision case this mirrors: there the
+    bad row was dropped and the good one still landed.
+    """
+    _seed_security(
+        db,
+        security_id="s_huge",
+        name="Overflow Coin",
+        security_type="crypto",
+        coingecko_id="huge-coin",
+    )
+    _seed_security(
+        db,
+        security_id="s_btc",
+        name="Bitcoin",
+        security_type="crypto",
+        coingecko_id="bitcoin",
+    )
+    _hold(db, "s_huge")
+    _hold(db, "s_btc")
+    coingecko = _FakeCoinGecko()
+    coingecko.close_by_key = {"huge-coin": Decimal(10) ** 19}
+
+    result = _service(db, _FakeTiingo(), coingecko).pull()
+
+    assert result.rows_written == 1
+    assert [u.reason for u in result.unpriced] == ["close_above_storable_range"]
+
+
+@pytest.mark.parametrize("tz", ["Pacific/Kiritimati", "Pacific/Midway"])
+def test_the_complete_day_cutoff_follows_the_utc_day_not_the_host(
+    db: Database, monkeypatch: pytest.MonkeyPatch, tz: str
+) -> None:
+    """The cutoff must mean one complete PROVIDER day, on any host.
+
+    Every day this service reasons about is a UTC day — CoinGecko's close for D
+    is the 00:00 UTC point of D+1 — so a host-local clock disagrees with the data
+    off UTC. East of UTC the local date rolls first and the cutoff names a UTC day
+    whose close does not exist yet; on an append-only table with
+    on_conflict="ignore" that partial value would own the date permanently. West
+    of UTC a completed UTC day goes unfetched until local catches up.
+
+    The two zones are UTC+14 and UTC-11, chosen so the assertion is never vacuous:
+    Kiritimati's local date runs ahead of UTC whenever it is 10:00 UTC or later
+    and Midway's runs behind before 11:00 UTC, so whatever the instant, at least
+    one parametrization has a local date that differs from the UTC one. A
+    host-local clock cannot pass both.
+
+    Asserted through ``pull``'s refusal rather than the stored date, so this
+    tests the behaviour a user meets. Today's UTC date is always after the last
+    complete UTC day, so it must always be refused — but on a host running a day
+    ahead of UTC the cutoff lands on today, the refusal never fires, and the pull
+    proceeds to ask a provider for a day that has not closed.
+    """
+    monkeypatch.setenv("TZ", tz)
+    _time.tzset()
+    try:
+        # Constructed WITHOUT `today`: the module-level helper injects a fixed
+        # date, which is exactly the default this test has to exercise.
+        service = PriceService(db, tiingo=_FakeTiingo(), coingecko=_FakeCoinGecko())
+
+        with pytest.raises(UserError) as caught:
+            service.pull(since=datetime.now(UTC).date())
+
+        assert caught.value.code == error_codes.INVESTMENT_DATE_RANGE_INVALID
+    finally:
+        monkeypatch.undo()
+        _time.tzset()
 
 
 # --------------------------------------------------------------------------

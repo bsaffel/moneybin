@@ -17,7 +17,8 @@ Two response facts below were verified against the live keyless API on
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+import time as _time
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import httpx
@@ -37,6 +38,14 @@ from moneybin.connectors.prices.protocol import SecurityRef
 
 _DAY_MS = 86_400_000
 _HOUR_MS = 3_600_000
+
+# The window pair below pins its own "today" and injects it, rather than reading a
+# clock. Reading date.today() built the window on the host's calendar while the
+# adapter measures the span against UTC, so on any host whose local date has
+# already turned over, a window spelled as exactly 365 days arrives as 366 and the
+# boundary case refuses a backfill that is legal. A literal also stops the pair
+# expiring the day the real clock runs 365 days past it.
+_WINDOW_TODAY = date(2026, 7, 24)
 
 
 def _midnight_ms(day: date) -> int:
@@ -185,14 +194,14 @@ def test_it_refuses_a_window_deeper_than_the_keyless_tier_serves() -> None:
 
     No request is issued, so the refusal also costs none of the keyless quota.
     """
-    today = date.today()
+    today = _WINDOW_TODAY
     with respx.mock:
         route = respx.get(_chart_route()).mock(
             return_value=httpx.Response(200, json=_prices([]))
         )
 
         with pytest.raises(PriceFeedWindowUnsupportedError, match="365"):
-            CoinGeckoPriceAdapter().fetch(
+            CoinGeckoPriceAdapter(today=today).fetch(
                 [_ref()],
                 today - timedelta(days=COINGECKO_MAX_HISTORY_DAYS),
                 today,
@@ -207,7 +216,7 @@ def test_it_serves_the_deepest_window_the_keyless_tier_allows() -> None:
     Paired with the refusal deliberately: a guard spelled ``>=`` passes that test
     and fails this one, and neither fixture on its own separates the two versions.
     """
-    today = date.today()
+    today = _WINDOW_TODAY
     with respx.mock:
         route = respx.get(_chart_route()).mock(
             return_value=httpx.Response(
@@ -215,7 +224,7 @@ def test_it_serves_the_deepest_window_the_keyless_tier_allows() -> None:
             )
         )
 
-        CoinGeckoPriceAdapter().fetch(
+        CoinGeckoPriceAdapter(today=today).fetch(
             [_ref()],
             today - timedelta(days=COINGECKO_MAX_HISTORY_DAYS - 1),
             today,
@@ -223,6 +232,46 @@ def test_it_serves_the_deepest_window_the_keyless_tier_allows() -> None:
 
     days = int(route.calls.last.request.url.params["days"])
     assert days == COINGECKO_MAX_HISTORY_DAYS
+
+
+@pytest.mark.parametrize("tz", ["Pacific/Kiritimati", "Pacific/Midway"])
+def test_the_default_span_is_measured_against_the_utc_day(
+    monkeypatch: pytest.MonkeyPatch, tz: str
+) -> None:
+    """``days`` counts back from the UTC date, on any host.
+
+    The pair above injects its clock, so nothing else here exercises the default,
+    and the default is the whole point: CoinGecko's close for D is the 00:00 UTC
+    point of D+1, so a span measured on the host's calendar asks for a window
+    offset by a day from the one the response is filtered against. West of UTC
+    that silently drops the oldest date asked for; east of UTC it reaches for a
+    day the provider has not closed.
+
+    UTC+14 and UTC-11 are chosen so the assertion is never vacuous: Kiritimati's
+    local date runs ahead of UTC from 10:00 UTC and Midway's runs behind before
+    11:00 UTC, so at any instant at least one of the two disagrees with UTC. A
+    host-local clock cannot pass both.
+    """
+    monkeypatch.setenv("TZ", tz)
+    _time.tzset()
+    try:
+        start = datetime.now(UTC).date() - timedelta(days=9)
+        with respx.mock:
+            route = respx.get(_chart_route()).mock(
+                return_value=httpx.Response(
+                    200,
+                    json=_prices([
+                        (_midnight_ms(start + timedelta(days=5)), "64000.10")
+                    ]),
+                )
+            )
+
+            CoinGeckoPriceAdapter().fetch([_ref()], start, start + timedelta(days=9))
+
+        assert int(route.calls.last.request.url.params["days"]) == 10
+    finally:
+        monkeypatch.undo()
+        _time.tzset()
 
 
 def test_it_declares_the_raw_basis() -> None:

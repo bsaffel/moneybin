@@ -24,7 +24,7 @@ import difflib
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Protocol
 
@@ -276,12 +276,23 @@ class PriceService:
         actor: str = "system",
         today: date | None = None,
     ) -> None:
-        """Initialize with injected adapters; ``today`` is a test seam only."""
+        """Initialize with injected adapters; ``today`` is a test seam only.
+
+        The default is the UTC date, not ``date.today()``. Every provider day this
+        service reasons about is a UTC day — CoinGecko's close for D is the 00:00
+        UTC point of D+1 — so a host-local clock disagrees with the data whenever
+        the host is not on UTC. East of UTC the local date turns over first, and
+        ``pull`` would name a UTC day whose close does not exist yet; west of UTC
+        it turns over last, and a completed UTC day goes unfetched until local
+        catches up. The first is the dangerous one: raw.security_prices is
+        append-only with on_conflict="ignore", so a partial close written once
+        owns that date permanently.
+        """
         self._db = db
         self._tiingo = tiingo
         self._coingecko = coingecko
         self._actor = actor
-        self._today = today or date.today()
+        self._today = today or datetime.now(UTC).date()
         self._links = SecurityLinksRepo(db)
         self._decisions = SecurityLinkDecisionsRepo(db)
 
@@ -473,10 +484,28 @@ class PriceService:
                         source_type=source_type, outcome="failed"
                     ).inc()
                 continue
-            unstorable: set[str] = set()
+            # Both halves of what DECIMAL(28,10) cannot hold, checked here so one
+            # unrepresentable quote costs one security instead of the batch.
+            # Neither failure is loud on its own: a sub-quantum close quantizes to
+            # exactly 0 and trips CHECK (close > 0), and an oversized one becomes
+            # NULL in frame construction and trips NOT NULL. Both surface from
+            # _store() as a duckdb.ConstraintException, which is outside the
+            # per-source PriceFeedError containment above and outside what
+            # classify_user_error recognises — so the whole pull dies and every
+            # well-priced security fetched with it is discarded. set_mark refuses
+            # the same two values outright; this is the pull-path half of that
+            # rule, and it checks magnitude before precision for the reason
+            # set_mark does: quantizing a number this large overflows the decimal
+            # context before a precision test could answer.
+            unstorable: dict[str, str] = {}
             for obs in result.observations:
+                if obs.close > MAX_STORED_PRICE:
+                    unstorable[obs.provider_security_key] = "close_above_storable_range"
+                    continue
                 if obs.close < PRICE_QUANTUM:
-                    unstorable.add(obs.provider_security_key)
+                    unstorable[obs.provider_security_key] = (
+                        "close_below_storable_precision"
+                    )
                     continue
                 observations.append(obs)
                 priced_keys.add((source_type, obs.provider_security_key))
@@ -486,11 +515,7 @@ class PriceService:
                 if key in failed:
                     unpriced.append(UnpricedSecurity(sec.security_id, failed[key]))
                 elif key in unstorable and not priced:
-                    unpriced.append(
-                        UnpricedSecurity(
-                            sec.security_id, "close_below_storable_precision"
-                        )
-                    )
+                    unpriced.append(UnpricedSecurity(sec.security_id, unstorable[key]))
                 # Exhaustive and disjoint over the fetched set: a security the
                 # adapter answered for neither way returned no data without
                 # calling it an error, which is a skip, not a failure.
@@ -1269,9 +1294,15 @@ def build_price_service(db: Database, *, actor: str = "system") -> PriceService:
         SecretStore,  # noqa: PLC0415  # keyring import is deferred too
     )
 
+    # One clock for the whole pull. The service derives its complete-day cutoff
+    # from this date and CoinGecko measures its `days` span against it, so a pull
+    # that happens to straddle UTC midnight cannot end up asking for a span that
+    # disagrees with the window it filters the response against.
+    today = datetime.now(UTC).date()
     return PriceService(
         db,
         tiingo=TiingoPriceAdapter(secrets=SecretStore()),
-        coingecko=CoinGeckoPriceAdapter(),
+        coingecko=CoinGeckoPriceAdapter(today=today),
         actor=actor,
+        today=today,
     )

@@ -1275,6 +1275,52 @@ def test_accepting_a_feed_key_keeps_the_security(db: Database) -> None:
     assert _security_exists(db, security)
 
 
+def test_a_feed_key_grant_is_verified_inside_the_write_transaction(
+    db: Database,
+) -> None:
+    """The bind path must check its grant where the merge path does — in the txn.
+
+    ``mcp.md`` requires a confirmation grant be verified "against live state
+    inside the same write transaction, immediately before the first mutation" and
+    forbids verifying and then opening a separate one. ``accept_merge`` obeys via
+    ``verify_accept``; the feed-key branch verified in the MCP layer and *then*
+    called this method, which opens its own transaction. Anything that queued a
+    sibling candidate for this ref in the gap would be auto-rejected by a bind the
+    user approved when that row was not part of its blast radius.
+
+    Asserting the callback sees pre-mutation state is what distinguishes "inside
+    the transaction, before the first write" from merely "called at some point" —
+    a callback invoked after ``update_status`` would observe 'accepted' here.
+    """
+    security = _mint(db, name="BHP Group Ltd", created_by="user")
+    decision_id = _feed_key_decision(db, security_id=security)
+    verified = False
+
+    def refuse() -> None:
+        nonlocal verified
+        verified = True
+        live = SecurityLinkDecisionsRepo(db).fetch_by_id(decision_id)
+        assert live is not None and live["status"] == "pending"
+        assert (
+            _accepted_binding(db, "BHP", ref_kind="tiingo_ticker", source_type="tiingo")
+            is None
+        )
+        raise UserError("Confirmation mismatch", code="mutation_confirmation_mismatch")
+
+    with pytest.raises(UserError, match="Confirmation mismatch"):
+        SecurityLinksService(db).accept_feed_key(
+            decision_id, into=security, verify_accept=refuse
+        )
+
+    assert verified
+    live = SecurityLinkDecisionsRepo(db).fetch_by_id(decision_id)
+    assert live is not None and live["status"] == "pending"
+    assert (
+        _accepted_binding(db, "BHP", ref_kind="tiingo_ticker", source_type="tiingo")
+        is None
+    )
+
+
 def test_accept_reports_binding_a_feed_key_as_a_bind(db: Database) -> None:
     """The caller cannot see which mechanism ran, and the two are opposite.
 

@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import httpx
@@ -68,9 +68,20 @@ class CoinGeckoPriceAdapter:
     # Test hook — overridable so a backoff assertion costs no wall clock.
     _sleep = staticmethod(time.sleep)
 
-    def __init__(self, client: httpx.Client | None = None) -> None:
-        """Initialize with an optional injected HTTP client. No credential."""
+    def __init__(
+        self, client: httpx.Client | None = None, today: date | None = None
+    ) -> None:
+        """Initialize with an optional injected HTTP client. No credential.
+
+        ``today`` is the clock the `days` span is measured against. It exists so
+        the caller can hand this adapter the SAME date it built its own window
+        from — otherwise the service and the adapter read the clock separately
+        and can straddle a rollover mid-pull, asking for a span that disagrees
+        with the window used to filter the response. Defaults to the UTC date,
+        which is the day CoinGecko's own closes are defined against.
+        """
         self._client = client or httpx.Client(timeout=DEFAULT_TIMEOUT)
+        self._today = today
 
     def fetch(
         self, securities: Sequence[SecurityRef], start: date, end: date
@@ -81,7 +92,7 @@ class CoinGeckoPriceAdapter:
         for ref in securities:
             params = {
                 "vs_currency": ref.quote_currency.lower(),
-                "days": str(_days_to_request(start)),
+                "days": str(_days_to_request(start, self._today)),
             }
             try:
                 body = fetch_json(
@@ -161,11 +172,14 @@ class CoinGeckoPriceAdapter:
         return rows
 
 
-def _days_to_request(start: date) -> int:
+def _days_to_request(start: date, today: date | None = None) -> int:
     """How many days back to ask for, given the earliest date wanted.
 
     The `days` parameter counts back from now rather than from the window's end,
     so the span is measured against today and the response is filtered after.
+    ``today`` defaults to the UTC date rather than the host's: CoinGecko defines
+    its closes at UTC midnight, so measuring the span against a local calendar
+    would ask for a window offset from the one the caller filters against.
 
     Refuses rather than clamps a span the keyless tier cannot serve. Clamping
     silently substituted 365 days for whatever was asked, wrote those rows, and
@@ -174,9 +188,10 @@ def _days_to_request(start: date) -> int:
     documentation. Since the whole batch shares one window, this leaves as a
     whole-batch error and `pull` contains it per source.
     """
-    span = (date.today() - start).days + 1
+    today = today or datetime.now(UTC).date()
+    span = (today - start).days + 1
     if span > COINGECKO_MAX_HISTORY_DAYS:
-        earliest = date.today() - timedelta(days=COINGECKO_MAX_HISTORY_DAYS - 1)
+        earliest = today - timedelta(days=COINGECKO_MAX_HISTORY_DAYS - 1)
         raise PriceFeedWindowUnsupportedError(
             f"CoinGecko's keyless endpoint serves at most "
             f"{COINGECKO_MAX_HISTORY_DAYS} days of history, and {start.isoformat()} "

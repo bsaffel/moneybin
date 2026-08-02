@@ -430,6 +430,7 @@ class SecurityLinksService:
         into: str,
         decided_by: str = "user",
         in_outer_txn: bool = False,
+        verify_accept: Callable[[], None] | None = None,
     ) -> None:
         """Bind a reviewed market-data symbol to the security under review.
 
@@ -443,6 +444,16 @@ class SecurityLinksService:
         binding, so the pair undoes together), insert the accepted link, and
         auto-reject the ref's sibling candidates — accepting one answers them all.
 
+        ``verify_accept`` is the confirmation-grant check, and it runs HERE rather
+        than in the caller for the reason ``mcp.md`` gives: a grant is verified
+        against live state inside the same write transaction, immediately before
+        the first mutation, never verified ahead of a transaction opened
+        afterwards. The gap matters because of the sibling auto-reject below —
+        a candidate queued for this ref between an outside check and this
+        transaction would be rejected by a bind whose approved blast radius never
+        counted it. It takes no argument because the radius a feed-key bind
+        confirms is the caller's to recompute; the service only guarantees WHEN.
+
         Raises ``UserError`` when the decision is unknown or not pending, when
         ``into`` does not match the decision's own ``candidate_security_id`` (the
         same confirming safety check the merge path applies), or when that
@@ -453,6 +464,8 @@ class SecurityLinksService:
         try:
             decision = self._require_pending(decision_id)
             self._require_bindable(decision, decision_id=decision_id, into=into)
+            if verify_accept is not None:
+                verify_accept()
             event = self._decisions.update_status(
                 decision_id,
                 status="accepted",

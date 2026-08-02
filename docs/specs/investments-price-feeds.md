@@ -1053,11 +1053,14 @@ Failure handling follows `GSheetPullService`:
   `feed_key_bound_elsewhere`. Neither `ticker` nor `coingecko_id` is unique in
   `app.securities`, so two catalog rows for one instrument is a reachable state,
   not a corruption — and it belongs to that security, not to the refresh.
-- **A close below the storable precision is dropped**, not stored and not
-  raised. `raw.security_prices.close` is `DECIMAL(28,10)` under `CHECK (close >
-  0)`, so a sub-1e-10 quote quantizes to zero and would fail the insert for
-  every security batched with it. The security reports
-  `close_below_storable_precision`.
+- **A close outside the storable range is dropped**, not stored and not raised.
+  `raw.security_prices.close` is `DECIMAL(28,10)` under `CHECK (close > 0)`, so
+  a quote outside that column fails the insert for every security batched with
+  it. Both ends are checked, magnitude first, because quantizing an oversized
+  value overflows the decimal context before a precision test could answer. A
+  sub-1e-10 quote quantizes to zero and reports
+  `close_below_storable_precision`; one above 18 integer digits becomes NULL in
+  frame construction and reports `close_above_storable_range`.
 - **Rate limiting backs off exponentially**, on rate-limit responses only.
 - **An undeclared `price_basis` fails ingest.**
 - **A security no source covers** is reported in the refresh result and carries
