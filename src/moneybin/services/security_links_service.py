@@ -760,22 +760,28 @@ class SecurityLinksService:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def decisions_for_ref(
+    def decision_ids_for_ref(
         self, *, ref_kind: str, ref_value: str, source_type: str
-    ) -> int:
-        """Pending decisions competing for one provider ref.
+    ) -> tuple[str, ...]:
+        """Pending decisions competing for one provider ref, in id order.
 
         Accepting any one of them resolves the whole group — the winner is
-        accepted and its siblings auto-rejected — so this is the decision-row
-        count a confirmation's blast radius must state. Read-only.
+        accepted and its siblings auto-rejected — so this names every row a
+        confirmation is about to decide, and its length is the count the blast
+        radius states.
+
+        Ids rather than a count, because the count is not an identity. Reject a
+        sibling and let a later pull queue a different one, and the total is
+        unchanged: a grant bound to the number alone still verifies, and the
+        accept then auto-rejects a decision the user was never shown. Read-only.
         """
-        row = self._db.execute(
-            f"SELECT COUNT(*) FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef + parameterized values
+        rows = self._db.execute(
+            f"SELECT decision_id FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef + parameterized values
             "WHERE status = 'pending' AND ref_kind = ? AND ref_value = ? "
-            "AND source_type = ?",
+            "AND source_type = ? ORDER BY decision_id",
             [ref_kind, ref_value, source_type],
-        ).fetchone()
-        return int(row[0]) if row is not None else 0
+        ).fetchall()
+        return tuple(str(row[0]) for row in rows)
 
     def _require_pending(self, decision_id: str) -> dict[str, Any]:
         """Fetch the decision, or raise ``UserError`` unless it is pending."""

@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import duckdb
@@ -2444,6 +2444,66 @@ def test_a_feed_key_bind_claims_no_transaction_and_no_lot() -> None:
     assert item.affected_ids["transactions"] == ()
     assert item.affected_ids["lots"] == ()
     assert item.affected_ids["securities"] == (setup["security"],)
+
+
+def _snapshot_marks(item: IdentityDecisionPlanItem) -> list[object]:
+    """The price-mark rows a plan item bound its approval to."""
+    state = cast("dict[str, list[object]]", item.before_state)
+    return state["security_price_overrides"]
+
+
+def test_a_feed_key_bind_snapshots_none_of_the_candidates_marks() -> None:
+    """A bind's source_id IS the survivor, so its whole mark history was captured.
+
+    `before_state` was ungated on the theory that it reads only rows this
+    decision can change. True for a merge, which re-points every override — but
+    a bind changes no mark at all, and its `source_id` is the existing candidate
+    rather than a provisional about to disappear. Snapshotting there binds the
+    approval to a security's entire valuation history, so a mark the user edits
+    between elicitation and submit rejects the whole batch as mismatched on
+    state the bind never touched.
+    """
+    setup = _identity_feed_key_setup("marks-bind")
+    _seed_price_mark(setup["security"], date(2026, 7, 1))
+    _seed_price_mark(setup["security"], date(2026, 7, 2))
+
+    with get_database(read_only=True) as db:
+        plan = ReviewDecisionsService(db, actor="mcp").plan_identity([
+            SecurityLinkDecisionRequest(
+                kind="security_link",
+                decision_id=setup["decision_id"],
+                decision="accept",
+                target_id=setup["security"],
+            )
+        ])
+
+    (item,) = plan.items
+    assert _snapshot_marks(item) == []
+
+
+def test_an_identity_merge_still_snapshots_the_marks_it_re_points() -> None:
+    """Paired with the bind above: the gate must not blank the merge's snapshot.
+
+    A merge does move these rows, so they are exactly the state its approval has
+    to be bound to — dropping them here would let a mark authored after preview
+    ride along on a stale grant, which is the failure
+    `test_a_price_mark_authored_after_preview_invalidates_the_token` exists for.
+    """
+    setup = _identity_security_setup("marks-snapshot")
+    _seed_price_mark(setup["provisional"], date(2026, 7, 1))
+
+    with get_database(read_only=True) as db:
+        plan = ReviewDecisionsService(db, actor="mcp").plan_identity([
+            SecurityLinkDecisionRequest(
+                kind="security_link",
+                decision_id=setup["decision_id"],
+                decision="accept",
+                target_id=setup["survivor"],
+            )
+        ])
+
+    (item,) = plan.items
+    assert len(_snapshot_marks(item)) == 1
 
 
 def test_an_identity_merge_still_claims_the_rows_it_re_points() -> None:

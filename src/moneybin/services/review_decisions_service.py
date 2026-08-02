@@ -797,22 +797,32 @@ class ReviewDecisionsService:
         # wrong twice over — it contradicts the mutation contract the prompt
         # states, and because these counts are part of the digest the approval is
         # bound to, an unrelated refresh between preview and commit then
-        # invalidates a grant for rows the bind never touches. (`before_state`
-        # needs no such gate: it reads no core table, only the app and raw rows
-        # this decision itself can change.)
+        # invalidates a grant for rows the bind never touches.
+        #
+        # `before_state` gates on the same flag for the same reason. It reads no
+        # core table, but a bind's `source_id` IS the surviving candidate, so
+        # snapshotting its marks captures a security's whole valuation history
+        # that `accept_feed_key` never touches — and a mark the user edits
+        # between elicitation and submit then rejects the batch as mismatched on
+        # state the bind has nothing to do with. A merge does move these rows
+        # (`_repoint_price_marks`), so there they belong in the snapshot.
         #
         # `securities` deliberately stays on material_accept: a bind does affect
         # one security — it becomes priceable — and reporting a wholly empty
         # blast radius for a write would understate it.
         material_merge = material_accept and not binds_a_feed_key
-        marks = _query_json_rows(
-            self._db,
-            f"""
-            SELECT * FROM {SECURITY_PRICE_OVERRIDES.full_name}
-            WHERE security_id = ?
-            ORDER BY price_date, quote_currency
-            """,  # noqa: S608  # TableRef constant + parameterized value
-            [source_id],
+        marks = (
+            _query_json_rows(
+                self._db,
+                f"""
+                SELECT * FROM {SECURITY_PRICE_OVERRIDES.full_name}
+                WHERE security_id = ?
+                ORDER BY price_date, quote_currency
+                """,  # noqa: S608  # TableRef constant + parameterized value
+                [source_id],
+            )
+            if material_merge
+            else []
         )
         core_transactions = (
             _query_ids(

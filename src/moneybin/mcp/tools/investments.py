@@ -622,12 +622,15 @@ class _MergeProposal:
     provisional_security_id: str | None
     blast_radius: dict[str, int]
     is_feed_key: bool
+    # The exact pending decisions an accept resolves. Empty for a merge, whose
+    # binding is already pinned to the two security ids it fuses.
+    sibling_decision_ids: tuple[str, ...] = ()
 
 
-def _feed_key_bind_radius(
+def _feed_key_bind_scope(
     service: SecurityLinksService, decision: dict[str, Any]
-) -> dict[str, int]:
-    """Rows a feed-key bind touches: one new link, plus the ref's pending decisions.
+) -> tuple[tuple[str, ...], dict[str, int]]:
+    """What a feed-key bind decides: the ref's pending ids, and the row counts.
 
     Both ends of one confirmation compute this — the proposal states it, the
     commit recomputes it before verifying the grant — so it has to be one
@@ -636,15 +639,19 @@ def _feed_key_bind_radius(
     ``_reject_pending_siblings`` rejects on; ``pending()`` groups by
     ``(ref_kind, ref_value)`` alone, so counting a group would overstate the
     radius for a symbol two feeds serve.
+
+    The ids go into the binding and the count into the radius, because they
+    answer different questions: how much this touches, and exactly which rows.
+    A grant carrying only the count is satisfied by any group of the same size,
+    so a sibling rejected and replaced between prompt and submit is auto-rejected
+    by an approval that never named it.
     """
-    return {
-        "security_links": 1,
-        "security_link_decisions": service.decisions_for_ref(
-            ref_kind=str(decision["ref_kind"]),
-            ref_value=str(decision["ref_value"]),
-            source_type=str(decision["source_type"]),
-        ),
-    }
+    ids = service.decision_ids_for_ref(
+        ref_kind=str(decision["ref_kind"]),
+        ref_value=str(decision["ref_value"]),
+        source_type=str(decision["source_type"]),
+    )
+    return ids, {"security_links": 1, "security_link_decisions": len(ids)}
 
 
 def _load_pending_proposal(decision_id: str) -> _MergeProposal:
@@ -667,7 +674,9 @@ def _load_pending_proposal(decision_id: str) -> _MergeProposal:
                         if decision is None:  # pragma: no cover
                             break
                         provisional = None
-                        blast_radius = _feed_key_bind_radius(service, decision)
+                        sibling_ids, blast_radius = _feed_key_bind_scope(
+                            service, decision
+                        )
                     else:
                         impact = service.accept_impact(
                             decision_id,
@@ -675,6 +684,7 @@ def _load_pending_proposal(decision_id: str) -> _MergeProposal:
                         )
                         provisional = impact.provisional_security_id
                         blast_radius = impact.blast_radius
+                        sibling_ids = ()
                     return _MergeProposal(
                         decision_id=decision_id,
                         ref_kind=group.ref_kind,
@@ -688,6 +698,7 @@ def _load_pending_proposal(decision_id: str) -> _MergeProposal:
                         provisional_security_id=provisional,
                         blast_radius=blast_radius,
                         is_feed_key=is_feed_key,
+                        sibling_decision_ids=sibling_ids,
                     )
     raise UserError(
         f"No pending security merge decision '{decision_id}'.",
@@ -711,12 +722,19 @@ def _security_link_binding(
     candidate_security_id: str,
     provisional_security_id: str | None,
     blast_radius: dict[str, int],
+    sibling_decision_ids: tuple[str, ...] = (),
 ) -> ConfirmationBinding:
     """Bind approval without exposing the raw provider reference.
 
     ``operation_kind`` distinguishes the two acceptances, so a grant issued for a
     feed-key bind can never be replayed against a merge: they touch different
     rows and only one deletes a security.
+
+    A bind's siblings are named in ``resolved_ids`` rather than left to the
+    radius count, because accepting one auto-rejects all of them: bound to the
+    count alone, a group whose membership changed between prompt and submit
+    still verifies, and the accept then rejects a decision the user never saw.
+    A merge needs no such list — its binding already pins both security ids.
     """
     is_feed_key = provisional_security_id is None
     return ConfirmationBinding(
@@ -726,7 +744,7 @@ def _security_link_binding(
             "into": candidate_security_id,
         },
         resolved_ids=(
-            (candidate_security_id,)
+            (candidate_security_id, *sibling_decision_ids)
             if is_feed_key
             else (provisional_security_id, candidate_security_id)
         ),
@@ -845,12 +863,14 @@ def _apply_accept(
                         f"No pending decision found for id {decision_id!r}.",
                         code=error_codes.MUTATION_NOT_FOUND,
                     )
+                sibling_ids, radius = _feed_key_bind_scope(service, live)
                 grant.verify(
                     _security_link_binding(
                         decision_id=decision_id,
                         candidate_security_id=into,
                         provisional_security_id=None,
-                        blast_radius=_feed_key_bind_radius(service, live),
+                        blast_radius=radius,
+                        sibling_decision_ids=sibling_ids,
                     )
                 )
 
@@ -980,6 +1000,7 @@ async def investments_securities_links_set(
                 candidate_security_id=into,
                 provisional_security_id=proposal.provisional_security_id,
                 blast_radius=proposal.blast_radius,
+                sibling_decision_ids=proposal.sibling_decision_ids,
             )
             message = (
                 _feed_key_confirm_message(proposal)

@@ -22,6 +22,7 @@ from moneybin.mcp.tools.investments import (
     _confirm_message,  # pyright: ignore[reportPrivateUsage]  # the merge prompt under test
     _load_pending_proposal,  # pyright: ignore[reportPrivateUsage]  # the adapter branch under test
     _MergeProposal,  # pyright: ignore[reportPrivateUsage]  # the prompt's input shape
+    _security_link_binding,  # pyright: ignore[reportPrivateUsage]  # the grant under test
 )
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import (
@@ -98,6 +99,49 @@ def test_a_feed_key_proposal_merges_nothing_away(mcp_db: Path) -> None:
     assert proposal.is_feed_key is True
     assert proposal.provisional_security_id is None
     assert proposal.blast_radius["security_links"] == 1
+
+
+def test_a_bind_grant_names_its_siblings_rather_than_counting_them(
+    mcp_db: Path,
+) -> None:
+    """An equal-sized group is not the same group.
+
+    Accepting one decision auto-rejects every sibling competing for the same
+    ref. Bound to the count alone, a grant still verifies after a sibling is
+    rejected and a later pull queues a different one — the total never moved —
+    and the accept then rejects a decision the user was never shown. The ids
+    must reach `resolved_ids`, so the two states are distinguishable.
+    """
+    with get_database(read_only=False) as db:
+        first = _mint(db, name="BHP Group Ltd")
+        second = _mint(db, name="BHP Billiton Plc")
+        winner = _queue(db, security_id=first, source_type="tiingo")
+        _queue(db, security_id=second, source_type="tiingo")
+
+    before = _load_pending_proposal(winner)
+
+    with get_database(read_only=False) as db:
+        third = _mint(db, name="BHP Group Holdings")
+        _queue(db, security_id=third, source_type="tiingo")
+
+    after = _load_pending_proposal(winner)
+
+    assert len(before.sibling_decision_ids) == 2
+    assert set(before.sibling_decision_ids) < set(after.sibling_decision_ids)
+    assert _binding_ids(before) != _binding_ids(after), (
+        "a changed sibling group must change the binding, not just its count"
+    )
+
+
+def _binding_ids(proposal: _MergeProposal) -> tuple[str, ...]:
+    """The resolved ids a grant for this proposal is bound to."""
+    return _security_link_binding(
+        decision_id=proposal.decision_id,
+        candidate_security_id=proposal.candidate_security_id,
+        provisional_security_id=proposal.provisional_security_id,
+        blast_radius=proposal.blast_radius,
+        sibling_decision_ids=proposal.sibling_decision_ids,
+    ).resolved_ids
 
 
 def _merge_proposal(*, marks: int) -> _MergeProposal:
