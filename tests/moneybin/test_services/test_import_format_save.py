@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from moneybin.database import Database
+from tests.moneybin.import_helpers import import_answering_gate
 
 
 def test_autosaved_format_does_not_store_account_name_as_institution(
@@ -16,7 +17,8 @@ def test_autosaved_format_does_not_store_account_name_as_institution(
     csv = tmp_path / "txns.csv"
     csv.write_text("Date,Description,Amount\n2026-01-15,Coffee,-12.50\n")
     svc = ImportService(db)
-    svc.import_file(
+    import_answering_gate(
+        svc,
         csv,
         account_name="WF Checking (...4267)",
         confirm=True,
@@ -47,7 +49,8 @@ def test_explicit_account_name_overrides_saved_format_binding(
     b = tmp_path / "b.csv"
     b.write_text("Date,Description,Amount\n2026-02-01,Y,-2.00\n")
     # First import saves the format (header signature = these columns).
-    svc.import_file(
+    import_answering_gate(
+        svc,
         a,
         account_name="WF Checking",
         confirm=True,
@@ -57,7 +60,8 @@ def test_explicit_account_name_overrides_saved_format_binding(
     )
     # Second import is structurally identical -> matches the saved format,
     # but carries a DIFFERENT explicit account name.
-    svc.import_file(
+    import_answering_gate(
+        svc,
         b,
         account_name="WF Savings",
         confirm=True,
@@ -88,7 +92,8 @@ def test_autosaved_format_records_resolved_institution(
     csv = tmp_path / "wells_fargo_export.csv"
     csv.write_text("Date,Description,Amount\n2026-01-15,Coffee,-12.50\n")
     svc = ImportService(db)
-    svc.import_file(
+    import_answering_gate(
+        svc,
         csv,
         account_name="Checking",
         confirm=True,

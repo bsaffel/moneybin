@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from moneybin.services.import_service import ImportService, per_file_failure
+from tests.moneybin.import_helpers import import_answering_gate
 
 # Stands in for the payee/amount/memo content ofxparse and Polars embed in
 # their exception strings when they choke on a row.
@@ -60,7 +61,8 @@ def test_transform_failure_does_not_put_polars_text_on_the_wire(
     # auto_accept clears the unknown-layout confirmation gate, which is
     # upstream of the transform stage under test and has its own coverage.
     with pytest.raises(ValueError) as raised:
-        ImportService(db).import_file(
+        import_answering_gate(
+            ImportService(db),
             csv,
             refresh=False,
             account_name="Checking",

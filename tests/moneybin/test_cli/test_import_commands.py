@@ -164,6 +164,7 @@ class TestImportFilesCommand:
             auto_accept=False,
             confirm=False,
             actor_kind="human",
+            account_bindings=None,
         )
 
     def test_import_files_force_flag(
