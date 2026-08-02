@@ -1075,6 +1075,85 @@ class TestImportConfirmCommand:
         }
         assert json.loads(result.output)["data"]["status"] == "applied"
 
+    def test_bridge_response_can_answer_the_account_gate_it_raises(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The bridge raises the account gate, so it must accept the answer.
+
+        `apply_pdf_bridge_response` gates on account identity like every other
+        channel and takes `account_bindings` to resolve it — the MCP path
+        forwards them. The CLI rejected the flag outright, so the one surface
+        where a human answers this had no way to: the same command re-raised
+        the same gate however it was re-run.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+        apply = mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+            return_value=BridgeApplyResult(
+                outcome="applied",
+                import_id="bridge123",
+                rows_loaded=2,
+                format_name="chase_abc123",
+                expected_row_count=2,
+                actual_row_count=2,
+                rows_diverged=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--account-binding",
+                "@0=new",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert apply.call_args.kwargs["account_bindings"] == {"@0": "new"}
+
+    def test_bridge_response_still_refuses_the_tabular_account_flags(
+        self, tmp_path: Path
+    ) -> None:
+        """--account-name and --account-meta stay refused; only bindings opened.
+
+        A PDF's account identity comes from the statement, not from a column,
+        and neither flag reaches the bridge service. Refusing them is the
+        contract; refusing --account-binding alongside them was the bug.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+
+        for flag, value in (("--account-name", "Chase"), ("--account-meta", "k:a=b")):
+            result = runner.invoke(
+                app,
+                [
+                    "confirm",
+                    str(pdf_file),
+                    "--bridge-response",
+                    str(response_file),
+                    "--confirm",
+                    flag,
+                    value,
+                ],
+            )
+            assert result.exit_code != 0, flag
+            # …and the refusal advertises the one account flag that IS accepted,
+            # so a caller who reached for the wrong one is pointed at it.
+            assert "--account-binding only" in result.output, flag
+
     def test_requires_accept_or_mapping(
         self,
         tmp_path: Path,

@@ -1456,10 +1456,14 @@ def import_confirm_command(
                 "--confirm-sign, or --sign.",
                 param_hint="'--bridge-response'",
             )
-        if account_name or account_binding or account_meta:
+        # --account-binding is deliberately absent from this refusal: the bridge
+        # raises the same account gate every other channel does, and this is the
+        # command a human answers it with. Refusing it made that gate
+        # unanswerable — the same re-run raised the same question.
+        if account_name or account_meta:
             raise typer.BadParameter(
-                "--bridge-response supports --account-id only; PDF rows do not use "
-                "--account-name, --account-binding, or --account-meta.",
+                "--bridge-response supports --account-id and --account-binding "
+                "only; PDF rows do not use --account-name or --account-meta.",
                 param_hint="'--bridge-response'",
             )
         if not confirm:
@@ -1540,6 +1544,7 @@ def import_confirm_command(
                         bridge_response_data,
                         save_format=save_format,
                         account_id=account_id,
+                        account_bindings=parsed_bindings,
                         confirm=True,
                     )
                     result = None
@@ -1717,6 +1722,10 @@ def import_confirm_command(
             "actual_row_count": bridge_result.actual_row_count,
             "rows_diverged": bridge_result.rows_diverged,
         }
+        if bridge_result.accounts_created:
+            data["accounts_created"] = _accounts_created_payload(
+                bridge_result.accounts_created
+            )
         actions = [
             f"Use 'moneybin import revert {bridge_result.import_id}' to undo this import.",
             "Run 'moneybin transform apply' to rebuild derived tables.",
@@ -1728,6 +1737,9 @@ def import_confirm_command(
             logger.info(
                 f"✅ Imported {file_path.name}: {bridge_result.rows_loaded} rows "
                 f"(import_id: {bridge_result.import_id})"
+            )
+            _echo_accounts_created(
+                _accounts_created_payload(bridge_result.accounts_created)
             )
             logger.info("💡 Run 'moneybin transform apply' to rebuild derived tables.")
         return
