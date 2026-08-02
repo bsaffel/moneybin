@@ -219,7 +219,16 @@ class SecurityLinksRepo(BaseRepo):
                 ref_kind=before["ref_kind"],
                 ref_value=before["ref_value"],
                 source_type=before["source_type"],
-                decided_by=decided_by,
+                # The binding's own provenance, not the merge's. `decided_by`
+                # answers "who decided this ref names this instrument", and
+                # moving the ref to a survivor does not re-answer it — who
+                # performed the merge is on the reversal row's `reversed_by` and
+                # in this operation's audit trail. Stamping the merge's actor
+                # here turned every auto-derived feed key into a user one, and
+                # PriceService._binding_is_stale re-derives only `auto` rows, so
+                # a ticker that later diverged from the catalog was never
+                # retired again — silently, for the life of the binding.
+                decided_by=str(before["decided_by"]),
                 actor=actor,
                 status="accepted",
                 parent_audit_id=parent_audit_id,

@@ -2034,6 +2034,47 @@ def test_a_stale_binding_is_retired_once_its_replacement_is_derived(
     assert _links(db) == [(TIINGO_REF_KIND, "META", "s1")]
 
 
+def test_a_feed_key_carried_across_a_merge_is_still_re_derived(db: Database) -> None:
+    """A merge moves the key; it must not also freeze it.
+
+    An identity merge repoints every accepted link on the provisional onto the
+    survivor, feed keys included, and it does so as a user decision. The moved
+    row was being re-stamped with that decision, which put an auto-derived key
+    permanently outside `_binding_is_stale` — so a ticker that diverged from the
+    catalog after the merge was never retired, and the security kept pricing
+    from a symbol its own row no longer claimed, indefinitely and silently.
+
+    The binding arrives here the way the merge delivers it — through
+    `repoint`, not a direct insert — because that is the step that was
+    rewriting it. Seeding an `auto` row directly would exercise the retirement
+    that already worked and prove nothing about the path that broke it.
+    """
+    _seed_security(db, security_id="s0", name="Meta Platforms", ticker="FB")
+    _seed_security(db, security_id="s1", name="Meta Platforms", ticker="META")
+    _hold(db, "s1")
+    repo = SecurityLinksRepo(db)
+    event = repo.insert(
+        security_id="s0",
+        ref_kind=TIINGO_REF_KIND,
+        ref_value="FB",
+        source_type=TIINGO_SOURCE_TYPE,
+        decided_by="auto",
+        actor="system",
+    )
+    assert event.target_id is not None
+    repo.repoint(
+        link_id=event.target_id,
+        new_security_id="s1",
+        decided_by="user",
+        actor="cli",
+    )
+    tiingo = _FakeTiingo(metadata={"META": TickerMetadata("Meta Platforms", None)})
+
+    _service(db, tiingo).pull()
+
+    assert _links(db) == [(TIINGO_REF_KIND, "META", "s1")]
+
+
 def test_a_stale_binding_is_retired_even_when_its_replacement_collides(
     db: Database,
 ) -> None:
