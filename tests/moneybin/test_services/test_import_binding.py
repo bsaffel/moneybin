@@ -32,6 +32,46 @@ def _seed_existing_account(db: Database, *, account_id: str, display_name: str) 
     )
 
 
+# One existing account per fixture that the file's own institution + last four
+# weakly match. Candidates are what make an account identity a *question*: a
+# mint with nothing to merge into proceeds and is reported instead, so any test
+# whose subject is the gate has to give the resolver something the file could
+# plausibly BE. That is also the case the gate exists for — a silent weak merge
+# is the expensive, hard-to-undo mistake.
+_OFX_TWIN = {"institution_slug": "sample-bank", "last_four": "1111"}
+_PDF_TWIN = {"institution_slug": "chase", "last_four": "1234"}
+
+
+def _seed_twin(
+    db: Database,
+    twin: dict[str, str],
+    *,
+    account_id: str = "acct_twin01",
+    display_name: str = "Existing Account",
+) -> str:
+    """Seed the weak institution+last4 match that makes a file's identity a question."""
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "(account_id, display_name, institution_slug, last_four) VALUES (?, ?, ?, ?)",
+        [account_id, display_name, twin["institution_slug"], twin["last_four"]],
+    )
+    return account_id
+
+
+def _seed_tabular_twin(db: Database) -> None:
+    """The tabular fixtures name their account, so the weak signal is the name."""
+    _seed_existing_account(db, account_id="acct_twin01", display_name="WF Checking")
+
+
+def _seed_ofx_twin(db: Database) -> None:
+    _seed_twin(db, _OFX_TWIN)
+
+
+def _seed_pdf_twin(db: Database) -> None:
+    _seed_twin(db, _PDF_TWIN)
+
+
 # --- the gate + bindings (via the real import_file pipeline) --------------
 # Binding application ("new" -> force_standalone, id -> adopt, unbound -> gate)
 # is exercised end-to-end below rather than against the private helper.
@@ -93,37 +133,38 @@ def test_agent_import_gates_on_weak_account_candidate(
     assert n is not None and n[0] == 0
 
 
-def test_first_contact_mint_gates_with_no_candidates(
+def test_a_named_first_contact_mint_loads_without_asking(
     db: Database,
 ) -> None:
-    """Minting a brand-new account is a visible moment, not a silent side effect.
+    """A stated identity with nothing to merge into proceeds; the mint is reported.
 
-    The book is empty, so the candidate pass finds nothing and the proposal is
-    ``is_new`` with ``adopted_via=None`` — the second clause of
-    ``AccountProposal.requires_confirm``, which had no consumer. The gate tested
-    ``candidates`` alone, so this import minted an account and loaded rows
-    without ever asking, on every channel.
+    The book is empty, so the candidate pass finds nothing and there is no
+    second answer the user could give — on a fresh database "new" is the only
+    possibility. Gating it made a first import of N files cost N confirms that
+    each had exactly one legal answer, which is confirm volume scaling with
+    items rather than with uncertainty.
+
+    The caller named this account (``account_name``), so the mint records an
+    identity that was stated rather than guessed — unlike a bare CSV, which
+    still gates (``identity_unknown``). Contrast
+    ``test_human_import_gates_on_weak_account_candidate``: add one account this
+    file could plausibly be, and the same import stops.
     """
     create_core_tables(db)
-    svc = ImportService(db)
-    with pytest.raises(ImportConfirmationRequiredError) as exc:
-        svc.import_file(
-            _STANDARD_CSV,
-            account_name="WF Checking",
-            refresh=False,
-            confirm=True,
-            actor_kind="human",
-        )
-    outcome = exc.value.outcome
-    assert outcome.reason == "account_confirmation"
-    proposals = outcome.account_proposals
-    assert [p["source_account_key"] for p in proposals] == ["wf-checking"]
-    # The clause under test: nothing to merge against, and it still gates.
-    assert proposals[0]["candidates"] == []
-    assert proposals[0]["is_new"] is True
-    assert proposals[0]["requires_confirm"] is True
-    n = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
-    assert n is not None and n[0] == 0
+    result = ImportService(db).import_file(
+        _STANDARD_CSV,
+        account_name="WF Checking",
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+    )
+    assert result.transactions > 0
+    row = db.execute(
+        "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+        "AND ref_value=? AND status='accepted'",
+        ["wf-checking"],
+    ).fetchone()
+    assert row is not None and row[0]
 
 
 def test_masked_label_reaches_resolver_as_clean_name(
@@ -329,26 +370,6 @@ def test_account_metadata_rejects_invalid_value_before_any_write(
     assert n is not None and n[0] == 0
 
 
-def test_account_bindings_rejects_unknown_source_key(
-    db: Database,
-) -> None:
-    """A binding for a source key not in the file fails loud, before any write."""
-    svc = ImportService(db)
-    with pytest.raises(
-        ValueError, match="account_bindings references unknown source key"
-    ):
-        svc.import_file(
-            _STANDARD_CSV,
-            account_name="WF Checking",
-            refresh=False,
-            confirm=True,
-            actor_kind="human",
-            account_bindings={"typo-key": "new"},
-        )
-    n = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
-    assert n is not None and n[0] == 0
-
-
 @pytest.mark.parametrize("bad_value", ["", "   ", "\t"])
 def test_account_bindings_rejects_empty_value(db: Database, bad_value: str) -> None:
     """An empty or whitespace-only binding value fails loud, not a silent mint.
@@ -516,7 +537,7 @@ def test_account_gate_counts_a_proposed_confirmation_on_every_channel(
     """
     from prometheus_client import REGISTRY
 
-    create_core_tables(db)
+    (_seed_ofx_twin if channel == "ofx" else _seed_tabular_twin)(db)
     labels = {"channel": channel, "tier": "high", "outcome": "proposed"}
     before = REGISTRY.get_sample_value("moneybin_import_confirmations_total", labels)
     with pytest.raises(ImportConfirmationRequiredError):
@@ -895,7 +916,7 @@ def test_ofx_import_gates_before_raw_ingest(
     ``raw.import_log`` row either: an import that never started should not appear
     in history as a failure.
     """
-    create_core_tables(db)
+    _seed_twin(db, _OFX_TWIN)
     svc = ImportService(db)
     with pytest.raises(ImportConfirmationRequiredError) as exc:
         svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True, actor_kind="human")
@@ -918,8 +939,12 @@ def test_ofx_import_gates_before_raw_ingest(
 def test_ofx_binding_new_mints_and_loads(
     db: Database,
 ) -> None:
-    """Answering the OFX gate with `new` mints the account and completes the import."""
-    create_core_tables(db)
+    """Answering the OFX gate with `new` mints a distinct account and loads the rows.
+
+    The seeded twin is what raises the gate, so `new` carries its real meaning
+    here: "not that existing account — keep this one separate."
+    """
+    _seed_twin(db, _OFX_TWIN)
     svc = ImportService(db)
     with pytest.raises(ImportConfirmationRequiredError) as exc:
         svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True, actor_kind="human")
@@ -949,9 +974,10 @@ def test_ofx_reimport_does_not_re_ask(
     The second import hits ``source_native`` in the resolution ladder, so the
     proposal comes back ``adopted_via='source_native'`` and ``requires_confirm``
     is False. This is what keeps the gate's volume tied to new identities rather
-    than to files.
+    than to files. The seeded twin makes the FIRST import ask; the assertion is
+    that the second one does not.
     """
-    create_core_tables(db)
+    _seed_twin(db, _OFX_TWIN)
     svc = ImportService(db)
     with pytest.raises(ImportConfirmationRequiredError) as exc:
         svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True, actor_kind="human")
@@ -996,11 +1022,11 @@ def _minimal_ofx(_tmp: Path) -> Path:
 
 
 @pytest.mark.parametrize(
-    ("channel", "make_file", "import_kwargs"),
+    ("channel", "make_file", "import_kwargs", "seed_twin"),
     [
-        ("tabular", _standard_csv, {"account_name": "WF Checking"}),
-        ("ofx", _minimal_ofx, {}),
-        ("pdf", _pdf_fixture, {}),
+        ("tabular", _standard_csv, {"account_name": "WF Checking"}, _seed_tabular_twin),
+        ("ofx", _minimal_ofx, {}, _seed_ofx_twin),
+        ("pdf", _pdf_fixture, {}, _seed_pdf_twin),
     ],
 )
 def test_a_positional_ref_answers_the_gate_on_every_channel(
@@ -1009,6 +1035,7 @@ def test_a_positional_ref_answers_the_gate_on_every_channel(
     channel: str,
     make_file: Callable[[Path], Path],
     import_kwargs: dict[str, Any],
+    seed_twin: Callable[[Database], None],
 ) -> None:
     """Every channel's gate offers a ref, and binding by it loads the file.
 
@@ -1017,7 +1044,7 @@ def test_a_positional_ref_answers_the_gate_on_every_channel(
     them. Parametrized rather than split so a channel that grows its own
     binding vocabulary fails here.
     """
-    create_core_tables(db)
+    seed_twin(db)
     svc = ImportService(db)
     path = make_file(tmp_path)
 
@@ -1062,7 +1089,11 @@ def test_the_ref_indexes_the_files_accounts_in_order(
     binding the caller's answer onto the wrong account — silently, which is the
     failure this whole gate exists to prevent.
     """
-    create_core_tables(db)
+    # One twin per account in the file, so BOTH gate and both refs are exercised.
+    # With only one seeded, the unmatched account would mint straight through and
+    # this test would silently assert against a one-element list.
+    _seed_existing_account(db, account_id="acct_chk01", display_name="Checking")
+    _seed_existing_account(db, account_id="acct_sav01", display_name="Savings")
     svc = ImportService(db)
     csv_path = _two_account_csv(tmp_path)
     with pytest.raises(ImportConfirmationRequiredError) as first:
@@ -1087,7 +1118,7 @@ def test_the_ref_indexes_the_files_accounts_in_order(
 
 def test_a_raw_source_key_still_binds(db: Database) -> None:
     """The ref is additive — the CLI's existing key= form keeps working."""
-    create_core_tables(db)
+    _seed_twin(db, _OFX_TWIN)
     svc = ImportService(db)
     with pytest.raises(ImportConfirmationRequiredError) as exc:
         svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True)
@@ -1100,6 +1131,48 @@ def test_a_raw_source_key_still_binds(db: Database) -> None:
         "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native'"
     ).fetchone()
     assert linked is not None and linked[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("channel", "make_file", "import_kwargs"),
+    [
+        ("tabular", _standard_csv, {"account_name": "WF Checking"}),
+        ("ofx", _minimal_ofx, {}),
+        ("pdf", _pdf_fixture, {}),
+    ],
+)
+def test_a_mistyped_source_key_is_refused_on_every_channel(
+    db: Database,
+    tmp_path: Path,
+    channel: str,
+    make_file: Callable[[Path], Path],
+    import_kwargs: dict[str, Any],
+) -> None:
+    """A binding naming no account in the file fails loud, before any write.
+
+    Silently dropping it re-raises the identical gate the caller was answering,
+    with nothing to distinguish "your key was wrong" from "you didn't answer" —
+    the caller re-sends the same binding and loops. Lived on tabular only until
+    the check moved into the shared binding application, so OFX and PDF spent
+    the whole gate rollout swallowing typos.
+    """
+    create_core_tables(db)
+    svc = ImportService(db)
+    path = make_file(tmp_path)
+
+    with pytest.raises(
+        ValueError, match="account_bindings references unknown source key"
+    ):
+        svc.import_file(
+            path,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"typo-key": "new"},
+            **import_kwargs,
+        )
+    n = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+    assert n is not None and n[0] == 0, f"{channel}: wrote a link"
 
 
 def test_an_out_of_range_ref_is_refused(db: Database) -> None:
@@ -1124,7 +1197,7 @@ def test_a_ref_and_a_raw_key_disagreeing_on_one_account_is_refused(
     Picking a winner silently binds an account to one of two ids the caller
     asked for — the unrecoverable-by-surprise merge this gate exists to stop.
     """
-    create_core_tables(db)
+    _seed_twin(db, _OFX_TWIN)
     svc = ImportService(db)
     with pytest.raises(ImportConfirmationRequiredError) as exc:
         svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True)

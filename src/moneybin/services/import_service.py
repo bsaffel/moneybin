@@ -803,17 +803,25 @@ def _resolve_binding_targets(
     the caller would never learn which — the unrecoverable-by-surprise merge
     this gate exists to prevent.
 
-    Also raises on a ref outside the file's account list. Left unchecked it
-    reads as "no binding for this account", so the import re-gates and tells the
-    caller nothing about why their answer did not take.
+    Also raises on a key — ref or raw — that names no account in this file.
+    Left unchecked either reads as "no binding for this account", so the import
+    re-gates with nothing to distinguish a mistyped answer from no answer, and
+    the caller re-sends the same binding forever.
+
+    The message never names the file's own source keys. An OFX ``<ACCTID>`` is
+    an account number, and this ValueError reaches an MCP caller through
+    ``per_file_failure`` — echoing the caller's own unknown keys back is safe
+    (they sent them), listing the real ones is not.
     """
     refs = {key for key in bindings if key.startswith(_PROPOSAL_REF_PREFIX)}
     valid = {proposal_ref(index) for index in range(len(source_accounts))}
-    if unknown := sorted(refs - valid):
+    known = {src.source_account_key for src in source_accounts}
+    if unknown := sorted((refs - valid) | (set(bindings) - refs - known)):
         raise ValueError(
-            f"account_bindings names {', '.join(unknown)}, but this file has "
-            f"{len(source_accounts)} account(s): "
-            f"{', '.join(sorted(valid)) or 'none'}."
+            f"account_bindings references unknown source key(s): {unknown}. "
+            f"This file has {len(source_accounts)} account(s) — bind by "
+            f"proposal_ref ({', '.join(sorted(valid)) or 'none'}), or by a "
+            "source key exactly as the confirmation reported it."
         )
     targets: list[str | None] = []
     for index, src in enumerate(source_accounts):
@@ -1237,10 +1245,12 @@ class ImportService:
         # stable institution-assigned key, so the answer binds for good: the next
         # import of the same account adopts via source_native without re-asking.
         resolver = AccountResolver(self._db, actor="system")
-        source_accounts = _apply_account_bindings(
-            _ofx_source_accounts(parsed_ofx, source_origin), account_bindings or {}
+        source_accounts = self._gate_account_proposals(
+            resolver,
+            _ofx_source_accounts(parsed_ofx, source_origin),
+            account_bindings,
+            channel="ofx",
         )
-        self._gate_account_proposals(resolver, source_accounts, channel="ofx")
 
         # OFX <ACCTID> values are institution-assigned account numbers, not
         # display names. We pass them through to import_log as-is — the
@@ -1421,14 +1431,21 @@ class ImportService:
         self,
         resolver: AccountResolver,
         source_accounts: list[SourceAccount],
+        bindings: dict[str, str] | None,
         *,
         channel: Channel,
         resolved_mapping: dict[str, str] | None = None,
         fallback_keys: Collection[str] = (),
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
-    ) -> None:
-        """Surface an unratified account identity for confirmation before load.
+    ) -> list[SourceAccount]:
+        """Fold in the caller's answers, then stop on any identity still open.
+
+        Returns the ratified accounts for the resolve pass. Applying the
+        bindings here rather than at each call site is what makes "gate what you
+        are about to resolve" structural: every channel used to apply-then-gate
+        as two statements, and a channel that forgot the first got a gate it
+        could never satisfy.
 
         Propose-then-bind: ``propose()`` is read-only, so an unratified identity
         raises ``ImportConfirmationRequiredError`` (no rows load, no links
@@ -1466,12 +1483,13 @@ class ImportService:
         histogram it used to feed would read zero for the interactive path.
         ``disposition="rollback"`` because raising is this call's success case.
         """
+        source_accounts = _apply_account_bindings(source_accounts, bindings or {})
         wanted_fallback = set(fallback_keys)
         proposals: list[AccountProposalDict] = []
-        # enumerate over the FULL list, not the surfaced subset: the answering
-        # call applies bindings before this gate runs, so it can only index the
-        # file's own accounts. Numbering what gets surfaced would shift every
-        # ref as soon as one account resolved strongly.
+        # enumerate over the FULL list, not the surfaced subset: bindings are
+        # applied above, so a ref can only index the file's own accounts.
+        # Numbering what gets surfaced would shift every ref as soon as one
+        # account resolved strongly.
         for index, src in enumerate(source_accounts):
             # A bound account (explicit_account_id / force_standalone) is already
             # decided; only unratified accounts gate.
@@ -1483,7 +1501,7 @@ class ImportService:
             if proposal.requires_confirm:
                 proposals.append(proposal.to_dict(proposal_ref=proposal_ref(index)))
         if not proposals:
-            return
+            return source_accounts
         from moneybin.extractors.confidence import Confidence
         from moneybin.metrics.registry import (
             ACCOUNT_LINK_CONFIDENCE,
@@ -2462,35 +2480,26 @@ class ImportService:
             # step without re-prompting (idempotency, not a filename guess).
             fallback_keys.add(native_key)
 
-        # Phase 2 — apply explicit bindings, then gate on weak account proposals.
-        # The gate raises ImportConfirmationRequiredError (no rows load) for an
-        # interactive human first-contact with ambiguous candidates.
-        #
-        # Fail loud on a binding/metadata source key that doesn't match any of
-        # this file's accounts (a typo) — silently ignoring it would do the
-        # wrong thing invisibly ("magic stays visible").
+        # Fail loud on a metadata source key that doesn't match any of this
+        # file's accounts (a typo) — silently ignoring it would do the wrong
+        # thing invisibly ("magic stays visible"). account_metadata is
+        # tabular-only; the binding half of this check lives in
+        # _resolve_binding_targets, which every channel reaches.
         known_keys = {s.source_account_key for s in source_accounts}
-        for label, keyed in (
-            # A binding may also name an account by its positional proposal_ref;
-            # _apply_account_bindings validates those, and reports an out-of-range
-            # one against the file's account count rather than its source keys.
-            (
-                "account_bindings",
-                {k for k in bindings if not k.startswith(_PROPOSAL_REF_PREFIX)},
-            ),
-            ("account_metadata", account_metadata or {}),
-        ):
-            unknown_keys = set(keyed) - known_keys
-            if unknown_keys:
-                raise ValueError(
-                    f"{label} references unknown source key(s): "
-                    f"{sorted(unknown_keys)}. This file's source keys: "
-                    f"{sorted(known_keys)}."
-                )
-        source_accounts = _apply_account_bindings(source_accounts, bindings)
-        self._gate_account_proposals(
+        if unknown_keys := set(account_metadata or {}) - known_keys:
+            raise ValueError(
+                f"account_metadata references unknown source key(s): "
+                f"{sorted(unknown_keys)}. This file's source keys: "
+                f"{sorted(known_keys)}."
+            )
+
+        # Phase 2 — gate on any account identity the caller hasn't ratified.
+        # Raises ImportConfirmationRequiredError (no rows load) and returns the
+        # bound accounts for the resolve pass below.
+        source_accounts = self._gate_account_proposals(
             resolver,
             source_accounts,
+            bindings,
             channel="tabular",
             resolved_mapping=dict(resolved.field_mapping),
             fallback_keys=fallback_keys,
@@ -3114,16 +3123,14 @@ class ImportService:
         # deterministic one — and an agent must never self-pick an identity.
         self._gate_account_proposals(
             AccountResolver(self._db, actor="system"),
-            _apply_account_bindings(
-                [
-                    _pdf_source_account(
-                        decision,
-                        resolved_alias=resolved_alias,
-                        account_id_override=account_id,
-                    )
-                ],
-                account_bindings or {},
-            ),
+            [
+                _pdf_source_account(
+                    decision,
+                    resolved_alias=resolved_alias,
+                    account_id_override=account_id,
+                )
+            ],
+            account_bindings,
             channel="pdf",
             emit_metrics=emit_metrics,
             observations=observations,
@@ -3759,16 +3766,14 @@ class ImportService:
         if decision.outcome == "transactions":
             self._gate_account_proposals(
                 AccountResolver(self._db, actor="system"),
-                _apply_account_bindings(
-                    [
-                        _pdf_source_account(
-                            decision,
-                            resolved_alias=resolved_alias,
-                            account_id_override=account_id,
-                        )
-                    ],
-                    account_bindings or {},
-                ),
+                [
+                    _pdf_source_account(
+                        decision,
+                        resolved_alias=resolved_alias,
+                        account_id_override=account_id,
+                    )
+                ],
+                account_bindings,
                 channel="pdf",
                 emit_metrics=emit_metrics,
                 observations=observations,
