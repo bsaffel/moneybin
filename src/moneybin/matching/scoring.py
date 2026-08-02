@@ -18,8 +18,17 @@ from moneybin.matching.persistence import MatchTier
 logger = logging.getLogger(__name__)
 
 # Scoring weights — sum to 1.0.
-_WEIGHT_DATE = 0.40
-_WEIGHT_DESCRIPTION = 0.60
+# Description outweighs date deliberately. The blocking query has already
+# required the same account, an exact amount match, and a date inside the
+# window, so description is the only signal left that discriminates; date only
+# modulates. The weight is also load-bearing for a correctness property:
+# date_score decays to 0 at the window edge, so a pair sitting there scores
+# _WEIGHT_DESCRIPTION * similarity and nothing more. With the description weight
+# below the review threshold, the edge of the window is a dead zone — admitted
+# as a candidate, mathematically unable to be reviewed even with identical
+# descriptions. Keep _WEIGHT_DESCRIPTION >= MatchingSettings.review_threshold.
+_WEIGHT_DATE = 0.30
+_WEIGHT_DESCRIPTION = 0.70
 
 
 @dataclass(frozen=True)

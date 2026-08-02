@@ -202,7 +202,17 @@ class AccountResolver:
         self._write_strong_ref(src, account_id=account_id, decided_by="auto")
 
         candidates = self._find_candidates(
-            src, exclude_account_id=account_id, reissue=True
+            src,
+            exclude_account_id=account_id,
+            # Quarantine a null-last_four mint. Such an account cannot
+            # participate in last4-based resolution at all, so its silence is
+            # not evidence of a distinct account — it is an unanswerable
+            # question, and letting it mint silently is a merge decision nobody
+            # ever sees. Surfacing the pick-list routes it to the identity
+            # review queue instead ("magic stays visible"). No-ops on an empty
+            # book: nothing to propose against means a clean mint.
+            fallback=src.last_four is None,
+            reissue=True,
         )
         if not candidates:
             return ResolvedAccount(
@@ -301,7 +311,13 @@ class AccountResolver:
         # leaves it off so a no-match named account still mints silently.
         preview_id = uuid.uuid4().hex[:12]
         raw_candidates = self._find_candidates(
-            src, exclude_account_id=preview_id, fallback=fallback, reissue=True
+            src,
+            exclude_account_id=preview_id,
+            # A null last_four quarantines regardless of the caller's opt-in, so
+            # this preview agrees with resolve()'s ladder. Without it the gate
+            # would load rows and surface the question afterwards.
+            fallback=fallback or src.last_four is None,
+            reissue=True,
         )
         candidates = tuple(
             AccountCandidate(

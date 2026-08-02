@@ -511,7 +511,7 @@ class MatchingSettings(BaseModel):
         description="Review queue threshold (>= this but < high = pending)",
     )
     date_window_days: int = Field(
-        default=3,
+        default=5,
         ge=0,
         description="Maximum days between transaction dates for candidate pairs",
     )

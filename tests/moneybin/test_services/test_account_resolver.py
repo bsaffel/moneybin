@@ -224,6 +224,93 @@ def test_no_candidate_mints_standalone(db: Database) -> None:
     assert len(resolved.account_id) == 12
 
 
+def test_null_last_four_mint_is_quarantined_into_the_review_queue(
+    db: Database,
+) -> None:
+    """A source with no last_four never becomes canonical silently.
+
+    An account with a null last_four cannot participate in last4-based
+    resolution at all, so a silent mint is a merge decision nobody ever sees —
+    this is exactly how the Chase PDF placeholder (`chase_xxxx`, `last_four:
+    null`) grew into a second copy of a card that already existed. Quarantine
+    it: surface the pick-list so the mint lands in the identity-review queue.
+
+    Fixture trips ONLY this guard. last_four=None makes the institution+last4
+    rung and `_reissue_candidates` structurally unable to fire, and
+    `test_find_candidates_no_fallback_by_default_keeps_backfill_quiet` pins
+    that this exact source yields no candidates without the guard — so the
+    assertion is non-vacuous.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four=None, institution=None)
+    )
+    assert resolved.outcome == "pending_review"
+    assert len(resolved.pending_decision_ids) == 1
+
+
+def test_null_last_four_mints_cleanly_on_an_empty_book(db: Database) -> None:
+    """The quarantine guard must not gate the very first import.
+
+    With no existing accounts there is nothing to merge into, so there is no
+    ambiguity to surface — the pick-list is empty and the mint is clean. This
+    is what keeps the guard from turning every fresh profile's first import
+    into a review queue.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four=None, institution=None)
+    )
+    assert resolved.outcome == "minted_new"
+    assert resolved.pending_decision_ids == ()
+
+
+def test_known_last_four_with_no_signal_still_mints_silently(db: Database) -> None:
+    """The guard keys on a MISSING last_four, not on the absence of candidates.
+
+    A source that carries a last_four can participate in last4 resolution; its
+    silence is real evidence of a distinct account, not an unanswerable
+    question. Pairs with the quarantine test above — same shape, last_four
+    present — so the two together pin which condition the guard reads.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four="9911", institution=None)
+    )
+    assert resolved.outcome == "minted_new"
+    assert resolved.pending_decision_ids == ()
+
+
+def test_propose_quarantines_null_last_four_without_opting_into_fallback(
+    db: Database,
+) -> None:
+    """propose() must agree with resolve() on the quarantine, at the default.
+
+    The gate calls propose() without fallback, so if the quarantine lived only
+    in resolve() an interactive import would load rows first and surface the
+    question afterwards — the "magic stays visible" gap the guard exists to
+    close.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    proposal = resolver.propose(
+        _src(account_name="Imported Statement", last_four=None, institution=None)
+    )
+    assert {c.account_id for c in proposal.candidates} == {"acct_a"}
+
+
 def test_fuzzy_name_writes_pending(db: Database) -> None:
     """No last4/institution: a fuzzy account_name match -> a pending decision."""
     create_core_tables(db)
@@ -696,6 +783,12 @@ def test_propose_no_fallback_by_default_keeps_multi_account_mint_silent(
 
     A no-match named account in a multi-account file must mint silently, not gate
     the whole import — so the default propose() returns no candidates here.
+
+    The source carries a last_four deliberately. This fixture originally set it
+    to None, which meant the null-last_four quarantine ALSO suppressed the
+    silent mint — two guards on one fixture, so neither was isolated. The
+    behavior under test is a *named* account whose name matches nothing; the
+    missing-last_four case is its own test above.
     """
     create_core_tables(db)
     _seed_dim_account(
@@ -703,7 +796,7 @@ def test_propose_no_fallback_by_default_keeps_multi_account_mint_silent(
     )
     resolver = AccountResolver(db, actor="system")
     proposal = resolver.propose(
-        _src(account_name="Imported Statement", last_four=None, institution=None)
+        _src(account_name="Imported Statement", last_four="9911", institution=None)
     )
     assert proposal.is_new is True
     assert proposal.candidates == ()

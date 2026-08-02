@@ -74,3 +74,42 @@ class TestTransferSettings:
                     "pair_frequency": 0.15,
                 }
             )
+
+
+class TestDateWindowBound:
+    """The window may not widen far enough to make a date gap auto-merge."""
+
+    def test_default_window_spans_a_weekend(self) -> None:
+        """Card transactions post after the weekend; 3 days could not reach Tuesday.
+
+        A Friday purchase posting the next business day is 4 days out, and a
+        Monday holiday makes it 5. The old 3-day window could not admit that
+        pair at all, so the OFX and PDF copies of one transaction were never
+        even offered to the matcher as candidates.
+        """
+        assert MatchingSettings().date_window_days >= 5
+
+    def test_shipped_defaults_keep_every_date_gap_in_review(self) -> None:
+        """At the shipped defaults, only same-day pairs can auto-merge.
+
+        Auto-merge belongs to the exact-key path — same account, exact amount,
+        same day — because a wrong silent merge is the hardest inference to
+        notice and undo (design-principles.md). The weighted branch peaks one
+        day apart, so checking that peak against the auto-merge threshold covers
+        every date gap at once.
+
+        This is pinned at the DEFAULTS only. The margin narrows as the window
+        widens, so it is a property of the shipped configuration rather than a
+        law of the scoring function.
+        """
+        from moneybin.matching.scoring import _WEIGHT_DATE, _WEIGHT_DESCRIPTION
+
+        settings = MatchingSettings()
+        peak = (
+            _WEIGHT_DATE * (1.0 - 1.0 / settings.date_window_days) + _WEIGHT_DESCRIPTION
+        )
+        assert peak < settings.high_confidence_threshold, (
+            f"a one-day-apart pair with identical descriptions scores {peak:.4f}, "
+            f"at or above the {settings.high_confidence_threshold} auto-merge "
+            "threshold — date-gap pairs would merge without review"
+        )

@@ -2,6 +2,7 @@
 
 import pytest
 
+from moneybin.config import MatchingSettings
 from moneybin.database import Database
 from moneybin.matching.scoring import (
     CandidatePair,
@@ -64,6 +65,65 @@ def unioned_table(db: Database) -> Database:
 class TestComputeConfidence:
     """Tests for compute_confidence scoring function."""
 
+    def test_identical_descriptions_inside_window_are_always_review_eligible(
+        self,
+    ) -> None:
+        """The blocking window must never admit a pair the scoring cannot surface.
+
+        Blocking already requires the same account, an exact amount match, and a
+        date inside ``date_window_days``. If two such rows also carry *identical*
+        descriptions, there is no signal left that could justify hiding them —
+        yet the date term decays to 0 at the window edge, so confidence there is
+        ``_WEIGHT_DESCRIPTION`` alone. Whenever that weight sits below the review
+        threshold the edge of the window is a dead zone: admitted as a candidate,
+        mathematically unable to be reviewed.
+
+        Found on real data — 77 of 345 genuine Chase duplicate pairs scored below
+        the review threshold, every one of them at the window edge.
+
+        Thresholds come from the live defaults, not literals, so retuning the
+        bands cannot silently reopen the dead zone.
+        """
+        bands = MatchingSettings()
+        for window in (1, 3, 5, 7):
+            for days in range(window + 1):
+                score = compute_confidence(
+                    date_distance_days=days,
+                    description_similarity=1.0,
+                    date_window_days=window,
+                )
+                assert score >= bands.review_threshold, (
+                    f"identical descriptions at {days}d inside a {window}d window "
+                    f"scored {score:.3f}, below review_threshold "
+                    f"{bands.review_threshold}"
+                )
+
+    def test_only_same_day_pairs_can_auto_merge(self) -> None:
+        """Any date gap means review, never a silent merge.
+
+        A wrong silent merge is the hardest inference to notice and undo
+        (design-principles.md), so the auto-merge band is reserved for the one
+        case that is near-certain on its own: same account, exact amount, same
+        day. A pair separated by even one day must land in review no matter how
+        perfectly its descriptions agree.
+        """
+        bands = MatchingSettings()
+        # Up to the shipped default window. The margin narrows as the window
+        # widens, so this holds for supported configurations rather than for
+        # every conceivable one — see test_shipped_defaults_keep_every_date_gap
+        # _in_review, which pins the same property against the live defaults.
+        for window in (1, 2, 3, 4, 5):
+            for days in range(1, window + 1):
+                score = compute_confidence(
+                    date_distance_days=days,
+                    description_similarity=1.0,
+                    date_window_days=window,
+                )
+                assert score < bands.high_confidence_threshold, (
+                    f"a {days}d-apart pair scored {score:.3f}, at or above the "
+                    f"{bands.high_confidence_threshold} auto-merge threshold"
+                )
+
     def test_exact_date_high_similarity(self) -> None:
         score = compute_confidence(date_distance_days=0, description_similarity=0.95)
         assert score >= 0.95
@@ -89,7 +149,7 @@ class TestComputeConfidence:
     def test_exact_key_floor_lifts_low_similarity_above_threshold(self) -> None:
         """An exact-key (date_distance=0) pair auto-merges regardless of low desc.
 
-        Without the floor, date_distance=0 + desc 0.2 scores 0.40 + 0.60*0.2 = 0.52,
+        Without the floor, date_distance=0 + desc 0.2 scores 0.30 + 0.70*0.2 = 0.44,
         well below the 0.95 auto-merge threshold (the OFX-vs-CSV truncation bug).
         With exact_key_floor=0.95 the score is lifted to >= 0.95 so it auto-merges.
         """
