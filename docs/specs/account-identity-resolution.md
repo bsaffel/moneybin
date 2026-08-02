@@ -557,22 +557,38 @@ flowchart TD
     B -->|yes| ADOPT[Adopt pinned canonical id]
     B -->|no| C{Remembered source_native or strong confirmer?}
     C -->|yes| AUTO[Auto-adopt / agent may self-accept]
-    C -->|no| MINT[Mint canonical account + accepted source_native mapping]
-    MINT --> D{Existing candidates? institution+last4 / name}
-    D -->|none| STANDALONE[Standalone new account]
-    D -->|one or more| PROPOSE[Write pending decisions; surface for confirm]
-    PROPOSE --> E{Interactive / first contact?}
-    E -->|human, or agent| CONFIRM[import_confirm: merge into candidate, or keep standalone]
-    E -->|deferred / non-interactive| QUEUE[account-link pending queue]
+    C -->|no| PROPOSE[propose: read-only preview + candidates]
+    PROPOSE --> GATE[Stop before load: confirmation_required / account_confirmation]
+    GATE --> CONFIRM{account_bindings answers it}
+    CONFIRM -->|candidate account_id| MERGE[Bind onto the existing account]
+    CONFIRM -->|"new"| STANDALONE[Mint a standalone account]
     ADOPT --> REMEMBER[Accepted mapping remembered]
     AUTO --> REMEMBER
+    MERGE --> REMEMBER
     STANDALONE --> REMEMBER
-    CONFIRM --> REMEMBER
 ```
 
-Note the surfacing rule is structural in the flow: **agent self-accept lives only
-on the strong-confirmer `AUTO` branch** — a weak-signal proposal (`MINT → PROPOSE`)
-*always* goes to a human confirm or the queue, never to agent self-accept.
+**Propose, then bind — nothing is written before the answer.** The gate runs on
+`AccountResolver.propose()`, which is read-only, and it fires whenever
+`AccountProposal.requires_confirm` holds: a proposal carrying merge candidates,
+**or** a first-contact mint that nothing confirmed. Resolution — the mint, the
+`source_native` link, any decision row — happens only on the re-entry that
+carries the answer. An unanswered import therefore leaves no provisional
+account and no pending row to reconcile, only an unanswered question.
+
+Two consequences worth stating outright, because both contradict an earlier
+design that shipped:
+
+- **The gate is actor-independent.** An agent was previously allowed past it,
+  minting a provisional and queueing a pending decision for later review. That
+  put the resolver's weakest signal into effect unseen on the surface where
+  nobody is watching, so it is gone. Agent self-accept survives only on the
+  strong-confirmer `AUTO` branch.
+- **Imports no longer write to the account-link pending queue.** `resolve()`'s
+  candidate pass is unreachable from every import channel: the gate answers
+  every weak proposal first, and an answered binding resolves above it. That
+  queue is still fed by the backfill link service and by sync — it is not
+  dead, it is simply no longer an import outcome.
 
 **UX (human).** First contact with an unresolved account returns a
 `confirmation_required` outcome including the **proposed account binding** (matched
@@ -586,12 +602,23 @@ remembered, so re-imports are silent.
 **AX (agent).** The same envelope is the agent's structured contract: per detected
 account an `account_proposal` (`{proposed_account_id, is_new, candidates:[{account_id,
 display_name, confidence, signal}]}`) plus `actions[]`. The agent (a) returns an
-`account_bindings` map to `import_confirm` to bind deterministically — preferred,
-using the Decision-6 handle; (b) self-accepts **only a strong-confirmer adoption**
-when `self_accept` is enabled for its `actor_kind` (both defined in M1H,
+`account_bindings` map to `import_files` or `import_confirm` to bind
+deterministically — preferred, using the Decision-6 handle; or (b) self-accepts
+**only a strong-confirmer adoption** when `self_accept` is enabled for its
+`actor_kind` (both defined in M1H,
 [`smart-import-confirmation.md`](smart-import-confirmation.md) §"Agent autonomy &
-recovery"); or (c) leaves proposals for the account-link queue. The agent
+recovery"). Leaving the proposal for the account-link queue is no longer an
+option: the import stops until it is answered. The agent
 never disambiguates a masked `****4267`.
+
+**Open AX gap — an agent cannot read the key it must bind.** `account_bindings`
+is keyed by `source_account_key`, which is an `ACCOUNT_IDENTIFIER` (CRITICAL),
+so the MCP envelope masks it: the caller sees `****1234` where the binding
+needs `chase_1234`. Binding is therefore a CLI capability today, and an agent
+that hits the gate can only pin up front with `account_id` or hand the file to
+a human. Closing this means giving each proposal a non-sensitive handle (an
+opaque `proposal_id`) that `account_bindings` accepts alongside the raw key —
+a public-contract addition, and unresolved.
 
 **Fallback candidates at the gate (decision support, not auto-merge).** The
 auto-resolve ladder above is unchanged: a bare single-account source with no

@@ -395,6 +395,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   asked you in place on spreadsheet and AI-extracted-PDF imports.
 
 ### Changed
+- **Every import now asks which account a file belongs to, before it loads
+  anything.** Previously only CSV/Excel stopped to ask; OFX and PDF resolved
+  and bound the account on their own, so the one moment MoneyBin could be
+  wrong about *whose* transactions these are went by unseen. All three
+  channels now stop on an unrecognized account and show what they found —
+  including the existing accounts they think it might be — and load nothing
+  until you answer. Answer with `--account-binding KEY=ACCOUNT_ID` (or
+  `=new` to keep it separate) on `moneybin import files`, or the
+  `account_bindings` parameter on the `import_files` and `import_confirm`
+  tools. Pinning up front with `--account-id` / `--account-name` still skips
+  the question entirely, and a statement for an account you have already
+  confirmed is still silent — you answer once per account, not once per file.
+
+  Two behavior changes fall out of this. **An agent no longer gets a
+  different answer than you do:** it used to be allowed past this question,
+  quietly creating a provisional account and filing a suggestion for you to
+  review later, which put MoneyBin's weakest guess into effect on the surface
+  where nobody is watching. It now stops exactly where you would.
+  **Imports no longer add to the account-review queue** — the suggestions
+  arrive while you are importing instead of accumulating for later. That
+  queue still exists and is still filled by account sync.
+
+  *Upgrading:* nothing to migrate, and no re-import is needed. Scripted
+  imports of OFX or PDF files for accounts MoneyBin has not seen before will
+  now stop and ask; add `--account-binding` (or an `--account-id` pin) to
+  those calls. A known account keeps importing unattended.
 - **BREAKING for anything branching on an error `code`: 104 code values were
   renamed.** They were raised from tool paths without ever being declared in
   the taxonomy, so they had never been reviewed for shape; each now carries the
