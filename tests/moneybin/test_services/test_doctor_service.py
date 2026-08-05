@@ -11,10 +11,15 @@ from typing import Any, Final
 from unittest.mock import MagicMock
 
 import pytest
+from prometheus_client import REGISTRY
 
 from moneybin.config import get_settings
 from moneybin.database import SQLMESH_ROOT, Database
-from moneybin.metrics.registry import PROFILE_CURRENCIES, UNKNOWN_CURRENCY_ROWS
+from moneybin.metrics.registry import (
+    DUPLICATE_ACCOUNT_PAIRS,
+    PROFILE_CURRENCIES,
+    UNKNOWN_CURRENCY_ROWS,
+)
 from moneybin.repositories import concrete_repo_classes
 from moneybin.services.doctor_service import (
     DoctorReport,
@@ -26,6 +31,12 @@ from tests.moneybin.db_helpers import create_core_tables
 
 _COVERAGE_PREFIX: Final = "app_audit_coverage_"
 """Name prefix `_run_app_audit_coverage` builds from a table's bare name."""
+
+_PAIR_GAUGE_SAMPLE: Final = "moneybin_duplicate_account_pairs"
+"""Sample name of `DUPLICATE_ACCOUNT_PAIRS` in the default registry."""
+
+_UNSET_PAIR_GAUGE: Final = -1.0
+"""Sentinel no run can produce, so "untouched" is distinguishable from zero."""
 
 
 @pytest.mark.unit
@@ -3105,6 +3116,48 @@ def test_transfers_between_sibling_accounts_are_not_overlap(
     result = _overlap_result(doctor_db, monkeypatch)
 
     assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_the_overlap_gauge_carries_the_pair_count(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The published gauge and the reported invariant agree on one number."""
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    DUPLICATE_ACCOUNT_PAIRS.set(_UNSET_PAIR_GAUGE)
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert len(result.affected_ids) == 1
+    assert REGISTRY.get_sample_value(_PAIR_GAUGE_SAMPLE) == 1.0
+
+
+@pytest.mark.unit
+def test_a_skipped_overlap_check_leaves_the_gauge_alone(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skip must not publish a zero that reads as "no duplicate accounts".
+
+    The check skips whenever the core views are missing — before the first
+    transform, most often. Setting the gauge outside the success path turns
+    that into a confident zero on a dashboard, and a duplicate-account alert
+    that silently reports "clear" while unverified is worse than one that
+    reports nothing.
+    """
+    doctor_db.execute("DROP TABLE core.fct_transactions")
+    DUPLICATE_ACCOUNT_PAIRS.set(_UNSET_PAIR_GAUGE)
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "skipped"
+    assert REGISTRY.get_sample_value(_PAIR_GAUGE_SAMPLE) == _UNSET_PAIR_GAUGE
 
 
 @pytest.mark.unit

@@ -215,11 +215,17 @@ Surviving candidates are then scored by:
 - **Date distance** — linear decay across the window.
 - **Description similarity** — Jaro-Winkler over the two `description` strings.
 
-The combined confidence score is checked against two thresholds from settings:
+Two things decide what happens to a candidate — the score and whether the two
+descriptions agree (one contains the other, or they are identical):
 
-- `>= high_confidence_threshold` (default `0.85`) → auto-accept, written to `app.match_decisions` with `match_status = 'accepted'`.
-- `>= review_threshold` (default `0.70`) → land in the review queue (`moneybin transactions matches pending` lists them; `moneybin review --type matches --status` reports the count).
-- Below `review_threshold` → discarded.
+- `>= high_confidence_threshold` (default `0.95`) **and descriptions agree** → auto-accept, written to `app.match_decisions` with `match_status = 'accepted'`.
+- Anything else, cross-source → the review queue (`moneybin transactions matches pending` lists them; `moneybin review --type matches --status` reports the count). No cross-source candidate is discarded for scoring low.
+- Anything else, within one source → not merged; both rows stay in the ledger, since that tier has no review queue.
+
+`review_threshold` (default `0.70`) no longer admits or discards a duplicate
+candidate. It bounds the scoring weights and is validated against
+`high_confidence_threshold`; tuning it will not move a pair between auto-merge
+and review. Transfer detection uses `transfer_review_threshold` instead.
 
 Notably **not** part of the comparison: payee fuzzy match (description similarity does the work), merchant ID, category, or any field that the matcher itself is supposed to harmonize downstream. Dedup is identity, not normalization.
 

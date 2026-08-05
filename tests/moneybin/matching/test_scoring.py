@@ -133,33 +133,47 @@ class TestComputeConfidence:
                     f"{bands.review_threshold}"
                 )
 
-    def test_the_weighted_path_alone_never_auto_merges(self) -> None:
-        """Without description agreement, no date gap can earn a silent merge.
+    def test_the_weighted_path_peaks_at_zero_gap_and_clears_the_threshold(
+        self,
+    ) -> None:
+        """The formula is not the auto-merge guard, and must not be mistaken for one.
 
-        A wrong silent merge is the hardest inference to notice and undo
-        (design-principles.md), so the weighted path — the one a disagreeing
-        pair falls to — must stay under the auto-merge bar at every gap. Pairs
-        that *do* agree are lifted over it by the agreement floor, which this
-        deliberately does not pass; see
-        test_agreeing_descriptions_auto_merge_at_every_date_gap.
+        ``date_score`` is ``1 - days/window``, so it is largest at *zero* days
+        apart, not one. At that point the weighted path scores
+        ``_WEIGHT_DATE + _WEIGHT_DESCRIPTION * similarity``, which clears the
+        auto-merge threshold for any similarity above roughly 0.93 — with no
+        description agreement involved at all.
+
+        This test pins that hazard rather than denying it. An earlier version
+        asserted the opposite, and held only because it started its loop at one
+        day apart and never evaluated the peak; two genuinely distinct
+        transactions differing by a trailing digit would have merged silently.
+        The gate that actually holds the line is
+        ``TransactionMatcher._classify_pair``, which requires
+        ``descriptions_agree``. Anyone tempted to move it back into the formula
+        should fail here first.
         """
         bands = MatchingSettings()
-        # Up to the shipped default window. The margin narrows as the window
-        # widens, so this holds for supported configurations rather than for
-        # every conceivable one — see test_closeness_alone_never_reaches_auto_
-        # merge in test_config_matching.py, which pins the same property
-        # against the live defaults.
         for window in (1, 2, 3, 4, 5):
-            for days in range(1, window + 1):
-                score = compute_confidence(
+            scores = [
+                compute_confidence(
                     date_distance_days=days,
                     description_similarity=1.0,
                     date_window_days=window,
                 )
-                assert score < bands.high_confidence_threshold, (
-                    f"a {days}d-apart pair scored {score:.3f}, at or above the "
-                    f"{bands.high_confidence_threshold} auto-merge threshold"
-                )
+                for days in range(0, window + 1)
+            ]
+            assert scores == sorted(scores, reverse=True), (
+                f"scores over a {window}d window are not monotonically "
+                f"decreasing in date distance: {scores}"
+            )
+            assert scores[0] >= bands.high_confidence_threshold, (
+                f"the weighted path's peak over a {window}d window scored "
+                f"{scores[0]:.3f}, below the {bands.high_confidence_threshold} "
+                "auto-merge threshold — if this is now true, the classification "
+                "gate is no longer the only thing preventing a silent merge and "
+                "this test should be rewritten deliberately, not deleted"
+            )
 
     def test_exact_date_high_similarity(self) -> None:
         score = compute_confidence(date_distance_days=0, description_similarity=0.95)
@@ -764,6 +778,52 @@ class TestGetCandidatesCrossSource:
         assert len(candidates) == 1
         assert candidates[0].confidence_score < 0.95
 
+    def test_identical_descriptions_agree_even_when_boilerplate(
+        self, unioned_table: Database
+    ) -> None:
+        """Two sources writing the same word is agreement, boilerplate or not.
+
+        The merchant-token requirement exists because containment on a *fragment*
+        is weak evidence: a bare `DEBIT` sits inside `DEBIT CARD PURCHASE AMAZON`
+        and identifies nothing. Exact equality is not a fragment match — there is
+        no longer string for the short one to hide inside. A `DEPOSIT` of the same
+        amount, on the same day, in the same account, described identically by two
+        sources is one transaction; requiring a merchant word there asks a bank to
+        name a merchant that does not exist.
+
+        Isolation: both sides are non-empty and the shared text is pure
+        boilerplate, so the merchant-token rule would reject this pair. Only the
+        equality carve-out can admit it.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-01-28",
+            amount="5000.00",
+            description="Deposit",
+            source_type="ofx",
+            source_origin="wf_ofx",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-01-28",
+            amount="5000.00",
+            description="DEPOSIT",
+            source_type="csv",
+            source_origin="wf",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=5,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].descriptions_agree is True
+
     def test_boilerplate_beside_a_merchant_token_still_agrees(
         self, unioned_table: Database
     ) -> None:
@@ -802,6 +862,94 @@ class TestGetCandidatesCrossSource:
         )
         assert len(candidates) == 1
         assert candidates[0].confidence_score >= 0.95
+
+    def test_punctuation_alone_does_not_defeat_agreement(
+        self, unioned_table: Database
+    ) -> None:
+        """One source writing `#` where the other writes nothing still agrees.
+
+        Agreement is the only route to auto-merge, so a character of punctuation
+        cannot be allowed to sink an otherwise identical pair. Two sources
+        rendering one transaction as `STARBUCKS #1234` and `STARBUCKS 1234` is
+        the ordinary case this feature exists to absorb; without this, it costs a
+        human decision every time.
+
+        Isolation: both sides are non-empty, both carry a merchant token, and the
+        two differ *only* in punctuation — so nothing but the punctuation
+        handling can decide this pair.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="STARBUCKS #1234",
+            source_type="csv",
+            source_origin="chase",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="STARBUCKS 1234",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=5,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].descriptions_agree is True
+
+    def test_a_differing_reference_number_is_not_agreement(
+        self, unioned_table: Database
+    ) -> None:
+        """Dropping punctuation must not make two different references equal.
+
+        This is the pair the whole agreement gate exists to refuse: same
+        merchant, same amount, same day, descriptions differing only in a
+        trailing digit. Jaro-Winkler puts it near 0.96, high enough that the
+        weighted formula alone would have merged it silently. Punctuation
+        handling widens what agrees, so it is pinned here that it does not widen
+        this far — a digit is not punctuation.
+
+        Isolation: both sides are non-empty and both carry a merchant token, so
+        only the containment test can keep this pair out of agreement.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="SHELL 1234",
+            source_type="csv",
+            source_origin="chase",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-42.50",
+            description="SHELL 1235",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=5,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].descriptions_agree is False
 
     def test_candidate_carries_source_file(self, unioned_table: Database) -> None:
         """Candidates expose source_file on both sides for the cardinality guard."""

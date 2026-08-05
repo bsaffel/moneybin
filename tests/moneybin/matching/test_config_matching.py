@@ -94,31 +94,55 @@ class TestDateWindowBound:
 
         This is the safety property the description-agreement gate rests on.
         Pairs whose descriptions agree are lifted to auto-merge by the floor;
-        everything else falls to the weighted formula, and that path must stay
-        below the auto-merge threshold no matter how close the dates are. If it
-        could reach the threshold on its own, a disagreeing pair would merge
-        without review purely for landing on a nearby day.
+        everything else must land in review (Tier 3) or go unmerged (Tier 2b),
+        however close the dates are.
 
-        Checking the weighted branch's peak covers every gap at once: it is
-        highest one day apart with identical descriptions.
-
-        Pinned at the DEFAULTS only. The margin narrows as the window widens, so
-        this is a property of the shipped configuration, not a law of the
-        scoring function.
+        The weighted formula does not hold that line by itself. Its peak is at
+        *zero* days apart, where the date term is 1.0 — an earlier version of
+        this test evaluated the score one day apart and called that the maximum,
+        which is why the gap went unnoticed. The line is held at classification
+        instead, and this pins it against the *shipped* settings rather than a
+        fixture's, feeding in the formula's real peak.
         """
-        from moneybin.matching.scoring import (
-            _WEIGHT_DATE,  # pyright: ignore[reportPrivateUsage]  # derive, not literal
-            _WEIGHT_DESCRIPTION,  # pyright: ignore[reportPrivateUsage]  # same
-        )
+        from unittest.mock import MagicMock
+
+        from moneybin.matching.engine import TransactionMatcher
+        from moneybin.matching.scoring import CandidatePair, compute_confidence
 
         settings = MatchingSettings()
-        # Derived from the live weights, never a literal, so retuning them here
-        # cannot silently reopen the door this test is holding shut.
-        peak = (
-            _WEIGHT_DATE * (1.0 - 1.0 / settings.date_window_days) + _WEIGHT_DESCRIPTION
+        # Derived from the live weights and window, never a literal, so retuning
+        # them cannot silently reopen the door this test is holding shut.
+        peak = compute_confidence(
+            date_distance_days=0,
+            description_similarity=1.0,
+            date_window_days=settings.date_window_days,
         )
-        assert peak < settings.high_confidence_threshold, (
-            f"a one-day-apart pair with identical descriptions scores {peak:.4f}, "
-            f"at or above the {settings.high_confidence_threshold} auto-merge "
-            "threshold — proximity alone would merge a pair without review"
+        assert peak >= settings.high_confidence_threshold, (
+            f"the weighted peak is {peak:.4f}, below the auto-merge threshold "
+            f"{settings.high_confidence_threshold} — the formula now holds this "
+            "line on its own and this test should be rewritten deliberately"
+        )
+        pair = CandidatePair(
+            source_transaction_id_a="a",
+            source_type_a="csv",
+            source_origin_a="chase",
+            source_transaction_id_b="b",
+            source_type_b="ofx",
+            source_origin_b="chase_ofx",
+            account_id="acct1",
+            date_distance_days=0,
+            description_similarity=1.0,
+            confidence_score=peak,
+            description_a="SHELL 1234",
+            description_b="SHELL 1235",
+            descriptions_agree=False,
+        )
+        matcher = TransactionMatcher(MagicMock(), settings)
+        assert matcher._classify_pair(pair, "3") == ("pending", "auto"), (  # pyright: ignore[reportPrivateUsage]
+            "a disagreeing cross-source pair at the weighted peak was accepted "
+            "— proximity alone merged it without review"
+        )
+        assert matcher._classify_pair(pair, "2b") is None, (  # pyright: ignore[reportPrivateUsage]
+            "a disagreeing within-source pair at the weighted peak was accepted "
+            "— and Tier 2b has no review queue to catch it"
         )

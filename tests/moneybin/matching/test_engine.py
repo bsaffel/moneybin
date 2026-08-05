@@ -15,7 +15,12 @@ from moneybin.matching.scoring import CandidatePair
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 
 
-def _make_pair(confidence: float) -> CandidatePair:
+def _make_pair(confidence: float, *, agree: bool = False) -> CandidatePair:
+    """Build a scored pair. ``agree`` is the description-agreement signal.
+
+    Defaults to False because that is the case a silent merge must never
+    survive; every test asserting an auto-merge has to opt in explicitly.
+    """
     return CandidatePair(
         source_transaction_id_a="a",
         source_type_a="csv",
@@ -29,6 +34,7 @@ def _make_pair(confidence: float) -> CandidatePair:
         confidence_score=confidence,
         description_a="",
         description_b="",
+        descriptions_agree=agree,
     )
 
 
@@ -44,13 +50,48 @@ class TestClassifyPair:
         matcher = _matcher_with_settings(
             high_confidence_threshold=0.90, review_threshold=0.70
         )
-        assert matcher._classify_pair(_make_pair(0.95), "2b") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
+        pair = _make_pair(0.95, agree=True)
+        assert matcher._classify_pair(pair, "2b") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
 
     def test_high_confidence_returns_accepted_for_3(self) -> None:
         matcher = _matcher_with_settings(
             high_confidence_threshold=0.90, review_threshold=0.70
         )
-        assert matcher._classify_pair(_make_pair(0.95), "3") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
+        pair = _make_pair(0.95, agree=True)
+        assert matcher._classify_pair(pair, "3") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_high_score_without_agreement_is_reviewed_not_merged(self) -> None:
+        """Score alone never earns a silent merge — only agreement does.
+
+        The weighted formula peaks at ``date_distance_days=0``, where its date
+        term is 1.0, so a *disagreeing* pair landing on the same day clears the
+        auto-merge threshold on closeness alone: two distinct transactions at
+        one merchant differing only in a trailing reference number score ~0.97.
+        Merging those deletes a real transaction with no review entry, which is
+        the hardest failure to notice and undo (design-principles.md), so
+        agreement is checked here rather than left to the formula.
+        """
+        matcher = _matcher_with_settings(
+            high_confidence_threshold=0.90, review_threshold=0.70
+        )
+        pair = _make_pair(0.97, agree=False)
+        assert matcher._classify_pair(pair, "3") == ("pending", "auto")  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_high_score_without_agreement_is_dropped_within_source(self) -> None:
+        """Tier 2b has no review queue, so a disagreeing pair is simply not merged.
+
+        Both rows stay in the ledger. That is a double-count — visible in any
+        total, and correctable — where the alternative is deleting one of two
+        genuinely distinct transactions with nothing recorded anywhere. Within
+        one source the rendering is consistent, so two rows written differently
+        are two transactions; this is the same premise the agreement floor is
+        withheld from Tier 2b for (``scoring.py``), enforced at the decision.
+        """
+        matcher = _matcher_with_settings(
+            high_confidence_threshold=0.90, review_threshold=0.70
+        )
+        pair = _make_pair(0.97, agree=False)
+        assert matcher._classify_pair(pair, "2b") is None  # pyright: ignore[reportPrivateUsage]
 
     def test_tier3_above_review_threshold_returns_pending(self) -> None:
         matcher = _matcher_with_settings(

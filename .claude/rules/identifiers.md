@@ -106,6 +106,7 @@ Two rules generalize from that:
 
 - **The retirement belongs wherever the id is derived, not in a one-shot cleanup.** A migration fixes the installs that already have the orphan; it does nothing about the next one, because the derivation still produces it. Suppress in the layer that reads the ids.
 - **Suppress on proof, never on resemblance.** The predicate is exact content equality. A row whose text drifted between exports is not provably superseded, so it survives and goes to the matcher as an ambiguous pair. Prefix-matching an id with `LIKE` is a specific trap here: `_` and `%` are wildcards, so an id containing either borrows an unrelated id's suffix and deletes a transaction that was never superseded. Split the id by position and join on equality.
+- **Scope the pairing to one account *and* one source origin.** The account key at that layer is source-native, so nothing stops two institutions from minting the same `ACCTID` string. Matching on the account alone lets one bank's suffixed row delete another's bare row whenever every hashed field happens to agree — silently, since a deletion leaves no trace. Requiring the same origin costs a legitimate suppression only when one institution's exports arrive under two origin slugs, and that failure double-counts a row where the other deletes it.
 
 ## Semantic Slugs
 

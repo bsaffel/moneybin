@@ -465,6 +465,13 @@ ACCOUNT_LINK_CONFIDENCE = Histogram(
     "Resolution confidence for account-link candidate proposals.",
 )
 
+DUPLICATE_ACCOUNT_PAIRS = Gauge(
+    "moneybin_duplicate_account_pairs",
+    "Account pairs at one institution whose transactions mirror each other — "
+    "one account likely imported under two identities, double-counting it. "
+    "Left untouched when the check cannot run, so a skip never reads as zero.",
+)
+
 # ── Merchant identity resolution ─────────────────────────────────────────────
 
 MERCHANT_LINK_REVIEW_PENDING = Gauge(

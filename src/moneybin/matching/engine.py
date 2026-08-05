@@ -203,7 +203,17 @@ class TransactionMatcher:
         The tier-3-only review-threshold branch lives exclusively here so it can
         be tested without a database fixture.
         """
-        if pair.confidence_score >= self._settings.high_confidence_threshold:
+        # Agreement, not the score, is what earns a silent merge. The score
+        # cannot carry that gate on its own: the weighted formula peaks at
+        # date_distance_days=0, where its date term is 1.0, so a disagreeing
+        # pair landing on the same day clears the threshold on closeness alone
+        # — two distinct transactions at one merchant differing only in a
+        # trailing reference number score ~0.97. Agreement is a separate
+        # signal precisely because similarity is not evidence of identity.
+        if (
+            pair.confidence_score >= self._settings.high_confidence_threshold
+            and pair.descriptions_agree
+        ):
             return ("accepted", "auto")
         # Every cross-source pair that survives assignment is reviewable. It has
         # already cleared same-account, exact-amount, in-window blocking and won a

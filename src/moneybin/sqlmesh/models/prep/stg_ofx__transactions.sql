@@ -19,6 +19,7 @@ MODEL (
 WITH superseding AS (
   SELECT
     account_id,
+    source_origin,
     LEFT(
       source_transaction_id,
       LENGTH(source_transaction_id) - STRPOS(REVERSE(source_transaction_id), '#')
@@ -71,6 +72,13 @@ WITH superseding AS (
       FROM superseding AS s
       WHERE
         s.account_id = t.account_id
+        AND /* The account key here is source-native, not canonical: nothing scopes
+                   an OFX ACCTID globally, so two institutions can both mint 'ACC1'.
+                   Without this, one bank's suffixed row could delete the other's bare
+                   row whenever all six hashed fields happened to agree. Requiring the
+                   same origin costs a legitimate suppression only if one institution's
+                   exports arrive under two origin slugs — which double-counts a row,
+                   where the alternative deletes one. */ s.source_origin IS NOT DISTINCT FROM t.source_origin
         AND s.superseded_transaction_id = t.source_transaction_id
         AND s.transaction_type IS NOT DISTINCT FROM t.transaction_type
         AND s.date_posted IS NOT DISTINCT FROM t.date_posted

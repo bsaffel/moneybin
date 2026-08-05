@@ -1,6 +1,6 @@
 # Cross-Source Auto-Merge on Description Agreement
 
-> Last updated: 2026-08-02
+> Last updated: 2026-08-05
 > Status: implemented
 > Filename note: the file is still `matching-exact-key-dedup.md` because
 > CHANGELOG history and five specs link to it. The exact-key rule it was named
@@ -27,6 +27,9 @@ confidence = 0.40·date_score + 0.60·description_similarity
 auto-merge requires confidence ≥ high_confidence_threshold (0.95)
 ```
 
+(Those are the weights as of the bug. They are now 0.30/0.70 — see
+[§The cross-source asymmetry](#the-cross-source-asymmetry).)
+
 For an exact duplicate (`date_distance = 0` → `date_score = 1.0`), auto-merge
 needed description similarity `S ≥ 0.92`. OFX truncates/splits descriptions
 differently from CSV (OFX `description` is truncated; the rest lands in the
@@ -50,12 +53,23 @@ fires as designed (279 @ `source_count = 2`).
 
 ## Decision (2026-08-02, supersedes 2026-06-13)
 
-**Auto-merge on description agreement.** For the **cross-source tier only**, a
-pair auto-merges when one description **contains** the other, after
-normalization (case-fold, collapse internal whitespace runs, trim), with both
-sides non-empty and the **contained** side carrying at least one token that is
-not transaction-type boilerplate. The date gap no longer gates anything — it only
-modulates the score below the floor.
+**Auto-merge on description agreement.** A pair auto-merges when one description
+**contains** the other, after normalization (case-fold, reduce punctuation to a
+space, collapse internal whitespace runs, trim), with both sides non-empty and
+the **contained** side carrying at least one token that is not transaction-type
+boilerplate — unless the two normalize to the same string, which is agreement on
+its own. The date gap no longer gates anything — it only modulates the score
+below the floor.
+
+Agreement is required at the decision, not merely rewarded in the score:
+`TransactionMatcher._classify_pair` accepts only a pair that both clears
+`high_confidence_threshold` **and** agrees, for **every** tier. The score cannot
+carry that gate alone. Its weighted branch is
+`_WEIGHT_DATE * date_score + _WEIGHT_DESCRIPTION * similarity`, and `date_score`
+peaks at `date_distance_days = 0`, so at the shipped weights any similarity above
+~0.93 clears 0.95 with no agreement at all — `SHELL 1234` against `SHELL 1235`,
+same account, same amount, same day, scores 0.972. The **agreement floor** stays
+cross-source-only; the **agreement requirement** applies everywhere.
 
 Containment is the literal mechanism: sources carry a shared merchant string,
 truncate it at different lengths, and wrap it in their own preamble and trailing
@@ -70,6 +84,14 @@ to **review** — never silently dropped. Blocking has already required the same
 account, an exact amount, and a date inside the window; that is enough evidence
 to ask about, and dropping instead would be its own silent action, leaving a
 duplicate in the ledger nobody is told about.
+
+Tier 2b has no review queue, so a within-source pair that does not agree is
+simply not merged: both rows stay in the ledger. That is a double-count —
+visible in any total, and correctable — where the alternative is deleting one of
+two genuinely distinct transactions with nothing recorded anywhere. It is also
+the premise the agreement floor is withheld from Tier 2b for: inside one source
+the rendering is consistent, so two rows written differently are two
+transactions.
 
 ### Why the 2026-06-13 exact-key rule was replaced
 
@@ -108,16 +130,34 @@ layouts like `NETFLIX.COM NETFLIX.COM CA` pass through untouched.
 
 ### The cross-source asymmetry
 
-The floor is Tier 3 only. Across sources each side lists a transaction once, so
-two agreeing rows are one transaction rendered twice. Inside one source the
-rendering is consistent, so two rows written *differently* are two
-transactions — granting the floor there would silently delete one. Tier 2b keeps
-the weighted formula unchanged.
+Only the *floor* is asymmetric; the *agreement requirement* is not. The floor is
+Tier 3 only: across sources each side lists a transaction once, so two agreeing
+rows are one transaction rendered twice, and lifting them to auto-merge is safe.
+Inside one source the rendering is consistent, so two rows written *differently*
+are two transactions — granting the floor there would silently delete one.
+
+Tier 2b gets the requirement anyway. `_classify_pair` demands
+`descriptions_agree` before any silent merge on either tier, because the
+sentence that withholds the floor from Tier 2b ("two rows written differently
+are two transactions") is the same sentence that forbids merging them. Without
+it the weighted score is the only gate on Tier 2b, and that score peaks at
+`date_distance_days = 0` where its date term is 1.0 — so a same-day pair reaches
+0.95 at `description_similarity ≥ 0.929`, which two distinct charges at one
+merchant differing only in a trailing reference number clear
+(`SHELL 1234` / `SHELL 1235` score 0.972).
+
+Tier 2b's score also moved, as a consequence of the reweight below rather than a
+retune of this tier: at 0.40/0.60 a same-day pair needed 0.917 similarity, at
+0.30/0.70 it needs 0.929. That narrows what Tier 2b merges silently, which is
+the safe direction for a tier with no review queue, so the weights were not
+re-tuned to restore the old boundary — `_WEIGHT_DESCRIPTION ≥ review_threshold`
+(0.70) is load-bearing for the window-edge dead zone, and 0.60 does not satisfy
+it.
 
 ## Mechanisms
 
-Two changes, both scoped to the cross-source tier / shared assignment; transfer
-matching and within-source (Tier 2b) acceptance are unchanged.
+Two changes to the cross-source tier and shared assignment, plus one gate that
+applies to every dedup tier. Transfer matching and blocking are unchanged.
 
 ### 1. Description-agreement confidence floor (`scoring.py`)
 
@@ -139,6 +179,14 @@ string (`POS AMAZON` inside `POS AMAZON MKTPL*… SEATTLE WA` is a genuine
 agreement), so rejecting any description merely *containing* boilerplate would
 throw away the matches this gate exists to find.
 
+**Exact equality is exempt from the merchant-token requirement.** The rule guards
+against a short *fragment* hiding inside a longer string; two identical
+descriptions have no longer string to hide inside. A bank writing `DEPOSIT` in
+both its OFX and CSV export of one account cannot name a merchant, and demanding
+one refuses the plainest duplicate there is — caught by
+`account-identity-cross-source`, where a $5,000 `Deposit` present in both sources
+stopped collapsing.
+
 The vocabulary is hand-maintained and pinned by **set equality**, not membership:
 every token added to it removes evidence from the gate and widens what merges
 without review, so the change has to land as a deliberate edit in one reviewable
@@ -152,10 +200,20 @@ other rows on the same account, since boilerplate matches dozens and a merchant
 string matches one or two — which needs measurement against real data before it
 can replace the list.
 
-Normalization is `_normalized_description()` in `scoring.py` — case-fold,
-collapse internal whitespace runs, trim. Deliberately *only* canonicalization:
-running the categorization normalizer (`normalize_description`) here was
-measured and rejected (see above).
+Normalization is `_normalized_description()` in `scoring.py` — case-fold, reduce
+punctuation to a space, collapse internal whitespace runs, trim. Deliberately
+*only* canonicalization: running the categorization normalizer
+(`normalize_description`) here was measured and rejected (see above).
+
+Punctuation is **reduced to a space, not deleted**. That is the difference
+between `WAL-MART` matching `WAL MART` (it does) and matching `WALMART` (it does
+not): deleting separators would merge pairs whose word boundaries genuinely
+differ, while reducing them only absorbs the characters one source prints and
+another omits. Once agreement became the sole route to auto-merge, a single `#`
+was enough to sink an otherwise identical pair — `STARBUCKS #1234` against
+`STARBUCKS 1234` is the ordinary cross-source rendering difference this feature
+exists to absorb, and it was costing a human decision every time. A digit is not
+punctuation, so `SHELL 1234` and `SHELL 1235` still disagree.
 
 `compute_confidence(..., agreement_floor=high_confidence_threshold,
 descriptions_agree=True)` then lifts the pair into `[floor, 1.0]` via
@@ -173,11 +231,27 @@ The floor is threaded from `MatchingSettings.high_confidence_threshold` (not
 hard-coded) so the two stay coupled if the threshold ever changes. Tier 2b
 passes no floor.
 
-`_classify_pair` accepts at/above the threshold and routes **every** other
-surviving Tier 3 pair to `pending`. `review_threshold` no longer applies to
-Tier 3; `assign_components` bounds the queue, so it cannot run away.
+`_classify_pair` accepts a pair only when it is at/above the threshold **and**
+`descriptions_agree`, and routes **every** other surviving Tier 3 pair to
+`pending`. `review_threshold` no longer applies to Tier 3; `assign_components`
+bounds the queue, so it cannot run away.
 
-### 2. Cardinality guard (`assignment.py::assign_components`)
+### 2. Agreement required for every silent merge (`engine.py::_classify_pair`)
+
+The score alone cannot gate an auto-merge, on any tier. `compute_confidence`
+peaks at `date_distance_days = 0`, where the date term is 1.0 and the pair
+scores `0.30 + 0.70 · description_similarity` — so `similarity ≥ 0.929` clears
+0.95 without the floor and without agreeing. Two distinct charges at one
+merchant differing only in a trailing reference number sit there. Requiring
+`descriptions_agree` at the classification site closes that route on Tier 3 and
+Tier 2b alike; the floor (mechanism 1) then decides only *which* agreeing
+cross-source pairs also clear the threshold.
+
+Both are needed. The floor without the gate leaves the day-0 hole open on Tier
+2b; the gate without the floor sends agreeing but low-similarity cross-source
+pairs to review, which is the queue-volume problem this spec set out to fix.
+
+### 3. Cardinality guard (`assignment.py::assign_components`)
 
 `assign_components` is a union-find spanning forest. With description no longer
 gating, multiple exact-key pairs in one `(account, amount, date)` bucket would
@@ -253,11 +327,17 @@ descriptions sharing nothing) must not.
   preserves description ordering; disagreeing pairs stay below the floor even on
   the same day; a blank description is not agreement; a boilerplate-only
   contained side is not agreement, while one merchant token beside boilerplate
-  still is; the boilerplate vocabulary is pinned by set equality; the floor does
-  not reach
+  still is, and identical descriptions agree even when the shared text is pure
+  boilerplate; the boilerplate vocabulary is pinned by set equality; punctuation
+  alone does not defeat agreement while a differing reference number still does;
+  the floor does not reach
   Tier 2b (same fixture, opposite outcome); an auto-merge records
   `descriptions_agree`; the cardinality guard pairs N duplicates 1:1 (including
   with equal scores) and still collapses distinct-file N-way groups.
+  `_classify_pair` refuses a disagreeing pair at the weighted formula's true
+  peak — reviewed on Tier 3, unmerged on Tier 2b — and the peak itself is
+  asserted to clear `high_confidence_threshold`, so the day the formula alone
+  becomes safe, the test that says otherwise fails loudly rather than rotting.
 - **Scenario** (`tests/scenarios/`):
   - `dedup-cross-format-truncation` (positive) — 4 real deidentified WF
     OFX↔CSV pairs with low description similarity collapse to 4 gold records,
@@ -279,5 +359,6 @@ descriptions sharing nothing) must not.
   decoded description is what reaches dedup. This change adds the previously
   missing regression test for it; no further fix is needed (stale rows imported
   before #194 are cleaned by re-import, not retroactively).
-- No change to transfer matching, within-source (Tier 2b) acceptance, blocking,
-  or the prep fold.
+- No change to transfer matching, blocking, or the prep fold. Within-source
+  (Tier 2b) acceptance **is** in scope — it gains the agreement requirement and
+  inherits the reweight — but gains no floor and no review queue.

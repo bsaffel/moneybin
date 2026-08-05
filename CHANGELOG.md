@@ -420,9 +420,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now auto-merges when one description contains the other, at any gap inside the
   window — provided the shared text carries something more than transaction-type
   boilerplate, since `DEBIT` sits inside most card descriptions and identifies no
-  merchant. Which existing duplicates merge and which go to review both change on
+  merchant. Two sources writing the *identical* description are exempt from that:
+  a bank labelling a row `Deposit` in both exports cannot name a merchant.
+  Punctuation no longer decides the question — `STARBUCKS #1234` and
+  `STARBUCKS 1234` agree — while a differing reference number still does, so
+  `SHELL 1234` and `SHELL 1235` stay two transactions. Which existing duplicates
+  merge and which go to review both change on
   the next `refresh`. `matching.date_window_days` is shared with transfer
   detection, so its new default widens that candidate window too.
+- **A high score no longer merges two transactions on its own (#377).** Closeness
+  and description agreement were both feeding one number, and a pair landing on
+  the same day could clear the auto-merge bar on closeness alone — two distinct
+  charges at one merchant differing only in a trailing reference number scored
+  0.97 and one of them was deleted, with no review entry and nothing recorded.
+  Agreement is now required at the decision itself, for same-source duplicates as
+  well as cross-source. Same-source pairs have no review queue, so a disagreeing
+  pair there is left unmerged: both rows stay in the ledger, which is a
+  double-count you can see in a total rather than a deletion you cannot.
 - **Every cross-source duplicate candidate now reaches the review queue (#377).**
   Pairs scoring below `matching.review_threshold` used to be dropped and logged
   at DEBUG — the duplicate stayed in the ledger and nobody was told. Expect the

@@ -75,6 +75,7 @@ def _insert_ofx_row(
     payee: str = "FOREIGN TRANSACTION FEE",
     memo: str | None = None,
     account_id: str = "ACC1",
+    source_origin: str = "chase",
 ) -> None:
     """Seed one `raw.ofx_transactions` row.
 
@@ -88,9 +89,17 @@ def _insert_ofx_row(
             amount, payee, memo, check_number, source_file, extracted_at,
             loaded_at, source_type, source_origin, currency_code
         ) VALUES (?, ?, 'DEBIT', TIMESTAMP '2026-01-15 00:00:00', ?, ?, ?, NULL,
-                  ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ofx', 'chase', 'USD')
+                  ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ofx', ?, 'USD')
         """,  # noqa: S608 — test input, not user data
-        [fitid, account_id, Decimal(amount), payee, memo, source_file],
+        [
+            fitid,
+            account_id,
+            Decimal(amount),
+            payee,
+            memo,
+            source_file,
+            source_origin,
+        ],
     )
 
 
@@ -169,6 +178,27 @@ def test_supersession_does_not_cross_accounts(db: Database) -> None:
     _build_staging(db)
     _insert_ofx_row(db, fitid="X", source_file="a.qfx", account_id="ACC1")
     _insert_ofx_row(db, fitid="X#aaaa1111", source_file="b.qfx", account_id="ACC2")
+
+    assert _staged_ids(db) == ["X", "X#aaaa1111"]
+
+
+@pytest.mark.unit
+def test_supersession_does_not_cross_institutions(db: Database) -> None:
+    """The account key here is source-native, so two banks can both mint `ACC1`.
+
+    Nothing scopes an OFX ACCTID globally. Two institutions issuing the same
+    account string, one of them hitting a FITID collision whose superseded
+    prefix is the other's bare id, would otherwise let one bank's row delete the
+    other's — silently, and only when all six hashed fields happen to agree.
+    Requiring the same origin costs a legitimate suppression only if one
+    institution's exports arrive under two origin slugs, and that failure
+    double-counts a row where this one deletes it.
+    """
+    _build_staging(db)
+    _insert_ofx_row(db, fitid="X", source_file="a.qfx", source_origin="chase")
+    _insert_ofx_row(
+        db, fitid="X#aaaa1111", source_file="b.qfx", source_origin="wells_fargo"
+    )
 
     assert _staged_ids(db) == ["X", "X#aaaa1111"]
 

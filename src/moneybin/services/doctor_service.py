@@ -14,7 +14,11 @@ from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
-from moneybin.metrics.registry import PROFILE_CURRENCIES, UNKNOWN_CURRENCY_ROWS
+from moneybin.metrics.registry import (
+    DUPLICATE_ACCOUNT_PAIRS,
+    PROFILE_CURRENCIES,
+    UNKNOWN_CURRENCY_ROWS,
+)
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (
     SECURITY_TYPE_STALENESS_DAYS,
@@ -2265,6 +2269,9 @@ class DoctorService:
                 detail=f"accounts/ledger unavailable: {e}",
                 affected_ids=[],
             )
+        # Only after the query succeeded: a skipped check leaves the gauge alone
+        # rather than publishing a zero that reads as "no duplicate accounts".
+        DUPLICATE_ACCOUNT_PAIRS.set(len(rows))
         if rows:
             return InvariantResult(
                 name=name,

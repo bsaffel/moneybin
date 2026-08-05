@@ -34,10 +34,20 @@ _WEIGHT_DESCRIPTION = 0.70
 def _normalized_description(column: str) -> str:
     """SQL expression canonicalizing a description for the agreement test.
 
-    Case-folds, collapses internal whitespace runs, and trims. Sources pad
-    descriptions to fixed column widths, so the same merchant string arrives with
-    different runs of spaces; without the collapse, two renderings of one
-    transaction fail to relate at all.
+    Case-folds, reduces punctuation to a space, collapses internal whitespace
+    runs, and trims. Sources pad descriptions to fixed column widths, so the same
+    merchant string arrives with different runs of spaces; without the collapse,
+    two renderings of one transaction fail to relate at all.
+
+    Punctuation is reduced rather than deleted, which is the difference between
+    `WAL-MART` matching `WAL MART` (it does) and matching `WALMART` (it does
+    not). Deleting it would silently merge pairs whose word boundaries genuinely
+    differ; reducing it only absorbs the separator characters one source prints
+    and another omits — `STARBUCKS #1234` against `STARBUCKS 1234`. Since
+    agreement is now the sole route to an auto-merge (see
+    ``TransactionMatcher._classify_pair``), a single `#` deciding that question
+    was costing a human decision on the ordinary case this feature exists for.
+    A digit is not punctuation, so `SHELL 1234` and `SHELL 1235` still disagree.
 
     Deliberately *only* canonicalization — no token stripping. Running the
     categorization normalizer here was measured on live data and rejected: it
@@ -45,7 +55,8 @@ def _normalized_description(column: str) -> str:
     because its trailing-location pattern needs a plain capitalized word before
     the state code and statement layouts do not supply one.
     """
-    return f"REGEXP_REPLACE(UPPER(TRIM(COALESCE({column}, ''))), '\\s+', ' ', 'g')"
+    depunctuated = f"REGEXP_REPLACE(UPPER(COALESCE({column}, '')), '[^\\p{{L}}\\p{{N}}]', ' ', 'g')"
+    return f"TRIM(REGEXP_REPLACE({depunctuated}, '\\s+', ' ', 'g'))"
 
 
 # Words describing *what kind* of movement a row is, never *who* was paid.
@@ -276,11 +287,17 @@ def _get_candidates(
             -- The *contained* side is the shared evidence, so it is the side that
             -- must carry a merchant token. An empty description is the extreme
             -- case of the same defect; bare boilerplate is the merely-generic one.
+            -- Equality is exempt from that requirement: the merchant token guards
+            -- against a short *fragment* hiding inside a longer string, and two
+            -- identical descriptions have no longer string to hide inside. A bank
+            -- writing `DEPOSIT` in both exports cannot name a merchant, and
+            -- demanding one would refuse the plainest duplicate there is.
             (
                 {norm_a} <> ''
                 AND {norm_b} <> ''
                 AND (
-                    (contains({norm_a}, {norm_b}) AND {merchant_b})
+                    {norm_a} = {norm_b}
+                    OR (contains({norm_a}, {norm_b}) AND {merchant_b})
                     OR (contains({norm_b}, {norm_a}) AND {merchant_a})
                 )
             ) AS desc_agree

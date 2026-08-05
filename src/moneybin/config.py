@@ -523,13 +523,24 @@ class MatchingSettings(BaseModel):
         default=0.95,
         ge=0.0,
         le=1.0,
-        description="Auto-merge threshold (>= this score = accepted)",
+        description=(
+            "Auto-merge score floor. Necessary but not sufficient: a pair must "
+            "also have agreeing descriptions before it merges without review."
+        ),
     )
     review_threshold: float = Field(
         default=0.70,
         ge=0.0,
         le=1.0,
-        description="Review queue threshold (>= this but < high = pending)",
+        description=(
+            "Dedup review floor. No longer admits or discards a duplicate "
+            "candidate — every cross-source pair that survives assignment is "
+            "reviewable, and the within-source tier has no review queue. It "
+            "still bounds the scoring weights (a window-edge pair scores only "
+            "_WEIGHT_DESCRIPTION, which must stay at or above this) and is "
+            "validated against high_confidence_threshold. Transfer review uses "
+            "transfer_review_threshold, not this."
+        ),
     )
     date_window_days: int = Field(
         default=5,
