@@ -543,6 +543,64 @@ class TestImportFilesConfirmFlow:
         assert rerun.exit_code == 0, f"{channel}: {rerun.output}"
         assert gated.call_args.kwargs["account_bindings"] == {"1111": "new"}
 
+    def test_the_account_recovery_carries_the_institution_it_was_given(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """An --institution the user had to supply survives into the printed recovery.
+
+        `resolve_institution` raises before the account gate, so the only way to
+        reach that gate on such a file is `import files x.ofx --institution
+        chase`. The recovery printed there dropped the flag, so pasting it hit
+        the institution error again — a command MoneyBin printed that does not
+        run, which is the defect the unified recovery was meant to end.
+
+        Re-invokes rather than asserting on the string alone: the flag has to
+        reach the service, not just appear in the text.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        outcome = ConfirmationRequired(
+            channel="ofx",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("1111")],
+        )
+        gated = mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        payload = json.loads(
+            runner.invoke(
+                app,
+                ["files", str(ofx_file), "--institution", "chase", "--output", "json"],
+            ).output
+        )
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+
+        assert "--institution chase" in recovery
+
+        quoted = recovery[recovery.index("moneybin") : recovery.index("` ")]
+        argv = [a.replace("<account_id|new>", "new") for a in shlex.split(quoted)[1:]]
+        gated.side_effect = None
+        gated.return_value = _make_import_result()
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+
+        rerun = runner.invoke(app, argv[1:])
+
+        assert rerun.exit_code == 0, rerun.output
+        assert gated.call_args.kwargs["institution"] == "chase"
+        assert gated.call_args.kwargs["account_bindings"] == {"1111": "new"}
+
     def test_account_confirmation_tty_renders_proposals(
         self,
         mock_db: MagicMock,
@@ -1219,6 +1277,68 @@ class TestImportConfirmCommand:
             # …and the refusal advertises the one account flag that IS accepted,
             # so a caller who reached for the wrong one is pointed at it.
             assert "--account-binding only" in result.output, flag
+
+    def test_institution_override_reaches_the_service(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """`import confirm` carries --institution, because the gate it answers can need it.
+
+        `resolve_institution` raises before the account gate, so an OFX whose
+        issuer is underivable from <FID>, <ORG>, and the filename reaches the
+        account confirmation only on a re-run that already carries
+        --institution. Without this option the command that answers the gate
+        cannot also satisfy the check that precedes it.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        imported = mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+
+        result = runner.invoke(
+            app, ["confirm", str(ofx_file), "--accept", "--institution", "chase"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert imported.call_args.kwargs["institution"] == "chase"
+
+    def test_bridge_response_refuses_the_institution_override(
+        self, tmp_path: Path
+    ) -> None:
+        """--institution is refused with --bridge-response rather than dropped.
+
+        `apply_pdf_bridge_response` has no institution parameter — the recipe
+        carries the format. Accepting the flag here would silently ignore it,
+        which is the failure mode this whole option exists to close.
+
+        Asserts the refusal sentence, not the exit code: with the guard removed
+        this command still exits non-zero, on the unrelated missing-database
+        error, so an exit-code check passes either way and pins nothing.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--institution",
+                "chase",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "--account-name, --account-meta, or --institution" in result.output
 
     def test_requires_accept_or_mapping(
         self,

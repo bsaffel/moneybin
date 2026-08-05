@@ -572,6 +572,7 @@ def import_files_command(
                         accept=confirm or overrides is None,
                         mapping=overrides,
                         save_format=save_format,
+                        institution=institution,
                         account_id=account_id,
                         account_name=account_name,
                         proposed_sign=proposed_sign,
@@ -589,7 +590,7 @@ def import_files_command(
                     # retries persist no partial state, and add the missing binding.
                     # The generic alternate mapping hints below remain irrelevant.
                     confirm_actions.append(
-                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign)}` "
+                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign)}` "
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
@@ -645,6 +646,7 @@ def import_files_command(
                 accept=confirm or overrides is None,
                 mapping=overrides,
                 save_format=save_format,
+                institution=institution,
                 account_id=account_id,
                 account_name=account_name,
                 confirm_sign=confirm_sign,
@@ -965,6 +967,7 @@ def _import_confirm_command(
     sign: SignConventionType | None,
     mapping: dict[str, str] | None,
     save_format: bool,
+    institution: str | None,
     account_id: str | None,
     account_name: str | None,
     account_bindings: dict[str, str] | None,
@@ -974,6 +977,12 @@ def _import_confirm_command(
 
     Every channel's account and sign recoveries route through here, so the
     command MoneyBin prints is always the command it would accept back.
+
+    ``institution`` is here because a file can need it to reach the gate at
+    all: ``resolve_institution`` raises earlier in the import, so an OFX whose
+    issuer is underivable arrives at an account confirmation only on a re-run
+    that already carries the override. Dropping it printed a command that
+    failed the check ahead of the one it was answering.
     """
     import shlex  # noqa: PLC0415
 
@@ -984,6 +993,8 @@ def _import_confirm_command(
         parts.append("--confirm-sign")
     if sign is not None:
         parts.extend(("--sign", sign))
+    if institution is not None:
+        parts.extend(("--institution", institution))
     if account_id is not None:
         parts.extend(("--account-id", account_id))
     if account_name is not None:
@@ -1007,6 +1018,7 @@ def _account_recovery_command(
     accept: bool = True,
     mapping: dict[str, str] | None = None,
     save_format: bool = True,
+    institution: str | None = None,
     account_id: str | None = None,
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
@@ -1045,6 +1057,7 @@ def _account_recovery_command(
         sign=sign,
         mapping=mapping,
         save_format=save_format,
+        institution=institution,
         account_id=account_id,
         account_name=account_name,
         account_bindings=bindings,
@@ -1059,6 +1072,7 @@ def _sign_recovery_commands(
     accept: bool = True,
     mapping: dict[str, str] | None = None,
     save_format: bool = True,
+    institution: str | None = None,
     account_id: str | None = None,
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
@@ -1091,6 +1105,7 @@ def _sign_recovery_commands(
             sign=None,
             mapping=mapping,
             save_format=save_format,
+            institution=institution,
             account_id=account_id,
             account_name=account_name,
             account_bindings=account_bindings,
@@ -1103,6 +1118,7 @@ def _sign_recovery_commands(
             sign="negative_is_expense",
             mapping=mapping,
             save_format=save_format,
+            institution=institution,
             account_id=account_id,
             account_name=account_name,
             account_bindings=account_bindings,
@@ -1163,6 +1179,7 @@ def _render_sign_convention_prompt(
     accept: bool = True,
     mapping: dict[str, str] | None = None,
     save_format: bool = True,
+    institution: str | None = None,
     account_id: str | None = None,
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
@@ -1209,6 +1226,7 @@ def _render_sign_convention_prompt(
         accept=accept,
         mapping=mapping,
         save_format=save_format,
+        institution=institution,
         account_id=account_id,
         account_name=account_name,
         account_bindings=account_bindings,
@@ -1227,6 +1245,7 @@ def _render_confirmation_prompt(
     accept: bool = True,
     mapping: dict[str, str] | None = None,
     save_format: bool = True,
+    institution: str | None = None,
     account_id: str | None = None,
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
@@ -1261,6 +1280,7 @@ def _render_confirmation_prompt(
             accept=accept,
             mapping=mapping,
             save_format=save_format,
+            institution=institution,
             account_id=account_id,
             account_name=account_name,
             account_bindings=account_bindings,
@@ -1320,6 +1340,7 @@ def _render_confirmation_prompt(
                 accept=accept,
                 mapping=mapping,
                 save_format=save_format,
+                institution=institution,
                 account_id=account_id,
                 account_name=account_name,
                 account_bindings=account_bindings,
@@ -1386,6 +1407,18 @@ def import_confirm_command(
         help=(
             "Explicit tabular sign-convention override. Use "
             "negative_is_expense to keep amounts as printed."
+        ),
+    ),
+    institution: str | None = typer.Option(
+        None,
+        "--institution",
+        "-i",
+        help=(
+            "Institution override, carried over from the 'import files' call "
+            "that raised this confirmation. Same meaning as on 'import files': "
+            "consulted for OFX/QFX/QBO only when the file's <FI><ORG>, FID "
+            "lookup, and filename heuristic all yield nothing; for tabular "
+            "files it selects the format profile."
         ),
     ),
     account_id: str | None = typer.Option(
@@ -1461,10 +1494,14 @@ def import_confirm_command(
         # raises the same account gate every other channel does, and this is the
         # command a human answers it with. Refusing it made that gate
         # unanswerable — the same re-run raised the same question.
-        if account_name or account_meta:
+        # --institution joins the refusal rather than the forward list:
+        # apply_pdf_bridge_response has no institution parameter (the recipe
+        # carries the format), so accepting it would silently discard it.
+        if account_name or account_meta or institution:
             raise typer.BadParameter(
                 "--bridge-response supports --account-id and --account-binding "
-                "only; PDF rows do not use --account-name or --account-meta.",
+                "only; PDF rows do not use --account-name, --account-meta, or "
+                "--institution.",
                 param_hint="'--bridge-response'",
             )
         if not confirm:
@@ -1554,6 +1591,7 @@ def import_confirm_command(
                         "file_path": file_path,
                         "confirm": accept,
                         "overrides": parsed_mapping,
+                        "institution": institution,
                         "account_id": account_id,
                         "account_name": account_name,
                         "account_bindings": parsed_bindings,
@@ -1589,6 +1627,7 @@ def import_confirm_command(
                     accept=accept,
                     mapping=parsed_mapping,
                     save_format=save_format,
+                    institution=institution,
                     account_id=account_id,
                     account_name=account_name,
                     account_bindings=parsed_bindings,
@@ -1603,7 +1642,7 @@ def import_confirm_command(
             # partial state, and add the missing binding. Generic alternate
             # mapping hints remain irrelevant here.
             confirm_actions.append(
-                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign)}` "
+                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign)}` "
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
@@ -1648,6 +1687,7 @@ def import_confirm_command(
                 accept=accept,
                 mapping=parsed_mapping,
                 save_format=save_format,
+                institution=institution,
                 account_id=account_id,
                 account_name=account_name,
                 account_bindings=parsed_bindings,
@@ -1668,6 +1708,7 @@ def import_confirm_command(
                     accept=accept,
                     mapping=parsed_mapping,
                     save_format=save_format,
+                    institution=institution,
                     account_id=account_id,
                     account_name=account_name,
                     account_bindings=parsed_bindings,

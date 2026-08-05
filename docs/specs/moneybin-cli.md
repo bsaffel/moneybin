@@ -130,6 +130,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |                                  Approve an inferred tabular inversion, or explicitly override its convention
 |   |     [--bridge-response FILE --confirm]  Apply an agent PDF recipe after human confirmation
 |   |     [--save-format/--no-save-format]  Pin merged mapping for silent reuse (default on)
+|   |     [--institution NAME]       Carry over an override the `import files` call needed to reach this gate (refused with --bridge-response)
 |   |     [--account-name NAME]      Optional; omitting all account identifiers elicits account_confirmation (resolve via --account-binding/--account-name/--account-id)
 |   |     [--account-id ID]          Explicit account ID bypass
 |   |     [--account-binding REF=ID|new]  Ratify an account_confirmation (repeatable); REF is the proposal_ref (@0) or its source_account_key

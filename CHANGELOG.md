@@ -452,6 +452,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `import_pdf_account_signal_unsupported` is replaced by
   `import_account_signal_unsupported`, since the refusal is no longer
   PDF-only.)
+- **`moneybin import confirm` takes `--institution`.** An OFX whose issuer is
+  underivable from `<FI><ORG>`, the FID lookup, and the filename fails before
+  the account question is ever reached, so the only way to reach that question
+  is `moneybin import files <file> --institution <name>`. The recovery command
+  printed there dropped the override, so pasting it hit the institution error
+  again. It now carries it, and `import confirm` accepts it. Refused alongside
+  `--bridge-response`, which has no institution to apply.
 - **BREAKING for anything branching on an error `code`: 104 code values were
   renamed.** They were raised from tool paths without ever being declared in
   the taxonomy, so they had never been reviewed for shape; each now carries the
