@@ -209,9 +209,12 @@ def _accounts_created_action(count: int) -> str | None:
     Names no account: the ids and labels are structured data on the result, and
     ``actions`` is unclassified prose that the redaction pass cannot see.
 
-    The merge recovery points at the CLI because the link-review tools are not
-    in the standard registry — same shape as the sign-override action above,
-    and honest about it rather than naming a tool the agent cannot call.
+    The merge recovery is entirely MCP-reachable, which is easy to miss because
+    the tool named after it is not: ``accounts_links_run`` is unregistered, but
+    ``refresh_run(steps=["identity"])`` calls the same
+    ``AccountLinksService.run()``, and ``reviews`` and ``identity_links_decide``
+    carry the rest of the loop. Sending the agent to the CLI for any of it costs
+    it the one correction it can perform without the user leaving the chat.
     """
     if not count:
         return None
@@ -219,9 +222,10 @@ def _accounts_created_action(count: int) -> str | None:
         f"This import created {count} new account(s) — see accounts_created in "
         "the result, and report them to the user: a first-contact account is "
         "bound without asking. Rename one with accounts_set(account_id=..., "
-        "display_name=...). If one duplicates an account they already have, the "
-        "merge is CLI-only today: `moneybin accounts links run` proposes it and "
-        "`moneybin accounts links set` decides it."
+        "display_name=...). If one duplicates an account they already have, "
+        "refresh_run(steps=['identity']) proposes the merge, "
+        "reviews(kind='account_links') shows it, and identity_links_decide "
+        "accepts it."
     )
 
 

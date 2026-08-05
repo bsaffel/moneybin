@@ -1379,7 +1379,7 @@ async def test_import_confirm_coarse_names_the_account_it_created(
     ]
     joined = " ".join(response.actions or [])
     assert "accounts_set" in joined
-    assert "moneybin accounts links run" in joined
+    assert "identity_links_decide" in joined
 
 
 async def test_import_confirm_coarse_revalidates_bridge_sign_inside_write_attempt(
@@ -3775,9 +3775,37 @@ class TestImportFilesConfirmationRequired:
         ]
         joined = " ".join(result.actions or [])
         assert "accounts_set" in joined
-        # The merge recovery is CLI-only: the link-review tools are not in the
-        # standard MCP registry, so the action must not name one.
-        assert "moneybin accounts links run" in joined
+        assert "identity_links_decide" in joined
+
+    async def test_the_created_account_action_names_a_merge_the_agent_can_run(
+        self,
+    ) -> None:
+        """Every step of the merge recovery is a tool the agent can call.
+
+        The first version of this action said the merge was "CLI-only today"
+        and sent the agent to a terminal for the one correction it could have
+        made itself. The mistake was reading the unregistered
+        ``accounts_links_run`` as the only way to propose a merge:
+        ``refresh_run(steps=["identity"])`` calls the same
+        ``AccountLinksService.run()``, and ``reviews`` +
+        ``identity_links_decide`` finish the loop.
+
+        Asserted against the live registry rather than a literal, because the
+        claim is about which tools a client can reach, not about the sentence.
+        """
+        from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+        from moneybin.mcp.tools.import_tools import (
+            _accounts_created_action,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        action = _accounts_created_action(1)
+
+        assert action is not None
+        for tool in ("refresh_run", "reviews", "identity_links_decide"):
+            assert tool in action
+            assert tool in STANDARD_TOOL_NAMES
+        # No CLI escape hatch: naming one here is what the bug looked like.
+        assert "moneybin " not in action
 
     async def test_import_files_that_created_nothing_hints_nothing(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

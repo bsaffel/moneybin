@@ -594,7 +594,10 @@ Those imports proceed, and every surface names the accounts they created
 (`accounts_created`: the opaque id plus the source's own label, on the CLI, in
 the `import_files` per-file rows, and in the `import_confirm` result). This is
 what keeps "magic stays visible" true: the two recoveries — rename with
-`accounts set`, merge with `accounts links run` — are named alongside it.
+`accounts set`, merge with `accounts links run` — are named alongside it. Both
+are reachable from either surface; the agent proposes a merge through
+`refresh_run(steps=["identity"])`, which runs the same `AccountLinksService`
+backfill, then decides it with `identity_links_decide`.
 Calibration is by cost of a wrong silent action: a surprise account is visible
 in the account list and cheap to correct, unlike the silent merge onto an
 existing account that this gate exists to prevent.
