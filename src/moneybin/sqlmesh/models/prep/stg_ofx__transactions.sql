@@ -64,7 +64,15 @@ WITH superseding AS (
      layer can tell a re-export apart from a distinct transaction, and dropping a
      row we cannot prove superseded is the silent data loss the extractor already
      refuses to risk. That case falls through to the matcher, where an ambiguous
-     pair belongs. */
+     pair belongs.
+
+     Scoped to one source origin as well as one account. The account key here is
+     source-native, not canonical: nothing scopes an OFX ACCTID globally, so two
+     institutions can both mint 'ACC1'. Without the origin predicate, one bank's
+     suffixed row could delete the other's bare row whenever all six hashed
+     fields happened to agree. Requiring the same origin costs a legitimate
+     suppression only if one institution's exports arrive under two origin slugs
+     — which double-counts a row, where the alternative deletes one. */
   WHERE
     NOT EXISTS(
       SELECT
@@ -72,13 +80,7 @@ WITH superseding AS (
       FROM superseding AS s
       WHERE
         s.account_id = t.account_id
-        AND /* The account key here is source-native, not canonical: nothing scopes
-                   an OFX ACCTID globally, so two institutions can both mint 'ACC1'.
-                   Without this, one bank's suffixed row could delete the other's bare
-                   row whenever all six hashed fields happened to agree. Requiring the
-                   same origin costs a legitimate suppression only if one institution's
-                   exports arrive under two origin slugs — which double-counts a row,
-                   where the alternative deletes one. */ s.source_origin IS NOT DISTINCT FROM t.source_origin
+        AND s.source_origin IS NOT DISTINCT FROM t.source_origin
         AND s.superseded_transaction_id = t.source_transaction_id
         AND s.transaction_type IS NOT DISTINCT FROM t.transaction_type
         AND s.date_posted IS NOT DISTINCT FROM t.date_posted
