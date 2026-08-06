@@ -73,3 +73,45 @@ def test_transform_failure_does_not_put_polars_text_on_the_wire(
     message, _code, _hint, _details = per_file_failure(raised.value)
     assert PII not in message, f"parser text reached the wire: {message}"
     assert "Transform failed" in str(raised.value)
+
+
+# An <ACCTID> long enough that no other field could produce it by accident.
+ACCTID = "987654321098"
+
+
+def _ofx_with_acctid(tmp_path: Path, acctid: str = ACCTID) -> Path:
+    """The minimal fixture, re-keyed to an account number worth protecting."""
+    source = Path("tests/fixtures/ofx/sample_minimal.ofx").read_text(encoding="utf-8")
+    ofx = tmp_path / "statement.ofx"
+    ofx.write_text(
+        source.replace("<ACCTID>1111</ACCTID>", f"<ACCTID>{acctid}</ACCTID>"),
+        encoding="utf-8",
+    )
+    return ofx
+
+
+def test_empty_binding_value_does_not_echo_the_files_account_number(
+    db: Any, tmp_path: Path
+) -> None:
+    """Rejecting a blank binding must not quote the OFX ``<ACCTID>`` back.
+
+    ``_resolve_binding_targets`` already states the rule — echoing the caller's
+    own unknown keys is safe, listing the file's real ones is not — but the
+    sibling raise in ``_apply_account_bindings`` named ``source_account_key``,
+    which on this channel IS an account number. ``classify_user_error`` maps a
+    bare ValueError to ``UserError(str(exc))`` with the message intact, so it
+    reaches an MCP caller verbatim; ``per_file_failure``'s scrubbing only covers
+    UNclassified exceptions.
+    """
+    ofx = _ofx_with_acctid(tmp_path)
+
+    with pytest.raises(ValueError) as raised:
+        ImportService(db).import_file(
+            ofx, refresh=False, account_bindings={"@0": "   "}
+        )
+
+    message, _code, _hint, _details = per_file_failure(raised.value)
+    assert ACCTID not in message, f"account number reached the wire: {message}"
+    assert ACCTID not in str(raised.value)
+    # Still answerable: the caller learns which proposal it fumbled.
+    assert "@0" in message

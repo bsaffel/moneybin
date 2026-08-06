@@ -1344,3 +1344,71 @@ def test_a_ref_and_a_raw_key_disagreeing_on_one_account_is_refused(
             confirm=True,
             account_bindings={key: "new", "@0": "acct-other"},
         )
+
+
+def test_a_binding_may_not_contradict_an_explicit_account_id(
+    db: Database,
+) -> None:
+    """``account_id`` and ``account_bindings`` are two answers to one question.
+
+    ``_resolve_binding_targets`` already refuses two conflicting bindings for
+    one account, for the reason it states — the caller never learns which of the
+    ids they named won. A pin plus a contradicting binding is the same conflict
+    arriving through two parameters instead of one, and the binding used to win
+    silently, discarding the pin.
+    """
+    svc = ImportService(db)
+    with pytest.raises(ValueError, match="pinned"):
+        svc.import_file(
+            _STANDARD_CSV,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+            account_bindings={"@0": "acct_other02"},
+        )
+
+
+def test_restating_the_pin_as_a_binding_is_not_a_conflict(db: Database) -> None:
+    """Re-sending the same id both ways is agreement, not contradiction.
+
+    An agent answering a gate re-sends the parameters it already had alongside
+    the new binding, so refusing agreement would punish the normal recovery.
+    """
+    svc = ImportService(db)
+    result = svc.import_file(
+        _STANDARD_CSV,
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        account_id="acct_pinned01",
+        account_bindings={"@0": "acct_pinned01"},
+    )
+    assert result.transactions > 0
+
+
+def test_a_source_key_shaped_like_a_ref_binds_only_its_own_account() -> None:
+    """A file whose own key reads as "@0" must not also answer proposal zero.
+
+    ``source_account_key`` is untrusted file content on the OFX channel — it is
+    the ``<ACCTID>`` verbatim — so a key of "@0" collided with the positional
+    vocabulary and bound BOTH accounts to one id: exactly the silent merge the
+    gate exists to prevent, reached through the answer rather than the file.
+    """
+    from moneybin.services.account_resolution_types import SourceAccount
+    from moneybin.services.import_service import (
+        _resolve_binding_targets,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    def _src(key: str) -> SourceAccount:
+        return SourceAccount(
+            source_type="ofx",
+            source_origin="sample-bank",
+            source_account_key=key,
+            account_name=f"sample-bank {key}",
+        )
+
+    targets = _resolve_binding_targets(
+        [_src("1111"), _src("@0")], {"@0": "acct_target01"}
+    )
+    assert targets == [None, "acct_target01"]

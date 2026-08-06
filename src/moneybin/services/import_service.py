@@ -917,10 +917,19 @@ def _resolve_binding_targets(
     an account number, and this ValueError reaches an MCP caller through
     ``per_file_failure`` — echoing the caller's own unknown keys back is safe
     (they sent them), listing the real ones is not.
+
+    A real source key always wins over the positional vocabulary it happens to
+    look like. ``source_account_key`` is untrusted file content on OFX (the
+    ``<ACCTID>`` verbatim), so a key of "@0" would otherwise bind both its own
+    account AND proposal zero — one answer silently merging two accounts.
     """
-    refs = {key for key in bindings if key.startswith(_PROPOSAL_REF_PREFIX)}
-    valid = {proposal_ref(index) for index in range(len(source_accounts))}
     known = {src.source_account_key for src in source_accounts}
+    refs = {
+        key
+        for key in bindings
+        if key.startswith(_PROPOSAL_REF_PREFIX) and key not in known
+    }
+    valid = {proposal_ref(index) for index in range(len(source_accounts))}
     if unknown := sorted((refs - valid) | (set(bindings) - refs - known)):
         raise ValueError(
             f"account_bindings references unknown source key(s): {unknown}. "
@@ -931,7 +940,8 @@ def _resolve_binding_targets(
     targets: list[str | None] = []
     for index, src in enumerate(source_accounts):
         by_key = bindings.get(src.source_account_key)
-        by_ref = bindings.get(proposal_ref(index))
+        ref = proposal_ref(index)
+        by_ref = None if ref in known else bindings.get(ref)
         if by_key is not None and by_ref is not None and by_key != by_ref:
             raise ValueError(
                 f"account_bindings has conflicting values for the same account: "
@@ -957,28 +967,46 @@ def _apply_account_bindings(
 
     Raises ``ValueError`` on an empty binding value — ``explicit_account_id=""``
     is falsy and would silently fall through to a fresh mint as if no binding
-    were given, discarding the caller's intent ("magic stays visible").
+    were given, discarding the caller's intent ("magic stays visible"). That
+    message names the positional ref, never the source key, for the reason
+    :func:`_resolve_binding_targets` documents: on OFX the key is an account
+    number and this ValueError reaches an MCP caller intact.
     """
     if not bindings:
         return source_accounts
     targets = _resolve_binding_targets(source_accounts, bindings)
     bound: list[SourceAccount] = []
-    for src, target in zip(source_accounts, targets, strict=True):
+    for index, (src, target) in enumerate(zip(source_accounts, targets, strict=True)):
         if target is None:
             bound.append(src)
-        elif target == "new":
+            continue
+        if not target.strip():
+            # Reject whitespace-only too: CLI input is not stripped (_parse_kv
+            # keeps the raw value) and MCP passes JSON as-is, so a bare-spaces
+            # value would otherwise be truthy and bind a bogus account_id.
+            # Checked before the pin conflict below so a blank value is reported
+            # as blank rather than as a contradiction of some other id.
+            raise ValueError(
+                f"account_bindings entry for {proposal_ref(index)} has an empty "
+                'value; use an existing account_id or "new".'
+            )
+        if src.explicit_account_id and target != src.explicit_account_id:
+            # A caller-supplied account_id already answered this account. The
+            # binding used to overwrite it (or clear it, on "new") with nothing
+            # said, so the pin the caller asked for vanished — the same
+            # two-answers-one-account conflict _resolve_binding_targets refuses,
+            # arriving through two parameters instead of one. Restating the same
+            # id is agreement, not conflict: an agent answering a gate re-sends
+            # what it already had.
+            raise ValueError(
+                f"account_bindings binds {proposal_ref(index)} to {target!r}, "
+                f"but account_id pinned {src.explicit_account_id!r}. Send one."
+            )
+        if target == "new":
             bound.append(
                 dataclasses.replace(
                     src, force_standalone=True, explicit_account_id=None
                 )
-            )
-        elif not target.strip():
-            # Reject whitespace-only too: CLI input is not stripped (_parse_kv
-            # keeps the raw value) and MCP passes JSON as-is, so a bare-spaces
-            # value would otherwise be truthy and bind a bogus account_id.
-            raise ValueError(
-                f"account_bindings for source key {src.source_account_key!r} "
-                'has an empty value; use an existing account_id or "new".'
             )
         else:
             bound.append(dataclasses.replace(src, explicit_account_id=target))
