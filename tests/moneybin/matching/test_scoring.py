@@ -175,6 +175,30 @@ class TestComputeConfidence:
                 "this test should be rewritten deliberately, not deleted"
             )
 
+    def test_the_within_source_boundary_narrowed_with_the_reweight(self) -> None:
+        """Tier 2b's silent-merge boundary moved, and the narrowing is deliberate.
+
+        Tier 2b always takes the weighted path — no agreement floor, and no review
+        queue behind it, so a pair below ``high_confidence_threshold`` is dropped
+        with no trace at all. The 0.40/0.60 → 0.30/0.70 reweight therefore moved a
+        real acceptance boundary: a same-day pair at 0.92 similarity scored
+        ``0.40 + 0.60 * 0.92 = 0.952`` and merged silently, and now scores
+        ``0.30 + 0.70 * 0.92 = 0.944`` and is dropped.
+
+        The narrowing is accepted rather than incidental. It errs toward leaving
+        two rows a human can still see instead of deleting one nobody will, and
+        restoring the old boundary would need ``_WEIGHT_DESCRIPTION`` back at
+        0.60 — below ``review_threshold``, which reopens the window-edge dead zone
+        the weights are chosen to close. Pinned as a literal so a future re-tune
+        has to make that trade again in the open rather than drift back into it.
+        """
+        bands = MatchingSettings()
+        same_day = compute_confidence(
+            date_distance_days=0, description_similarity=0.92, date_window_days=3
+        )
+        assert same_day == pytest.approx(0.944)  # type: ignore[reportUnknownMemberType]  # pytest.approx stub incomplete
+        assert same_day < bands.high_confidence_threshold
+
     def test_exact_date_high_similarity(self) -> None:
         score = compute_confidence(date_distance_days=0, description_similarity=0.95)
         assert score >= 0.95
@@ -862,6 +886,93 @@ class TestGetCandidatesCrossSource:
         )
         assert len(candidates) == 1
         assert candidates[0].confidence_score >= 0.95
+
+    def test_a_digit_only_token_is_not_merchant_evidence(
+        self, unioned_table: Database
+    ) -> None:
+        """A reference number names no merchant, so it cannot earn a silent merge.
+
+        The merchant-token guard asks whether the contained side carries anything
+        beyond transaction-type boilerplate. A card or reference number clears
+        that bar without meaning anything: `POS 1234` is boilerplate plus a
+        number, and it sits inside every longer description from the other source
+        that happens to print the same card digits. Two distinct charges on one
+        card, equal in amount and inside the window, would then auto-merge and one
+        would disappear with no review entry.
+
+        Isolation: both sides are non-empty (the blank guard cannot claim this),
+        containment genuinely holds (the unrelated-description case cannot),
+        `1234` is not in `_BOILERPLATE_TOKENS` (the boilerplate guard cannot), and
+        the two strings differ (the equality carve-out cannot). Only the
+        letter-bearing requirement can keep this pair out of auto-merge.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-47.50",
+            description="POS 1234",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-47.50",
+            description="POS 1234 STARBUCKS SEATTLE WA",
+            source_type="csv",
+            source_origin="chase",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].descriptions_agree is False
+
+    def test_a_merchant_token_may_still_contain_digits(
+        self, unioned_table: Database
+    ) -> None:
+        """The rule rejects digit-*only* tokens, not merchant names carrying digits.
+
+        Real merchant strings are full of them — `7-ELEVEN`, `STORE 1234 CVS`.
+        Requiring the whole token to be alphabetic would throw away the ordinary
+        truncation agreements this gate exists to find, so the requirement is one
+        letter somewhere in the token, not the absence of digits.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-12.75",
+            description="POS 7ELEVEN",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-12.75",
+            description="POS 7ELEVEN 22140 SEATTLE WA",
+            source_type="csv",
+            source_origin="chase",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].descriptions_agree is True
 
     def test_punctuation_alone_does_not_defeat_agreement(
         self, unioned_table: Database

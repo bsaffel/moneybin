@@ -424,7 +424,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a bank labelling a row `Deposit` in both exports cannot name a merchant.
   Punctuation no longer decides the question — `STARBUCKS #1234` and
   `STARBUCKS 1234` agree — while a differing reference number still does, so
-  `SHELL 1234` and `SHELL 1235` stay two transactions. Which existing duplicates
+  `SHELL 1234` and `SHELL 1235` stay two transactions. A number on its own is not
+  merchant text either: a source rendering a row as `POS 1234` no longer agrees
+  with every longer description that prints the same card digits. Which existing duplicates
   merge and which go to review both change on
   the next `refresh`. `matching.date_window_days` is shared with transfer
   detection, so its new default widens that candidate window too.
@@ -436,7 +438,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Agreement is now required at the decision itself, for same-source duplicates as
   well as cross-source. Same-source pairs have no review queue, so a disagreeing
   pair there is left unmerged: both rows stay in the ledger, which is a
-  double-count you can see in a total rather than a deletion you cannot.
+  double-count you can see in a total rather than a deletion you cannot. The
+  rebalanced weights narrow same-source auto-merging for the same reason — a
+  same-day pair now needs 0.93 description similarity to merge silently where it
+  needed 0.92 — so a few near-duplicates inside one source that used to merge
+  will stay as two rows.
 - **Every cross-source duplicate candidate now reaches the review queue (#377).**
   Pairs scoring below `matching.review_threshold` used to be dropped and logged
   at DEBUG — the duplicate stayed in the ledger and nobody was told. Expect the
@@ -447,7 +453,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   participate in last-four resolution at all, so its silence was never evidence
   that it was a distinct account. Cash accounts, manually created accounts, and
   sources that never publish the digits will each raise one proposal to confirm
-  or dismiss.
+  or dismiss. A source that sends the digits as a blank string counts as missing
+  them, so a connector reporting an unavailable mask that way is quarantined too
+  rather than minting a second copy of a card you already have.
 - **BREAKING for anything branching on an error `code`: 104 code values were
   renamed.** They were raised from tool paths without ever being declared in
   the taxonomy, so they had never been reviewed for shape; each now carries the

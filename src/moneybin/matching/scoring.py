@@ -90,17 +90,26 @@ _BOILERPLATE_TOKENS = frozenset({
 
 
 def _carries_a_merchant_token(normalized: str) -> str:
-    """SQL expression: this description has at least one non-boilerplate token.
+    """SQL expression: this description has at least one word naming a merchant.
 
     One merchant word is enough. Sources prepend their own transaction-type words
     to a real merchant string, so rejecting any description that *contains*
     boilerplate would throw away the agreements this gate exists to find; only a
     description carrying nothing else is uninformative.
+
+    A qualifying token must carry a letter. Absent that, a card or reference
+    number satisfies the rule while naming nobody: `POS 1234` is boilerplate plus
+    a number, and it sits inside every longer description from the other source
+    that prints the same digits — so two distinct charges on one card, equal in
+    amount and inside the window, would auto-merge and one would vanish with no
+    review entry. The requirement is a letter *somewhere in the token*, not the
+    absence of digits: real merchant strings are full of them (`7ELEVEN`).
     """
     tokens = ", ".join(f"'{token}'" for token in sorted(_BOILERPLATE_TOKENS))
     return (
         f"len(list_filter(string_split({normalized}, ' '), "
-        f"token -> NOT list_contains([{tokens}], token))) > 0"
+        f"token -> NOT list_contains([{tokens}], token) "
+        f"AND regexp_matches(token, '\\p{{L}}'))) > 0"
     )
 
 

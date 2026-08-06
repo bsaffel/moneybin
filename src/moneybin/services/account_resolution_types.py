@@ -115,6 +115,20 @@ class SourceAccount:
     of ``"new"``. Still idempotent on re-import (adopts an existing
     source_native above)."""
 
+    def __post_init__(self) -> None:
+        """Canonicalize a blank last four to None — they mean the same thing.
+
+        ``SyncAccount.mask`` declares only a maximum length, so the sync server
+        can send ``""``; a source that writes an empty column produces the same.
+        Both answer the last4 rung with silence, but the resolver asks whether
+        that answer is missing in two conventions — ``is None`` at the quarantine
+        gates, falsy at the lookup and reissue passes — and ``"" is None`` is
+        False. Canonicalizing here is what keeps the two from disagreeing, rather
+        than requiring every present and future consumer to pick the right one.
+        """
+        if self.last_four == "":
+            object.__setattr__(self, "last_four", None)
+
 
 @dataclass(frozen=True)
 class ResolvedAccount:

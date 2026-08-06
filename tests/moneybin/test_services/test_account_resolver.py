@@ -270,6 +270,43 @@ def test_null_last_four_mints_cleanly_on_an_empty_book(db: Database) -> None:
     assert resolved.pending_decision_ids == ()
 
 
+def test_a_blank_last_four_is_quarantined_like_a_missing_one(db: Database) -> None:
+    """A blank mask is a missing last four, not a last four that happens to be empty.
+
+    `SyncAccount.mask` declares only a maximum length, so the sync server — opaque
+    to this client by design — can legitimately send `""`. It reaches the resolver
+    as `SourceAccount.last_four` and answers the last4 rung with exactly the
+    silence `None` does, but a gate written against `None` alone reads it as an
+    answer and mints silently. That is the one failure this quarantine exists to
+    prevent, arriving through the one source MoneyBin does not control.
+
+    Fixture trips ONLY this guard: identical in shape to the null-last_four
+    quarantine above, whose companion `test_known_last_four_with_no_signal_still_
+    mints_silently` pins that a *present* last_four still mints cleanly here.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four="", institution=None)
+    )
+    assert resolved.outcome == "pending_review"
+    assert len(resolved.pending_decision_ids) == 1
+
+
+def test_a_blank_last_four_normalizes_to_none_on_the_source_account() -> None:
+    """One spelling of "absent" reaches every consumer.
+
+    The resolver asks whether a last four is missing in two conventions — `is
+    None` at the quarantine gates, falsy at the last4 lookup and the reissue
+    pass. Canonicalizing at construction is what keeps the two from disagreeing;
+    without it the file's own conventions answer the same question differently.
+    """
+    assert _src(last_four="").last_four is None
+
+
 def test_known_last_four_with_no_signal_still_mints_silently(db: Database) -> None:
     """The guard keys on a MISSING last_four, not on the absence of candidates.
 
@@ -307,6 +344,26 @@ def test_propose_quarantines_null_last_four_without_opting_into_fallback(
     resolver = AccountResolver(db, actor="system")
     proposal = resolver.propose(
         _src(account_name="Imported Statement", last_four=None, institution=None)
+    )
+    assert {c.account_id for c in proposal.candidates} == {"acct_a"}
+
+
+def test_propose_quarantines_a_blank_last_four_without_opting_into_fallback(
+    db: Database,
+) -> None:
+    """propose() agrees with resolve() on a blank mask, as it does on a null one.
+
+    The interactive import gate calls propose() without fallback. If the blank
+    case were quarantined only in resolve(), the gate would load rows first and
+    surface the question afterwards — the "magic stays visible" gap in reverse.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    proposal = resolver.propose(
+        _src(account_name="Imported Statement", last_four="", institution=None)
     )
     assert {c.account_id for c in proposal.candidates} == {"acct_a"}
 

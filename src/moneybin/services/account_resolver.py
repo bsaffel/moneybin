@@ -210,7 +210,8 @@ class AccountResolver:
             # question, and letting it mint silently is a merge decision nobody
             # ever sees. Surfacing the pick-list routes it to the identity
             # review queue instead ("magic stays visible"). No-ops on an empty
-            # book: nothing to propose against means a clean mint.
+            # book: nothing to propose against means a clean mint. A blank
+            # last_four reaches this as None (SourceAccount canonicalizes it).
             fallback=src.last_four is None,
             reissue=True,
         )
@@ -315,7 +316,8 @@ class AccountResolver:
             exclude_account_id=preview_id,
             # A null last_four quarantines regardless of the caller's opt-in, so
             # this preview agrees with resolve()'s ladder. Without it the gate
-            # would load rows and surface the question afterwards.
+            # would load rows and surface the question afterwards. Blank reaches
+            # this as None (SourceAccount canonicalizes it).
             fallback=fallback or src.last_four is None,
             reissue=True,
         )

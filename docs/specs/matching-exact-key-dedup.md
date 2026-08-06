@@ -179,6 +179,14 @@ string (`POS AMAZON` inside `POS AMAZON MKTPL*… SEATTLE WA` is a genuine
 agreement), so rejecting any description merely *containing* boilerplate would
 throw away the matches this gate exists to find.
 
+A qualifying token must carry a letter. Without that the rule counts a card or
+reference number as merchant evidence while it names nobody: `POS 1234` is
+boilerplate plus a number, and it sits inside every longer description from the
+other source that prints the same digits — so two distinct charges on one card,
+equal in amount and inside the window, would auto-merge and one would vanish with
+no review entry. The requirement is a letter *somewhere in the token*, not the
+absence of digits; real merchant strings are full of them (`7ELEVEN`).
+
 **Exact equality is exempt from the merchant-token requirement.** The rule guards
 against a short *fragment* hiding inside a longer string; two identical
 descriptions have no longer string to hide inside. A bank writing `DEPOSIT` in
