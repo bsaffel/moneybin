@@ -820,35 +820,37 @@ def test_exact_same_file_reimport_adopts_without_reprompt(
     assert total is not None and total[0] == 1  # no second account minted
 
 
-def test_source_native_exists_reflects_accepted_link(
+def test_the_gate_writes_no_link_until_the_binding_answers_it(
     db: Database,
 ) -> None:
-    """source_native_exists() is the short-circuit's idempotency probe.
+    """The accepted source_native link appears only once the caller has answered.
 
-    True only after an accepted source_native link maps the exact (source_type,
-    source_origin, ref_value) tuple. Driven through the real import path — the
-    link is created by binding a bare file, never INSERTed directly.
+    Two properties in one pass, because they are the same property from either
+    side: the gate raises before Phase 3, so an unanswered import leaves nothing
+    behind to adopt on a retry; and answering it writes exactly one accepted
+    link, keyed by this file's own source key, which is what makes the NEXT
+    import of the same file idempotent instead of a second confirm.
+
+    Driven through the real import path — the link is created by binding a bare
+    file, never INSERTed directly.
     """
-    from moneybin.services.account_resolver import AccountResolver
-
     create_core_tables(db)
     svc = ImportService(db)
-    resolver = AccountResolver(db, actor="system")
 
     with pytest.raises(ImportConfirmationRequiredError) as exc:
         svc.import_file(_STANDARD_CSV, refresh=False, confirm=True, actor_kind="human")
     key = exc.value.outcome.account_proposals[0]["source_account_key"]
 
-    # No accepted source_native link yet → False (the elicit raised pre-Phase-3).
-    assert (
-        db.execute(
-            "SELECT 1 FROM app.account_links WHERE ref_kind='source_native' "
-            "AND ref_value=? AND status='accepted'",
-            [key],
-        ).fetchone()
-        is None
-    )
-    assert not resolver.source_native_exists("csv", "unknown", key)
+    def _accepted_native() -> list[tuple[str, ...]]:
+        return [
+            tuple(row)
+            for row in db.execute(
+                "SELECT source_type, source_origin, ref_value FROM app.account_links "
+                "WHERE ref_kind='source_native' AND status='accepted'"
+            ).fetchall()
+        ]
+
+    assert _accepted_native() == []
 
     svc.import_file(
         _STANDARD_CSV,
@@ -857,19 +859,10 @@ def test_source_native_exists_reflects_accepted_link(
         actor_kind="human",
         account_bindings={key: "new"},
     )
-    link = db.execute(
-        "SELECT source_type, source_origin FROM app.account_links "
-        "WHERE ref_kind='source_native' AND ref_value=? AND status='accepted'",
-        [key],
-    ).fetchone()
-    assert link is not None
-    source_type, source_origin = link[0], link[1]
-    # True for the exact tuple the import wrote...
-    assert resolver.source_native_exists(source_type, source_origin, key)
-    # ...False for a key that was never imported (same source columns).
-    assert not resolver.source_native_exists(
-        source_type, source_origin, "never-seen-key"
-    )
+
+    written = _accepted_native()
+    assert len(written) == 1
+    assert written[0][2] == key
 
 
 def test_bare_single_account_mistyped_binding_raises(

@@ -465,24 +465,6 @@ class AccountResolver:
             in_outer_txn=True,  # joins resolve()'s per-account transaction
         )
 
-    def source_native_exists(
-        self, source_type: str, source_origin: str, source_account_key: str
-    ) -> bool:
-        """True if an accepted ``source_native`` link already maps this exact key.
-
-        Read-only probe. The import path no longer calls it: the confirm gate now
-        asks ``propose()``, whose Step-1 ladder answers the same question and
-        strictly more of it (persistent_token and scoped full_number adopt too).
-        Kept as the narrow "has this exact key been bound?" query.
-        """
-        row = self._db.execute(
-            f"SELECT 1 FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
-            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
-            "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
-            [source_type, source_origin, source_account_key],
-        ).fetchone()
-        return row is not None
-
     def _lookup_strong_ref(self, src: SourceAccount) -> tuple[str, str] | None:
         """Return (account_id, ref_kind) if any accepted strong ref matches, else None.
 
