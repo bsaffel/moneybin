@@ -119,15 +119,23 @@ class SourceAccount:
         """Canonicalize a blank last four to None — they mean the same thing.
 
         ``SyncAccount.mask`` declares only a maximum length, so the sync server
-        can send ``""``; a source that writes an empty column produces the same.
-        Both answer the last4 rung with silence, but the resolver asks whether
-        that answer is missing in two conventions — ``is None`` at the quarantine
-        gates, falsy at the lookup and reissue passes — and ``"" is None`` is
-        False. Canonicalizing here is what keeps the two from disagreeing, rather
-        than requiring every present and future consumer to pick the right one.
+        can send ``""`` or ``"  "``; a source that writes an empty column
+        produces the same. All answer the last4 rung with silence, but the
+        resolver asks whether that answer is missing in two conventions — ``is
+        None`` at the quarantine gates, falsy at the lookup and reissue passes —
+        and neither ``"" is None`` nor ``bool("  ")`` agrees. Canonicalizing here
+        is what keeps the two from disagreeing, rather than requiring every
+        present and future consumer to pick the right one.
+
+        Stripping, not just an empty-string test: a whitespace-only mask is
+        truthy and non-None, so it would clear the quarantine gate that ``""``
+        cannot. Padding around real digits is the same defect one step along —
+        the last4 lookup matches exactly, so ``" 1234 "`` would mint a second
+        account for a ledger that already has one.
         """
-        if self.last_four == "":
-            object.__setattr__(self, "last_four", None)
+        if self.last_four is not None:
+            stripped = self.last_four.strip()
+            object.__setattr__(self, "last_four", stripped or None)
 
 
 @dataclass(frozen=True)

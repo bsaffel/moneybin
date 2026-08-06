@@ -307,6 +307,19 @@ def test_a_blank_last_four_normalizes_to_none_on_the_source_account() -> None:
     assert _src(last_four="").last_four is None
 
 
+def test_a_whitespace_only_last_four_normalizes_like_a_blank_one() -> None:
+    """A mask of spaces answers the last4 rung with silence too.
+
+    ``SyncAccount.mask`` declares only a maximum length, so `" "` validates and
+    arrives here truthy and non-None — clearing the quarantine gate that `""`
+    cannot. Padding around a real mask is the same defect one step along: it
+    would miss the exact-match last4 lookup and mint a second account for a
+    ledger that already has one.
+    """
+    assert _src(last_four="   ").last_four is None
+    assert _src(last_four=" 1234 ").last_four == "1234"
+
+
 def test_known_last_four_with_no_signal_still_mints_silently(db: Database) -> None:
     """The guard keys on a MISSING last_four, not on the absence of candidates.
 

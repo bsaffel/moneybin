@@ -461,9 +461,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   participate in last-four resolution at all, so its silence was never evidence
   that it was a distinct account. Cash accounts, manually created accounts, and
   sources that never publish the digits will each raise one proposal to confirm
-  or dismiss. A source that sends the digits as a blank string counts as missing
-  them, so a connector reporting an unavailable mask that way is quarantined too
-  rather than minting a second copy of a card you already have.
+  or dismiss. A source that sends the digits as blank — an empty string or only
+  spaces — counts as missing them, so a connector reporting an unavailable mask
+  either way is quarantined too rather than minting a second copy of a card you
+  already have. Digits that arrive padded (`" 1234 "`) now resolve against the
+  account holding `1234`, where before the padding made the lookup miss and mint
+  a second account for a ledger that already had one.
 - **BREAKING for anything branching on an error `code`: 104 code values were
   renamed.** They were raised from tool paths without ever being declared in
   the taxonomy, so they had never been reviewed for shape; each now carries the
