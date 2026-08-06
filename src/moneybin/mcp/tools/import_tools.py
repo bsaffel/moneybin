@@ -2089,16 +2089,24 @@ def _import_confirm_coarse_confirmation_actions(
         # redacts `data` only — a key named in this prose ships unmasked. Bind by
         # proposal_ref instead: it rides the same proposal, survives the mask, and
         # is what makes this answerable without leaving the surface.
-        actions.append(
+        action = (
             f"Use import_confirm(preview_id={preview_id!r}, account_bindings=..."
             ") to ratify the account identity. "
             f"{len(outcome.account_proposals)} source account(s) were detected; "
             "data.account_proposals[] describes them with identifiers masked. "
             "Key each binding by that entry's proposal_ref and give an existing "
             "account_id or the literal 'new' — e.g. account_bindings={'@0': "
-            "'new'}. account_name='<name>' also works when the file holds one "
-            "account."
+            "'new'}."
         )
+        if outcome.channel == "tabular":
+            # Only tabular honors it. `_reject_unsupported_pdf_account_signals`
+            # raises on account_name for a PDF, so advertising it there names a
+            # recovery that fails — and the OFX branch never reaches this text at
+            # all, since import_confirm refuses that channel first.
+            action += (
+                " account_name='<name>' also works when the file holds one account."
+            )
+        actions.append(action)
         return actions
     # Every reason the service narrows gets the same text the preview-side
     # builder uses. Two hand-kept branch lists over one set of states is what
@@ -2407,10 +2415,35 @@ def import_files_coarse(
     actions = list(response.actions)
     for row in response.data.files:
         if row.status == "confirmation_required":
-            actions.append(
-                f"Use import_preview(file_path={row.path!r}) to begin the "
-                "reviewed confirmation workflow."
-            )
+            payload = row.confirmation_payload or {}
+            if payload.get("reason") == "account_confirmation":
+                # NOT import_preview: it refuses .ofx/.qfx/.qbo outright, and the
+                # account gate carries no error_message, so the generic hint was
+                # the only action an OFX gate got — every route the agent could
+                # take refused the file. The layout is already settled here
+                # anyway; re-calling import_files with the answer is the whole
+                # recovery on every channel.
+                #
+                # Bind by proposal_ref, never source_account_key: the key is
+                # ACCOUNT_IDENTIFIER (CRITICAL) and is masked out of `data`,
+                # while prose in actions[] ships unmasked.
+                refs = ", ".join(
+                    str(proposal.get("proposal_ref"))
+                    for proposal in payload.get("account_proposals") or []
+                )
+                actions.append(
+                    f"Use import_files(paths=[{row.path!r}], account_bindings="
+                    "{...}) to ratify this file's account identity — one path "
+                    "per call. Key each binding by a proposal_ref from "
+                    "data.files[].confirmation_payload.account_proposals[] "
+                    f"({refs or 'none'}) and give an existing account_id or the "
+                    "literal 'new'."
+                )
+            else:
+                actions.append(
+                    f"Use import_preview(file_path={row.path!r}) to begin the "
+                    "reviewed confirmation workflow."
+                )
         elif row.import_id is not None:
             actions.append(
                 "Use import_status(sections=['imports'], "

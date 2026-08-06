@@ -3525,6 +3525,7 @@ def _make_confirmation_error(
     missing_required: tuple[str, ...] = (),
     reason: str = "unknown_layout",
     account_proposals: list[dict[str, object]] | None = None,
+    channel: str = "tabular",
 ) -> ImportConfirmationRequiredError:
     proposed = ProposedMapping(
         field_mapping=field_mapping or {"transaction_date": "Date", "amount": "Amount"},
@@ -3532,7 +3533,7 @@ def _make_confirmation_error(
         unmapped_columns=("Notes",),
     )
     outcome = ConfirmationRequired(
-        channel="tabular",
+        channel=channel,  # type: ignore[arg-type]
         confidence=_make_confidence(
             score=score, tier=tier, flagged=flagged, missing_required=missing_required
         ),
@@ -3600,6 +3601,61 @@ class TestImportFilesConfirmationRequired:
         # sample rows + proposed mapping (per moneybin-mcp.md). Pure-success
         # batches stay at "low"; any pending file bumps the batch to "medium".
         assert result.summary.sensitivity == "medium"
+
+    async def test_ofx_account_gate_names_the_tool_that_can_answer_it(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """An OFX account gate must not route the agent to a tool that refuses OFX.
+
+        ``import_preview`` raises IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED on
+        .ofx/.qfx/.qbo, and so does ``import_confirm``. The account gate carries
+        no ``error_message``, so the unconditional preview hint was the ONLY
+        action the envelope had — the agent's every route refused the file and
+        the one parameter that answers the gate, ``account_bindings``, was never
+        named. That is the loop ``import_files``' own single-file guard exists to
+        prevent, arriving through the hints instead of through a dropped answer.
+        """
+        ofx_file = tmp_path / "statements" / "statement.ofx"
+        ofx_file.parent.mkdir(parents=True)
+        ofx_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = _make_confirmation_error(
+            channel="ofx",
+            reason="account_confirmation",
+            tier="high",
+            score=1.0,
+            account_proposals=[
+                {
+                    "source_account_key": "1111",
+                    "proposal_ref": "@0",
+                    "proposed_account_id": "prev01",
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                }
+            ],
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files_coarse(paths=[str(ofx_file)])
+
+        actions = " ".join(result.actions)
+        assert "import_preview" not in actions
+        assert "account_bindings" in actions
+        # Bind by the positional referent: source_account_key is CRITICAL and is
+        # masked out of `data`, so it can never be echoed in prose.
+        assert "@0" in actions
+        assert "1111" not in actions
 
     async def test_account_bindings_reach_the_service(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -3961,6 +4017,54 @@ class TestImportFilesConfirmationRequired:
         assert "moneybin import" not in joined, joined
         # Still never the raw key — it is CRITICAL and actions[] is not redacted.
         assert "bare-abc123" not in joined, joined
+
+    async def test_pdf_account_action_does_not_advertise_account_name(
+        self, tmp_path: Path
+    ) -> None:
+        """A hint must not name a parameter the same tool refuses.
+
+        ``import_confirm`` runs ``_reject_unsupported_pdf_account_signals``
+        before it looks at anything else, so ``account_name`` on a PDF is a hard
+        UserError. Offering it as an alternative answer sends the agent into a
+        refusal it cannot diagnose from the hint that suggested it. Tabular does
+        honor it, so the sentence is channel-conditional rather than deleted.
+        """
+        from moneybin.mcp.tools.import_tools import (
+            _import_confirm_coarse_confirmation_actions,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        proposals: list[dict[str, object]] = [
+            {"source_account_key": "chase_1234", "proposal_ref": "@0", "candidates": []}
+        ]
+        pdf = _make_confirmation_error(
+            channel="pdf",
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=proposals,
+        ).outcome
+        tabular = _make_confirmation_error(
+            channel="tabular",
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=proposals,
+        ).outcome
+
+        pdf_actions = " ".join(
+            _import_confirm_coarse_confirmation_actions(
+                "pv_123", str(tmp_path / "card.pdf"), pdf
+            )
+        )
+        tabular_actions = " ".join(
+            _import_confirm_coarse_confirmation_actions(
+                "pv_123", str(tmp_path / "bare.csv"), tabular
+            )
+        )
+
+        assert "account_name" not in pdf_actions, pdf_actions
+        assert "account_bindings" in pdf_actions
+        assert "account_name" in tabular_actions
 
     async def test_low_tier_envelope_includes_missing_required(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
