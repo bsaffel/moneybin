@@ -435,6 +435,77 @@ class TestImportFilesConfirmFlow:
         # the layout is settled and --accept without a binding loops the gate).
         assert not any("--mapping" in a for a in payload["actions"])
 
+    def test_account_recovery_replays_the_bindings_already_supplied(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A partial answer must survive into the command that completes it.
+
+        Retries persist no state, so every binding has to be re-sent together.
+        The recovery builder accepts ``account_bindings`` and merges them —
+        ``import confirm``'s own handler passes them — but ``import files`` did
+        not, so a two-account file answered one at a time printed a command that
+        dropped the first answer and could never converge.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("savings")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--account-binding",
+                "checking=acct_known01",
+                "--output",
+                "json",
+            ],
+        )
+
+        payload = json.loads(result.output)
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+        assert "checking=acct_known01" in recovery
+        assert "savings=<account_id|new>" in recovery
+
+    def test_multi_file_refuses_account_bindings(self, tmp_path: Path) -> None:
+        """Warn-and-drop is the loop the MCP twin hard-refuses for this same input.
+
+        A ``source_account_key`` is only unambiguous within one file and the
+        batch path cannot route bindings per-file, so a dropped answer returns
+        the identical ``account_confirmation`` on every re-run. The other
+        per-file flags in that warning are *overrides*; this one is an answer to
+        a gate, which is why ``import_files`` refuses it outright.
+        """
+        first = tmp_path / "a.csv"
+        second = tmp_path / "b.csv"
+        for path in (first, second):
+            path.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            ["files", str(first), str(second), "--account-binding", "@0=new"],
+        )
+
+        assert result.exit_code != 0
+        assert "single" in result.output.lower()
+
     def test_ofx_account_confirmation_names_a_command_that_runs(
         self,
         mock_db: MagicMock,
@@ -1245,6 +1316,58 @@ class TestImportConfirmCommand:
 
         assert result.exit_code == 0, result.output
         assert apply.call_args.kwargs["account_bindings"] == {"@0": "new"}
+
+    def test_bridge_account_gate_recovery_keeps_the_bridge_response(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The command it prints has to be one this command would accept back.
+
+        The bridge raises the same account gate as every channel, but the
+        recovery was built from the generic ``import confirm`` serializer, which
+        knows nothing about ``--bridge-response``. It printed ``--accept`` — a
+        combination this very command refuses — and dropped the agent-authored
+        recipe, so the printed line could not run and the recipe was gone.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+        outcome = ConfirmationRequired(
+            channel="pdf",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("chase_1234")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--output",
+                "json",
+            ],
+        )
+
+        payload = json.loads(result.output)
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+        assert "--bridge-response" in recovery
+        assert str(response_file) in recovery
+        assert "--confirm" in recovery
+        # --accept is refused alongside --bridge-response by this same command.
+        assert "--accept" not in recovery
 
     def test_bridge_response_still_refuses_the_tabular_account_flags(
         self, tmp_path: Path

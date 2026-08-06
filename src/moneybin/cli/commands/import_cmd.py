@@ -376,7 +376,6 @@ def import_files_command(
             )
         )
         or overrides is not None
-        or account_bindings is not None
         or yes
         or no_row_limit
         or no_size_limit
@@ -387,6 +386,18 @@ def import_files_command(
         logger.warning(
             "⚠️  Per-file flags only apply in single-file mode and will be "
             "ignored. Use one file per command for per-file overrides."
+        )
+    if len(file_paths) > 1 and account_bindings is not None:
+        # Deliberately NOT in has_single_file_knobs above. Everything in that
+        # warn-and-drop set is an override; this is an ANSWER to a gate, and a
+        # dropped answer returns the identical account_confirmation on every
+        # re-run. A source key is also only unambiguous within one file, and the
+        # batch path can't route bindings per-file. `import_files` refuses the
+        # same input for the same reason.
+        raise typer.BadParameter(
+            "--account-binding answers one file's account confirmation; run it "
+            "with a single file. Each file's source keys are its own.",
+            param_hint="'--account-binding'",
         )
     if len(file_paths) > 1 and (confirm or confirm_sign):
         # --confirm with multiple files would silently auto-accept every
@@ -575,6 +586,7 @@ def import_files_command(
                         institution=institution,
                         account_id=account_id,
                         account_name=account_name,
+                        account_bindings=account_bindings,
                         proposed_sign=proposed_sign,
                         prior_sign=prior_sign,
                     )
@@ -589,8 +601,12 @@ def import_files_command(
                     # ratifying. Replay the current confirmation inputs because
                     # retries persist no partial state, and add the missing binding.
                     # The generic alternate mapping hints below remain irrelevant.
+                    # account_bindings rides along: retries persist no partial
+                    # state, so a two-account file answered one at a time needs
+                    # every binding re-sent together or the printed command
+                    # drops the answer already given and never converges.
                     confirm_actions.append(
-                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign)}` "
+                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_bindings=account_bindings, confirm_sign=confirm_sign, sign=sign)}` "
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
@@ -972,6 +988,7 @@ def _import_confirm_command(
     account_name: str | None,
     account_bindings: dict[str, str] | None,
     account_metadata: dict[str, dict[str, str]] | None,
+    bridge_response: Path | None = None,
 ) -> str:
     """Serialize one public `import confirm` request losslessly.
 
@@ -983,11 +1000,20 @@ def _import_confirm_command(
     issuer is underivable arrives at an account confirmation only on a re-run
     that already carries the override. Dropping it printed a command that
     failed the check ahead of the one it was answering.
+
+    ``bridge_response`` is the same argument one step further: the bridge raises
+    the account gate like every other channel, but its recipe is agent-authored
+    and lives only in that file. Dropping it printed a command that re-ran the
+    deterministic path instead — and paired ``--accept`` with a flag this
+    command refuses alongside it. The bridge takes ``--confirm``, not
+    ``--accept``, so the two are mutually exclusive here as well.
     """
     import shlex  # noqa: PLC0415
 
     parts = ["moneybin", "import", "confirm", file_path_str]
-    if accept:
+    if bridge_response is not None:
+        parts.extend(("--bridge-response", str(bridge_response), "--confirm"))
+    elif accept:
         parts.append("--accept")
     if confirm_sign:
         parts.append("--confirm-sign")
@@ -1025,6 +1051,7 @@ def _account_recovery_command(
     account_metadata: dict[str, dict[str, str]] | None = None,
     confirm_sign: bool = False,
     sign: SignConventionType | None = None,
+    bridge_response: Path | None = None,
 ) -> str:
     """Name the command that answers this account confirmation — one, for every channel.
 
@@ -1051,7 +1078,9 @@ def _account_recovery_command(
         file_path_str,
         # A channel with no mapping has nothing to ratify, but the command
         # requires an action; `accept` is False only where a --mapping override
-        # supplies one, which is tabular-only.
+        # supplies one, which is tabular-only. A bridge answer satisfies that
+        # guard with --confirm instead, and _import_confirm_command drops
+        # --accept when it sees one.
         accept=accept or outcome.channel in ("ofx", "pdf"),
         confirm_sign=confirm_sign,
         sign=sign,
@@ -1062,6 +1091,7 @@ def _account_recovery_command(
         account_name=account_name,
         account_bindings=bindings,
         account_metadata=account_metadata,
+        bridge_response=bridge_response,
     )
 
 
@@ -1642,7 +1672,7 @@ def import_confirm_command(
             # partial state, and add the missing binding. Generic alternate
             # mapping hints remain irrelevant here.
             confirm_actions.append(
-                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign)}` "
+                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign, bridge_response=bridge_response)}` "
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
