@@ -414,9 +414,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the next line. The same pair of fields arrives as `accounts_created` on
   `--output json`, on the `import_files` per-file rows, and on
   `import_confirm`. Asking here charged one confirmation per file on a first
-  import, each with exactly one answer available. The exception is a bare
-  Date/Description/Amount CSV: it states no account at all, so the only name
-  available is the filename, and MoneyBin asks rather than guessing.
+  import, each with exactly one answer available. The exception is a file that
+  states no account at all — a bare Date/Description/Amount CSV, or a PDF
+  statement with no readable account number. There the only name available is
+  the filename, and MoneyBin asks rather than guessing.
 
   Each account the gate shows is labeled `@0`, `@1`, … for the file in front
   of you, and that label is what `REF` takes — the account's own key works
@@ -440,7 +441,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   imports of OFX or PDF files that resemble an account you already have will
   now stop and ask; add `--account-binding` (or an `--account-id` pin) to
   those calls. A known account, and a genuinely new one, keep importing
-  unattended.
+  unattended. `--account-binding` answers one file, so `moneybin import files`
+  refuses it alongside several paths rather than dropping it: run those calls
+  one file at a time. It also cannot contradict an `--account-id` pin on the
+  same account — send whichever one you mean.
 - **An account you named on a file type that cannot use it is now an error
   instead of silence.** `--account-name` and `--account-meta` reached only
   spreadsheet imports, and `--account-id` only spreadsheets and PDFs; passing

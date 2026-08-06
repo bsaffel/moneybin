@@ -90,9 +90,16 @@ class ImportCreatedAccount(TypedDict, total=False):
     """One canonical account an import minted.
 
     Same two fields, and the same classes, as an existing-account candidate: a
-    minted account is the account a candidate would have been. Never carries
-    ``source_account_key`` — that is the file's native key (an OFX ``<ACCTID>``
-    is an account number), and the opaque ``account_id`` already names the row.
+    minted account is the account a candidate would have been, and USER_NOTE is
+    what ``core.dim_accounts.display_name`` carries everywhere else.
+
+    There is no ``source_account_key`` field, because that is the file's native
+    key (an OFX ``<ACCTID>`` is an account number) and the opaque ``account_id``
+    already names the row. That is a statement about the schema, not about the
+    values: on the PDF channel ``display_name`` is the document alias, which for
+    a statement with no account anchor is also the derived source key. The alias
+    is ``slugify(file_path.stem)`` — a path the caller supplied and, in
+    ``import_files`` responses, already readable in the same row's ``path``.
     """
 
     account_id: Annotated[str, DataClass.RECORD_ID]
