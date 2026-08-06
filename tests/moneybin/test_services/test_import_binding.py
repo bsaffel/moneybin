@@ -1412,3 +1412,30 @@ def test_a_source_key_shaped_like_a_ref_binds_only_its_own_account() -> None:
         [_src("1111"), _src("@0")], {"@0": "acct_target01"}
     )
     assert targets == [None, "acct_target01"]
+
+
+def test_one_account_split_across_statements_asks_once(
+    db: Database, tmp_path: Path
+) -> None:
+    """Two <STMTRS> blocks for one card are one account, not two.
+
+    ofxparse accumulates one ``Account`` per statement response with no ACCTID
+    de-dup, so an export that splits a period into two blocks surfaced the same
+    card as both "@0" and "@1". Answering "@0" left "@1" unbound and re-raised
+    the identical gate; answering both with different ids wrote the native
+    mapping for one key under two canonical accounts.
+    """
+    _seed_twin(db, _OFX_TWIN)
+    source = _MINIMAL_OFX.read_text(encoding="utf-8")
+    body_start = source.index("<STMTTRNRS>")
+    body_end = source.index("</STMTTRNRS>") + len("</STMTTRNRS>")
+    split = tmp_path / "two_statements.ofx"
+    split.write_text(
+        source[:body_end] + source[body_start:body_end] + source[body_end:],
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).import_file(split, refresh=False, confirm=True)
+
+    assert len(exc.value.outcome.account_proposals) == 1

@@ -1131,15 +1131,25 @@ def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAcco
     would let the gate propose one identity while resolve binds another; the
     field derivation is shared with the extractor (``none_if_blank``,
     ``ofx_account_type``) for the same reason.
+
+    Deduped by ``<ACCTID>``, because ofxparse emits one ``Account`` per statement
+    response with no de-dup of its own: an export that splits one card across two
+    ``<STMTRS>`` blocks would otherwise surface it as two independent identities,
+    ask about each, and let two different answers write one native key under two
+    canonical accounts. ACCTID alone is the right key — it *is* the
+    ``source_account_key`` every downstream link and staging JOIN uses, so two
+    entries sharing one cannot resolve to different accounts by design.
     """
     from moneybin.extractors.institution_resolution import slug_for_fid
     from moneybin.extractors.ofx.extractor import none_if_blank, ofx_account_type
 
     accounts: list[SourceAccount] = []
+    seen: set[str] = set()
     for account in parsed_ofx.accounts:
         acctid: str | None = account.account_id
-        if not acctid:
+        if not acctid or acctid in seen:
             continue
+        seen.add(acctid)
         routing = none_if_blank(account.routing_number)
         institution = account.institution
         fid = none_if_blank(institution.fid if institution else None)
