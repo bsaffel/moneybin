@@ -447,7 +447,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rebalanced weights narrow same-source auto-merging for the same reason — a
   same-day pair now needs 0.93 description similarity to merge silently where it
   needed 0.92 — so a few near-duplicates inside one source that used to merge
-  will stay as two rows.
+  will stay as two rows. A pair that cannot merge no longer takes an assignment
+  slot from one that can: when a row had two candidates in one file, a
+  higher-scoring disagreeing pair used to claim it and then be discarded, and the
+  agreeing pair behind it was lost with it.
 - **Every cross-source duplicate candidate now reaches the review queue (#377).**
   Pairs scoring below `matching.review_threshold` used to be dropped and logged
   at DEBUG — the duplicate stayed in the ledger and nobody was told. Expect the

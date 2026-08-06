@@ -365,7 +365,9 @@ descriptions sharing nothing) must not.
   the floor does not reach
   Tier 2b (same fixture, opposite outcome); an auto-merge records
   `descriptions_agree`; the cardinality guard pairs N duplicates 1:1 (including
-  with equal scores) and still collapses distinct-file N-way groups.
+  with equal scores) and still collapses distinct-file N-way groups; a pair that
+  cannot be persisted is filtered before assignment, so a higher-scoring
+  disagreeing edge cannot claim the slot and strand an agreeing one.
   `_classify_pair` refuses a disagreeing pair at the weighted formula's true
   peak — reviewed on Tier 3, unmerged on Tier 2b — and the peak itself is
   asserted to clear `high_confidence_threshold`, so the day the formula alone

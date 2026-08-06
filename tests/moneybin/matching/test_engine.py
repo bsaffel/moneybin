@@ -128,6 +128,66 @@ class TestClassifyPair:
         assert result == ("pending", "auto")
 
 
+class TestRunTierAssignment:
+    """An edge that cannot be persisted must not consume assignment."""
+
+    @staticmethod
+    def _within_source_pair(
+        other_id: str, confidence: float, *, agree: bool
+    ) -> CandidatePair:
+        """One row of `file1.csv` against one row of `file2.csv`, same source."""
+        return CandidatePair(
+            source_transaction_id_a="x",
+            source_type_a="csv",
+            source_origin_a="chase",
+            source_transaction_id_b=other_id,
+            source_type_b="csv",
+            source_origin_b="chase",
+            account_id="acct1",
+            date_distance_days=0,
+            description_similarity=confidence,
+            confidence_score=confidence,
+            description_a="",
+            description_b="",
+            descriptions_agree=agree,
+            source_file_a="file1.csv",
+            source_file_b="file2.csv",
+        )
+
+    def test_a_disagreeing_edge_does_not_suppress_an_agreeing_one(
+        self, db: Database
+    ) -> None:
+        """The mergeable pair wins assignment even when a doomed pair scores higher.
+
+        `assign_components` orders by score alone, and the cardinality guard lets
+        one row claim only one partner per physical source. So a higher-scoring
+        pair whose descriptions disagree would union the component first, push the
+        lower-scoring *agreeing* pair out on the guard, and then be dropped itself
+        by the agreement gate — leaving the real duplicate unmatched and counted
+        twice. Both rows survive in the ledger, which is silent: nothing is written
+        and Tier 2b has no review queue to notice the gap.
+
+        x/z is the true duplicate here. x/y outscores it by 0.01 and cannot merge.
+        """
+        matcher = TransactionMatcher(
+            db, MatchingSettings(high_confidence_threshold=0.95, review_threshold=0.70)
+        )
+        doomed = self._within_source_pair("y", 0.97, agree=False)
+        mergeable = self._within_source_pair("z", 0.96, agree=True)
+        result = MatchResult()
+
+        matcher._run_tier(  # pyright: ignore[reportPrivateUsage]
+            tier="2b",
+            candidates_fn=lambda: [doomed, mergeable],
+            seed_edges=[],
+            result=result,
+        )
+
+        assert result.auto_merged == 1
+        matches = get_active_matches(db, match_type="dedup")
+        assert [m["source_transaction_id_b"] for m in matches] == ["z"]
+
+
 class TestFetchActiveDedupDecisions:
     """Equivalence check: _fetch_active_dedup_decisions covers pre-seeded and newly-created matches."""
 

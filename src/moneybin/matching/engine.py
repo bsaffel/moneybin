@@ -275,27 +275,34 @@ class TransactionMatcher:
         candidates: list[CandidatePair] = candidates_fn()
         DEDUP_PAIRS_SCORED.inc(len(candidates))
 
-        if not candidates:
+        # Classify before assignment, so an edge that cannot be persisted never
+        # consumes one. assign_components orders by score alone and the
+        # cardinality guard lets a row claim only one partner per physical source,
+        # so on Tier 2b a higher-scoring *disagreeing* pair would union the
+        # component first, push the lower-scoring agreeing pair out on the guard,
+        # and then be dropped itself by the agreement gate — leaving the real
+        # duplicate unmatched and counted twice, with nothing written and no review
+        # queue on that tier to notice. Tier 3 classifies every pair, so this is a
+        # no-op there. Filtering here also keeps newly_added consistent with what
+        # is persisted: every assigned edge now has a classification.
+        classified = [(pair, self._classify_pair(pair, tier)) for pair in candidates]
+        mergeable = {
+            pair: classification
+            for pair, classification in classified
+            if classification is not None
+        }
+
+        if not mergeable:
             return []
 
-        assigned = assign_components(candidates, seed_edges=seed_edges)
+        assigned = assign_components(list(mergeable), seed_edges=seed_edges)
         newly_added: list[tuple[NodeKey, NodeKey]] = []
         tier_merged = 0
         tier_pending = 0
 
         for pair in assigned:
             DEDUP_MATCH_CONFIDENCE.observe(pair.confidence_score)
-
-            classification = self._classify_pair(pair, tier)
-            # A sub-threshold edge that joined two components is dropped here and
-            # NOT appended to newly_added. This is safe: assign_components sorts
-            # descending by confidence, so once a sub-threshold edge appears every
-            # remaining candidate is also sub-threshold and would be dropped too —
-            # a dropped union can never suppress a persistable edge. newly_added
-            # therefore stays consistent with what is persisted.
-            if classification is None:
-                continue
-            status, decided_by = classification
+            status, decided_by = mergeable[pair]
 
             if status == "accepted":
                 result.auto_merged += 1
