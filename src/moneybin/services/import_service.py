@@ -14,7 +14,7 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
 
 import duckdb
 
@@ -985,12 +985,30 @@ def _apply_account_bindings(
     return bound
 
 
+class PdfAccountIdentity(NamedTuple):
+    """What a PDF statement says about its account, and whether it said anything.
+
+    ``identity_unknown`` is returned beside the account rather than derived again
+    at each call site: the gate and the resolve pass have to agree about whether
+    the file stated an identity, and re-testing the anchor separately is exactly
+    the drift ``_pdf_source_account``'s own contract rules out.
+    """
+
+    source: SourceAccount
+    identity_unknown: bool
+
+    @property
+    def fallback_keys(self) -> tuple[str, ...]:
+        """The gate's ``fallback_keys`` argument for this identity."""
+        return (self.source.source_account_key,) if self.identity_unknown else ()
+
+
 def _pdf_source_account(
     decision: "RouteDecision",
     *,
     resolved_alias: str,
     account_id_override: str | None,
-) -> SourceAccount:
+) -> PdfAccountIdentity:
     """Derive the account identity a PDF statement presents, without resolving.
 
     Shared by the confirm gate (which runs before ``begin_import``) and the
@@ -1009,6 +1027,13 @@ def _pdf_source_account(
     this needs to unify. ``resolved_alias`` stays the per-file scope for
     raw.import_log and the raw.pdf_<alias> view, which are genuinely per-document
     and which revert depends on.
+
+    A statement with no readable account number has no identity of its own: the
+    key falls back to the filename stem, so the returned
+    ``identity_unknown`` sends it through the gate's ``fallback_keys`` path — the
+    same one the bare single-account tabular import takes, and for the same
+    reason. Minting on a filename is the guess "magic stays visible" forbids
+    doing silently.
     """
     from moneybin.utils import slugify
 
@@ -1023,6 +1048,11 @@ def _pdf_source_account(
     # leaks it through every downstream surface that treats account_id as an
     # opaque identifier.
     masked_acct = _to_account_number_mask(decision.metadata.account_id)
+    # Whether the DOCUMENT named an account, captured before the override branch
+    # below clears masked_acct. Without an anchor the key below is the filename
+    # stem, which is a guess about what the file was called — not an identity the
+    # statement stated.
+    anchored = bool(masked_acct)
     derived_key = (
         f"{issuer_slug}_{slugify(masked_acct)}" if masked_acct else resolved_alias
     )
@@ -1037,18 +1067,28 @@ def _pdf_source_account(
         masked_acct = None
     else:
         native_key = derived_key
-    return SourceAccount(
-        source_type="pdf",
-        source_origin=issuer_slug,
-        source_account_key=native_key,
-        account_name=resolved_alias,
-        institution=decision.fp.get("issuer") or None,
-        # None for a digits-free token ("xxxx"), which correctly denies the
-        # institution+last4 signal and routes to name review rather than
-        # inventing a strong match.
-        last_four=_last4_from_account_number(masked_acct),
-        explicit_account_id=account_id_override,
-        unpinned_account_key=derived_key if account_id_override else None,
+    return PdfAccountIdentity(
+        source=SourceAccount(
+            source_type="pdf",
+            source_origin=issuer_slug,
+            source_account_key=native_key,
+            account_name=resolved_alias,
+            institution=decision.fp.get("issuer") or None,
+            # None for a digits-free token ("xxxx"), which correctly denies the
+            # institution+last4 signal and routes to name review rather than
+            # inventing a strong match.
+            last_four=_last4_from_account_number(masked_acct),
+            explicit_account_id=account_id_override,
+            # Only teach a key the DOCUMENT yields. Unanchored, the derived key
+            # is the file stem, and accepting it as a source_native ref would let
+            # any later same-named statement from this issuer adopt the pinned
+            # account with no confirm — a silent cross-account merge on the
+            # strength of a filename.
+            unpinned_account_key=(
+                derived_key if account_id_override and anchored else None
+            ),
+        ),
+        identity_unknown=not anchored,
     )
 
 
@@ -1563,13 +1603,16 @@ class ImportService:
         write anything.
 
         The predicate is ``AccountProposal.requires_confirm`` in full, both
-        clauses. Weak merge candidates surface, and so does a first-contact mint
-        (``is_new`` with no ``adopted_via``) — minting an account is a visible
-        moment, and the clause had no consumer, so every channel minted
-        silently. A remembered binding never re-asks: the second import of the
-        same source hits ``source_native`` in the resolution ladder, sets
-        ``adopted_via``, and passes straight through. The confirm therefore
-        costs one answer per new account identity, once, not one per file.
+        clauses: weak merge candidates surface, and so does a source that stated
+        no identity at all (``identity_unknown``). A first-contact mint of a
+        STATED identity does not — it has nothing to merge into and no other
+        answer available, so gating it made a first import of N files cost N
+        confirms that each had exactly one legal answer. It is reported instead,
+        through ``accounts_created``. A remembered binding never re-asks: the
+        second import of the same source hits ``source_native`` in the
+        resolution ladder, sets ``adopted_via``, and passes straight through.
+        The confirm therefore costs one answer per new account identity, once,
+        not one per file.
 
         Actor-independent by design: an agent never self-picks an account
         identity. It receives the same pre-load stop as a human, surfaced as a
@@ -1580,11 +1623,13 @@ class ImportService:
 
         ``fallback_keys`` names the source keys that get ``propose(fallback=True)``
         — a decision-support pick-list of existing accounts instead of an empty
-        ``candidates``. Only the bare single-account tabular import opts in: it
-        has genuinely no identity signal, so an empty pick-list would force the
-        user to type a raw account id. Every other source leaves it off, because
-        a named account that matches nothing should mint, not be offered an
-        unrelated list.
+        ``candidates``, and the flag that sets ``identity_unknown``. Two sources
+        opt in, both for the same reason: the bare single-account tabular import
+        (no ``--account-name``, no account column) and a PDF whose text yields no
+        account anchor. Each would otherwise mint under a filename guess, and an
+        empty pick-list would force the user to type a raw account id. Every
+        other source leaves it off, because a named account that matches nothing
+        should mint, not be offered an unrelated list.
 
         Metrics are emitted here rather than left to ``resolve()``. The gate
         answers every weak candidate before resolution runs, so no import
@@ -3234,17 +3279,17 @@ class ImportService:
         # routing settles, before begin_import. A bridge recipe is agent-authored,
         # so the account identity it implies is no more ratified than a
         # deterministic one — and an agent must never self-pick an identity.
+        identity = _pdf_source_account(
+            decision,
+            resolved_alias=resolved_alias,
+            account_id_override=account_id,
+        )
         self._gate_account_proposals(
             AccountResolver(self._db, actor="system"),
-            [
-                _pdf_source_account(
-                    decision,
-                    resolved_alias=resolved_alias,
-                    account_id_override=account_id,
-                )
-            ],
+            [identity.source],
             account_bindings,
             channel="pdf",
+            fallback_keys=identity.fallback_keys,
             emit_metrics=emit_metrics,
             observations=observations,
         )
@@ -3878,17 +3923,17 @@ class ImportService:
         # there is nothing to ratify. The identity scope is the issuer slug, so
         # this asks once per card, not once per statement.
         if decision.outcome == "transactions":
+            identity = _pdf_source_account(
+                decision,
+                resolved_alias=resolved_alias,
+                account_id_override=account_id,
+            )
             self._gate_account_proposals(
                 AccountResolver(self._db, actor="system"),
-                [
-                    _pdf_source_account(
-                        decision,
-                        resolved_alias=resolved_alias,
-                        account_id_override=account_id,
-                    )
-                ],
+                [identity.source],
                 account_bindings,
                 channel="pdf",
+                fallback_keys=identity.fallback_keys,
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
@@ -4065,7 +4110,7 @@ class ImportService:
                     decision,
                     resolved_alias=resolved_alias,
                     account_id_override=account_id_override,
-                )
+                ).source
             ],
             account_bindings or {},
         )[0]

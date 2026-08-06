@@ -98,6 +98,24 @@ def _standard_doc(
     )
 
 
+def _anchorless_doc(opening: str = "1000.00", closing: str = "1100.00") -> PdfDocument:
+    """The standard statement with its account-number line removed.
+
+    Everything else still reads — issuer, balances, rows — so routing reaches
+    ``transactions`` exactly as usual. Only the account identity is missing,
+    which is the whole point: it isolates the derivation that falls back to the
+    filename stem.
+    """
+    return _make_doc(
+        text_lines=[
+            line
+            for line in _standard_text_lines(opening, closing)
+            if not line.startswith("Account Number:")
+        ],
+        tables=[_standard_table()],
+    )
+
+
 def _valid_recipe_dict() -> dict[str, Any]:
     # `metadata_anchors` omitted → None → routing falls back to DEFAULT_ANCHORS
     # for capture_metadata, so opening/closing balance anchors find values and
@@ -1984,6 +2002,80 @@ def test_pdf_import_gates_account_identity_before_begin_import(
     assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
     assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
     assert _count(db, "SELECT COUNT(*) FROM app.pdf_formats") == 0
+
+
+@pytest.mark.integration
+def test_pdf_with_no_account_anchor_gates_before_minting(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """A statement naming no account is ``identity_unknown``, not a confident mint.
+
+    With no readable account number the source-native key falls back to the
+    filename stem, so proceeding silently would attach a card's whole history to
+    a guess about what the file happened to be called. No twin is seeded here on
+    purpose: the point is that a proposal with an EMPTY candidate list still has
+    to stop, which is the half ``identity_unknown`` exists to express — the
+    tabular bare-file branch already opts in this way via ``fallback_keys``.
+    """
+    create_core_tables(db)
+    doc = _anchorless_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
+
+    outcome = exc.value.outcome
+    assert outcome.reason == "account_confirmation"
+    assert outcome.channel == "pdf"
+    [proposal] = outcome.account_proposals
+    assert proposal["candidates"] == []
+    assert proposal["is_new"] is True
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
+
+
+@pytest.mark.integration
+def test_pinning_an_anchorless_pdf_does_not_teach_the_filename(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """A pin must not promote a filename guess to a strong ``source_native`` ref.
+
+    ``unpinned_account_key`` exists so a pin also teaches what the document
+    yields on its own, sparing the next unpinned statement a second account.
+    When the document yields nothing, that key is the file stem — and accepting
+    it means any later same-named statement from the same issuer adopts this
+    account with no confirm, merging two cards on the strength of a filename.
+    """
+    _seed_chase_twin(db)
+    doc = _anchorless_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_existing01",
+        )
+
+    taught = db.execute(
+        "SELECT ref_value FROM app.account_links "
+        "WHERE ref_kind = 'source_native' AND status = 'accepted'"
+    ).fetchall()
+    # Only the pin's own self-map; never the "statement" stem.
+    assert [row[0] for row in taught] == ["acct_existing01"]
 
 
 @pytest.mark.integration
