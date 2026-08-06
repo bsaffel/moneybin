@@ -197,13 +197,23 @@ arise from either. Implemented as a leading space on both sides of the
 `contains()` call rather than a token-set test, because a token-set test would
 refuse the truncation case — `WALMART STO` is not a token of `WALMART STORE`.
 
-**Exact equality is exempt from the merchant-token requirement.** The rule guards
-against a short *fragment* hiding inside a longer string; two identical
-descriptions have no longer string to hide inside. A bank writing `DEPOSIT` in
-both its OFX and CSV export of one account cannot name a merchant, and demanding
-one refuses the plainest duplicate there is — caught by
+**Exact equality is exempt from the merchant-token requirement on the same day.**
+The rule guards against a short *fragment* hiding inside a longer string; two
+identical descriptions have no longer string to hide inside. A bank writing
+`DEPOSIT` in both its OFX and CSV export of one account cannot name a merchant,
+and demanding one refuses the plainest duplicate there is — caught by
 `account-identity-cross-source`, where a $5,000 `Deposit` present in both sources
 stopped collapsing.
+
+The date bound is what stops that exemption from becoming a hole once the window
+widened to five days. Two *different* charges of one amount, three days apart on
+one account, are both `DEBIT` as well, and no other field separates them — so an
+unbounded carve-out silently merges them and deletes one. The pair the exemption
+exists for shares a posting date (the `Deposit` above is same-day in both
+sources), and before the window widened no cross-source pair could merge at any
+other gap, so same-day is exactly the condition under which the carve-out was
+validated. A generic pair at a gap keeps its Tier 3 review entry; nothing is
+dropped, the question is only who answers it.
 
 The vocabulary is hand-maintained and pinned by **set equality**, not membership:
 every token added to it removes evidence from the gate and widens what merges
@@ -346,7 +356,8 @@ descriptions sharing nothing) must not.
   the same day; a blank description is not agreement; a boilerplate-only
   contained side is not agreement, while one merchant token beside boilerplate
   still is, and identical descriptions agree even when the shared text is pure
-  boilerplate; the boilerplate vocabulary is pinned by set equality; a digit-only
+  boilerplate — but only on the same day, since identical boilerplate across a
+  date gap is not agreement; the boilerplate vocabulary is pinned by set equality; a digit-only
   token is not merchant evidence while a merchant token carrying digits still is;
   a fragment starting mid-token is not agreement (`ARCO` inside `MARCOS PIZZA`)
   while a truncated tail still is; punctuation

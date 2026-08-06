@@ -296,11 +296,16 @@ def _get_candidates(
             -- The *contained* side is the shared evidence, so it is the side that
             -- must carry a merchant token. An empty description is the extreme
             -- case of the same defect; bare boilerplate is the merely-generic one.
-            -- Equality is exempt from that requirement: the merchant token guards
-            -- against a short *fragment* hiding inside a longer string, and two
-            -- identical descriptions have no longer string to hide inside. A bank
-            -- writing `DEPOSIT` in both exports cannot name a merchant, and
-            -- demanding one would refuse the plainest duplicate there is.
+            -- Equality is exempt from that requirement on the same day: the
+            -- merchant token guards against a short *fragment* hiding inside a
+            -- longer string, and two identical descriptions have no longer string
+            -- to hide inside. A bank writing `DEPOSIT` in both exports cannot name
+            -- a merchant, and demanding one would refuse the plainest duplicate
+            -- there is. The date bound is what keeps that exemption from becoming
+            -- a hole now the window is five days wide: two *different* charges of
+            -- one amount, days apart, are both `DEBIT` too, and nothing else in
+            -- the row tells them apart. Same-day is where the carve-out was
+            -- validated, and a generic pair at a gap still reaches Tier 3 review.
             -- The leading space makes containment start at a token boundary. Raw
             -- substring containment reads `ARCO` as agreeing with `MARCOS PIZZA`,
             -- naming a merchant in both and meaning a different one in each. Only
@@ -312,7 +317,10 @@ def _get_candidates(
                 {norm_a} <> ''
                 AND {norm_b} <> ''
                 AND (
-                    {norm_a} = {norm_b}
+                    (
+                        {norm_a} = {norm_b}
+                        AND ({merchant_a} OR a.transaction_date = b.transaction_date)
+                    )
                     OR (contains(' ' || {norm_a}, ' ' || {norm_b}) AND {merchant_b})
                     OR (contains(' ' || {norm_b}, ' ' || {norm_a}) AND {merchant_a})
                 )

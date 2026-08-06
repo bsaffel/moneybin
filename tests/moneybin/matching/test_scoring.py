@@ -974,6 +974,58 @@ class TestGetCandidatesCrossSource:
         assert len(candidates) == 1
         assert candidates[0].descriptions_agree is True
 
+    def test_identical_boilerplate_across_a_date_gap_is_not_agreement(
+        self, unioned_table: Database
+    ) -> None:
+        """The equality carve-out is same-day evidence, and does not travel.
+
+        Two sources writing `DEBIT` for one transaction post it on one day. Two
+        *different* transactions of the same amount, three days apart on the same
+        account, are also both `DEBIT` — and nothing else in the row distinguishes
+        them. Admitting that pair auto-merges two real charges and deletes one.
+
+        The same-day requirement is where the carve-out was validated: the pair it
+        exists for (a $5,000 `Deposit` in both a CSV and a QFX of one account)
+        shares a posting date, and before the window widened to five days no
+        cross-source pair could merge at any other gap. Losing agreement here does
+        not lose the pair — Tier 3 routes it to review, where an ambiguous pair
+        with no merchant evidence belongs.
+
+        Isolation: both sides are non-empty, the strings are equal so containment
+        holds in both directions but `DEBIT` is boilerplate, so neither containment
+        branch can admit this pair. Only the equality carve-out can, and only the
+        date condition on it can refuse.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-47.50",
+            description="DEBIT",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-18",
+            amount="-47.50",
+            description="DEBIT",
+            source_type="csv",
+            source_origin="chase",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=5,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].date_distance_days == 3
+        assert candidates[0].descriptions_agree is False
+
     def test_a_fragment_starting_mid_token_is_not_agreement(
         self, unioned_table: Database
     ) -> None:

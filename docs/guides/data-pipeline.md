@@ -216,9 +216,10 @@ Surviving candidates are then scored by:
 - **Description similarity** — Jaro-Winkler over the two `description` strings.
 
 Two things decide what happens to a candidate — the score and whether the two
-descriptions agree (identical, or one contained in the other from a word
-boundary onward and carrying a word that names a merchant rather than only
-boilerplate or digits):
+descriptions agree — one contained in the other from a word boundary onward and
+carrying a word that names a merchant rather than only boilerplate or digits, or
+the two identical (identical boilerplate counts only when both rows posted the
+same day):
 
 - `>= high_confidence_threshold` (default `0.95`) **and descriptions agree** → auto-accept, written to `app.match_decisions` with `match_status = 'accepted'`.
 - Anything else, cross-source → the review queue (`moneybin transactions matches pending` lists them; `moneybin review --type matches --status` reports the count). No cross-source candidate is discarded for scoring low.

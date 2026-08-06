@@ -421,7 +421,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   window — provided the shared text carries something more than transaction-type
   boilerplate, since `DEBIT` sits inside most card descriptions and identifies no
   merchant. Two sources writing the *identical* description are exempt from that:
-  a bank labelling a row `Deposit` in both exports cannot name a merchant.
+  a bank labelling a row `Deposit` in both exports cannot name a merchant — but
+  only when both rows posted the same day, since two different charges of one
+  amount days apart are both `DEBIT` too; that pair goes to review instead.
   Punctuation no longer decides the question — `STARBUCKS #1234` and
   `STARBUCKS 1234` agree — while a differing reference number still does, so
   `SHELL 1234` and `SHELL 1235` stay two transactions. A number on its own is not
