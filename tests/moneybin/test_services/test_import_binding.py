@@ -332,6 +332,37 @@ def test_new_binding_captures_account_metadata(
     assert row == ("WF Checking", "4267", "checking", "USD")
 
 
+def test_mint_is_announced_under_the_name_it_will_actually_carry(
+    db: Database,
+) -> None:
+    """The reported name must be the one the user can find afterwards.
+
+    ``_capture_new_account_metadata`` writes ``display_name`` to
+    ``app.account_settings``, and ``dim_accounts`` COALESCEs that arm first — so
+    announcing the source label instead named a row that does not exist under
+    that name anywhere the user looks. This is the visible half of "gate the
+    merge, not the mint": a mint is reported rather than confirmed precisely
+    because the report is enough to notice and correct it.
+    """
+    result = ImportService(db).import_file(
+        _STANDARD_CSV,
+        account_name="WF Checking",
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        account_bindings={"wf-checking": "new"},
+        account_metadata={"wf-checking": {"display_name": "Joint Checking"}},
+    )
+
+    assert [a.display_name for a in result.accounts_created] == ["Joint Checking"]
+    minted = _minted_account_id(db, "wf-checking")
+    settings = db.execute(
+        "SELECT display_name FROM app.account_settings WHERE account_id=?",
+        [minted],
+    ).fetchone()
+    assert settings == ("Joint Checking",)
+
+
 def test_account_metadata_rejects_unknown_field_before_any_write(
     db: Database,
 ) -> None:

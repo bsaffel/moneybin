@@ -89,16 +89,28 @@ class CreatedAccount:
 
 
 def _created_account(
-    src: SourceAccount, resolved: ResolvedAccount
+    src: SourceAccount,
+    resolved: ResolvedAccount,
+    *,
+    display_name: str | None = None,
 ) -> CreatedAccount | None:
     """The account this resolve minted, or None when it adopted an existing one.
 
     One definition of "created" for all three channels, so a new channel cannot
     report a different set than the one it bound.
+
+    ``display_name`` is the caller's ``account_metadata`` value when they
+    supplied one. It has to win: ``_capture_new_account_metadata`` writes it to
+    ``app.account_settings`` and ``dim_accounts`` COALESCEs that arm ahead of
+    everything derived, so reporting the source label would announce the mint
+    under a name the user then cannot find.
     """
     if resolved.outcome != "minted_new":
         return None
-    return CreatedAccount(account_id=resolved.account_id, display_name=src.account_name)
+    return CreatedAccount(
+        account_id=resolved.account_id,
+        display_name=display_name or src.account_name,
+    )
 
 
 @dataclass
@@ -2716,9 +2728,11 @@ class ImportService:
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
-            if minted := _created_account(src, resolved_account):
-                created.append(minted)
             meta = metadata.get(src.source_account_key)
+            if minted := _created_account(
+                src, resolved_account, display_name=(meta or {}).get("display_name")
+            ):
+                created.append(minted)
             if not meta:
                 continue
             # Capture only for a genuinely-new account (outcome="minted_new",
