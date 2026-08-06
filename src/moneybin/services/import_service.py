@@ -2676,13 +2676,18 @@ class ImportService:
         # file's accounts (a typo) — silently ignoring it would do the wrong
         # thing invisibly ("magic stays visible"). account_metadata is
         # tabular-only; the binding half of this check lives in
-        # _resolve_binding_targets, which every channel reaches.
+        # _resolve_binding_targets, which every channel reaches — and this
+        # message follows that one's rule: echo the caller's own unknown keys
+        # (they sent them), never enumerate the file's real ones. A tabular key
+        # is slugify(account_name), and an account label routinely carries the
+        # number it names.
         known_keys = {s.source_account_key for s in source_accounts}
         if unknown_keys := set(account_metadata or {}) - known_keys:
             raise ValueError(
                 f"account_metadata references unknown source key(s): "
-                f"{sorted(unknown_keys)}. This file's source keys: "
-                f"{sorted(known_keys)}."
+                f"{sorted(unknown_keys)}. This file has {len(source_accounts)} "
+                "account(s) — key each entry by a source key exactly as the "
+                "confirmation reported it."
             )
 
         # Phase 2 — gate on any account identity the caller hasn't ratified.

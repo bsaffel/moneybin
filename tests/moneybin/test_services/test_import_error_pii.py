@@ -115,3 +115,31 @@ def test_empty_binding_value_does_not_echo_the_files_account_number(
     assert ACCTID not in str(raised.value)
     # Still answerable: the caller learns which proposal it fumbled.
     assert "@0" in message
+
+
+def test_unknown_account_metadata_key_does_not_list_the_real_keys(
+    db: Any, tmp_path: Path
+) -> None:
+    """The typo error names what the caller sent, never what the file holds.
+
+    A tabular source key is ``slugify(account_name)``, and a real account label
+    routinely carries the number ("Checking 987654321098"), so enumerating this
+    file's keys publishes it. The caller's own unknown key stays — they sent it.
+    """
+    csv = tmp_path / "txns.csv"
+    csv.write_text("Date,Description,Amount\n2024-01-15,Coffee,-4.50\n")
+
+    with pytest.raises(ValueError) as raised:
+        import_answering_gate(
+            ImportService(db),
+            csv,
+            refresh=False,
+            account_name=f"Checking {ACCTID}",
+            confirm=True,
+            auto_accept=True,
+            account_metadata={"mistyped-key": {"display_name": "Joint"}},
+        )
+
+    message, _code, _hint, _details = per_file_failure(raised.value)
+    assert ACCTID not in message, f"account number reached the wire: {message}"
+    assert "mistyped-key" in message
