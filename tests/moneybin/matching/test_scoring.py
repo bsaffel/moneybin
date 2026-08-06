@@ -974,6 +974,56 @@ class TestGetCandidatesCrossSource:
         assert len(candidates) == 1
         assert candidates[0].descriptions_agree is True
 
+    def test_a_fragment_starting_mid_token_is_not_agreement(
+        self, unioned_table: Database
+    ) -> None:
+        """A merchant name buried inside another word names a different merchant.
+
+        `ARCO` sits inside `MARCOS PIZZA` at character level, so a raw substring
+        test reads two unrelated merchants as the same one. Nothing else stops it:
+        the fragment is a real merchant name, so it is neither boilerplate nor
+        digits, and equal-amount pairs inside the window are common. The merge
+        would delete one of the two charges with no review entry.
+
+        The rule that separates this from the truncation case is *where* the
+        contained side starts. A source truncating a shared string cuts the tail,
+        and a source wrapping it in a preamble leaves a space in front — both begin
+        at a token boundary. A fragment that begins inside a word cannot be
+        produced either way.
+
+        Isolation: both sides are non-empty, containment genuinely holds, `ARCO` is
+        not in `_BOILERPLATE_TOKENS`, it carries a letter, and the two strings
+        differ. Only the token-boundary requirement can refuse this pair.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-31.20",
+            description="ARCO",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-31.20",
+            description="MARCOS PIZZA",
+            source_type="csv",
+            source_origin="chase",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].descriptions_agree is False
+
     def test_punctuation_alone_does_not_defeat_agreement(
         self, unioned_table: Database
     ) -> None:

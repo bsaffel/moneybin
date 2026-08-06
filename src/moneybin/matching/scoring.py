@@ -301,13 +301,20 @@ def _get_candidates(
             -- identical descriptions have no longer string to hide inside. A bank
             -- writing `DEPOSIT` in both exports cannot name a merchant, and
             -- demanding one would refuse the plainest duplicate there is.
+            -- The leading space makes containment start at a token boundary. Raw
+            -- substring containment reads `ARCO` as agreeing with `MARCOS PIZZA`,
+            -- naming a merchant in both and meaning a different one in each. Only
+            -- the *start* is constrained, never the end: a truncating source cuts
+            -- the tail (`STARBUCK` from `STARBUCKS STORE 1234`) and a wrapping
+            -- source leaves a space in front, so both still relate — while a
+            -- fragment beginning inside a word cannot arise from either.
             (
                 {norm_a} <> ''
                 AND {norm_b} <> ''
                 AND (
                     {norm_a} = {norm_b}
-                    OR (contains({norm_a}, {norm_b}) AND {merchant_b})
-                    OR (contains({norm_b}, {norm_a}) AND {merchant_a})
+                    OR (contains(' ' || {norm_a}, ' ' || {norm_b}) AND {merchant_b})
+                    OR (contains(' ' || {norm_b}, ' ' || {norm_a}) AND {merchant_a})
                 )
             ) AS desc_agree
         FROM {table} AS a

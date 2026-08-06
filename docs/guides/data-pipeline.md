@@ -207,7 +207,7 @@ The matcher's blocking key is strict: two rows are even *considered* a dedup can
 
 - Same `account_id`.
 - Exactly equal `amount` (DuckDB `DECIMAL` equality — no tolerance).
-- `transaction_date` within `matching.date_window_days` days of each other (default `3`).
+- `transaction_date` within `matching.date_window_days` days of each other (default `5`).
 - Neither row has `source_type = 'manual'` (manual entries are deliberately exempt — see `transaction-curation` spec Req 6).
 
 Surviving candidates are then scored by:
@@ -216,7 +216,9 @@ Surviving candidates are then scored by:
 - **Description similarity** — Jaro-Winkler over the two `description` strings.
 
 Two things decide what happens to a candidate — the score and whether the two
-descriptions agree (one contains the other, or they are identical):
+descriptions agree (identical, or one contained in the other from a word
+boundary onward and carrying a word that names a merchant rather than only
+boilerplate or digits):
 
 - `>= high_confidence_threshold` (default `0.95`) **and descriptions agree** → auto-accept, written to `app.match_decisions` with `match_status = 'accepted'`.
 - Anything else, cross-source → the review queue (`moneybin transactions matches pending` lists them; `moneybin review --type matches --status` reports the count). No cross-source candidate is discarded for scoring low.

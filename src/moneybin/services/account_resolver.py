@@ -270,9 +270,17 @@ class AccountResolver:
         — there is genuinely no signal there, so an empty pick-list would force a
         raw account id. The multi-account gate leaves it False: a no-match named
         account mints a new standalone account (it never auto-merges), and turning
-        on fallback there would gate every fresh multi-account import. resolve()
-        never uses fallback, so these candidates are preview-only — confirming
+        on fallback there would gate every fresh multi-account import. Candidates
+        that appear only because the caller opted in are preview-only — confirming
         "new" still mints.
+
+        One case overrides the caller either way: a source with no last_four turns
+        fallback on here and in resolve() alike (``fallback=src.last_four is
+        None``), because an account that cannot answer the last4 rung is an
+        unanswerable question rather than evidence of a distinct account. So
+        resolve() does use fallback for that source, and the multi-account gate's
+        False does not switch it off — which is what keeps this preview agreeing
+        with the ladder it previews.
 
         The proposed_account_id in the mint path (is_new=True) is a preview id
         (uuid4[:12]) that is NOT written anywhere; resolve() will produce a

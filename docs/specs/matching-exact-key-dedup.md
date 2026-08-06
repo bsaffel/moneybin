@@ -187,6 +187,16 @@ equal in amount and inside the window, would auto-merge and one would vanish wit
 no review entry. The requirement is a letter *somewhere in the token*, not the
 absence of digits; real merchant strings are full of them (`7ELEVEN`).
 
+**Containment must begin at a token boundary.** A raw substring test reads `ARCO`
+as agreeing with `MARCOS PIZZA` — a real merchant name buried inside an unrelated
+one, so it is neither boilerplate nor digits and no other guard refuses it. Only
+the *start* is constrained, never the end: a truncating source cuts the tail
+(`STARBUCK` from `STARBUCKS STORE 1234`) and a wrapping source leaves a space in
+front, so both still relate, while a fragment beginning inside a word cannot
+arise from either. Implemented as a leading space on both sides of the
+`contains()` call rather than a token-set test, because a token-set test would
+refuse the truncation case — `WALMART STO` is not a token of `WALMART STORE`.
+
 **Exact equality is exempt from the merchant-token requirement.** The rule guards
 against a short *fragment* hiding inside a longer string; two identical
 descriptions have no longer string to hide inside. A bank writing `DEPOSIT` in
@@ -336,7 +346,10 @@ descriptions sharing nothing) must not.
   the same day; a blank description is not agreement; a boilerplate-only
   contained side is not agreement, while one merchant token beside boilerplate
   still is, and identical descriptions agree even when the shared text is pure
-  boilerplate; the boilerplate vocabulary is pinned by set equality; punctuation
+  boilerplate; the boilerplate vocabulary is pinned by set equality; a digit-only
+  token is not merchant evidence while a merchant token carrying digits still is;
+  a fragment starting mid-token is not agreement (`ARCO` inside `MARCOS PIZZA`)
+  while a truncated tail still is; punctuation
   alone does not defeat agreement while a differing reference number still does;
   the floor does not reach
   Tier 2b (same fixture, opposite outcome); an auto-merge records

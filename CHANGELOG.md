@@ -426,7 +426,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `STARBUCKS 1234` agree — while a differing reference number still does, so
   `SHELL 1234` and `SHELL 1235` stay two transactions. A number on its own is not
   merchant text either: a source rendering a row as `POS 1234` no longer agrees
-  with every longer description that prints the same card digits. Which existing duplicates
+  with every longer description that prints the same card digits. Nor is a name
+  buried inside a longer word — `ARCO` and `MARCOS PIZZA` name different
+  merchants and no longer agree, while a truncated `STARBUCK` still agrees with
+  `STARBUCKS STORE 1234`. Which existing duplicates
   merge and which go to review both change on
   the next `refresh`. `matching.date_window_days` is shared with transfer
   detection, so its new default widens that candidate window too.
