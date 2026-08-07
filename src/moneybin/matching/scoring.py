@@ -113,6 +113,31 @@ def _carries_a_merchant_token(normalized: str) -> str:
     )
 
 
+def _contains_on_word_boundaries(container: str, contained: str) -> str:
+    """SQL expression: ``contained`` sits inside ``container`` on word boundaries.
+
+    Raw substring containment reads `ARCO` as agreeing with `MARCOS PIZZA`,
+    naming a merchant in both and meaning a different one in each. Padding both
+    sides with spaces is what makes a match start where a word starts.
+
+    The end is the harder half, because the shape this feature exists to absorb —
+    a source truncating a shared string — ends mid-word by definition, and so does
+    a coincidence (`SHELL` beginning `SHELLYS CAFE`). Nothing in the strings tells
+    them apart. What differs is how much matched *whole*: a real truncation
+    usually cuts several words in, and those earlier whole words are the evidence
+    a bare one-word prefix does not have. So the match must either end on a word
+    boundary too, or carry at least one complete word before its partial tail.
+    Normalization collapses whitespace runs and trims, so an interior space is a
+    reliable "more than one word".
+    """
+    padded = f"contains(' ' || {container} || ' ', ' ' || {contained} || ' ')"
+    partial_tail = (
+        f"contains(' ' || {container}, ' ' || {contained}) "
+        f"AND contains({contained}, ' ')"
+    )
+    return f"({padded} OR ({partial_tail}))"
+
+
 @dataclass(frozen=True)
 class CandidatePair:
     """A scored candidate pair from blocking + scoring."""
@@ -262,6 +287,8 @@ def _get_candidates(
     norm_b = _normalized_description("b.description")
     merchant_a = _carries_a_merchant_token(norm_a)
     merchant_b = _carries_a_merchant_token(norm_b)
+    contains_ab = _contains_on_word_boundaries(norm_a, norm_b)
+    contains_ba = _contains_on_word_boundaries(norm_b, norm_a)
 
     # Manual-source exemption: per transaction-curation spec Req 6, manual rows
     # are excluded as candidates in *either* direction — never matched against
@@ -306,13 +333,12 @@ def _get_candidates(
             -- one amount, days apart, are both `DEBIT` too, and nothing else in
             -- the row tells them apart. Same-day is where the carve-out was
             -- validated, and a generic pair at a gap still reaches Tier 3 review.
-            -- The leading space makes containment start at a token boundary. Raw
-            -- substring containment reads `ARCO` as agreeing with `MARCOS PIZZA`,
-            -- naming a merchant in both and meaning a different one in each. Only
-            -- the *start* is constrained, never the end: a truncating source cuts
-            -- the tail (`STARBUCK` from `STARBUCKS STORE 1234`) and a wrapping
-            -- source leaves a space in front, so both still relate — while a
-            -- fragment beginning inside a word cannot arise from either.
+            -- Containment is word-bounded on both ends (see
+            -- _contains_on_word_boundaries): a match starts where a word starts,
+            -- and either ends where one ends or carries a whole word before its
+            -- partial tail. That refuses `ARCO` inside `MARCOS PIZZA` and `SHELL`
+            -- inside `SHELLYS CAFE`, while a truncating source that cuts several
+            -- words in still relates to the full string.
             (
                 {norm_a} <> ''
                 AND {norm_b} <> ''
@@ -321,8 +347,8 @@ def _get_candidates(
                         {norm_a} = {norm_b}
                         AND ({merchant_a} OR a.transaction_date = b.transaction_date)
                     )
-                    OR (contains(' ' || {norm_a}, ' ' || {norm_b}) AND {merchant_b})
-                    OR (contains(' ' || {norm_b}, ' ' || {norm_a}) AND {merchant_a})
+                    OR ({contains_ab} AND {merchant_b})
+                    OR ({contains_ba} AND {merchant_a})
                 )
             ) AS desc_agree
         FROM {table} AS a

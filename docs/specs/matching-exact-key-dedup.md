@@ -189,13 +189,27 @@ absence of digits; real merchant strings are full of them (`7ELEVEN`).
 
 **Containment must begin at a token boundary.** A raw substring test reads `ARCO`
 as agreeing with `MARCOS PIZZA` — a real merchant name buried inside an unrelated
-one, so it is neither boilerplate nor digits and no other guard refuses it. Only
-the *start* is constrained, never the end: a truncating source cuts the tail
-(`STARBUCK` from `STARBUCKS STORE 1234`) and a wrapping source leaves a space in
-front, so both still relate, while a fragment beginning inside a word cannot
+one, so it is neither boilerplate nor digits and no other guard refuses it. A
+truncating source cuts the tail and a wrapping source leaves a space in front, so
+both still begin where a token begins; a fragment beginning inside a word cannot
 arise from either. Implemented as a leading space on both sides of the
 `contains()` call rather than a token-set test, because a token-set test would
 refuse the truncation case — `WALMART STO` is not a token of `WALMART STORE`.
+
+**A match ending inside a token must carry a whole token before it.** Constraining
+only the start leaves `SHELL` agreeing with `SHELLYS CAFE`. That is the same shape
+a truncating source produces (`STARBUCK` from `STARBUCKS STORE 1234`), and nothing
+in the strings separates the two — a prefix that is a whole merchant on its own is
+as likely a coincidence as a truncation. What differs is how much matched *whole*:
+a fixed-width truncation usually cuts several tokens in, and those complete tokens
+are evidence a bare one-token prefix does not have. So the match must end on a
+token boundary too, *or* the contained side must hold at least one interior space.
+`STARBUCKS STO` still relates to the full string; `SHELL` no longer does, and
+reaches Tier 3 review instead of merging silently. Normalization collapses
+whitespace runs and trims, so an interior space is a reliable "more than one
+token". The cost is the single-token truncation, which now costs a review click;
+the asymmetry pays for it, since the merge it prevents deletes a real charge with
+no review entry.
 
 **Exact equality is exempt from the merchant-token requirement on the same day.**
 The rule guards against a short *fragment* hiding inside a longer string; two

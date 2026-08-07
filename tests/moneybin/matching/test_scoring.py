@@ -574,6 +574,11 @@ class TestGetCandidatesCrossSource:
         OFX truncates where CSV spells the merchant out, so jaro_winkler alone is
         low. The dates are deliberately two days apart so the date cannot be the
         reason this merges — the truncation relationship is doing the work.
+
+        The cut lands mid-word but several words in, which is what a fixed-width
+        truncation does and what separates it from a bare one-word prefix (see
+        ``test_a_bare_one_word_prefix_is_not_agreement``): `STARBUCKS` matched
+        whole before `STO` was cut, and that whole word is the evidence.
         """
         _insert_unioned_row(
             unioned_table,
@@ -591,7 +596,7 @@ class TestGetCandidatesCrossSource:
             account_id="acct1",
             transaction_date="2026-03-17",
             amount="-42.50",
-            description="STARBUCK",
+            description="STARBUCKS STO",
             source_type="ofx",
             source_origin="chase_ofx",
         )
@@ -1064,6 +1069,57 @@ class TestGetCandidatesCrossSource:
             transaction_date="2026-03-15",
             amount="-31.20",
             description="MARCOS PIZZA",
+            source_type="csv",
+            source_origin="chase",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].descriptions_agree is False
+
+    def test_a_bare_one_word_prefix_is_not_agreement(
+        self, unioned_table: Database
+    ) -> None:
+        """A prefix that names a whole merchant on its own may name a different one.
+
+        `SHELL` begins `SHELLYS CAFE` at a token boundary, so the boundary rule
+        cannot separate them — and neither can anything else, because a prefix
+        ending mid-word is exactly the shape a truncating source produces. The
+        two are indistinguishable from the strings alone.
+
+        What breaks the tie is how much matched *whole*. A source that truncates a
+        shared string usually cuts several words in and leaves a partial word at
+        the end (`STARBUCKS STORE 1234 NEW YOR`); those earlier whole words are
+        the evidence. A single word cut mid-way carries none — it is one word that
+        happens to start another, which is as true of a coincidence as of a
+        truncation. The asymmetry decides it: this pair reviewed costs a click,
+        this pair merged deletes a real charge.
+
+        Isolation: both sides are non-empty, containment holds and starts at a
+        token boundary, `SHELL` is not boilerplate and carries a letter, and the
+        strings differ. Only the whole-word requirement can refuse this pair.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-20.00",
+            description="SHELL",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-20.00",
+            description="SHELLY'S CAFE",
             source_type="csv",
             source_origin="chase",
         )

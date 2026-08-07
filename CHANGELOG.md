@@ -430,8 +430,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   merchant text either: a source rendering a row as `POS 1234` no longer agrees
   with every longer description that prints the same card digits. Nor is a name
   buried inside a longer word — `ARCO` and `MARCOS PIZZA` name different
-  merchants and no longer agree, while a truncated `STARBUCK` still agrees with
-  `STARBUCKS STORE 1234`. Which existing duplicates
+  merchants and no longer agree. A shared string may still stop mid-word, which
+  is what a source truncating to a fixed width does, but only when a whole word
+  matched before the cut: `STARBUCKS STO` agrees with `STARBUCKS STORE 1234 NEW
+  YORK NY`, while a bare `SHELL` no longer agrees with `SHELLY'S CAFE` — one word
+  that happens to begin another is as easily two merchants as one truncation, and
+  that pair now goes to review. Which existing duplicates
   merge and which go to review both change on
   the next `refresh`. `matching.date_window_days` is shared with transfer
   detection, so its new default widens that candidate window too.
@@ -465,8 +469,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   spaces — counts as missing them, so a connector reporting an unavailable mask
   either way is quarantined too rather than minting a second copy of a card you
   already have. Digits that arrive padded (`" 1234 "`) now resolve against the
-  account holding `1234`, where before the padding made the lookup miss and mint
-  a second account for a ledger that already had one.
+  account holding `1234`, where before the padding made the lookup miss and minted
+  a second account for a ledger that already had one. When one of these accounts
+  does raise a proposal, every existing account is offered as a merge target
+  instead of the first 25 in id order: you can only merge into an account the
+  proposal itself lists, so an omitted one left no way to resolve the duplicate
+  except declaring the account standalone — which re-created the duplicate the
+  proposal existed to prevent.
 - **BREAKING for anything branching on an error `code`: 104 code values were
   renamed.** They were raised from tool paths without ever being declared in
   the taxonomy, so they had never been reviewed for shape; each now carries the

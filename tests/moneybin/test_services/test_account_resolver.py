@@ -10,7 +10,10 @@ import pytest
 from moneybin.database import Database
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_resolution_types import AccountProposal, SourceAccount
-from moneybin.services.account_resolver import AccountResolver
+from moneybin.services.account_resolver import (
+    _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
+    AccountResolver,
+)
 from tests.moneybin.db_helpers import create_core_tables
 
 
@@ -294,6 +297,33 @@ def test_a_blank_last_four_is_quarantined_like_a_missing_one(db: Database) -> No
     )
     assert resolved.outcome == "pending_review"
     assert len(resolved.pending_decision_ids) == 1
+
+
+def test_a_forced_quarantine_offers_every_account_however_many_exist(
+    db: Database,
+) -> None:
+    """The account you need to merge into is always on the list.
+
+    The pick-list is capped so an opt-in fallback cannot flood the review queue,
+    and it is ordered by opaque account id — so past the cap, *which* accounts
+    survive is arbitrary. That is tolerable where the human asked for a pick-list
+    and can decline it. It is not tolerable here: this review is forced open by
+    the quarantine, and `AccountLinksService.set()` accepts only a target already
+    attached to the decision, so an account left off the list cannot be chosen at
+    all. The user would be asked which account this is, find none of the answers
+    right, and have `--standalone` as the only exit — which re-mints the very
+    duplicate the quarantine was raised to prevent.
+    """
+    create_core_tables(db)
+    for i in range(_FALLBACK_CANDIDATE_CAP + 5):
+        _seed_dim_account(db, account_id=f"acct_{i:03d}", display_name=f"Account {i}")
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four=None, institution=None)
+    )
+
+    assert resolved.outcome == "pending_review"
+    assert len(resolved.pending_decision_ids) == _FALLBACK_CANDIDATE_CAP + 5
 
 
 def test_a_blank_last_four_normalizes_to_none_on_the_source_account() -> None:
