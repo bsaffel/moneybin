@@ -491,6 +491,27 @@ class DoctorSettings(BaseModel):
             "`moneybin system doctor --full` bypasses the cap and scans every row."
         ),
     )
+    duplicate_account_overlap_ratio: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "duplicate_account_overlap warns when this fraction of one "
+            "account's transactions have a same-amount counterpart within the "
+            "matcher's date window on a sibling account at the same "
+            "institution. Below it, the shared rows read as coincidence."
+        ),
+    )
+    duplicate_account_min_distinct_amounts: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Minimum distinct amounts among the mirrored rows before "
+            "duplicate_account_overlap will judge a pair. Two savings accounts "
+            "posting the same interest every month mirror each other perfectly "
+            "on one amount; a duplicated account mirrors many."
+        ),
+    )
 
 
 class MatchingSettings(BaseModel):
@@ -502,16 +523,27 @@ class MatchingSettings(BaseModel):
         default=0.95,
         ge=0.0,
         le=1.0,
-        description="Auto-merge threshold (>= this score = accepted)",
+        description=(
+            "Auto-merge score floor. Necessary but not sufficient: a pair must "
+            "also have agreeing descriptions before it merges without review."
+        ),
     )
     review_threshold: float = Field(
         default=0.70,
         ge=0.0,
         le=1.0,
-        description="Review queue threshold (>= this but < high = pending)",
+        description=(
+            "Dedup review floor. No longer admits or discards a duplicate "
+            "candidate — every cross-source pair that survives assignment is "
+            "reviewable, and the within-source tier has no review queue. It "
+            "still bounds the scoring weights (a window-edge pair scores only "
+            "_WEIGHT_DESCRIPTION, which must stay at or above this) and is "
+            "validated against high_confidence_threshold. Transfer review uses "
+            "transfer_review_threshold, not this."
+        ),
     )
     date_window_days: int = Field(
-        default=3,
+        default=5,
         ge=0,
         description="Maximum days between transaction dates for candidate pairs",
     )

@@ -1,0 +1,59 @@
+scenario: ofx-fitid-supersession
+description: "A FITID alone in one export and colliding in another must not double-count"
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+  fixtures: []
+  imports:
+    # FX9001 arrives alone — no collision, so the extractor writes it bare.
+    - path: ofx/fitid_alone.ofx
+      refresh: false
+    # The next statement carries FX9001 twice with differing content, so
+    # `_disambiguate_colliding_fitids` suffixes EVERY member. The bare row from
+    # the first import keeps its own primary key and is orphaned.
+    - path: ofx/fitid_collides.ofx
+      refresh: false
+
+pipeline:
+  - import_file
+  - transform
+
+# Hand-counted from the two fixtures, before running anything:
+#   file 1 → 1 row (FX9001)
+#   file 2 → 2 rows (FX9001#<hash-a>, FX9001#<hash-b>)
+# Reality is TWO transactions: a −13.12 foreign purchase and its −0.39 fee, which
+# the bank stamped with one FITID. The bare row is the fee, re-exported.
+#
+# `match` is deliberately NOT in the pipeline. The matcher could also absorb the
+# bare row as a within-source duplicate, which would mask whether staging did its
+# job; this scenario is about the staging layer alone.
+assertions:
+  - name: raw_keeps_every_row_it_received
+    # The fix suppresses in prep, never deletes from raw — raw is the untouched
+    # source of truth, and a wrong suppression stays recoverable because of it.
+    fn: assert_row_count_exact
+    args:
+      table: raw.ofx_transactions
+      expected: 3
+  - name: core_holds_two_transactions_not_three
+    fn: assert_row_count_exact
+    args:
+      table: core.fct_transactions
+      expected: 2
+  - name: both_real_amounts_survive
+    # Guards the direction a bare count cannot: two rows could also mean the fix
+    # dropped a real transaction and kept a duplicate. −0.39 and −13.12 are the
+    # two distinct amounts the fixtures declare.
+    fn: assert_unique_value_count
+    args:
+      table: core.fct_transactions
+      col: amount
+      expected: 2
+      tolerance_pct: 0
+
+gates:
+  required_assertions: all
+  required_evaluations: all
+  required_expectations: all

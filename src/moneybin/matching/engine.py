@@ -157,10 +157,10 @@ class TransactionMatcher:
         )
         component_edges.extend(tier_2b_edges)
 
-        # Tier 3: cross-source. Passing high_confidence_threshold enables
-        # exact-key auto-merge: a date_distance=0 pair scores at/above the
-        # threshold regardless of description similarity (assign_components'
-        # source_file guard keeps N true duplicates paired 1:1).
+        # Tier 3: cross-source. Passing high_confidence_threshold enables the
+        # agreement floor: a pair whose descriptions agree scores at/above the
+        # threshold at any gap inside the window, regardless of similarity
+        # (assign_components' source_file guard keeps N true duplicates 1:1).
         tier_3_edges = self._run_tier(
             tier="3",
             candidates_fn=lambda: get_candidates_cross_source(
@@ -203,9 +203,25 @@ class TransactionMatcher:
         The tier-3-only review-threshold branch lives exclusively here so it can
         be tested without a database fixture.
         """
-        if pair.confidence_score >= self._settings.high_confidence_threshold:
+        # Agreement, not the score, is what earns a silent merge. The score
+        # cannot carry that gate on its own: the weighted formula peaks at
+        # date_distance_days=0, where its date term is 1.0, so a disagreeing
+        # pair landing on the same day clears the threshold on closeness alone
+        # — two distinct transactions at one merchant differing only in a
+        # trailing reference number score ~0.97. Agreement is a separate
+        # signal precisely because similarity is not evidence of identity.
+        if (
+            pair.confidence_score >= self._settings.high_confidence_threshold
+            and pair.descriptions_agree
+        ):
             return ("accepted", "auto")
-        if tier == "3" and pair.confidence_score >= self._settings.review_threshold:
+        # Every cross-source pair that survives assignment is reviewable. It has
+        # already cleared same-account, exact-amount, in-window blocking and won a
+        # 1:1 assignment, which is enough evidence to ask about even when the
+        # descriptions disagree. Dropping it instead would be its own silent
+        # action: the duplicate stays in the ledger and nobody is ever told.
+        # assign_components bounds this, so the queue cannot run away.
+        if tier == "3":
             return ("pending", "auto")
         return None
 
@@ -231,6 +247,7 @@ class TransactionMatcher:
             match_signals={
                 "date_distance": pair.date_distance_days,
                 "description_similarity": round(pair.description_similarity, 4),
+                "descriptions_agree": pair.descriptions_agree,
             },
             match_tier=tier,
             match_status=status,
@@ -238,6 +255,7 @@ class TransactionMatcher:
             match_reason=(
                 f"Amount match, {pair.date_distance_days}d apart, "
                 f"desc similarity {pair.description_similarity:.2f}"
+                + (", descriptions agree" if pair.descriptions_agree else "")
             ),
             actor=self._actor,
         )
@@ -257,27 +275,34 @@ class TransactionMatcher:
         candidates: list[CandidatePair] = candidates_fn()
         DEDUP_PAIRS_SCORED.inc(len(candidates))
 
-        if not candidates:
+        # Classify before assignment, so an edge that cannot be persisted never
+        # consumes one. assign_components orders by score alone and the
+        # cardinality guard lets a row claim only one partner per physical source,
+        # so on Tier 2b a higher-scoring *disagreeing* pair would union the
+        # component first, push the lower-scoring agreeing pair out on the guard,
+        # and then be dropped itself by the agreement gate — leaving the real
+        # duplicate unmatched and counted twice, with nothing written and no review
+        # queue on that tier to notice. Tier 3 classifies every pair, so this is a
+        # no-op there. Filtering here also keeps newly_added consistent with what
+        # is persisted: every assigned edge now has a classification.
+        classified = [(pair, self._classify_pair(pair, tier)) for pair in candidates]
+        mergeable = {
+            pair: classification
+            for pair, classification in classified
+            if classification is not None
+        }
+
+        if not mergeable:
             return []
 
-        assigned = assign_components(candidates, seed_edges=seed_edges)
+        assigned = assign_components(list(mergeable), seed_edges=seed_edges)
         newly_added: list[tuple[NodeKey, NodeKey]] = []
         tier_merged = 0
         tier_pending = 0
 
         for pair in assigned:
             DEDUP_MATCH_CONFIDENCE.observe(pair.confidence_score)
-
-            classification = self._classify_pair(pair, tier)
-            # A sub-threshold edge that joined two components is dropped here and
-            # NOT appended to newly_added. This is safe: assign_components sorts
-            # descending by confidence, so once a sub-threshold edge appears every
-            # remaining candidate is also sub-threshold and would be dropped too —
-            # a dropped union can never suppress a persistable edge. newly_added
-            # therefore stays consistent with what is persisted.
-            if classification is None:
-                continue
-            status, decided_by = classification
+            status, decided_by = mergeable[pair]
 
             if status == "accepted":
                 result.auto_merged += 1

@@ -10,7 +10,10 @@ import pytest
 from moneybin.database import Database
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_resolution_types import AccountProposal, SourceAccount
-from moneybin.services.account_resolver import AccountResolver
+from moneybin.services.account_resolver import (
+    _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
+    AccountResolver,
+)
 from tests.moneybin.db_helpers import create_core_tables
 
 
@@ -222,6 +225,190 @@ def test_no_candidate_mints_standalone(db: Database) -> None:
     assert resolved.outcome == "minted_new"
     assert resolved.pending_decision_ids == ()
     assert len(resolved.account_id) == 12
+
+
+def test_null_last_four_mint_is_quarantined_into_the_review_queue(
+    db: Database,
+) -> None:
+    """A source with no last_four never becomes canonical silently.
+
+    An account with a null last_four cannot participate in last4-based
+    resolution at all, so a silent mint is a merge decision nobody ever sees —
+    this is exactly how the Chase PDF placeholder (`chase_xxxx`, `last_four:
+    null`) grew into a second copy of a card that already existed. Quarantine
+    it: surface the pick-list so the mint lands in the identity-review queue.
+
+    Fixture trips ONLY this guard. last_four=None makes the institution+last4
+    rung and `_reissue_candidates` structurally unable to fire, and
+    `test_find_candidates_no_fallback_by_default_keeps_backfill_quiet` pins
+    that this exact source yields no candidates without the guard — so the
+    assertion is non-vacuous.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four=None, institution=None)
+    )
+    assert resolved.outcome == "pending_review"
+    assert len(resolved.pending_decision_ids) == 1
+
+
+def test_null_last_four_mints_cleanly_on_an_empty_book(db: Database) -> None:
+    """The quarantine guard must not gate the very first import.
+
+    With no existing accounts there is nothing to merge into, so there is no
+    ambiguity to surface — the pick-list is empty and the mint is clean. This
+    is what keeps the guard from turning every fresh profile's first import
+    into a review queue.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four=None, institution=None)
+    )
+    assert resolved.outcome == "minted_new"
+    assert resolved.pending_decision_ids == ()
+
+
+def test_a_blank_last_four_is_quarantined_like_a_missing_one(db: Database) -> None:
+    """A blank mask is a missing last four, not a last four that happens to be empty.
+
+    `SyncAccount.mask` declares only a maximum length, so the sync server — opaque
+    to this client by design — can legitimately send `""`. It reaches the resolver
+    as `SourceAccount.last_four` and answers the last4 rung with exactly the
+    silence `None` does, but a gate written against `None` alone reads it as an
+    answer and mints silently. That is the one failure this quarantine exists to
+    prevent, arriving through the one source MoneyBin does not control.
+
+    Fixture trips ONLY this guard: identical in shape to the null-last_four
+    quarantine above, whose companion `test_known_last_four_with_no_signal_still_
+    mints_silently` pins that a *present* last_four still mints cleanly here.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four="", institution=None)
+    )
+    assert resolved.outcome == "pending_review"
+    assert len(resolved.pending_decision_ids) == 1
+
+
+def test_a_forced_quarantine_offers_every_account_however_many_exist(
+    db: Database,
+) -> None:
+    """The account you need to merge into is always on the list.
+
+    The pick-list is capped so an opt-in fallback cannot flood the review queue,
+    and it is ordered by opaque account id — so past the cap, *which* accounts
+    survive is arbitrary. That is tolerable where the human asked for a pick-list
+    and can decline it. It is not tolerable here: this review is forced open by
+    the quarantine, and `AccountLinksService.set()` accepts only a target already
+    attached to the decision, so an account left off the list cannot be chosen at
+    all. The user would be asked which account this is, find none of the answers
+    right, and have `--standalone` as the only exit — which re-mints the very
+    duplicate the quarantine was raised to prevent.
+    """
+    create_core_tables(db)
+    for i in range(_FALLBACK_CANDIDATE_CAP + 5):
+        _seed_dim_account(db, account_id=f"acct_{i:03d}", display_name=f"Account {i}")
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four=None, institution=None)
+    )
+
+    assert resolved.outcome == "pending_review"
+    assert len(resolved.pending_decision_ids) == _FALLBACK_CANDIDATE_CAP + 5
+
+
+def test_a_blank_last_four_normalizes_to_none_on_the_source_account() -> None:
+    """One spelling of "absent" reaches every consumer.
+
+    The resolver asks whether a last four is missing in two conventions — `is
+    None` at the quarantine gates, falsy at the last4 lookup and the reissue
+    pass. Canonicalizing at construction is what keeps the two from disagreeing;
+    without it the file's own conventions answer the same question differently.
+    """
+    assert _src(last_four="").last_four is None
+
+
+def test_a_whitespace_only_last_four_normalizes_like_a_blank_one() -> None:
+    """A mask of spaces answers the last4 rung with silence too.
+
+    ``SyncAccount.mask`` declares only a maximum length, so `" "` validates and
+    arrives here truthy and non-None — clearing the quarantine gate that `""`
+    cannot. Padding around a real mask is the same defect one step along: it
+    would miss the exact-match last4 lookup and mint a second account for a
+    ledger that already has one.
+    """
+    assert _src(last_four="   ").last_four is None
+    assert _src(last_four=" 1234 ").last_four == "1234"
+
+
+def test_known_last_four_with_no_signal_still_mints_silently(db: Database) -> None:
+    """The guard keys on a MISSING last_four, not on the absence of candidates.
+
+    A source that carries a last_four can participate in last4 resolution; its
+    silence is real evidence of a distinct account, not an unanswerable
+    question. Pairs with the quarantine test above — same shape, last_four
+    present — so the two together pin which condition the guard reads.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four="9911", institution=None)
+    )
+    assert resolved.outcome == "minted_new"
+    assert resolved.pending_decision_ids == ()
+
+
+def test_propose_quarantines_null_last_four_without_opting_into_fallback(
+    db: Database,
+) -> None:
+    """propose() must agree with resolve() on the quarantine, at the default.
+
+    The gate calls propose() without fallback, so if the quarantine lived only
+    in resolve() an interactive import would load rows first and surface the
+    question afterwards — the "magic stays visible" gap the guard exists to
+    close.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    proposal = resolver.propose(
+        _src(account_name="Imported Statement", last_four=None, institution=None)
+    )
+    assert {c.account_id for c in proposal.candidates} == {"acct_a"}
+
+
+def test_propose_quarantines_a_blank_last_four_without_opting_into_fallback(
+    db: Database,
+) -> None:
+    """propose() agrees with resolve() on a blank mask, as it does on a null one.
+
+    The interactive import gate calls propose() without fallback. If the blank
+    case were quarantined only in resolve(), the gate would load rows first and
+    surface the question afterwards — the "magic stays visible" gap in reverse.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db, account_id="acct_a", display_name="Chase Checking", institution_name="CHASE"
+    )
+    resolver = AccountResolver(db, actor="system")
+    proposal = resolver.propose(
+        _src(account_name="Imported Statement", last_four="", institution=None)
+    )
+    assert {c.account_id for c in proposal.candidates} == {"acct_a"}
 
 
 def test_fuzzy_name_writes_pending(db: Database) -> None:
@@ -696,6 +883,12 @@ def test_propose_no_fallback_by_default_keeps_multi_account_mint_silent(
 
     A no-match named account in a multi-account file must mint silently, not gate
     the whole import — so the default propose() returns no candidates here.
+
+    The source carries a last_four deliberately. This fixture originally set it
+    to None, which meant the null-last_four quarantine ALSO suppressed the
+    silent mint — two guards on one fixture, so neither was isolated. The
+    behavior under test is a *named* account whose name matches nothing; the
+    missing-last_four case is its own test above.
     """
     create_core_tables(db)
     _seed_dim_account(
@@ -703,7 +896,7 @@ def test_propose_no_fallback_by_default_keeps_multi_account_mint_silent(
     )
     resolver = AccountResolver(db, actor="system")
     proposal = resolver.propose(
-        _src(account_name="Imported Statement", last_four=None, institution=None)
+        _src(account_name="Imported Statement", last_four="9911", institution=None)
     )
     assert proposal.is_new is True
     assert proposal.candidates == ()

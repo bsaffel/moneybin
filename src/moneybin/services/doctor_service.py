@@ -14,7 +14,11 @@ from moneybin.config import get_settings
 from moneybin.database import Database, sqlmesh_context
 from moneybin.errors import RecoveryAction
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
-from moneybin.metrics.registry import PROFILE_CURRENCIES, UNKNOWN_CURRENCY_ROWS
+from moneybin.metrics.registry import (
+    DUPLICATE_ACCOUNT_PAIRS,
+    PROFILE_CURRENCIES,
+    UNKNOWN_CURRENCY_ROWS,
+)
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (
     SECURITY_TYPE_STALENESS_DAYS,
@@ -225,6 +229,7 @@ class DoctorService:
         transaction_count = self._get_transaction_count()
         sqlmesh_results = self._run_sqlmesh_audits(verbose)
         dedup_reconciliation = self._run_dedup_reconciliation()
+        duplicate_accounts = self._run_duplicate_account_overlap()
         categorization = self._run_categorization_coverage()
         currency_integrity = self._run_currency_integrity()
         app_integrity = self._run_app_integrity(full=full)
@@ -248,6 +253,7 @@ class DoctorService:
             *sqlmesh_results,
             self._run_sqlmesh_model_presence(),
             dedup_reconciliation,
+            duplicate_accounts,
             categorization,
             currency_integrity,
             *app_integrity,
@@ -2146,6 +2152,152 @@ class DoctorService:
         """Execute a single-row query and return column 0 as an int (0 if no row)."""
         row = self._db.execute(sql).fetchone()
         return int(row[0]) if row else 0
+
+    def _run_duplicate_account_overlap(self) -> InvariantResult:
+        """One real account imported under two canonical identities.
+
+        The transaction matcher blocks candidate pairs on ``account_id``, so it
+        is structurally blind to this: when the same account arrives from two
+        sources and account identity fails to bind them, every transaction is
+        held twice under two ids and no dedup pair is ever even considered.
+        Nothing else in the pipeline reports it — the ledger simply reads
+        double. This check is the only surface that can see across the split,
+        which is why it queries the ledger directly rather than reusing
+        ``dedup_reconciliation``'s staging counts (those reconcile perfectly
+        while the split persists: nothing was lost, the same money was counted
+        twice).
+
+        The evidence is an overlapping date+amount set between two accounts at
+        the same institution. Three conditions narrow it to the real failure:
+
+        - **Same institution.** Two accounts at one bank are the only pair a
+          split identity can produce.
+        - **Exact amount, matcher date window.** Reuses
+          ``matching.date_window_days`` deliberately: an exact-date formulation
+          would have missed the case that motivated this check, where only 23%
+          of the mirrored pairs landed on the same day and the rest were spread
+          across posting lag. Amount equality carries the SIGN, which is what
+          keeps same-institution transfers (equal magnitude, opposite sign) out.
+        - **Enough of the account, over enough distinct amounts.** The ratio
+          separates a duplicated account from two real ones that share a few
+          amounts by coincidence; the distinct-amount floor rejects the
+          degenerate mirror — twin savings accounts posting identical interest
+          every month cover each other 100% on a single amount.
+
+        ``warn``, not ``fail``: only the user knows whether two accounts at one
+        bank are really one, and a merge is not reversible by re-running
+        anything. Reported once per unordered pair, at the higher of the two
+        directional coverage ratios (a small duplicate fully contained in a
+        large sibling covers little of the sibling but all of itself).
+        """
+        name = "duplicate_account_overlap"
+        settings = get_settings()
+        try:
+            rows = self._db.execute(
+                f"""
+                -- Prune to institutions holding more than one account before
+                -- touching the (expensive) fact view: a profile's transactions
+                -- are overwhelmingly at institutions with a single account,
+                -- and those can never form a pair.
+                WITH contested_accounts AS (
+                    SELECT account_id, institution_slug
+                    FROM {DIM_ACCOUNTS.full_name}
+                    WHERE NOT institution_slug IS NULL
+                      AND institution_slug IN (
+                        SELECT institution_slug
+                        FROM {DIM_ACCOUNTS.full_name}
+                        WHERE NOT institution_slug IS NULL
+                        GROUP BY institution_slug
+                        HAVING COUNT(*) > 1
+                      )
+                ),
+                scoped AS MATERIALIZED (
+                    SELECT t.transaction_id, t.account_id, t.transaction_date,
+                           t.amount, c.institution_slug
+                    FROM {FCT_TRANSACTIONS.full_name} AS t
+                    JOIN contested_accounts AS c ON c.account_id = t.account_id
+                ),
+                totals AS (
+                    SELECT account_id, COUNT(*) AS row_count
+                    FROM scoped GROUP BY account_id
+                ),
+                -- DISTINCT on the LEFT row: one transaction with three
+                -- counterparts on the sibling still covers exactly one row, so
+                -- a repeating amount cannot inflate the ratio past 100%.
+                mirrored AS (
+                    SELECT DISTINCT x.account_id AS lhs, y.account_id AS rhs,
+                           x.transaction_id, x.amount
+                    FROM scoped AS x
+                    JOIN scoped AS y
+                      ON y.institution_slug = x.institution_slug
+                     AND y.account_id <> x.account_id
+                     AND y.amount = x.amount
+                     AND ABS(
+                         DATEDIFF('day', x.transaction_date, y.transaction_date)
+                     ) <= ?
+                ),
+                directional AS (
+                    SELECT lhs, rhs, COUNT(*) AS mirrored_rows,
+                           COUNT(DISTINCT amount) AS distinct_amounts
+                    FROM mirrored GROUP BY lhs, rhs
+                ),
+                qualifying AS (
+                    SELECT d.lhs, d.rhs,
+                           d.mirrored_rows * 1.0 / t.row_count AS ratio
+                    FROM directional AS d
+                    JOIN totals AS t ON t.account_id = d.lhs
+                    WHERE d.distinct_amounts >= ?
+                      AND d.mirrored_rows >= t.row_count * ?
+                )
+                SELECT LEAST(lhs, rhs) AS account_a,
+                       GREATEST(lhs, rhs) AS account_b,
+                       MAX(ratio) AS ratio
+                FROM qualifying
+                GROUP BY account_a, account_b
+                ORDER BY account_a, account_b
+                """,  # noqa: S608 — TableRef constants, parameterized values
+                [
+                    settings.matching.date_window_days,
+                    settings.doctor.duplicate_account_min_distinct_amounts,
+                    settings.doctor.duplicate_account_overlap_ratio,
+                ],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core views absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"accounts/ledger unavailable: {e}",
+                affected_ids=[],
+            )
+        # Only after the query succeeded: a skipped check leaves the gauge alone
+        # rather than publishing a zero that reads as "no duplicate accounts".
+        DUPLICATE_ACCOUNT_PAIRS.set(len(rows))
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} account pair(s) at the same institution mirror "
+                    "each other's transactions on date and amount — most likely "
+                    "one real account imported under two identities, which "
+                    "double-counts its balance and its spending; the transaction "
+                    "matcher blocks on account_id and cannot see across the "
+                    "split. Try `moneybin accounts links run`, then "
+                    "`accounts links pending`; decide a proposal with "
+                    "`accounts links set <decision_id> --into <account_id>`, or "
+                    "`--standalone` if the accounts are genuinely distinct and "
+                    "this should stay a warning. Note that identity resolution "
+                    "matches on institution+last-four and name similarity, not "
+                    "on the transaction overlap this check measures, so a pair "
+                    "flagged here may raise no proposal at all — that is the "
+                    "same binding failure that produced the split"
+                ),
+                affected_ids=[
+                    f"{a}:{b} ({round(float(ratio) * 100)}% overlap)"
+                    for a, b, ratio in rows
+                ],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_currency_integrity(self) -> InvariantResult:
         """Report unknown-currency rows, then merely-mixed currency.

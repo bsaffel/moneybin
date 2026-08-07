@@ -393,8 +393,91 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   turns out to have no such question pending, nothing is imported. Previously
   this one case sent you to a terminal, even though the same inversion already
   asked you in place on spreadsheet and AI-extracted-PDF imports.
+- **`moneybin system doctor` now reports one account imported under two
+  identities.** When the same real account arrives from two sources and account
+  identity fails to bind them, every transaction is held twice under two ids —
+  the balance and the spending both read double. Nothing caught it: the
+  transaction matcher only compares pairs within one `account_id`, so it never
+  considered the duplicates, and the raw→core row accounting reconciled
+  perfectly because nothing was lost. The new `duplicate_account_overlap` check
+  warns when a large share of one account's transactions have a same-amount
+  counterpart within five days on a sibling account at the same institution,
+  and names the pair with its overlap percentage. Transfers between two
+  accounts at one bank do not trigger it — amount equality carries the sign.
+  Try `accounts links run` on a flagged pair, then `accounts links pending`.
+  Identity resolution matches on institution+last-four and name similarity, not
+  on transaction overlap, so a flagged pair may raise no proposal — that same
+  binding failure is what split the account in the first place.
 
 ### Changed
+- **Cross-source duplicates now auto-merge on description agreement rather than
+  on the calendar date, and the candidate window widens from 3 days to 5
+  (#377).** Previously any pair landing on the same day merged silently no
+  matter how differently the two sources described it, and a pair one day apart
+  did not. Both halves were wrong: the same-day band held amount collisions
+  between genuinely different merchants, while pairs whose descriptions already
+  agreed sat in the review queue because the card had posted a day late. A pair
+  now auto-merges when one description contains the other, at any gap inside the
+  window — provided the shared text carries something more than transaction-type
+  boilerplate, since `DEBIT` sits inside most card descriptions and identifies no
+  merchant. Two sources writing the *identical* description are exempt from that:
+  a bank labelling a row `Deposit` in both exports cannot name a merchant — but
+  only when both rows posted the same day, since two different charges of one
+  amount days apart are both `DEBIT` too; that pair goes to review instead.
+  Punctuation no longer decides the question — `STARBUCKS #1234` and
+  `STARBUCKS 1234` agree — while a differing reference number still does, so
+  `SHELL 1234` and `SHELL 1235` stay two transactions. A number on its own is not
+  merchant text either: a source rendering a row as `POS 1234` no longer agrees
+  with every longer description that prints the same card digits. Nor is a name
+  buried inside a longer word — `ARCO` and `MARCOS PIZZA` name different
+  merchants and no longer agree. A shared string may still stop mid-word, which
+  is what a source truncating to a fixed width does, but only when a whole word
+  naming a merchant matched before the cut: `STARBUCKS STO` agrees with
+  `STARBUCKS STORE 1234 NEW YORK NY`, while a bare `SHELL` no longer agrees with
+  `SHELLY'S CAFE` — one word that happens to begin another is as easily two
+  merchants as one truncation, and that pair now goes to review. Boilerplate does
+  not count as the word that matched, so `CARD SHELL` and `CARD SHELLY'S CAFE`
+  are reviewed too rather than merged on a word every card description carries. Which existing duplicates
+  merge and which go to review both change on
+  the next `refresh`. `matching.date_window_days` is shared with transfer
+  detection, so its new default widens that candidate window too.
+- **A high score no longer merges two transactions on its own (#377).** Closeness
+  and description agreement were both feeding one number, and a pair landing on
+  the same day could clear the auto-merge bar on closeness alone — two distinct
+  charges at one merchant differing only in a trailing reference number scored
+  0.97 and one of them was deleted, with no review entry and nothing recorded.
+  Agreement is now required at the decision itself, for same-source duplicates as
+  well as cross-source. Same-source pairs have no review queue, so a disagreeing
+  pair there is left unmerged: both rows stay in the ledger, which is a
+  double-count you can see in a total rather than a deletion you cannot. The
+  rebalanced weights narrow same-source auto-merging for the same reason — a
+  same-day pair now needs 0.93 description similarity to merge silently where it
+  needed 0.92 — so a few near-duplicates inside one source that used to merge
+  will stay as two rows. A pair that cannot merge no longer takes an assignment
+  slot from one that can: when a row had two candidates in one file, a
+  higher-scoring disagreeing pair used to claim it and then be discarded, and the
+  agreeing pair behind it was lost with it.
+- **Every cross-source duplicate candidate now reaches the review queue (#377).**
+  Pairs scoring below `matching.review_threshold` used to be dropped and logged
+  at DEBUG — the duplicate stayed in the ledger and nobody was told. Expect the
+  pending-review count to rise on the first `refresh` after upgrading; the pairs
+  were always there.
+- **An account minted without a last four now proposes into the identity review
+  queue instead of appearing silently (#377).** Such an account cannot
+  participate in last-four resolution at all, so its silence was never evidence
+  that it was a distinct account. Cash accounts, manually created accounts, and
+  sources that never publish the digits will each raise one proposal to confirm
+  or dismiss. A source that sends the digits as blank — an empty string or only
+  spaces — counts as missing them, so a connector reporting an unavailable mask
+  either way is quarantined too rather than minting a second copy of a card you
+  already have. Digits that arrive padded (`" 1234 "`) now resolve against the
+  account holding `1234`, where before the padding made the lookup miss and minted
+  a second account for a ledger that already had one. When one of these accounts
+  does raise a proposal, every existing account is offered as a merge target
+  instead of the first 25 in id order: you can only merge into an account the
+  proposal itself lists, so an omitted one left no way to resolve the duplicate
+  except declaring the account standalone — which re-created the duplicate the
+  proposal existed to prevent.
 - **BREAKING for anything branching on an error `code`: 104 code values were
   renamed.** They were raised from tool paths without ever being declared in
   the taxonomy, so they had never been reviewed for shape; each now carries the
@@ -509,6 +592,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   will see `import_confirm` move band.
 
 ### Fixed
+- **An OFX transaction whose id changed between imports is no longer counted
+  twice.** Some institutions stamp two distinct transactions with one `FITID` —
+  a foreign purchase and its fee, for instance. MoneyBin gives every member of
+  such a collision a content-derived suffix so neither is lost, but a `FITID`
+  that arrives alone in one statement and collides in a later one was written
+  plain the first time and suffixed the second. The plain row could not be
+  overwritten and survived alongside its own replacement: one real transaction,
+  two rows, inflating the balance and the spending. It never looked like a
+  duplicate id, so no uniqueness check caught it. MoneyBin now recognizes the
+  superseded row and drops it during the transform, which repairs existing
+  databases on the next `refresh` and prevents the next occurrence. Nothing is
+  deleted from imported data — a row is only suppressed when a replacement
+  carries identical content, and one whose description drifted between
+  statements is left for duplicate review rather than silently removed.
 - **A replacement card no longer lands as a second account with no trace
   (#375).** A reissued card changes its last four digits by definition, so the
   institution+last-four match cannot fire, and on the PDF path the account name
