@@ -10,6 +10,7 @@ from moneybin.database import Database
 from moneybin.services.import_service import (
     _detect_file_type,  # type: ignore[reportPrivateUsage]  # testing private function
 )
+from tests.import_helpers import import_answering_gate
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -377,7 +378,8 @@ def test_reimport_writes_single_accepted_source_native_link(
 
     svc = ImportService(db)
     for _ in range(2):
-        result = svc.import_file(
+        result = import_answering_gate(
+            svc,
             _STANDARD_CSV,
             account_name="Reimport Test",
             refresh=False,
@@ -411,7 +413,8 @@ def test_single_account_csv_captures_last4_from_label(
     from moneybin.services.import_service import ImportService
 
     svc = ImportService(db)
-    svc.import_file(
+    import_answering_gate(
+        svc,
         _STANDARD_CSV,
         account_name="WF Checking (...4267)",
         refresh=False,
@@ -430,6 +433,14 @@ def test_single_account_csv_captures_last4_from_label(
 # ---------------------------------------------------------------------------
 # TestTabularConfirmationFlow
 # ---------------------------------------------------------------------------
+
+
+# Every test below imports _STANDARD_CSV as account_name="test", so the account
+# gate proposes that one never-seen key. Account identity is incidental here —
+# the mapping and sign gates are what's under test — so the calls expected to
+# load answer it up front rather than re-import to answer, which would double
+# every detection metric these tests count.
+_BIND_TEST_ACCOUNT = {"test": "new"}
 
 
 class TestTabularConfirmationFlow:
@@ -549,6 +560,7 @@ class TestTabularConfirmationFlow:
             result = ImportService(db).import_file(
                 _STANDARD_CSV,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 actor_kind="agent",
             )
@@ -566,6 +578,7 @@ class TestTabularConfirmationFlow:
             result = ImportService(db).import_file(
                 _STANDARD_CSV,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 confirm=True,
             )
@@ -856,6 +869,7 @@ class TestTabularConfirmationFlow:
             result = ImportService(db).import_file(
                 csv,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 confirm=True,
                 date_format="%Y%m%d",
@@ -891,6 +905,7 @@ class TestTabularConfirmationFlow:
             result = ImportService(db).import_file(
                 csv,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 confirm=True,
                 date_format="%Y%m%d",
@@ -1040,6 +1055,7 @@ class TestTabularConfirmationFlow:
         result = ImportService(db).import_file(
             csv,
             account_name="test",
+            account_bindings=_BIND_TEST_ACCOUNT,
             refresh=False,
             confirm=True,
             save_format=False,
@@ -1113,6 +1129,7 @@ class TestTabularConfirmationFlow:
             result = ImportService(db).import_file(
                 _STANDARD_CSV,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 overrides={"description": "Description"},
             )
@@ -1149,6 +1166,7 @@ class TestTabularConfirmationFlow:
             result = ImportService(db).import_file(
                 _CITI_CSV,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 confirm=True,
             )
@@ -1175,6 +1193,7 @@ class TestTabularConfirmationFlow:
             ImportService(db).import_file(
                 _STANDARD_CSV,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 confirm=True,
             )
@@ -1290,6 +1309,7 @@ class TestTabularConfirmationFlow:
             result = service.import_file(
                 _STANDARD_CSV,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 confirm=True,
                 human_sign_confirmation=True,
@@ -1318,6 +1338,7 @@ class TestTabularConfirmationFlow:
             result = ImportService(db).import_file(
                 _STANDARD_CSV,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 confirm=True,
                 human_sign_confirmation=True,
@@ -1386,6 +1407,7 @@ class TestTabularConfirmationFlow:
             result = ImportService(db).import_file(
                 _STANDARD_CSV,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 confirm=True,
                 sign="negative_is_expense",
@@ -1576,6 +1598,7 @@ class TestTabularConfirmationFlow:
             first = service.import_file(
                 _STANDARD_CSV,
                 account_name="test",
+                account_bindings=_BIND_TEST_ACCOUNT,
                 refresh=False,
                 confirm=True,
                 human_sign_confirmation=True,

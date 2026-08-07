@@ -40,7 +40,11 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
 )
-from moneybin.services.import_service import ImportResult, ReviewedTabularPlan
+from moneybin.services.import_service import (
+    BridgeApplyResult,
+    ImportResult,
+    ReviewedTabularPlan,
+)
 from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
 from tests.moneybin.test_mcp.schema_assertions import isolated_server
 
@@ -743,6 +747,7 @@ async def test_import_confirm_ignores_format_created_after_preview(
     confirmed = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
         save_format=False,
     )
 
@@ -1234,7 +1239,7 @@ async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
                 evidence=("proposal changed after approval",),
             )
         if channel == "bridge":
-            return SimpleNamespace(
+            return BridgeApplyResult(
                 outcome="applied",
                 import_id=import_id,
                 rows_loaded=1,
@@ -1330,6 +1335,53 @@ async def test_import_confirm_coarse_revalidates_tabular_sign_inside_write_attem
     ] == [False, False, True]
 
 
+async def test_import_confirm_coarse_names_the_account_it_created(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Confirming a preview is the likeliest place a new account appears.
+
+    An agent that just answered an account gate lands here, and the accounts
+    the import minted are exactly what it needs to report back to the user.
+    """
+    from moneybin.services.import_service import CreatedAccount, ImportResult
+
+    csv = tmp_path / "statement.csv"
+    csv.write_text("Date,Description,Amount\n2026-07-01,Coffee,4.50\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        MagicMock(
+            return_value=ImportResult(
+                file_path=str(csv),
+                file_type="tabular",
+                transactions=1,
+                import_id="imp_tabular_mint",
+                accounts_created=(
+                    CreatedAccount(
+                        account_id="acct00000001", display_name="WF Checking"
+                    ),
+                ),
+            )
+        ),
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="WF Checking",
+    )
+
+    assert response.error is None
+    assert response.data.accounts_created == [
+        {"account_id": "acct00000001", "display_name": "WF Checking"}
+    ]
+    joined = " ".join(response.actions or [])
+    assert "accounts_set" in joined
+    assert "identity_links_decide" in joined
+
+
 async def test_import_confirm_coarse_revalidates_bridge_sign_inside_write_attempt(
     mcp_db: object,
     tmp_path: Path,
@@ -1349,7 +1401,7 @@ async def test_import_confirm_coarse_revalidates_bridge_sign_inside_write_attemp
         },
     )
     proposal = _coarse_sign_error("pdf")
-    applied = SimpleNamespace(
+    applied = BridgeApplyResult(
         outcome="applied",
         import_id="imp_bridge_sign",
         rows_loaded=1,
@@ -1454,7 +1506,7 @@ async def test_import_confirm_bridge_sign_degraded_client_retries_with_opaque_to
         },
     )
     proposal = _coarse_sign_error("pdf")
-    applied = SimpleNamespace(
+    applied = BridgeApplyResult(
         outcome="applied",
         import_id="imp_bridge_token",
         rows_loaded=1,
@@ -1538,7 +1590,14 @@ async def test_import_confirm_token_reconstruction_does_not_double_count_sign_pr
     proposed_before = proposed._value.get()  # type: ignore[attr-defined]  # testing prometheus internals
     confirmed_before = confirmed_metric._value.get()  # type: ignore[attr-defined]  # testing prometheus internals
 
-    required = await import_confirm_coarse(preview_id=preview_id)
+    # The binding rides both calls: the sign grant is bound to the canonical
+    # arguments, and the "confirmed" counter commits with the import, so a call
+    # the account gate stops would discard it. chase_1234 is the source key the
+    # card fixture's issuer and masked number derive.
+    bindings = {"chase_1234": "new"}
+    required = await import_confirm_coarse(
+        preview_id=preview_id, account_bindings=bindings
+    )
 
     assert required.error is not None
     assert required.error.details is not None
@@ -1546,6 +1605,7 @@ async def test_import_confirm_token_reconstruction_does_not_double_count_sign_pr
     confirmed = await import_confirm_coarse(
         preview_id=preview_id,
         confirmation_token=str(required.error.details["confirmation_token"]),
+        account_bindings=bindings,
     )
 
     assert confirmed.error is None
@@ -1747,7 +1807,7 @@ async def test_import_confirm_coarse_applies_pdf_bridge_by_preview_id(
             "bridge_payload": {"layout_fingerprint": {"issuer": "Example"}},
         },
     )
-    applied = SimpleNamespace(
+    applied = BridgeApplyResult(
         outcome="applied",
         import_id="imp_pdf",
         rows_loaded=2,
@@ -2122,6 +2182,7 @@ async def test_import_confirm_tabular_transform_failures_observed_after_rollback
     response = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
     )
 
     assert response.error is not None
@@ -2208,14 +2269,141 @@ def test_the_elicitation_prompt_keeps_card_framing_on_first_contact() -> None:
     assert "Approve this sign inversion?" in message
 
 
+async def test_import_confirm_coarse_answers_the_pdf_account_gate(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A PDF confirm must be able to answer the account gate it just raised.
+
+    PDF now stops before load on an unratified account identity, and
+    import_confirm is the tool that surfaces that stop for a previewed PDF. If
+    it also refuses account_bindings the agent is in a loop it cannot exit —
+    the only escape would be abandoning the preview for import_files.
+    """
+    pdf = write_card_statement_pdf(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # An existing Chase ...1234 account, so this statement's identity is a real
+    # question. Candidates are what gate: a mint with nothing to merge into
+    # proceeds and is reported instead.
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.conn.execute(
+            "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+            "(account_id, display_name, institution_slug, last_four) "
+            "VALUES (?, ?, ?, ?)",
+            ["acct_twin01", "Chase Card", "chase", "1234"],
+        )
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "sign_convention",
+        },
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation._active_context",
+        MagicMock(return_value=None),
+    )
+
+    # 1. Learn the account key. The sign gate fires first, so this call answers
+    #    nothing; it reports which account is unratified.
+    sign = await import_confirm_coarse(preview_id=preview_id)
+    assert sign.error is not None and sign.error.details is not None
+    gated = await import_confirm_coarse(
+        preview_id=preview_id,
+        confirmation_token=str(sign.error.details["confirmation_token"]),
+    )
+    assert gated.data.status == "confirmation_required"
+    # The envelope masks source_account_key — it is an ACCOUNT_IDENTIFIER
+    # (CRITICAL) — so the key is not what an agent binds on. proposal_ref is:
+    # it rides the same proposal and stays readable, which is what makes this
+    # gate answerable from the response alone.
+    assert [p["source_account_key"] for p in gated.data.account_proposals] == [
+        "****1234"
+    ]
+    assert [p["proposal_ref"] for p in gated.data.account_proposals] == ["@0"]
+
+    # 2. Re-approve with the answer in hand. The sign grant is bound to the
+    #    canonical arguments, so adding a binding to the old token is a
+    #    mismatch by design — the caller re-runs the gate with the binding
+    #    supplied, and that token covers it.
+    bindings = {"chase_1234": "new"}
+    resign = await import_confirm_coarse(
+        preview_id=preview_id, account_bindings=bindings
+    )
+    assert resign.error is not None and resign.error.details is not None
+    answered = await import_confirm_coarse(
+        preview_id=preview_id,
+        confirmation_token=str(resign.error.details["confirmation_token"]),
+        account_bindings=bindings,
+    )
+    assert answered.error is None, answered.error
+    assert answered.data.kind == "pdf_sign_applied"
+    # Rows, not just a clean envelope: the binding has to survive all the way
+    # into the load, which is the hop that silently dropped it.
+    assert answered.data.rows_loaded > 0
+
+
+async def test_import_confirm_coarse_forwards_bindings_to_the_bridge_apply(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The bridge branch forwards the binding too, not only the sign branch.
+
+    Both PDF rungs raise the same account gate, so a binding honored on one and
+    dropped on the other leaves the bridge path unanswerable.
+    """
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {},
+        },
+    )
+    applied = BridgeApplyResult(
+        outcome="applied",
+        import_id="imp_bridge_bound",
+        rows_loaded=1,
+        format_name="bridge_recipe",
+        expected_row_count=1,
+        actual_row_count=1,
+        rows_diverged=False,
+        reject_reason=None,
+    )
+    apply = MagicMock(return_value=applied)
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+        apply,
+    )
+
+    confirmed = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response={"recipe": {"version": 1}, "rows": [{}]},
+        account_bindings={"chase_1234": "new"},
+    )
+
+    assert confirmed.error is None, confirmed.error
+    assert apply.call_args.kwargs["account_bindings"] == {"chase_1234": "new"}
+
+
 @pytest.mark.parametrize(
     "signal",
     [
         {"account_name": "Checking"},
-        {"account_bindings": {"stmt-key": "acct_123"}},
         {"account_metadata": {"stmt-key": {"institution": "Chase"}}},
     ],
-    ids=["account_name", "account_bindings", "account_metadata"],
+    ids=["account_name", "account_metadata"],
 )
 async def test_import_confirm_coarse_rejects_every_tabular_account_signal_for_pdf(
     mcp_db: object,
@@ -2223,12 +2411,14 @@ async def test_import_confirm_coarse_rejects_every_tabular_account_signal_for_pd
     monkeypatch: MonkeyPatch,
     signal: dict[str, Any],
 ) -> None:
-    """A PDF preview refuses every tabular account signal, not just account_name.
+    """A PDF preview refuses the tabular account signals no PDF path can honor.
 
-    PDF rows resolve the account from the statement; only account_id pins them
-    to an existing one. Each arm needs its own case — a guard narrowed to the
-    one signal under test would silently drop the other two, binding the
-    statement to whichever account the extractor inferred with no error.
+    ``account_name`` and ``account_metadata`` still bottom out in tabular-only
+    service arguments. ``account_bindings`` used to sit here too and no longer
+    does — the PDF account gate made it the answer, covered above. Each arm
+    needs its own case: a guard narrowed to the one signal under test would
+    silently drop the other, binding the statement to whichever account the
+    extractor inferred with no error.
     """
     pdf = tmp_path / "statement.pdf"
     pdf.write_bytes(b"%PDF fixture")
@@ -2246,7 +2436,7 @@ async def test_import_confirm_coarse_rejects_every_tabular_account_signal_for_pd
     response = await import_confirm_coarse(preview_id=preview_id, **signal)
 
     assert response.error is not None
-    assert response.error.code == "import_pdf_account_signal_unsupported"
+    assert response.error.code == "import_account_signal_unsupported"
 
 
 async def test_import_preview_coarse_keeps_ofx_on_direct_import_surface(
@@ -2294,6 +2484,7 @@ async def test_import_preview_coarse_mapping_override_corrects_swapped_columns(
     confirmed = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
     )
     assert confirmed.data.status == "complete"
     assert confirmed.data.rows_loaded == 2
@@ -2335,6 +2526,7 @@ async def test_mapping_override_to_single_amount_retires_the_split_sign_rule(
     confirmed = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
     )
     assert confirmed.data.status == "complete"
     assert confirmed.data.rows_loaded == 2
@@ -2447,6 +2639,7 @@ async def test_import_preview_confirm_status_coarse_workflow(
     confirmed = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
     )
     status = await import_status_coarse(
         sections=["imports"],
@@ -2774,8 +2967,12 @@ async def test_account_confirmation_hint_never_names_the_raw_source_key(
     assert isinstance(data, ImportConfirmRequiredPayload)
     assert data.reason == "account_confirmation"
     joined = " ".join(confirmed.actions)
-    # The old hint embedded a literal dict keyed by the raw source key.
-    assert "account_bindings={" not in joined, joined
+    # The old hint embedded a literal dict keyed by the raw source key. A
+    # bindings literal is not itself the leak — what it is keyed by is. Every
+    # one in this prose must open on a positional ref, which discloses nothing
+    # beyond how many accounts a file the caller already holds contains.
+    for fragment in joined.split("account_bindings={")[1:]:
+        assert fragment.startswith(("'@", '"@')), joined
     masked = data.account_proposals[0].get("source_account_key", "")
     last_four = masked.removeprefix("****")
     assert last_four, f"fixture gave no maskable key: {masked!r}"
@@ -3328,6 +3525,7 @@ def _make_confirmation_error(
     missing_required: tuple[str, ...] = (),
     reason: str = "unknown_layout",
     account_proposals: list[dict[str, object]] | None = None,
+    channel: str = "tabular",
 ) -> ImportConfirmationRequiredError:
     proposed = ProposedMapping(
         field_mapping=field_mapping or {"transaction_date": "Date", "amount": "Amount"},
@@ -3335,7 +3533,7 @@ def _make_confirmation_error(
         unmapped_columns=("Notes",),
     )
     outcome = ConfirmationRequired(
-        channel="tabular",
+        channel=channel,  # type: ignore[arg-type]
         confidence=_make_confidence(
             score=score, tier=tier, flagged=flagged, missing_required=missing_required
         ),
@@ -3404,6 +3602,120 @@ class TestImportFilesConfirmationRequired:
         # batches stay at "low"; any pending file bumps the batch to "medium".
         assert result.summary.sensitivity == "medium"
 
+    async def test_ofx_account_gate_names_the_tool_that_can_answer_it(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """An OFX account gate must not route the agent to a tool that refuses OFX.
+
+        ``import_preview`` raises IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED on
+        .ofx/.qfx/.qbo, and so does ``import_confirm``. The account gate carries
+        no ``error_message``, so the unconditional preview hint was the ONLY
+        action the envelope had — the agent's every route refused the file and
+        the one parameter that answers the gate, ``account_bindings``, was never
+        named. That is the loop ``import_files``' own single-file guard exists to
+        prevent, arriving through the hints instead of through a dropped answer.
+        """
+        ofx_file = tmp_path / "statements" / "statement.ofx"
+        ofx_file.parent.mkdir(parents=True)
+        ofx_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = _make_confirmation_error(
+            channel="ofx",
+            reason="account_confirmation",
+            tier="high",
+            score=1.0,
+            account_proposals=[
+                {
+                    "source_account_key": "1111",
+                    "proposal_ref": "@0",
+                    "proposed_account_id": "prev01",
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                }
+            ],
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files_coarse(paths=[str(ofx_file)])
+
+        actions = " ".join(result.actions)
+        assert "import_preview" not in actions
+        assert "account_bindings" in actions
+        # Bind by the positional referent: source_account_key is CRITICAL and is
+        # masked out of `data`, so it can never be echoed in prose.
+        assert "@0" in actions
+        assert "1111" not in actions
+
+    async def test_account_bindings_reach_the_service(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """import_files carries the gate answer through to the service.
+
+        OFX and PDF have no staged preview, so import_confirm cannot take their
+        account confirmation — it requires a preview_id, refuses channel "ofx"
+        outright, and rejects account_bindings for PDF. import_files is
+        therefore the answer path for both, and the parameter has to reach
+        ImportService or the agent's answer is silently dropped.
+        """
+        ofx_file = tmp_path / "statements" / "statement.ofx"
+        ofx_file.parent.mkdir(parents=True)
+        ofx_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(ofx_file), file_type="ofx", transactions=2
+        )
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            import_files(
+                paths=[str(ofx_file)],
+                refresh=False,
+                account_bindings={"1111": "new"},
+            )
+        assert mock_service.import_file.call_args.kwargs["account_bindings"] == {
+            "1111": "new"
+        }
+
+    async def test_account_bindings_refused_for_a_multi_path_batch(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A source key is unambiguous only within one file — refuse, don't drop.
+
+        The batch path can't route bindings per-file. Silently ignoring them
+        would hand the agent the same account_confirmation back on every retry.
+        """
+        first = tmp_path / "statements" / "a.ofx"
+        first.parent.mkdir(parents=True)
+        first.touch()
+        second = tmp_path / "statements" / "b.ofx"
+        second.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        with pytest.raises(UserError) as exc:
+            import_files(
+                paths=[str(first), str(second)],
+                account_bindings={"1111": "new"},
+            )
+        assert "single path" in str(exc.value)
+
     async def test_confirmation_actions_route_through_the_staged_preview(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
@@ -3437,6 +3749,151 @@ class TestImportFilesConfirmationRequired:
         assert f"import_preview(file_path='{csv_file}')" in joined
         assert "import_confirm(file_path=" not in joined
         assert "accept=True" not in joined
+
+    async def test_import_files_coarse_forwards_account_bindings(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The registered tool must accept the account answer, not just the builder.
+
+        ``import_files_coarse`` is what the MCP surface registers as
+        ``import_files``; the inner ``import_files`` is an unregistered builder.
+        A parameter added only to the builder is invisible to every caller and
+        absent from the published schema, so an agent that hits an account gate
+        on the one tool that raises it has no way to answer.
+        """
+        csv_file = tmp_path / "statements" / "txns.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file), file_type="csv", transactions=2
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            await import_files_coarse(
+                paths=[str(csv_file)], account_bindings={"checking": "new"}
+            )
+
+        assert mock_service.import_file.call_args.kwargs["account_bindings"] == {
+            "checking": "new"
+        }
+
+    async def test_import_files_coarse_names_the_account_it_created(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The agent gets the mint as data plus the two ways to correct it.
+
+        A first-contact mint no longer raises a gate, so this row is the only
+        place an agent learns an account came into existence. Prose in
+        ``actions`` would not survive an agent that branches on the payload, and
+        the row alone would not tell it what to do if the account is wrong.
+        """
+        from moneybin.services.import_service import CreatedAccount
+
+        csv_file = tmp_path / "statements" / "txns.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file),
+            file_type="csv",
+            transactions=2,
+            accounts_created=(
+                CreatedAccount(account_id="acct00000001", display_name="WF Checking"),
+            ),
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files_coarse(paths=[str(csv_file)])
+
+        assert result.data.files[0].accounts_created == [
+            {"account_id": "acct00000001", "display_name": "WF Checking"}
+        ]
+        joined = " ".join(result.actions or [])
+        assert "accounts_set" in joined
+        assert "identity_links_decide" in joined
+
+    async def test_the_created_account_action_names_a_merge_the_agent_can_run(
+        self,
+    ) -> None:
+        """Every step of the merge recovery is a tool the agent can call.
+
+        The first version of this action said the merge was "CLI-only today"
+        and sent the agent to a terminal for the one correction it could have
+        made itself. The mistake was reading the unregistered
+        ``accounts_links_run`` as the only way to propose a merge:
+        ``refresh_run(steps=["identity"])`` calls the same
+        ``AccountLinksService.run()``, and ``reviews`` +
+        ``identity_links_decide`` finish the loop.
+
+        Asserted against the live registry rather than a literal, because the
+        claim is about which tools a client can reach, not about the sentence.
+        """
+        from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+        from moneybin.mcp.tools.import_tools import (
+            _accounts_created_action,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        action = _accounts_created_action(1)
+
+        assert action is not None
+        for tool in ("refresh_run", "reviews", "identity_links_decide"):
+            assert tool in action
+            assert tool in STANDARD_TOOL_NAMES
+        # No CLI escape hatch: naming one here is what the bug looked like.
+        assert "moneybin " not in action
+
+    async def test_import_files_that_created_nothing_hints_nothing(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The re-import case is the common one — it must not carry the hint.
+
+        An ``actions`` entry about correcting a new account, emitted on every
+        import, trains the agent to ignore it on the one import that means it.
+        """
+        csv_file = tmp_path / "statements" / "txns.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(csv_file), file_type="csv", transactions=2
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files_coarse(paths=[str(csv_file)])
+
+        assert result.data.files[0].accounts_created == []
+        assert "created 1 new account" not in " ".join(result.actions or [])
 
     async def test_import_files_builds_no_confirm_hint_of_its_own(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -3515,6 +3972,99 @@ class TestImportFilesConfirmationRequired:
         assert "import_confirm(preview_id='pv_123'" in joined
         # The mapping is settled — do not send the agent back for a new preview.
         assert "import_preview(" not in joined
+
+    async def test_account_confirmation_action_binds_by_ref_not_by_the_cli(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The hint names the referent the agent can actually read back.
+
+        This used to send the agent to the CLI for anything past one account,
+        because binding keyed on source_account_key and that key masks. The
+        proposal now carries a positional ref that survives the mask, so the
+        multi-account answer belongs on this surface — a hint that still
+        points at the shell describes a limitation that no longer exists.
+        """
+        from moneybin.mcp.tools.import_tools import (
+            _import_confirm_coarse_confirmation_actions,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        outcome = _make_confirmation_error(
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=[
+                {
+                    "source_account_key": "bare-abc123",
+                    "proposal_ref": "@0",
+                    "candidates": [],
+                },
+                {
+                    "source_account_key": "bare-def456",
+                    "proposal_ref": "@1",
+                    "candidates": [],
+                },
+            ],
+        ).outcome
+
+        actions = _import_confirm_coarse_confirmation_actions(
+            "pv_123", str(tmp_path / "bare.csv"), outcome
+        )
+
+        joined = " ".join(actions)
+        assert "account_bindings" in joined, joined
+        assert "proposal_ref" in joined, joined
+        assert "@0" in joined, joined
+        assert "moneybin import" not in joined, joined
+        # Still never the raw key — it is CRITICAL and actions[] is not redacted.
+        assert "bare-abc123" not in joined, joined
+
+    async def test_pdf_account_action_does_not_advertise_account_name(
+        self, tmp_path: Path
+    ) -> None:
+        """A hint must not name a parameter the same tool refuses.
+
+        ``import_confirm`` runs ``_reject_unsupported_pdf_account_signals``
+        before it looks at anything else, so ``account_name`` on a PDF is a hard
+        UserError. Offering it as an alternative answer sends the agent into a
+        refusal it cannot diagnose from the hint that suggested it. Tabular does
+        honor it, so the sentence is channel-conditional rather than deleted.
+        """
+        from moneybin.mcp.tools.import_tools import (
+            _import_confirm_coarse_confirmation_actions,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        proposals: list[dict[str, object]] = [
+            {"source_account_key": "chase_1234", "proposal_ref": "@0", "candidates": []}
+        ]
+        pdf = _make_confirmation_error(
+            channel="pdf",
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=proposals,
+        ).outcome
+        tabular = _make_confirmation_error(
+            channel="tabular",
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=proposals,
+        ).outcome
+
+        pdf_actions = " ".join(
+            _import_confirm_coarse_confirmation_actions(
+                "pv_123", str(tmp_path / "card.pdf"), pdf
+            )
+        )
+        tabular_actions = " ".join(
+            _import_confirm_coarse_confirmation_actions(
+                "pv_123", str(tmp_path / "bare.csv"), tabular
+            )
+        )
+
+        assert "account_name" not in pdf_actions, pdf_actions
+        assert "account_bindings" in pdf_actions
+        assert "account_name" in tabular_actions
 
     async def test_low_tier_envelope_includes_missing_required(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

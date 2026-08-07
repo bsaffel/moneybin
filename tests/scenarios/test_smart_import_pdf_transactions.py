@@ -19,6 +19,7 @@ import yaml
 
 from moneybin.database import Database
 from moneybin.services.import_service import ImportService
+from tests.import_helpers import apply_bridge_answering_gate, import_answering_gate
 from tests.scenarios._runner import scenario_env
 from tests.scenarios._runner.loader import Scenario
 
@@ -113,7 +114,7 @@ def test_chase_checking_first_import_routes_transactions(tmp_path: Path) -> None
 
     with scenario_env(_minimal_scenario("chase-first-import")) as (db, _tmp, _env):
         svc = ImportService(db)
-        result = svc.import_file(pdf_copy, refresh=False)
+        result = import_answering_gate(svc, pdf_copy, refresh=False)
 
         expected_txn_count = len(gt["expected_transactions"])
         assert result.transactions == expected_txn_count, (
@@ -182,12 +183,24 @@ def test_chase_checking_second_import_replays_recipe(tmp_path: Path) -> None:
     with scenario_env(_minimal_scenario("chase-replay")) as (db, _tmp, _env):
         svc = ImportService(db)
 
+        # No account answer needed on either import, which is what keeps the
+        # decision count at one per import. The statement states its own
+        # identity (issuer + last four) and the book is empty, so the first
+        # import mints and reports rather than gating; the second resolves
+        # through the source_native link the first one wrote.
         with patch(
             "moneybin.extractors.pdf.routing.route_pdf_import",
             side_effect=_capturing_route,
         ):
             result_first = svc.import_file(pdf_first, refresh=False)
             result_second = svc.import_file(pdf_second, refresh=False)
+
+        assert len(result_first.accounts_created) == 1, (
+            "First contact with this card should have minted one account"
+        )
+        assert result_second.accounts_created == (), (
+            "Second statement of the same card must adopt, not mint"
+        )
 
         # First import routed to transactions
         assert result_first.transactions > 0, "First import produced no transactions"
@@ -248,7 +261,7 @@ def test_fidelity_positions_falls_back_to_seed(tmp_path: Path) -> None:
 
     with scenario_env(_minimal_scenario("fidelity-seed")) as (db, _tmp, _env):
         svc = ImportService(db)
-        result = svc.import_file(pdf_copy, refresh=False)
+        result = import_answering_gate(svc, pdf_copy, refresh=False)
 
         # Seed path: seed_rows is set, transactions is 0
         assert result.transactions == 0, (
@@ -333,7 +346,7 @@ def test_bridge_apply_round_trip_persists_and_replays(tmp_path: Path) -> None:
             "rows": [dict(t) for t in expected_txns],
         }
 
-        result = svc.apply_pdf_bridge_response(pdf_apply, bridge_response)
+        result = apply_bridge_answering_gate(svc, pdf_apply, bridge_response)
 
         assert result.outcome == "applied"
         assert result.rows_loaded == expected_count
@@ -370,7 +383,7 @@ def test_bridge_apply_round_trip_persists_and_replays(tmp_path: Path) -> None:
             "moneybin.extractors.pdf.routing.route_pdf_import",
             side_effect=_capturing,
         ):
-            replay_result = svc.import_file(pdf_replay, refresh=False)
+            replay_result = import_answering_gate(svc, pdf_replay, refresh=False)
 
         assert replay_result.import_id is not None
         assert len(captured) == 1
@@ -410,7 +423,7 @@ def test_unruled_chase_statement_routes_transactions(tmp_path: Path) -> None:
 
     with scenario_env(_minimal_scenario("chase-unruled")) as (db, _tmp, _env):
         svc = ImportService(db)
-        result = svc.import_file(pdf_copy, refresh=False)
+        result = import_answering_gate(svc, pdf_copy, refresh=False)
 
         expected_txn_count = len(gt["expected_transactions"])
         assert result.transactions == expected_txn_count, (
@@ -474,7 +487,7 @@ def test_chase_card_unruled_wrapped_header_and_mmdd_dates(tmp_path: Path) -> Non
     with scenario_env(_minimal_scenario("chase-card-unruled")) as (db, _tmp, _env):
         svc = ImportService(db)
         # confirm=True ratifies the proposed card sign inversion.
-        result = svc.import_file(pdf_copy, refresh=False, confirm=True)
+        result = import_answering_gate(svc, pdf_copy, refresh=False, confirm=True)
 
         assert result.transactions == len(expected), (
             f"Card statement extracted {result.transactions} transactions, "

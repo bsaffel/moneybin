@@ -55,8 +55,11 @@ def _print_sync_text(result: InboxSyncResult) -> None:
             raw_props: Any = item.get("account_proposals")
             proposals: list[Any] = raw_props if isinstance(raw_props, list) else []
             for p in proposals:
+                # Same shape as _echo_account_proposals: ref first, then the
+                # source key. The gate accepts either as the binding's key.
                 typer.echo(
-                    f"     source key: {p.get('source_account_key', '<source_key>')}",
+                    f"     {p.get('proposal_ref', '')}  source key: "
+                    f"{p.get('source_account_key', '<source_key>')}",
                     err=True,
                 )
                 raw_cands: Any = p.get("candidates")

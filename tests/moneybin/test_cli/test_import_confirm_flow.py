@@ -26,14 +26,21 @@ from moneybin.services.account_resolution_types import (
     AccountProposalDict,
 )
 from moneybin.services.import_confirmation import (
+    Channel,
     ConfirmationRequired,
     ImportConfirmationRequiredError,
     ProposedMapping,
     SignConventionProposal,
 )
-from moneybin.services.import_service import BridgeApplyResult, ImportResult
+from moneybin.services.import_service import (
+    BridgeApplyResult,
+    CreatedAccount,
+    ImportResult,
+)
 
 runner = CliRunner()
+
+_MINTED = (CreatedAccount(account_id="acct00000001", display_name="WF Checking"),)
 
 
 def _account_proposal_dict(source_account_key: str) -> AccountProposalDict:
@@ -50,7 +57,7 @@ def _account_proposal_dict(source_account_key: str) -> AccountProposalDict:
                 signal="name",
             ),
         ),
-    ).to_dict()
+    ).to_dict(proposal_ref="@0")
 
 
 def _make_import_result(**kwargs: Any) -> ImportResult:
@@ -232,6 +239,114 @@ class TestImportFilesConfirmFlow:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["confirm"] is True
 
+    def test_a_created_account_is_named_in_the_json_envelope(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A mint no longer stops the import, so the envelope has to name it.
+
+        Structured, not prose: an agent that just created an account needs to
+        answer "which one, and was that right?" without parsing a log line.
+        """
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(accounts_created=_MINTED),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app, ["files", str(csv_file), "--confirm", "--output", "json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["data"]["files"][0]["accounts_created"] == [
+            {"account_id": "acct00000001", "display_name": "WF Checking"}
+        ]
+
+    def test_a_created_account_lifts_the_batch_envelope_to_medium(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A mint is medium-tier content, so the declaration has to say so.
+
+        ``ImportCreatedAccount.display_name`` is ``DataClass.USER_NOTE``, but the
+        batch path builds a bare ``dict`` rather than the typed payload, so
+        ``render_or_json`` cannot derive the tier from annotations and whatever
+        ``batch_sensitivity`` says stands. A clean batch whose only notable
+        content is a created account would otherwise ship an account label to
+        scripts and agents under a ``low`` declaration, and the privacy-audit row
+        would inherit that under-declaration.
+        """
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(accounts_created=_MINTED),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app, ["files", str(csv_file), "--confirm", "--output", "json"]
+        )
+
+        payload = json.loads(result.stdout)
+        # No confirmation, error or hint here — the mint is the only reason.
+        first = payload["data"]["files"][0]
+        assert not (
+            first.get("confirmation_payload") or first.get("error") or first.get("hint")
+        )
+        assert payload["summary"]["sensitivity"] == "medium"
+
+    def test_a_created_account_is_named_in_text_output(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The human running the bare command sees the account by name.
+
+        The JSON branch alone would leave the default invocation — the one a
+        person actually types — silent about an account that just appeared.
+        """
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(accounts_created=_MINTED),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(app, ["files", str(csv_file), "--confirm"])
+
+        assert result.exit_code == 0
+        assert "WF Checking" in result.output
+
+    def test_an_import_that_created_nothing_says_nothing(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Re-importing into a known account is the common case; keep it quiet.
+
+        A line that prints on every import stops carrying the signal that
+        something new appeared.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app, ["files", str(csv_file), "--confirm", "--output", "json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert "accounts_created" not in payload["data"]["files"][0]
+
     def test_no_confirm_flag_passes_confirm_false(
         self,
         mock_db: MagicMock,
@@ -354,6 +469,292 @@ class TestImportFilesConfirmFlow:
         # Mapping/accept hints are gated out for account_confirmation (noise —
         # the layout is settled and --accept without a binding loops the gate).
         assert not any("--mapping" in a for a in payload["actions"])
+
+    def test_account_recovery_replays_the_bindings_already_supplied(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A partial answer must survive into the command that completes it.
+
+        Retries persist no state, so every binding has to be re-sent together.
+        The recovery builder accepts ``account_bindings`` and merges them —
+        ``import confirm``'s own handler passes them — but ``import files`` did
+        not, so a two-account file answered one at a time printed a command that
+        dropped the first answer and could never converge.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("savings")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--account-binding",
+                "checking=acct_known01",
+                "--output",
+                "json",
+            ],
+        )
+
+        payload = json.loads(result.output)
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+        assert "checking=acct_known01" in recovery
+        assert "savings=<account_id|new>" in recovery
+
+    def test_interactive_account_recovery_replays_the_bindings_already_supplied(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The TTY twin of the test above — same defect, the other branch.
+
+        ``import files`` picks between the JSON envelope and this human-readable
+        prompt on ``sys.stdout.isatty()``, and only the JSON side forwarded the
+        answers already supplied. ``_render_confirmation_prompt`` accepts
+        ``account_bindings`` and hands them to the recovery builder, so the gap
+        was one unpassed argument at the call site: a terminal user answering a
+        two-account file one account at a time was handed a command that dropped
+        the first answer, and running it re-raised the gate it had just
+        satisfied.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("savings")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        # Force the interactive (TTY) branch — patch the module's sys.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(
+            app,
+            ["files", str(csv_file), "--account-binding", "checking=acct_known01"],
+        )
+
+        recovery = next(
+            line for line in result.output.splitlines() if "--account-binding" in line
+        )
+        assert "checking=acct_known01" in recovery
+        assert "savings=<account_id|new>" in recovery
+
+    def test_multi_file_refuses_account_bindings(self, tmp_path: Path) -> None:
+        """Warn-and-drop is the loop the MCP twin hard-refuses for this same input.
+
+        A ``source_account_key`` is only unambiguous within one file and the
+        batch path cannot route bindings per-file, so a dropped answer returns
+        the identical ``account_confirmation`` on every re-run. The other
+        per-file flags in that warning are *overrides*; this one is an answer to
+        a gate, which is why ``import_files`` refuses it outright.
+        """
+        first = tmp_path / "a.csv"
+        second = tmp_path / "b.csv"
+        for path in (first, second):
+            path.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            ["files", str(first), str(second), "--account-binding", "@0=new"],
+        )
+
+        assert result.exit_code != 0
+        assert "single" in result.output.lower()
+
+    def test_ofx_account_confirmation_names_a_command_that_runs(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """An OFX gate names `import confirm`, the same command every gate names.
+
+        The premise this test used to carry — that `import confirm` would
+        bounce an OFX with a usage error — is not true of the CLI. It takes a
+        file path, not a staged preview id (that is the MCP tool), and
+        `moneybin import confirm <file>.ofx --accept` imports. `--accept`
+        ratifies nothing on a channel with no mapping, but it satisfies the
+        command's require-an-action guard, which is exactly the form
+        `InboxService` has always emitted for an account gate on any channel.
+
+        Naming `import files` instead had a cost beyond the second vocabulary:
+        only `import confirm` calls `archive_confirmed_file`, so answering a
+        pending inbox file with `import files` left it in `pending/` to be
+        offered again forever.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        outcome = ConfirmationRequired(
+            channel="ofx",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("1111")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(app, ["files", str(ofx_file), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+        assert "moneybin import confirm" in recovery
+        assert "import files" not in recovery
+        assert "1111=<account_id|new>" in recovery
+        # Required by the command's own guard, and what InboxService emits.
+        assert "--accept" in recovery
+
+    @pytest.mark.parametrize("suffix", [".ofx", ".pdf", ".csv"])
+    def test_the_account_recovery_it_prints_actually_parses(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        suffix: str,
+    ) -> None:
+        """Run the printed command back through the CLI, on every channel.
+
+        The test this sits beside asserted which command was named and never
+        ran it, so its claim that the other one "would bounce with a usage
+        error" went unchecked for as long as it was false. Re-invoking is what
+        makes the assertion about the command rather than about the string.
+        """
+        source = tmp_path / f"statement{suffix}"
+        source.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        channels: dict[str, Channel] = {
+            ".ofx": "ofx",
+            ".pdf": "pdf",
+            ".csv": "tabular",
+        }
+        channel = channels[suffix]
+        outcome = ConfirmationRequired(
+            channel=channel,
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("1111")],
+        )
+        gated = mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        payload = json.loads(
+            runner.invoke(app, ["files", str(source), "--output", "json"]).output
+        )
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+
+        # Strip the surrounding prose, then fill the placeholder as a user would.
+        quoted = recovery[recovery.index("moneybin") : recovery.index("` ")]
+        argv = [a.replace("<account_id|new>", "new") for a in shlex.split(quoted)[1:]]
+        assert argv[0] == "import"
+        gated.side_effect = None
+        gated.return_value = _make_import_result()
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+
+        rerun = runner.invoke(app, argv[1:])
+
+        assert rerun.exit_code == 0, f"{channel}: {rerun.output}"
+        assert gated.call_args.kwargs["account_bindings"] == {"1111": "new"}
+
+    def test_the_account_recovery_carries_the_institution_it_was_given(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """An --institution the user had to supply survives into the printed recovery.
+
+        `resolve_institution` raises before the account gate, so the only way to
+        reach that gate on such a file is `import files x.ofx --institution
+        chase`. The recovery printed there dropped the flag, so pasting it hit
+        the institution error again — a command MoneyBin printed that does not
+        run, which is the defect the unified recovery was meant to end.
+
+        Re-invokes rather than asserting on the string alone: the flag has to
+        reach the service, not just appear in the text.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        outcome = ConfirmationRequired(
+            channel="ofx",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("1111")],
+        )
+        gated = mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        payload = json.loads(
+            runner.invoke(
+                app,
+                ["files", str(ofx_file), "--institution", "chase", "--output", "json"],
+            ).output
+        )
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+
+        assert "--institution chase" in recovery
+
+        quoted = recovery[recovery.index("moneybin") : recovery.index("` ")]
+        argv = [a.replace("<account_id|new>", "new") for a in shlex.split(quoted)[1:]]
+        gated.side_effect = None
+        gated.return_value = _make_import_result()
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+
+        rerun = runner.invoke(app, argv[1:])
+
+        assert rerun.exit_code == 0, rerun.output
+        assert gated.call_args.kwargs["institution"] == "chase"
+        assert gated.call_args.kwargs["account_bindings"] == {"1111": "new"}
 
     def test_account_confirmation_tty_renders_proposals(
         self,
@@ -710,6 +1111,37 @@ class TestImportConfirmCommand:
         assert call_kwargs["confirm"] is True
         assert call_kwargs.get("actor_kind") == "human"
 
+    def test_confirm_names_the_account_it_created(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Answering the gate is the moment an account is most likely to be new.
+
+        `import confirm` is where a caller lands after binding an identity, so
+        it owes the same report as `import files` — on both output formats.
+        """
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(accounts_created=_MINTED),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        text = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+        assert text.exit_code == 0
+        assert "WF Checking" in text.output
+
+        as_json = runner.invoke(
+            app, ["confirm", str(csv_file), "--accept", "--output", "json"]
+        )
+        assert as_json.exit_code == 0
+        payload = json.loads(as_json.stdout)
+        assert payload["data"]["accounts_created"] == [
+            {"account_id": "acct00000001", "display_name": "WF Checking"}
+        ]
+
     def test_confirm_with_mapping_loads(
         self,
         mock_db: MagicMock,
@@ -922,6 +1354,199 @@ class TestImportConfirmCommand:
         }
         assert json.loads(result.output)["data"]["status"] == "applied"
 
+    def test_bridge_response_can_answer_the_account_gate_it_raises(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The bridge raises the account gate, so it must accept the answer.
+
+        `apply_pdf_bridge_response` gates on account identity like every other
+        channel and takes `account_bindings` to resolve it — the MCP path
+        forwards them. The CLI rejected the flag outright, so the one surface
+        where a human answers this had no way to: the same command re-raised
+        the same gate however it was re-run.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+        apply = mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+            return_value=BridgeApplyResult(
+                outcome="applied",
+                import_id="bridge123",
+                rows_loaded=2,
+                format_name="chase_abc123",
+                expected_row_count=2,
+                actual_row_count=2,
+                rows_diverged=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--account-binding",
+                "@0=new",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert apply.call_args.kwargs["account_bindings"] == {"@0": "new"}
+
+    def test_bridge_account_gate_recovery_keeps_the_bridge_response(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The command it prints has to be one this command would accept back.
+
+        The bridge raises the same account gate as every channel, but the
+        recovery was built from the generic ``import confirm`` serializer, which
+        knows nothing about ``--bridge-response``. It printed ``--accept`` — a
+        combination this very command refuses — and dropped the agent-authored
+        recipe, so the printed line could not run and the recipe was gone.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+        outcome = ConfirmationRequired(
+            channel="pdf",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("chase_1234")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--output",
+                "json",
+            ],
+        )
+
+        payload = json.loads(result.output)
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+        assert "--bridge-response" in recovery
+        assert str(response_file) in recovery
+        assert "--confirm" in recovery
+        # --accept is refused alongside --bridge-response by this same command.
+        assert "--accept" not in recovery
+
+    def test_bridge_response_still_refuses_the_tabular_account_flags(
+        self, tmp_path: Path
+    ) -> None:
+        """--account-name and --account-meta stay refused; only bindings opened.
+
+        A PDF's account identity comes from the statement, not from a column,
+        and neither flag reaches the bridge service. Refusing them is the
+        contract; refusing --account-binding alongside them was the bug.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+
+        for flag, value in (("--account-name", "Chase"), ("--account-meta", "k:a=b")):
+            result = runner.invoke(
+                app,
+                [
+                    "confirm",
+                    str(pdf_file),
+                    "--bridge-response",
+                    str(response_file),
+                    "--confirm",
+                    flag,
+                    value,
+                ],
+            )
+            assert result.exit_code != 0, flag
+            # …and the refusal advertises the one account flag that IS accepted,
+            # so a caller who reached for the wrong one is pointed at it.
+            assert "--account-binding only" in result.output, flag
+
+    def test_institution_override_reaches_the_service(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """`import confirm` carries --institution, because the gate it answers can need it.
+
+        `resolve_institution` raises before the account gate, so an OFX whose
+        issuer is underivable from <FID>, <ORG>, and the filename reaches the
+        account confirmation only on a re-run that already carries
+        --institution. Without this option the command that answers the gate
+        cannot also satisfy the check that precedes it.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        imported = mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+
+        result = runner.invoke(
+            app, ["confirm", str(ofx_file), "--accept", "--institution", "chase"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert imported.call_args.kwargs["institution"] == "chase"
+
+    def test_bridge_response_refuses_the_institution_override(
+        self, tmp_path: Path
+    ) -> None:
+        """--institution is refused with --bridge-response rather than dropped.
+
+        `apply_pdf_bridge_response` has no institution parameter — the recipe
+        carries the format. Accepting the flag here would silently ignore it,
+        which is the failure mode this whole option exists to close.
+
+        Asserts the refusal sentence, not the exit code: with the guard removed
+        this command still exits non-zero, on the unrelated missing-database
+        error, so an exit-code check passes either way and pins nothing.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--institution",
+                "chase",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "--account-name, --account-meta, or --institution" in result.output
+
     def test_requires_accept_or_mapping(
         self,
         tmp_path: Path,
@@ -1037,6 +1662,31 @@ class TestImportConfirmCommand:
             "wf-checking": "acct123456",
             "wf-savings": "new",
         }
+
+    def test_account_binding_accepts_a_positional_proposal_ref(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """``@0`` reaches the service intact — the CLI must not eat the sigil.
+
+        The gate surfaces a proposal_ref because source_account_key masks on
+        the MCP side; the CLI answers with the same referent so both surfaces
+        take one vocabulary. Click treats a leading ``@`` as ordinary text,
+        but that is a dependency worth pinning: an argument-file convention
+        here would silently swallow the ref.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            ["confirm", str(csv_file), "--accept", "--account-binding", "@0=new"],
+        )
+
+        assert result.exit_code == 0
+        assert mock_import_file.call_args.kwargs["account_bindings"] == {"@0": "new"}
 
     def test_account_meta_parsed_into_nested_map(
         self,
@@ -1244,6 +1894,9 @@ class TestImportConfirmCommand:
         assert "Account binding required" in result.output
         assert "wf-checking" in result.output
         assert "cand87654321" in result.output
+        # The ref is what --account-binding's help tells the user to type, so
+        # the gate that demands a binding has to be where they read it.
+        assert "@0" in result.output
 
 
 class TestSignRecoveryDirection:

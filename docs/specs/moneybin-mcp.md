@@ -77,7 +77,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / maximum low |
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / maximum medium / view-derived |
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / maximum low |
-| `import_files` | `force`, `paths`, `refresh` | Import files | Audited workflow / maximum critical / file-derived |
+| `import_files` | `account_bindings`, `force`, `paths`, `refresh` | Import files | Audited workflow / maximum critical / file-derived |
 | `import_preview` | `file_path`, `mapping` | Stage and inspect an import proposal | Staged write (`readOnlyHint=false`, `idempotentHint=false`) / dynamic / maximum critical / file-derived |
 | `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / maximum critical / preview-derived |
 | `import_status` | `cursor`, `import_id`, `limit`, `sections` | Import lifecycle status | Read / dynamic / maximum medium / import-derived |

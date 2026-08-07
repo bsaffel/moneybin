@@ -100,6 +100,14 @@ def test_same_issuer_same_last_four_merges_silently_today(db: Database) -> None:
     "same card, next statement" (which MUST keep adopting — that is the
     idempotency #371 established) from "second card, same last four". Until that
     discriminator exists, this pins the defect so it cannot regress unnoticed.
+
+    **The account confirm gate does not reach this.** Every import channel now
+    stops before load on an unratified account identity, which makes it
+    tempting to read this merge as already covered. It is not: the gate fires
+    on ``AccountProposal.requires_confirm``, and a step-1 adoption sets
+    ``adopted_via`` with no candidates, so the predicate is False and no
+    proposal is ever surfaced. This is a known residual, not a desired
+    behavior.
     """
     resolver = AccountResolver(db, actor="system")
     first = resolver.resolve(

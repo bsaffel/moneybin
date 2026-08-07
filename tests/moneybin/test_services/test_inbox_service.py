@@ -551,6 +551,7 @@ class TestSyncFailure:
                         account_proposals=[
                             {
                                 "source_account_key": "unknown",
+                                "proposal_ref": "@0",
                                 "proposed_account_id": None,
                                 "is_new": True,
                                 "adopted_via": None,
@@ -605,6 +606,7 @@ class TestSyncFailure:
 
         proposal: AccountProposalDict = {
             "source_account_key": "unknown",
+            "proposal_ref": "@0",
             "proposed_account_id": "prov123",
             "is_new": True,
             "adopted_via": None,
@@ -1343,6 +1345,7 @@ class TestPendingSidecarAccountHint:
             account_proposals=[
                 {
                     "source_account_key": "statement",
+                    "proposal_ref": "@0",
                     "proposed_account_id": None,
                     "is_new": True,
                     "adopted_via": None,
@@ -1398,6 +1401,7 @@ class TestPendingSidecarAccountHint:
             account_proposals=[
                 {
                     "source_account_key": "acct-a",
+                    "proposal_ref": "@0",
                     "proposed_account_id": None,
                     "is_new": True,
                     "adopted_via": None,
@@ -1406,6 +1410,7 @@ class TestPendingSidecarAccountHint:
                 },
                 {
                     "source_account_key": "acct-b",
+                    "proposal_ref": "@1",
                     "proposed_account_id": None,
                     "is_new": True,
                     "adopted_via": None,
@@ -1480,7 +1485,7 @@ class TestPendingSidecarAccountHint:
                         is_new=True,
                         candidates=(),
                         adopted_via=None,
-                    ).to_dict()
+                    ).to_dict(proposal_ref="@0")
                 ],
             )
         )

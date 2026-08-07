@@ -38,7 +38,7 @@ def _account_proposal_dict() -> AccountProposalDict:
                 signal="institution_last4",
             ),
         ),
-    ).to_dict()
+    ).to_dict(proposal_ref="@0")
 
 
 class TestProposedMapping:

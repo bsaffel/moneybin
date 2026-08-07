@@ -32,6 +32,8 @@ from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
     from moneybin.repositories.pdf_formats_repo import PdfFormat
@@ -39,7 +41,11 @@ if TYPE_CHECKING:
         ConfirmationRequired,
         SignConventionProposal,
     )
-    from moneybin.services.import_service import BatchImportResult, ImportResult
+    from moneybin.services.import_service import (
+        BatchImportResult,
+        CreatedAccount,
+        ImportResult,
+    )
 
 
 class _FormatTypeFilter(StrEnum):
@@ -100,8 +106,8 @@ def _parse_overrides(override: list[str] | None) -> dict[str, str] | None:
 
 
 def _parse_account_bindings(binding: list[str] | None) -> dict[str, str] | None:
-    """Parse --account-binding source_key=ACCOUNT_ID|new values."""
-    return _parse_kv(binding, flag="--account-binding", fmt="source_key=ACCOUNT_ID|new")
+    """Parse --account-binding REF=ACCOUNT_ID|new values (REF is @0 or a source key)."""
+    return _parse_kv(binding, flag="--account-binding", fmt="REF=ACCOUNT_ID|new")
 
 
 def _parse_account_metadata(
@@ -204,6 +210,18 @@ def import_files_command(
         "--account-name",
         "-n",
         help="Account name for single-account tabular files. Single-file mode only.",
+    ),
+    account_binding: list[str] = typer.Option(
+        None,
+        "--account-binding",
+        help=(
+            "Answer an account confirmation: REF=ACCOUNT_ID|new, repeatable. "
+            "REF is the proposal_ref the gate printed (@0 is the file's first "
+            "source account) or that proposal's source_account_key. This is how "
+            "OFX and PDF imports ratify an account identity; a tabular file "
+            "answers through 'import confirm' instead, because its confirmation "
+            "also stages a column mapping. Single-file mode only."
+        ),
     ),
     format_name: str | None = typer.Option(
         None,
@@ -330,6 +348,7 @@ def import_files_command(
     # --mapping is an alias for --override; merge both into one dict.
     combined_override = list(override or []) + list(mapping or [])
     overrides = _parse_overrides(combined_override or None)
+    account_bindings = _parse_account_bindings(list(account_binding or []) or None)
     interactive = not yes and sys.stdin.isatty()
 
     # Single-file mode (`len(file_paths) == 1`) always uses import_file
@@ -367,6 +386,18 @@ def import_files_command(
         logger.warning(
             "⚠️  Per-file flags only apply in single-file mode and will be "
             "ignored. Use one file per command for per-file overrides."
+        )
+    if len(file_paths) > 1 and account_bindings is not None:
+        # Deliberately NOT in has_single_file_knobs above. Everything in that
+        # warn-and-drop set is an override; this is an ANSWER to a gate, and a
+        # dropped answer returns the identical account_confirmation on every
+        # re-run. A source key is also only unambiguous within one file, and the
+        # batch path can't route bindings per-file. `import_files` refuses the
+        # same input for the same reason.
+        raise typer.BadParameter(
+            "--account-binding answers one file's account confirmation; run it "
+            "with a single file. Each file's source keys are its own.",
+            param_hint="'--account-binding'",
         )
     if len(file_paths) > 1 and (confirm or confirm_sign):
         # --confirm with multiple files would silently auto-accept every
@@ -454,6 +485,7 @@ def import_files_command(
                             "auto_accept": yes,
                             "confirm": confirm,
                             "actor_kind": "human",
+                            "account_bindings": account_bindings,
                         }
                         if confirm_sign:
                             import_kwargs["human_sign_confirmation"] = True
@@ -486,29 +518,13 @@ def import_files_command(
                                 )
                             if result.sign_override_replayed:
                                 typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
-                            files_list = [
-                                {
-                                    "path": str(file_paths[0]),
-                                    "status": "imported",
-                                    "source_type": result.file_type,
-                                    "rows_loaded": result.rows_loaded,
-                                    "import_id": result.import_id,
-                                    # Mirror the batch path: JSON-output agents need
-                                    # the structured signal regardless of single vs
-                                    # multi-file invocation.
-                                    "sign_correction_suggested": result.sign_correction_suggested,
-                                    "sign_override_replayed": result.sign_override_replayed,
-                                }
-                            ]
-                            data = {
-                                "imported_count": 1,
-                                "failed_count": 0,
-                                "total_count": 1,
-                                "transforms_applied": refresh
-                                and result.core_tables_rebuilt,
-                                "transforms_duration_seconds": None,
-                                "files": files_list,
-                            }
+                            # Through the batch projector rather than an inline
+                            # dict: the per-file row is a public contract agents
+                            # branch on, and a second copy of it is how
+                            # `error`/`hint` once reached the batch path only.
+                            files_list, data = _batch_payload(
+                                _single_file_success(file_paths[0], result, refresh)
+                            )
                     else:
                         batch_result = svc.import_files(
                             [str(p) for p in file_paths],
@@ -567,8 +583,10 @@ def import_files_command(
                         accept=confirm or overrides is None,
                         mapping=overrides,
                         save_format=save_format,
+                        institution=institution,
                         account_id=account_id,
                         account_name=account_name,
+                        account_bindings=account_bindings,
                         proposed_sign=proposed_sign,
                         prior_sign=prior_sign,
                     )
@@ -583,8 +601,12 @@ def import_files_command(
                     # ratifying. Replay the current confirmation inputs because
                     # retries persist no partial state, and add the missing binding.
                     # The generic alternate mapping hints below remain irrelevant.
+                    # account_bindings rides along: retries persist no partial
+                    # state, so a two-account file answered one at a time needs
+                    # every binding re-sent together or the printed command
+                    # drops the answer already given and never converges.
                     confirm_actions.append(
-                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign)}` "
+                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_bindings=account_bindings, confirm_sign=confirm_sign, sign=sign)}` "
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
@@ -640,8 +662,13 @@ def import_files_command(
                 accept=confirm or overrides is None,
                 mapping=overrides,
                 save_format=save_format,
+                institution=institution,
                 account_id=account_id,
                 account_name=account_name,
+                # Same reason the non-TTY branch above replays them: retries
+                # persist no partial state, so a command that omits the answers
+                # already given re-raises the gate they satisfied.
+                account_bindings=account_bindings,
                 confirm_sign=confirm_sign,
                 sign=sign,
             )
@@ -666,10 +693,16 @@ def import_files_command(
     # failing path, so a batch carrying either is medium on this surface too —
     # otherwise the same bytes ship as `low` from the CLI and `medium` from
     # MCP, and the privacy-audit row inherits the under-declaration.
+    # `accounts_created` is here for the same reason: its `display_name` is
+    # USER_NOTE in `ImportCreatedAccount`, but this path builds a bare dict, so
+    # nothing downstream can re-derive that tier from the annotation.
     batch_sensitivity = (
         "medium"
         if any(
-            f.get("confirmation_payload") or f.get("error") or f.get("hint")
+            f.get("confirmation_payload")
+            or f.get("error")
+            or f.get("hint")
+            or f.get("accounts_created")
             for f in files_list
         )
         else "low"
@@ -696,6 +729,7 @@ def import_files_command(
                 logger.error(f"   {error}")
             if hint := f.get("hint"):
                 logger.info(f"   {hint}")
+            _echo_accounts_created(f.get("accounts_created") or [])
         if data["transforms_applied"]:
             duration = data["transforms_duration_seconds"]
             if duration is not None:
@@ -740,6 +774,19 @@ def _batch_payload(
             # gap for scripted callers.
             "sign_correction_suggested": r.sign_correction_suggested,
             "sign_override_replayed": r.sign_override_replayed,
+            # Omitted rather than emitted empty: this key means "an account you
+            # have never seen now exists", and a key present on every row stops
+            # reading as news. Same reason `error` and `hint` are conditional.
+            **(
+                {
+                    "accounts_created": [
+                        {"account_id": a.account_id, "display_name": a.display_name}
+                        for a in r.accounts_created
+                    ]
+                }
+                if r.accounts_created
+                else {}
+            ),
             **({"error": r.error} if r.error else {}),
             # Paired with "error" so scripted/agent callers get the same stable
             # code the MCP files[] rows carry.
@@ -770,6 +817,74 @@ def _batch_payload(
     if batch.transforms_error:
         data["transforms_error"] = batch.transforms_error
     return files_list, data
+
+
+def _accounts_created_payload(
+    accounts: Sequence[CreatedAccount],
+) -> list[dict[str, str]]:
+    """Project minted accounts for a JSON envelope."""
+    return [
+        {"account_id": a.account_id, "display_name": a.display_name} for a in accounts
+    ]
+
+
+def _echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
+    """Name the accounts an import created, and how to correct one.
+
+    This is the visible half of "gate the merge, not the mint": a first-contact
+    mint no longer stops the import, so it has to announce itself instead. Both
+    recoveries are named because they are different commands — a wrong *name* is
+    a rename, a wrong *identity* is a merge — and neither is guessable.
+
+    ``typer.echo``, not ``logger.info``: a display_name is whatever the source
+    file called the account (a CSV's account column, an OFX institution + type)
+    and can carry the holder's name, so it must not reach the log pipeline.
+    """
+    if not accounts:
+        return
+    for account in accounts:
+        typer.echo(
+            f"👀 Created account: {account['display_name']} ({account['account_id']})",
+            err=True,
+        )
+    typer.echo(
+        "   Rename with 'moneybin accounts set <account_id> --display-name'; "
+        "if it duplicates an account you already have, "
+        "'moneybin accounts links run' proposes the merge.",
+        err=True,
+    )
+
+
+def _single_file_success(
+    file_path: Path, result: ImportResult, refresh: bool
+) -> BatchImportResult:
+    """Wrap a successful single-file import as the one-file batch it really is.
+
+    Twin of ``_single_file_failure``, and for the same reason: both feed
+    ``_batch_payload`` so `moneybin import files a.csv` and
+    `moneybin import files a.csv b.csv` describe a file identically.
+    """
+    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+        BatchImportResult,
+        PerFileResult,
+    )
+
+    return BatchImportResult(
+        per_file=[
+            PerFileResult(
+                path=str(file_path),
+                status="imported",
+                source_type=result.file_type,
+                rows_loaded=result.rows_loaded,
+                import_id=result.import_id,
+                sign_correction_suggested=result.sign_correction_suggested,
+                sign_override_replayed=result.sign_override_replayed,
+                accounts_created=result.accounts_created,
+            )
+        ],
+        transforms_applied=refresh and result.core_tables_rebuilt,
+        transforms_duration_seconds=None,
+    )
 
 
 def _single_file_failure(file_path: Path, exc: Exception) -> BatchImportResult:
@@ -838,7 +953,12 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
         return
     typer.echo("\n   Account binding required:", err=err)
     for p in outcome.account_proposals:
-        typer.echo(f"     source key: {p['source_account_key']}", err=err)
+        # Lead with the ref: it is what --account-binding takes on both
+        # surfaces, and the only half of this line an MCP caller can read.
+        typer.echo(
+            f"     {p['proposal_ref']}  source key: {p['source_account_key']}",
+            err=err,
+        )
         for c in p["candidates"]:
             typer.echo(
                 f"       candidate: {c['account_id']}  "
@@ -865,7 +985,7 @@ def _tabular_recovery_args(
     return args
 
 
-def _tabular_confirmation_command(
+def _import_confirm_command(
     file_path_str: str,
     *,
     accept: bool,
@@ -873,21 +993,44 @@ def _tabular_confirmation_command(
     sign: SignConventionType | None,
     mapping: dict[str, str] | None,
     save_format: bool,
+    institution: str | None,
     account_id: str | None,
     account_name: str | None,
     account_bindings: dict[str, str] | None,
     account_metadata: dict[str, dict[str, str]] | None,
+    bridge_response: Path | None = None,
 ) -> str:
-    """Serialize one public tabular confirmation request losslessly."""
+    """Serialize one public `import confirm` request losslessly.
+
+    Every channel's account and sign recoveries route through here, so the
+    command MoneyBin prints is always the command it would accept back.
+
+    ``institution`` is here because a file can need it to reach the gate at
+    all: ``resolve_institution`` raises earlier in the import, so an OFX whose
+    issuer is underivable arrives at an account confirmation only on a re-run
+    that already carries the override. Dropping it printed a command that
+    failed the check ahead of the one it was answering.
+
+    ``bridge_response`` is the same argument one step further: the bridge raises
+    the account gate like every other channel, but its recipe is agent-authored
+    and lives only in that file. Dropping it printed a command that re-ran the
+    deterministic path instead — and paired ``--accept`` with a flag this
+    command refuses alongside it. The bridge takes ``--confirm``, not
+    ``--accept``, so the two are mutually exclusive here as well.
+    """
     import shlex  # noqa: PLC0415
 
     parts = ["moneybin", "import", "confirm", file_path_str]
-    if accept:
+    if bridge_response is not None:
+        parts.extend(("--bridge-response", str(bridge_response), "--confirm"))
+    elif accept:
         parts.append("--accept")
     if confirm_sign:
         parts.append("--confirm-sign")
     if sign is not None:
         parts.extend(("--sign", sign))
+    if institution is not None:
+        parts.extend(("--institution", institution))
     if account_id is not None:
         parts.extend(("--account-id", account_id))
     if account_name is not None:
@@ -911,14 +1054,29 @@ def _account_recovery_command(
     accept: bool = True,
     mapping: dict[str, str] | None = None,
     save_format: bool = True,
+    institution: str | None = None,
     account_id: str | None = None,
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
     account_metadata: dict[str, dict[str, str]] | None = None,
     confirm_sign: bool = False,
     sign: SignConventionType | None = None,
+    bridge_response: Path | None = None,
 ) -> str:
-    """Reproduce a tabular confirmation while adding unresolved account bindings."""
+    """Name the command that answers this account confirmation — one, for every channel.
+
+    ``import confirm`` on all three. It takes a file path, not a staged preview
+    id (that is the MCP tool), so nothing about OFX or PDF makes it bounce, and
+    ``InboxService`` has always emitted exactly this form for an account gate
+    regardless of channel. ``--accept`` ratifies nothing on a channel with no
+    column mapping; it satisfies the command's require-an-action guard, which is
+    why the inbox's version carries it too.
+
+    OFX and PDF used to be sent to ``import files`` here — a second vocabulary
+    for one question, and worse than cosmetic: only ``import confirm`` calls
+    ``archive_confirmed_file``, so a pending inbox file answered through
+    ``import files`` stayed in ``pending/`` and was offered again on every sync.
+    """
     bindings = dict(account_bindings or {})
     for proposal in outcome.account_proposals:
         source_key = str(proposal["source_account_key"])
@@ -926,17 +1084,24 @@ def _account_recovery_command(
     if not bindings:
         bindings["<source_key>"] = "<account_id|new>"
 
-    return _tabular_confirmation_command(
+    return _import_confirm_command(
         file_path_str,
-        accept=accept,
+        # A channel with no mapping has nothing to ratify, but the command
+        # requires an action; `accept` is False only where a --mapping override
+        # supplies one, which is tabular-only. A bridge answer satisfies that
+        # guard with --confirm instead, and _import_confirm_command drops
+        # --accept when it sees one.
+        accept=accept or outcome.channel in ("ofx", "pdf"),
         confirm_sign=confirm_sign,
         sign=sign,
         mapping=mapping,
         save_format=save_format,
+        institution=institution,
         account_id=account_id,
         account_name=account_name,
         account_bindings=bindings,
         account_metadata=account_metadata,
+        bridge_response=bridge_response,
     )
 
 
@@ -947,6 +1112,7 @@ def _sign_recovery_commands(
     accept: bool = True,
     mapping: dict[str, str] | None = None,
     save_format: bool = True,
+    institution: str | None = None,
     account_id: str | None = None,
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
@@ -972,25 +1138,27 @@ def _sign_recovery_commands(
     both conventions and what each does.
     """
     if channel == "tabular":
-        approve_command = _tabular_confirmation_command(
+        approve_command = _import_confirm_command(
             file_path_str,
             accept=accept,
             confirm_sign=True,
             sign=None,
             mapping=mapping,
             save_format=save_format,
+            institution=institution,
             account_id=account_id,
             account_name=account_name,
             account_bindings=account_bindings,
             account_metadata=account_metadata,
         )
-        native_command = _tabular_confirmation_command(
+        native_command = _import_confirm_command(
             file_path_str,
             accept=accept,
             confirm_sign=False,
             sign="negative_is_expense",
             mapping=mapping,
             save_format=save_format,
+            institution=institution,
             account_id=account_id,
             account_name=account_name,
             account_bindings=account_bindings,
@@ -1051,6 +1219,7 @@ def _render_sign_convention_prompt(
     accept: bool = True,
     mapping: dict[str, str] | None = None,
     save_format: bool = True,
+    institution: str | None = None,
     account_id: str | None = None,
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
@@ -1097,6 +1266,7 @@ def _render_sign_convention_prompt(
         accept=accept,
         mapping=mapping,
         save_format=save_format,
+        institution=institution,
         account_id=account_id,
         account_name=account_name,
         account_bindings=account_bindings,
@@ -1115,6 +1285,7 @@ def _render_confirmation_prompt(
     accept: bool = True,
     mapping: dict[str, str] | None = None,
     save_format: bool = True,
+    institution: str | None = None,
     account_id: str | None = None,
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
@@ -1149,6 +1320,7 @@ def _render_confirmation_prompt(
             accept=accept,
             mapping=mapping,
             save_format=save_format,
+            institution=institution,
             account_id=account_id,
             account_name=account_name,
             account_bindings=account_bindings,
@@ -1208,6 +1380,7 @@ def _render_confirmation_prompt(
                 accept=accept,
                 mapping=mapping,
                 save_format=save_format,
+                institution=institution,
                 account_id=account_id,
                 account_name=account_name,
                 account_bindings=account_bindings,
@@ -1276,6 +1449,18 @@ def import_confirm_command(
             "negative_is_expense to keep amounts as printed."
         ),
     ),
+    institution: str | None = typer.Option(
+        None,
+        "--institution",
+        "-i",
+        help=(
+            "Institution override, carried over from the 'import files' call "
+            "that raised this confirmation. Same meaning as on 'import files': "
+            "consulted for OFX/QFX/QBO only when the file's <FI><ORG>, FID "
+            "lookup, and filename heuristic all yield nothing; for tabular "
+            "files it selects the format profile."
+        ),
+    ),
     account_id: str | None = typer.Option(
         None,
         "--account-id",
@@ -1291,9 +1476,11 @@ def import_confirm_command(
         "--account-binding",
         help=(
             "Ratify an account_confirmation (repeatable): "
-            "--account-binding source_key=ACCOUNT_ID to adopt an existing "
-            "account, or source_key=new to mint a distinct new account. "
-            "Keys come from confirmation_required account_proposals. On retry, "
+            "--account-binding REF=ACCOUNT_ID to adopt an existing account, or "
+            "REF=new to mint a distinct new account. REF is the proposal_ref "
+            "the gate printed (@0 is the file's first source account) or that "
+            "proposal's source_account_key; both name the same account and "
+            "supplying two different answers for one is an error. On retry, "
             "re-supply ALL bindings — no partial state persists between calls."
         ),
     ),
@@ -1343,10 +1530,18 @@ def import_confirm_command(
                 "--confirm-sign, or --sign.",
                 param_hint="'--bridge-response'",
             )
-        if account_name or account_binding or account_meta:
+        # --account-binding is deliberately absent from this refusal: the bridge
+        # raises the same account gate every other channel does, and this is the
+        # command a human answers it with. Refusing it made that gate
+        # unanswerable — the same re-run raised the same question.
+        # --institution joins the refusal rather than the forward list:
+        # apply_pdf_bridge_response has no institution parameter (the recipe
+        # carries the format), so accepting it would silently discard it.
+        if account_name or account_meta or institution:
             raise typer.BadParameter(
-                "--bridge-response supports --account-id only; PDF rows do not use "
-                "--account-name, --account-binding, or --account-meta.",
+                "--bridge-response supports --account-id and --account-binding "
+                "only; PDF rows do not use --account-name, --account-meta, or "
+                "--institution.",
                 param_hint="'--bridge-response'",
             )
         if not confirm:
@@ -1427,6 +1622,7 @@ def import_confirm_command(
                         bridge_response_data,
                         save_format=save_format,
                         account_id=account_id,
+                        account_bindings=parsed_bindings,
                         confirm=True,
                     )
                     result = None
@@ -1435,6 +1631,7 @@ def import_confirm_command(
                         "file_path": file_path,
                         "confirm": accept,
                         "overrides": parsed_mapping,
+                        "institution": institution,
                         "account_id": account_id,
                         "account_name": account_name,
                         "account_bindings": parsed_bindings,
@@ -1470,6 +1667,7 @@ def import_confirm_command(
                     accept=accept,
                     mapping=parsed_mapping,
                     save_format=save_format,
+                    institution=institution,
                     account_id=account_id,
                     account_name=account_name,
                     account_bindings=parsed_bindings,
@@ -1484,7 +1682,7 @@ def import_confirm_command(
             # partial state, and add the missing binding. Generic alternate
             # mapping hints remain irrelevant here.
             confirm_actions.append(
-                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign)}` "
+                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign, bridge_response=bridge_response)}` "
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
@@ -1529,6 +1727,7 @@ def import_confirm_command(
                 accept=accept,
                 mapping=parsed_mapping,
                 save_format=save_format,
+                institution=institution,
                 account_id=account_id,
                 account_name=account_name,
                 account_bindings=parsed_bindings,
@@ -1549,6 +1748,7 @@ def import_confirm_command(
                     accept=accept,
                     mapping=parsed_mapping,
                     save_format=save_format,
+                    institution=institution,
                     account_id=account_id,
                     account_name=account_name,
                     account_bindings=parsed_bindings,
@@ -1604,6 +1804,10 @@ def import_confirm_command(
             "actual_row_count": bridge_result.actual_row_count,
             "rows_diverged": bridge_result.rows_diverged,
         }
+        if bridge_result.accounts_created:
+            data["accounts_created"] = _accounts_created_payload(
+                bridge_result.accounts_created
+            )
         actions = [
             f"Use 'moneybin import revert {bridge_result.import_id}' to undo this import.",
             "Run 'moneybin transform apply' to rebuild derived tables.",
@@ -1615,6 +1819,9 @@ def import_confirm_command(
             logger.info(
                 f"✅ Imported {file_path.name}: {bridge_result.rows_loaded} rows "
                 f"(import_id: {bridge_result.import_id})"
+            )
+            _echo_accounts_created(
+                _accounts_created_payload(bridge_result.accounts_created)
             )
             logger.info("💡 Run 'moneybin transform apply' to rebuild derived tables.")
         return
@@ -1645,6 +1852,11 @@ def import_confirm_command(
             # column mapping was actually applied without re-detecting.
             "merged_mapping": dict(result.field_mapping or {}),
         }
+        # Same omit-when-empty rule as the files[] rows: present means news.
+        if result.accounts_created:
+            data["accounts_created"] = _accounts_created_payload(
+                result.accounts_created
+            )
         actions = [
             f"Use 'moneybin import revert {result.import_id}' to undo this import.",
             "Run 'moneybin transform apply' to rebuild derived tables.",
@@ -1665,6 +1877,7 @@ def import_confirm_command(
             f"✅ Imported {file_path.name}: {result.rows_loaded} rows "
             f"(import_id: {result.import_id})"
         )
+        _echo_accounts_created(_accounts_created_payload(result.accounts_created))
         if result.sign_correction_suggested:
             typer.echo(
                 "⚠️  Sign convention may be inverted (running balance suggests "

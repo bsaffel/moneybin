@@ -94,6 +94,7 @@ class TestImportFileAccountName:
             auto_accept=False,
             confirm=False,
             actor_kind="human",
+            account_bindings=None,
         )
 
 
