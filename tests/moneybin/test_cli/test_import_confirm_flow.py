@@ -267,6 +267,41 @@ class TestImportFilesConfirmFlow:
             {"account_id": "acct00000001", "display_name": "WF Checking"}
         ]
 
+    def test_a_created_account_lifts_the_batch_envelope_to_medium(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A mint is medium-tier content, so the declaration has to say so.
+
+        ``ImportCreatedAccount.display_name`` is ``DataClass.USER_NOTE``, but the
+        batch path builds a bare ``dict`` rather than the typed payload, so
+        ``render_or_json`` cannot derive the tier from annotations and whatever
+        ``batch_sensitivity`` says stands. A clean batch whose only notable
+        content is a created account would otherwise ship an account label to
+        scripts and agents under a ``low`` declaration, and the privacy-audit row
+        would inherit that under-declaration.
+        """
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(accounts_created=_MINTED),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app, ["files", str(csv_file), "--confirm", "--output", "json"]
+        )
+
+        payload = json.loads(result.stdout)
+        # No confirmation, error or hint here — the mint is the only reason.
+        first = payload["data"]["files"][0]
+        assert not (
+            first.get("confirmation_payload") or first.get("error") or first.get("hint")
+        )
+        assert payload["summary"]["sensitivity"] == "medium"
+
     def test_a_created_account_is_named_in_text_output(
         self,
         mock_db: MagicMock,
@@ -481,6 +516,55 @@ class TestImportFilesConfirmFlow:
 
         payload = json.loads(result.output)
         recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+        assert "checking=acct_known01" in recovery
+        assert "savings=<account_id|new>" in recovery
+
+    def test_interactive_account_recovery_replays_the_bindings_already_supplied(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The TTY twin of the test above — same defect, the other branch.
+
+        ``import files`` picks between the JSON envelope and this human-readable
+        prompt on ``sys.stdout.isatty()``, and only the JSON side forwarded the
+        answers already supplied. ``_render_confirmation_prompt`` accepts
+        ``account_bindings`` and hands them to the recovery builder, so the gap
+        was one unpassed argument at the call site: a terminal user answering a
+        two-account file one account at a time was handed a command that dropped
+        the first answer, and running it re-raised the gate it had just
+        satisfied.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("savings")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        # Force the interactive (TTY) branch — patch the module's sys.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(
+            app,
+            ["files", str(csv_file), "--account-binding", "checking=acct_known01"],
+        )
+
+        recovery = next(
+            line for line in result.output.splitlines() if "--account-binding" in line
+        )
         assert "checking=acct_known01" in recovery
         assert "savings=<account_id|new>" in recovery
 

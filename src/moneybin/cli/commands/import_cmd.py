@@ -665,6 +665,10 @@ def import_files_command(
                 institution=institution,
                 account_id=account_id,
                 account_name=account_name,
+                # Same reason the non-TTY branch above replays them: retries
+                # persist no partial state, so a command that omits the answers
+                # already given re-raises the gate they satisfied.
+                account_bindings=account_bindings,
                 confirm_sign=confirm_sign,
                 sign=sign,
             )
@@ -689,10 +693,16 @@ def import_files_command(
     # failing path, so a batch carrying either is medium on this surface too —
     # otherwise the same bytes ship as `low` from the CLI and `medium` from
     # MCP, and the privacy-audit row inherits the under-declaration.
+    # `accounts_created` is here for the same reason: its `display_name` is
+    # USER_NOTE in `ImportCreatedAccount`, but this path builds a bare dict, so
+    # nothing downstream can re-derive that tier from the annotation.
     batch_sensitivity = (
         "medium"
         if any(
-            f.get("confirmation_payload") or f.get("error") or f.get("hint")
+            f.get("confirmation_payload")
+            or f.get("error")
+            or f.get("hint")
+            or f.get("accounts_created")
             for f in files_list
         )
         else "low"

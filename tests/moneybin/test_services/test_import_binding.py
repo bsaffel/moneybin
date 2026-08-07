@@ -97,9 +97,18 @@ def test_human_import_gates_on_weak_account_candidate(
         c["account_id"] for p in outcome.account_proposals for c in p["candidates"]
     ]
     assert "wf_existing01" in cand_ids
-    # Gate raised before transform/load: no rows landed.
-    n = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
-    assert n is not None and n[0] == 0
+    # Gate raised before transform/load: nothing landed, and no batch opened.
+    # The `raw.import_log` half matters as much as the rows: an import that
+    # never started must not appear in history as a failure. Its OFX and PDF
+    # siblings assert the same pair, so tabular — the channel that had the
+    # confirm first — is not the one left without the guard.
+    for table, expected in (
+        ("raw.tabular_transactions", 0),
+        ("app.account_links", 0),
+        ("raw.import_log", 0),
+    ):
+        n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # fixed table list, not user input
+        assert n is not None and n[0] == expected, table
 
 
 def test_agent_import_gates_on_weak_account_candidate(
@@ -129,9 +138,16 @@ def test_agent_import_gates_on_weak_account_candidate(
         c["account_id"] for p in outcome.account_proposals for c in p["candidates"]
     ]
     assert "wf_existing01" in cand_ids
-    # Same pre-load guarantee the human path gets: nothing landed.
-    n = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
-    assert n is not None and n[0] == 0
+    # Same pre-load guarantee the human path gets, asserted the same way — the
+    # agent path is the one most likely to run unattended, so it is the last
+    # place to accept a weaker check than its human twin.
+    for table, expected in (
+        ("raw.tabular_transactions", 0),
+        ("app.account_links", 0),
+        ("raw.import_log", 0),
+    ):
+        n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # fixed table list, not user input
+        assert n is not None and n[0] == expected, table
 
 
 def test_a_named_first_contact_mint_loads_without_asking(
