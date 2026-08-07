@@ -655,8 +655,16 @@ imported — `@0` is its first source account, `@1` the second — classified
 two different answers for one account is an error rather than a precedence rule,
 and a ref past the end of the file is rejected by name.
 
-Three properties are load-bearing:
+Four properties are load-bearing:
 
+- **A key that reads as both forms is refused, not resolved.** `<ACCTID>` is
+  untrusted file content, so a source key can spell `@1` verbatim. Where the two
+  readings name the *same* account there is nothing to decide and the binding
+  applies. Where they name different accounts, neither reading is safe: letting
+  the key bind both accounts is the silent merge the gate exists to prevent, and
+  letting the source key win silently delivers the answer to the account the
+  caller was not looking at while the intended one stays gated behind a ref that
+  no longer reaches it. The ambiguity is raised by name instead.
 - **Positions index the file's full account list, not the surfaced subset.**
   The answering call applies bindings *before* the gate re-runs, so it can only
   index the accounts the file itself declares. Numbering what got surfaced would

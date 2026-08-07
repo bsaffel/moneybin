@@ -930,10 +930,14 @@ def _resolve_binding_targets(
     ``per_file_failure`` — echoing the caller's own unknown keys back is safe
     (they sent them), listing the real ones is not.
 
-    A real source key always wins over the positional vocabulary it happens to
-    look like. ``source_account_key`` is untrusted file content on OFX (the
-    ``<ACCTID>`` verbatim), so a key of "@0" would otherwise bind both its own
-    account AND proposal zero — one answer silently merging two accounts.
+    A real source key wins over the positional vocabulary it happens to look
+    like, but only where the two readings name the same account.
+    ``source_account_key`` is untrusted file content on OFX (the ``<ACCTID>``
+    verbatim), so a key of "@0" would otherwise bind both its own account AND
+    proposal zero — one answer silently merging two accounts. When the readings
+    name *different* accounts the key is refused instead of resolved: picking
+    either one delivers the answer to an account the caller was not looking at
+    and leaves the other gated behind a ref that no longer reaches it.
     """
     known = {src.source_account_key for src in source_accounts}
     refs = {
@@ -942,6 +946,21 @@ def _resolve_binding_targets(
         if key.startswith(_PROPOSAL_REF_PREFIX) and key not in known
     }
     valid = {proposal_ref(index) for index in range(len(source_accounts))}
+    # A key that is BOTH a real source key and a valid ref for a *different*
+    # position has no safe reading. Source-key-wins (below) would answer the
+    # account whose key it spells while the caller was looking at the other
+    # account's ref — and through a masking surface that ref is the only
+    # referent they can reproduce, so the miss is invisible and unrecoverable.
+    # Same index is not ambiguous: both readings name the one account.
+    for index, src in enumerate(source_accounts):
+        key = src.source_account_key
+        if key in bindings and key in valid and key != proposal_ref(index):
+            raise ValueError(
+                f"account_bindings key {key!r} is ambiguous for this file: it is "
+                f"the source key for {proposal_ref(index)} and the positional ref "
+                f"for {key}. Bind {proposal_ref(index)} by its own ref, and the "
+                "other account by its source key."
+            )
     if unknown := sorted((refs - valid) | (set(bindings) - refs - known)):
         raise ValueError(
             f"account_bindings references unknown source key(s): {unknown}. "
@@ -1023,6 +1042,41 @@ def _apply_account_bindings(
         else:
             bound.append(dataclasses.replace(src, explicit_account_id=target))
     return bound
+
+
+def _refuse_contradicted_bindings(
+    resolver: AccountResolver, source_accounts: list[SourceAccount]
+) -> None:
+    """Reject a binding the resolver would later refuse, before anything loads.
+
+    A bound account skips the proposal loop, so it used to reach ``resolve()``
+    unchecked — and on OFX that happens *after* the raw frames are ingested.
+    ``_write_native_mapping``'s conflict guard then raised with the rows already
+    written and nothing to remove them: the batch finalized ``failed``, but
+    ``prep.stg_ofx__transactions`` filters on ``_row_num``, not import status,
+    so the statement still surfaced — joined to the very account the binding was
+    trying to move it away from. Asking here makes the refusal cost nothing,
+    and gives the caller a message naming what to send instead.
+
+    Only ``explicit_account_id`` is checked. A ``force_standalone`` ("new")
+    binding over an existing native key adopts at the ladder's strong-ref step
+    instead of minting, which is the documented re-import idempotency, not a
+    contradiction.
+    """
+    for index, src in enumerate(source_accounts):
+        if not src.explicit_account_id:
+            continue
+        existing = resolver.accepted_native_account_id(src)
+        if existing is None or existing == src.explicit_account_id:
+            continue
+        # Names the positional ref, never source_account_key, for the reason
+        # _apply_account_bindings documents: this reaches an MCP caller intact.
+        raise ValueError(
+            f"account_bindings binds {proposal_ref(index)} to "
+            f"{src.explicit_account_id!r}, but this file's account is already "
+            f"accepted onto {existing!r}. Bind it to {existing!r}, or re-point "
+            "the existing link first."
+        )
 
 
 class PdfAccountIdentity(NamedTuple):
@@ -1688,6 +1742,7 @@ class ImportService:
         ``disposition="rollback"`` because raising is this call's success case.
         """
         source_accounts = _apply_account_bindings(source_accounts, bindings or {})
+        _refuse_contradicted_bindings(resolver, source_accounts)
         wanted_fallback = set(fallback_keys)
         proposals: list[AccountProposalDict] = []
         # enumerate over the FULL list, not the surfaced subset: bindings are

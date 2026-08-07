@@ -21,6 +21,9 @@ from tests.moneybin.db_helpers import create_core_tables
 
 _STANDARD_CSV = Path(__file__).parents[2] / "fixtures" / "tabular" / "standard.csv"
 _MINIMAL_OFX = Path(__file__).parents[2] / "fixtures" / "ofx" / "sample_minimal.ofx"
+_MULTI_ACCOUNT_OFX = (
+    Path(__file__).parents[2] / "fixtures" / "ofx" / "multi_account_sample.ofx"
+)
 
 
 def _seed_existing_account(db: Database, *, account_id: str, display_name: str) -> None:
@@ -1044,6 +1047,73 @@ def test_ofx_reimport_does_not_re_ask(
     assert result.transactions == 2
 
 
+def _second_ofx_statement(tmp_path: Path) -> Path:
+    """A later statement for the SAME <ACCTID>, carrying rows the first one lacks.
+
+    The distinct FITIDs are the point: ingest upserts on them, so re-importing
+    the original file would leave the row count flat and make the assertion
+    that nothing new landed vacuous.
+    """
+    path = tmp_path / "sample_minimal_february.ofx"
+    path.write_text(
+        _MINIMAL_OFX
+        .read_text()
+        .replace("FITID001", "FITID003")
+        .replace("FITID002", "FITID004")
+    )
+    return path
+
+
+def test_an_ofx_binding_that_contradicts_a_remembered_link_loads_nothing(
+    db: Database, tmp_path: Path
+) -> None:
+    """A binding the resolver will reject must stop before raw ingest, not after.
+
+    ``_gate_account_proposals`` skips any account already carrying
+    ``explicit_account_id``, so a binding walks past the gate untouched. OFX
+    then ingested all four raw frames *before* ``resolver.resolve()`` reached
+    ``_write_native_mapping``'s conflict guard, and that guard's ``except`` only
+    finalized the batch ``failed`` — it deleted nothing.
+    ``prep.stg_ofx__transactions`` filters on ``_row_num``, never on import
+    status, and its LEFT JOIN still found the *pre-existing* link. So the caller
+    asked for account B, was told the import failed, and got the rows under
+    account A anyway: exactly the silent mis-attribution this gate exists to
+    prevent, reached through the one path that skips the gate.
+    """
+    twin = _seed_twin(db, _OFX_TWIN)
+    svc = ImportService(db)
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(_MINIMAL_OFX, refresh=False, confirm=True, actor_kind="human")
+    key = exc.value.outcome.account_proposals[0]["source_account_key"]
+    # Answer "new": the <ACCTID> is now remembered against a freshly minted
+    # account, which is what the next binding will contradict.
+    svc.import_file(
+        _MINIMAL_OFX,
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        account_bindings={key: "new"},
+    )
+
+    with pytest.raises(ValueError, match="already accepted"):
+        svc.import_file(
+            _second_ofx_statement(tmp_path),
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: twin},
+        )
+
+    # The refusal costs nothing downstream: the first import's two rows are all
+    # that exist, and no second batch was ever opened.
+    for table, expected in (
+        ("raw.ofx_transactions", 2),
+        ("raw.import_log", 1),
+    ):
+        n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # fixed table list, not user input
+        assert n is not None and n[0] == expected, table
+
+
 # --- positional proposal refs --------------------------------------------
 # The binding map is keyed on source_account_key, which every channel derives
 # from file *content* (OFX <ACCTID>, PDF issuer+last4, tabular's account-name
@@ -1178,6 +1248,82 @@ def test_a_raw_source_key_still_binds(db: Database) -> None:
         "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native'"
     ).fetchone()
     assert linked is not None and linked[0] == 1
+
+
+def _ofx_with_acctids(tmp_path: Path, *acctids: str) -> Path:
+    """An OFX file whose <ACCTID>s are exactly ``acctids``.
+
+    OFX hands <ACCTID> through verbatim as ``source_account_key``, and it is
+    untrusted file content — an issuer can emit any string, including one
+    shaped like the positional vocabulary. Only this channel can produce that
+    collision: tabular slugifies its account column and PDF derives issuer+last4.
+    """
+    source = _MULTI_ACCOUNT_OFX if len(acctids) > 1 else _MINIMAL_OFX
+    text = source.read_text()
+    for placeholder, acctid in zip(
+        ("CHECKING1", "SAVINGS1") if len(acctids) > 1 else ("1111",),
+        acctids,
+        strict=True,
+    ):
+        text = text.replace(
+            f"<ACCTID>{placeholder}</ACCTID>", f"<ACCTID>{acctid}</ACCTID>"
+        )
+    path = tmp_path / f"acctids_{'_'.join(acctids)}.ofx".replace("@", "at")
+    path.write_text(text)
+    return path
+
+
+def test_a_source_key_spelled_like_another_accounts_ref_is_refused(
+    db: Database, tmp_path: Path
+) -> None:
+    """`@1` naming account 0 and account 1 at once has no safe reading.
+
+    Source-key-wins is the right precedence — a key of "@0" must not bind both
+    its own account and proposal zero — but applied *silently* it delivered the
+    answer to the wrong account: "@1" bound account 0 by its raw key, while
+    account 1 saw no binding and stayed gated. The caller could not recover
+    either, because a masking surface hands ``source_account_key`` back as
+    ****1234, so the only referent it can reproduce for account 1 is the ref
+    that just missed. Refuse the ambiguity rather than pick a reading nobody
+    can see.
+    """
+    svc = ImportService(db)
+    with pytest.raises(ValueError, match="@1"):
+        svc.import_file(
+            _ofx_with_acctids(tmp_path, "@1", "2222"),
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"@1": "new"},
+        )
+    # Refused before begin_import, like every other binding rejection.
+    for table in ("raw.ofx_transactions", "app.account_links", "raw.import_log"):
+        n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # fixed table list, not user input
+        assert n is not None and n[0] == 0, table
+
+
+def test_a_source_key_that_matches_its_own_ref_still_binds(
+    db: Database, tmp_path: Path
+) -> None:
+    """A lone account keyed "@0" is not ambiguous — both readings are itself.
+
+    The refusal above has to turn on the two readings *disagreeing*, not on the
+    spelling. Refusing every collision would strand this file instead, with no
+    referent left that names its one account.
+    """
+    svc = ImportService(db)
+    svc.import_file(
+        _ofx_with_acctids(tmp_path, "@0"),
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        account_bindings={"@0": "new"},
+    )
+    linked = db.execute(
+        "SELECT account_id FROM app.account_links WHERE ref_kind = 'source_native' "
+        "AND ref_value = '@0' AND status = 'accepted'"
+    ).fetchone()
+    assert linked is not None and linked[0]
 
 
 @pytest.mark.parametrize(
@@ -1427,13 +1573,16 @@ def test_restating_the_pin_as_a_binding_is_not_a_conflict(db: Database) -> None:
     assert result.transactions > 0
 
 
-def test_a_source_key_shaped_like_a_ref_binds_only_its_own_account() -> None:
-    """A file whose own key reads as "@0" must not also answer proposal zero.
+def test_a_source_key_shaped_like_another_accounts_ref_is_refused() -> None:
+    """A file whose own key reads as "@0" must not quietly answer proposal zero.
 
     ``source_account_key`` is untrusted file content on the OFX channel — it is
-    the ``<ACCTID>`` verbatim — so a key of "@0" collided with the positional
-    vocabulary and bound BOTH accounts to one id: exactly the silent merge the
-    gate exists to prevent, reached through the answer rather than the file.
+    the ``<ACCTID>`` verbatim — so a key of "@0" collides with the positional
+    vocabulary. Letting it bind BOTH accounts would be the silent merge the gate
+    exists to prevent. Letting the source key win *silently* is the mirror of
+    that mistake: the answer lands on the account the caller was not looking at,
+    while the one they meant stays gated behind a ref that no longer reaches it.
+    Neither reading is safe, so the ambiguity is refused and named.
     """
     from moneybin.services.account_resolution_types import SourceAccount
     from moneybin.services.import_service import (
@@ -1448,10 +1597,14 @@ def test_a_source_key_shaped_like_a_ref_binds_only_its_own_account() -> None:
             account_name=f"sample-bank {key}",
         )
 
-    targets = _resolve_binding_targets(
-        [_src("1111"), _src("@0")], {"@0": "acct_target01"}
-    )
-    assert targets == [None, "acct_target01"]
+    with pytest.raises(ValueError, match="ambiguous"):
+        _resolve_binding_targets([_src("1111"), _src("@0")], {"@0": "acct_target01"})
+
+    # Same index is not a collision: both readings name the one account, so
+    # there is nothing to disambiguate and the file stays bindable.
+    assert _resolve_binding_targets([_src("@0")], {"@0": "acct_target01"}) == [
+        "acct_target01"
+    ]
 
 
 def test_one_account_split_across_statements_asks_once(

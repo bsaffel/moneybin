@@ -384,6 +384,22 @@ class AccountResolver:
         """Return display_name from core.dim_accounts for a candidate account_id."""
         return fetch_display_name(self._db, account_id)
 
+    def accepted_native_account_id(self, src: SourceAccount) -> str | None:
+        """The canonical account this source's native key is already accepted onto.
+
+        Read-only, and shared with the import gate so both layers ask the same
+        question of the same row: the gate refuses a contradicting binding
+        before anything loads, and ``_write_native_mapping`` below stays the
+        backstop for every path that does not run the gate.
+        """
+        row = self._db.execute(
+            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+            "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
+            [src.source_type, src.source_origin, src.source_account_key],
+        ).fetchone()
+        return row[0] if row is not None else None
+
     def _write_native_mapping(
         self, src: SourceAccount, *, account_id: str, decided_by: str
     ) -> None:
@@ -395,17 +411,12 @@ class AccountResolver:
         explicit, surfaced operation (M1S.5), never an implicit import-time side
         effect (spec "Magic stays visible").
         """
-        existing = self._db.execute(
-            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
-            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
-            "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
-            [src.source_type, src.source_origin, src.source_account_key],
-        ).fetchone()
+        existing = self.accepted_native_account_id(src)
         if existing is not None:
-            if existing[0] != account_id:
+            if existing != account_id:
                 raise ValueError(
                     "account_links: source_native already accepted for a different "
-                    f"account_id; existing={existing[0]!r}, requested={account_id!r}"
+                    f"account_id; existing={existing!r}, requested={account_id!r}"
                 )
             return
         self._links.insert(
