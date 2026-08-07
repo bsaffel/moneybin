@@ -126,14 +126,20 @@ def _contains_on_word_boundaries(container: str, contained: str) -> str:
     them apart. What differs is how much matched *whole*: a real truncation
     usually cuts several words in, and those earlier whole words are the evidence
     a bare one-word prefix does not have. So the match must either end on a word
-    boundary too, or carry at least one complete word before its partial tail.
-    Normalization collapses whitespace runs and trims, so an interior space is a
-    reliable "more than one word".
+    boundary too, or carry a complete word before its partial tail.
+
+    That complete word must itself name something. Counting any word would let
+    boilerplate stand in as evidence — `CARD SHELL` against `CARD SHELLYS CAFE`
+    shares nothing but a word every card description carries and a cut-off
+    fragment, which is the one-word-prefix hole again with a prefix on it. So the
+    test runs over the contained side minus its final token: everything that
+    matched whole, and nothing that did not.
     """
+    whole_prefix = f"array_to_string(string_split({contained}, ' ')[1:-2], ' ')"
     padded = f"contains(' ' || {container} || ' ', ' ' || {contained} || ' ')"
     partial_tail = (
         f"contains(' ' || {container}, ' ' || {contained}) "
-        f"AND contains({contained}, ' ')"
+        f"AND {_carries_a_merchant_token(whole_prefix)}"
     )
     return f"({padded} OR ({partial_tail}))"
 

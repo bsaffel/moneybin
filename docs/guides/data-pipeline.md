@@ -220,8 +220,9 @@ descriptions agree — one contained in the other on word boundaries and carryin
 word that names a merchant rather than only boilerplate or digits, or the two
 identical (identical boilerplate counts only when both rows posted the same day).
 A match may end mid-word, as a truncating source produces, only when a whole word
-matched before the cut, so a bare one-word prefix like `SHELL` inside `SHELLY'S
-CAFE` goes to review rather than merging:
+naming a merchant matched before the cut — so `SHELL` inside `SHELLY'S CAFE` goes
+to review, and so does `CARD SHELL` inside `CARD SHELLY'S CAFE`, where the only
+whole word shared is boilerplate:
 
 - `>= high_confidence_threshold` (default `0.95`) **and descriptions agree** → auto-accept, written to `app.match_decisions` with `match_status = 'accepted'`.
 - Anything else, cross-source → the review queue (`moneybin transactions matches pending` lists them; `moneybin review --type matches --status` reports the count). No cross-source candidate is discarded for scoring low.

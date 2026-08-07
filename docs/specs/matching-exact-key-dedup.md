@@ -203,13 +203,18 @@ in the strings separates the two — a prefix that is a whole merchant on its ow
 as likely a coincidence as a truncation. What differs is how much matched *whole*:
 a fixed-width truncation usually cuts several tokens in, and those complete tokens
 are evidence a bare one-token prefix does not have. So the match must end on a
-token boundary too, *or* the contained side must hold at least one interior space.
-`STARBUCKS STO` still relates to the full string; `SHELL` no longer does, and
-reaches Tier 3 review instead of merging silently. Normalization collapses
-whitespace runs and trims, so an interior space is a reliable "more than one
-token". The cost is the single-token truncation, which now costs a review click;
-the asymmetry pays for it, since the merge it prevents deletes a real charge with
-no review entry.
+token boundary too, *or* the contained side must carry a complete token before its
+partial tail. `STARBUCKS STO` still relates to the full string; `SHELL` no longer
+does, and reaches Tier 3 review instead of merging silently. The cost is the
+single-token truncation, which now costs a review click; the asymmetry pays for
+it, since the merge it prevents deletes a real charge with no review entry.
+
+**That complete token must be substantive.** Accepting any token lets boilerplate
+stand in as the evidence: `CARD SHELL` and `CARD SHELLYS CAFE` share only a token
+every card description carries plus a cut-off fragment, which is the one-token
+prefix hole again wearing a prefix. The merchant-token test therefore runs over
+the contained side *minus its final token* — everything that matched whole, and
+nothing that did not.
 
 **Exact equality is exempt from the merchant-token requirement on the same day.**
 The rule guards against a short *fragment* hiding inside a longer string; two

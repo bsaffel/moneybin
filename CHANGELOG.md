@@ -432,10 +432,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   buried inside a longer word — `ARCO` and `MARCOS PIZZA` name different
   merchants and no longer agree. A shared string may still stop mid-word, which
   is what a source truncating to a fixed width does, but only when a whole word
-  matched before the cut: `STARBUCKS STO` agrees with `STARBUCKS STORE 1234 NEW
-  YORK NY`, while a bare `SHELL` no longer agrees with `SHELLY'S CAFE` — one word
-  that happens to begin another is as easily two merchants as one truncation, and
-  that pair now goes to review. Which existing duplicates
+  naming a merchant matched before the cut: `STARBUCKS STO` agrees with
+  `STARBUCKS STORE 1234 NEW YORK NY`, while a bare `SHELL` no longer agrees with
+  `SHELLY'S CAFE` — one word that happens to begin another is as easily two
+  merchants as one truncation, and that pair now goes to review. Boilerplate does
+  not count as the word that matched, so `CARD SHELL` and `CARD SHELLY'S CAFE`
+  are reviewed too rather than merged on a word every card description carries. Which existing duplicates
   merge and which go to review both change on
   the next `refresh`. `matching.date_window_days` is shared with transfer
   detection, so its new default widens that candidate window too.

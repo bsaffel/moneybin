@@ -1132,6 +1132,50 @@ class TestGetCandidatesCrossSource:
         assert len(candidates) == 1
         assert candidates[0].descriptions_agree is False
 
+    def test_a_boilerplate_word_is_not_the_evidence_a_partial_tail_needs(
+        self, unioned_table: Database
+    ) -> None:
+        """The word that matched whole has to name something.
+
+        Requiring a complete word before a partial tail is only worth anything if
+        that word is evidence. `CARD` is not — every card description carries it,
+        so `CARD SHELL` clears the bar against `CARD SHELLYS CAFE` while the only
+        thing genuinely shared is boilerplate and a cut-off fragment. That is the
+        one-word-prefix hole again, wearing a prefix.
+
+        Isolation: containment holds and starts at a token boundary, the contained
+        side has an interior space, and it carries a merchant token (`SHELL`), so
+        every other guard passes. Only the substantive-word requirement refuses it.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_xyz",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-20.00",
+            description="CARD SHELL",
+            source_type="ofx",
+            source_origin="chase_ofx",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_abc",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-20.00",
+            description="CARD SHELLY'S CAFE",
+            source_type="csv",
+            source_origin="chase",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].descriptions_agree is False
+
     def test_punctuation_alone_does_not_defeat_agreement(
         self, unioned_table: Database
     ) -> None:
