@@ -606,6 +606,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   deleted from imported data — a row is only suppressed when a replacement
   carries identical content, and one whose description drifted between
   statements is left for duplicate review rather than silently removed.
+  Suppression is keyed on MoneyBin's own record of which ids it rewrote, not on
+  spotting the suffix in the id text: the OFX format does not reserve `#`, so a
+  bank is free to issue `X` and `X#reference` as two ordinary unrelated ids, and
+  reading the second as a replacement for the first would delete a real
+  transaction. Statements imported before this release are treated as they were
+  until you re-import them.
 - **A replacement card no longer lands as a second account with no trace
   (#375).** A reissued card changes its last four digits by definition, so the
   institution+last-four match cannot fire, and on the PDF path the account name

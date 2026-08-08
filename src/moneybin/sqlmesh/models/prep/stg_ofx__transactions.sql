@@ -10,6 +10,14 @@ MODEL (
    PK carries the id, and the dedup window below partitions on it, so both reach
    core and one real transaction is counted twice.
 
+   Keyed on `fitid_repaired`, which the extractor writes on exactly the rows it
+   rewrote. The marker is NOT evidence: the OFX spec does not reserve '#', so an
+   institution may legitimately mint both 'X' and 'X#reference' for two distinct
+   transactions, and content equality cannot separate that from a repair —
+   identifiers.md is explicit that two genuinely distinct transactions can carry
+   identical content. Inferring provenance from the marker therefore deletes a
+   real transaction, silently and with no review entry. Suppress on proof.
+
    The superseded id is everything before the LAST marker, derived by position
    rather than by matching a pattern against the id: '_' and '%' are LIKE
    wildcards, and a FITID containing either would let a pattern borrow an
@@ -32,7 +40,7 @@ WITH superseding AS (
     check_number
   FROM raw.ofx_transactions
   WHERE
-    CONTAINS(source_transaction_id, '#')
+    fitid_repaired AND CONTAINS(source_transaction_id, '#')
 ), ranked AS (
   SELECT
     t.source_transaction_id,

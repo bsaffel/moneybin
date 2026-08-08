@@ -76,20 +76,25 @@ def _insert_ofx_row(
     memo: str | None = None,
     account_id: str = "ACC1",
     source_origin: str = "chase",
+    fitid_repaired: bool = False,
 ) -> None:
     """Seed one `raw.ofx_transactions` row.
 
     Defaults carry the shape that produced the live failure: a foreign-transaction
     fee sharing its FITID with the purchase that incurred it.
+
+    ``fitid_repaired`` defaults False — the institution's own id, untouched. Pass
+    True only where the extractor would have rewritten it, since that flag is
+    what licenses staging to suppress the id this one superseded.
     """
     db.execute(
         """
         INSERT INTO raw.ofx_transactions (
             source_transaction_id, account_id, transaction_type, date_posted,
             amount, payee, memo, check_number, source_file, extracted_at,
-            loaded_at, source_type, source_origin, currency_code
+            loaded_at, source_type, source_origin, currency_code, fitid_repaired
         ) VALUES (?, ?, 'DEBIT', TIMESTAMP '2026-01-15 00:00:00', ?, ?, ?, NULL,
-                  ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ofx', ?, 'USD')
+                  ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ofx', ?, 'USD', ?)
         """,  # noqa: S608 — test input, not user data
         [
             fitid,
@@ -99,6 +104,7 @@ def _insert_ofx_row(
             memo,
             source_file,
             source_origin,
+            fitid_repaired,
         ],
     )
 
@@ -134,13 +140,16 @@ def test_bare_fitid_is_dropped_when_a_suffixed_twin_matches_its_content(
     """
     _build_staging(db)
     _insert_ofx_row(db, fitid="X", source_file="before.qfx")
-    _insert_ofx_row(db, fitid="X#aaaa1111", source_file="after.qfx")
+    _insert_ofx_row(
+        db, fitid="X#aaaa1111", source_file="after.qfx", fitid_repaired=True
+    )
     _insert_ofx_row(
         db,
         fitid="X#bbbb2222",
         source_file="after.qfx",
         amount="-0.39",
         payee="FOREIGN PURCHASE",
+        fitid_repaired=True,
     )
 
     assert _staged_ids(db) == ["X#aaaa1111", "X#bbbb2222"]
@@ -157,10 +166,47 @@ def test_bare_fitid_survives_when_no_suffixed_twin_matches_its_content(
     """
     _build_staging(db)
     _insert_ofx_row(db, fitid="X", source_file="before.qfx", amount="-13.12")
-    _insert_ofx_row(db, fitid="X#aaaa1111", source_file="after.qfx", amount="-0.39")
-    _insert_ofx_row(db, fitid="X#bbbb2222", source_file="after.qfx", amount="-99.00")
+    _insert_ofx_row(
+        db,
+        fitid="X#aaaa1111",
+        source_file="after.qfx",
+        amount="-0.39",
+        fitid_repaired=True,
+    )
+    _insert_ofx_row(
+        db,
+        fitid="X#bbbb2222",
+        source_file="after.qfx",
+        amount="-99.00",
+        fitid_repaired=True,
+    )
 
     assert _staged_ids(db) == ["X", "X#aaaa1111", "X#bbbb2222"]
+
+
+@pytest.mark.unit
+def test_a_native_marker_in_a_fitid_does_not_delete_its_bare_twin(
+    db: Database,
+) -> None:
+    """The marker is evidence of nothing; only the repair flag licenses a delete.
+
+    The OFX spec does not reserve `#`, so an institution may legitimately mint
+    both `X` and `X#reference` for two distinct transactions. Content equality
+    cannot separate that from a repair — `identifiers.md` is explicit that two
+    genuinely distinct transactions can carry identical content, which is why the
+    occurrence-suffix rule exists at all. Inferring provenance from the marker
+    therefore deletes a real transaction, silently and with no review entry.
+
+    Isolation: the ids, account, origin, and all six hashed fields are exactly
+    the shape that *does* suppress in
+    `test_bare_fitid_is_dropped_when_a_suffixed_twin_matches_its_content`. Only
+    the absent repair flag can keep this row alive.
+    """
+    _build_staging(db)
+    _insert_ofx_row(db, fitid="X", source_file="statement.qfx")
+    _insert_ofx_row(db, fitid="X#reference", source_file="statement.qfx")
+
+    assert _staged_ids(db) == ["X", "X#reference"]
 
 
 @pytest.mark.unit
@@ -177,7 +223,13 @@ def test_supersession_does_not_cross_accounts(db: Database) -> None:
     """FITID uniqueness is per account, so two accounts may reuse one id."""
     _build_staging(db)
     _insert_ofx_row(db, fitid="X", source_file="a.qfx", account_id="ACC1")
-    _insert_ofx_row(db, fitid="X#aaaa1111", source_file="b.qfx", account_id="ACC2")
+    _insert_ofx_row(
+        db,
+        fitid="X#aaaa1111",
+        source_file="b.qfx",
+        account_id="ACC2",
+        fitid_repaired=True,
+    )
 
     assert _staged_ids(db) == ["X", "X#aaaa1111"]
 
@@ -197,7 +249,11 @@ def test_supersession_does_not_cross_institutions(db: Database) -> None:
     _build_staging(db)
     _insert_ofx_row(db, fitid="X", source_file="a.qfx", source_origin="chase")
     _insert_ofx_row(
-        db, fitid="X#aaaa1111", source_file="b.qfx", source_origin="wells_fargo"
+        db,
+        fitid="X#aaaa1111",
+        source_file="b.qfx",
+        source_origin="wells_fargo",
+        fitid_repaired=True,
     )
 
     assert _staged_ids(db) == ["X", "X#aaaa1111"]
