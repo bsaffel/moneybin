@@ -45,6 +45,49 @@ _ACCOUNT_PATTERN = re.compile(r"(?<!\d)(\d{8,})(?!\d)")
 _DOLLAR_PATTERN = re.compile(r"\$[\d,]+(?:\.\d{2})?")
 
 
+def _mask_ssn(text: str) -> tuple[str, bool]:
+    """Mask SSN-shaped substrings; report whether anything matched."""
+    masked = False
+
+    def replacer(_match: re.Match[str]) -> str:
+        nonlocal masked
+        masked = True
+        return "***-**-****"
+
+    return _SSN_PATTERN.sub(replacer, text), masked
+
+
+def _mask_account(text: str) -> tuple[str, bool]:
+    """Mask account-number-shaped substrings; report whether anything matched."""
+    masked = False
+
+    def replacer(match: re.Match[str]) -> str:
+        nonlocal masked
+        masked = True
+        return f"****...{match.group(1)[-4:]}"
+
+    return _ACCOUNT_PATTERN.sub(replacer, text), masked
+
+
+def _mask_dollar(text: str) -> tuple[str, bool]:
+    """Mask dollar-amount-shaped substrings; report whether anything matched."""
+    result = _DOLLAR_PATTERN.sub("$***", text)
+    return result, result != text
+
+
+def mask_pii_shaped(text: str) -> tuple[str, bool]:
+    """Mask SSN- and account-shaped substrings; report whether anything matched.
+
+    Shared by ``SanitizedLogFormatter`` (which adds its own dollar-amount pass)
+    and the ``sql_query`` content-net floor. Dollar amounts are deliberately NOT
+    masked here: a log line should never carry one, but the floor exists so a
+    user can read their own financial data.
+    """
+    result, ssn_masked = _mask_ssn(text)
+    result, account_masked = _mask_account(result)
+    return result, ssn_masked or account_masked
+
+
 class SanitizedLogFormatter(logging.Formatter):
     """Log formatter that detects and masks PII patterns.
 
@@ -90,29 +133,14 @@ class SanitizedLogFormatter(logging.Formatter):
             formatted = self._inner.format(record)
         else:
             formatted = super().format(record)
-        masked = False
 
-        # Mask SSNs
-        def ssn_replacer(match: re.Match[str]) -> str:
-            nonlocal masked
-            masked = True
-            return "***-**-****"
-
-        result = _SSN_PATTERN.sub(ssn_replacer, formatted)
-
-        # Mask dollar amounts
-        new_result = _DOLLAR_PATTERN.sub("$***", result)
-        if new_result != result:
-            masked = True
-            result = new_result
-
-        # Mask account numbers (8+ digit sequences; regex guarantees len >= 8)
-        def account_replacer(match: re.Match[str]) -> str:
-            nonlocal masked
-            masked = True
-            return f"****...{match.group(1)[-4:]}"
-
-        result = _ACCOUNT_PATTERN.sub(account_replacer, result)
+        # Order matters: dollar must run before account, or an 8+ digit
+        # amount (e.g. $12345678.00) gets read as an account number first
+        # and leaks its last four digits instead of being fully masked.
+        result, ssn_masked = _mask_ssn(formatted)
+        result, dollar_masked = _mask_dollar(result)
+        result, account_masked = _mask_account(result)
+        masked = ssn_masked or dollar_masked or account_masked
 
         # Guard against re-entrant calls: if the sanitizer's own warning record
         # is passed back through this formatter (e.g. via the root logger's file
