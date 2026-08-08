@@ -39,6 +39,20 @@ def _masked_pending(entries: list[dict[str, object]]) -> list[dict[str, Any]]:
     ]
 
 
+def _minted_any(processed: list[dict[str, object]]) -> bool:
+    """Whether the drain minted an account on any imported file.
+
+    The rows are service-shaped ``dict[str, object]``, so the list is checked
+    rather than assumed: a malformed entry must not raise on the drain's own
+    success path.
+    """
+    for entry in processed:
+        created = entry.get("accounts_created")
+        if isinstance(created, list) and created:
+            return True
+    return False
+
+
 def _print_sync_text(result: InboxSyncResult) -> None:
     """Render a sync result as human-readable text."""
     processed = result.processed
@@ -160,9 +174,18 @@ def inbox_default(
         # candidates include account display names (DESCRIPTION/medium). The
         # CLI has no privacy middleware, so the envelope's declared tier is the
         # only sensitivity signal a JSON consumer sees; declare medium when any
-        # pending entry exists (mirrors the MCP import_files rule). Processed,
-        # failed, skipped, and ignored entries carry only paths and counts (low).
-        sensitivity = "medium" if result.pending else "low"
+        # pending entry exists (mirrors the MCP import_files rule).
+        #
+        # A drain that minted an account is medium for the same reason, with
+        # nothing pending to raise the tier on its behalf: accounts_created[]
+        # .display_name is USER_NOTE. It is counted here rather than derived
+        # because the payload below is dataclasses.asdict output — a bare dict,
+        # so render_or_json's walk never reaches the annotation and the low
+        # fallback would stand in the privacy audit record. Every other
+        # processed, failed, skipped, and ignored key is a path or a count.
+        sensitivity = (
+            "medium" if result.pending or _minted_any(result.processed) else "low"
+        )
         payload = dataclasses.asdict(result)
         payload["pending"] = _masked_pending(result.pending)
         render_or_json(

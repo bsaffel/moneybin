@@ -238,6 +238,38 @@ def test_inbox_drain_json_pending_is_medium_sensitivity(
     assert payload["summary"]["sensitivity"] == "medium"
 
 
+def test_inbox_drain_json_minted_account_is_medium_sensitivity(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """A minted account is medium even when nothing is pending.
+
+    ``accounts_created[].display_name`` is the source's own label for an account
+    the drain just minted (USER_NOTE/medium), and a clean drain that mints is
+    the common first-import case — no pending entry to raise the tier on its
+    behalf. The tier cannot be derived here either: the branch builds its
+    payload with ``dataclasses.asdict``, so ``render_or_json`` sees a bare dict
+    and leaves the ``low`` fallback standing in the privacy audit record.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[
+            {
+                "filename": "march.ofx",
+                "transactions": 47,
+                "accounts_created": [
+                    {"account_id": "9f8e7d6c5b4a", "display_name": "Chase Checking"}
+                ],
+            }
+        ],
+        pending=[],
+    )
+
+    result = runner.invoke(app, ["import", "inbox", "--output", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["summary"]["sensitivity"] == "medium"
+
+
 def test_inbox_drain_names_accounts_it_minted(
     runner: CliRunner, patch_inbox: MagicMock
 ) -> None:
