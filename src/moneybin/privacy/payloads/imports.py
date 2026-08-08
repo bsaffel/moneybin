@@ -145,6 +145,47 @@ class ImportConfirmationPayload(TypedDict, total=False):
 
 
 @dataclass(frozen=True, slots=True)
+class CLIConfirmationRequiredPayload:
+    """The CLI's ``confirmation_required`` envelope ``data``.
+
+    A dataclass rather than the ``ImportConfirmationPayload`` TypedDict it
+    otherwise mirrors, because ``render_or_json`` gates the redaction walk on
+    ``type(envelope.data)`` and a TypedDict instance is a bare ``dict`` at
+    runtime — it carries no annotation to find, so the walk is skipped and
+    ``account_proposals[].source_account_key`` (the institution's own account
+    number on the OFX channel) ships in cleartext on the surface built to be
+    machine-read.
+
+    Distinct from MCP's ``ImportConfirmRequiredPayload``, which requires a
+    ``preview_id`` the CLI never mints — previews are an MCP concept. The nested
+    types are shared, so both surfaces mask the same fields by the same
+    declarations rather than by two hand-maintained lists.
+
+    Every field is emitted unconditionally, matching the dict this replaced:
+    ``confirmation_payload_dict`` returns all keys on every channel, so the
+    serialized shape is unchanged.
+    """
+
+    status: Annotated[str, DataClass.TXN_TYPE]
+    channel: Annotated[str, DataClass.TXN_TYPE]
+    tier: Annotated[str, DataClass.AGGREGATE]
+    score: Annotated[float, DataClass.AGGREGATE]
+    reason: Annotated[str, DataClass.TXN_TYPE]
+    error_message: Annotated[str | None, DataClass.DESCRIPTION]
+    proposed_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
+    samples: Annotated[dict[str, list[str]], DataClass.DESCRIPTION]
+    flagged: Annotated[list[str], DataClass.TXN_TYPE]
+    missing_required: Annotated[list[str], DataClass.TXN_TYPE]
+    unmapped_columns: Annotated[list[str], DataClass.TXN_TYPE]
+    bridge_payload: ImportConfirmationBridgePayload | None
+    sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    sign_prior_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
+    sign_sample_rows: list[ImportConfirmationSignSample]
+    account_proposals: list[ImportConfirmationAccountProposal]
+
+
+@dataclass(frozen=True, slots=True)
 class ImportPerFileRow:
     """Per-file outcome inside ImportFilesPayload.files."""
 

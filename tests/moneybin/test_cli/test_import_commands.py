@@ -492,6 +492,99 @@ class TestImportFilesCommand:
         payload = json.loads(result.output)
         assert payload["summary"]["sensitivity"] == "medium"
 
+    def test_batch_confirmation_payload_masks_the_institutions_account_number(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """The multi-file twin of the single-file leak, and it escapes the same way.
+
+        ``render_or_json`` derives its redaction walk from
+        ``type(envelope.data)``, and this path hands it a bare dict — a dict
+        carries no ``Annotated`` field, so ``has_active_transform`` is False and
+        the walk never starts. Nothing below it is reached either, including the
+        ``ImportConfirmationPayload`` nested here, whose ``source_account_key``
+        is declared ACCOUNT_IDENTIFIER precisely so it masks.
+
+        On the OFX channel that key is the ``<ACCTID>`` the *institution*
+        issued — a real account number. MoneyBin's own minted account ids
+        (``proposed_account_id``, ``candidates[].account_id``) and the
+        positional ``proposal_ref`` are RECORD_ID and must stay readable: they
+        are what a caller binds to, so masking them would break the confirm gate
+        without protecting anything. Both directions are asserted so a future
+        declaration that confuses the two identifiers fails here.
+        """
+        import json
+
+        from moneybin.services.account_resolution_types import (
+            AccountCandidate,
+            AccountProposal,
+        )
+
+        # Two files on purpose: one path takes the single-file branch, which is
+        # already covered by its own leak test. This must exercise
+        # `_batch_payload`, and only a real multi-file invocation reaches it.
+        ofx = tmp_path / "statement.ofx"
+        other = tmp_path / "b.ofx"
+        ofx.touch()
+        other.touch()
+        acctid = "000123456789"
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(ofx),
+                    status="confirmation_required",
+                    source_type=None,
+                    rows_loaded=0,
+                    import_id=None,
+                    confirmation_payload={
+                        "channel": "ofx",
+                        "account_proposals": [
+                            AccountProposal(
+                                source_account_key=acctid,
+                                proposed_account_id="prov12345678",
+                                is_new=True,
+                                candidates=(
+                                    AccountCandidate(
+                                        account_id="cand87654321",
+                                        display_name="Checking",
+                                        confidence=0.5,
+                                        signal="name",
+                                    ),
+                                ),
+                            ).to_dict(proposal_ref="@0")
+                        ],
+                    },
+                ),
+                PerFileResult(
+                    path=str(other),
+                    status="imported",
+                    source_type="ofx",
+                    rows_loaded=1,
+                    import_id="x",
+                ),
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=None,
+        )
+
+        result = runner.invoke(app, ["files", str(ofx), str(other), "--output", "json"])
+
+        payload = json.loads(result.output)
+        assert acctid not in json.dumps(payload["data"])
+        proposal = payload["data"]["files"][0]["confirmation_payload"][
+            "account_proposals"
+        ][0]
+        # The institution's own account number: masked.
+        assert proposal["source_account_key"] == "****6789"
+        # MoneyBin's own ids and the positional referent: readable, because
+        # these are what an answer names.
+        assert proposal["proposal_ref"] == "@0"
+        assert proposal["proposed_account_id"] == "prov12345678"
+        assert proposal["candidates"][0]["account_id"] == "cand87654321"
+
     def test_failed_file_json_carries_error_code_and_hint(
         self,
         runner: CliRunner,
@@ -1135,15 +1228,25 @@ class TestConfirmationEnvelopeData:
         from moneybin.cli.commands.import_cmd import _confirmation_envelope_data
 
         data = _confirmation_envelope_data(self._bridge_outcome())
-        assert data["bridge_payload"] == {"ir": "request"}
+        assert data.bridge_payload == {"ir": "request"}
 
     def test_matches_canonical_helper_plus_status(self) -> None:
+        """The typed payload must carry the canonical dict field-for-field.
+
+        Compared through ``asdict`` rather than by dropping the type: the type
+        is what makes ``render_or_json`` walk the payload and mask the
+        institution's account number, and the equality here is what keeps a new
+        channel field from landing in ``confirmation_payload_dict`` alone and
+        silently vanishing from the CLI envelope.
+        """
+        from dataclasses import asdict
+
         from moneybin.cli.commands.import_cmd import _confirmation_envelope_data
         from moneybin.services.import_confirmation import confirmation_payload_dict
 
         outcome = self._bridge_outcome()
         data = _confirmation_envelope_data(outcome)
-        assert data == {
+        assert asdict(data) == {
             "status": "confirmation_required",
             **confirmation_payload_dict(outcome),
         }

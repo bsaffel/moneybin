@@ -8,6 +8,8 @@ from typing import Any
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.privacy.payloads.imports import ImportConfirmationAccountProposal
+from moneybin.privacy.redaction import redact_typed
 from moneybin.services.inbox_service import InboxService, InboxSyncResult
 
 app = typer.Typer(
@@ -55,11 +57,16 @@ def _print_sync_text(result: InboxSyncResult) -> None:
             raw_props: Any = item.get("account_proposals")
             proposals: list[Any] = raw_props if isinstance(raw_props, list) else []
             for p in proposals:
-                # Same shape as _echo_account_proposals: ref first, then the
-                # source key. The gate accepts either as the binding's key.
+                # Same shape as _echo_account_proposals, masking included: on
+                # OFX this key is the institution's own <ACCTID>, and stderr is
+                # not exempt from the redaction contract. The ref is the answer;
+                # the masked key only tells two proposals apart.
+                masked = redact_typed(
+                    p, consent=None, declared_type=ImportConfirmationAccountProposal
+                )
                 typer.echo(
-                    f"     {p.get('proposal_ref', '')}  source key: "
-                    f"{p.get('source_account_key', '<source_key>')}",
+                    f"     {p.get('proposal_ref', '')}  account: "
+                    f"{masked.get('source_account_key', '<account>')}",
                     err=True,
                 )
                 raw_cands: Any = p.get("candidates")

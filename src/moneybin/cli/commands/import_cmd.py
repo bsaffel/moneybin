@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
+    from moneybin.privacy.payloads.imports import CLIConfirmationRequiredPayload
     from moneybin.repositories.pdf_formats_repo import PdfFormat
     from moneybin.services.import_confirmation import (
         ConfirmationRequired,
@@ -760,7 +761,20 @@ def _batch_payload(
     the synthesized single-file failure — because the per-file row shape is a
     public contract that agents branch on. Two inline copies is how `error` and
     `hint` reached one surface and not the other.
+
+    The rows stay a bare dict rather than becoming the typed payload MCP uses,
+    because the omitted keys below are themselves the contract: a dataclass
+    emits every field, so `error`, `hint`, `accounts_created`, and
+    `confirmation_payload` would start arriving as `null` on every row. That is
+    why the one field carrying a real account number is masked explicitly.
     """
+    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+        ImportConfirmationPayload,
+    )
+    from moneybin.privacy.redaction import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+        redact_typed,
+    )
+
     files_list = [
         {
             "path": r.path,
@@ -798,8 +812,23 @@ def _batch_payload(
             # protected_root). `hint` says it in prose; this is what a script
             # branches on without matching that prose.
             **({"details": r.details} if r.details else {}),
+            # Masked here rather than by the envelope walk, which never reaches
+            # it: `render_or_json` starts that walk only when
+            # `type(envelope.data)` declares a transform, and this payload is a
+            # bare dict that declares nothing. On the OFX channel
+            # `account_proposals[].source_account_key` is the <ACCTID> the
+            # institution issued, so skipping the walk shipped a real account
+            # number. Masking by the shared `ImportConfirmationPayload`
+            # declarations — the same ones MCP's typed row uses — rather than by
+            # a field list here, so one declaration still governs both surfaces.
             **(
-                {"confirmation_payload": r.confirmation_payload}
+                {
+                    "confirmation_payload": redact_typed(
+                        r.confirmation_payload,
+                        consent=None,
+                        declared_type=ImportConfirmationPayload,
+                    )
+                }
                 if r.confirmation_payload
                 else {}
             ),
@@ -926,8 +955,10 @@ def _single_file_failure(file_path: Path, exc: Exception) -> BatchImportResult:
     )
 
 
-def _confirmation_envelope_data(outcome: ConfirmationRequired) -> dict[str, Any]:
-    """Build the ``confirmation_required`` envelope ``data`` dict from an outcome.
+def _confirmation_envelope_data(
+    outcome: ConfirmationRequired,
+) -> CLIConfirmationRequiredPayload:
+    """Build the ``confirmation_required`` envelope ``data`` from an outcome.
 
     Shared by ``import files`` and ``import confirm`` so the JSON shape cannot
     drift between the two surfaces. Delegates to the canonical
@@ -936,12 +967,26 @@ def _confirmation_envelope_data(outcome: ConfirmationRequired) -> dict[str, Any]
     place; this wrapper only prepends the CLI-envelope ``status`` field. The
     per-command ``actions[]`` hints differ (files-level vs confirm-subcommand
     context) and stay in the callers.
+
+    Typed, not the bare dict it used to be: ``render_or_json`` derives both the
+    redaction walk and the audit log's ``classes_returned`` from
+    ``type(envelope.data)``, and a bare dict declares nothing. That shipped the
+    institution's own account number — the OFX ``<ACCTID>`` behind
+    ``account_proposals[].source_account_key`` — unmasked, and recorded no
+    classes for it. MoneyBin's own minted account ids stay readable through the
+    same walk: they are RECORD_ID, and they are what an answer names.
     """
+    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+        CLIConfirmationRequiredPayload,
+    )
     from moneybin.services.import_confirmation import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
         confirmation_payload_dict,
     )
 
-    return {"status": "confirmation_required", **confirmation_payload_dict(outcome)}
+    return CLIConfirmationRequiredPayload(
+        status="confirmation_required",
+        **cast(Any, confirmation_payload_dict(outcome)),
+    )
 
 
 def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None:
@@ -950,15 +995,36 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
     Shared by the interactive `import files` prompt (stdout) and the `import
     confirm` error path (stderr) so the binding info a user must reference never
     diverges between the two surfaces.
+
+    The terminal gets the same masking the JSON envelope gets. It does not reach
+    ``render_or_json``, so no redaction walk runs here on its own — and on the
+    OFX channel ``source_account_key`` is the ``<ACCTID>`` the institution
+    issued, which this gate is what first routes through this function.
+    `.claude/rules/cli.md` allows no CLI exemption: "never assume CLI users are
+    'trusted enough to skip redaction'".
+
+    The masked key is printed as context, never as an answer — it is a
+    disambiguator when one file proposes several accounts, and it is not
+    typeable. ``proposal_ref`` is the answer, on every channel.
     """
+    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+        ImportConfirmationAccountProposal,
+    )
+    from moneybin.privacy.redaction import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+        redact_typed,
+    )
+
     if not outcome.account_proposals:
         return
     typer.echo("\n   Account binding required:", err=err)
     for p in outcome.account_proposals:
+        masked = redact_typed(
+            p, consent=None, declared_type=ImportConfirmationAccountProposal
+        )
         # Lead with the ref: it is what --account-binding takes on both
         # surfaces, and the only half of this line an MCP caller can read.
         typer.echo(
-            f"     {p['proposal_ref']}  source key: {p['source_account_key']}",
+            f"     {p['proposal_ref']}  account: {masked['source_account_key']}",
             err=err,
         )
         for c in p["candidates"]:
@@ -985,6 +1051,46 @@ def _tabular_recovery_args(
         for field, value in metadata.items():
             args.extend(("--account-meta", f"{source_key}:{field}={value}"))
     return args
+
+
+def _import_files_account_args(
+    *,
+    institution: str | None,
+    account_id: str | None,
+    account_name: str | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+) -> str:
+    """Serialize the account-identity options onto an ``import files`` recovery.
+
+    The `import confirm` twin of this lives in ``_import_confirm_command``; this
+    one exists because the sign recoveries re-run ``import files`` instead. Both
+    gates can fire on one file, and the sign gate goes first on PDF — so a sign
+    recovery is routinely the command a caller re-runs while still holding an
+    account pin they must not lose.
+
+    Returns a leading-space-prefixed fragment (or ``""``) so callers can splice
+    it into a sentence without emitting a double space when nothing is set.
+    """
+    import shlex  # noqa: PLC0415
+
+    parts: list[str] = []
+    if institution is not None:
+        parts.extend(("--institution", institution))
+    if account_id is not None:
+        parts.extend(("--account-id", account_id))
+    if account_name is not None:
+        parts.extend(("--account-name", account_name))
+    # mapping=None: a mapping override is tabular-only, and this fragment serves
+    # the channels that have none. The binding/metadata serialization is shared.
+    parts.extend(
+        _tabular_recovery_args(
+            mapping=None,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
+    )
+    return f" {shlex.join(parts)}" if parts else ""
 
 
 def _import_confirm_command(
@@ -1196,20 +1302,38 @@ def _sign_recovery_commands(
     )
 
     quoted = shlex.quote(file_path_str)
+    # The account-identity options ride along on every one of these, exactly as
+    # the tabular branch above threads them through _import_confirm_command. On
+    # PDF the sign gate raises BEFORE the account gate, so this is the command a
+    # caller who already passed --account-id gets handed; without the pin, the
+    # command MoneyBin prints re-imports under auto-matching and binds something
+    # the caller never chose.
+    acct = _import_files_account_args(
+        institution=institution,
+        account_id=account_id,
+        account_name=account_name,
+        account_bindings=account_bindings,
+        account_metadata=account_metadata,
+    )
     if prior_sign is None:
         return [
-            f"If it IS a credit card: moneybin import files {quoted} --confirm "
-            "(records charges as expenses, payments as credits).",
+            f"If it IS a credit card: moneybin import files {quoted} "
+            f"--confirm{acct} (records charges as expenses, payments as credits).",
             f"If it is NOT a credit card: moneybin import files {quoted} "
-            "--sign negative_is_expense (records amounts exactly as printed).",
+            f"--sign negative_is_expense{acct} "
+            "(records amounts exactly as printed).",
         ]
 
     accepted = proposed_sign or "the re-derived convention"
+    # No sentence-ending period: the command runs to the end of the line, so a
+    # period would glue onto the final argument and a pasted command would carry
+    # it (`--confirm.`, or a metadata value ending in `.`). The branch above
+    # closes with a parenthetical instead, which is why it can keep its period.
     return [
         f"Accept the change — {sign_convention_effect(accepted)}: "
-        f"moneybin import files {quoted} --confirm.",
+        f"moneybin import files {quoted} --confirm{acct}",
         f"Keep the previous convention — {sign_convention_effect(prior_sign)}: "
-        f"moneybin import files {quoted} --sign {prior_sign}.",
+        f"moneybin import files {quoted} --sign {prior_sign}{acct}",
     ]
 
 

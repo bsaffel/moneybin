@@ -145,6 +145,53 @@ def _make_sign_confirmation_error() -> ImportConfirmationRequiredError:
     return ImportConfirmationRequiredError(outcome)
 
 
+@pytest.mark.parametrize("prior_sign", [None, "negative_is_expense"])
+def test_pdf_sign_recoveries_keep_the_account_pin(prior_sign: str | None) -> None:
+    """A PDF sign recovery must not silently drop the caller's account identity.
+
+    The sign gate fires *before* the account gate on PDF, so this is the command
+    a user actually gets back from ``import files statement.pdf --account-id
+    acc_existing``. The tabular branch already threads the account-identity
+    options through; this branch built both strings from the file path alone, so
+    pasting exactly what MoneyBin printed dropped the pin and fell back to
+    auto-matching — the "it bound whatever it worked out for itself" failure
+    this whole gate exists to close.
+
+    Both framings are checked because they are separate return statements: a fix
+    applied to the first-contact branch alone still drops the pin on the
+    self-healed-recipe path.
+    """
+    from moneybin.cli.commands.import_cmd import (
+        _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+    )
+
+    actions = _sign_recovery_commands(  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+        "statement.pdf",
+        channel="pdf",
+        institution="Wells Fargo",
+        account_id="acc existing",
+        account_bindings={"chase_1234": "new"},
+        account_metadata={"chase_1234": {"display_name": "Owner's Card"}},
+        proposed_sign="negative_is_income",
+        prior_sign=prior_sign,
+    )
+
+    assert len(actions) == 2
+    for action in actions:
+        tokens = shlex.split(action.split(": ", 1)[1])
+        assert "--account-id" in tokens
+        assert tokens[tokens.index("--account-id") + 1] == "acc existing"
+        assert "--institution" in tokens
+        assert tokens[tokens.index("--institution") + 1] == "Wells Fargo"
+        assert "--account-binding" in tokens
+        assert tokens[tokens.index("--account-binding") + 1] == "chase_1234=new"
+        assert "--account-meta" in tokens
+        assert (
+            tokens[tokens.index("--account-meta") + 1]
+            == "chase_1234:display_name=Owner's Card"
+        )
+
+
 def test_tabular_sign_recoveries_preserve_confirmation_inputs() -> None:
     """Both sign choices losslessly serialize every public confirmation input."""
     from moneybin.cli.commands.import_cmd import (
@@ -493,7 +540,14 @@ class TestImportFilesConfirmFlow:
         data = payload["data"]
         assert data["status"] == "confirmation_required"
         assert data["reason"] == "account_confirmation"
-        assert data["account_proposals"][0]["source_account_key"] == "checking"
+        # Masked even though a tabular source key is MoneyBin's own
+        # slugify(account_name), not the institution's account number. The field
+        # is declared ACCOUNT_IDENTIFIER for every channel because on OFX it is
+        # the <ACCTID> the bank issued, and one declaration cannot vary by
+        # channel. Over-masking our own slug is the fail-closed direction; the
+        # readable answer vocabulary is proposal_ref.
+        assert data["account_proposals"][0]["source_account_key"] == "****king"
+        assert data["account_proposals"][0]["proposal_ref"] == "@0"
         assert any("--account-binding" in a for a in payload["actions"])
         # Mapping/accept hints are gated out for account_confirmation (noise —
         # the layout is settled and --accept without a binding loops the gate).
@@ -714,6 +768,63 @@ class TestImportFilesConfirmFlow:
         recovery = next(a for a in payload["actions"] if "--account-binding" in a)
         assert "@0=<account_id|new>" in recovery
 
+    def test_the_confirmation_data_never_carries_the_account_number(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """``data`` is the other half of the same leak, and it is the bigger half.
+
+        ``actions[]`` escaped redaction because the walk never reaches it. This
+        path escapes for a different reason: the walk runs on ``envelope.data``,
+        but ``_confirmation_envelope_data`` hands it a bare ``dict``, and
+        ``has_active_transform(dict)`` is False because a bare dict carries no
+        ``Annotated`` field to find. So the walk is skipped entirely and the OFX
+        ``<ACCTID>`` is emitted verbatim on the surface built to be machine-read.
+
+        Two different identifiers share the word "account" here and only one is
+        sensitive, so both directions are asserted. The *institution's* account
+        number (``source_account_key``, which on the OFX channel is the
+        ``<ACCTID>`` the bank issued) is CRITICAL and must mask. *MoneyBin's own*
+        minted account id (``proposed_account_id``, ``candidates[].account_id``)
+        is a synthetic opaque ``uuid4().hex[:12]`` classed RECORD_ID, and must
+        stay readable — it is the value a caller binds to, so masking it would
+        break the gate rather than protect anything. A future declaration that
+        confuses the two fails here.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        acctid = "000123456789"
+        outcome = ConfirmationRequired(
+            channel="ofx",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict(acctid)],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(app, ["files", str(ofx_file), "--output", "json"])
+
+        payload = json.loads(result.output)
+        assert acctid not in json.dumps(payload["data"])
+        proposal = payload["data"]["account_proposals"][0]
+        # The institution's number: masked.
+        assert proposal["source_account_key"] == "****6789"
+        # MoneyBin's own ids and the positional referent: readable, because
+        # these are what an answer names.
+        assert proposal["proposal_ref"] == "@0"
+        assert proposal["proposed_account_id"] == "prov12345678"
+        assert proposal["candidates"][0]["account_id"] == "cand87654321"
+
     def test_a_binding_already_answered_comes_back_as_its_ref(
         self,
         mock_db: MagicMock,
@@ -923,9 +1034,63 @@ class TestImportFilesConfirmFlow:
         )
 
         assert "Account binding required" in result.output
-        assert "checking" in result.output  # the source key
         assert "cand87654321" in result.output  # the candidate account id
         assert "--account-binding" in result.output
+        # Masked, for the reason the OFX twin below spells out: one
+        # ACCOUNT_IDENTIFIER declaration covers every channel, and the terminal
+        # is not exempt from it. @0 is what the user types.
+        assert "@0" in result.output
+        assert "****king" in result.output
+
+    def test_the_tty_prompt_never_prints_the_institutions_account_number(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The terminal is the third surface this leak reached, and the last.
+
+        ``actions[]`` and the JSON ``data`` are both masked now, but
+        ``_echo_account_proposals`` writes straight to the terminal and never
+        passes through ``render_or_json``, so no redaction walk runs on it at
+        all. On OFX ``source_account_key`` is the ``<ACCTID>`` the *institution*
+        issued, and this PR's own gate is what first routes OFX through here —
+        before it, OFX bound silently and never reached this print.
+
+        ``.claude/rules/cli.md`` is explicit that redaction is identical across
+        CLI and MCP, so the fix masks by the same declaration rather than
+        trusting the terminal. The *positional referent* stays readable because
+        it is the answer: ``@0`` is what ``--account-binding`` accepts on every
+        channel, and unlike the masked key it is safe to type.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        acctid = "000123456789"
+        outcome = ConfirmationRequired(
+            channel="ofx",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict(acctid)],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(app, ["files", str(ofx_file)])
+
+        assert acctid not in result.output
+        assert "****6789" in result.output
+        # The referent survives — masking the key would be pointless if it also
+        # removed the only thing the user can answer with.
+        assert "@0" in result.output
 
     def test_sign_convention_tty_shows_evidence_and_sign_recovery(
         self,
@@ -1964,7 +2129,10 @@ class TestImportConfirmCommand:
         data = payload["data"]
         assert data["status"] == "confirmation_required"
         assert data["reason"] == "account_confirmation"
-        assert data["account_proposals"][0]["source_account_key"] == "wf-checking"
+        # Masked for the same reason as the files-level twin above: one
+        # ACCOUNT_IDENTIFIER declaration covers every channel, and on OFX this
+        # field carries the institution's own account number.
+        assert data["account_proposals"][0]["source_account_key"] == "****king"
         assert any("--account-binding" in a for a in payload["actions"])
         # Mapping/accept hints gated out for account_confirmation.
         assert not any("--mapping" in a for a in payload["actions"])
@@ -2081,11 +2249,15 @@ class TestImportConfirmCommand:
         result = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
 
         assert result.exit_code == 1
-        # The proposals (source key + candidate) render so the user sees what to
-        # bind. The --account-binding hint itself is a logger.info line (real
-        # stderr, not captured here under the sys mock).
+        # The proposals (masked account + candidate) render so the user sees
+        # what to bind. The --account-binding hint itself is a logger.info line
+        # (real stderr, not captured here under the sys mock).
         assert "Account binding required" in result.output
-        assert "wf-checking" in result.output
+        # Masked for the same reason as the files-level twin: this echo shares
+        # _echo_account_proposals with it, and one ACCOUNT_IDENTIFIER
+        # declaration covers every channel — on OFX the key is the <ACCTID> the
+        # institution issued. The ref below is the typeable half.
+        assert "****king" in result.output
         assert "cand87654321" in result.output
         # The ref is what --account-binding's help tells the user to type, so
         # the gate that demands a binding has to be where they read it.

@@ -318,4 +318,10 @@ def test_inbox_drain_names_each_proposal_by_its_ref(
 
     assert result.exit_code == 0, result.stderr
     assert "@0" in result.stderr, result.stderr
-    assert "chase-1234" in result.stderr, result.stderr
+    # Masked, not raw: `source_account_key` is ACCOUNT_IDENTIFIER on every
+    # channel, and on OFX — which this fixture is — it carries the <ACCTID> the
+    # institution issued. stderr is not exempt from the redaction contract, so
+    # the ref above is the half the user types and this is only the
+    # disambiguator that tells two proposals apart.
+    assert "chase-1234" not in result.stderr, result.stderr
+    assert "****1234" in result.stderr, result.stderr

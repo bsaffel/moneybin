@@ -492,3 +492,23 @@ def test_unclassified_type_passes_through_with_warning(
     with caplog.at_level("WARNING", logger="moneybin.privacy.redaction"):
         out = redact_typed(_Untyped(x="raw"), consent=None)
     assert out.x == "raw"
+
+
+def test_declared_type_redacts_a_typeddict_no_parent_declares() -> None:
+    """A TypedDict is a bare ``dict`` at runtime, so it must be named explicitly.
+
+    ``type(obj)`` on a TypedDict instance returns ``dict``, which carries no
+    ``Annotated`` field — so the default path masks nothing and returns the
+    value unchanged. That is only safe while some typed parent declares the
+    field; a payload assembled into a bare dict has no such parent, and the CLI
+    batch-import row is exactly that case. Passing ``declared_type`` restores
+    the declarations the runtime type lost.
+    """
+    row: _SecretUnionArm = {"kind": "secret", "account_id": "000123456789"}
+
+    # Without it: the annotations are unreachable and the value ships raw.
+    assert redact_typed(row, consent=None) == row
+
+    masked = redact_typed(row, consent=None, declared_type=_SecretUnionArm)
+    assert masked["account_id"] == "****6789"
+    assert masked["kind"] == "secret"
