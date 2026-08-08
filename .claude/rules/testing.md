@@ -198,6 +198,39 @@ guard may have silently started catching them. Pick fixture values that fail
 exactly one condition: a *long* pattern with a huge blast radius tests breadth;
 a *short* pattern with a tiny blast radius tests specificity.
 
+## A Fixture That Never Reaches the Predicate Proves Nothing
+
+The sibling failure of the section above: not two guards catching one fixture,
+but *zero* guards executing. A green result from a check whose predicate never
+ran is indistinguishable from a green result from a check that passed.
+
+`duplicate_account_overlap` narrows with `GROUP BY institution_slug HAVING
+COUNT(*) > 1`. The `basic` demo persona holds two accounts at two *different*
+institutions, so `contested_accounts` was empty, the invariant returned no
+rows, and the check reported green with its detection logic never evaluated.
+Re-running with `--persona family --years 3` produced two Chase accounts and
+2,886 transactions, and the same green meant something.
+
+**How to apply.** Before trusting a green invariant or scenario, prove the
+input reached the predicate: count the rows satisfying the *narrowing* clause —
+the `WHERE`, the `HAVING`, the join — and hand-derive that it is non-zero.
+
+## Fixture Dates Expire When the Code Filters on Now
+
+A test that pins absolute fixture dates against code filtering on a wall-clock
+window stops testing anything once the window moves past them — and the failure
+surfaces months later, attributed to whatever change was in flight that day.
+
+`test_spending_service` pinned transactions in 2026-03 and 2026-04 against
+`by_category`, which filters `transaction_year_month >= CURRENT_DATE - INTERVAL
+n months`. On 2026-08-02 two tests failed for a reason unrelated to any code
+change in that session.
+
+**How to apply.** When the code under test filters relative to `CURRENT_DATE`,
+`now()`, or `today()`, derive fixture dates from the same clock or freeze it —
+never write an absolute literal on the far side of a moving window. Check the
+model or service for `CURRENT_DATE` / `INTERVAL` before pinning a date.
+
 ## Guard Design — How Guards Have Failed Here Before
 
 The failure modes above are one family. [`.claude/references/guard-design.md`](../references/guard-design.md)

@@ -8,6 +8,19 @@ description: "Branch prefix → PR label mapping, commit message style"
 
 `{type}/{kebab-case-summary}` — e.g., `feat/add-oauth-support`, `fix/null-pointer-auth`, `deps/bump-typer`.
 
+## Branch names are a public surface
+
+A branch name reaches origin, every PR URL, the reflog, and CI logs — all
+public. Never build one from real account data: an institution plus a last four
+is a linked pair, and a rename does not recall it. One such branch had to be
+force-deleted from origin with its history rewritten, and the worktree
+directory kept the name afterward.
+
+Name the defect, not the account — `fix/cross-source-dedup-remediation`, never
+`fix/<bank>-<last-four>-…`. The same applies to worktree directory names, which
+the native mechanism derives from the branch. This rule file is public too:
+describe the shape, never paste the offending name as an example.
+
 ## Type → Label Mapping
 
 Every branch must use one of these prefixes. The corresponding GitHub label is applied to the PR.
