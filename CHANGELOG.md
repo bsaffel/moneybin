@@ -403,7 +403,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   warns when a large share of one account's transactions have a same-amount
   counterpart within five days on a sibling account at the same institution,
   and names the pair with its overlap percentage. Transfers between two
-  accounts at one bank do not trigger it — amount equality carries the sign.
+  accounts at one bank do not trigger it — amount equality carries the sign —
+  and neither do two accounts held in different currencies, where equal numerals
+  are coincidence rather than evidence.
   Try `accounts links run` on a flagged pair, then `accounts links pending`.
   Identity resolution matches on institution+last-four and name similarity, not
   on transaction overlap, so a flagged pair may raise no proposal — that same
@@ -437,8 +439,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SHELLY'S CAFE` — one word that happens to begin another is as easily two
   merchants as one truncation, and that pair now goes to review. Boilerplate does
   not count as the word that matched, so `CARD SHELL` and `CARD SHELLY'S CAFE`
-  are reviewed too rather than merged on a word every card description carries. Which existing duplicates
-  merge and which go to review both change on
+  are reviewed too rather than merged on a word every card description carries.
+  Two transactions in different currencies are never paired at all, whatever
+  their descriptions say: a EUR 10.00 and a USD 10.00 charge are equal as
+  numbers and unequal as money, and the wider window and description-led merge
+  would otherwise have collapsed them. A source that records no currency is not
+  treated as a mismatch, so this costs no existing match. Which existing
+  duplicates merge and which go to review both change on
   the next `refresh`. `matching.date_window_days` is shared with transfer
   detection, so its new default widens that candidate window too.
 - **A high score no longer merges two transactions on its own (#377).** Closeness
@@ -473,11 +480,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already have. Digits that arrive padded (`" 1234 "`) now resolve against the
   account holding `1234`, where before the padding made the lookup miss and minted
   a second account for a ledger that already had one. When one of these accounts
-  does raise a proposal, every existing account is offered as a merge target
-  instead of the first 25 in id order: you can only merge into an account the
-  proposal itself lists, so an omitted one left no way to resolve the duplicate
-  except declaring the account standalone — which re-created the duplicate the
-  proposal existed to prevent.
+  does raise a proposal, every existing account is offered as a merge target —
+  not the first 25 in id order, and not only those at a matching institution:
+  you can only merge into an account the proposal itself lists, so an omitted
+  one left no way to resolve the duplicate except declaring the account
+  standalone, which re-created the duplicate the proposal existed to prevent.
+  Accounts at the institution the source names are still listed first, so the
+  likely answer stays at the top of a long list.
 - **BREAKING for anything branching on an error `code`: 104 code values were
   renamed.** They were raised from tool paths without ever being declared in
   the taxonomy, so they had never been reviewed for shape; each now carries the
@@ -601,17 +610,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   overwritten and survived alongside its own replacement: one real transaction,
   two rows, inflating the balance and the spending. It never looked like a
   duplicate id, so no uniqueness check caught it. MoneyBin now recognizes the
-  superseded row and drops it during the transform, which repairs existing
-  databases on the next `refresh` and prevents the next occurrence. Nothing is
-  deleted from imported data — a row is only suppressed when a replacement
-  carries identical content, and one whose description drifted between
-  statements is left for duplicate review rather than silently removed.
-  Suppression is keyed on MoneyBin's own record of which ids it rewrote, not on
-  spotting the suffix in the id text: the OFX format does not reserve `#`, so a
-  bank is free to issue `X` and `X#reference` as two ordinary unrelated ids, and
-  reading the second as a replacement for the first would delete a real
-  transaction. Statements imported before this release are treated as they were
-  until you re-import them.
+  superseded row and drops it during the transform, preventing the next
+  occurrence. Nothing is deleted from imported data — a row is only suppressed
+  when a replacement carries identical content, and one whose description
+  drifted between statements is left for duplicate review rather than silently
+  removed. Suppression is keyed on MoneyBin's own record of which ids it
+  rewrote, not on spotting the suffix in the id text: the OFX format does not
+  reserve `#`, so a bank is free to issue `X` and `X#reference` as two ordinary
+  unrelated ids, and reading the second as a replacement for the first would
+  delete a real transaction. That record only exists for statements imported
+  from this release onward, and it is not guessed retroactively — so if this
+  already happened to you, the affected statement still shows both rows until
+  you re-import it, which is what tells MoneyBin which id it rewrote.
 - **A replacement card no longer lands as a second account with no trace
   (#375).** A reissued card changes its last four digits by definition, so the
   institution+last-four match cannot fire, and on the PDF path the account name

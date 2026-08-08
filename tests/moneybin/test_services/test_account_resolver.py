@@ -326,6 +326,45 @@ def test_a_forced_quarantine_offers_every_account_however_many_exist(
     assert len(resolved.pending_decision_ids) == _FALLBACK_CANDIDATE_CAP + 5
 
 
+def test_a_forced_quarantine_reaches_past_a_matching_institution(
+    db: Database,
+) -> None:
+    """An institution match must not hide the account the merge actually needs.
+
+    Lifting the cap only made the list long enough; it did not make it complete.
+    When the source resolves an institution that matches *anything*, the scoped
+    branch returns that subset and stops — so an account whose `institution_slug`
+    is absent or drifted (the cross-source slug drift this fallback already
+    documents) never reaches the decision. `AccountLinksService.set()` accepts
+    only a target attached to the decision, so that account is unpickable and
+    `--standalone` is again the only exit, re-minting the duplicate the
+    quarantine exists to prevent.
+
+    Isolation: the cap is irrelevant here — three accounts, far below it. The
+    forced review is open (`last_four=None`) and one account matches the source's
+    institution. Only reaching past the scoped subset can put the drifted account
+    on the list.
+    """
+    create_core_tables(db)
+    _seed_dim_account(db, account_id="acct_same_inst", institution_name="chase")
+    _seed_dim_account(db, account_id="acct_no_slug", institution_slug=None)
+    _seed_dim_account(db, account_id="acct_other_inst", institution_name="wells")
+    resolver = AccountResolver(db, actor="system")
+
+    resolved = resolver.resolve(
+        _src(account_name="Imported Statement", last_four=None, institution="chase")
+    )
+
+    assert resolved.outcome == "pending_review"
+    offered = {
+        row[0]
+        for row in db.execute(
+            "SELECT candidate_account_id FROM app.account_link_decisions"
+        ).fetchall()
+    }
+    assert offered == {"acct_same_inst", "acct_no_slug", "acct_other_inst"}
+
+
 def test_a_blank_last_four_normalizes_to_none_on_the_source_account() -> None:
     """One spelling of "absent" reaches every consumer.
 
@@ -774,7 +813,13 @@ def test_find_candidates_no_fallback_by_default_keeps_backfill_quiet(
 def test_find_candidates_fallback_scopes_to_institution_when_known(
     db: Database,
 ) -> None:
-    """When the source resolves an institution, the fallback pick-list scopes to it."""
+    """When the source resolves an institution, the fallback pick-list scopes to it.
+
+    The source carries a last_four so this exercises the *opt-in* fallback alone.
+    A null one would additionally force the quarantine open, which deliberately
+    reaches past the institution scope — and a fixture that trips both narrowings
+    isolates neither.
+    """
     create_core_tables(db)
     _seed_dim_account(
         db,
@@ -786,7 +831,7 @@ def test_find_candidates_fallback_scopes_to_institution_when_known(
         db, account_id="acct_citi", display_name="Citi Savings", institution_name="CITI"
     )
     resolver = AccountResolver(db, actor="system")
-    src = _src(account_name="Imported Statement", last_four=None, institution="chase")
+    src = _src(account_name="Imported Statement", last_four="0000", institution="chase")
     candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # exercise fallback scoping
         src, exclude_account_id="prov", fallback=True
     )
@@ -804,6 +849,9 @@ def test_find_candidates_fallback_lists_all_when_institution_scope_empty(
     saved format's institution). When institution-scoping matches nothing,
     fall through to listing all accounts — the whole point of the fallback is a
     non-empty pick-list, so a mismatched scope must not re-create candidates: [].
+
+    The source carries a last_four so the fallthrough is what produces the full
+    list here, not the forced quarantine's own reach-past.
     """
     create_core_tables(db)
     _seed_dim_account(
@@ -817,7 +865,7 @@ def test_find_candidates_fallback_lists_all_when_institution_scope_empty(
     # polluted "wf_checking_9940").
     src = _src(
         account_name="Imported Statement",
-        last_four=None,
+        last_four="0000",
         institution="wf_checking_9940",
     )
     candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # exercise scope-empty fallthrough

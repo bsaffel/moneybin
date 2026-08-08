@@ -2213,7 +2213,7 @@ class DoctorService:
                 ),
                 scoped AS MATERIALIZED (
                     SELECT t.transaction_id, t.account_id, t.transaction_date,
-                           t.amount, c.institution_slug
+                           t.amount, t.currency_code, c.institution_slug
                     FROM {FCT_TRANSACTIONS.full_name} AS t
                     JOIN contested_accounts AS c ON c.account_id = t.account_id
                 ),
@@ -2232,6 +2232,19 @@ class DoctorService:
                       ON y.institution_slug = x.institution_slug
                      AND y.account_id <> x.account_id
                      AND y.amount = x.amount
+                     -- Equal numerals across currencies are not mirroring: one
+                     -- bank's USD checking and EUR travel accounts can align on
+                     -- nominal amounts by coincidence, which is exactly what the
+                     -- distinct-amount floor and coverage ratio below exist to
+                     -- rule out. NULL-tolerant for the same reason as the
+                     -- matcher's blocking join — an unrecorded currency is not a
+                     -- known mismatch, and treating it as one would hide a real
+                     -- split account behind a quiet source.
+                     AND (
+                         y.currency_code IS NULL
+                         OR x.currency_code IS NULL
+                         OR y.currency_code = x.currency_code
+                     )
                      AND ABS(
                          DATEDIFF('day', x.transaction_date, y.transaction_date)
                      ) <= ?

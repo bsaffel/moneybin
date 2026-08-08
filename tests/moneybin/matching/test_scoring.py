@@ -58,13 +58,14 @@ def _insert_unioned_row(
     source_type: str,
     source_origin: str,
     source_file: str = "test.csv",
+    currency_code: str | None = "USD",
 ) -> None:
     db.execute(
         """
         INSERT INTO _test_unioned (
             source_transaction_id, account_id, transaction_date, amount,
-            description, source_type, source_origin, source_file
-        ) VALUES (?, ?, ?::DATE, ?::DECIMAL(18,2), ?, ?, ?, ?)
+            description, source_type, source_origin, source_file, currency_code
+        ) VALUES (?, ?, ?::DATE, ?::DECIMAL(18,2), ?, ?, ?, ?, ?)
         """,
         [
             source_transaction_id,
@@ -75,6 +76,7 @@ def _insert_unioned_row(
             source_type,
             source_origin,
             source_file,
+            currency_code,
         ],
     )
 
@@ -91,7 +93,8 @@ def unioned_table(db: Database) -> Database:
             description VARCHAR,
             source_type VARCHAR,
             source_origin VARCHAR,
-            source_file VARCHAR
+            source_file VARCHAR,
+            currency_code VARCHAR
         )
     """)
     return db
@@ -1131,6 +1134,104 @@ class TestGetCandidatesCrossSource:
         )
         assert len(candidates) == 1
         assert candidates[0].descriptions_agree is False
+
+    def test_two_known_currencies_that_differ_are_not_one_transaction(
+        self, unioned_table: Database
+    ) -> None:
+        """EUR 10 and USD 10 are different money, so they are never a pair.
+
+        Blocking fixes the account and the exact amount, which leaves the
+        description as the only remaining evidence — and this PR made an agreeing
+        description sufficient to auto-merge at any gap inside a five-day window.
+        A same-merchant charge billed in two currencies clears that bar on the
+        numeral alone, so the pair merges and one real charge is deleted. The
+        amounts are equal as numbers and unequal as money; blocking is the layer
+        that knows the difference.
+
+        Not a review case: two different currencies are not an ambiguous identity
+        that a human could resolve, so this is refused at blocking rather than
+        surfaced.
+
+        Isolation: same account, same amount, one day apart inside the window,
+        different source types, and descriptions that agree outright. Only the
+        currency predicate can refuse this pair.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_eur",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-10.00",
+            description="STARBUCKS STORE 1234",
+            source_type="ofx",
+            source_origin="chase_ofx",
+            currency_code="EUR",
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_usd",
+            account_id="acct1",
+            transaction_date="2026-03-16",
+            amount="-10.00",
+            description="STARBUCKS STORE 1234",
+            source_type="csv",
+            source_origin="chase",
+            currency_code="USD",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=5,
+            high_confidence_threshold=0.95,
+        )
+        assert candidates == []
+
+    def test_an_unrecorded_currency_still_pairs_with_a_known_one(
+        self, unioned_table: Database
+    ) -> None:
+        """Only a *known* mismatch refuses the pair; silence is not a mismatch.
+
+        Not every source records a currency — `currency_code` is nullable at this
+        layer, and `core.fct_transactions` only fills it from the account later.
+        Reading NULL as "differs" would drop genuine duplicates wherever one
+        source is quiet, which is the double-count this PR exists to close. So
+        the predicate refuses two currencies that are both known and different,
+        and stays out of the way otherwise.
+
+        Isolation: identical to the pair above except that one side's currency is
+        NULL instead of `EUR`. Only the NULL-tolerance of the currency predicate
+        can distinguish the two outcomes.
+        """
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="ofx_quiet",
+            account_id="acct1",
+            transaction_date="2026-03-15",
+            amount="-10.00",
+            description="STARBUCKS STORE 1234",
+            source_type="ofx",
+            source_origin="chase_ofx",
+            currency_code=None,
+        )
+        _insert_unioned_row(
+            unioned_table,
+            source_transaction_id="csv_usd",
+            account_id="acct1",
+            transaction_date="2026-03-16",
+            amount="-10.00",
+            description="STARBUCKS STORE 1234",
+            source_type="csv",
+            source_origin="chase",
+            currency_code="USD",
+        )
+        candidates = get_candidates_cross_source(
+            unioned_table,
+            table="main._test_unioned",
+            date_window_days=5,
+            high_confidence_threshold=0.95,
+        )
+        assert len(candidates) == 1
+        assert candidates[0].descriptions_agree is True
 
     def test_a_boilerplate_word_is_not_the_evidence_a_partial_tail_needs(
         self, unioned_table: Database

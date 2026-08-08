@@ -93,9 +93,9 @@ def _institution_key(institution: str | None) -> str | None:
 # Cap on the fallback pick-list (existing accounts surfaced for the human to pick
 # from when no real signal cleared). Bounds an otherwise-unbounded "list all
 # accounts" so a large book doesn't dump everything; a personal-finance user
-# rarely exceeds this. Does not apply when a null last_four forced the review
-# open — see _fallback_candidates: there the omitted account is unpickable, so a
-# long list is the lesser cost.
+# rarely exceeds this. Neither this cap nor the institution scope applies when a
+# null last_four forced the review open — see _fallback_candidates: there any
+# omitted account is unpickable, so a long list is the lesser cost.
 _FALLBACK_CANDIDATE_CAP = 25
 
 
@@ -720,22 +720,28 @@ class AccountResolver:
         the fallback is a non-empty pick-list, so a mismatched scope must not
         recreate ``candidates: []``.
 
-        The cap does not apply when a null last_four forced this review open. The
-        ordering is by opaque account id, so past the cap *which* accounts survive
-        is arbitrary — fine where the caller opted in and can decline the result,
-        but here ``AccountLinksService.set()`` accepts only a target already
-        attached to the decision, so an omitted account cannot be picked at all.
-        The human would be asked which account this is with the right answer
-        absent and only ``--standalone`` as an exit, re-minting the duplicate the
-        quarantine was raised to prevent. A long list is the lesser cost.
+        Neither the cap nor the institution scope applies when a null last_four
+        forced this review open — there the list must be *complete*, not merely
+        long. Both narrowings drop accounts silently: the cap orders by opaque
+        account id, so past it *which* accounts survive is arbitrary, and the
+        scope keeps only slugs that match, which is precisely the drift this
+        method already falls through for. Either way
+        ``AccountLinksService.set()`` accepts only a target already attached to
+        the decision, so an omitted account cannot be picked at all. The human
+        would be asked which account this is with the right answer absent and
+        only ``--standalone`` as an exit, re-minting the duplicate the quarantine
+        was raised to prevent. A long list is the lesser cost; institution
+        matches still lead it, so the likely answer stays at the top.
         """
-        cap = None if src.last_four is None else _FALLBACK_CANDIDATE_CAP
+        forced = src.last_four is None
+        cap = None if forced else _FALLBACK_CANDIDATE_CAP
         rows = self._db.execute(
             f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
             "WHERE account_id != ? ORDER BY institution_slug, account_id",
             [exclude_account_id],
         ).fetchall()
         target_inst = _institution_key(src.institution) if src.institution else None
+        scoped: list[_Candidate] = []
         if target_inst:
             scoped = [
                 _Candidate(
@@ -747,11 +753,16 @@ class AccountResolver:
                 for r in rows
                 if r[1] and _institution_key(str(r[1])) == target_inst
             ]
-            if scoped:
+            if scoped and not forced:
                 return scoped[:cap]
-        return [
-            _Candidate(
-                account_id=str(r[0]), signal="fallback", value="", confidence=0.1
-            )
-            for r in rows
-        ][:cap]
+        led = {cand.account_id for cand in scoped}
+        return (
+            scoped
+            + [
+                _Candidate(
+                    account_id=str(r[0]), signal="fallback", value="", confidence=0.1
+                )
+                for r in rows
+                if str(r[0]) not in led
+            ][:cap]
+        )

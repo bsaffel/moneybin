@@ -157,7 +157,25 @@ it.
 ## Mechanisms
 
 Two changes to the cross-source tier and shared assignment, plus one gate that
-applies to every dedup tier. Transfer matching and blocking are unchanged.
+applies to every dedup tier and one narrowing of the blocking predicate itself.
+Transfer matching is unchanged.
+
+### 0. Blocking requires compatible currencies (`scoring.py`)
+
+The self-join matched on `a.amount = b.amount` alone. `core.fct_transactions`
+carries `currency_code` per row and an account may legitimately hold more than
+one currency, so a EUR 10.00 and an unrelated USD 10.00 inside the window were
+candidates on the numeral alone — and with the agreement floor below, a shared
+merchant string is then enough to merge them silently. Equal as numbers, unequal
+as money.
+
+Refused at blocking rather than surfaced for review: two known-different
+currencies are not an ambiguous identity a human could resolve. The predicate is
+NULL-tolerant (`a.currency_code IS NULL OR b.currency_code IS NULL OR a = b`)
+because the column is nullable at `prep.int_transactions__unioned` — core fills
+it from the account later — and reading silence as a mismatch would drop genuine
+duplicates wherever one source is quiet, which is the double-count this tier
+exists to close. Only a *known* mismatch refuses the pair.
 
 ### 1. Description-agreement confidence floor (`scoring.py`)
 

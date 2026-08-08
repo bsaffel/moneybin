@@ -2959,6 +2959,7 @@ def _insert_amount_ladder(
     first_index: int = 1,
     day_offset: int = 0,
     sign: int = -1,
+    currency_code: str = "USD",
 ) -> None:
     """Insert ``rows`` transactions whose amounts and dates are all distinct.
 
@@ -2974,10 +2975,18 @@ def _insert_amount_ladder(
             currency_code, source_type
         )
         SELECT ? || '_' || i, ?, DATE '2026-01-01' + CAST(i + ? AS INTEGER),
-               ? * i, 'USD', 'ofx'
+               ? * i, ?, 'ofx'
         FROM GENERATE_SERIES(?, ?) AS t(i)
         """,  # noqa: S608 — test input, not user data
-        [account_id, account_id, day_offset, sign, first_index, first_index + rows - 1],
+        [
+            account_id,
+            account_id,
+            day_offset,
+            sign,
+            currency_code,
+            first_index,
+            first_index + rows - 1,
+        ],
     )
 
 
@@ -3049,6 +3058,42 @@ def test_mirrored_accounts_at_different_institutions_pass(
     _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
     _insert_amount_ladder(
         doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_mirrored_amounts_in_different_currencies_pass(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A USD account and a EUR account at one bank are two accounts, not one.
+
+    Equal numerals across currencies are not evidence of mirroring — a USD
+    checking account and a EUR travel account at the same institution can align
+    on nominal amounts by ordinary coincidence. This check added a distinct-amount
+    floor and a coverage ratio specifically to rule coincidence out, and matching
+    on the numeral alone hands that precision back: the pair is reported as a
+    likely duplicate and the user is pointed at an account merge.
+
+    Isolation: identical to `test_mirrored_accounts_at_one_institution_warn` in
+    every respect — same institution, same ladders, same offset, same coverage
+    and distinct-amount counts — except the currency. Only the currency predicate
+    can turn that warning into a pass.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows, currency_code="USD")
+    _insert_amount_ladder(
+        doctor_db,
+        "DUP_B",
+        rows=rows,
+        day_offset=settings.matching.date_window_days,
+        currency_code="EUR",
     )
 
     result = _overlap_result(doctor_db, monkeypatch)

@@ -9,13 +9,21 @@ distinct transactions can carry identical content. That inference deletes a real
 transaction, silently and with no review entry. The extractor now records which
 ids it rewrote, and staging suppresses only against those.
 
-Backfilled to the marker inference for rows already imported, which is the
-status quo those installs are running on. Nothing at this layer can recover the
-true provenance of an id written before the flag existed, and backfilling FALSE
-would strand the orphaned bare rows the supersession was built to retire —
-re-creating the double-count on every database that has already hit a collision.
-Re-importing a statement replaces its rows through the raw PK and writes the
-real value.
+Deliberately NOT backfilled. Rows imported before this column existed carry no
+record of what wrote them, and every available substitute is the same unsound
+inference in a narrower dress: the marker itself, or the suffix's shape.
+Recomputing the extractor's hash cannot recover it either — the suffix is taken
+over ``str(amount)`` as the extractor saw it, before DuckDB coerces the column to
+``DECIMAL(18,2)``, so a statement amount of ``-25.5`` hashed ``"-25.5"`` and reads
+back ``"-25.50"``.
+
+So the column starts FALSE everywhere and no pre-existing row licenses a delete.
+The cost is real and accepted: a database that already imported a collision keeps
+showing that double-count until the statement is re-imported, at which point the
+extractor writes the true value through the raw PK and the supersession resumes.
+That is the trade this whole change is built on — a double-count is visible in a
+total and correctable, while a wrong suppression removes a real transaction with
+nothing left to notice.
 """
 
 from __future__ import annotations
@@ -26,20 +34,15 @@ logger = logging.getLogger(__name__)
 
 
 def migrate(conn: object) -> None:
-    """Add raw.ofx_transactions.fitid_repaired and backfill it. Idempotent."""
+    """Add raw.ofx_transactions.fitid_repaired, FALSE for every existing row."""
     logger.debug("V047: ADD COLUMN IF NOT EXISTS raw.ofx_transactions.fitid_repaired")
     conn.execute(  # type: ignore[union-attr]
         "ALTER TABLE raw.ofx_transactions "
         "ADD COLUMN IF NOT EXISTS fitid_repaired BOOLEAN DEFAULT FALSE"
     )
-    logger.debug("V047: backfilling fitid_repaired from the collision marker")
-    conn.execute(  # type: ignore[union-attr]
-        "UPDATE raw.ofx_transactions SET fitid_repaired = TRUE "
-        "WHERE CONTAINS(source_transaction_id, '#') AND NOT fitid_repaired"
-    )
     conn.execute(  # type: ignore[union-attr]
         "COMMENT ON COLUMN raw.ofx_transactions.fitid_repaired IS "
         "'TRUE when the extractor rewrote source_transaction_id to break a FITID "
         "collision; the only proof staging may use to retire the id this row "
-        "superseded. Rows predating this column were backfilled from the marker'"
+        "superseded. Rows predating this column are FALSE and never licensed one'"
     )

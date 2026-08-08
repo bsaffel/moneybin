@@ -361,6 +361,22 @@ def _get_candidates(
         JOIN {table} AS b
             ON a.account_id = b.account_id
             AND a.amount = b.amount
+            -- Equal numbers are not equal money. An account can legitimately hold
+            -- rows in more than one currency, and everything downstream of this
+            -- join compares only the numeral: a EUR 10.00 and an unrelated USD
+            -- 10.00 inside the window with agreeing descriptions clear the
+            -- agreement floor and merge silently. Refused here rather than at
+            -- review because two known-different currencies are not an ambiguous
+            -- identity a human could resolve — they are simply not one charge.
+            -- Only a *known* mismatch refuses: currency_code is nullable at this
+            -- layer (core fills it from the account later), and reading NULL as
+            -- "differs" would drop genuine duplicates wherever one source is
+            -- quiet — the double-count this gate exists to prevent.
+            AND (
+                a.currency_code IS NULL
+                OR b.currency_code IS NULL
+                OR a.currency_code = b.currency_code
+            )
             AND ABS(DATEDIFF('day', a.transaction_date, b.transaction_date)) <= ?
             AND a.source_type != 'manual'
             AND b.source_type != 'manual'
