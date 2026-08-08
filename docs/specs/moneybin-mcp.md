@@ -82,7 +82,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / maximum critical / preview-derived |
 | `import_status` | `cursor`, `import_id`, `limit`, `sections` | Import lifecycle status | Read / dynamic / maximum medium / import-derived |
 | `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch | Audited recovery / maximum low |
-| `import_inbox_sync` | `refresh` | Drain the import inbox | Audited workflow / maximum medium |
+| `import_inbox_sync` | `refresh` | Drain the import inbox | Audited workflow / maximum critical |
 | `import_labels_set` | `import_id`, `labels` | Import-label target state | Audited write / maximum medium |
 | `sync_link` | `institution`, `mode` | Start mediated provider linking | Credential flow / maximum medium |
 | `sync_status` | `auth_session_id`, `session_id` | Provider connection status | Read / dynamic / maximum medium / session-derived |

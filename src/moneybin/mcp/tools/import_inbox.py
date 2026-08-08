@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from moneybin.database import get_database
 from moneybin.privacy.payloads.imports import (
+    ImportInboxPendingEntry,
     ImportInboxPendingPayload,
+    ImportInboxProcessedEntry,
     ImportInboxSyncPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -37,6 +40,21 @@ def _uncategorized_count() -> int:
         return 0
 
 
+def _minted_count(processed: list[dict[str, object]]) -> int:
+    """Count accounts the drain minted across every imported file.
+
+    The rows arrive as service-shaped ``dict[str, object]``, so the list is
+    checked rather than assumed: a malformed entry must undercount, never raise
+    on the drain's own success path.
+    """
+    total = 0
+    for entry in processed:
+        created = entry.get("accounts_created")
+        if isinstance(created, list):
+            total += len(created)  # pyright: ignore[reportUnknownArgumentType]
+    return total
+
+
 def _tier_of(pending_entry: dict[str, object]) -> str:
     """Extract the confidence tier from one pending-entry dict.
 
@@ -64,18 +82,30 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         sync_result = service.sync(refresh=refresh)
 
     actions: list[str] = ["Use transactions.search to view newly imported transactions"]
+    # The drain mints accounts under exactly the conditions import_files does,
+    # and the same "gate the merge, not the mint" bargain applies: no confirm, so
+    # the surface has to name what it created. Same helper as import_files —
+    # unattended drain is where an unannounced account is least likely to be
+    # noticed, not where a weaker hint is acceptable.
+    from moneybin.mcp.tools.import_tools import accounts_created_action  # noqa: PLC0415
+
+    if minted_action := accounts_created_action(_minted_count(sync_result.processed)):
+        actions.insert(0, minted_action)
     account_pending = [
         p for p in sync_result.pending if p.get("reason") == "account_confirmation"
     ]
     if account_pending:
         actions.insert(
             0,
+            # @N, not source_key: this envelope masks source_account_key (on OFX
+            # it is the institution's own <ACCTID>), so the ref is the only
+            # referent an agent reading this response can act on.
             "Some pending files need an account identity — run `moneybin import "
             "confirm <pending-path> --accept --account-binding "
-            "<source_key>=<account_id|new>` (--accept ratifies the settled "
-            "mapping; source_key is in the .pending.yml sidecar's "
-            "account_proposals), or move the file into inbox/<account-slug>/ and "
-            "re-run import_inbox_sync",
+            "@N=<account_id|new>` (--accept ratifies the settled mapping; @N is "
+            "the proposal_ref on each data.pending[].account_proposals[] entry), "
+            "or move the file into inbox/<account-slug>/ and re-run "
+            "import_inbox_sync",
         )
     # Mapping confirmations only — account_confirmation entries are handled
     # above and take --accept plus --account-binding (not a --mapping override).
@@ -122,10 +152,18 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         )
 
     return build_envelope(
+        # The service returns loosely-typed per-file dicts; declaring their shape
+        # is this adapter's job, and it is what lets the redaction walk reach
+        # `display_name` (USER_NOTE) and `source_account_key`
+        # (ACCOUNT_IDENTIFIER) instead of classing each row as a single opaque
+        # value. cast, not copy: the shapes already match key for key.
         data=ImportInboxSyncPayload(
-            processed=sync_result.processed,
+            processed=cast(
+                "list[ImportInboxProcessedEntry]",
+                sync_result.processed,
+            ),
             failed=sync_result.failed,
-            pending=sync_result.pending,
+            pending=cast("list[ImportInboxPendingEntry]", sync_result.pending),
             skipped=sync_result.skipped,
             ignored=sync_result.ignored,
             transforms_applied=sync_result.transforms_applied,

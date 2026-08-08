@@ -1327,6 +1327,37 @@ def _ofx_with_acctids(tmp_path: Path, *acctids: str) -> Path:
     return path
 
 
+def test_the_unknown_key_refusal_never_names_the_institutions_account_number(
+    db: Database, tmp_path: Path
+) -> None:
+    """The "which keys are valid?" half of the refusal must offer refs, not keys.
+
+    The obvious way to make this error more helpful is to list what the file
+    *does* contain — and on OFX that list is the institution's own <ACCTID>s.
+    The message would then leak an account number to whoever mistyped a binding,
+    including the model provider on the MCP path, and it would read as a
+    usability improvement in review. Pin both directions so it cannot.
+    """
+    create_core_tables(db)
+    acctid = "000123456789"
+    path = _ofx_with_acctids(tmp_path, acctid)
+
+    with pytest.raises(ValueError) as excinfo:
+        ImportService(db).import_file(
+            path,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"typo-key": "new"},
+        )
+
+    message = str(excinfo.value)
+    assert acctid not in message, message
+    # The refusal still has to be answerable: the ref is what the caller can
+    # retype, and it is the referent every masking surface leaves readable.
+    assert "@0" in message, message
+
+
 def test_a_source_key_spelled_like_another_accounts_ref_is_refused(
     db: Database, tmp_path: Path
 ) -> None:

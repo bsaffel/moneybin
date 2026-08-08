@@ -199,7 +199,7 @@ def _created_account_rows(
     ]
 
 
-def _accounts_created_action(count: int) -> str | None:
+def accounts_created_action(count: int) -> str | None:
     """Tell the agent an account came into existence, and how to correct it.
 
     Returns None when nothing was minted. An action emitted on every import is
@@ -603,7 +603,7 @@ def import_files(
             "decision. Tell the user; change it by re-running via CLI with "
             "`moneybin import files <path> --sign <SignConventionType>`."
         )
-    if minted := _accounts_created_action(
+    if minted := accounts_created_action(
         sum(len(r.accounts_created) for r in batch.per_file)
     ):
         actions.append(minted)
@@ -2362,7 +2362,7 @@ async def import_confirm_coarse(
         "Use import_status(sections=['imports'], "
         f"import_id='{import_id}') to verify it.",
     ]
-    if minted := _accounts_created_action(len(created)):
+    if minted := accounts_created_action(len(created)):
         actions.insert(0, minted)
     if bridge_result is not None and bridge_result.rows_diverged:
         actions.insert(
@@ -2546,7 +2546,15 @@ def import_labels_set_coarse(
 def register_import_workflow_tools(mcp: FastMCP) -> None:
     """Register the standard seven-boundary staged-import workflow."""
     for callback, name, description in (
-        (import_files_coarse, "import_files", "Import one or more files."),
+        (
+            import_files_coarse,
+            "import_files",
+            "Import one or more files. When a file's account identity is "
+            "unresolved it imports nothing and returns account proposals whose "
+            "source_account_key is masked; answer with account_bindings="
+            '{ref: account_id or "new"}, where ref is a proposal\'s '
+            "proposal_ref (@0 is the file's first source account).",
+        ),
         (
             import_preview_coarse,
             "import_preview",
@@ -2566,8 +2574,9 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "eliciting human approval before any sign inversion. When the "
             "file's accounts are unresolved it imports nothing and returns "
             "account proposals whose source_account_key is masked; bind a "
-            "single account with account_name, or several with "
-            "moneybin import confirm <file> --account-binding.",
+            "single account with account_name, or any number with "
+            'account_bindings={ref: account_id or "new"}, where ref is a '
+            "proposal's proposal_ref (@0 is the file's first source account).",
         ),
         (
             import_status_coarse,

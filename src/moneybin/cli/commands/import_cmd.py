@@ -221,7 +221,11 @@ def import_files_command(
             "source account) or that proposal's source_account_key. This is how "
             "OFX and PDF imports ratify an account identity; a tabular file "
             "answers through 'import confirm' instead, because its confirmation "
-            "also stages a column mapping. Single-file mode only."
+            "also stages a column mapping. For a file already sitting in the "
+            "inbox's pending/, answer with 'import confirm' too: only that "
+            "command archives the file afterward, so answering here imports the "
+            "data but leaves the file pending and the next 'import inbox' "
+            "re-offers it. Single-file mode only."
         ),
     ),
     format_name: str | None = typer.Option(
@@ -730,7 +734,7 @@ def import_files_command(
                 logger.error(f"   {error}")
             if hint := f.get("hint"):
                 logger.info(f"   {hint}")
-            _echo_accounts_created(f.get("accounts_created") or [])
+            echo_accounts_created(f.get("accounts_created") or [])
         if data["transforms_applied"]:
             duration = data["transforms_duration_seconds"]
             if duration is not None:
@@ -857,7 +861,7 @@ def _accounts_created_payload(
     ]
 
 
-def _echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
+def echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
     """Name the accounts an import created, and how to correct one.
 
     This is the visible half of "gate the merge, not the mint": a first-contact
@@ -1970,7 +1974,7 @@ def import_confirm_command(
                 f"✅ Imported {file_path.name}: {bridge_result.rows_loaded} rows "
                 f"(import_id: {bridge_result.import_id})"
             )
-            _echo_accounts_created(
+            echo_accounts_created(
                 _accounts_created_payload(bridge_result.accounts_created)
             )
             logger.info("💡 Run 'moneybin transform apply' to rebuild derived tables.")
@@ -2027,7 +2031,7 @@ def import_confirm_command(
             f"✅ Imported {file_path.name}: {result.rows_loaded} rows "
             f"(import_id: {result.import_id})"
         )
-        _echo_accounts_created(_accounts_created_payload(result.accounts_created))
+        echo_accounts_created(_accounts_created_payload(result.accounts_created))
         if result.sign_correction_suggested:
             typer.echo(
                 "⚠️  Sign convention may be inverted (running balance suggests "

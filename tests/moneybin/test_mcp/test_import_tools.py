@@ -3851,10 +3851,10 @@ class TestImportFilesConfirmationRequired:
         """
         from moneybin.mcp.surface import STANDARD_TOOL_NAMES
         from moneybin.mcp.tools.import_tools import (
-            _accounts_created_action,  # pyright: ignore[reportPrivateUsage]
+            accounts_created_action,  # pyright: ignore[reportPrivateUsage]
         )
 
-        action = _accounts_created_action(1)
+        action = accounts_created_action(1)
 
         assert action is not None
         for tool in ("refresh_run", "reviews", "identity_links_decide"):

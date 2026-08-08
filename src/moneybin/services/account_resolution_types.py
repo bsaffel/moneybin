@@ -151,7 +151,8 @@ class SourceAccount:
     document: the next import of the same source, without the pin, derives this
     key, finds no link, and mints a second account for the same thing. Recording
     it alongside the pin is what makes the pin stick. Never re-points a key
-    already bound elsewhere — see ``AccountResolver._run_ladder``."""
+    already bound elsewhere — see ``AccountResolver._teach_unpinned_key``, which
+    holds that guard; ``_run_ladder`` only calls it."""
 
     def __post_init__(self) -> None:
         """Canonicalize a blank last four to None — they mean the same thing.

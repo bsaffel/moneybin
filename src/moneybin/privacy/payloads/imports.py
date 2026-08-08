@@ -20,13 +20,16 @@ Tier derivation summary:
   - ``ImportRevertPayload``        → Tier.LOW (RECORD_ID + TXN_TYPE)
   - ``ImportFormatRow``            → Tier.LOW (format metadata only)
   - ``ImportFormatsPayload``       → Tier.LOW (list of ImportFormatRow)
-  - ``ImportInboxSyncPayload``     → Tier.MEDIUM (transforms_error = DESCRIPTION;
+  - ``ImportInboxSyncPayload``     → Tier.CRITICAL (pending[].account_proposals[]
+                                     .source_account_key = ACCOUNT_IDENTIFIER;
+                                     transforms_error = DESCRIPTION and the
                                      failed list may contain error strings)
   - ``ImportInboxPendingPayload``  → Tier.LOW (filename/account metadata only)
   - ``ImportLabelsSetPayload``     → Tier.MEDIUM (labels = USER_NOTE)
   - ``ImportConfirmCoarsePayload`` → Tier.MEDIUM (union max; reject_reason on
-                                     ImportPdfBridgeInvalidPayload = DESCRIPTION,
-                                     every other member field is LOW);
+                                     ImportPdfBridgeInvalidPayload = DESCRIPTION
+                                     and accounts_created[].display_name =
+                                     USER_NOTE; every other member field is LOW);
                                      confirmation_required re-surfaces build a
                                      raw dict envelope instead (see
                                      import_tools.py)
@@ -506,20 +509,69 @@ class ImportFormatsPayload:
 # ---------------------------------------------------------------------------
 
 
+class ImportInboxProcessedEntry(TypedDict, total=False):
+    """One file the inbox drain imported successfully.
+
+    Declared rather than opaque for the same reason as
+    ``ImportInboxPendingEntry``: ``accounts_created[].display_name`` is the
+    source's own label for an account it just minted (USER_NOTE → MEDIUM), and
+    an opaque ``dict[str, object]`` would have handed the whole row one class.
+    Key omission is the contract — ``accounts_created`` is absent when the file
+    adopted every account, which is the common re-import case.
+    """
+
+    filename: Annotated[str, DataClass.RECORD_ID]
+    moved_to: Annotated[str, DataClass.RECORD_ID]
+    transactions: Annotated[int, DataClass.AGGREGATE]
+    file_type: Annotated[str, DataClass.TXN_TYPE]
+    sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE]
+    sign_override_replayed: Annotated[bool, DataClass.TXN_TYPE]
+    accounts_created: list[ImportCreatedAccount]
+
+
+class ImportInboxPendingEntry(TypedDict, total=False):
+    """One file the inbox drain routed to ``pending/`` awaiting confirmation.
+
+    A TypedDict rather than a dataclass because key omission is this entry's
+    contract: ``moved_to``, ``sidecar``, and ``account_proposals`` are absent
+    when the file never moved or the gate carried no account proposal, and a
+    dataclass would start emitting them as ``null`` on every row.
+
+    Declared at all so the redaction walk can descend. The field this exists for
+    is ``account_proposals[].source_account_key``, which on the OFX channel is
+    the ``<ACCTID>`` the institution issued (ACCOUNT_IDENTIFIER → CRITICAL). An
+    opaque ``dict[str, object]`` gives the walk one class for the whole entry,
+    so the nested key inherited the entry's tier instead of its own.
+    """
+
+    filename: Annotated[str, DataClass.RECORD_ID]
+    channel: Annotated[str, DataClass.TXN_TYPE]
+    tier: Annotated[str, DataClass.AGGREGATE]
+    score: Annotated[float, DataClass.AGGREGATE]
+    reason: Annotated[str, DataClass.TXN_TYPE]
+    moved_to: Annotated[str, DataClass.RECORD_ID]
+    sidecar: Annotated[str, DataClass.RECORD_ID]
+    account_proposals: list[ImportConfirmationAccountProposal]
+
+
 @dataclass(frozen=True, slots=True)
 class ImportInboxSyncPayload:
     """Payload for ``import_inbox_sync`` — drain result.
 
-    ``processed``, ``skipped``, ``ignored`` are opaque per-file metadata dicts
-    with no PII fields; annotated as AGGREGATE (LOW).
+    ``skipped`` and ``ignored`` are opaque per-file metadata dicts with no PII
+    fields; annotated as AGGREGATE (LOW).
     ``failed`` may contain error strings (DESCRIPTION, MEDIUM) — pushed by
     the service layer and user-visible in the tool's action hints.
+    ``processed`` names the accounts a drain minted, so it is typed per-entry
+    rather than opaque; see ``ImportInboxProcessedEntry``.
+    ``pending`` carries the account-confirmation gate's proposals, so it is
+    typed per-entry rather than opaque; see ``ImportInboxPendingEntry``.
     ``transforms_error`` is a free-text error string (DESCRIPTION, MEDIUM).
     """
 
-    processed: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
+    processed: list[ImportInboxProcessedEntry]
     failed: Annotated[list[dict[str, object]], DataClass.DESCRIPTION]
-    pending: Annotated[list[dict[str, object]], DataClass.DESCRIPTION]
+    pending: list[ImportInboxPendingEntry]
     skipped: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     ignored: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     transforms_applied: Annotated[bool, DataClass.TXN_TYPE]

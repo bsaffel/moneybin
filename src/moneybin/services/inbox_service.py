@@ -575,6 +575,21 @@ class InboxService:
             # the product — dropping the note here would make a durable override
             # invisible exactly where nobody is watching.
             "sign_override_replayed": import_result.sign_override_replayed,
+            # And the same reason again, for the account the drain just minted.
+            # "Gate the merge, not the mint" lets a first-contact account through
+            # without a confirm, and pays for it by requiring every surface to
+            # name what it created (account-identity-resolution.md). Omitted when
+            # empty so the common row stays the shape it has always been.
+            **(
+                {
+                    "accounts_created": [
+                        {"account_id": a.account_id, "display_name": a.display_name}
+                        for a in import_result.accounts_created
+                    ]
+                }
+                if import_result.accounts_created
+                else {}
+            ),
         })
         INBOX_SYNC_TOTAL.labels(outcome="processed").inc()
 
