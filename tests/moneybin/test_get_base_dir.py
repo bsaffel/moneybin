@@ -32,6 +32,20 @@ class TestGetBaseDir:
         monkeypatch.setenv("MONEYBIN_ENVIRONMENT", "development")
         assert get_base_dir() == (Path.cwd() / ".moneybin").resolve()
 
+    def test_development_env_uses_repo_root_from_subdirectory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Development mode keeps a checkout's state in its root directory."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "moneybin"\n')
+        subdirectory = tmp_path / "src" / "moneybin"
+        subdirectory.mkdir(parents=True)
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+        monkeypatch.setenv("MONEYBIN_ENVIRONMENT", "development")
+        monkeypatch.chdir(subdirectory)
+
+        assert get_base_dir() == (tmp_path / ".moneybin").resolve()
+
     def test_repo_checkout_detected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

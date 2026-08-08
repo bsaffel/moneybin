@@ -64,12 +64,21 @@ def find_repo_root() -> Path | None:
     return None
 
 
+def _find_moneybin_repo_ancestor(path: Path) -> Path | None:
+    """Return the nearest MoneyBin checkout containing ``path``."""
+    for candidate in (path, *path.parents):
+        if _is_moneybin_repo(candidate):
+            return candidate
+    return None
+
+
 def get_base_dir() -> Path:
     """Determine the base directory for MoneyBin data and configuration.
 
     Resolution order:
         1. MONEYBIN_HOME env var (explicit override, always wins)
-        2. MONEYBIN_ENVIRONMENT=development: <cwd>/.moneybin
+        2. MONEYBIN_ENVIRONMENT=development: <repo-root>/.moneybin when in a
+           checkout, otherwise <cwd>/.moneybin
         3. Repo checkout detection (.git + pyproject.toml name=moneybin): <cwd>/.moneybin
         4. Default: ~/.moneybin/
 
@@ -84,7 +93,8 @@ def get_base_dir() -> Path:
 
     environment = os.getenv("MONEYBIN_ENVIRONMENT")
     if environment == "development":
-        return (Path.cwd() / ".moneybin").resolve()
+        repo_root = _find_moneybin_repo_ancestor(Path.cwd())
+        return ((repo_root or Path.cwd()) / ".moneybin").resolve()
 
     if _is_moneybin_repo(Path.cwd()):
         return (Path.cwd() / ".moneybin").resolve()
