@@ -1021,6 +1021,19 @@ def _apply_account_bindings(
                 f"account_bindings entry for {proposal_ref(index)} has an empty "
                 'value; use an existing account_id or "new".'
             )
+        if target.strip().lower() == "new" and target != "new":
+            # "New", "NEW", "new " all fall through to the adopt branch below
+            # and become an explicit_account_id. The unknown-target refusal
+            # catches them, but in the vocabulary of ids rather than of the
+            # keyword the caller plainly meant. Folding case and surrounding
+            # space into the keyword instead would be a guess: an account_id is
+            # opaque, so "New" cannot be proven to be the keyword rather than
+            # an id ("magic stays visible"). Name the near miss and stop.
+            raise ValueError(
+                f"account_bindings entry for {proposal_ref(index)} is {target!r}; "
+                'the mint keyword is exactly "new" (lowercase, no surrounding '
+                "spaces). Every other value is read as an existing account_id."
+            )
         if src.explicit_account_id and target != src.explicit_account_id:
             # A caller-supplied account_id already answered this account. The
             # binding used to overwrite it (or clear it, on "new") with nothing
@@ -1042,6 +1055,51 @@ def _apply_account_bindings(
         else:
             bound.append(dataclasses.replace(src, explicit_account_id=target))
     return bound
+
+
+def _refuse_unknown_binding_targets(
+    resolver: AccountResolver,
+    source_accounts: list[SourceAccount],
+    bindings: dict[str, str],
+) -> None:
+    """Reject a binding onto an account id this database does not have.
+
+    Step 0 of the ladder adopts ``explicit_account_id`` verbatim and reports
+    ``outcome="adopted_strong"``, ``is_new=False`` — so an id naming nothing
+    became a canonical account with no mint announced and no ``accounts_created``
+    entry carrying it. The statement's rows then landed under an account the
+    caller invented by typo, under a name no surface would ever show them. That
+    is what the shared reference-resolution contract exists to prevent: a write
+    never invents its own target (``.claude/rules/mcp.md``, "Entity resolution").
+
+    Scoped to values that arrived through ``account_bindings``, which is why it
+    reads them rather than every ``explicit_account_id``. A binding answers a
+    confirmation that *just enumerated* the ids worth naming, so one that
+    matches none of them is a typo by construction. The ``account_id``
+    parameter is a different contract: it names the account this file becomes,
+    minting under that id when it is unknown, and validating it would delete
+    that capability rather than protect it.
+
+    Runs before the contradiction refusal below: when a binding is both unknown
+    and contradicting, "no such account" is the more useful answer.
+    """
+    bound_ids = {value for value in bindings.values() if value != "new"}
+    if not bound_ids:
+        return
+    for index, src in enumerate(source_accounts):
+        account_id = src.explicit_account_id
+        if not account_id or account_id not in bound_ids:
+            continue
+        if resolver.knows_account_id(account_id):
+            continue
+        # Names the positional ref, never source_account_key, for the reason
+        # _apply_account_bindings documents: this reaches an MCP caller intact.
+        # The id itself is echoed back because the caller is the one who sent it.
+        raise ValueError(
+            f"account_bindings binds {proposal_ref(index)} to {account_id!r}, "
+            "which is not an account in this database. Use an id the "
+            'confirmation offered as a candidate, or "new" to mint one.'
+        )
 
 
 def _refuse_contradicted_bindings(
@@ -1742,6 +1800,7 @@ class ImportService:
         ``disposition="rollback"`` because raising is this call's success case.
         """
         source_accounts = _apply_account_bindings(source_accounts, bindings or {})
+        _refuse_unknown_binding_targets(resolver, source_accounts, bindings or {})
         _refuse_contradicted_bindings(resolver, source_accounts)
         wanted_fallback = set(fallback_keys)
         proposals: list[AccountProposalDict] = []

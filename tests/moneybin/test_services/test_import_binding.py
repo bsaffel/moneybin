@@ -450,6 +450,60 @@ def test_account_bindings_rejects_empty_value(db: Database, bad_value: str) -> N
     assert n is not None and n[0] == 0
 
 
+def test_a_binding_to_an_unknown_account_id_loads_nothing(db: Database) -> None:
+    """A mistyped account_id is refused, not adopted as an identity nobody made.
+
+    Step 0 of the ladder adopts ``explicit_account_id`` verbatim and reports
+    ``outcome="adopted_strong"``, ``is_new=False`` — so a typo used to become a
+    canonical account with no mint announced and no ``accounts_created`` entry
+    naming it. The statement's rows then landed under an id the caller invented
+    by accident, under a name no surface would ever show them. Nothing about
+    that is visible afterwards, which is the silent mis-delivery this gate
+    exists to stop.
+    """
+    _seed_existing_account(db, account_id="wf_existing01", display_name="WF Checking")
+    svc = ImportService(db)
+    with pytest.raises(ValueError, match="wf_existng01"):
+        svc.import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking",
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"wf-checking": "wf_existng01"},
+        )
+    n = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+    assert n is not None and n[0] == 0
+
+
+@pytest.mark.parametrize("near_miss", ["New", "NEW", "new ", " new"])
+def test_a_binding_that_misspells_new_is_refused(db: Database, near_miss: str) -> None:
+    """The mint keyword is exact; a near miss is named rather than guessed at.
+
+    Only the lowercase token mints — every other value is read as an existing
+    account_id, so a shift key turned "make a new account" into "adopt the
+    account called New", which the unknown-id refusal above would then report
+    in the vocabulary of ids rather than of the keyword the caller meant.
+    Quietly folding case and surrounding space into the keyword is the other
+    wrong answer: an account_id is opaque, so ``"New"`` cannot be *proven* to
+    be the keyword rather than an id, and guessing is the magic this feature
+    exists to remove. Name the near miss instead.
+    """
+    _seed_existing_account(db, account_id="wf_existing01", display_name="WF Checking")
+    svc = ImportService(db)
+    with pytest.raises(ValueError, match='exactly "new"'):
+        svc.import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking",
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"wf-checking": near_miss},
+        )
+    n = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+    assert n is not None and n[0] == 0
+
+
 def test_metadata_not_captured_for_an_adopted_account(
     db: Database,
 ) -> None:
@@ -1326,6 +1380,56 @@ def test_a_source_key_that_matches_its_own_ref_still_binds(
     assert linked is not None and linked[0]
 
 
+def test_a_binding_to_an_account_minted_before_any_refresh_is_accepted(
+    db: Database, tmp_path: Path
+) -> None:
+    """An account minted moments ago is bindable before core is rebuilt.
+
+    ``core.dim_accounts`` is SQLMesh-materialized, so an account this import
+    just minted is absent from it until a refresh runs — and every import here
+    defaults to ``refresh=False``. Validating a binding target against that
+    table alone would therefore reject the most natural next step in the
+    workflow the gate itself creates: answer "new" for one file, then bind its
+    sibling to the id that answer produced. ``app.account_links`` carries the
+    id from the instant it is minted, which is why the check reads both — and
+    why this test asserts the mint is *absent* from dim_accounts first, so it
+    can only pass through the links half.
+    """
+    _seed_existing_account(db, account_id="wf_existing01", display_name="WF Checking")
+    svc = ImportService(db)
+    svc.import_file(
+        _STANDARD_CSV,
+        account_name="WF Checking",
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        account_bindings={"wf-checking": "new"},
+    )
+    row = db.execute(
+        "SELECT account_id FROM app.account_links WHERE ref_kind = 'source_native' "
+        "AND ref_value = 'wf-checking' AND status = 'accepted'"
+    ).fetchone()
+    assert row is not None
+    minted = str(row[0])
+    unmaterialized = db.execute(
+        "SELECT COUNT(*) FROM core.dim_accounts WHERE account_id = ?", [minted]
+    ).fetchone()
+    assert unmaterialized is not None and unmaterialized[0] == 0
+
+    svc.import_file(
+        _ofx_with_acctids(tmp_path, "9999"),
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        account_bindings={"9999": minted},
+    )
+    adopted = db.execute(
+        "SELECT account_id FROM app.account_links WHERE ref_kind = 'source_native' "
+        "AND ref_value = '9999' AND status = 'accepted'"
+    ).fetchone()
+    assert adopted is not None and adopted[0] == minted
+
+
 @pytest.mark.parametrize(
     ("channel", "make_file", "import_kwargs"),
     [
@@ -1542,7 +1646,12 @@ def test_a_binding_may_not_contradict_an_explicit_account_id(
     ids they named won. A pin plus a contradicting binding is the same conflict
     arriving through two parameters instead of one, and the binding used to win
     silently, discarding the pin.
+
+    Both ids are seeded so this can only be the conflict refusal: an unknown
+    pin is refused too, by a different guard whose message also says "pinned".
     """
+    _seed_existing_account(db, account_id="acct_pinned01", display_name="Pinned")
+    _seed_existing_account(db, account_id="acct_other02", display_name="Other")
     svc = ImportService(db)
     with pytest.raises(ValueError, match="pinned"):
         svc.import_file(
@@ -1560,7 +1669,9 @@ def test_restating_the_pin_as_a_binding_is_not_a_conflict(db: Database) -> None:
 
     An agent answering a gate re-sends the parameters it already had alongside
     the new binding, so refusing agreement would punish the normal recovery.
+    The id is seeded because a pin naming no account is refused on its own.
     """
+    _seed_existing_account(db, account_id="acct_pinned01", display_name="Pinned")
     svc = ImportService(db)
     result = svc.import_file(
         _STANDARD_CSV,

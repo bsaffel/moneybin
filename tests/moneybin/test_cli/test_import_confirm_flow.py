@@ -10,6 +10,7 @@ argument parsing, exit codes, error messages, and JSON envelope shape.
 from __future__ import annotations
 
 import json
+import logging
 import shlex
 from pathlib import Path
 from typing import Any
@@ -1451,6 +1452,67 @@ class TestImportConfirmCommand:
         assert str(response_file) in recovery
         assert "--confirm" in recovery
         # --accept is refused alongside --bridge-response by this same command.
+        assert "--accept" not in recovery
+
+    def test_bridge_account_gate_recovery_keeps_the_response_on_a_tty(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The TTY twin of the test above — same defect, the other branch.
+
+        This command picks between the JSON envelope and this printed line on
+        ``sys.stdout.isatty()``, and only the JSON side forwarded the recipe.
+        The terminal user was handed the generic PDF recovery instead: no
+        ``--bridge-response``, no ``--confirm``, and an ``--accept`` this very
+        command refuses next to a bridge response. So the printed line could
+        not run, and the agent-authored recipe it was meant to complete was
+        gone. Same one-unpassed-argument shape as the ``import files`` pair
+        above, which is why both branches now get a test.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+        outcome = ConfirmationRequired(
+            channel="pdf",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("chase_1234")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        # Force the interactive (TTY) branch — patch the module's sys.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        with caplog.at_level(logging.INFO):
+            runner.invoke(
+                app,
+                [
+                    "confirm",
+                    str(pdf_file),
+                    "--bridge-response",
+                    str(response_file),
+                    "--confirm",
+                ],
+            )
+
+        recovery = next(
+            line for line in caplog.text.splitlines() if "--account-binding" in line
+        )
+        assert "--bridge-response" in recovery
+        assert str(response_file) in recovery
+        assert "--confirm" in recovery
         assert "--accept" not in recovery
 
     def test_bridge_response_still_refuses_the_tabular_account_flags(

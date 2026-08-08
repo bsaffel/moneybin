@@ -677,6 +677,25 @@ Four properties are load-bearing:
 - **`@`, not `#`.** A binding is typed at a shell prompt, where
   `--account-binding #0=new` opens a comment and drops the rest of the line.
 
+**The value side is closed, and checked before anything loads.** A binding
+value is either the exact token `new` or an account id this database already
+has. The ladder verifies neither — Step 0 adopts an `explicit_account_id`
+verbatim and reports `is_new=false`, so an unrecognized id would become a
+canonical account with no mint announced and no `accounts_created` row naming
+it, and the statement would land under an account the caller created by typo.
+Existence is read from `app.account_links` as well as `core.dim_accounts`: the
+latter is SQLMesh-materialized, so an account minted by the previous import is
+absent from it until a refresh runs, which is exactly the id a caller binds a
+sibling file to. A near miss on the keyword (`New`, `new `) is named rather
+than folded in — an account id is opaque, so case and whitespace cannot be
+normalized away without guessing which of the two the caller meant.
+
+The check is scoped to `account_bindings` and deliberately does not extend to
+the `account_id` parameter, which is a different contract: a binding answers a
+confirmation that just enumerated the ids worth naming, so one matching none of
+them is a typo by construction, while `account_id` *names* the account the file
+becomes and mints under that id when it is unknown.
+
 **Fallback candidates at the gate (decision support, not auto-merge).** The
 auto-resolve ladder above is unchanged: a bare single-account source with no
 account number and no institution match still mints (or, when interactive,

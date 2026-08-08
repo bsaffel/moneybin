@@ -400,6 +400,39 @@ class AccountResolver:
         ).fetchone()
         return row[0] if row is not None else None
 
+    def knows_account_id(self, account_id: str) -> bool:
+        """Whether this database already has an account under this canonical id.
+
+        Two sources, because neither alone is complete. ``core.dim_accounts``
+        is SQLMesh-materialized, so an account minted by an earlier import is
+        absent from it until a refresh runs — and imports default to not
+        refreshing. ``app.account_links`` carries every id the resolver has
+        bound from the instant it mints one, but only those: an account that
+        predates the links table, or that arrives by another path, is in
+        dim_accounts alone. Reading both is what lets a caller answer "new" for
+        one file and bind its sibling to the id that answer just produced.
+
+        The catalog guard mirrors :func:`fetch_display_name` — ``core`` does
+        not exist before its first materialization, and its absence means no
+        account is known *there*, not that the question cannot be answered.
+        """
+        row = self._db.execute(
+            f"SELECT 1 FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE account_id = ? LIMIT 1",
+            [account_id],
+        ).fetchone()
+        if row is not None:
+            return True
+        try:
+            row = self._db.execute(
+                f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                "WHERE account_id = ? LIMIT 1",
+                [account_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return False
+        return row is not None
+
     def _write_native_mapping(
         self, src: SourceAccount, *, account_id: str, decided_by: str
     ) -> None:

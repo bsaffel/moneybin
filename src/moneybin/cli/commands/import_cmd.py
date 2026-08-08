@@ -1755,6 +1755,12 @@ def import_confirm_command(
                     account_metadata=parsed_metadata,
                     confirm_sign=confirm_sign,
                     sign=sign,
+                    # Forwarded for the same reason the JSON branch above does:
+                    # without it the printed line loses --bridge-response and
+                    # --confirm, gains an --accept this command refuses beside a
+                    # bridge response, and so cannot finish the agent-authored
+                    # import the user was answering the gate for.
+                    bridge_response=bridge_response,
                 )
                 + "`."
             )
