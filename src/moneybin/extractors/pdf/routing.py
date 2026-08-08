@@ -148,6 +148,10 @@ class RouteDecision:
     # ratifies the flip — see _gate_pdf_sign_convention, which cannot infer it:
     # decision.recipe already carries the NEW convention by the time it looks.
     rederived_from_sign: str | None = None
+    # Why the repair happened, in the words the service writes to app.audit_log.
+    # Set only when rederived is True. The service cannot infer it: by the time
+    # it persists, both triggers look identical on the decision.
+    rederived_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -436,18 +440,56 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     return decision
 
 
-def _self_heal_trigger(decision: RouteDecision) -> str | None:
-    """Why this replay should be re-derived, phrased for the log; None to leave it be.
+@dataclass(frozen=True)
+class _SelfHealTrigger:
+    """Why a saved recipe is being re-derived, in the two vocabularies it needs.
+
+    ``log_phrase`` completes the sentence "Saved format 'x' …" in the transient
+    operator log. ``audit_reason`` is the durable one — the service writes it
+    through ``bump_version`` into app.audit_log, which is what ``system audit``
+    replays to an operator months later. They are separate fields because one
+    hardcoded reason for both triggers made that durable row assert a
+    reconciliation failure for a statement that reconciled to the cent.
+    """
+
+    log_phrase: str
+    audit_reason: str
+
+
+_RECONCILIATION_FAILED = _SelfHealTrigger(
+    log_phrase="failed reconciliation",
+    audit_reason=(
+        "saved recipe stopped reconciling; re-derived from the "
+        "statement and proven against it"
+    ),
+)
+
+_DIGITLESS_ACCOUNT_ID = _SelfHealTrigger(
+    log_phrase="captured an account id with no digits",
+    audit_reason=(
+        "saved recipe read the account number as a digit-free mask; "
+        "re-derived from the statement and proven against it"
+    ),
+)
+
+
+def _self_heal_trigger(decision: RouteDecision) -> _SelfHealTrigger | None:
+    """Why this replay should be re-derived; None to leave it be.
 
     Both triggers share one cause — a saved recipe is a frozen snapshot of the
     derivation logic, so a fix to auto_derive can never reach it — and so share
     one repair. They differ only in how the staleness shows up.
     """
     if decision.reason == "replay_reconciliation_failed":
-        return "failed reconciliation"
+        return _RECONCILIATION_FAILED
     if _captured_a_digitless_account_id(decision):
-        return "captured an account id with no digits"
+        return _DIGITLESS_ACCOUNT_ID
     return None
+
+
+def _has_digits(value: str | None) -> bool:
+    """True when *value* is present and carries at least one digit."""
+    return value is not None and any(char.isdigit() for char in value)
 
 
 def _captured_a_digitless_account_id(decision: RouteDecision) -> bool:
@@ -465,10 +507,13 @@ def _captured_a_digitless_account_id(decision: RouteDecision) -> bool:
 
     A *missing* id is deliberately not a trigger. Some statements genuinely
     disclose no account number, and re-deriving each time would repeat the work
-    on every import without ever producing one.
+    on every import without ever producing one. A digit-free id that the current
+    anchors *also* read as digit-free — a fully-masked "XXXX" — is the same case
+    wearing a different shape, and _attempt_self_heal declines it for the same
+    reason once the fresh derivation has proven it can't do better.
     """
     account_id = decision.metadata.account_id
-    return account_id is not None and not any(char.isdigit() for char in account_id)
+    return account_id is not None and not _has_digits(account_id)
 
 
 def _attempt_self_heal(
@@ -476,15 +521,16 @@ def _attempt_self_heal(
     document_text: str,
     fp: dict[str, Any],
     saved_format: PdfFormat,
-    failed: RouteDecision,
+    replayed: RouteDecision,
     *,
-    trigger: str,
+    trigger: _SelfHealTrigger,
 ) -> RouteDecision | None:
     """Re-derive a saved recipe that went stale; None if unrepairable.
 
-    ``trigger`` is the log phrase naming what exposed the staleness — see
-    ``_self_heal_trigger``. It completes the sentence "Saved format 'x' …", so
-    the operator log says which signal fired rather than assuming reconciliation.
+    ``replayed`` is the decision the saved recipe produced — a seed when it
+    stopped reconciling, or a perfectly reconciled ``transactions`` decision
+    whose only defect is the account id. ``trigger`` names which of the two
+    exposed the staleness; see ``_self_heal_trigger``.
 
     A persisted recipe is a frozen snapshot of the derivation logic that produced
     it, so a fix to auto_derive can never reach a format already in
@@ -517,17 +563,18 @@ def _attempt_self_heal(
 
     The fresh recipe earns its place by clearing the same ±1c reconciliation gate
     a first-contact recipe must clear — it is proven against this document, not
-    assumed. Anything short of that returns None and the caller keeps the
-    original seed decision.
+    assumed. Anything short of that returns None and the caller keeps
+    ``replayed`` — which means seeding when reconciliation was what failed, but
+    loading the statement under the known-bad account id when it wasn't.
     """
-    # Reuses the failed decision's markers: a pure function of doc, which has not
-    # changed, and scanning the whole document a second time buys nothing.
-    card_markers = failed.card_markers
-    saved_recipe = failed.recipe
+    # Reuses the replayed decision's markers: a pure function of doc, which has
+    # not changed, and scanning the whole document a second time buys nothing.
+    card_markers = replayed.card_markers
+    saved_recipe = replayed.recipe
 
     if saved_format.source != "detected":
         logger.info(
-            f"Saved format {saved_format.name!r} {trigger} but its "
+            f"Saved format {saved_format.name!r} {trigger.log_phrase} but its "
             f"source is {saved_format.source!r}, not 'detected' — declining to "
             f"overwrite a human-authored recipe; routing to seed"
         )
@@ -537,7 +584,7 @@ def _attempt_self_heal(
     fresh = derive_recipe(doc, _EMPTY_METADATA)
     if fresh is None:
         logger.info(
-            f"Saved format {saved_format.name!r} {trigger} and the "
+            f"Saved format {saved_format.name!r} {trigger.log_phrase} and the "
             f"document could not be re-derived ({derivation_failure_reason(doc)})"
             f" — routing to seed"
         )
@@ -573,11 +620,27 @@ def _attempt_self_heal(
     )
     if retry.outcome != "transactions":
         logger.info(
-            f"Saved format {saved_format.name!r} {trigger} and the "
+            f"Saved format {saved_format.name!r} {trigger.log_phrase} and the "
             f"re-derived recipe did not reconcile either (reason={retry.reason})"
             f" — routing to seed"
         )
         PDF_SELF_HEAL_TOTAL.labels(outcome="still_unreconciled").inc()
+        return None
+
+    if trigger is _DIGITLESS_ACCOUNT_ID and not _has_digits(retry.metadata.account_id):
+        # The statement itself discloses no account digits — a fully-masked
+        # "XXXX" that _to_account_number_mask deliberately preserves — so the
+        # fresh recipe reads exactly what the saved one did. Accepting this as a
+        # repair would bump the version and write an audit row on every future
+        # import of the layout while the account identity never improves. Same
+        # reason a *missing* id is not a trigger, established one step later:
+        # only the re-derivation can tell the two cases apart.
+        logger.info(
+            f"Saved format {saved_format.name!r} {trigger.log_phrase} but a "
+            f"re-derived recipe reads the same digit-free id — this statement "
+            f"discloses no account digits; leaving the saved recipe alone"
+        )
+        PDF_SELF_HEAL_TOTAL.labels(outcome="no_identity_gain").inc()
         return None
 
     if sign_changed:
@@ -597,15 +660,16 @@ def _attempt_self_heal(
         return replace(
             retry,
             rederived=True,
+            rederived_reason=trigger.audit_reason,
             rederived_from_sign=saved_recipe.sign_convention,
         )
 
     logger.info(
-        f"Saved format {saved_format.name!r} {trigger} but a "
+        f"Saved format {saved_format.name!r} {trigger.log_phrase} but a "
         f"re-derived recipe reconciles — repairing the saved recipe in place"
     )
     PDF_SELF_HEAL_TOTAL.labels(outcome="repaired").inc()
-    return replace(retry, rederived=True)
+    return replace(retry, rederived=True, rederived_reason=trigger.audit_reason)
 
 
 def route_forced_recipe(doc: PdfDocument, recipe: Recipe) -> RouteDecision:

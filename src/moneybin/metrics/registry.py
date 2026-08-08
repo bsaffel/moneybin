@@ -115,13 +115,14 @@ PDF_REPLAY_GUARD_FAILURE_TOTAL = Counter(
 # What happened AFTER a replay-guard failure. Without this, a fleet where every
 # failure self-heals is indistinguishable from one where every failure seeds —
 # PDF_REPLAY_GUARD_FAILURE_TOTAL fires before the repair is attempted, so it
-# counts the trigger, not the outcome. Cardinality is fixed at 5 by the literal
+# counts the trigger, not the outcome. Cardinality is fixed at 6 by the literal
 # label set below.
 PDF_SELF_HEAL_TOTAL = Counter(
     "moneybin_pdf_self_heal_total",
-    "Outcome of re-deriving a saved PDF recipe that stopped reconciling.",
+    "Outcome of re-deriving a saved PDF recipe found stale — either because it "
+    "stopped reconciling or because it read a digit-free account id.",
     ["outcome"],  # repaired | repaired_pending_sign | refused_not_detected
-    # | underivable | still_unreconciled
+    # | underivable | still_unreconciled | no_identity_gain
 )
 
 # Phase 1: cardinality bounded by distinct PDF aliases per user (~dozens).

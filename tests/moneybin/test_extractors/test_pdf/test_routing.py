@@ -1233,6 +1233,8 @@ def test_replay_failure_re_derives_and_recovers_the_dropped_row(
     # re-derived — not a first-contact save under a new name.
     assert decision.matched_format_name == "chase_checking_pdf"
     assert len(decision.rows) == 3
+    assert decision.rederived_reason is not None
+    assert "stopped reconciling" in decision.rederived_reason
 
 
 def _frozen_anchor_recipe_dict() -> dict[str, Any]:
@@ -1306,6 +1308,10 @@ def test_replay_capturing_a_digitless_account_id_re_derives(db: Database) -> Non
     assert decision.matched_format_name == "chase_checking_pdf"
     assert decision.metadata.account_id is not None
     assert any(char.isdigit() for char in decision.metadata.account_id)
+    # The reason the service persists into app.audit_log has to name the trigger
+    # that actually fired: this replay reconciled to the cent.
+    assert decision.rederived_reason is not None
+    assert "digit-free mask" in decision.rederived_reason
 
 
 def test_replay_capturing_a_digitful_account_id_does_not_re_derive(
@@ -1324,6 +1330,33 @@ def test_replay_capturing_a_digitful_account_id_does_not_re_derive(
     assert decision.outcome == "transactions"
     assert decision.rederived is False
     assert decision.metadata.account_id == "1234"
+
+
+def _fully_masked_account_doc() -> PdfDocument:
+    """A Chase statement whose account line discloses no digits at all."""
+    lines = _standard_text_lines()
+    lines[1] = "Account Number: XXXX"
+    return _make_doc(text_lines=lines, tables=[_standard_table()])
+
+
+def test_replay_is_not_re_derived_when_the_account_id_cannot_gain_a_digit(
+    db: Database,
+) -> None:
+    """A statement that genuinely discloses no digits is left alone.
+
+    The trigger fires — the captured id is digit-free — but current anchors read
+    the same digit-free value, so "repairing" would bump the recipe version and
+    write an audit row on every future import of this layout while the account
+    identity never improves. The same reasoning excludes a *missing* id.
+    """
+    _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+
+    decision = route_pdf_import(_fully_masked_account_doc(), db)
+
+    assert decision.outcome == "transactions"
+    assert decision.rederived is False
+    assert decision.rederived_reason is None
+    assert decision.metadata.account_id == "XXXX"
 
 
 def test_self_heal_falls_back_to_seed_when_the_document_is_underivable(

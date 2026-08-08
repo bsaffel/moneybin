@@ -3296,7 +3296,7 @@ class ImportService:
         import_id: str,
         in_outer_txn: bool = False,
     ) -> None:
-        """Write back a recipe that routing re-derived after a replay stopped reconciling.
+        """Write back a recipe that routing re-derived after finding it stale.
 
         Without this the repair is per-import: the rows land, but
         ``app.pdf_formats`` still holds the recipe that couldn't read them, so the
@@ -3313,18 +3313,19 @@ class ImportService:
         """
         name = decision.matched_format_name
         recipe = decision.recipe
-        # A re-derived decision carries both by construction (see
+        # The reason comes from the decision because only routing knows which
+        # trigger fired; a hardcoded one told every operator reading the audit
+        # log that reconciliation failed, including for repairs where it didn't.
+        reason = decision.rederived_reason
+        # A re-derived decision carries all three by construction (see
         # _attempt_self_heal). The guard satisfies the type checker.
-        if name is None or recipe is None:  # pragma: no cover
+        if name is None or recipe is None or reason is None:  # pragma: no cover
             return
         try:
             self._pdf_formats.bump_version(
                 name=name,
                 new_recipe=recipe.model_dump(),
-                reason=(
-                    "saved recipe stopped reconciling; re-derived from the "
-                    "statement and proven against it"
-                ),
+                reason=reason,
                 # "system": a detection repaired its own earlier detection. No
                 # human asserted anything here.
                 actor="system",
