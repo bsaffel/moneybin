@@ -79,7 +79,7 @@ The sandbox is a guard, not an obstacle. Default to fixing the policy, not bypas
 
 ## Known cases — don't re-derive these
 
-Each of these has already cost a debugging detour. The first four are failures that **look** like they need a bypass and do not.
+Each of these has already cost a debugging detour. The first five are failures that **look** like they need a bypass and do not.
 
 | Case | What actually happens | What to do |
 |---|---|---|
@@ -87,6 +87,7 @@ Each of these has already cost a debugging detour. The first four are failures t
 | `gh run view --log-failed` | Works in-sandbox — the `gh` cache path is allowlisted. | Read CI failure logs directly; no bypass. |
 | Bare `git push` after the sandbox blocked the `-u` write | Reports success and **no-ops**. | Push `HEAD:<branch>` explicitly, then verify `origin/<branch>` actually moved. |
 | `git branch -m` on a fresh branch → `could not lock config file .git/config` | The ref rename **succeeded**; only the (nonexistent) upstream-config write failed. | Confirm with `git symbolic-ref HEAD` and `git worktree list`. Don't retry unsandboxed. |
+| `moneybin demo` / `accounts links run` → `PasswordSetError: Can't store password on keychain: (-60008)` | The keychain **write** is denied. Reads are unaffected and `moneybin db backup` completes normally (34.5 MB written), so only commands that store a secret fail. | Not an allowlist problem. For `demo`, supply the in-memory keyring: `PYTHON_KEYRING_BACKEND=tests.e2e.memory_keyring.MemoryKeyring PYTHONPATH="$PWD" uv run moneybin demo …`. For `accounts links run`, go via MCP — the server holds its own keyring session. |
 | Compound bash — several `&&`/`;` statements or subshells | Defeats the static analyzer and prompts even when every component is allowlisted. | One statement per call, or move the logic into a single `python3` / `uv run python` helper. |
 | Bare `uv run sqlmesh -p … format` | Forks a worker pool the encrypted-DB design disallows. | `make format-sql` (sets `MAX_FORK_WORKERS=1`). |
 | Reading repos under `~/Workspace/` other than `moneybin*` (sibling clones, external projects) | Outside the read allowlist. | Genuine one-off bypass — quote the denied path first. |
