@@ -44,7 +44,9 @@ runner = CliRunner()
 _MINTED = (CreatedAccount(account_id="acct00000001", display_name="WF Checking"),)
 
 
-def _account_proposal_dict(source_account_key: str) -> AccountProposalDict:
+def _account_proposal_dict(
+    source_account_key: str, ref: str = "@0"
+) -> AccountProposalDict:
     """One account proposal dict via the real serializer (guarantees the shape)."""
     return AccountProposal(
         source_account_key=source_account_key,
@@ -58,7 +60,7 @@ def _account_proposal_dict(source_account_key: str) -> AccountProposalDict:
                 signal="name",
             ),
         ),
-    ).to_dict(proposal_ref="@0")
+    ).to_dict(proposal_ref=ref)
 
 
 def _make_import_result(**kwargs: Any) -> ImportResult:
@@ -326,6 +328,32 @@ class TestImportFilesConfirmFlow:
         assert result.exit_code == 0
         assert "WF Checking" in result.output
 
+    def test_the_rename_hint_names_a_command_that_can_actually_run(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """``accounts set --display-name`` takes a value, so the hint must show one.
+
+        The option is declared ``str | None`` on ``accounts set``, so the
+        advertised form ending at the flag exits with a missing-option-value
+        usage error. A recovery the user cannot copy is not a recovery.
+        """
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(accounts_created=_MINTED),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(app, ["files", str(csv_file), "--confirm"])
+
+        hint = next(
+            line for line in result.output.splitlines() if "--display-name" in line
+        )
+        assert "--display-name <name>" in hint
+
     def test_an_import_that_created_nothing_says_nothing(
         self,
         mock_db: MagicMock,
@@ -518,7 +546,9 @@ class TestImportFilesConfirmFlow:
         payload = json.loads(result.output)
         recovery = next(a for a in payload["actions"] if "--account-binding" in a)
         assert "checking=acct_known01" in recovery
-        assert "savings=<account_id|new>" in recovery
+        # The generated half is keyed by ref; the carried key names no proposal
+        # in this outcome, so it can only be echoed back as the caller sent it.
+        assert "@0=<account_id|new>" in recovery
 
     def test_interactive_account_recovery_replays_the_bindings_already_supplied(
         self,
@@ -567,7 +597,7 @@ class TestImportFilesConfirmFlow:
             line for line in result.output.splitlines() if "--account-binding" in line
         )
         assert "checking=acct_known01" in recovery
-        assert "savings=<account_id|new>" in recovery
+        assert "@0=<account_id|new>" in recovery
 
     def test_multi_file_refuses_account_bindings(self, tmp_path: Path) -> None:
         """Warn-and-drop is the loop the MCP twin hard-refuses for this same input.
@@ -637,9 +667,108 @@ class TestImportFilesConfirmFlow:
         recovery = next(a for a in payload["actions"] if "--account-binding" in a)
         assert "moneybin import confirm" in recovery
         assert "import files" not in recovery
-        assert "1111=<account_id|new>" in recovery
+        assert "@0=<account_id|new>" in recovery
         # Required by the command's own guard, and what InboxService emits.
         assert "--accept" in recovery
+
+    def test_the_recovery_action_never_carries_the_account_number(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """``actions[]`` is outside the redaction walk, so it must not hold a key.
+
+        ``render_or_json`` applies ``redact_typed`` to ``data`` alone, so a
+        recovery command keyed by ``source_account_key`` hands an OFX
+        ``<ACCTID>`` — a full account number — to whatever reads the JSON, and
+        the CLI's redaction contract is the same one MCP has (``cli.md``: never
+        assume CLI users are trusted enough to skip redaction).
+
+        ``proposal_ref`` is the referent that survives this: it names the same
+        account and discloses nothing, which is the whole reason it exists.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        acctid = "000123456789"
+        outcome = ConfirmationRequired(
+            channel="ofx",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict(acctid)],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(app, ["files", str(ofx_file), "--output", "json"])
+
+        payload = json.loads(result.output)
+        assert acctid not in json.dumps(payload["actions"])
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+        assert "@0=<account_id|new>" in recovery
+
+    def test_a_binding_already_answered_comes_back_as_its_ref(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Re-keying only the generated half would leave the leak in place.
+
+        A two-account statement answered one at a time is exactly why the
+        recovery replays the bindings already given — and replaying the
+        caller's own ``<ACCTID>`` key puts the account number back into
+        ``actions[]`` through the other door. Every key in the printed command
+        is a ref, so the whole line is safe to hand to a script.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        answered, pending = "000123456789", "000987654321"
+        outcome = ConfirmationRequired(
+            channel="ofx",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[
+                _account_proposal_dict(answered),
+                _account_proposal_dict(pending, ref="@1"),
+            ],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(ofx_file),
+                "--account-binding",
+                f"{answered}=acct_known01",
+                "--output",
+                "json",
+            ],
+        )
+
+        payload = json.loads(result.output)
+        rendered = json.dumps(payload["actions"])
+        assert answered not in rendered
+        assert pending not in rendered
+        recovery = next(a for a in payload["actions"] if "--account-binding" in a)
+        assert "@0=acct_known01" in recovery
+        assert "@1=<account_id|new>" in recovery
 
     @pytest.mark.parametrize("suffix", [".ofx", ".pdf", ".csv"])
     def test_the_account_recovery_it_prints_actually_parses(
@@ -697,7 +826,7 @@ class TestImportFilesConfirmFlow:
         rerun = runner.invoke(app, argv[1:])
 
         assert rerun.exit_code == 0, f"{channel}: {rerun.output}"
-        assert gated.call_args.kwargs["account_bindings"] == {"1111": "new"}
+        assert gated.call_args.kwargs["account_bindings"] == {"@0": "new"}
 
     def test_the_account_recovery_carries_the_institution_it_was_given(
         self,
@@ -755,7 +884,9 @@ class TestImportFilesConfirmFlow:
 
         assert rerun.exit_code == 0, rerun.output
         assert gated.call_args.kwargs["institution"] == "chase"
-        assert gated.call_args.kwargs["account_bindings"] == {"1111": "new"}
+        # The printed command answers by ref, and the ref reaches the service
+        # intact — the round trip is what proves the safe key is also usable.
+        assert gated.call_args.kwargs["account_bindings"] == {"@0": "new"}
 
     def test_account_confirmation_tty_renders_proposals(
         self,
@@ -1908,7 +2039,7 @@ class TestImportConfirmCommand:
         } == {
             "settled=acct-123",
             "minted=new",
-            "card-abc=<account_id|new>",
+            "@0=<account_id|new>",
         }
         assert {
             tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"

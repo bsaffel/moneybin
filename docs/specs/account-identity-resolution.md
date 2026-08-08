@@ -676,6 +676,16 @@ Four properties are load-bearing:
   id that `resolve()` discards.
 - **`@`, not `#`.** A binding is typed at a shell prompt, where
   `--account-binding #0=new` opens a comment and drops the rest of the line.
+- **The recovery command the gate prints answers in refs.** `actions[]` sits
+  outside the envelope's redaction walk — `render_or_json` applies
+  `redact_typed` to `data` alone — so a recovery keyed by `source_account_key`
+  hands an OFX `<ACCTID>` to whatever reads the JSON, on the surface designed to
+  be machine-read. Carried bindings are re-keyed alongside the generated ones:
+  the replay exists for the two-account file answered one at a time, so leaving
+  the caller's own key raw restores the disclosure through the other door, and a
+  ref beside its own source key is refused as a double binding anyway. A key
+  naming no proposal in the outcome is echoed as sent — it cannot be re-keyed,
+  and the resolver refuses it upstream.
 
 **The value side is closed, and checked before anything loads.** A binding
 value is either the exact token `new` or an account id this database already

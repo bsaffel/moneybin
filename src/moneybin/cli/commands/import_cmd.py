@@ -848,7 +848,9 @@ def _echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
             err=True,
         )
     typer.echo(
-        "   Rename with 'moneybin accounts set <account_id> --display-name'; "
+        # --display-name takes a value; ending the hint at the flag prints a
+        # command that exits on a missing option value.
+        "   Rename with 'moneybin accounts set <account_id> --display-name <name>'; "
         "if it duplicates an account you already have, "
         "'moneybin accounts links run' proposes the merge.",
         err=True,
@@ -1077,10 +1079,28 @@ def _account_recovery_command(
     ``archive_confirmed_file``, so a pending inbox file answered through
     ``import files`` stayed in ``pending/`` and was offered again on every sync.
     """
-    bindings = dict(account_bindings or {})
+    # Every key this command names is a proposal_ref, never a source key.
+    # `actions[]` sits outside the envelope's redaction walk — render_or_json
+    # applies redact_typed to `data` alone — so a source key here hands an OFX
+    # <ACCTID> to whatever reads the JSON, and the CLI carries MCP's redaction
+    # contract unchanged (cli.md). A ref names the same account and discloses
+    # nothing, which is what it exists for.
+    #
+    # Carried bindings are re-keyed too, not just the generated ones: the
+    # replay exists for the two-account file answered one at a time, so leaving
+    # the caller's own key raw would put the account number back through the
+    # other door. A key naming no proposal in this outcome cannot be re-keyed
+    # and is echoed as sent — the resolver refuses it upstream anyway.
+    ref_by_source_key = {
+        str(proposal["source_account_key"]): str(proposal["proposal_ref"])
+        for proposal in outcome.account_proposals
+    }
+    bindings = {
+        ref_by_source_key.get(key, key): value
+        for key, value in (account_bindings or {}).items()
+    }
     for proposal in outcome.account_proposals:
-        source_key = str(proposal["source_account_key"])
-        bindings.setdefault(source_key, "<account_id|new>")
+        bindings.setdefault(str(proposal["proposal_ref"]), "<account_id|new>")
     if not bindings:
         bindings["<source_key>"] = "<account_id|new>"
 
