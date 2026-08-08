@@ -1,5 +1,6 @@
 """Tests for TransactionMatcher orchestrator."""
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -14,7 +15,12 @@ from moneybin.matching.scoring import CandidatePair
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 
 
-def _make_pair(confidence: float) -> CandidatePair:
+def _make_pair(confidence: float, *, agree: bool = False) -> CandidatePair:
+    """Build a scored pair. ``agree`` is the description-agreement signal.
+
+    Defaults to False because that is the case a silent merge must never
+    survive; every test asserting an auto-merge has to opt in explicitly.
+    """
     return CandidatePair(
         source_transaction_id_a="a",
         source_type_a="csv",
@@ -28,6 +34,7 @@ def _make_pair(confidence: float) -> CandidatePair:
         confidence_score=confidence,
         description_a="",
         description_b="",
+        descriptions_agree=agree,
     )
 
 
@@ -43,13 +50,48 @@ class TestClassifyPair:
         matcher = _matcher_with_settings(
             high_confidence_threshold=0.90, review_threshold=0.70
         )
-        assert matcher._classify_pair(_make_pair(0.95), "2b") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
+        pair = _make_pair(0.95, agree=True)
+        assert matcher._classify_pair(pair, "2b") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
 
     def test_high_confidence_returns_accepted_for_3(self) -> None:
         matcher = _matcher_with_settings(
             high_confidence_threshold=0.90, review_threshold=0.70
         )
-        assert matcher._classify_pair(_make_pair(0.95), "3") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
+        pair = _make_pair(0.95, agree=True)
+        assert matcher._classify_pair(pair, "3") == ("accepted", "auto")  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_high_score_without_agreement_is_reviewed_not_merged(self) -> None:
+        """Score alone never earns a silent merge — only agreement does.
+
+        The weighted formula peaks at ``date_distance_days=0``, where its date
+        term is 1.0, so a *disagreeing* pair landing on the same day clears the
+        auto-merge threshold on closeness alone: two distinct transactions at
+        one merchant differing only in a trailing reference number score ~0.97.
+        Merging those deletes a real transaction with no review entry, which is
+        the hardest failure to notice and undo (design-principles.md), so
+        agreement is checked here rather than left to the formula.
+        """
+        matcher = _matcher_with_settings(
+            high_confidence_threshold=0.90, review_threshold=0.70
+        )
+        pair = _make_pair(0.97, agree=False)
+        assert matcher._classify_pair(pair, "3") == ("pending", "auto")  # pyright: ignore[reportPrivateUsage]
+
+    def test_a_high_score_without_agreement_is_dropped_within_source(self) -> None:
+        """Tier 2b has no review queue, so a disagreeing pair is simply not merged.
+
+        Both rows stay in the ledger. That is a double-count — visible in any
+        total, and correctable — where the alternative is deleting one of two
+        genuinely distinct transactions with nothing recorded anywhere. Within
+        one source the rendering is consistent, so two rows written differently
+        are two transactions; this is the same premise the agreement floor is
+        withheld from Tier 2b for (``scoring.py``), enforced at the decision.
+        """
+        matcher = _matcher_with_settings(
+            high_confidence_threshold=0.90, review_threshold=0.70
+        )
+        pair = _make_pair(0.97, agree=False)
+        assert matcher._classify_pair(pair, "2b") is None  # pyright: ignore[reportPrivateUsage]
 
     def test_tier3_above_review_threshold_returns_pending(self) -> None:
         matcher = _matcher_with_settings(
@@ -64,13 +106,86 @@ class TestClassifyPair:
         )
         assert matcher._classify_pair(_make_pair(0.80), "2b") is None  # pyright: ignore[reportPrivateUsage]
 
-    def test_below_all_thresholds_returns_none(self) -> None:
+    def test_low_confidence_within_source_pair_is_dropped(self) -> None:
+        """Within-source has no review band, so a weak pair is simply not a match."""
         matcher = _matcher_with_settings(
             high_confidence_threshold=0.90, review_threshold=0.70
         )
-        for tier in ("2b", "3"):
-            result = matcher._classify_pair(_make_pair(0.50), tier)  # type: ignore[arg-type]  # pyright: ignore[reportPrivateUsage]
-            assert result is None, f"Expected None for tier {tier!r}"
+        result = matcher._classify_pair(_make_pair(0.50), "2b")  # type: ignore[arg-type]  # pyright: ignore[reportPrivateUsage]
+        assert result is None
+
+    def test_low_confidence_cross_source_pair_is_still_reviewed(self) -> None:
+        """No cross-source pair is ever dropped for being weak — only for losing assignment.
+
+        Scored well below both thresholds, this pair still cleared same-account,
+        exact-amount, in-window blocking and won its 1:1 assignment. Dropping it
+        would silently leave a duplicate in the ledger, so it goes to review.
+        """
+        matcher = _matcher_with_settings(
+            high_confidence_threshold=0.90, review_threshold=0.70
+        )
+        result = matcher._classify_pair(_make_pair(0.50), "3")  # type: ignore[arg-type]  # pyright: ignore[reportPrivateUsage]
+        assert result == ("pending", "auto")
+
+
+class TestRunTierAssignment:
+    """An edge that cannot be persisted must not consume assignment."""
+
+    @staticmethod
+    def _within_source_pair(
+        other_id: str, confidence: float, *, agree: bool
+    ) -> CandidatePair:
+        """One row of `file1.csv` against one row of `file2.csv`, same source."""
+        return CandidatePair(
+            source_transaction_id_a="x",
+            source_type_a="csv",
+            source_origin_a="chase",
+            source_transaction_id_b=other_id,
+            source_type_b="csv",
+            source_origin_b="chase",
+            account_id="acct1",
+            date_distance_days=0,
+            description_similarity=confidence,
+            confidence_score=confidence,
+            description_a="",
+            description_b="",
+            descriptions_agree=agree,
+            source_file_a="file1.csv",
+            source_file_b="file2.csv",
+        )
+
+    def test_a_disagreeing_edge_does_not_suppress_an_agreeing_one(
+        self, db: Database
+    ) -> None:
+        """The mergeable pair wins assignment even when a doomed pair scores higher.
+
+        `assign_components` orders by score alone, and the cardinality guard lets
+        one row claim only one partner per physical source. So a higher-scoring
+        pair whose descriptions disagree would union the component first, push the
+        lower-scoring *agreeing* pair out on the guard, and then be dropped itself
+        by the agreement gate — leaving the real duplicate unmatched and counted
+        twice. Both rows survive in the ledger, which is silent: nothing is written
+        and Tier 2b has no review queue to notice the gap.
+
+        x/z is the true duplicate here. x/y outscores it by 0.01 and cannot merge.
+        """
+        matcher = TransactionMatcher(
+            db, MatchingSettings(high_confidence_threshold=0.95, review_threshold=0.70)
+        )
+        doomed = self._within_source_pair("y", 0.97, agree=False)
+        mergeable = self._within_source_pair("z", 0.96, agree=True)
+        result = MatchResult()
+
+        matcher._run_tier(  # pyright: ignore[reportPrivateUsage]
+            tier="2b",
+            candidates_fn=lambda: [doomed, mergeable],
+            seed_edges=[],
+            result=result,
+        )
+
+        assert result.auto_merged == 1
+        matches = get_active_matches(db, match_type="dedup")
+        assert [m["source_transaction_id_b"] for m in matches] == ["z"]
 
 
 class TestFetchActiveDedupDecisions:
@@ -587,20 +702,31 @@ class TestNWayDedup:
         )
 
 
-class TestExactKeyCrossSourceAutoMerge:
-    """Exact-key (same account + exact amount + same day) cross-source auto-merge.
+class TestCrossSourceAgreementGate:
+    """Cross-source dedup gates on description agreement, not on the date gap.
 
-    Brandon, 2026-06-13: a cross-source pair with date_distance=0 is a near-certain
-    duplicate; auto-merge it regardless of description similarity. Description is a
-    tiebreaker for *which* rows pair, never a gate on *whether* they merge.
+    Blocking has already required the same account, an exact amount, and a date
+    inside the window, and the pair has won its 1:1 assignment. That is enough
+    evidence to *ask* about every surviving pair, and enough to *act* silently
+    only on the ones whose descriptions agree.
+
+    Supersedes the exact-key rule (Brandon, 2026-06-13), which auto-merged any
+    same-day pair regardless of description. Measured on live data, the same-day
+    band held the weakest-evidence pairs in the set — including amount collisions
+    between genuinely different merchants — so the date turned out to be the wrong
+    thing to trust.
     """
 
-    def test_low_description_similarity_still_auto_merges(self, db: Database) -> None:
-        """Same account/amount/day but divergent descriptions → auto-merge, not review.
+    def test_divergent_descriptions_are_reviewed_not_merged_or_dropped(
+        self, db: Database
+    ) -> None:
+        """A generic OFX string against a full CSV one is a question, not an answer.
 
-        This is the OFX-vs-CSV truncation case: jaro_winkler is low, so the
-        weighted score (0.40 + 0.60*low) lands below the review threshold and the
-        pair was previously dropped. Exact-key auto-merge accepts it.
+        Same account, amount, and day, but the descriptions share nothing, so this
+        could be one transaction rendered two ways or two different transactions
+        that collided on amount. Both silent outcomes are wrong here: merging can
+        destroy a real transaction, and dropping leaves a duplicate in the ledger
+        that nobody is ever told about. It has to surface.
         """
         _create_test_table(db)
         _insert(
@@ -628,13 +754,58 @@ class TestExactKeyCrossSourceAutoMerge:
         settings = MatchingSettings()
         matcher = TransactionMatcher(db, settings, table="main._test_unioned")
         result = matcher.run()
-        assert result.auto_merged == 1
-        assert result.pending_review == 0
+        assert result.auto_merged == 0, "divergent descriptions must not merge silently"
+        assert result.pending_review == 1, "nor may the pair vanish without a question"
 
-        # Persisted confidence reflects exact-key certainty, not the low jaro score.
+        matches = get_pending_matches(db, match_type="dedup")
+        assert len(matches) == 1
+        assert (
+            float(matches[0]["confidence_score"]) < settings.high_confidence_threshold
+        )
+
+    def test_auto_merge_records_the_agreement_that_justified_it(
+        self, db: Database
+    ) -> None:
+        """A silent merge has to leave behind the evidence it acted on.
+
+        Auto-merge is the one path with no human in it, so the decision record is
+        the only place its reasoning survives. Storing the agreement signal means
+        a later reviewer can tell an agreement-driven merge from a coincidence
+        without re-deriving it from two strings that may since have changed.
+        """
+        _create_test_table(db)
+        _insert(
+            db,
+            "csv_a",
+            "acct1",
+            "2026-03-15",
+            "-42.50",
+            "STARBUCKS STORE 1234 NEW YORK NY",
+            "csv",
+            "chase",
+            sfile="march.csv",
+        )
+        _insert(
+            db,
+            "ofx_b",
+            "acct1",
+            "2026-03-17",
+            "-42.50",
+            "STARBUCKS STORE",
+            "ofx",
+            "chase_ofx",
+            sfile="march.ofx",
+        )
+        matcher = TransactionMatcher(db, MatchingSettings(), table="main._test_unioned")
+        result = matcher.run()
+        assert result.auto_merged == 1
+
         matches = get_active_matches(db, match_type="dedup")
         assert len(matches) == 1
-        assert float(matches[0]["confidence_score"]) >= 0.95
+        signals = matches[0]["match_signals"]
+        if isinstance(signals, str):
+            signals = json.loads(signals)
+        assert signals["descriptions_agree"] is True
 
     def test_two_distinct_same_key_txns_stay_separate(self, db: Database) -> None:
         """Negative/precision: two genuinely-distinct $5 charges, same account/day.

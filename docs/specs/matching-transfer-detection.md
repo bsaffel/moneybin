@@ -131,7 +131,7 @@ Query against prep views. A candidate pair must satisfy ALL of:
 1. **Different accounts** — `account_id_a != account_id_b`
 2. **Opposite signs** — `amount_a * amount_b < 0` (one negative, one positive)
 3. **Exact amount match** — `ABS(amount_a) = ABS(amount_b)` (same-currency only)
-4. **Date within window** — `ABS(transaction_date_a - transaction_date_b) <= date_window_days` (default 3)
+4. **Date within window** — `ABS(transaction_date_a - transaction_date_b) <= date_window_days` (default 5)
 5. **Not already matched** — neither transaction is part of an accepted dedup match or transfer pair
 
 This produces a narrow candidate set. No fuzzy logic at this stage.
@@ -142,7 +142,7 @@ For each candidate pair, two signals combined into a confidence score:
 
 | Signal | Range | Logic |
 |---|---|---|
-| **Date distance** | 0.0-1.0 | `1.0 - (days_apart / date_window_days)`. Same-day = 1.0, 3 days apart = 0.0. Primary discriminator for recurring transfers. |
+| **Date distance** | 0.0-1.0 | `1.0 - (days_apart / date_window_days)`. Same-day = 1.0, `date_window_days` apart = 0.0. Primary discriminator for recurring transfers. |
 | **Keyword presence** | 0.0-1.0 | Scan both descriptions for transfer-indicating terms: TRANSFER, XFER, ACH, DIRECT DEP, WIRE, plus ~40 compound phrases (ONLINE TRANSFER TO SAV, AUTO PAY, CC PAYMENT, etc.). Matched longest-first (non-overlapping) so compound phrases consume their span before sub-keywords can double-count. Score: 0.0 (no match), 0.5 (1 match), 0.8 (2 matches), 1.0 (3+ matches). |
 
 Amount roundness and account pair frequency were dropped: roundness is a weak signal ($437.82 is as real a transfer as $500), and pair frequency is within-batch-only — backfills see different scores than incremental syncs, making the signal unstable. Both remaining signals and their per-pair scores are persisted in `match_signals` JSON for auditability and tuning diagnosis.
@@ -326,7 +326,7 @@ class MatchingSettings(BaseModel):
 
     # Transfer-specific settings
     transfer_review_threshold: float = 0.55
-    date_window_days: int = 3  # shared with dedup
+    date_window_days: int = 5  # shared with dedup
     transfer_signal_weights: dict[str, float] = {
         "date_distance": 0.6,
         "keyword": 0.4,

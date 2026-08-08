@@ -499,7 +499,12 @@ def _txn_row(
     memo: str | None = None,
     check_number: str | None = None,
 ) -> dict[str, object]:
-    """Minimal transaction row carrying the fields the FITID-collision repair reads."""
+    """Minimal transaction row carrying the fields the FITID-collision repair reads.
+
+    ``fitid_repaired`` starts False exactly as the extractor's own row build sets
+    it: the repair only visits colliding groups, so rows it never reaches must
+    already carry the flag rather than acquire it there.
+    """
     return {
         "source_transaction_id": source_transaction_id,
         "account_id": account_id,
@@ -509,6 +514,7 @@ def _txn_row(
         "payee": payee,
         "memo": memo,
         "check_number": check_number,
+        "fitid_repaired": False,
     }
 
 
@@ -588,6 +594,32 @@ class TestDisambiguateCollidingFitids:
 
         assert rewritten == 0
         assert all(r["source_transaction_id"] == "F1" for r in rows)
+
+    def test_repair_records_its_own_provenance(self) -> None:
+        """Staging retires a bare id only against a row flagged here.
+
+        The '#' marker cannot carry this: the OFX spec does not reserve it, so an
+        institution may mint both `X` and `X#reference` for two distinct
+        transactions. If the repair does not record that it acted, staging is
+        left inferring provenance from the id text and deletes a real row.
+        """
+        rows = [
+            _txn_row(source_transaction_id="F1", amount="-13.12", payee="PURCHASE"),
+            _txn_row(source_transaction_id="F1", amount="-0.39", payee="FEE"),
+        ]
+        _disambiguate_colliding_fitids(rows)
+
+        assert all(r["fitid_repaired"] is True for r in rows)
+
+    def test_an_untouched_id_is_not_marked_repaired(self) -> None:
+        """The flag licenses a delete, so it must stay off wherever nothing changed."""
+        rows = [
+            _txn_row(source_transaction_id="A", amount="-1.00"),
+            _txn_row(source_transaction_id="B", amount="-2.00"),
+        ]
+        _disambiguate_colliding_fitids(rows)
+
+        assert all(r["fitid_repaired"] is False for r in rows)
 
     def test_distinct_fitids_are_untouched(self) -> None:
         rows = [

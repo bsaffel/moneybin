@@ -207,7 +207,7 @@ The matcher's blocking key is strict: two rows are even *considered* a dedup can
 
 - Same `account_id`.
 - Exactly equal `amount` (DuckDB `DECIMAL` equality — no tolerance).
-- `transaction_date` within `matching.date_window_days` days of each other (default `3`).
+- `transaction_date` within `matching.date_window_days` days of each other (default `5`).
 - Neither row has `source_type = 'manual'` (manual entries are deliberately exempt — see `transaction-curation` spec Req 6).
 
 Surviving candidates are then scored by:
@@ -215,11 +215,23 @@ Surviving candidates are then scored by:
 - **Date distance** — linear decay across the window.
 - **Description similarity** — Jaro-Winkler over the two `description` strings.
 
-The combined confidence score is checked against two thresholds from settings:
+Two things decide what happens to a candidate — the score and whether the two
+descriptions agree — one contained in the other on word boundaries and carrying a
+word that names a merchant rather than only boilerplate or digits, or the two
+identical (identical boilerplate counts only when both rows posted the same day).
+A match may end mid-word, as a truncating source produces, only when a whole word
+naming a merchant matched before the cut — so `SHELL` inside `SHELLY'S CAFE` goes
+to review, and so does `CARD SHELL` inside `CARD SHELLY'S CAFE`, where the only
+whole word shared is boilerplate:
 
-- `>= high_confidence_threshold` (default `0.85`) → auto-accept, written to `app.match_decisions` with `match_status = 'accepted'`.
-- `>= review_threshold` (default `0.70`) → land in the review queue (`moneybin transactions matches pending` lists them; `moneybin review --type matches --status` reports the count).
-- Below `review_threshold` → discarded.
+- `>= high_confidence_threshold` (default `0.95`) **and descriptions agree** → auto-accept, written to `app.match_decisions` with `match_status = 'accepted'`.
+- Anything else, cross-source → the review queue (`moneybin transactions matches pending` lists them; `moneybin review --type matches --status` reports the count). No cross-source candidate is discarded for scoring low.
+- Anything else, within one source → not merged; both rows stay in the ledger, since that tier has no review queue.
+
+`review_threshold` (default `0.70`) no longer admits or discards a duplicate
+candidate. It bounds the scoring weights and is validated against
+`high_confidence_threshold`; tuning it will not move a pair between auto-merge
+and review. Transfer detection uses `transfer_review_threshold` instead.
 
 Notably **not** part of the comparison: payee fuzzy match (description similarity does the work), merchant ID, category, or any field that the matcher itself is supposed to harmonize downstream. Dedup is identity, not normalization.
 
