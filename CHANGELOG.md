@@ -601,6 +601,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   will see `import_confirm` move band.
 
 ### Fixed
+- **A saved PDF recipe that misreads a masked account number now repairs
+  itself.** A statement printing `Account Number: XXXX XXXX XXXX 1234` was read
+  by older recipes as the bare mask, producing an account with no last four that
+  MoneyBin could not connect to the same card arriving by OFX, CSV, or a bank
+  connection — so one card's transactions counted two or three times. The anchor
+  itself was fixed in #371, but a recipe is a frozen snapshot of the derivation
+  logic that produced it, and every later statement of that layout kept replaying
+  the old one. The existing self-repair could not help: it triggers when a recipe
+  stops reconciling, and these statements reconcile to the cent — only the
+  account identity is wrong. MoneyBin now also treats a digit-free account id as
+  a stale-recipe signal, re-derives against the statement, and rewrites the saved
+  recipe in place. The rewrite is audited and reversible through `system audit
+  undo`, and it touches only machine-derived recipes — one you or an agent
+  authored is never overwritten. A statement that genuinely discloses no account
+  number is left alone rather than re-derived on every import.
 - **An OFX transaction whose id changed between imports is no longer counted
   twice.** Some institutions stamp two distinct transactions with one `FITID` —
   a foreign purchase and its fee, for instance. MoneyBin gives every member of

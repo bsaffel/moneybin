@@ -1235,6 +1235,97 @@ def test_replay_failure_re_derives_and_recovers_the_dropped_row(
     assert len(decision.rows) == 3
 
 
+def _frozen_anchor_recipe_dict() -> dict[str, Any]:
+    """A recipe frozen before the masked-account anchor fix.
+
+    ``account_id`` leads with the stop-at-whitespace pattern that DEFAULT_ANCHORS
+    has since demoted to last. Every other anchor is current, and the balance and
+    period anchors are present, so the replay still reconciles — the recipe is
+    wrong in exactly one way.
+    """
+    return {
+        **_valid_recipe_dict(),
+        "metadata_anchors": [
+            {
+                "name": "account_id",
+                "pattern": r"Account\s+Number[:\s]+(\S+)",
+                "cast": "str",
+            },
+            {
+                "name": "account_id",
+                "pattern": r"Account\s+ending\s+in\s+(\d+)",
+                "cast": "str",
+            },
+            {
+                "name": "period_start",
+                "pattern": r"Statement\s+Period:\s+(\d{2}/\d{2}/\d{4})",
+                "cast": "date",
+            },
+            {
+                "name": "period_end",
+                "pattern": r"To:\s+(\d{2}/\d{2}/\d{4})",
+                "cast": "date",
+            },
+            {
+                "name": "opening_balance",
+                "pattern": r"Beginning\s+Balance[:\s]+\$?([\d,]+\.\d{2})",
+                "cast": "decimal",
+            },
+            {
+                "name": "closing_balance",
+                "pattern": r"Ending\s+Balance[:\s]+\$?([\d,]+\.\d{2})",
+                "cast": "decimal",
+            },
+        ],
+    }
+
+
+def _masked_account_doc() -> PdfDocument:
+    """A Chase statement that masks all but the trailing group of its account number."""
+    lines = _standard_text_lines()
+    lines[1] = "Account Number: XXXX XXXX XXXX 1234"
+    return _make_doc(text_lines=lines, tables=[_standard_table()])
+
+
+def test_replay_capturing_a_digitless_account_id_re_derives(db: Database) -> None:
+    """A recipe frozen before the masked-account anchor fix repairs itself.
+
+    The saved recipe's leading ``account_id`` anchor stops at the first
+    whitespace, so a masked account line yields the bare mask — a digit-free key
+    that becomes a placeholder account with a null last_four downstream. The
+    statement reconciles to the cent, so the reconciliation trigger never fires
+    and the broken recipe would otherwise survive every future statement.
+    """
+    _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+
+    decision = route_pdf_import(_masked_account_doc(), db)
+
+    assert decision.outcome == "transactions"
+    assert decision.rederived is True
+    # The same saved format, repaired — not a first-contact save under a new name.
+    assert decision.matched_format_name == "chase_checking_pdf"
+    assert decision.metadata.account_id is not None
+    assert any(char.isdigit() for char in decision.metadata.account_id)
+
+
+def test_replay_capturing_a_digitful_account_id_does_not_re_derive(
+    db: Database,
+) -> None:
+    """The negative case: a healthy replay must not be re-derived.
+
+    Same frozen recipe, but an unmasked account line the old anchor reads
+    correctly. Without this, the trigger could fire on every replay and the
+    positive test above would still pass.
+    """
+    _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+
+    decision = route_pdf_import(_standard_doc(), db)
+
+    assert decision.outcome == "transactions"
+    assert decision.rederived is False
+    assert decision.metadata.account_id == "1234"
+
+
 def test_self_heal_falls_back_to_seed_when_the_document_is_underivable(
     db: Database,
 ) -> None:
