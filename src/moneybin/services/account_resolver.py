@@ -93,7 +93,9 @@ def _institution_key(institution: str | None) -> str | None:
 # Cap on the fallback pick-list (existing accounts surfaced for the human to pick
 # from when no real signal cleared). Bounds an otherwise-unbounded "list all
 # accounts" so a large book doesn't dump everything; a personal-finance user
-# rarely exceeds this.
+# rarely exceeds this. Neither this cap nor the institution scope applies when a
+# null last_four forced the review open — see _fallback_candidates: there any
+# omitted account is unpickable, so a long list is the lesser cost.
 _FALLBACK_CANDIDATE_CAP = 25
 
 
@@ -202,7 +204,18 @@ class AccountResolver:
         self._write_strong_ref(src, account_id=account_id, decided_by="auto")
 
         candidates = self._find_candidates(
-            src, exclude_account_id=account_id, reissue=True
+            src,
+            exclude_account_id=account_id,
+            # Quarantine a null-last_four mint. Such an account cannot
+            # participate in last4-based resolution at all, so its silence is
+            # not evidence of a distinct account — it is an unanswerable
+            # question, and letting it mint silently is a merge decision nobody
+            # ever sees. Surfacing the pick-list routes it to the identity
+            # review queue instead ("magic stays visible"). No-ops on an empty
+            # book: nothing to propose against means a clean mint. A blank
+            # last_four reaches this as None (SourceAccount canonicalizes it).
+            fallback=src.last_four is None,
+            reissue=True,
         )
         if not candidates:
             return ResolvedAccount(
@@ -259,9 +272,17 @@ class AccountResolver:
         — there is genuinely no signal there, so an empty pick-list would force a
         raw account id. The multi-account gate leaves it False: a no-match named
         account mints a new standalone account (it never auto-merges), and turning
-        on fallback there would gate every fresh multi-account import. resolve()
-        never uses fallback, so these candidates are preview-only — confirming
+        on fallback there would gate every fresh multi-account import. Candidates
+        that appear only because the caller opted in are preview-only — confirming
         "new" still mints.
+
+        One case overrides the caller either way: a source with no last_four turns
+        fallback on here and in resolve() alike (``fallback=src.last_four is
+        None``), because an account that cannot answer the last4 rung is an
+        unanswerable question rather than evidence of a distinct account. So
+        resolve() does use fallback for that source, and the multi-account gate's
+        False does not switch it off — which is what keeps this preview agreeing
+        with the ladder it previews.
 
         The proposed_account_id in the mint path (is_new=True) is a preview id
         (uuid4[:12]) that is NOT written anywhere; resolve() will produce a
@@ -301,7 +322,14 @@ class AccountResolver:
         # leaves it off so a no-match named account still mints silently.
         preview_id = uuid.uuid4().hex[:12]
         raw_candidates = self._find_candidates(
-            src, exclude_account_id=preview_id, fallback=fallback, reissue=True
+            src,
+            exclude_account_id=preview_id,
+            # A null last_four quarantines regardless of the caller's opt-in, so
+            # this preview agrees with resolve()'s ladder. Without it the gate
+            # would load rows and surface the question afterwards. Blank reaches
+            # this as None (SourceAccount canonicalizes it).
+            fallback=fallback or src.last_four is None,
+            reissue=True,
         )
         candidates = tuple(
             AccountCandidate(
@@ -691,13 +719,29 @@ class AccountResolver:
         pass matches nothing, fall through to all accounts — the entire point of
         the fallback is a non-empty pick-list, so a mismatched scope must not
         recreate ``candidates: []``.
+
+        Neither the cap nor the institution scope applies when a null last_four
+        forced this review open — there the list must be *complete*, not merely
+        long. Both narrowings drop accounts silently: the cap orders by opaque
+        account id, so past it *which* accounts survive is arbitrary, and the
+        scope keeps only slugs that match, which is precisely the drift this
+        method already falls through for. Either way
+        ``AccountLinksService.set()`` accepts only a target already attached to
+        the decision, so an omitted account cannot be picked at all. The human
+        would be asked which account this is with the right answer absent and
+        only ``--standalone`` as an exit, re-minting the duplicate the quarantine
+        was raised to prevent. A long list is the lesser cost; institution
+        matches still lead it, so the likely answer stays at the top.
         """
+        forced = src.last_four is None
+        cap = None if forced else _FALLBACK_CANDIDATE_CAP
         rows = self._db.execute(
             f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
             "WHERE account_id != ? ORDER BY institution_slug, account_id",
             [exclude_account_id],
         ).fetchall()
         target_inst = _institution_key(src.institution) if src.institution else None
+        scoped: list[_Candidate] = []
         if target_inst:
             scoped = [
                 _Candidate(
@@ -709,11 +753,16 @@ class AccountResolver:
                 for r in rows
                 if r[1] and _institution_key(str(r[1])) == target_inst
             ]
-            if scoped:
-                return scoped[:_FALLBACK_CANDIDATE_CAP]
-        return [
-            _Candidate(
-                account_id=str(r[0]), signal="fallback", value="", confidence=0.1
-            )
-            for r in rows
-        ][:_FALLBACK_CANDIDATE_CAP]
+            if scoped and not forced:
+                return scoped[:cap]
+        led = {cand.account_id for cand in scoped}
+        return (
+            scoped
+            + [
+                _Candidate(
+                    account_id=str(r[0]), signal="fallback", value="", confidence=0.1
+                )
+                for r in rows
+                if str(r[0]) not in led
+            ][:cap]
+        )

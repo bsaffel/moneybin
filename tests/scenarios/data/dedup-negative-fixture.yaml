@@ -23,8 +23,9 @@ assertions:
     fn: assert_row_count_exact
     args:
       table: core.fct_transactions
-      # Hand-counted: 2 CSV rows + 2 OFX rows, none should collapse.
-      expected: 4
+      # Hand-counted: 3 CSV rows + 3 OFX rows = 6, minus the one TRADER JOES
+      # pair that collapses by design (see the note below) = 5.
+      expected: 5
 
 expectations:
   - kind: match_decision
@@ -36,21 +37,50 @@ expectations:
         source_type: ofx
     expected: not_matched
   - kind: match_decision
-    description: "TJ 04-10 vs TJ 04-11 must NOT match (same merchant, different days)"
+    description: "TJ 04-10 vs TJ 04-11 auto-merges: agreeing descriptions, gap is posting lag"
     transactions:
       - source_transaction_id: NEG_CSV_2024-04-10_TJ_28.10
         source_type: csv
       - source_transaction_id: NEG_OFX_2024-04-11_TJ
         source_type: ofx
+    expected: matched
+    expected_match_type: dedup
+    expected_confidence_min: 0.95
+  - kind: match_decision
+    description: "SHELL 04-12 vs COSTCO 04-13 must NOT match (different merchants, same amount)"
+    transactions:
+      - source_transaction_id: NEG_CSV_2024-04-12_SHELL_45.00
+        source_type: csv
+      - source_transaction_id: NEG_OFX_2024-04-13_COSTCO
+        source_type: ofx
     expected: not_matched
 
-# NOTE: a former third case (STARBUCKS csv vs DUNKIN ofx — different merchants,
-# same account/amount/day) was removed when exact-key auto-merge landed
-# (2026-06-13). A *lone* exact-key cross-source pair is indistinguishable from a
-# true cross-format duplicate and now auto-merges by design (accepted precision
-# tradeoff). The realistic version of that precision concern — both merchants
-# present in BOTH formats (4 rows) — is guarded 1:1 and lives in the
-# `dedup-overmerge-guard` scenario.
+# NOTE — why the TRADER JOES case flipped to `matched` (2026-08-02).
+#
+# It is NOT "what the new code produces." The two rows carry the same account,
+# the same amount, and descriptions where one contains the other; they differ
+# only by one day. That is indistinguishable — from every signal the scorer
+# has — from a card transaction purchased one day and posted the next, which is
+# the overwhelmingly more common shape. On live data, 266 such pairs were all
+# genuine cross-source duplicates of one transaction.
+#
+# The reading this fixture originally encoded (two separate $28.10 Trader Joe's
+# trips on consecutive days, each captured by only one of two sources covering
+# the same period) requires both sources to have missed a different transaction,
+# which is the rarer event. Brandon chose to merge on agreement at any gap in
+# the window (2026-08-02), accepting the residual silent-loss risk for a
+# recurring merchant with a repeating amount inside 5 days.
+#
+# This widens — it does not create — the tradeoff the 2026-06-13 exact-key rule
+# already accepted for a lone same-day pair. The SHELL/COSTCO case above was
+# added in the same change so the scenario keeps a real negative: same account,
+# same amount, one day apart, descriptions that share nothing. It fails if the
+# agreement gate ever stops discriminating.
+#
+# A former case (STARBUCKS csv vs DUNKIN ofx — same account/amount/day) was
+# removed on 2026-06-13 for the same reason. The realistic version of that
+# concern — both merchants present in BOTH formats (4 rows) — is guarded 1:1 and
+# lives in the `dedup-overmerge-guard` scenario.
 
 gates:
   required_assertions: all

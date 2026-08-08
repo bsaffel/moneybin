@@ -4,7 +4,7 @@
 > Status: implemented
 > Parent: [`matching-overview.md`](matching-overview.md) (pillars A + C)
 > Enhances: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — supersedes its Requirement 3 (1:1 bipartite assignment)
-> Refined by: [`matching-exact-key-dedup.md`](matching-exact-key-dedup.md) — adds a `(source_type, source_origin, source_file)` cardinality guard to the Requirement 2 / Algorithm edge-add rule, and the cross-source exact-key confidence floor supersedes the "No change to scoring" out-of-scope note for Tier 3
+> Refined by: [`matching-exact-key-dedup.md`](matching-exact-key-dedup.md) — adds a `(source_type, source_origin, source_file)` cardinality guard to the Requirement 2 / Algorithm edge-add rule, and the cross-source description-agreement confidence floor supersedes the "No change to scoring" out-of-scope note for Tier 3
 > Prerequisites (merged): matching-model reconciliation (#204, activated the `dedup_reconciliation` doctor check) and agent-callable match accept/reject (#209, the `reviews` / `reviews_decide` surface in Req 11–12 builds on)
 > Companions: `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (recursive CTE syntax, column naming), `.claude/rules/surface-design.md` (review-surface shapes), `docs/specs/moneybin-doctor.md` (`dedup_reconciliation`)
 
@@ -65,7 +65,7 @@ This **applies** the existing dedup and medallion patterns rather than establish
 2. Assignment is **union-find** over candidate pairs in descending confidence order, with a **deterministic tiebreak** (score desc, then the ordered source-key pair) so the spanning tree is reproducible across runs. An edge is added only if its two endpoints lie in **different** components.
 3. The union-find is **seeded with currently-active (accepted and pending) edges** before processing new candidates, so a newly imported copy attaches to a pre-existing component (cross-run attachment) and redundant edges are never re-proposed.
 4. Tiers 2b and 3 share one component set within a run; a row matched in 2b remains eligible for a cross-source edge in 3 when it connects a distinct component. This supersedes Requirement 3 of `matching-same-record-dedup.md` (1:1 bipartite assignment).
-5. Per-edge classification is unchanged: `>= high_confidence_threshold` (0.95) → accepted; Tier 3 `>= review_threshold` (0.70) and `< high` → pending; below → dropped. A component may carry mixed accepted and pending edges.
+5. Per-edge classification is unchanged in shape: `>= high_confidence_threshold` (0.95) → accepted; every other surviving Tier 3 edge → pending, with no lower cutoff (`review_threshold` no longer gates Tier 3 — see [`matching-exact-key-dedup.md`](matching-exact-key-dedup.md)). A component may carry mixed accepted and pending edges.
 6. Rejected pairs are still excluded from candidacy. Rejecting the only edge attaching a member detaches it; on the next run the previously-redundant alternative edge is re-proposed (recovery behavior).
 
 ### Prep fold

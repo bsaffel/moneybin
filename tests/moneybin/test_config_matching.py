@@ -10,7 +10,7 @@ class TestMatchingSettings:
         settings = MatchingSettings()
         assert settings.high_confidence_threshold == 0.95
         assert settings.review_threshold == 0.70
-        assert settings.date_window_days == 3
+        assert settings.date_window_days == 5
         assert settings.source_priority == [
             "manual",
             "gsheet",
@@ -39,4 +39,4 @@ class TestMatchingSettings:
     def test_available_on_root_settings(self) -> None:
         settings = MoneyBinSettings(profile="test")
         assert settings.matching.high_confidence_threshold == 0.95
-        assert settings.matching.date_window_days == 3
+        assert settings.matching.date_window_days == 5

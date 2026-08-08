@@ -196,6 +196,11 @@ def _disambiguate_colliding_fitids(transactions: list[dict[str, Any]]) -> int:
             row["source_transaction_id"] = (
                 f"{row['source_transaction_id']}{_FITID_COLLISION_MARKER}{digest}"
             )
+            # The marker alone cannot prove this id was generated here: the OFX
+            # spec does not reserve it, so an institution may mint both `X` and
+            # `X#reference` for two distinct transactions. Staging retires a bare
+            # id only against a row flagged here, never against a marker it found.
+            row["fitid_repaired"] = True
             rewritten += 1
     return rewritten
 
@@ -572,6 +577,10 @@ class OFXExtractor:
                     "import_id": import_id,
                     "source_type": "ofx",
                     "source_origin": source_origin,
+                    # Overwritten by _disambiguate_colliding_fitids on the rows it
+                    # rewrites. Every row carries the key so the frame keeps a
+                    # BOOLEAN column even when no collision occurred.
+                    "fitid_repaired": False,
                 }
                 transactions_data.append(tx_data)
 
@@ -612,6 +621,7 @@ class OFXExtractor:
                 "import_id": pl.String,
                 "source_type": pl.String,
                 "source_origin": pl.String,
+                "fitid_repaired": pl.Boolean,
             }
         )
 
