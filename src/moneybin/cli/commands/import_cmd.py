@@ -100,16 +100,28 @@ def _parse_kv(
     if not values:
         return None
     result: dict[str, str] = {}
+    # Masked before logging, on both refusals: --account-binding and
+    # --account-meta accept a raw source key, which on OFX is the institution's
+    # <ACCTID>, and logger.error persists it to a file that outlives the session
+    # (.claude/rules/security.md). SanitizedLogFormatter masks recognized shapes,
+    # not every issuer's numbering. Harmless for --override, whose keys are field
+    # names with no digit run to find. Same mask the service-layer refusals use,
+    # so a key is never disclosed to two different depths.
+    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+        mask_embedded_account_number,
+    )
+
     for raw in values:
         if "=" not in raw:
-            logger.error(f"❌ Invalid {flag} format (expected {fmt}): {raw!r}")
+            masked = mask_embedded_account_number(raw)
+            logger.error(f"❌ Invalid {flag} format (expected {fmt}): {masked!r}")
             raise typer.Exit(1)
         key, _, value = raw.partition("=")
         key, value = key.strip(), value.strip()
         if key in result and result[key] != value:
             logger.error(
-                f"❌ {flag} {key!r} was given twice with different values "
-                f"({result[key]!r} and {value!r}). Send one."
+                f"❌ {flag} {mask_embedded_account_number(key)!r} was given twice "
+                f"with different values ({result[key]!r} and {value!r}). Send one."
             )
             raise typer.Exit(1)
         result[key] = value
@@ -1154,14 +1166,58 @@ def _import_files_account_args(
         parts.extend(("--account-name", account_name))
     # mapping=None: a mapping override is tabular-only, and this fragment serves
     # the channels that have none. The binding/metadata serialization is shared.
+    # Ref-keyed answers only. The account-gate recoveries re-key to @N off the
+    # gate's own proposals, but the sign gate fires BEFORE the account gate on
+    # PDF, so there are no proposals here to re-key from — and passing the
+    # caller's key through would put a raw source_account_key (an OFX <ACCTID>,
+    # or issuer+last4 on PDF) into `actions[]`, which sits outside the redaction
+    # walk. Dropping it is the honest half: a ref answers the same account and
+    # discloses nothing, a raw key cannot be printed, and `_sign_recovery_note`
+    # tells the caller what to re-supply rather than letting the pin vanish.
+    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+        is_proposal_ref,
+    )
+
+    ref_bindings = {
+        k: v for k, v in (account_bindings or {}).items() if is_proposal_ref(k)
+    }
+    ref_metadata = {
+        k: v for k, v in (account_metadata or {}).items() if is_proposal_ref(k)
+    }
     parts.extend(
         _tabular_recovery_args(
             mapping=None,
-            account_bindings=account_bindings,
-            account_metadata=account_metadata,
+            account_bindings=ref_bindings,
+            account_metadata=ref_metadata,
         )
     )
     return f" {shlex.join(parts)}" if parts else ""
+
+
+def _sign_recovery_note(
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+) -> str:
+    """Tell the caller about any answer the recovery command could not carry.
+
+    Silence here would be the failure this gate exists to prevent: the caller
+    pastes a command that looks complete, the raw-keyed pin is gone, and the
+    import binds whatever matching infers.
+    """
+    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+        is_proposal_ref,
+    )
+
+    dropped = sum(1 for k in (account_bindings or {}) if not is_proposal_ref(k)) + sum(
+        1 for k in (account_metadata or {}) if not is_proposal_ref(k)
+    )
+    if not dropped:
+        return ""
+    return (
+        f" (re-supply your {dropped} source-key-keyed account answer(s) — they "
+        "are omitted here because this surface masks source keys; @N refs carry "
+        "through)"
+    )
 
 
 def _import_confirm_command(
@@ -1382,13 +1438,15 @@ def _sign_recovery_commands(
         account_bindings=account_bindings,
         account_metadata=account_metadata,
     )
+    note = _sign_recovery_note(account_bindings, account_metadata)
     if prior_sign is None:
         return [
             f"If it IS a credit card: moneybin import files {quoted} "
-            f"--confirm{acct} (records charges as expenses, payments as credits).",
+            f"--confirm{acct} (records charges as expenses, payments as "
+            f"credits).{note}",
             f"If it is NOT a credit card: moneybin import files {quoted} "
             f"--sign negative_is_expense{acct} "
-            "(records amounts exactly as printed).",
+            f"(records amounts exactly as printed).{note}",
         ]
 
     accepted = proposed_sign or "the re-derived convention"
@@ -1398,9 +1456,9 @@ def _sign_recovery_commands(
     # closes with a parenthetical instead, which is why it can keep its period.
     return [
         f"Accept the change — {sign_convention_effect(accepted)}: "
-        f"moneybin import files {quoted} --confirm{acct}",
+        f"moneybin import files {quoted} --confirm{acct}{note}",
         f"Keep the previous convention — {sign_convention_effect(prior_sign)}: "
-        f"moneybin import files {quoted} --sign {prior_sign}{acct}",
+        f"moneybin import files {quoted} --sign {prior_sign}{acct}{note}",
     ]
 
 

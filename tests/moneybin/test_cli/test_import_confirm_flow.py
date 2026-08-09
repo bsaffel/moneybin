@@ -160,6 +160,12 @@ def test_pdf_sign_recoveries_keep_the_account_pin(prior_sign: str | None) -> Non
     Both framings are checked because they are separate return statements: a fix
     applied to the first-contact branch alone still drops the pin on the
     self-healed-recipe path.
+
+    The binding is keyed by ``@0``. A *raw* source key cannot ride along —
+    ``actions[]`` sits outside the redaction walk and this path has no proposals
+    to re-key from, so it is dropped and announced instead; that half is pinned
+    by the test below. What must never happen, and what this test guards, is the
+    pin disappearing with nothing said.
     """
     from moneybin.cli.commands.import_cmd import (
         _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
@@ -170,8 +176,8 @@ def test_pdf_sign_recoveries_keep_the_account_pin(prior_sign: str | None) -> Non
         channel="pdf",
         institution="Wells Fargo",
         account_id="acc existing",
-        account_bindings={"chase_1234": "new"},
-        account_metadata={"chase_1234": {"display_name": "Owner's Card"}},
+        account_bindings={"@0": "new"},
+        account_metadata={"@0": {"display_name": "Owner's Card"}},
         proposed_sign="negative_is_income",
         prior_sign=prior_sign,
     )
@@ -184,12 +190,49 @@ def test_pdf_sign_recoveries_keep_the_account_pin(prior_sign: str | None) -> Non
         assert "--institution" in tokens
         assert tokens[tokens.index("--institution") + 1] == "Wells Fargo"
         assert "--account-binding" in tokens
-        assert tokens[tokens.index("--account-binding") + 1] == "chase_1234=new"
+        assert tokens[tokens.index("--account-binding") + 1] == "@0=new"
         assert "--account-meta" in tokens
         assert (
-            tokens[tokens.index("--account-meta") + 1]
-            == "chase_1234:display_name=Owner's Card"
+            tokens[tokens.index("--account-meta") + 1] == "@0:display_name=Owner's Card"
         )
+
+
+@pytest.mark.parametrize("prior_sign", [None, "negative_is_expense"])
+def test_pdf_sign_recoveries_drop_a_raw_source_key_but_say_so(
+    prior_sign: str | None,
+) -> None:
+    """A raw key cannot be printed here, so the caller is told to re-send it.
+
+    The sign gate fires before the account gate on PDF, so unlike the
+    account-gate recoveries this path has no ``account_proposals`` to re-key a
+    raw ``source_account_key`` against — and printing it verbatim would put an
+    OFX ``<ACCTID>`` or a PDF's issuer+last4 into ``actions[]``, which the
+    redaction walk does not reach.
+
+    Dropping it silently would be worse than either: the caller pastes a command
+    that looks complete, the pin is gone, and the import binds whatever matching
+    infers. So the omission is announced and counted.
+    """
+    from moneybin.cli.commands.import_cmd import (
+        _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+    )
+
+    actions = _sign_recovery_commands(  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+        "statement.pdf",
+        channel="pdf",
+        institution=None,
+        account_id=None,
+        account_name=None,
+        account_bindings={"chase_1234": "new"},
+        account_metadata={"chase_1234": {"display_name": "Owner's Card"}},
+        proposed_sign="negative_is_income",
+        prior_sign=prior_sign,
+    )
+
+    assert len(actions) == 2
+    for action in actions:
+        assert "chase_1234" not in action, action
+        assert "re-supply your 2 source-key-keyed account answer(s)" in action, action
 
 
 def test_tabular_sign_recoveries_preserve_confirmation_inputs() -> None:
@@ -728,6 +771,54 @@ class TestImportFilesConfirmFlow:
         assert result.exit_code != 0
         assert "@0" in caplog.text
         assert "--account-binding" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("argv_tail", "marker"),
+        [
+            (
+                [
+                    "--account-binding",
+                    "987654321098=a",
+                    "--account-binding",
+                    "987654321098=b",
+                ],
+                "twice",
+            ),
+            (["--account-binding", "987654321098"], "Invalid"),
+        ],
+        ids=["duplicate-key", "malformed-arg"],
+    )
+    def test_a_rejected_flag_never_logs_the_raw_source_key(
+        self,
+        mock_db: MagicMock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        argv_tail: list[str],
+        marker: str,
+    ) -> None:
+        """``--account-binding`` accepts a raw source key, so its refusals hold one.
+
+        On OFX that key is the institution's ``<ACCTID>``. Both of ``_parse_kv``'s
+        refusals wrote it through ``logger.error`` — the duplicate-value one
+        quoting ``key``, the malformed-argument one quoting the whole ``raw``
+        token — and a log file is the "artifact that outlives the session"
+        `.claude/rules/security.md` names as a boundary. ``SanitizedLogFormatter``
+        masks recognized shapes, not every issuer's numbering.
+
+        The service-layer siblings were fixed earlier in this PR; this is the CLI
+        entry point ahead of them, which the caller reaches *first*.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(app, ["files", str(csv_file), *argv_tail])
+
+        assert result.exit_code != 0
+        emitted = result.output + caplog.text
+        assert "987654321098" not in emitted, emitted
+        # Still identifiable, and still the refusal it was.
+        assert "****1098" in emitted, emitted
+        assert marker in emitted, emitted
 
     def test_repeating_one_ref_with_the_same_answer_is_agreement(
         self, mock_db: MagicMock, mocker: Any, tmp_path: Path

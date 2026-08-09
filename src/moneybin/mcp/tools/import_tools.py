@@ -323,10 +323,11 @@ def import_files(
             "@0" for the file's first source account) to an existing
             account_id, or the literal "new" to mint a fresh account. The
             proposal's source_account_key works too, but it masks in the
-            response — bind by ref. Single-path only. This is how OFX and PDF
-            imports ratify an account identity; a tabular file answers through
-            import_confirm instead, because its confirmation also stages a
-            column mapping.
+            response — bind by ref. Single-path only. This ratifies an account
+            identity on any channel, including a tabular file whose column
+            mapping is already settled and which therefore stopped only on the
+            account gate. Use import_confirm when the same file also needs a
+            column mapping ratified.
 
     Returns:
         Envelope with data containing imported/failed/total counts,

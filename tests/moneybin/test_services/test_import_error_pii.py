@@ -1,5 +1,6 @@
 """Raw third-party exception text must not reach the wire."""
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,31 @@ def test_empty_binding_value_does_not_echo_the_files_account_number(
     assert "@0" in message
 
 
+def test_masking_a_hostile_account_label_terminates(db: Any, tmp_path: Path) -> None:
+    """The mask runs on untrusted file content, so it must not be exponential.
+
+    ``_created_account`` masks ``src.account_name``, which on tabular is a cell
+    the file supplied — so a label is attacker-controlled in the same sense any
+    imported field is. The gap alternation had two branches that could each
+    match a run of whitespace in many ways, and a label that ultimately fails to
+    match made the engine try all of them: 165 characters took 0.53s, and every
+    additional pair of spaces doubled it.
+
+    Asserted as a wall-clock bound rather than a pattern property because that
+    is the failure a user experiences — a hung import. The margin is ~30×: this
+    input took minutes before the fix and is instant after it.
+    """
+    from moneybin.services.import_service import mask_embedded_account_number
+
+    hostile = ("1" + " " * 64) * 4 + "x"
+
+    start = time.perf_counter()
+    mask_embedded_account_number(hostile)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 1.0, f"masking took {elapsed:.2f}s — the gap is ambiguous again"
+
+
 # A key the caller typed that is shaped like an account number — a mistyped
 # <ACCTID>, or one pasted from the wrong statement. One digit off `ACCTID`, so
 # it is genuinely unknown to the file while still being the sensitive shape.
@@ -161,6 +187,31 @@ def test_an_unknown_binding_key_is_not_echoed_in_full(db: Any, tmp_path: Path) -
     # to send instead.
     assert "****1099" in message, message
     assert "@0" in message, message
+
+
+def test_an_unknown_binding_key_is_not_echoed_in_full_on_pdf(
+    db: Any, tmp_path: Path
+) -> None:
+    """The third channel, which this file otherwise never exercises.
+
+    ``_mask_caller_keys`` is channel-agnostic, so this is coverage of the claim
+    rather than of a suspected second bug — but this file's whole purpose is
+    proving account identifiers never reach error text, and PDF is one of the
+    three channels this PR newly gates. A file that proves it for two of three
+    reads as proving it for all three.
+    """
+    from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
+
+    pdf = write_card_statement_pdf(tmp_path)
+
+    with pytest.raises(ValueError) as raised:
+        ImportService(db).import_file(
+            pdf, refresh=False, confirm=True, account_bindings={MISTYPED_ACCTID: "new"}
+        )
+
+    message = _refusal_message(raised.value)
+    assert MISTYPED_ACCTID not in message, f"caller key reached the wire: {message}"
+    assert "****1099" in message, message
 
 
 def test_an_unknown_metadata_key_is_not_echoed_in_full(db: Any, tmp_path: Path) -> None:

@@ -113,8 +113,17 @@ class CreatedAccount:
 # and stops at a gap that is neither, which is exactly a whitespace-delimited
 # alphabetic word: "Checking 1234 Savings 5678" stays two safe four-digit
 # tokens, and "401K Plan 2024 Rewards" keeps its name instead of collapsing to
-# "****2024". The two branches are disjoint (zero whitespace vs. at least one),
-# so there is no ambiguity for the engine to backtrack through.
+# "****2024".
+#
+# Every quantifier here must have exactly one way to match a given gap, because
+# this runs on file-supplied labels and a failed match backtracks through every
+# alternative. An earlier version wrote the second branch as
+# `[^0-9A-Za-z]*\s[^0-9A-Za-z]*`, whose leading run can itself match whitespace
+# — so a run of N spaces had N places to put the `\s`, and a label that ended up
+# not matching cost 2^N. 165 characters took half a second; every further pair
+# of spaces doubled it. Excluding whitespace from the leading run pins `\s` to
+# the *first* one, which leaves a single parse. The two branches are disjoint on
+# whitespace count (zero vs. at least one), so no gap can take both.
 #
 # The leading and trailing [A-Za-z]* take the rest of the token, so "X12345678"
 # masks whole rather than leaving an "X" stub that publishes the prefix.
@@ -122,13 +131,13 @@ class CreatedAccount:
 # The cost is over-masking a decimal in a label ("Balance 1234.56"). That is the
 # right side to err on: an over-masked label is legible, an under-masked one is
 # an account number.
-_ACCOUNT_NUMBER_GAP = r"(?:[^\s\d]*|[^0-9A-Za-z]*\s[^0-9A-Za-z]*)"
+_ACCOUNT_NUMBER_GAP = r"(?:[^\s\d]*|[^\s0-9A-Za-z]*\s[^0-9A-Za-z]*)"
 _EMBEDDED_ACCOUNT_NUMBER = re.compile(
     rf"[A-Za-z]*\d(?:{_ACCOUNT_NUMBER_GAP}\d){{4,}}[A-Za-z]*"
 )
 
 
-def _mask_embedded_account_number(label: str) -> str:
+def mask_embedded_account_number(label: str) -> str:
     """Mask an account number embedded in a derived account label.
 
     ``parse_account_label`` lifts out a *recognized masked* last-four —
@@ -167,7 +176,7 @@ def _mask_caller_keys(keys: Iterable[str]) -> str:
     bound by source key. Same mask as the mint report, so a key and the label
     derived from it are never disclosed to different depths.
     """
-    return ", ".join(repr(_mask_embedded_account_number(key)) for key in sorted(keys))
+    return ", ".join(repr(mask_embedded_account_number(key)) for key in sorted(keys))
 
 
 def _created_account(
@@ -197,7 +206,7 @@ def _created_account(
         return CreatedAccount(account_id=resolved.account_id, display_name=display_name)
     return CreatedAccount(
         account_id=resolved.account_id,
-        display_name=_mask_embedded_account_number(src.account_name),
+        display_name=mask_embedded_account_number(src.account_name),
     )
 
 
@@ -1037,6 +1046,19 @@ def proposal_ref(index: int) -> str:
     return f"{_PROPOSAL_REF_PREFIX}{index}"
 
 
+def is_proposal_ref(key: str) -> bool:
+    """Whether a caller's binding/metadata key is a positional ref, not a raw key.
+
+    One definition, because two callers ask for opposite reasons and a
+    disagreement between them is a leak either way: ``_resolve_binding_targets``
+    asks so it can resolve refs against positions, and the CLI's sign recovery
+    asks so it can print refs and drop raw keys — that path has no proposals to
+    re-key from, and a raw ``source_account_key`` in ``actions[]`` sits outside
+    the redaction walk.
+    """
+    return key.startswith(_PROPOSAL_REF_PREFIX)
+
+
 def _resolve_binding_targets(
     source_accounts: list[SourceAccount], bindings: dict[str, str]
 ) -> list[str | None]:
@@ -1067,11 +1089,7 @@ def _resolve_binding_targets(
     and leaves the other gated behind a ref that no longer reaches it.
     """
     known = {src.source_account_key for src in source_accounts}
-    refs = {
-        key
-        for key in bindings
-        if key.startswith(_PROPOSAL_REF_PREFIX) and key not in known
-    }
+    refs = {key for key in bindings if is_proposal_ref(key) and key not in known}
     valid = {proposal_ref(index) for index in range(len(source_accounts))}
     # A key that is BOTH a real source key and a valid ref for a *different*
     # position has no safe reading. Source-key-wins (below) would answer the
