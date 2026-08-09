@@ -13,10 +13,14 @@ from moneybin.exports.snapshot import (
     prepared_table_checksum,
 )
 from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
+from moneybin.privacy.taxonomy import DataClass
 
-#: What every masking transform returns, whatever type it was handed. Measured, not
-#: assumed: `test_every_masking_transform_returns_text_whatever_it_is_given` walks
-#: `_TRANSFORMS` and fails the moment one answers with something else.
+#: What every masking transform returns, whatever type it was handed — except
+#: FLOORED, which masks per-value and so can leave a column holding mixed
+#: types (see `_stringify_floored_columns`). Measured, not assumed:
+#: `test_every_masking_transform_returns_text_whatever_it_is_given` walks
+#: `_TRANSFORMS` and fails the moment a non-FLOORED entry answers with
+#: something else.
 _MASKED_DUCKDB_TYPE = "VARCHAR"
 
 
@@ -40,6 +44,33 @@ def _redacted_column(column: PreparedColumn) -> PreparedColumn:
     return replace(column, duckdb_type=_MASKED_DUCKDB_TYPE)
 
 
+def _stringify_floored_columns(
+    records: list[dict[str, object]], output_classes: dict[str, DataClass]
+) -> list[dict[str, object]]:
+    """Coerce every FLOORED value to ``str`` so a masked column has one type.
+
+    FLOORED masks per VALUE, not per column (an int under the account-digit
+    threshold stays an int; one over it becomes a masked string), so a
+    FLOORED column can hold mixed types after ``redact_records``. Parquet
+    needs one declared type per column, and ``_redacted_column`` already
+    promises ``VARCHAR`` for it — this is where that promise is kept. Must
+    run AFTER masking: stringifying first would let a numeric column's digits
+    be re-read as an account shape by ``mask_pii_shaped``.
+    """
+    floored_columns = {
+        name for name, dc in output_classes.items() if dc is DataClass.FLOORED
+    }
+    if not floored_columns:
+        return records
+    return [
+        {
+            k: (str(v) if k in floored_columns and v is not None else v)
+            for k, v in record.items()
+        }
+        for record in records
+    ]
+
+
 def apply_export_redaction(
     snapshot: PreparedExport, mode: RedactionMode
 ) -> PreparedExport:
@@ -53,6 +84,7 @@ def apply_export_redaction(
         records = [dict(zip(column_names, row, strict=True)) for row in table.rows]
         output_classes = {column.name: column.data_class for column in table.columns}
         redacted_records = redact_records(records, output_classes, consent=None)
+        redacted_records = _stringify_floored_columns(redacted_records, output_classes)
         rows = tuple(
             tuple(record[column_name] for column_name in column_names)
             for record in redacted_records

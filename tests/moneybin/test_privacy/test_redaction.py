@@ -401,13 +401,23 @@ def test_transforms_covers_every_data_class() -> None:
 def test_every_masking_transform_returns_text_whatever_it_is_given() -> None:
     """The one fact ``apply_export_redaction`` retypes a masked column on.
 
+    True of every masking transform except FLOORED, which masks per-value.
     A redacted export declares ``VARCHAR`` for every masked column, because every
-    masking transform today answers with a string. That is a property of
+    masking transform except FLOORED answers with a string. That is a property of
     ``_TRANSFORMS``, not a second list beside it — the same reason
     ``mask_strength`` measures rather than restates. PR 3's amount bucketing is
     the live case: a bucket returned as a ``Decimal`` or a range tuple would keep
     masking correctly while making ``VARCHAR`` a lie, and the export would fail on
     the typed channel only. This turns that into a red test at the transform.
+
+    FLOORED is exempt HERE by SET EQUALITY, not `<=` or a count — a second
+    value-dependent transform must still trip this test, because nothing else
+    guards it. It is exempt because ``apply_export_redaction`` closes the gap
+    at the export boundary instead, by stringifying every FLOORED value after
+    masking (``exports/redaction.py::_stringify_floored_columns``); see
+    ``test_floored_column_values_are_stringified_before_export`` in
+    ``tests/moneybin/test_exports/test_redaction.py`` for the other half of
+    this contract.
     """
     from moneybin.privacy.redaction import (  # noqa: PLC0415
         _TRANSFORMS,  # pyright: ignore[reportPrivateUsage]
@@ -430,9 +440,11 @@ def test_every_masking_transform_returns_text_whatever_it_is_given() -> None:
         if not isinstance(masked := _TRANSFORMS[data_class](probe, None), str)
     }
 
-    assert not offenders, (
-        "a masked column is exported as VARCHAR, so every masking transform must "
-        f"return text; these returned something else: {offenders}"
+    assert set(offenders) == {DataClass.FLOORED.name}, (
+        "only FLOORED may return non-text — its column is stringified at the "
+        "export boundary instead, not in the transform. A masked column is "
+        "exported as VARCHAR, so every OTHER masking transform must return "
+        f"text; these returned something else: {offenders}"
     )
     # None survives as None — a masked column stays nullable, and VARCHAR is.
     assert all(

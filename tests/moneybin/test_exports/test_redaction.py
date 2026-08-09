@@ -208,6 +208,64 @@ def test_a_masked_text_column_keeps_the_type_it_already_had() -> None:
     assert _declared_types(redacted) == ("VARCHAR", "VARCHAR", "VARCHAR")
 
 
+def test_floored_column_values_are_stringified_before_export() -> None:
+    """A FLOORED column always exports as text, even where masking left a value alone.
+
+    FLOORED masks per VALUE (``_mask_floored``), not per column, so one BIGINT
+    column can hold an untouched ``42`` alongside a masked
+    ``"****...4321"`` — a mixed-type column no Parquet schema can describe.
+    ``_redacted_column`` already declares the column ``VARCHAR`` because
+    ``mask_strength(FLOORED)`` is not PASSTHROUGH; this pins that
+    ``apply_export_redaction`` actually delivers on that promise for every
+    row, not just the ones the transform happened to mask.
+
+    The unmasked ``42`` case is load-bearing: it is the value that proves
+    stringifying happens unconditionally rather than only as a side effect of
+    masking (a test using only already-masked values couldn't tell the two
+    apart).
+    """
+    columns = (
+        PreparedColumn("n", "BIGINT", DataClass.FLOORED),
+        PreparedColumn("blob", "VARCHAR", DataClass.FLOORED),
+    )
+    rows = (
+        (42, "groceries"),
+        (987654321, "acct 987654321"),
+        (None, None),
+        (7, {"inner": "value"}),
+    )
+    table = PreparedTable(
+        name="user:probe",
+        source=TableRef("reports", "probe"),
+        columns=columns,
+        rows=rows,
+        checksum_sha256=prepared_table_checksum(columns, rows),
+    )
+    original = PreparedExport(
+        artifact_version=1,
+        profile="test",
+        created_at=datetime(2026, 7, 28, tzinfo=UTC),
+        subject=ExportSubject(kind="report", report_id="user:probe", parameters={}),
+        redaction_mode="unredacted",
+        tables=(table,),
+        data_dictionary=build_data_dictionary((table,)),
+        provenance=None,
+    )
+
+    redacted = apply_export_redaction(original, "redacted")
+
+    out_rows = redacted.tables[0].rows
+    assert out_rows[0] == ("42", "groceries")  # unmasked int, still stringified
+    assert out_rows[1] == ("****...4321", "acct ****...4321")
+    assert out_rows[2] == (None, None)  # None stays None
+    assert out_rows[3] == ("7", "{'inner': 'value'}")
+    for row in out_rows:
+        for value in row:
+            assert value is None or isinstance(value, str)
+    for column in redacted.tables[0].columns:
+        assert column.duckdb_type == "VARCHAR"
+
+
 def test_redacted_policy_calls_the_shared_engine_once_per_table(
     db: Database, mocker: MockerFixture
 ) -> None:

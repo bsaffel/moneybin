@@ -390,11 +390,12 @@ def _declaration_is_safe(declared: DataClass, derived: DataClass) -> bool:
     declaration publishes the real routing number's last four digits while the
     guard reports nothing.
 
-    Below CRITICAL every transform is passthrough, so every strength there is
-    equal and this reduces to exactly the tier comparison it replaces — an
-    over-declaration like TXN_AMOUNT-where-CATEGORY-was-derived still passes.
-    Demanding class identity there would only manufacture false failures over
-    classes that mask identically.
+    Below CRITICAL every transform is passthrough except FLOORED, so strength
+    is otherwise equal and this reduces to the tier comparison it replaces —
+    an over-declaration like TXN_AMOUNT-where-CATEGORY-was-derived still
+    passes. FLOORED is the one exception: declaring a passthrough class over a
+    FLOORED derivation is unsafe (it drops the content net), same as at
+    CRITICAL — intended and fail-closed, not a bug.
 
     Strength comes from ``redaction.mask_strength``, which measures each
     class's own ``_TRANSFORMS`` entry rather than consulting a list of
@@ -423,8 +424,10 @@ def _is_unwaivable_weakening(declared: DataClass, derived: DataClass) -> bool:
     IS an institution account number, so derivation returns the partial-masking
     class too and there is no mismatch to excuse.
 
-    Below CRITICAL every transform is passthrough, so strengths are equal and
-    this never fires.
+    Below CRITICAL every transform is passthrough except FLOORED, so this
+    never fires there — but it CAN fire at equal LOW tier between FLOORED and
+    a passthrough class, and that weakening is unwaivable for the same reason
+    it is at CRITICAL: fail-closed, not a bug.
     """
     return declared.tier == derived.tier and mask_strength(declared) < mask_strength(
         derived
@@ -672,21 +675,40 @@ def test_declaration_safety_compares_mask_strength_not_only_tier(
 def test_below_critical_comparison_is_unchanged_by_the_strength_rule() -> None:
     """Adding strength must not start demanding class identity below CRITICAL.
 
-    Every transform below CRITICAL is passthrough, so strength is constant
-    there and the ordering must still reduce to the plain tier comparison. A
-    rule that tightened here would fail every one of the many legitimate
-    over-declarations in the tree (``account_id`` declared ACCOUNT_IDENTIFIER
-    where derivation says RECORD_ID, and so on) — noise, not signal.
+    The one exception is FLOORED, the one below-CRITICAL class that masks.
+    Every transform below CRITICAL is passthrough EXCEPT FLOORED, so strength
+    is otherwise constant and the ordering still reduces to the plain tier
+    comparison for every other below-CRITICAL pair. A rule that tightened
+    there would fail every one of the many legitimate over-declarations in the
+    tree (``account_id`` declared ACCOUNT_IDENTIFIER where derivation says
+    RECORD_ID, and so on) — noise, not signal.
+
+    The exempt set is checked by SET EQUALITY, not `<=` or a count: a second
+    below-CRITICAL non-passthrough class would break the tier-reduction
+    argument the rest of this test relies on, and only equality is guaranteed
+    to catch it arriving unnoticed.
     """
     below_critical = [dc for dc in DataClass if dc.tier is not Tier.CRITICAL]
     assert below_critical, "fixture assumption: some classes sit below CRITICAL"
-    for dc in below_critical:
-        assert mask_strength(dc) is MaskStrength.PASSTHROUGH
-    for declared in below_critical:
-        for derived in below_critical:
+    non_passthrough = {
+        dc for dc in below_critical if mask_strength(dc) is not MaskStrength.PASSTHROUGH
+    }
+    assert non_passthrough == {DataClass.FLOORED}, (
+        "FLOORED must be the ONLY below-CRITICAL class whose transform masks; "
+        "a second one here would silently invalidate the tier-only reduction "
+        "the rest of this test (and _declaration_is_safe's below-CRITICAL "
+        "docstring claim) depends on"
+    )
+    passthrough_only = [dc for dc in below_critical if dc is not DataClass.FLOORED]
+    for declared in passthrough_only:
+        for derived in passthrough_only:
             assert _declaration_is_safe(declared, derived) is (
                 declared.tier >= derived.tier
             )
+    # FLOORED pairs: declaring passthrough over a floored column drops the
+    # content net (unsafe); over-declaring FLOORED over passthrough is fine.
+    assert _declaration_is_safe(DataClass.CATEGORY, DataClass.FLOORED) is False
+    assert _declaration_is_safe(DataClass.FLOORED, DataClass.CATEGORY) is True
 
 
 def test_every_data_class_has_a_measurable_mask_strength() -> None:
