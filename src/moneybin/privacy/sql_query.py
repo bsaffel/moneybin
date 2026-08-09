@@ -497,10 +497,11 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     except (SqlSchemaError, duckdb.CatalogException, duckdb.BinderException) as e:
         # `hint` below is where the head described above (module comment,
         # `_LINE_ECHO`) reaches the caller — not just identifiers, caller-
-        # authored STRING LITERALS too. It reaches two places: the MCP error
-        # envelope, and — via `handle_cli_errors` in cli/utils.py — the CLI's
-        # durable log file at INFO. `str(e)` and the log line right below
-        # never carry it; that line names only the exception TYPE.
+        # authored STRING LITERALS too. It reaches the MCP error envelope and
+        # the CLI console (stderr) — never the log file, which
+        # `handle_cli_errors` (cli/utils.py) echoes deliberately to keep it
+        # out of. `str(e)` and the log line right below never carry it
+        # either; that line names only the exception TYPE.
         #
         # What makes threading it acceptable: a binder or catalog error is
         # raised BEFORE execution, so its message can only quote text the

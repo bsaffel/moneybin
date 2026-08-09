@@ -215,7 +215,11 @@ def sqlmesh_command(
         if user_error is not None:
             logger.error(f"❌ {user_error.message}")
             if user_error.hint:
-                logger.info(user_error.hint)
+                # See handle_cli_errors above: never logger.info — the file
+                # handler has no level filter, so a logged hint would persist
+                # to the durable log. Same fix, same reason, kept in sync so
+                # this path doesn't quietly reacquire the retired pattern.
+                typer.echo(user_error.hint, err=True)
         else:
             logger.error(f"❌ {label} failed: {e}")
         raise typer.Exit(1) from e

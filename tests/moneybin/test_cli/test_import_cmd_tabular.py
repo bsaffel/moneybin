@@ -531,9 +531,11 @@ class TestPreview:
         prints it straight to stderr via ``typer.echo`` instead of
         ``logger.info``, specifically so it never reaches the durable CLI log
         file (a DuckDB-error hint can carry caller-authored query text — see
-        ``tests/moneybin/test_cli/test_handle_cli_errors.py``). CliRunner's
-        default ``mix_stderr=True`` folds a direct ``typer.echo(err=True)``
-        into ``result.output``, so the hint is asserted there instead.
+        ``tests/moneybin/test_cli/test_handle_cli_errors.py``). Since click
+        8.2, ``result.output`` is its own stream mixing stdout and stderr in
+        write order (``mix_stderr`` is gone — ``CliRunner.__init__`` no
+        longer takes it), so a direct ``typer.echo(err=True)`` lands there
+        too, and the hint is asserted there instead.
         ``result.exception`` is the load-bearing check: an unwrapped
         PermissionError also yields exit code 1 under CliRunner, so the exit
         code alone cannot distinguish classified from unhandled.

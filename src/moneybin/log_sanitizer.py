@@ -82,8 +82,12 @@ def mask_pii_shaped(text: str) -> tuple[str, bool]:
     the same three primitives (SSN, dollar, account) directly, in its own
     order, deliberately different from the order here (see the "Order
     matters" comment in ``format()`` below). This function is the two-of-three
-    subset ``sql_query.py`` reuses for its DuckDB-error-hint backstop, which
-    never carries a dollar amount to mask.
+    subset ``sql_query.py`` reuses for its DuckDB-error-hint backstop. Leaving
+    dollar masking out of the pair is deliberate, not a claim the input can't
+    hold one — a caller-authored string literal in a binder-error head can
+    (``SELECT ({'a':1})['Payment $1,234.56 to Dr Smith']`` passes through
+    unmasked) — the point is that a dollar amount there is the user's own
+    financial data, which the hint should let them read.
     """
     result, ssn_masked = _mask_ssn(text)
     result, account_masked = _mask_account(result)
