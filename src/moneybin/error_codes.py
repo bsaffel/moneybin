@@ -36,6 +36,7 @@ that branches on it; treat as one-way per .claude/rules/design-principles.md.
 # Import — loading raw data
 # ---------------------------------------------------------------------------
 
+IMPORT_ACCOUNT_SIGNAL_UNSUPPORTED = "import_account_signal_unsupported"
 IMPORT_CURSOR_INVALID = "import_cursor_invalid"
 IMPORT_FILE_NOT_FOUND = "import_file_not_found"
 IMPORT_FORMAT_UNKNOWN = "import_format_unknown"
@@ -46,7 +47,6 @@ IMPORT_INVALID_NUMBER_FORMAT = "import_invalid_number_format"
 IMPORT_INVALID_SIGN_CONVENTION = "import_invalid_sign_convention"
 IMPORT_PAGINATION_NOT_ALLOWED = "import_pagination_not_allowed"
 IMPORT_PARSE_ERROR = "import_parse_error"
-IMPORT_PDF_ACCOUNT_SIGNAL_UNSUPPORTED = "import_pdf_account_signal_unsupported"
 # A scanned / image-only PDF with no selectable text layer: the deterministic
 # rung has nothing to structure, nothing to seed, and the text bridge can't read
 # a page image — extraction needs a vision-capable backend (Req 5, smart-import-pdf).

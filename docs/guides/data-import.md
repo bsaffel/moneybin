@@ -170,6 +170,14 @@ Actual timing for any specific batch appears in `moneybin import history` and in
 
 If you're working from raw bank or institution exports rather than another personal-finance tool, organize by file type.
 
+**Any format can stop to confirm an account.** Before a file loads, MoneyBin resolves which account it belongs to. A strong signal — a remembered binding, a full account number, a persistent token — adopts silently. A weak one (`institution` + last-4, or a similar display name) stops the import before a single row lands and asks which account it is:
+
+```bash
+moneybin import confirm <file> --accept --account-binding @0=<account_id|new>
+```
+
+`@0` is the first account the file declares, `@1` the second; `new` mints a distinct account rather than adopting the candidate. Agents get the same stop, not a pass. A file matching nothing has only one possible answer, so it loads and reports the account it created instead of asking — except a bare Date/Description/Amount CSV, which names no account at all and is asked with a pick-list. Full ladder: [account matching](../reference/account-matching.md).
+
 ### OFX / QFX / QBO
 
 Most US banks and credit cards expose OFX or QFX downloads in their online portals; QBO is the QuickBooks variant.
@@ -440,11 +448,12 @@ Set a batch's full label state with `import_labels_set(import_id=..., labels=[..
 - `--yes` / `-y` — auto-accept the top fuzzy account match without prompting. Unrelated to column-mapping or sign confirmation.
 - `--confirm` — accept the proposed mapping (tabular) or ratify a proposed sign inversion (PDF) after a `confirmation_required` response. A brand-new layout always needs this once, regardless of detector confidence; a saved layout replays without it.
 - `--confirm-sign` — ratify an inferred sign inversion for a tabular file specifically.
+- `--account-binding REF=<account_id|new>` — answer an account confirmation without a prompt (repeatable). `REF` is the positional referent the confirmation printed: `@0` for the first account the file declares.
 - `--output json` — emits the [standard response envelope](cli-reference.md#output-envelopes) on stdout.
 - `--no-refresh` — defer the post-load SQLMesh apply. Useful when chaining many imports.
 - `--force` / `-F` — re-import a file already in the log.
 
-`moneybin import confirm <path>` is the recovery command for a **tabular** `confirmation_required` response — pass `--accept`, `--mapping <field>=<column>` (repeatable), or `--confirm-sign` depending on what's pending; see its `--help` for the full set. A **PDF** sign-ratification proposal takes a different path: `import confirm` accepts `--confirm` only alongside `--bridge-response`, so re-run `moneybin import files <path>.pdf --confirm` to ratify one. The MCP equivalent is `import_confirm`, which elicits the human directly instead of requiring a second scripted call.
+`moneybin import confirm <path>` is the recovery command for a `confirmation_required` response — pass `--accept`, `--mapping <field>=<column>` (repeatable), `--confirm-sign`, or `--account-binding` depending on what's pending; see its `--help` for the full set. Mapping and sign proposals are tabular; an **account** confirmation reaches it from any of the three channels — tabular, OFX, or PDF. Carry `--institution` back when the original `import files` call needed one: institution resolution runs before the account gate, so an OFX whose issuer is underivable never reaches the gate on a re-run without it. A **PDF** sign-ratification proposal takes a different path: `import confirm` accepts `--confirm` only alongside `--bridge-response`, so re-run `moneybin import files <path>.pdf --confirm` to ratify one. The MCP equivalent is `import_confirm`, which elicits the human directly instead of requiring a second scripted call.
 
 **Exit codes for `moneybin import files`.**
 

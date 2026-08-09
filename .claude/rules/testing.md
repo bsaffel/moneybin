@@ -290,6 +290,29 @@ once worked. See `account-identity-resolution.md` (Decision 8).
   a shared `account:` fixture label, a pinned `account_id`/`explicit_account_id`,
   `force_standalone`, or a direct `INSERT INTO app.account_links`. Import the raw
   twins and let `AccountResolver` produce the proposal.
+
+  Every channel now *stops* when a file could be an account that already
+  exists, or when it names no account at all, so many import fixtures have to
+  answer something. That does not reopen the shortcut. Two answers are
+  legitimate and one is not:
+
+  - **Incidental identity** — the test is about something else (batch
+    lifecycle, format persistence, PDF routing) and its account has no
+    candidate. Use `tests/import_helpers.py`, which binds `"new"` and
+    **re-raises** the moment a proposal carries merge candidates, so it can
+    never answer an identity question on a test's behalf. It imports first and
+    binds only if the gate fires, so it is also correct for the file that
+    states an identity and passes straight through.
+  - **Answering the matcher** — bind onto a candidate *after* asserting the
+    gate surfaced it. The binding is the accept, not a bypass; the assertion
+    above it is what proves the matcher ran.
+  - **Still forbidden** — binding an account the test never let the resolver
+    propose. If you cannot point at the proposal your binding answers, you are
+    back to forcing the link.
+
+  Note also that imports no longer write to `app.account_link_decisions`; the
+  resolver's candidates ride on the raised proposal. A test asserting on that
+  queue is asserting about the backfill link service or sync, not about import.
 - **Derived `core.*` / pipeline-owned `app.*` state:** don't `INSERT` rows the
   pipeline is supposed to derive (`dim_*` rows, match decisions, categorizations,
   gold records) and then assert on them. Run `transform` / `match` / `categorize`

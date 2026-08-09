@@ -39,7 +39,9 @@ flowchart TD
     C -->|Yes| AUTO[Auto-adopt silently]
     C -->|No| D{Weak match?<br/>institution + last4 · fuzzy name}
     D -->|Yes| REVIEW[Propose - you confirm<br/>never an auto-merge]
-    D -->|No| E[Show your accounts as a pick-list<br/>choose one, or mint new]
+    D -->|No| F{Did the file name an account?}
+    F -->|Yes| MINT[Create it, and say so<br/>in the import result]
+    F -->|No| E[Show your accounts as a pick-list<br/>choose one, or mint new]
 ```
 
 1. **Explicit binding.** You pinned the identity (`--account-id`,
@@ -54,14 +56,38 @@ flowchart TD
    or a **fuzzy name** match. Weak signals collide — two Wells Fargo accounts can
    both end in `4267` — so MoneyBin *proposes* and waits. **It never merges two
    accounts on a weak signal.**
-4. **Nothing strong, and you haven't said.** MoneyBin shows a **pick-list of your
-   existing accounts** to choose from (or "new"). A bare CSV that carries no
-   in-file identity always lands here.
+4. **Nothing matched, but the file named an account.** An OFX `<ACCTID>`, a
+   statement's issuer and last four, an account column in a spreadsheet — the
+   file states an identity and nothing in your book resembles it. There is no
+   second answer to give, so MoneyBin creates the account and **names it in the
+   import result** rather than stopping to ask.
+5. **Nothing matched, and the file named nothing.** MoneyBin shows a **pick-list
+   of your existing accounts** to choose from (or "new"). A bare
+   Date/Description/Amount CSV lands here: the only name available is the
+   filename, and a guess is a question.
 
 The governing rule is **"magic stays visible":** MoneyBin acts silently only on a
 near-certain signal, and surfaces a confirm exactly where its inference could be
 wrong. A wrong account *merge* is hard to notice and undo, so the bar for acting
-without asking is deliberately high.
+without asking is deliberately high. A new account is the cheap mistake by
+comparison — it shows up in `moneybin accounts` and corrects with a rename or a
+merge — so rung 4 reports instead of asking. Each created account is listed by
+name and id when the import finishes, together with both recoveries:
+
+```console
+$ moneybin import files statement.ofx
+  Institutions: 1
+  Accounts: 1
+  Transactions: 2
+✅ statement.ofx [ofx] — 2 rows
+👀 Created account: sample_bank CHECKING (e3a84714695d)
+   Rename with 'moneybin accounts set <account_id> --display-name <name>'; if it duplicates an account you already have, 'moneybin accounts links run' proposes the merge.
+```
+
+The same two fields reach every other surface: `accounts_created` on the
+`--output json` per-file rows, on the `import_files` MCP result, and on
+`import_confirm`. It carries the id and the name only — never the file's own
+account key, which is an account number on OFX and PDF.
 
 ## What information is used, per format
 
@@ -107,7 +133,7 @@ Reading the table precisely requires four caveats:
   slug and stop that account matching itself on the next import.
 - **A bare bank CSV carries no identity.** Date/Description/Amount alone can't
   tell MoneyBin which account it is, so binding is always explicit — which is why
-  the pick-list (rung 4) exists.
+  the pick-list (rung 5) exists.
 - **Plaid's strong key is connection-scoped, not cross-connection.** The sync
   broker's account contract does not carry Plaid's `persistent_account_id`, so
   re-authenticating the same bank through Plaid Link (a new connection) does not
@@ -116,31 +142,47 @@ Reading the table precisely requires four caveats:
 
 ## When MoneyBin asks you: the import gate
 
-If an import can't pin the account, it **pauses without loading any rows** and
+If an import is about to adopt an account you already have on a weak signal, or
+the file names no account at all, it **pauses without loading any rows** and
 returns an account confirmation. You see the proposed account(s) plus a pick-list
 of your existing accounts. Bind it in one command:
 
 ```bash
 # Adopt an existing account, or mint a distinct new one:
-moneybin import confirm <file> --accept --account-binding <source_key>=<account_id|new>
+moneybin import confirm <file> --accept --account-binding @0=<account_id|new>
 
 # Or name a brand-new account directly:
 moneybin import confirm <file> --accept --account-name "WF Business Checking"
 ```
 
-The `<source_key>` comes from the confirmation (and the `.pending.yml` sidecar
-when the file came through the inbox). Supply a binding for **every** account the
-file contains in that one command — the gate is all-or-nothing.
+`@0` is the first account the confirmation listed, `@1` the second — the gate
+prints the label beside each one, and the `.pending.yml` sidecar carries it when
+the file came through the inbox. That account's own `source_account_key` works
+in the same position. Supply a binding for **every** account the file contains
+in that one command — the gate is all-or-nothing.
 
-**Human vs. agent.** A person importing interactively is *gated* — rows don't
-land until the account is bound. An agent-driven import does **not** block: it
-mints a provisional account and files any weak matches into the review queue,
-and it **never self-accepts** a weak match. Either way, you stay in control of
-account identity.
+`import confirm` answers the account gate on every file type. OFX and PDF have
+no column mapping to ratify, so `--accept` is a formality there — it satisfies
+the command's require-an-action guard. Use this command rather than re-running
+`import files`: only `import confirm` archives a file out of the inbox's
+`pending/` bucket, so answering a pending file any other way leaves it to be
+offered again on the next sync.
+
+**Human vs. agent — the same gate.** Both are gated: rows don't land until the
+account is bound, and neither self-accepts a weak match. An agent-driven import
+used to pass through instead, minting a provisional account and filing weak
+matches for later review; it now stops where you would.
+
+**What the gate does not ask.** A file that names an account nothing in your book
+resembles has one possible answer, so it loads and reports the account it created
+(rung 4). Stopping there charged one confirm per file on a first import, each
+with a single legal answer.
 
 The MCP equivalent is the same propose → confirm loop: `import_files` /
 `import_preview` return a confirmation, and `import_confirm(preview_id=..., account_bindings=...)`
-ratifies it.
+ratifies it. Key each binding by the proposal's `proposal_ref` — `@0` is the
+file's first source account. An assistant reads `source_account_key` masked
+(`****1234`), so the ref is the half of the proposal it can name back.
 
 ## Cross-source twins found later: the review queue
 

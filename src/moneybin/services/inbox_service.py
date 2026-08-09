@@ -38,6 +38,8 @@ from moneybin.metrics.registry import (
 from moneybin.services.account_resolution_types import AccountProposalDict
 from moneybin.services.import_service import (
     ImportService,
+    channel_honors_account_name,
+    honors_account_name,
     rekey_bare_proposals_for_path,
 )
 
@@ -529,11 +531,32 @@ class InboxService:
         actor_kind: Literal["human", "agent"] = (
             "human" if src.suffix.lower() == ".pdf" else "agent"
         )
+        # The subfolder name is a filing convention, not a caller signal, so it
+        # only rides along where the channel honors it. `account_name` is
+        # tabular-only, and `reject_unhonored_account_signals` refuses it
+        # elsewhere — correctly, for a flag someone typed, but that refusal
+        # would file a valid OFX or PDF under failed/ for sitting in a folder.
+        # The sidecar recommends this very layout as a recovery, so it has to
+        # work on every channel.
+        hint = account_hint if isinstance(account_hint, str) else None
         try:
+            # Inside the guard, not before it: honors_account_name routes
+            # through _detect_file_type, whose OFX sniff re-raises a read error
+            # rather than guessing from a suffix it could not verify. Asked
+            # above this try, one locked file would abort the whole drain
+            # instead of failing alone — and draining unattended is the point.
+            if hint is not None and not honors_account_name(src):
+                # The suffix, never rel_filename: that path carries the account
+                # folder the user named, and this is a persistent log.
+                logger.info(
+                    "Inbox folder hint not applicable to this file type, "
+                    f"importing without it ({src.suffix.lstrip('.') or 'unknown'})"
+                )
+                hint = None
             import_result = importer.import_file(
                 str(src),
                 refresh=False,
-                account_name=account_hint if isinstance(account_hint, str) else None,
+                account_name=hint,
                 actor_kind=actor_kind,
             )
         except ImportConfirmationRequiredError as e:
@@ -575,6 +598,21 @@ class InboxService:
             # the product — dropping the note here would make a durable override
             # invisible exactly where nobody is watching.
             "sign_override_replayed": import_result.sign_override_replayed,
+            # And the same reason again, for the account the drain just minted.
+            # "Gate the merge, not the mint" lets a first-contact account through
+            # without a confirm, and pays for it by requiring every surface to
+            # name what it created (account-identity-resolution.md). Omitted when
+            # empty so the common row stays the shape it has always been.
+            **(
+                {
+                    "accounts_created": [
+                        {"account_id": a.account_id, "display_name": a.display_name}
+                        for a in import_result.accounts_created
+                    ]
+                }
+                if import_result.accounts_created
+                else {}
+            ),
         })
         INBOX_SYNC_TOTAL.labels(outcome="processed").inc()
 
@@ -754,6 +792,11 @@ class InboxService:
         # sidecar: a REST/MCP client can't read the sidecar, and a CLI/JSON
         # consumer shouldn't have to. Same list the sidecar persists.
         entry["account_proposals"] = pending_proposals
+        # The channel decides which recoveries are real for this row — the
+        # inbox subfolder move answers an account gate on tabular only. Without
+        # it every surface rendering these entries has to re-derive the file
+        # type from a name, and would get a .pdf holding OFX text wrong.
+        entry["channel"] = outcome_obj.channel
         result.pending.append(entry)
         INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
         logger.info(log_line)
@@ -886,6 +929,10 @@ class InboxService:
         (``sign_sample_rows``) so the flip is visible before anyone ratifies it.
         Mirrors the MCP ``_sign_confirm_actions`` treatment.
         """
+        from moneybin.privacy.payloads.imports import (  # noqa: PLC0415  # avoid an import cycle at module scope
+            ImportConfirmationAccountProposal,
+        )
+        from moneybin.privacy.redaction import redact_typed  # noqa: PLC0415
         from moneybin.services.import_confirmation import (  # noqa: PLC0415  # avoid an import cycle at module scope
             header_row_consumed_recovery,
             unreadable_date_recovery,
@@ -929,8 +976,13 @@ class InboxService:
             # --account-binding/--account-name. We don't offer a standalone
             # --accept/--mapping action (an --accept with no binding loops back
             # to the account gate). Also offer the inbox/<account-slug>/ path.
-            keys = [str(p.get("source_account_key", "")) for p in proposals] or [
-                "<source_key>"
+            # Keyed by proposal_ref, never by source_account_key: on OFX that
+            # key is the institution's <ACCTID>, and this command is written
+            # into a sidecar that outlives the session. Every other surface
+            # emitting this command already binds by ref; this was the last one
+            # keying it by the raw value.
+            keys = [str(p.get("proposal_ref", "")) for p in proposals] or [
+                "<proposal_ref>"
             ]
             # One command must carry a binding for every proposal — the gate is
             # all-or-nothing, so supplying only some keys re-prompts and persists
@@ -941,17 +993,27 @@ class InboxService:
             actions.append(
                 f"moneybin import confirm {quoted_path} --accept {bindings} "
                 "(adopt existing accounts, or 'new' to mint distinct ones; "
-                "supply every source key in this one command)"
+                "supply every proposal ref in this one command)"
             )
-            if len(keys) == 1:
+            # Both remaining recoveries answer the gate with a *name*, so both
+            # ask the one channel table whether this channel would honor one.
+            # Naming an account directly is refused outright off tabular
+            # (IMPORT_ACCOUNT_SIGNAL_UNSUPPORTED), and `_sync_one` drops the
+            # folder hint there too — either one printed here reads as a fix and
+            # costs a full drain cycle to disprove. A PDF is single-account by
+            # construction, so `len(keys) == 1` holds for essentially every PDF
+            # account gate: without the channel check this was the *usual*
+            # printed recovery, not an edge case.
+            if channel_honors_account_name(channel):
+                if len(keys) == 1:
+                    actions.append(
+                        f"moneybin import confirm {quoted_path} --accept "
+                        "--account-name <name> (name a new account directly)"
+                    )
                 actions.append(
-                    f"moneybin import confirm {quoted_path} --accept "
-                    "--account-name <name> (name a new account directly)"
+                    "Or move the file into inbox/<account-slug>/ and re-run sync "
+                    "(the subfolder names the account)."
                 )
-            actions.append(
-                "Or move the file into inbox/<account-slug>/ and re-run sync "
-                "(the subfolder names the account)."
-            )
         elif reason == "header_row_consumed":
             # Nothing to run: no --accept, --mapping, or --date-format touches
             # a row already consumed as column names. The file stays in
@@ -1004,7 +1066,18 @@ class InboxService:
             "flagged": list(flagged),
             "missing_required": list(missing_required),
             "unmapped_columns": list(unmapped_columns),
-            "account_proposals": list(proposals),
+            # Masked by the same declaration every other surface uses. A
+            # sidecar is the one artifact here that outlives the session, which
+            # `.claude/rules/security.md` names as a boundary that matters in
+            # its own right — so it is the last place a raw <ACCTID> should
+            # persist, not the one place exempt because the statement sits
+            # beside it.
+            "account_proposals": [
+                redact_typed(
+                    p, consent=None, declared_type=ImportConfirmationAccountProposal
+                )
+                for p in proposals
+            ],
             "actions": actions,
         }
         sidecar.write_text(yaml.safe_dump(payload, sort_keys=False))

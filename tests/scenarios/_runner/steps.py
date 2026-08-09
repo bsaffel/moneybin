@@ -46,14 +46,25 @@ def _step_import_file(setup: SetupSpec, db: Database, env: dict[str, str]) -> No
     and may require ``expect_error_substring`` to appear in the raised
     exception. ``refresh`` defaults off here — scenarios group transforms
     via the explicit ``transform`` step instead.
+
+    Imports run through ``import_answering_gate`` because every channel now
+    stops before load on a never-seen account, and a YAML scenario has no
+    place to name a source key it never cared about. The helper answers only a
+    candidate-free proposal and re-raises otherwise, so a scenario whose
+    fixtures do have a merge candidate still crashes here rather than
+    silently minting past the resolver — the shortcut
+    ``.claude/rules/testing.md`` forbids. Such a scenario belongs in Python
+    where it can state its own answer.
     """
     from moneybin.services.import_service import ImportService
+    from tests.import_helpers import import_answering_gate
 
     service = ImportService(db)
     for spec in setup.imports:
         path = (IMPORT_FIXTURES_ROOT / spec.path).resolve()
         try:
-            service.import_file(
+            import_answering_gate(
+                service,
                 path,
                 refresh=spec.refresh,
                 institution=spec.institution,

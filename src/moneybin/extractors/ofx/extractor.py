@@ -65,7 +65,7 @@ _FITID_SIGNATURE_FIELDS = (
 _FITID_COLLISION_MARKER = "#"
 
 
-def _none_if_blank(value: str | None) -> str | None:
+def none_if_blank(value: str | None) -> str | None:
     """Normalize ofxparse's empty-string defaults to NULL.
 
     ``ofxparse.Account.__init__`` seeds ``account_type``, ``routing_number`` and
@@ -94,7 +94,7 @@ _CONTAINER_ACCOUNT_TYPES = {
 }
 
 
-def _ofx_account_type(account: Any) -> str | None:
+def ofx_account_type(account: Any) -> str | None:
     """Account type from ``<ACCTTYPE>``, falling back to the statement container.
 
     Reading only ``<ACCTTYPE>`` discards a distinction the file does state, just
@@ -103,7 +103,7 @@ def _ofx_account_type(account: Any) -> str | None:
     seeds.account_type_map is what maps them to the canonical ``credit`` /
     ``investment``. An unrecognized container yields None rather than a guess.
     """
-    declared = _none_if_blank(account.account_type)
+    declared = none_if_blank(account.account_type)
     if declared is not None:
         return declared
     container: Any = getattr(account, "type", None)
@@ -501,10 +501,10 @@ class OFXExtractor:
             inst_org = account.institution.organization if account.institution else None
             account_info = {
                 "account_id": account.account_id,
-                "routing_number": _none_if_blank(account.routing_number),
-                "account_type": _ofx_account_type(account),
+                "routing_number": none_if_blank(account.routing_number),
+                "account_type": ofx_account_type(account),
                 "institution_org": inst_org or source_origin,
-                "institution_fid": _none_if_blank(
+                "institution_fid": none_if_blank(
                     account.institution.fid if account.institution else None
                 ),
                 "source_file": source_file,

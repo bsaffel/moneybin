@@ -107,10 +107,13 @@ The source data establishes the constraints directly:
    one account. A composite-only match therefore creates a review candidate; it
    never auto-merges accounts.
 3. **The account is bound, not detected.** Auto-resolve only on a remembered ref
-   or a strong confirmer. At first contact, otherwise ask once with candidates
-   and a "new account" escape, then remember the accepted binding. This extends
-   the existing `import_preview`→`import_confirm` seam from column confirmation
-   to account confirmation (see
+   or a strong confirmer. Ask once — with candidates and a "new account" escape —
+   whenever the import is about to *adopt* an account that already exists on a
+   weak signal, or the source stated no identity at all; then remember the
+   accepted binding. A source that states an identity nothing else matches has
+   one legal answer, so it mints and the import reports what it created rather
+   than asking. This extends the existing `import_preview`→`import_confirm` seam
+   from column confirmation to account confirmation (see
    [§Decision 7](#decision-7--import-time-ux--ax-detect--confirm--remember)).
 
 ## Decision 1 — Canonical `account_id` is an opaque, minted, non-PII surrogate
@@ -339,10 +342,12 @@ signal reliability:
      institution / name (captured per Decision 7) become candidate signals for
      *future* imports.
    - **≥1 candidate** → write one `pending` `account_link_decisions` row per
-     candidate, surfaced for confirmation: at first contact via the import-confirm
-     seam (Decision 7) when interactive, else the account-link review queue.
-     **Never auto-merge on `institution+last4` or name** (Plaid's mask≠number
-     warning + last4-collision risk — two distinct WF accounts could share `4267`).
+     candidate, surfaced for confirmation on the account-link review queue.
+     Imports never reach this rung: the Decision 7 gate answers every candidate
+     before `resolve()` runs, so the queue's producers are the backfill link
+     service and sync. **Never auto-merge on `institution+last4` or name**
+     (Plaid's mask≠number warning + last4-collision risk — two distinct WF
+     accounts could share `4267`).
 
 | Outcome | signal | action | resulting state |
 |---|---|---|---|
@@ -534,11 +539,12 @@ there is no unmasked agent handle, and `****4267` is ambiguous across sources).
   The PII now lives in `app.account_links.ref_value` (masked per-`ref_kind`,
   Decision 2), not in `account_id`.
 - **`import_confirm` gains a per-account binding map** (not a single scalar):
-  `account_bindings = {source_account_key: canonical_account_id | "new"}`. Tiller/
-  Mint-style files carry N accounts; the confirm envelope enumerates the detected
-  source accounts each with a proposal, and the caller returns a map of
-  resolutions (the single-account file is the 1-entry case). Full flow in
-  Decision 7.
+  `account_bindings = {proposal_ref | source_account_key: canonical_account_id |
+  "new"}`. Tiller/Mint-style files carry N accounts; the confirm envelope
+  enumerates the detected source accounts each with a proposal, and the caller
+  returns a map of resolutions (the single-account file is the 1-entry case).
+  Key by `proposal_ref` — `source_account_key` masks on the MCP surface, so a
+  key-only contract is unanswerable there. Full flow in Decision 7.
 
 ## Decision 7 — Import-time UX & AX: detect → confirm → remember
 
@@ -557,41 +563,148 @@ flowchart TD
     B -->|yes| ADOPT[Adopt pinned canonical id]
     B -->|no| C{Remembered source_native or strong confirmer?}
     C -->|yes| AUTO[Auto-adopt / agent may self-accept]
-    C -->|no| MINT[Mint canonical account + accepted source_native mapping]
-    MINT --> D{Existing candidates? institution+last4 / name}
-    D -->|none| STANDALONE[Standalone new account]
-    D -->|one or more| PROPOSE[Write pending decisions; surface for confirm]
-    PROPOSE --> E{Interactive / first contact?}
-    E -->|human, or agent| CONFIRM[import_confirm: merge into candidate, or keep standalone]
-    E -->|deferred / non-interactive| QUEUE[account-link pending queue]
+    C -->|no| PROPOSE[propose: read-only preview + candidates]
+    PROPOSE --> ASK{Candidates, or no identity stated?}
+    ASK -->|no| MINT[Mint and report the created account]
+    ASK -->|yes| GATE[Stop before load: confirmation_required / account_confirmation]
+    GATE --> CONFIRM{account_bindings answers it}
+    CONFIRM -->|candidate account_id| MERGE[Bind onto the existing account]
+    CONFIRM -->|"new"| STANDALONE[Mint a standalone account]
     ADOPT --> REMEMBER[Accepted mapping remembered]
     AUTO --> REMEMBER
+    MINT --> REMEMBER
+    MERGE --> REMEMBER
     STANDALONE --> REMEMBER
-    CONFIRM --> REMEMBER
 ```
 
-Note the surfacing rule is structural in the flow: **agent self-accept lives only
-on the strong-confirmer `AUTO` branch** — a weak-signal proposal (`MINT → PROPOSE`)
-*always* goes to a human confirm or the queue, never to agent self-accept.
+**Propose, then bind — nothing is written before the answer.** The gate runs on
+`AccountResolver.propose()`, which is read-only, and it fires whenever
+`AccountProposal.requires_confirm` holds: a proposal carrying merge candidates,
+**or** one whose source stated no account identity at all (`identity_unknown` —
+a bare Date/Description/Amount CSV, which would mint under its own filename).
+Resolution — the mint, the `source_native` link, any decision row — happens only
+on the re-entry that carries the answer. An unanswered import therefore leaves no
+provisional account and no pending row to reconcile, only an unanswered question.
 
-**UX (human).** First contact with an unresolved account returns a
-`confirmation_required` outcome including the **proposed account binding** (matched
-candidate(s) or "new account") which the user ratifies or overrides
-(`import_confirm`, or `--account-id`/`--account-name` to pin up front). Only
-**remembered `source_native` mappings and strong scoped refs** bypass the confirm
-silently — a **name match never auto-resolves** ("Checking"/"Savings" would bind
+**Gate the merge, not the mint.** A proposal that states an identity and matches
+nothing is not a question: on a fresh book there is no second answer available,
+and gating it made a first import of N files cost N confirms that each had one
+legal answer — confirm volume scaling with items instead of with uncertainty.
+Those imports proceed, and every surface names the accounts they created
+(`accounts_created`: the opaque id plus the source's own label, on the CLI, in
+the `import_files` per-file rows, and in the `import_confirm` result). This is
+what keeps "magic stays visible" true: the two recoveries — rename with
+`accounts set`, merge with `accounts links run` — are named alongside it. Both
+are reachable from either surface; the agent proposes a merge through
+`refresh_run(steps=["identity"])`, which runs the same `AccountLinksService`
+backfill, then decides it with `identity_links_decide`.
+Calibration is by cost of a wrong silent action: a surprise account is visible
+in the account list and cheap to correct, unlike the silent merge onto an
+existing account that this gate exists to prevent.
+
+Two consequences worth stating outright, because both contradict an earlier
+design that shipped:
+
+- **The gate is actor-independent.** An agent was previously allowed past it,
+  minting a provisional and queueing a pending decision for later review. That
+  put the resolver's weakest signal into effect unseen on the surface where
+  nobody is watching, so it is gone. Agent self-accept survives only on the
+  strong-confirmer `AUTO` branch.
+- **Imports no longer write to the account-link pending queue.** `resolve()`'s
+  candidate pass is unreachable from every import channel: the gate answers
+  every weak proposal first, and an answered binding resolves above it. That
+  queue is still fed by the backfill link service and by sync — it is not
+  dead, it is simply no longer an import outcome.
+
+**UX (human).** An account the import could plausibly merge onto, or a source
+that named no account, returns a `confirmation_required` outcome including the
+**proposed account binding** (matched candidate(s) or "new account") which the
+user ratifies or overrides (`import_confirm`, or `--account-id`/`--account-name`
+to pin up front). Two things pass without a confirm, and only two: **remembered
+`source_native` mappings and strong scoped refs**, which are silent; and a
+**stated identity with no candidates**, which loads and then names the account it
+created. A **name match never auto-resolves** ("Checking"/"Savings" would bind
 wrong); genuine ambiguity always interrupts. After ratification the binding is
 remembered, so re-imports are silent.
 
 **AX (agent).** The same envelope is the agent's structured contract: per detected
-account an `account_proposal` (`{proposed_account_id, is_new, candidates:[{account_id,
-display_name, confidence, signal}]}`) plus `actions[]`. The agent (a) returns an
-`account_bindings` map to `import_confirm` to bind deterministically — preferred,
-using the Decision-6 handle; (b) self-accepts **only a strong-confirmer adoption**
-when `self_accept` is enabled for its `actor_kind` (both defined in M1H,
+account an `account_proposal` (`{proposal_ref, proposed_account_id, is_new,
+candidates:[{account_id, display_name, confidence, signal}]}`) plus `actions[]`.
+The agent (a) returns an `account_bindings` map to `import_files` or
+`import_confirm` to bind deterministically — preferred, keyed by `proposal_ref`;
+or (b) self-accepts **only a strong-confirmer adoption** when `self_accept` is
+enabled for its `actor_kind` (both defined in M1H,
 [`smart-import-confirmation.md`](smart-import-confirmation.md) §"Agent autonomy &
-recovery"); or (c) leaves proposals for the account-link queue. The agent
-never disambiguates a masked `****4267`.
+recovery"). Leaving the proposal for the account-link queue is no longer an
+option: the import stops until it is answered. The agent
+never disambiguates a masked `****4267` — it names the account positionally instead.
+
+An import that minted returns `accounts_created` on the result — per file in
+`import_files`, top-level in `import_confirm` — plus one `actions[]` entry naming
+the recoveries. The rows carry `{account_id, display_name}` and never the
+`source_account_key`, so nothing there is masked; the action names no account,
+because `actions[]` is prose the redaction pass does not classify. The agent's
+obligation is to tell the user an account came into existence.
+
+**`proposal_ref` — the referent that survives the mask.** `source_account_key`
+is an `ACCOUNT_IDENTIFIER` (CRITICAL), so the MCP envelope masks it: the caller
+reads `****1234` where the binding once needed `chase_1234`. Every proposal
+therefore carries `proposal_ref`, a positional referent for the file being
+imported — `@0` is its first source account, `@1` the second — classified
+`RECORD_ID` and left readable. `account_bindings` accepts either form; supplying
+two different answers for one account is an error rather than a precedence rule,
+and a ref past the end of the file is rejected by name.
+
+Four properties are load-bearing:
+
+- **A key that reads as both forms is refused, not resolved.** `<ACCTID>` is
+  untrusted file content, so a source key can spell `@1` verbatim. Where the two
+  readings name the *same* account there is nothing to decide and the binding
+  applies. Where they name different accounts, neither reading is safe: letting
+  the key bind both accounts is the silent merge the gate exists to prevent, and
+  letting the source key win silently delivers the answer to the account the
+  caller was not looking at while the intended one stays gated behind a ref that
+  no longer reaches it. The ambiguity is raised by name instead.
+- **Positions index the file's full account list, not the surfaced subset.**
+  The answering call applies bindings *before* the gate re-runs, so it can only
+  index the accounts the file itself declares. Numbering what got surfaced would
+  shift every ref the moment one account resolved strongly — silently moving an
+  answer onto a different account.
+- **It is a referent for one exchange, not an identifier.** Nothing persists it;
+  it means nothing on a later import, and it is not a handle to store.
+  `proposed_account_id` cannot serve this role: on the mint path it is a preview
+  id that `resolve()` discards.
+- **`@`, not `#`.** A binding is typed at a shell prompt, where
+  `--account-binding #0=new` opens a comment and drops the rest of the line.
+- **The recovery command the gate prints answers in refs.** `actions[]` sits
+  outside the envelope's redaction walk — `render_or_json` applies
+  `redact_typed` to `data` alone — so a recovery keyed by `source_account_key`
+  hands an OFX `<ACCTID>` to whatever reads the JSON, on the surface designed to
+  be machine-read. Carried bindings are re-keyed alongside the generated ones:
+  the replay exists for the two-account file answered one at a time, so leaving
+  the caller's own key raw restores the disclosure through the other door, and a
+  ref beside its own source key is refused as a double binding anyway. A key
+  naming no proposal in the outcome is echoed as sent — it cannot be re-keyed,
+  and the resolver refuses it upstream.
+
+**The value side is closed, and checked before anything loads.** A binding
+value is either the exact token `new` or an account id this database already
+has. The ladder verifies neither — Step 0 adopts an `explicit_account_id`
+verbatim and reports `is_new=false`, so an unrecognized id would become a
+canonical account with no mint announced and no `accounts_created` row naming
+it, and the statement would land under an account the caller created by typo.
+Existence is read from `app.account_links` as well as `core.dim_accounts`: the
+latter is SQLMesh-materialized, so an account minted by the previous import is
+absent from it until a refresh runs, which is exactly the id a caller binds a
+sibling file to. A near miss on the keyword (`New`, `new `) is named rather
+than folded in — an account id is opaque, so case and whitespace cannot be
+normalized away without guessing which of the two the caller meant.
+
+The check is scoped to `account_bindings` and deliberately does not extend to
+the `account_id` parameter, which is a different contract: a binding answers a
+confirmation that just enumerated the ids worth naming, so one matching none of
+them is a typo by construction, while `account_id` *names* the account the file
+becomes and mints under that id when it is unknown.
 
 **Fallback candidates at the gate (decision support, not auto-merge).** The
 auto-resolve ladder above is unchanged: a bare single-account source with no
@@ -783,7 +896,7 @@ fails CI. This is the durable reconciliation of "what we know per format" with
 
 A single-account file with no caller-supplied identity (no `--account-name`/`--account-id`, no account-name column) has no real source identity. Its synthetic `source_account_key` is therefore `slugify(stem)-sha256(bytes)[:12]` — unique per file content, stable across the elicit→confirm round-trip, and idempotent on an exact re-import. A filename stem is never a strong same-source key (it is even more incidental than the mutable label of Decision 8); two different-account files that share a name resolve to distinct accounts, and an explicit `=new` is always honored. The bare path never auto-links on a filename — it elicits `account_confirmation` unless the exact content was already imported.
 
-**Idempotency caveat — `source_origin` stability.** The exact-re-import short-circuit (`AccountResolver.source_native_exists`, and the resolver's Step-1 `source_native` lookup) keys on `(source_type, source_origin, source_account_key)`. For a bare file `source_origin = matched_format.name if matched_format else slugify(account_name or "unknown")`, so it can shift from `"unknown"` to a saved format's name once `save_format` persists a format. When that happens between the first import and a later exact re-import, the lookup misses the link written under the old `source_origin` and the file **re-elicits `account_confirmation`** rather than adopting silently. This is intentional within the constraints: `source_origin` is the staging-JOIN key and must not be changed (it is computed identically for `raw.*` and `app.account_links`). The cost is a safe, visible extra confirmation — no data loss, and the primary guarantee (no *silent* cross-account merge) is unaffected. Silent idempotency holds whenever `source_origin` is stable across the re-import (the common case).
+**Idempotency caveat — `source_origin` stability.** The exact-re-import short-circuit (the resolver's Step-1 `source_native` lookup) keys on `(source_type, source_origin, source_account_key)`. For a bare file `source_origin = matched_format.name if matched_format else slugify(account_name or "unknown")`, so it can shift from `"unknown"` to a saved format's name once `save_format` persists a format. When that happens between the first import and a later exact re-import, the lookup misses the link written under the old `source_origin` and the file **re-elicits `account_confirmation`** rather than adopting silently. This is intentional within the constraints: `source_origin` is the staging-JOIN key and must not be changed (it is computed identically for `raw.*` and `app.account_links`). The cost is a safe, visible extra confirmation — no data loss, and the primary guarantee (no *silent* cross-account merge) is unaffected. Silent idempotency holds whenever `source_origin` is stable across the re-import (the common case).
 
 ## Idempotency, reverse-order imports, correction
 
@@ -859,8 +972,9 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
 - **Import-time UX/AX** (Decision 7): a first-contact ambiguous account returns
   `confirmation_required` with per-account `account_proposal`s; `import_confirm`
   with an `account_bindings` map pins N accounts; a remembered/strong ref imports
-  silently (no prompt); a weak-signal proposal never agent-self-accepts;
-  institution-unknown bare CSV mints without error. CLI + MCP parity.
+  silently (no prompt); a weak-signal proposal never agent-self-accepts; a stated
+  identity matching nothing loads and reports `accounts_created`; a bare CSV
+  states no identity and still asks. CLI + MCP parity.
 - **Scenario** (`tests/scenarios/test_account_identity_cross_source.py`,
   `make test-scenarios` — data-shape change): `account-identity-cross-source`
   proves the regression fix with a representative 2-account fixture — 2 WF

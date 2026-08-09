@@ -19,7 +19,7 @@ from moneybin.extractors.confidence import Confidence, Tier
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 from moneybin.services.account_resolution_types import AccountProposalDict
 
-Channel = Literal["tabular", "gsheet", "pdf"]
+Channel = Literal["tabular", "gsheet", "pdf", "ofx"]
 ActorKind = Literal["human", "agent"]
 ConfirmationReason = Literal[
     "unknown_layout",
@@ -169,6 +169,17 @@ class ConfirmationRequired:
     each detected source account whose resolution needs ratification — weak
     candidates to choose among, or a no-candidate proposal for the bare
     single-account case. Empty for mapping-only confirmations.
+
+    `ratified_bindings` carries the answers the caller has *already* given,
+    re-keyed from whatever they sent to the positional `proposal_ref`. A
+    multi-account file is answered one at a time and retries persist no partial
+    state, so a surface must replay the earlier answers or the gate re-asks and
+    never converges — but an answered account is skipped by
+    `_gate_account_proposals` and so never appears in `account_proposals`,
+    leaving a surface nothing to re-key its key from. On OFX that key is the
+    `<ACCTID>`, an account number, so replaying the caller's own key verbatim
+    publishes it. The ref is the account's index in the file, which makes this
+    the only layer that can still name it once the proposal is gone.
     """
 
     channel: Channel
@@ -178,6 +189,11 @@ class ConfirmationRequired:
     samples: dict[str, list[str]] = field(default_factory=dict)
     error_message: str = ""
     account_proposals: list[AccountProposalDict] = field(default_factory=list)
+    # Keys are refs and values are MoneyBin's own account ids (or "new"), so
+    # unlike a source-keyed map this is safe on an unredacted surface. It is
+    # deliberately absent from confirmation_payload_dict: no transport consumer
+    # needs it, and MCP's actions[] never replays a caller's bindings at all.
+    ratified_bindings: dict[str, str] = field(default_factory=dict)
 
 
 def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object]:
