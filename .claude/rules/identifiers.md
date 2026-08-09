@@ -24,10 +24,10 @@ has already produced bugs that leak one while intending the other.
 
 | | `source_account_key` | `account_id`, `proposed_account_id` | `proposal_ref` (`@0`, `@1`) |
 |---|---|---|---|
-| **What it holds** | The source-native key — often the institution's, sometimes MoneyBin-synthesized or a copied pin (below) | MoneyBin's canonical id *once the account is resolved*; the source-native key when it is not (below) | A position in this file's full detected source-account list — always MoneyBin's (below) |
-| **Privacy class** | `ACCOUNT_IDENTIFIER` → CRITICAL (`imports.py:115`) | `RECORD_ID` (`imports.py:121-122`) | `RECORD_ID` (`imports.py:121`) |
+| **What it holds** | The source-native key — often the institution's, sometimes MoneyBin-synthesized or a copied pin (below) | Three different things: MoneyBin's canonical id once the account is resolved, the source-native key when it is not, and a throwaway preview id on the mint path (all below) | A position in this file's full detected source-account list — always MoneyBin's (below) |
+| **Privacy class** | `ACCOUNT_IDENTIFIER` → CRITICAL (`imports.py:115`) | `RECORD_ID` (`imports.py:86`, `:108`, `:122`) | `RECORD_ID` (`imports.py:121`) |
 | **In any surface** | Masked (`****6789`) | Printed readably | Printed readably |
-| **Unconditionally safe to show?** | No | **No** | **Yes** |
+| **Unconditionally safe to show?** | **No** | **No** | **Yes** |
 
 **`source_account_key` is not uniformly the institution's identifier**, and
 assuming it is re-creates the conflation this section exists to prevent. Its
@@ -36,7 +36,7 @@ value depends on the channel and on what the caller pinned:
 | Case | What `source_account_key` holds |
 |---|---|
 | OFX | `<ACCTID>` — the institution's |
-| PDF with a readable account anchor | issuer + last four — the institution's |
+| PDF with a readable account anchor | `{issuer_slug}_{slugify(masked_acct)}` — MoneyBin-synthesized *from* institution-derived parts, not issued by the institution (`import_service.py:1433-1446`) |
 | PDF with no anchor | a filename-derived alias — MoneyBin-synthesized |
 | Bare tabular (no account column) | `_bare_account_key(file_path, source_bytes)` — MoneyBin-synthesized from filename + content |
 | Any channel with `--account-id` pinned | MoneyBin's own `account_id`, copied straight in (`import_service.py` PDF `native_key = account_id_override`; tabular `source_account_key=account_id`) |
@@ -50,6 +50,14 @@ those models, so an account with **no resolver link** — exactly what
 `accounts links run` exists to backfill — surfaces its source-native key
 through `account_id`, a `RECORD_ID` field that every surface prints readably.
 On OFX that is a real `<ACCTID>`.
+
+**`proposed_account_id` on the mint path is neither.** When
+`AccountResolver.propose()` finds no account to adopt (`is_new=True`) it returns
+a preview `uuid.uuid4().hex[:12]` that its own docstring calls "NOT written
+anywhere" — `resolve()` mints a *different* real id when the import commits
+(`account_resolver.py:288-290`, and `:324-346` returns it). Retaining one as a
+later reference resolves to nothing. It is display-only, and only for the life
+of the proposal.
 
 This is why `proposal_ref` exists, and why it — not `account_id` — is the
 referent to put in front of a user or an agent.

@@ -467,21 +467,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reached only spreadsheet imports, and `--account-id` only spreadsheets and
   PDFs; passing one with any other file type was accepted and discarded, so the
   import bound whatever it worked out for itself while you believed you had
-  chosen. Each of
-  those combinations now refuses before anything loads and points at
-  `--account-binding`, which every file type honors. The MCP tools refuse the
-  same combinations, from the same table. (Error code
+  chosen. Each of those combinations now refuses before anything loads and
+  points at `--account-binding`, which every file type honors. The MCP tools
+  refuse the same combinations, from the same table. (Error code
   `import_pdf_account_signal_unsupported` is replaced by
-  `import_account_signal_unsupported`, since the refusal is no longer
-  PDF-only.)
+  `import_account_signal_unsupported`, since the refusal is no longer PDF-only.)
 - **`moneybin import confirm` takes `--institution` (#378).** An OFX whose
   issuer is underivable from `<FI><ORG>`, the FID lookup, and the filename
   fails before the account question is ever reached, so the only way to reach
-  that question
-  is `moneybin import files <file> --institution <name>`. The recovery command
-  printed there dropped the override, so pasting it hit the institution error
-  again. It now carries it, and `import confirm` accepts it. Refused alongside
-  `--bridge-response`, which has no institution to apply.
+  that question is `moneybin import files <file> --institution <name>`. The
+  recovery command printed there dropped the override, so pasting it hit the
+  institution error again. It now carries it, and `import confirm` accepts it.
+  Refused alongside `--bridge-response`, which has no institution to apply.
 - **Cross-source duplicates now auto-merge on description agreement rather than
   on the calendar date, and the candidate window widens from 3 days to 5
   (#377).** Previously any pair landing on the same day merged silently no
