@@ -25,6 +25,7 @@ at "Total:".
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -1299,9 +1300,12 @@ def test_replay_capturing_a_digitless_account_id_re_derives(db: Database) -> Non
     and the broken recipe would otherwise survive every future statement.
     """
     _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+    before = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
 
     decision = route_pdf_import(_masked_account_doc(), db)
 
+    after = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
     assert decision.outcome == "transactions"
     assert decision.rederived is True
     # The same saved format, repaired — not a first-contact save under a new name.
@@ -1324,9 +1328,13 @@ def test_replay_capturing_a_digitful_account_id_does_not_re_derive(
     positive test above would still pass.
     """
     _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+    before = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
 
     decision = route_pdf_import(_standard_doc(), db)
 
+    # Self-heal was never entered at all, so no outcome was recorded.
+    after = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before
     assert decision.outcome == "transactions"
     assert decision.rederived is False
     assert decision.metadata.account_id == "1234"
@@ -1350,13 +1358,55 @@ def test_replay_is_not_re_derived_when_the_account_id_cannot_gain_a_digit(
     identity never improves. The same reasoning excludes a *missing* id.
     """
     _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+    before = PDF_SELF_HEAL_TOTAL.labels(outcome="no_identity_gain")._value.get()  # type: ignore[reportPrivateUsage]
 
     decision = route_pdf_import(_fully_masked_account_doc(), db)
 
+    after = PDF_SELF_HEAL_TOTAL.labels(outcome="no_identity_gain")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
     assert decision.outcome == "transactions"
     assert decision.rederived is False
     assert decision.rederived_reason is None
     assert decision.metadata.account_id == "XXXX"
+
+
+def test_declining_a_digitless_repair_logs_that_the_statement_still_loads(
+    db: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A decline is only "routing to seed" when the replay had nothing loadable.
+
+    The digitless trigger fires on a replay that already reconciled, so declining
+    the repair lets the statement load under the account id the saved recipe
+    read. Reporting that as withheld tells an operator a problematic import was
+    stopped when it landed — the same class of false claim as an audit reason
+    naming the wrong trigger.
+    """
+    _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+    # Replay reads the text (masked account line, reconciles); derivation reads
+    # the tables, and an unparseable amount makes the re-derivation fail. So the
+    # trigger is the digit-free id, never reconciliation.
+    doc = _make_doc(
+        text_lines=_masked_account_doc().text_lines,
+        tables=[
+            PdfTable(
+                page=1,
+                header=_HEADERS,
+                rows=[
+                    ["01/15/2024", "Coffee Shop", "-50.00"],
+                    ["01/20/2024", "Paycheck", "n/a"],
+                ],
+            )
+        ],
+    )
+
+    with caplog.at_level(logging.INFO, logger="moneybin.extractors.pdf.routing"):
+        decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.rederived is False
+    assert "routing to seed" not in caplog.text
+    assert "loading the statement under the account id" in caplog.text
 
 
 def test_self_heal_falls_back_to_seed_when_the_document_is_underivable(

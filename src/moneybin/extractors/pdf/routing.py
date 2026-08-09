@@ -572,11 +572,23 @@ def _attempt_self_heal(
     card_markers = replayed.card_markers
     saved_recipe = replayed.recipe
 
+    # What returning None actually does, which the trigger decides. A replay that
+    # failed reconciliation has no loadable decision, so declining seeds. One
+    # whose only defect was the account id already reconciled — declining leaves
+    # the statement to load under the id the saved recipe read. Telling an
+    # operator "routing to seed" in that second case reports a problematic import
+    # as withheld when it landed. Names no id: account identifiers never log.
+    declined = (
+        "routing to seed"
+        if replayed.outcome != "transactions"
+        else "loading the statement under the account id the saved recipe read"
+    )
+
     if saved_format.source != "detected":
         logger.info(
             f"Saved format {saved_format.name!r} {trigger.log_phrase} but its "
             f"source is {saved_format.source!r}, not 'detected' — declining to "
-            f"overwrite a human-authored recipe; routing to seed"
+            f"overwrite a human-authored recipe; {declined}"
         )
         PDF_SELF_HEAL_TOTAL.labels(outcome="refused_not_detected").inc()
         return None
@@ -586,7 +598,7 @@ def _attempt_self_heal(
         logger.info(
             f"Saved format {saved_format.name!r} {trigger.log_phrase} and the "
             f"document could not be re-derived ({derivation_failure_reason(doc)})"
-            f" — routing to seed"
+            f" — {declined}"
         )
         PDF_SELF_HEAL_TOTAL.labels(outcome="underivable").inc()
         return None
@@ -622,7 +634,7 @@ def _attempt_self_heal(
         logger.info(
             f"Saved format {saved_format.name!r} {trigger.log_phrase} and the "
             f"re-derived recipe did not reconcile either (reason={retry.reason})"
-            f" — routing to seed"
+            f" — {declined}"
         )
         PDF_SELF_HEAL_TOTAL.labels(outcome="still_unreconciled").inc()
         return None
