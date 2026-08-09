@@ -1634,6 +1634,13 @@ class TestPendingSidecarAccountHint:
         payload = yaml.safe_load(sidecar.read_text())
         actions = payload["actions"]
         assert all("<account-slug>" not in a for a in actions), actions
+        # Same reason, same table: `account_name` is tabular-only, so neither
+        # the folder move nor the flag that names an account directly can be
+        # offered here. A PDF statement is single-account by construction, so
+        # the `--account-name` suggestion would otherwise fire on essentially
+        # every PDF account gate and fail with IMPORT_ACCOUNT_SIGNAL_UNSUPPORTED
+        # when pasted.
+        assert all("--account-name" not in a for a in actions), actions
         assert any("--account-binding" in a for a in actions), actions
 
     def test_account_confirmation_sidecar_never_writes_the_account_number(

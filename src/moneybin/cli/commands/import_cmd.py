@@ -1273,7 +1273,7 @@ def _account_recovery_command(
     for proposal in outcome.account_proposals:
         bindings.setdefault(str(proposal["proposal_ref"]), "<account_id|new>")
     if not bindings:
-        bindings["<source_key>"] = "<account_id|new>"
+        bindings["<proposal_ref>"] = "<account_id|new>"
 
     return _import_confirm_command(
         file_path_str,

@@ -135,8 +135,21 @@ def test_empty_binding_value_does_not_echo_the_files_account_number(
         ("Checking 1234.5678.9012", "Checking ****5678"),
         ("Checking 1234/5678/9012", "Checking ****5678/"),
         ("Checking 1234_5678_9012", "Checking ****5678_"),
-        # A letter breaks the run — two separate four-digit tokens are not one
-        # eight-digit number.
+        # A three-character separator, which the parser's own trailing-token
+        # strip accepts: it lifts `9012` out and hands the mask `1234 - 5678`.
+        ("Checking 1234 - 5678 - 9012", "Checking ****5678"),
+        # Letters *inside* the identifier, the shape brokerage and investment
+        # accounts actually use. The run is bounded by separator length, not by
+        # character class, so letters no longer end it.
+        ("Brokerage 12AB34CD56", "Brokerage ****3456"),
+        ("IRA 12X3456789", "IRA ****6789"),
+        # A letter prefix or suffix belongs to the identifier, not to the name,
+        # so the mask swallows the whole token rather than leaving a stub.
+        ("Brokerage X12345678", "Brokerage ****5678"),
+        ("Checking 12345XY", "Checking ****2345"),
+        # A whole *word* still breaks the run — two separate four-digit tokens
+        # are not one eight-digit number. This is the boundary the length bound
+        # exists to keep: wide enough for `12AB34`, too narrow for ` Savings `.
         ("Checking 1234 Savings 5678", "Checking 1234 Savings"),
         # A bare trailing four-digit group is the masked last-four banks print,
         # and parse_account_label lifts it out into `last_four` — so the label

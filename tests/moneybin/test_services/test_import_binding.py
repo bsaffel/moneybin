@@ -1402,6 +1402,44 @@ def test_the_ref_indexes_the_files_accounts_in_order(
     assert len(names) == 2, names
 
 
+def test_account_metadata_refuses_one_account_named_by_both_referents(
+    db: Database, tmp_path: Path
+) -> None:
+    """Two metadata sets for one account have no winner worth picking.
+
+    ``_resolve_metadata_keys`` collapses a ref onto the source key it names, so
+    sending both spells one account twice with two different field sets. Picking
+    either applies fields the caller did not ask for and never reports which
+    half was dropped — the metadata twin of the binding conflict already pinned
+    by ``test_a_ref_and_a_raw_key_disagreeing_on_one_account_is_refused``.
+
+    Both referents are read off the raised gate rather than written as literals:
+    the refusal only means anything if the two spellings really do reach one
+    account, and hard-coding either would assert against a fixture detail
+    instead of against the resolver.
+    """
+    _seed_existing_account(db, account_id="acct_chk01", display_name="Checking")
+    _seed_existing_account(db, account_id="acct_sav01", display_name="Savings")
+    svc = ImportService(db)
+    csv_path = _two_account_csv(tmp_path)
+    with pytest.raises(ImportConfirmationRequiredError) as gate:
+        svc.import_file(csv_path, refresh=False, confirm=True)
+    first = gate.value.outcome.account_proposals[0]
+    ref, key = str(first["proposal_ref"]), str(first["source_account_key"])
+
+    with pytest.raises(ValueError, match="names the same account twice"):
+        svc.import_file(
+            csv_path,
+            refresh=False,
+            confirm=True,
+            account_bindings={"@0": "new", "@1": "new"},
+            account_metadata={
+                ref: {"display_name": "By ref"},
+                key: {"display_name": "By source key"},
+            },
+        )
+
+
 def test_a_raw_source_key_still_binds(db: Database) -> None:
     """The ref is additive — the CLI's existing key= form keeps working."""
     _seed_twin(db, _OFX_TWIN)

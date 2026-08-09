@@ -94,18 +94,24 @@ class CreatedAccount:
 # anything longer in an account label is a number, not a label.
 #
 # Counting across the separator is the load-bearing part — a contiguous-only
-# rule reads "4111 1111 1111" as four safe tokens — and the separator set is
-# deliberately open rather than enumerated. Two rounds of review found the same
-# defect twice, first for "-" and then for "." and "/" and "_", because the
-# label parser's own trailing-token strip accepts punctuation this pattern did
-# not: each time the two disagreed about what a separator is, the disagreement
-# was a run of account digits shipped unmasked. A letter still breaks the run,
-# so "Checking 1234 Savings 5678" stays two four-digit tokens.
+# rule reads "4111 1111 1111" as four safe tokens — and the separator is bounded
+# by *length*, not by character class. Three rounds of review found the same
+# defect three times: first "-", then "." and "/" and "_", then letters
+# ("Brokerage 12AB34CD56", the shape brokerage accounts actually use). Each
+# enumeration was a guess about how numbers are written, and each gap between
+# the guess and the label parser's own trailing-token strip was a run of account
+# digits shipped unmasked. A length bound has no such gap to widen.
+#
+# Three characters is what separates an identifier from a sentence: wide enough
+# for "12AB34" and "1234 - 5678", too narrow for "Checking 1234 Savings 5678",
+# which stays two four-digit tokens rather than one eight-digit number. The
+# leading and trailing [A-Za-z]* take the rest of the token, so "X12345678"
+# masks whole instead of leaving an "X" stub.
 #
 # The cost is over-masking a decimal in a label ("Balance 1234.56"). That is the
 # right side to err on: an over-masked label is legible, an under-masked one is
 # an account number.
-_EMBEDDED_ACCOUNT_NUMBER = re.compile(r"\d(?:[^0-9A-Za-z]?\d){4,}")
+_EMBEDDED_ACCOUNT_NUMBER = re.compile(r"[A-Za-z]*\d(?:[^\d]{0,3}\d){4,}[A-Za-z]*")
 
 
 def _mask_embedded_account_number(label: str) -> str:
@@ -121,7 +127,9 @@ def _mask_embedded_account_number(label: str) -> str:
     Masks the run rather than the whole string, because naming what was created
     is the entire purpose of the field: "Checking 987654321098" has to become
     "Checking ****1098", not "****1098". The kept four are the run's last four
-    *digits*, so a grouped number and a contiguous one mask alike.
+    *digits*, so a grouped number, a contiguous one, and an alphanumeric one
+    mask alike — and the suffix stays four digits, the form every other masked
+    surface in the codebase shows.
     """
 
     def _mask(match: re.Match[str]) -> str:
@@ -576,6 +584,19 @@ _HONORED_ACCOUNT_SIGNALS: dict[str, frozenset[str]] = {
 }
 
 
+def channel_honors_account_name(channel: str) -> bool:
+    """Whether this channel's import path forwards ``account_name``.
+
+    The channel-keyed form of :func:`honors_account_name`, for the callers that
+    already know the channel and have no file to sniff — the inbox sidecar
+    decides which account recoveries to print from the pending row's own
+    ``channel``. Spelling that as ``channel == "tabular"`` would put a second
+    copy of the table beside this one, and the next channel to gain
+    ``account_name`` would have to remember both.
+    """
+    return "account_name" in _HONORED_ACCOUNT_SIGNALS.get(channel, frozenset())
+
+
 def honors_account_name(file_path: Path) -> bool:
     """Whether this file's channel forwards ``account_name`` to the resolver.
 
@@ -594,7 +615,7 @@ def honors_account_name(file_path: Path) -> bool:
         file_type = _detect_file_type(file_path)
     except ValueError:
         return False
-    return "account_name" in _HONORED_ACCOUNT_SIGNALS.get(file_type, frozenset())
+    return channel_honors_account_name(file_type)
 
 
 def reject_unhonored_account_signals(

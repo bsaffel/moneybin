@@ -38,6 +38,7 @@ from moneybin.metrics.registry import (
 from moneybin.services.account_resolution_types import AccountProposalDict
 from moneybin.services.import_service import (
     ImportService,
+    channel_honors_account_name,
     honors_account_name,
     rekey_bare_proposals_for_path,
 )
@@ -994,16 +995,21 @@ class InboxService:
                 "(adopt existing accounts, or 'new' to mint distinct ones; "
                 "supply every proposal ref in this one command)"
             )
-            if len(keys) == 1:
-                actions.append(
-                    f"moneybin import confirm {quoted_path} --accept "
-                    "--account-name <name> (name a new account directly)"
-                )
-            if channel == "tabular":
-                # Tabular-only, because that is the only channel whose import
-                # path honors `account_name` — `_sync_one` drops the folder
-                # hint everywhere else, so offering this move on OFX or PDF
-                # names a recovery that returns the file to the identical gate.
+            # Both remaining recoveries answer the gate with a *name*, so both
+            # ask the one channel table whether this channel would honor one.
+            # Naming an account directly is refused outright off tabular
+            # (IMPORT_ACCOUNT_SIGNAL_UNSUPPORTED), and `_sync_one` drops the
+            # folder hint there too — either one printed here reads as a fix and
+            # costs a full drain cycle to disprove. A PDF is single-account by
+            # construction, so `len(keys) == 1` holds for essentially every PDF
+            # account gate: without the channel check this was the *usual*
+            # printed recovery, not an edge case.
+            if channel_honors_account_name(channel):
+                if len(keys) == 1:
+                    actions.append(
+                        f"moneybin import confirm {quoted_path} --accept "
+                        "--account-name <name> (name a new account directly)"
+                    )
                 actions.append(
                     "Or move the file into inbox/<account-slug>/ and re-run sync "
                     "(the subfolder names the account)."
