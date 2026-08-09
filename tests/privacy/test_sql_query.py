@@ -1779,6 +1779,12 @@ def test_metadata_unknown_column_log_names_the_error_type_not_the_query(
                 max_rows=10,
             )
     assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    # The hint is the point of the clause, not a side effect: without these two
+    # a regression passing hint=None from _fetch_metadata still passes.
+    assert "nope" in (ei.value.hint or "")
+    # _MERCHANT is neither an SSN nor an 8+ digit run, so mask_pii_shaped can't
+    # catch it — only the LINE split keeps it out, which is what this pins.
+    assert _MERCHANT not in (ei.value.hint or "")
     cause = ei.value.__cause__
     assert cause is not None
     _assert_log_names_the_failure_without_quoting_it(
@@ -1807,6 +1813,7 @@ def test_metadata_unknown_table_log_names_the_error_type_not_the_query(
                 max_rows=10,
             )
     assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert "nonexistent_table" in (ei.value.hint or "")
     cause = ei.value.__cause__
     assert cause is not None
     assert isinstance(cause, duckdb.CatalogException)
