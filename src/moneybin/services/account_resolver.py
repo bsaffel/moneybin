@@ -443,10 +443,20 @@ class AccountResolver:
         The catalog guard mirrors :func:`fetch_display_name` — ``core`` does
         not exist before its first materialization, and its absence means no
         account is known *there*, not that the question cannot be answered.
+
+        Only ``accepted`` links count, matching
+        :meth:`accepted_native_account_id`. ``AccountLinksRepo.repoint`` — the
+        merge primitive — reverses the old row *in place*, leaving its
+        ``account_id`` intact, so an unpredicated match would keep answering
+        "yes" for an account the user already merged away. The caller
+        (``_refuse_unknown_binding_targets``) would then let that stale id
+        through as a binding target and step 0 would write a fresh accepted
+        link onto it, resurrecting the merged-away account as a second,
+        disconnected transaction stream.
         """
         row = self._db.execute(
             f"SELECT 1 FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized value
-            "WHERE account_id = ? LIMIT 1",
+            "WHERE status = 'accepted' AND account_id = ? LIMIT 1",
             [account_id],
         ).fetchone()
         if row is not None:

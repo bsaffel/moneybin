@@ -174,7 +174,11 @@ class CLIConfirmationRequiredPayload:
     tier: Annotated[str, DataClass.AGGREGATE]
     score: Annotated[float, DataClass.AGGREGATE]
     reason: Annotated[str, DataClass.TXN_TYPE]
-    error_message: Annotated[str | None, DataClass.DESCRIPTION]
+    # str, not str | None: the only construction path is
+    # confirmation_payload_dict(), and ConfirmationRequired.error_message
+    # defaults to "". Matches ImportConfirmationPayload, the type this mirrors
+    # field for field.
+    error_message: Annotated[str, DataClass.DESCRIPTION]
     proposed_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
     samples: Annotated[dict[str, list[str]], DataClass.DESCRIPTION]
     flagged: Annotated[list[str], DataClass.TXN_TYPE]

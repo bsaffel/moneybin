@@ -72,6 +72,65 @@ def test_explicit_rebind_to_different_id_raises(db: Database) -> None:
         resolver.resolve(_src(explicit_account_id="acct_B"))
 
 
+def test_a_merged_away_account_is_no_longer_known(db: Database) -> None:
+    """A reversed link must not answer "yes, this database has that account".
+
+    ``repoint()`` — the merge primitive — reverses the old row *in place*,
+    leaving its ``account_id`` untouched, so an unpredicated
+    ``WHERE account_id = ?`` still matches the account the user merged away.
+    That answer reaches ``_refuse_unknown_binding_targets``, which would accept
+    the stale id as a binding target; ladder step 0 then writes a fresh accepted
+    ``source_native`` link onto it, resurrecting a merged-away account as a
+    second, disconnected transaction stream — the silent-merge class this gate
+    exists to close.
+    """
+    create_core_tables(db)  # post-refresh: the merged-away id is gone from the dim
+    resolver = AccountResolver(db, actor="system")
+    resolver.resolve(_src(explicit_account_id="acct_merged_away"))
+    row = db.conn.execute(
+        "SELECT link_id FROM app.account_links WHERE ref_value = 'wf-checking'"
+    ).fetchone()
+    assert row is not None
+    AccountLinksRepo(db).repoint(
+        link_id=row[0],
+        new_account_id="acct_canonical",
+        decided_by="user",
+        actor="system",
+    )
+
+    assert resolver.knows_account_id("acct_merged_away") is False
+    # The merge *target* is still known — from the accepted row repoint inserted.
+    assert resolver.knows_account_id("acct_canonical") is True
+
+
+def test_an_account_minted_this_batch_is_known_before_any_refresh(
+    db: Database,
+) -> None:
+    """The accepted-only filter must not cost the in-batch bind it exists for.
+
+    ``core.dim_accounts`` is SQLMesh-materialized and imports default to not
+    refreshing, so a sibling file binding to the id the previous file just
+    minted can only be validated from ``app.account_links``. Isolates the links
+    arm: the dim exists and is empty.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    resolved = resolver.resolve(_src())
+
+    assert resolved.is_new is True
+    assert resolver.knows_account_id(resolved.account_id) is True
+
+
+def test_an_account_only_in_the_dim_is_known(db: Database) -> None:
+    """An account predating app.account_links is known from the dim alone."""
+    create_core_tables(db)
+    _seed_dim_account(db, account_id="acct_legacy")
+    resolver = AccountResolver(db, actor="system")
+
+    assert resolver.knows_account_id("acct_legacy") is True
+    assert resolver.knows_account_id("acct_never_imported") is False
+
+
 def test_source_native_reimport_is_idempotent(db: Database) -> None:
     """Re-importing the same source account reuses the canonical id (no dup)."""
     resolver = AccountResolver(db, actor="system")

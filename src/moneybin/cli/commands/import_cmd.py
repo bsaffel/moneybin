@@ -190,7 +190,8 @@ def import_files_command(
         help=(
             "Institution override for OFX/QFX/QBO files. Consulted only when "
             "the file's <FI><ORG>, FID lookup, and filename heuristic all "
-            "yield nothing. For CSV/tabular files, selects the format profile. "
+            "yield nothing. Ignored for tabular and PDF files, which resolve "
+            "their institution from the matched format and filename. "
             "Single-file mode only."
         ),
     ),
@@ -1605,8 +1606,9 @@ def import_confirm_command(
             "Institution override, carried over from the 'import files' call "
             "that raised this confirmation. Same meaning as on 'import files': "
             "consulted for OFX/QFX/QBO only when the file's <FI><ORG>, FID "
-            "lookup, and filename heuristic all yield nothing; for tabular "
-            "files it selects the format profile."
+            "lookup, and filename heuristic all yield nothing. Ignored for "
+            "tabular and PDF files, which resolve their institution from the "
+            "matched format and filename."
         ),
     ),
     account_id: str | None = typer.Option(

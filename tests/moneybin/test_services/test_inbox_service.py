@@ -351,6 +351,99 @@ class TestSyncHappyPath:
 
         assert result.processed[0]["sign_override_replayed"] is True
 
+    def test_processed_entry_names_the_account_the_drain_minted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Gating the merge but not the mint makes naming the mint the drain's job.
+
+        A first-contact account is created without a confirm, so the per-file
+        entry is the only place an unattended drain can say what it made. The
+        CLI and MCP tests that reference this key mock ``InboxService.sync``
+        wholesale and fabricate its return value, so ``_sync_one``'s own
+        population logic only ever runs here.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import CreatedAccount, ImportResult
+        from moneybin.services.refresh import RefreshResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **_kwargs: object) -> ImportResult:
+                return ImportResult(
+                    file_path=path,
+                    file_type="ofx",
+                    transactions=3,
+                    accounts_created=(
+                        CreatedAccount(
+                            account_id="acct_new01", display_name="Chase Checking"
+                        ),
+                    ),
+                )
+
+        def fake_refresh(db: object) -> RefreshResult:
+            return RefreshResult(applied=True, duration_seconds=0.01)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "statement.ofx").write_text("OFXHEADER:100")
+
+        result = svc.sync(year_month="2026-05")
+
+        # Projected to plain dicts, not CreatedAccount objects: the entry is
+        # serialized straight into the CLI/MCP envelope.
+        assert result.processed[0]["accounts_created"] == [
+            {"account_id": "acct_new01", "display_name": "Chase Checking"}
+        ]
+
+    def test_processed_entry_omits_accounts_created_when_nothing_was_minted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The common row — a file joining an account already known — keeps its shape.
+
+        The key is conditional, so absence needs proving too: an unconditional
+        ``"accounts_created": []`` would read as "this drain created nothing"
+        rather than "this drain had nothing to say", and would change the shape
+        of every row that has ever drained.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+        from moneybin.services.refresh import RefreshResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **_kwargs: object) -> ImportResult:
+                # Adopted an account that already existed: nothing minted.
+                return ImportResult(file_path=path, file_type="ofx", transactions=3)
+
+        def fake_refresh(db: object) -> RefreshResult:
+            return RefreshResult(applied=True, duration_seconds=0.01)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "statement.ofx").write_text("OFXHEADER:100")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert "accounts_created" not in result.processed[0]
+        # Still a normal processed row, so the absence is not a failed import.
+        assert result.processed[0]["transactions"] == 3
+
     def test_subfolder_passes_account_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

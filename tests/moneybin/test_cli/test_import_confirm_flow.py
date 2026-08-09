@@ -439,6 +439,34 @@ class TestImportFilesConfirmFlow:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["confirm"] is False
 
+    def test_account_name_on_ofx_is_refused_through_the_real_service_guard(
+        self,
+        mock_db: MagicMock,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The per-channel account-signal refusal, reached unmocked from the CLI.
+
+        Deliberately does *not* take ``mock_import_file``: every other test in
+        this class patches ``ImportService.import_file``, so none of them ever
+        executes ``reject_unhonored_account_signals``. The guard runs at the top
+        of ``import_file`` — before any database work — so mocking
+        ``get_database`` alone is enough to reach it. Without this, a CLI-side
+        regression that dropped the ``account_name`` kwarg would be caught only
+        by the MCP suite.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+
+        result = runner.invoke(app, ["files", str(ofx_file), "--account-name", "Chase"])
+
+        assert result.exit_code != 0
+        # The refusal reaches the user through handle_cli_errors' logger, not
+        # stdout, so assert on the record rather than on result.output.
+        # OFX names its own accounts, so its honored set is empty.
+        assert "account_name is not supported for a ofx import" in caplog.text
+        assert "account_bindings" in caplog.text
+
     def test_mapping_flag_passed_as_overrides(
         self,
         mock_db: MagicMock,

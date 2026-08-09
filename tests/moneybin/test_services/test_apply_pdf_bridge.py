@@ -26,6 +26,7 @@ from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL, PDF_SIGN_GATE_TOTAL
 from moneybin.services.import_service import BridgeApplyResult, ImportService
 from moneybin.tables import PDF_FORMATS, TABULAR_TRANSACTIONS
+from tests.moneybin.db_helpers import create_core_tables
 
 # ---------------------------------------------------------------------------
 # Fixtures — a reconciling Chase-style statement + the recipe the agent returns
@@ -601,3 +602,106 @@ def test_apply_extraction_failure_bumps_failed_metric(
 
     after = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge")._value.get()  # type: ignore[reportPrivateUsage]
     assert after == before + 1
+
+
+# ---------------------------------------------------------------------------
+# Account identity — the bridge path's own gate
+# ---------------------------------------------------------------------------
+
+
+def _seed_chase_twin(db: Database, account_id: str = "acct_existing01") -> None:
+    """An existing Chase ...1234 account, so the statement's identity is a question.
+
+    Candidates are what make the account gate fire: a mint with nothing to
+    merge into proceeds and is reported instead. Mirrors the deterministic
+    path's helper in ``test_import_pdf_transactions.py``.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture insert
+        "(account_id, display_name, institution_slug, last_four) "
+        "VALUES (?, ?, ?, ?)",
+        [account_id, "Chase Card", "chase", "1234"],
+    )
+
+
+def _count(db: Database, query: str) -> int:
+    row = db.conn.execute(query).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_bridge_apply_gates_account_identity_before_begin_import(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """The bridge path's own account gate, mirroring the deterministic path's.
+
+    A bridge recipe is agent-authored, so the account identity it implies is no
+    more ratified than a deterministic one — and an agent must never self-pick
+    an identity. Every other test in this file answers the gate through
+    ``_apply_bridge``'s standing binding; the gate itself is what this asserts,
+    so it calls the service directly with none.
+    """
+    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+
+    _seed_chase_twin(db)
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).apply_pdf_bridge_response(
+            _pdf_path(tmp_path), _bridge_response()
+        )
+
+    outcome = exc.value.outcome
+    assert outcome.reason == "account_confirmation"
+    assert outcome.channel == "pdf"
+    # The issuer-slug + masked-account native key is what the user binds.
+    assert [p["source_account_key"] for p in outcome.account_proposals] == [
+        "chase_1234"
+    ]
+    # The seeded twin is offered as the merge candidate, not silently adopted.
+    assert [c["account_id"] for c in outcome.account_proposals[0]["candidates"]] == [
+        "acct_existing01"
+    ]
+    # Nothing loaded, no batch opened, no link written, no recipe saved.
+    assert (
+        _count(
+            db,
+            f"SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name}",  # noqa: S608  # TableRef constant, not user input
+        )
+        == 0
+    )
+    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
+    assert (
+        _count(
+            db,
+            f"SELECT COUNT(*) FROM {PDF_FORMATS.full_name}",  # noqa: S608  # TableRef constant, not user input
+        )
+        == 0
+    )
+
+
+def test_bridge_apply_reports_the_account_it_minted(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """A first-contact bridge apply names the account it created.
+
+    ``accounts_created`` is the caller's only signal that this file did not join
+    an account they already had — the field exists precisely for the mint the
+    standing ``"new"`` binding produces, so it needs asserting somewhere.
+    """
+    result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
+
+    assert result.outcome == "applied"
+    assert len(result.accounts_created) == 1
+    created = result.accounts_created[0]
+    # The document alias, never the source_account_key (an account number on
+    # several channels) — see CreatedAccount's own contract.
+    assert created.display_name == "chase_may"
+    # The opaque canonical id, and it is the account the link actually points at.
+    linked = db.conn.execute(
+        "SELECT account_id FROM app.account_links "
+        "WHERE ref_kind = 'source_native' AND ref_value = 'chase_1234'"
+    ).fetchone()
+    assert linked is not None
+    assert created.account_id == linked[0]
