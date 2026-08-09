@@ -197,15 +197,20 @@ def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> N
 def test_inbox_drain_json_pending_is_medium_sensitivity(
     runner: CliRunner, patch_inbox: MagicMock
 ) -> None:
-    """Pending entries carry account display names — declare medium, not low.
+    """An account_confirmation pending carries an account number — declare critical.
 
     The CLI has no privacy middleware, so the envelope's declared
-    ``summary.sensitivity`` is the only tier signal a JSON consumer sees. A
-    pending ``account_confirmation`` entry embeds ``account_proposals`` whose
-    candidates carry account display names (DESCRIPTION/medium), so the
-    envelope must declare medium — matching the MCP ``import_files`` rule
-    (medium when pending entries exist). A low envelope would ship account
-    names under a consent tier that doesn't gate them.
+    ``summary.sensitivity`` is the only tier signal a JSON consumer sees.
+
+    Reading this row for its display names alone under-declares it by two
+    tiers: ``account_proposals[].source_account_key`` is ACCOUNT_IDENTIFIER
+    (on OFX, the ``<ACCTID>`` the institution issued), which is CRITICAL, not
+    the DESCRIPTION-tier candidate labels beside it. ``_masked_pending`` masks
+    the value, but ``dataclasses.asdict`` leaves a bare dict, so
+    ``render_or_json`` can derive neither the tier nor ``classes_returned``
+    from it — whatever this branch declares is what the JSON summary and the
+    privacy-audit row say. MCP's typed ``ImportInboxSyncPayload`` calls the
+    same bytes critical, and the two surfaces must not disagree (``cli.md``).
     """
     patch_inbox.sync.return_value = InboxSyncResult(
         processed=[],
@@ -235,7 +240,7 @@ def test_inbox_drain_json_pending_is_medium_sensitivity(
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["summary"]["sensitivity"] == "medium"
+    assert payload["summary"]["sensitivity"] == "critical"
 
 
 def test_inbox_drain_json_minted_account_is_medium_sensitivity(

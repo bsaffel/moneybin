@@ -784,6 +784,11 @@ class InboxService:
         # sidecar: a REST/MCP client can't read the sidecar, and a CLI/JSON
         # consumer shouldn't have to. Same list the sidecar persists.
         entry["account_proposals"] = pending_proposals
+        # The channel decides which recoveries are real for this row — the
+        # inbox subfolder move answers an account gate on tabular only. Without
+        # it every surface rendering these entries has to re-derive the file
+        # type from a name, and would get a .pdf holding OFX text wrong.
+        entry["channel"] = outcome_obj.channel
         result.pending.append(entry)
         INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
         logger.info(log_line)
@@ -978,10 +983,15 @@ class InboxService:
                     f"moneybin import confirm {quoted_path} --accept "
                     "--account-name <name> (name a new account directly)"
                 )
-            actions.append(
-                "Or move the file into inbox/<account-slug>/ and re-run sync "
-                "(the subfolder names the account)."
-            )
+            if channel == "tabular":
+                # Tabular-only, because that is the only channel whose import
+                # path honors `account_name` — `_sync_one` drops the folder
+                # hint everywhere else, so offering this move on OFX or PDF
+                # names a recovery that returns the file to the identical gate.
+                actions.append(
+                    "Or move the file into inbox/<account-slug>/ and re-run sync "
+                    "(the subfolder names the account)."
+                )
         elif reason == "header_row_consumed":
             # Nothing to run: no --accept, --mapping, or --date-format touches
             # a row already consumed as column names. The file stays in

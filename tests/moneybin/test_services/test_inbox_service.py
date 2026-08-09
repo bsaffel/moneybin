@@ -1524,6 +1524,61 @@ class TestPendingSidecarAccountHint:
         )
         assert payload["account_proposals"][0]["source_account_key"] == "statement"
 
+    @pytest.mark.parametrize("channel", ["ofx", "pdf"])
+    def test_account_confirmation_sidecar_omits_subfolder_recovery_off_tabular(
+        self, tmp_path: Path, channel: str
+    ) -> None:
+        """Only tabular can be answered by a folder name, so only it is offered one.
+
+        The inbox forwards ``inbox/<account-slug>/`` as ``account_name``, which
+        is tabular-only, so on OFX and PDF ``_sync_one`` drops the hint before
+        importing. Advertising that move as a recovery for an account gate on
+        those channels sends the file back to the identical gate — worse than
+        offering nothing, because it reads as a fix and costs a full drain cycle
+        to disprove.
+
+        The binding recovery, which does work on every channel, stays.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / f"statement.{channel}"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("x\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel=channel,
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            proposed_mapping={},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+            account_proposals=[
+                {
+                    "source_account_key": "000123456789",
+                    "proposal_ref": "@0",
+                    "proposed_account_id": None,
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                }
+            ],
+        )
+
+        import yaml
+
+        payload = yaml.safe_load(sidecar.read_text())
+        actions = payload["actions"]
+        assert all("<account-slug>" not in a for a in actions), actions
+        assert any("--account-binding" in a for a in actions), actions
+
     def test_account_confirmation_multi_proposal_one_command_all_bindings(
         self, tmp_path: Path
     ) -> None:

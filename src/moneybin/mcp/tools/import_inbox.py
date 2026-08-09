@@ -95,6 +95,15 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         p for p in sync_result.pending if p.get("reason") == "account_confirmation"
     ]
     if account_pending:
+        # The subfolder move is offered only when a tabular file is actually
+        # waiting on one: `account_name` is tabular-only, so on OFX and PDF the
+        # inbox drops the folder hint and the move returns the file to the same
+        # gate. Advertising it there costs an agent a full drain to disprove.
+        subfolder_alternative = (
+            ", or move the file into inbox/<account-slug>/ and re-run import_inbox_sync"
+            if any(p.get("channel") == "tabular" for p in account_pending)
+            else ""
+        )
         actions.insert(
             0,
             # @N, not source_key: this envelope masks source_account_key (on OFX
@@ -103,9 +112,8 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
             "Some pending files need an account identity — run `moneybin import "
             "confirm <pending-path> --accept --account-binding "
             "@N=<account_id|new>` (--accept ratifies the settled mapping; @N is "
-            "the proposal_ref on each data.pending[].account_proposals[] entry), "
-            "or move the file into inbox/<account-slug>/ and re-run "
-            "import_inbox_sync",
+            "the proposal_ref on each data.pending[].account_proposals[] entry)"
+            f"{subfolder_alternative}",
         )
     # Mapping confirmations only — account_confirmation entries are handled
     # above and take --accept plus --account-binding (not a --mapping override).

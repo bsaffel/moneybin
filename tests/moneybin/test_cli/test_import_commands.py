@@ -584,6 +584,12 @@ class TestImportFilesCommand:
         assert proposal["proposal_ref"] == "@0"
         assert proposal["proposed_account_id"] == "prov12345678"
         assert proposal["candidates"][0]["account_id"] == "cand87654321"
+        # Masking is only half the contract: the declaration has to match too.
+        # A bare dict lets render_or_json derive neither the tier nor the
+        # audited classes, so the same bytes MCP calls critical would ship as
+        # medium here and the privacy-audit row would inherit it. Declared from
+        # the same ImportConfirmationPayload the masking above uses.
+        assert payload["summary"]["sensitivity"] == "critical"
 
     def test_failed_file_json_carries_error_code_and_hint(
         self,

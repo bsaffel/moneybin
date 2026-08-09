@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import typer
 
@@ -713,6 +713,39 @@ def import_files_command(
         )
         else "low"
     )
+
+    # An account gate outranks all of the above: `source_account_key` is
+    # ACCOUNT_IDENTIFIER, and on OFX it is the <ACCTID> the institution issued.
+    # Masking it (above) is only half the contract — a bare dict lets
+    # `render_or_json` derive neither the tier nor `classes_returned`, so the
+    # same bytes MCP's typed payload calls critical would ship as medium here
+    # and the privacy-audit row would inherit the under-declaration (cli.md:
+    # the redaction contract is the same on both surfaces). Both values come
+    # from `ImportConfirmationPayload` itself, so a change to its declarations
+    # moves this surface with it rather than leaving a literal behind.
+    def _gates_an_account(row: dict[str, Any]) -> bool:
+        payload = row.get("confirmation_payload")
+        if not isinstance(payload, dict):
+            return False
+        return bool(cast("dict[str, Any]", payload).get("account_proposals"))
+
+    classes_returned: list[str] | None = None
+    if any(_gates_an_account(f) for f in files_list):
+        from moneybin.privacy.introspection import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+            derive_tier,
+            extract_data_classes,
+        )
+        from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+            ImportConfirmationPayload,
+        )
+
+        batch_sensitivity = cast(
+            'Literal["low", "medium", "high", "critical"]',
+            derive_tier(ImportConfirmationPayload).name.lower(),
+        )
+        classes_returned = sorted(
+            c.value for c in extract_data_classes(ImportConfirmationPayload)
+        )
     envelope = build_envelope(data=data, sensitivity=batch_sensitivity)
     if batch_result is not None:
         # Same gate the MCP import_files tool applies, from the same function:
@@ -720,7 +753,12 @@ def import_files_command(
         # script checking .status proceeds as though the data landed.
         envelope = mark_total_failure(envelope, batch_result)
     if output == OutputFormat.JSON:
-        render_or_json(envelope, output, cli_actor="import_files_command")
+        render_or_json(
+            envelope,
+            output,
+            cli_actor="import_files_command",
+            classes_returned=classes_returned,
+        )
     elif not quiet:
         for f in files_list:
             icon = "✅" if f["status"] == "imported" else "❌"

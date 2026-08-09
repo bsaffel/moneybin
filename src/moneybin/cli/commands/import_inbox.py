@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import typer
 
@@ -96,6 +96,15 @@ def _print_sync_text(result: InboxSyncResult) -> None:
             err=True,
         )
         if reason == "account_confirmation":
+            # Same rule the MCP action and the sidecar follow: the folder move
+            # answers an account gate on tabular only, because `account_name`
+            # is tabular-only and the inbox drops the hint elsewhere. Naming it
+            # on OFX or PDF sends the reader back to this identical gate.
+            subfolder_hint = (
+                "; or move the file into inbox/<account-slug>/ and re-sync"
+                if item.get("channel") == "tabular"
+                else ""
+            )
             typer.echo(
                 # Leads with @N, not <source_key>: the key is masked in the
                 # listing below (it is the institution's own <ACCTID> on OFX),
@@ -103,8 +112,7 @@ def _print_sync_text(result: InboxSyncResult) -> None:
                 f"   Account identity needed — run 'moneybin import confirm "
                 f"{moved_to} --accept --account-binding @N=<account_id|new>' "
                 "(@N is the ref beside each proposal below; =account_id adopts "
-                "an existing account, =new mints one; or move the file into "
-                "inbox/<account-slug>/ and re-sync):",
+                f"an existing account, =new mints one{subfolder_hint}):",
                 err=True,
             )
             raw_props: Any = item.get("account_proposals")
@@ -186,12 +194,33 @@ def inbox_default(
         sensitivity = (
             "medium" if result.pending or _minted_any(result.processed) else "low"
         )
+        # An account gate outranks that: account_proposals[].source_account_key
+        # is ACCOUNT_IDENTIFIER — on OFX the <ACCTID> the institution issued —
+        # so reading this row for its display names alone under-declares it by
+        # two tiers. _masked_pending masks the value, but the asdict payload is
+        # a bare dict, so nothing downstream can re-derive either the tier or
+        # the audited classes; MCP's typed ImportInboxSyncPayload calls the same
+        # bytes critical, and the surfaces must agree (cli.md). Derived from the
+        # declarations rather than restated, so they move together.
+        classes_returned: list[str] | None = None
+        if any(p.get("account_proposals") for p in result.pending):
+            from moneybin.privacy.introspection import derive_tier, extract_data_classes
+            from moneybin.privacy.payloads.imports import ImportConfirmationPayload
+
+            sensitivity = cast(
+                'Literal["low", "medium", "high", "critical"]',
+                derive_tier(ImportConfirmationPayload).name.lower(),
+            )
+            classes_returned = sorted(
+                c.value for c in extract_data_classes(ImportConfirmationPayload)
+            )
         payload = dataclasses.asdict(result)
         payload["pending"] = _masked_pending(result.pending)
         render_or_json(
             build_envelope(data=payload, sensitivity=sensitivity),
             output,
             cli_actor="inbox_default",
+            classes_returned=classes_returned,
         )
         return
     if quiet:
