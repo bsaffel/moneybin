@@ -1185,6 +1185,72 @@ def test_class_of_key_unknown_reports_column_is_none() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Task 5: raw/prep — a short CRITICAL declaration, everything else FLOORED
+# ---------------------------------------------------------------------------
+
+
+def test_declared_raw_critical_column_resolves_critical() -> None:
+    assert _class_of_key(("raw", "ofx_accounts", "routing_number")) is (
+        DataClass.ROUTING_NUMBER
+    )
+
+
+def test_undeclared_raw_column_floors() -> None:
+    assert _class_of_key(("raw", "ofx_transactions", "memo")) is DataClass.FLOORED
+
+
+def test_undeclared_core_column_does_not_floor() -> None:
+    """core/app keep their fail-closed default — the floor is raw/prep only."""
+    assert _class_of_key(("core", "fct_transactions", "no_such_column")) is None
+
+
+def test_account_id_is_classified_per_source_not_uniformly() -> None:
+    """``raw.*.account_id`` is a different value per source; one class is wrong.
+
+    OFX's is the institution's account number (the ``<ACCTID>`` element), so it
+    is CRITICAL. Plaid's is the provider's own surrogate — the account-number
+    material rides the separate ``mask`` column — and manual entry stores the
+    canonical minted ``dim_accounts.account_id``, so both pass through the
+    content net. Collapsing these to one declaration either masks two readable
+    debugging keys or publishes an account number.
+    """
+    assert _class_of_key(("raw", "ofx_accounts", "account_id")) is (
+        DataClass.INSTITUTION_ACCOUNT_NUMBER
+    )
+    assert _class_of_key(("raw", "plaid_accounts", "account_id")) is DataClass.FLOORED
+    assert _class_of_key(("raw", "plaid_accounts", "mask")) is (
+        DataClass.INSTITUTION_ACCOUNT_NUMBER
+    )
+    assert _class_of_key(("raw", "manual_transactions", "account_id")) is (
+        DataClass.FLOORED
+    )
+
+
+def test_staging_source_account_key_carries_the_native_account_number() -> None:
+    """``source_account_key`` is ``AS``-aliased from the source's ``account_id``.
+
+    Every ``stg_*`` model re-projects the source-native key under this second
+    name, so an enumeration that greps for account-shaped column NAMES misses
+    it entirely while it holds exactly the same value.
+    """
+    assert _class_of_key(("prep", "stg_ofx__accounts", "source_account_key")) is (
+        DataClass.INSTITUTION_ACCOUNT_NUMBER
+    )
+
+
+def test_staged_source_bytes_are_declared_not_floored() -> None:
+    """The content net does not reach ``bytes`` — see ``_mask_floored``.
+
+    ``raw.import_preview_snapshots.source_bytes`` holds a bank file verbatim
+    (OFX carries ``<ACCTID>`` and ``<BANKID>`` in the clear), and FLOORED would
+    return every byte of it untouched.
+    """
+    assert _class_of_key(("raw", "import_preview_snapshots", "source_bytes")) is (
+        FAIL_CLOSED_CLASS
+    )
+
+
+# ---------------------------------------------------------------------------
 # Parameter classing — both `$name` parse shapes
 # ---------------------------------------------------------------------------
 

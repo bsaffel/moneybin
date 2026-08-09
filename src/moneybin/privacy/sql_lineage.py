@@ -51,7 +51,12 @@ from sqlglot.optimizer.scope import Scope, build_scope
 
 from moneybin.database import Database
 from moneybin.log_sanitizer import sql_digest
-from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
+from moneybin.privacy.taxonomy import (
+    CLASSIFICATION,
+    INTERNAL_CRITICAL,
+    DataClass,
+    Tier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +413,10 @@ def collect_input_columns(
 # ---------------------------------------------------------------------------
 
 
+# The schemas that answer with a content floor instead of a declaration gap.
+_FLOORED_SCHEMAS = frozenset({"raw", "prep"})
+
+
 def _class_of_key(key: tuple[str, str, str]) -> DataClass | None:
     schema, table, column = key
     dc = CLASSIFICATION.get((schema, table), {}).get(column)
@@ -418,6 +427,19 @@ def _class_of_key(key: tuple[str, str, str]) -> DataClass | None:
     # lineage can't classify (ADR-013).
     if schema == "reports":
         return reports_class_map().get((schema, table), {}).get(column)
+    # raw/prep: a short CRITICAL declaration, everything else floored. Resolved
+    # HERE rather than at the redaction layer so `class_fingerprint` — which
+    # keys on the classes of every column a query reads — moves when a
+    # declaration is added, forcing saved reports to re-derive.
+    #
+    # Answering FLOORED instead of None also retires the `or FAIL_CLOSED_CLASS`
+    # short-circuits in `resolve_placeholder_classes` and `read_column_classes`
+    # for these two schemas. That is the intent: a raw/prep parameter or
+    # fingerprint entry is now shape-masked rather than whole-masked, which is
+    # the whole point of making these schemas readable.
+    if schema in _FLOORED_SCHEMAS:
+        declared = INTERNAL_CRITICAL.get((schema, table), {}).get(column)
+        return declared if declared is not None else DataClass.FLOORED
     return None
 
 
