@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,6 +22,9 @@ from moneybin.mcp.confirmation import (
     ConfirmationGrant,
     grant_confirmation_or_raise,
 )
+from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import Sensitivity
+from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 
 NOW = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
 
@@ -383,6 +388,134 @@ async def test_declined_or_cancelled_elicitation_refuses_confirmation(
 
     assert raised.value.code == error_codes.MUTATION_CONFIRMATION_DECLINED
     assert raised.value.details == {"reason": "declined"}
+
+
+@pytest.mark.asyncio
+async def test_unanswered_elicitation_degrades_to_a_usable_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prompt nobody answers must leave a working token, not a dead end."""
+
+    async def answers_too_late(
+        *_args: object, **_kwargs: object
+    ) -> AcceptedElicitation[bool]:
+        await asyncio.sleep(1.0)
+        return AcceptedElicitation(data=True)
+
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(side_effect=answers_too_late)
+    monkeypatch.setattr("moneybin.mcp.confirmation._active_context", lambda: ctx)
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation", _supports_elicitation
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.elicitation.elicitation_wait_seconds", lambda: 0.05
+    )
+    broker = ConfirmationBroker(ttl_seconds=300)
+
+    with pytest.raises(UserError) as raised:
+        await grant_confirmation_or_raise(
+            binding=BINDING,
+            message="Merge the PDF-derived account into the OFX account?",
+            confirmation_token=None,
+            broker=broker,
+        )
+
+    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    details = raised.value.details or {}
+    # A token that cannot be redeemed is still a dead end — redeem it.
+    grant = broker.consume(details["confirmation_token"], now=datetime.now(UTC))
+    grant.verify(BINDING)
+
+
+@pytest.mark.asyncio
+async def test_human_thinking_time_does_not_count_against_the_tool_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cap bounds machine work; a human reading a prompt is not machine work."""
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.3)
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", MagicMock()
+    )
+
+    async def answers_after_thinking(
+        *_args: object, **_kwargs: object
+    ) -> AcceptedElicitation[bool]:
+        await asyncio.sleep(0.5)  # deliberately longer than the 0.3s cap
+        return AcceptedElicitation(data=True)
+
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(side_effect=answers_after_thinking)
+    monkeypatch.setattr("moneybin.mcp.confirmation._active_context", lambda: ctx)
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation", _supports_elicitation
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.elicitation.elicitation_wait_seconds", lambda: 5.0
+    )
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    async def merge_tool() -> ResponseEnvelope[Any]:
+        await grant_confirmation_or_raise(
+            binding=BINDING,
+            message="Merge the PDF-derived account into the OFX account?",
+            confirmation_token=None,
+            broker=ConfirmationBroker(ttl_seconds=300),
+        )
+        return ResponseEnvelope(
+            summary=SummaryMeta(total_count=0, returned_count=0), data=[]
+        )
+
+    result = await merge_tool()
+
+    assert result.error is None, (
+        f"cap fired while the human was reading: {result.error}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_cap_resumes_after_the_human_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Excluding the prompt must not leave the rest of the tool unbounded."""
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.3)
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", MagicMock()
+    )
+
+    async def answers_after_thinking(
+        *_args: object, **_kwargs: object
+    ) -> AcceptedElicitation[bool]:
+        await asyncio.sleep(0.4)
+        return AcceptedElicitation(data=True)
+
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(side_effect=answers_after_thinking)
+    monkeypatch.setattr("moneybin.mcp.confirmation._active_context", lambda: ctx)
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation", _supports_elicitation
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.elicitation.elicitation_wait_seconds", lambda: 5.0
+    )
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    async def merge_tool() -> ResponseEnvelope[Any]:
+        await grant_confirmation_or_raise(
+            binding=BINDING,
+            message="Merge the PDF-derived account into the OFX account?",
+            confirmation_token=None,
+            broker=ConfirmationBroker(ttl_seconds=300),
+        )
+        await asyncio.sleep(0.5)  # machine work, past the 0.3s cap on its own
+        return ResponseEnvelope(
+            summary=SummaryMeta(total_count=0, returned_count=0), data=[]
+        )
+
+    result = await merge_tool()
+
+    assert result.error is not None, "machine work after the prompt went unbounded"
+    assert result.error.code == error_codes.INFRA_TIMED_OUT
 
 
 @pytest.mark.asyncio

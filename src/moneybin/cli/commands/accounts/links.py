@@ -10,6 +10,7 @@ deferred to the M1L audit-undo consumer.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -25,6 +26,10 @@ from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_links_service import (
     AccountLinksService,
 )
+from moneybin.services.identity_confirmation import identity_confirm_message
+
+if TYPE_CHECKING:
+    from moneybin.services.review_decisions_service import IdentityDecisionPlan
 
 app = typer.Typer(
     help="Review and manage account-link binding decisions",
@@ -104,6 +109,12 @@ def links_set(
         "--standalone",
         help="Standalone-reject: keep the provisional account as its own canonical entity",
     ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the merge confirmation prompt (--into only; --standalone never asks)",
+    ),
 ) -> None:
     """Accept (merge) or standalone-reject a pending account-link decision.
 
@@ -111,8 +122,13 @@ def links_set(
       --into <candidate_account_id>   merge the provisional into the candidate
       --standalone                    reject all candidates; provisional stays standalone
 
+    A merge shows what it moves and asks before committing; pass --yes to answer
+    it in advance. Rejecting is never gated — the provisional account stays where
+    it is.
+
     Examples:
       accounts links set dec001 --into ACC002
+      accounts links set dec001 --into ACC002 --yes
       accounts links set dec001 --standalone
     """
     if into is not None and standalone:
@@ -125,6 +141,8 @@ def links_set(
     target_account_id: str | None = into if not standalone else None
 
     with handle_cli_errors():
+        if target_account_id is not None and not yes:
+            _confirm_merge(decision_id, target_account_id)
         with get_database(read_only=False) as db:
             AccountLinksService(db, actor="cli").set(
                 decision_id, target_account_id=target_account_id, decided_by="user"
@@ -136,6 +154,48 @@ def links_set(
         else "standalone (rejected)"
     )
     logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
+
+
+def _merge_preview(decision_id: str, target_account_id: str) -> IdentityDecisionPlan:
+    """Resolve the merge read-only, the way MCP previews the same decision."""
+    # Deferred: the identity contracts and decision service are not worth loading
+    # on every CLI invocation to gate one subcommand.
+    from moneybin.mcp.write_contracts import (  # noqa: PLC0415 — keep off the cold-start path
+        AccountLinkDecisionRequest,
+    )
+    from moneybin.services.review_decisions_service import (  # noqa: PLC0415 — keep off the cold-start path
+        ReviewDecisionsService,
+    )
+
+    with get_database(read_only=True) as db:
+        return ReviewDecisionsService(db, actor="cli").plan_identity([
+            AccountLinkDecisionRequest(
+                kind="account_link",
+                decision_id=decision_id,
+                decision="accept",
+                target_id=target_account_id,
+            )
+        ])
+
+
+def _confirm_merge(decision_id: str, target_account_id: str) -> None:
+    """Show what the merge moves and require a yes before anything commits.
+
+    Renders the same sentence the MCP elicitation shows, from the same preflight,
+    because the decision does not change with the surface driving it: an accepted
+    link folds one account's whole history into another and no command splits it
+    back apart. This was the last accept path that committed unasked.
+
+    A plan that turns out not to be destructive — the decision is already
+    accepted, so nothing moves — passes through silently rather than asking about
+    a merge that will not happen.
+    """
+    plan = _merge_preview(decision_id, target_account_id)
+    if not plan.destructive:
+        return
+    typer.echo(identity_confirm_message(plan.blast_radius), err=True)
+    if not typer.confirm("Merge these accounts?", default=False, err=True):
+        raise typer.Abort()
 
 
 @app.command("history")

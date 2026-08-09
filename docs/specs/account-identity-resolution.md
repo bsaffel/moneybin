@@ -490,7 +490,7 @@ Guard-2 free-text resolution):
 | Operation | CLI | MCP |
 |---|---|---|
 | List pending link proposals (grouped by provisional account) | `accounts links pending` | `reviews(kind="account_links", status="pending")` |
-| Resolve one — **merge** into a candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | Accept with `identity_links_decide(decisions=[{"kind":"account_link","decision_id":"<id>","decision":"accept","target_id":"<account_id>"}])`; reject omits `target_id`. An accepted merge is gated by MCP elicitation; reject decisions do not prompt. |
+| Resolve one — **merge** into a candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | Accept with `identity_links_decide(decisions=[{"kind":"account_link","decision_id":"<id>","decision":"accept","target_id":"<account_id>"}])`; reject omits `target_id`. An accepted merge is gated on both surfaces — MCP elicits, the CLI prints what moves and asks (`--yes` answers in advance). Reject decisions do not prompt on either. |
 | Reverse a prior decision | `accounts links undo <id>` | Find the operation with `system_audit(view="history", limit=50)`, optionally inspect it with `system_audit(view="detail", operation_id=...)`, then call `system_audit_undo(operation_id=...)`. |
 | Decision history | `accounts links history` | `reviews(kind="account_links", status="history")` |
 | Run resolution over unlinked accounts (backfill) | `accounts links run` | `refresh_run(steps=["identity"])` |

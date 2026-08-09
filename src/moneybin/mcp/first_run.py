@@ -24,7 +24,7 @@ from fastmcp.tools import ToolResult
 from moneybin import error_codes
 from moneybin.config import set_current_profile
 from moneybin.errors import UserError
-from moneybin.mcp.elicitation import supports_elicitation
+from moneybin.mcp.elicitation import elicit_bounded, supports_elicitation
 from moneybin.observability import setup_observability
 from moneybin.protocol.envelope import build_error_envelope
 from moneybin.services.profile_service import ProfileExistsError, ProfileService
@@ -111,7 +111,9 @@ async def _elicit_profile_name(ctx: Context) -> str | None:
                 "Please enter a name like 'brandon'."
             )
         )
-        result = await ctx.elicit(message, response_type=str)
+        # None covers both a declined answer and one that never arrived; the
+        # caller returns the setup-required envelope either way.
+        result = await elicit_bounded(ctx.elicit(message, response_type=str))
         if not isinstance(result, AcceptedElicitation):
             return None
         try:

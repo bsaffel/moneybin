@@ -12,6 +12,11 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.accounts.links import app
+from moneybin.mcp.write_contracts import AccountLinkDecisionRequest
+from moneybin.services.review_decisions_service import (
+    IdentityDecisionPlan,
+    IdentityDecisionPlanItem,
+)
 
 runner = CliRunner()
 
@@ -44,6 +49,45 @@ def _make_pending_group(
     group.provisional_display_name = provisional_name
     group.candidates = [candidate]
     return group
+
+
+def _merge_plan(
+    *,
+    provisional_id: str = "PROV1",
+    candidate_id: str = "CAND001",
+    decision_id: str = "dec001",
+    transactions: tuple[str, ...] = ("t1",),
+) -> IdentityDecisionPlan:
+    """A one-item plan shaped exactly like ``_prepare_account`` builds for an accept.
+
+    Built from the real dataclasses rather than a MagicMock so the prompt under
+    test renders through the same ``blast_radius`` arithmetic the MCP binding
+    uses — a mock would report whatever count the assertion asked for. The
+    ``accounts`` pair mirrors the preparer, which counts both sides of a merge.
+    """
+    item = IdentityDecisionPlanItem(
+        request=AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=decision_id,
+            decision="accept",
+            target_id=candidate_id,
+        ),
+        changed=True,
+        status="accepted",
+        source_id=provisional_id,
+        target_id=candidate_id,
+        group_key=("account", provisional_id),
+        before_state=None,
+        affected_ids={
+            "accounts": (provisional_id, candidate_id),
+            "merchants": (),
+            "securities": (),
+            "transactions": transactions,
+            "lots": (),
+            "price_marks": (),
+        },
+    )
+    return IdentityDecisionPlan(items=(item,))
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +205,14 @@ class TestLinksSet:
         mock_set: MagicMock,
         mock_get_db: MagicMock,
     ) -> None:
-        """--into <account_id> passes target_account_id to service."""
+        """--into <account_id> passes target_account_id to service.
+
+        Carries --yes because a merge is gated: the flag is the non-interactive
+        half of that gate, not an unrelated convenience.
+        """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
 
-        result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"])
+        result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
         assert result.exit_code == 0
         mock_set.assert_called_once_with(
             "dec001", target_account_id="CAND001", decided_by="user"
@@ -185,6 +233,99 @@ class TestLinksSet:
         mock_set.assert_called_once_with(
             "dec001", target_account_id=None, decided_by="user"
         )
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.cli.commands.accounts.links._merge_preview")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_declined_at_the_prompt_writes_nothing(
+        self,
+        mock_set: MagicMock,
+        mock_preview: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """A merge the operator declines must not reach the service.
+
+        `accounts links set --into` was the one accept path with no gate on any
+        surface: MCP elicits, the import gate asks, and this command merged one
+        account's whole history into another on a single unprompted invocation.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_preview.return_value = _merge_plan()
+
+        result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="n\n")
+
+        assert result.exit_code != 0
+        mock_set.assert_not_called()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.cli.commands.accounts.links._merge_preview")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_prompt_names_what_the_merge_moves(
+        self,
+        mock_set: MagicMock,
+        mock_preview: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """The operator reads the same sentence the MCP elicitation shows.
+
+        A bare "Are you sure?" would satisfy the gate above while telling the
+        reader nothing about the size of what moves, which is the only fact that
+        makes the answer more than a coin flip.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_preview.return_value = _merge_plan(transactions=("t1", "t2", "t3"))
+
+        result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="y\n")
+
+        assert result.exit_code == 0
+        assert "3 transactions" in result.output
+        assert "2 accounts" in result.output
+        mock_set.assert_called_once()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.cli.commands.accounts.links._merge_preview")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_standalone_is_not_gated(
+        self,
+        mock_set: MagicMock,
+        mock_preview: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """Keeping an account standalone destroys nothing, so it never asks.
+
+        Matches the MCP rule exactly — `IdentityDecisionPlan.destructive` is true
+        only for a changed accept — so the gate cannot drift into confirming a
+        rejection on one surface and not the other.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+        result = runner.invoke(app, ["set", "dec001", "--standalone"])
+
+        assert result.exit_code == 0
+        mock_preview.assert_not_called()
+        mock_set.assert_called_once()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.cli.commands.accounts.links._merge_preview")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_with_yes_never_reaches_the_prompt(
+        self,
+        mock_set: MagicMock,
+        mock_preview: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """--yes is the whole gate, preflight included.
+
+        Asserting the preview never runs is what proves the flag short-circuits
+        rather than answering a prompt that still cost a read.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+        result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        mock_preview.assert_not_called()
+        mock_set.assert_called_once()
 
     def test_set_requires_into_or_standalone(self) -> None:
         """Invoking set without --into or --standalone exits 2."""

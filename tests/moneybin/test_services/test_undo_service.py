@@ -15,11 +15,69 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.metrics.registry import ACCOUNT_LINK_REVIEW_PENDING
+from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
+from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.repositories.base import BaseRepo
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
+from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.account_resolver import refresh_account_link_pending_gauge
 from moneybin.services.audit_service import AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_service import UndoService
+from tests.moneybin.db_helpers import create_core_tables
+
+
+def _pending_gauge() -> int:
+    """Read the live account-link pending gauge value."""
+    return int(ACCOUNT_LINK_REVIEW_PENDING._value.get())  # type: ignore[reportPrivateUsage] — testing prometheus internals
+
+
+def _insert_dim_account(db: Database, account_id: str, display_name: str) -> None:
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, source_type) "
+        "VALUES (?, ?, ?)",
+        [account_id, display_name, "csv"],
+    )
+
+
+def _insert_pending_decision(
+    db: Database, decision_id: str, provisional: str, candidate: str
+) -> None:
+    AccountLinkDecisionsRepo(db).insert(
+        decision_id=decision_id,
+        provisional_account_id=provisional,
+        candidate_account_id=candidate,
+        confidence_score=0.9,
+        match_signals={"signal": "institution_last4", "value": "***"},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+
+
+def _insert_source_native_link(db: Database, account_id: str) -> None:
+    """The mapping ``set`` re-points onto the candidate; a merge refuses without one."""
+    AccountLinksRepo(db).insert(
+        link_id=f"link_{account_id}",
+        account_id=account_id,
+        ref_kind="source_native",
+        ref_value=f"ref_{account_id}",
+        source_type="csv",
+        source_origin="bank_a",
+        decided_by="auto",
+        actor="system",
+        status="accepted",
+    )
+
+
+def _decision_status(db: Database, decision_id: str) -> str | None:
+    row = db.execute(
+        "SELECT status FROM app.account_link_decisions WHERE decision_id = ?",
+        [decision_id],
+    ).fetchone()
+    return row[0] if row else None
 
 
 def _note_and_tag_op(db: Database) -> str:
@@ -525,6 +583,62 @@ class TestGet:
             )
         detail = UndoService(db).get(op)
         assert detail.can_undo is False
+
+
+class TestUndoRefreshesPendingGauges:
+    """Undoing a decision puts it back in the queue; the gauge must say so."""
+
+    def test_undo_of_an_accepted_link_restores_the_pending_gauge(
+        self, db: Database
+    ) -> None:
+        """The queue re-fills on undo and the gauge has to follow it back up.
+
+        Every accept/reject path refreshes ``ACCOUNT_LINK_REVIEW_PENDING`` from a
+        live count, but undo reverses through repos rather than the link service,
+        so none of those refreshers ran on the way back. The proposal returned to
+        ``pending`` while the gauge still read the post-accept value — and an
+        under-reported review queue is the direction nothing else signals, since
+        the operator's prompt to go look at it is the gauge.
+        """
+        create_core_tables(db)  # materializes core.dim_accounts
+        _insert_dim_account(db, "prov1", "Provisional")
+        _insert_dim_account(db, "cand1", "Candidate")
+        _insert_source_native_link(db, "prov1")
+        _insert_pending_decision(db, "dec1", "prov1", "cand1")
+        refresh_account_link_pending_gauge(db)
+        assert _pending_gauge() == 1
+
+        with operation() as op:
+            AccountLinksService(db, actor="cli").set(
+                "dec1", target_account_id="cand1", decided_by="user"
+            )
+        assert _pending_gauge() == 0
+
+        UndoService(db).undo(op, actor="cli")
+
+        assert _decision_status(db, "dec1") == "pending"
+        assert _pending_gauge() == 1
+
+    def test_every_touched_repo_is_refreshed_once(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Once per distinct repo — not once per row, and not only the last one.
+
+        A two-table operation is the case the account-link test above cannot
+        see: it has one repo, so a call site that refreshed only the final repo,
+        or re-refreshed per audit row, would pass it either way. The note+tag
+        operation writes two rows through two repos.
+        """
+        refreshed: list[str] = []
+
+        def _record(repo: BaseRepo) -> None:
+            refreshed.append(type(repo).__name__)
+
+        monkeypatch.setattr(BaseRepo, "refresh_pending_gauge", _record)
+
+        UndoService(db).undo(_note_and_tag_op(db), actor="cli")
+
+        assert sorted(refreshed) == ["TransactionNotesRepo", "TransactionTagsRepo"]
 
 
 if __name__ == "__main__":

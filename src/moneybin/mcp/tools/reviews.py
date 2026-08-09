@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
 from dataclasses import replace
 from decimal import Decimal
 from functools import cmp_to_key
@@ -100,11 +99,11 @@ from moneybin.protocol.pagination import (
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import CategorizationService
+from moneybin.services.identity_confirmation import identity_confirm_message
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.mutation_context import current_operation_id
 from moneybin.services.review_decisions_service import (
-    IDENTITY_BLAST_RADIUS_CATEGORIES,
     IdentityDecisionPlan,
     ReviewDecisionsService,
 )
@@ -1070,47 +1069,6 @@ def reviews_decide_coarse(
     )
 
 
-#: How each blast-radius category is named in the prompt a human ratifies.
-#:
-#: Presentation, so it lives here rather than beside the category constant in the
-#: service — but it must stay in step with it, which
-#: ``test_every_blast_radius_category_has_a_prompt_label`` asserts by set
-#: equality. A category counted in the digest but absent from this map would be
-#: bound into the approval and left out of the sentence explaining it.
-IDENTITY_BLAST_RADIUS_LABELS: dict[str, tuple[str, str]] = {
-    "accounts": ("account", "accounts"),
-    "merchants": ("merchant", "merchants"),
-    "securities": ("security", "securities"),
-    "transactions": ("transaction", "transactions"),
-    "lots": ("tax lot", "tax lots"),
-    "price_marks": ("price mark you set by hand", "price marks you set by hand"),
-}
-
-
-def _identity_confirm_message(blast_radius: Mapping[str, int]) -> str:
-    """Prompt text naming what this batch moves, and how much of it.
-
-    The elicitation shows this string and nothing else — the binding's counts are
-    a digest the human never reads — so a category missing from here is a
-    mutation nobody was told about. Zero-count categories are omitted rather than
-    listed as zeros: a bind that touches one security should not read as a batch
-    reaching into accounts and merchants it never opens.
-    """
-    moved = [
-        f"{count} {IDENTITY_BLAST_RADIUS_LABELS[key][0 if count == 1 else 1]}"
-        for key in IDENTITY_BLAST_RADIUS_CATEGORIES
-        if (count := blast_radius.get(key, 0))
-    ]
-    return (
-        "Confirm this complete identity-decision batch. Accepted links can merge "
-        "account histories, merchant attribution, or security lots — including "
-        "any price marks you set by hand, which move onto the survivor — or bind "
-        "a price-feed symbol without merging anything; every decision in the "
-        "ordered batch will commit together.\n\n"
-        f"This batch touches: {', '.join(moved) if moved else 'no rows'}."
-    )
-
-
 def _identity_binding(
     decisions: list[IdentityDecisionRequest],
     plan: IdentityDecisionPlan,
@@ -1127,12 +1085,6 @@ def _identity_binding(
         for value in (item.request.decision_id, item.source_id, item.target_id):
             if value not in resolved_ids:
                 resolved_ids.append(value)
-    blast_radius = {
-        key: len({
-            entity_id for item in plan.items for entity_id in item.affected_ids[key]
-        })
-        for key in IDENTITY_BLAST_RADIUS_CATEGORIES
-    }
     return ConfirmationBinding(
         arguments=arguments,
         resolved_ids=tuple(resolved_ids),
@@ -1140,7 +1092,7 @@ def _identity_binding(
         profile=get_settings().profile,
         authorization_context="local-profile",
         operation_kind="identity_links_decide",
-        blast_radius=blast_radius,
+        blast_radius=plan.blast_radius,
     )
 
 
@@ -1197,7 +1149,7 @@ async def identity_links_decide_coarse(
     if plan.destructive:
         grant = await grant_confirmation_or_raise(
             binding=binding if confirmation_token is None else None,
-            message=_identity_confirm_message(binding.blast_radius),
+            message=identity_confirm_message(binding.blast_radius),
             confirmation_token=confirmation_token,
         )
     live = await asyncio.to_thread(

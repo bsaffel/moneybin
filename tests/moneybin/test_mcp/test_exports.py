@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -339,6 +340,44 @@ async def test_export_run_refuses_nonaccepted_or_invalid_redaction_choice(
         )
 
     assert _structured(response)["error"]["details"]["reason"] == reason
+    run.assert_not_called()
+
+
+async def test_export_run_refuses_when_nobody_answers_the_redaction_prompt(
+    mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unanswered prompt must refuse, never silently pick a redaction mode."""
+    from moneybin.exports.service import ExportService
+    from moneybin.mcp.tools import exports as exports_mcp
+
+    async def answers_too_late(
+        *_args: object, **_kwargs: object
+    ) -> AcceptedElicitation[str]:
+        # Deliberately the unsafe answer: a late reply must not slip through.
+        await asyncio.sleep(1.0)
+        return AcceptedElicitation(data="unredacted")
+
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(side_effect=answers_too_late)
+    monkeypatch.setattr(
+        "moneybin.mcp.elicitation.elicitation_wait_seconds", lambda: 0.05
+    )
+    with (
+        patch.object(exports_mcp, "get_context", return_value=ctx),
+        patch.object(exports_mcp, "supports_elicitation", return_value=True),
+        patch.object(ExportService, "run") as run,
+    ):
+        response = await call_tool_raw(
+            isolated_server(exports_mcp.register_export_tools),
+            "export_run",
+            {
+                "subject": {"kind": "bundle"},
+                "destination": {"kind": "local", "name": "exports"},
+            },
+        )
+
+    assert _structured(response)["error"]["details"]["reason"] == "timeout"
     run.assert_not_called()
 
 

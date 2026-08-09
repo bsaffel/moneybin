@@ -26,6 +26,7 @@ from moneybin.metrics.registry import (
     audit_undo_rows_reversed_total,
     audit_undo_total,
 )
+from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_dispatch import is_registered, repo_for
@@ -209,6 +210,7 @@ class UndoService:
             self._db.begin()
             try:
                 undone: list[AuditEvent] = []
+                touched: dict[str, BaseRepo] = {}
                 for event in reversed(row_events):
                     repo = repo_for(
                         event.target_schema or "",
@@ -216,6 +218,7 @@ class UndoService:
                         self._db,
                         audit=self._audit,
                     )
+                    touched.setdefault(type(repo).__name__, repo)
                     inverse = repo.undo_event(event, actor=actor, in_outer_txn=True)
                     if inverse is not None:
                         undone.append(inverse)
@@ -242,6 +245,10 @@ class UndoService:
                 "(all captured rows show before == after).",
                 code=error_codes.RECOVERY_NO_PATH,
             )
+        # After the commit, never inside it: a gauge set from uncommitted rows
+        # would survive a rollback that discarded them.
+        for repo in touched.values():
+            repo.refresh_pending_gauge()
         tables = sorted({e.target_table for e in undone if e.target_table})
         audit_undo_total.labels(outcome="success").inc()
         audit_undo_rows_reversed_total.inc(len(undone))
