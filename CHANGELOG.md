@@ -413,13 +413,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - **Breaking:** **Every import now stops before it merges a file into an
-  account you already
-  have.** Previously only CSV/Excel stopped to ask; OFX and PDF resolved and
-  bound the account on their own, so the one moment MoneyBin could be wrong
-  about *whose* transactions these are went by unseen. All three channels now
-  stop when a file could plausibly be an existing account — showing which ones
-  — and load nothing until you answer. Answer with
-  `--account-binding REF=ACCOUNT_ID` (or `=new` to keep it separate) on
+  account you already have (#378).** Previously only CSV/Excel stopped to ask;
+  OFX and PDF resolved and bound the account on their own, so the one moment
+  MoneyBin could be wrong about *whose* transactions these are went by unseen.
+  All three channels now stop when a file could plausibly be an existing
+  account — showing which ones — and load nothing until you answer. Answer
+  with `--account-binding REF=ACCOUNT_ID` (or `=new` to keep it separate) on
   `moneybin import files`, or the `account_bindings` parameter on the
   `import_files` and `import_confirm` tools. Pinning up front with
   `--account-id` / `--account-name` still skips the question entirely, and a
@@ -464,20 +463,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one file at a time. It also cannot contradict an `--account-id` pin on the
   same account — send whichever one you mean.
 - **Breaking:** **An account you named on a file type that cannot use it is now
-  an error
-  instead of silence.** `--account-name` and `--account-meta` reached only
-  spreadsheet imports, and `--account-id` only spreadsheets and PDFs; passing
-  one with any other file type was accepted and discarded, so the import bound
-  whatever it worked out for itself while you believed you had chosen. Each of
+  an error instead of silence (#378).** `--account-name` and `--account-meta`
+  reached only spreadsheet imports, and `--account-id` only spreadsheets and
+  PDFs; passing one with any other file type was accepted and discarded, so the
+  import bound whatever it worked out for itself while you believed you had
+  chosen. Each of
   those combinations now refuses before anything loads and points at
   `--account-binding`, which every file type honors. The MCP tools refuse the
   same combinations, from the same table. (Error code
   `import_pdf_account_signal_unsupported` is replaced by
   `import_account_signal_unsupported`, since the refusal is no longer
   PDF-only.)
-- **`moneybin import confirm` takes `--institution`.** An OFX whose issuer is
-  underivable from `<FI><ORG>`, the FID lookup, and the filename fails before
-  the account question is ever reached, so the only way to reach that question
+- **`moneybin import confirm` takes `--institution` (#378).** An OFX whose
+  issuer is underivable from `<FI><ORG>`, the FID lookup, and the filename
+  fails before the account question is ever reached, so the only way to reach
+  that question
   is `moneybin import files <file> --institution <name>`. The recovery command
   printed there dropped the override, so pasting it hit the institution error
   again. It now carries it, and `import confirm` accepts it. Refused alongside
