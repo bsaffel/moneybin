@@ -1023,8 +1023,20 @@ INTERNAL_CRITICAL: dict[tuple[str, str], dict[str, DataClass]] = {
     # --- Tabular (CSV/Excel/Parquet): the native key is a slug of whatever the
     # file presents as the account, and the mapped account column can be the
     # account number itself, so the column cannot be told apart from one.
+    #
+    # `account_name` is that same file value UNSLUGIFIED, and it must carry the
+    # same class as the `account_id` slug derived from it — one value, one
+    # class. A multi-account import keeps both halves: `account_ids =
+    # [slugify(name) for name in raw_names]` while `acct_id_to_name` retains the
+    # original, which is written straight to this column (import_service.py).
+    # Declaring only the slug masks the derivative and publishes the source.
+    # The content net cannot cover the gap: a 7-digit number is under the 8-digit
+    # run it looks for, and a separator-formatted one contains no run at all.
+    # `core` is no precedent for passing it through — `dim_accounts.display_name`
+    # is CONSTRUCTED from institution + subtype + last4, never the raw file value.
     ("raw", "tabular_accounts"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_name": DataClass.ACCOUNT_IDENTIFIER,
         "account_number": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "account_number_masked": DataClass.INSTITUTION_ACCOUNT_NUMBER,
     },
@@ -1034,10 +1046,24 @@ INTERNAL_CRITICAL: dict[tuple[str, str], dict[str, DataClass]] = {
     ("prep", "stg_tabular__accounts"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
         "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+        "account_name": DataClass.ACCOUNT_IDENTIFIER,
         "account_number": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "account_number_masked": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         # `NULL::TEXT AS routing_number` placeholder, as for Plaid above.
         "routing_number": DataClass.ROUTING_NUMBER,
+    },
+    # --- Import log: `account_names` is the same tabular file value again, and
+    # the OFX importer writes raw <ACCTID> values into it verbatim — its call
+    # site says so ("institution-assigned account numbers, not display names").
+    #
+    # WHOLE, not the partial mask the two columns above take. A DuckDB JSON
+    # column reaches the transform as `str`, so ACCOUNT_IDENTIFIER's
+    # `"****" + value[-4:]` would publish the TAIL of the serialized array,
+    # which for a one-element array of a bare number is the tail of an account
+    # number. Same reasoning as `source_bytes` below, and the same scoping
+    # argument for using UNRESOLVED in this map.
+    ("raw", "import_log"): {
+        "account_names": DataClass.UNRESOLVED,
     },
     ("prep", "stg_tabular__transactions"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,

@@ -14,6 +14,7 @@ import yaml
 from sqlglot import exp
 
 from moneybin.database import Database
+from moneybin.privacy.redaction import MaskStrength, mask_strength
 from moneybin.privacy.sql_lineage import (
     _MAX_SCOPE_DEPTH,  # pyright: ignore[reportPrivateUsage]
     FAIL_CLOSED_CLASS,
@@ -1248,6 +1249,37 @@ def test_staged_source_bytes_are_declared_not_floored() -> None:
     assert _class_of_key(("raw", "import_preview_snapshots", "source_bytes")) is (
         FAIL_CLOSED_CLASS
     )
+
+
+def test_tabular_account_name_is_declared_like_its_slug() -> None:
+    """``account_id`` is ``slugify()`` of ``account_name`` — one value, one class.
+
+    A multi-account file's account column becomes ``raw_names``, and the import
+    keeps BOTH: the slug lands in ``account_id`` and the unslugified original in
+    ``account_name``. Declaring only the slug masks the derivative and publishes
+    the source. The content net does not save it — a 7-digit number is under the
+    8-digit run the net looks for, and a separator-formatted one contains no run
+    at all, so either leaks whole.
+    """
+    for schema, table in (
+        ("raw", "tabular_accounts"),
+        ("prep", "stg_tabular__accounts"),
+    ):
+        assert _class_of_key((schema, table, "account_name")) is (
+            DataClass.ACCOUNT_IDENTIFIER
+        ), f"{schema}.{table}.account_name must match its account_id twin"
+
+
+def test_import_log_account_names_masks_whole_not_partial() -> None:
+    """The OFX importer writes ``<ACCTID>`` values into this column verbatim.
+
+    Whole, not partial: a DuckDB ``JSON`` column arrives as ``str``, so
+    ACCOUNT_IDENTIFIER's ``"****" + value[-4:]`` would publish the TAIL of the
+    serialized array — which for a one-element array of a bare number is the
+    tail of an account number.
+    """
+    assert _class_of_key(("raw", "import_log", "account_names")) is FAIL_CLOSED_CLASS
+    assert mask_strength(FAIL_CLOSED_CLASS) is MaskStrength.WHOLE
 
 
 # ---------------------------------------------------------------------------
