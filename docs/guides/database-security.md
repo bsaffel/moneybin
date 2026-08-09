@@ -15,7 +15,7 @@ If you only read one other doc on this topic, read the [Threat Model](threat-mod
 - **DuckDB temp / spill files.** Automatically encrypted with the same key whenever DuckDB writes them. You cannot accidentally leak a spill file in plaintext.
 - **File location.** `<base>/profiles/<profile>/moneybin.duckdb`. `<base>` resolves in this order:
   1. `MONEYBIN_HOME` env var (explicit override)
-  2. `<cwd>/.moneybin` when `MONEYBIN_ENVIRONMENT=development` or you're inside the MoneyBin repo checkout
+  2. In development mode, `<repo-root>/.moneybin` inside a MoneyBin checkout or `<cwd>/.moneybin` outside one; otherwise `<cwd>/.moneybin` when the CWD is the MoneyBin repo checkout
   3. `~/.moneybin/` (the normal user install)
 
   So a typical install puts the database at `~/.moneybin/profiles/default/moneybin.duckdb`.

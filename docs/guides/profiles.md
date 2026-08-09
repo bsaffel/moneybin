@@ -39,7 +39,7 @@ What lives inside a profile:
 `<base>` is the MoneyBin home, resolved in this order (first match wins):
 
 1. `MONEYBIN_HOME` env var (explicit override)
-2. `MONEYBIN_ENVIRONMENT=development` → `<cwd>/.moneybin`
+2. `MONEYBIN_ENVIRONMENT=development` → `<repo-root>/.moneybin` inside a MoneyBin checkout; otherwise `<cwd>/.moneybin`
 3. CWD is the MoneyBin repo checkout → `<cwd>/.moneybin`
 4. Default → `~/.moneybin`
 
