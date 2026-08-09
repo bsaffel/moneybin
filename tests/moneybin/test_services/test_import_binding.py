@@ -195,6 +195,40 @@ def test_an_answered_account_leaves_its_ref_behind_not_its_number(
     assert outcome.ratified_bindings == {"@0": "acct_first01"}
 
 
+def test_account_metadata_takes_the_ref_the_confirmation_showed(
+    db: Database, tmp_path: Path
+) -> None:
+    """Metadata has to accept the referent the gate actually handed back.
+
+    The confirmation masks ``source_account_key``, so on the surfaces this PR
+    added the ref is the only key a caller can read. ``account_bindings`` takes
+    it; ``account_metadata`` compared against source keys only, and its refusal
+    then asked for a key the caller had no way to obtain. That makes naming a
+    newly minted account unusable on exactly the path the mask created.
+
+    The ref is read off the raised proposal rather than written as ``"@0"``, so
+    this asserts the round trip a caller actually performs.
+    """
+    csv = tmp_path / "txns.csv"
+    csv.write_text("Date,Description,Amount\n2024-01-15,Coffee,-4.50\n")
+    svc = ImportService(db)
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(csv, refresh=False, confirm=True, actor_kind="human")
+    ref = str(exc.value.outcome.account_proposals[0]["proposal_ref"])
+
+    result = svc.import_file(
+        csv,
+        refresh=False,
+        confirm=True,
+        actor_kind="human",
+        account_bindings={ref: "new"},
+        account_metadata={ref: {"display_name": "Joint Checking"}},
+    )
+
+    assert [a.display_name for a in result.accounts_created] == ["Joint Checking"]
+
+
 def test_agent_import_gates_on_weak_account_candidate(
     db: Database,
 ) -> None:

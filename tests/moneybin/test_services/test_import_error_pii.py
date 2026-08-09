@@ -128,6 +128,16 @@ def test_empty_binding_value_does_not_echo_the_files_account_number(
         # is four digits.
         ("Checking 1234-5678-9012", "Checking ****5678"),
         ("Checking 4111 1111 1111 1111", "Checking ****1111"),
+        # Every separator, not an enumerated few: the label parser and the mask
+        # have to agree on what a separator is, and each time they did not, the
+        # gap was a run of account digits. The parser's trailing-token strip
+        # accepts these, so the mask has to as well.
+        ("Checking 1234.5678.9012", "Checking ****5678"),
+        ("Checking 1234/5678/9012", "Checking ****5678/"),
+        ("Checking 1234_5678_9012", "Checking ****5678_"),
+        # A letter breaks the run — two separate four-digit tokens are not one
+        # eight-digit number.
+        ("Checking 1234 Savings 5678", "Checking 1234 Savings"),
         # A bare trailing four-digit group is the masked last-four banks print,
         # and parse_account_label lifts it out into `last_four` — so the label
         # arrives already stripped and there is nothing left for the mask to

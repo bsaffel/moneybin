@@ -1698,7 +1698,8 @@ def import_confirm_command(
         "--account-meta",
         help=(
             "Metadata for a 'new' account (repeatable): "
-            "--account-meta source_key:field=value, where field is one of "
+            "--account-meta REF:field=value, where REF is the @0/@1 ref the "
+            "confirmation showed (or the source key), and field is one of "
             "display_name, account_subtype, last_four, currency_code."
         ),
     ),

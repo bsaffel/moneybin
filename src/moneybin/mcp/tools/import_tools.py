@@ -2576,7 +2576,8 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "account proposals whose source_account_key is masked; bind a "
             "single account with account_name, or any number with "
             'account_bindings={ref: account_id or "new"}, where ref is a '
-            "proposal's proposal_ref (@0 is the file's first source account).",
+            "proposal's proposal_ref (@0 is the file's first source account). "
+            "account_metadata takes the same refs to name an account it mints.",
         ),
         (
             import_status_coarse,

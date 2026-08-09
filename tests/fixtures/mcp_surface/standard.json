@@ -1,5 +1,5 @@
 {
-  "sha256": "9910a4956dd0c4ee1b34a9d53f97eb5b696dca21324d060cc5189605d7829d43",
+  "sha256": "4b03cab1c5bed8ace1c1b5514b833bc2bdaf5e54ce3b3369649270ebf5523b41",
   "tool_count": 49,
   "tools": [
     {
@@ -1469,7 +1469,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically consume an unchanged preview and import its file, eliciting human approval before any sign inversion. When the file's accounts are unresolved it imports nothing and returns account proposals whose source_account_key is masked; bind a single account with account_name, or any number with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account).",
+        "description": "Atomically consume an unchanged preview and import its file, eliciting human approval before any sign inversion. When the file's accounts are unresolved it imports nothing and returns account proposals whose source_account_key is masked; bind a single account with account_name, or any number with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). account_metadata takes the same refs to name an account it mints.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1569,12 +1569,12 @@
         },
         "name": "import_confirm"
       },
-      "description_bytes": 422,
+      "description_bytes": 488,
       "input_schema_bytes": 788,
       "name": "import_confirm",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 1406
+      "total_bytes": 1472
     },
     {
       "annotation_bytes": 91,
@@ -5027,5 +5027,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 54750
+  "total_bytes": 54816
 }

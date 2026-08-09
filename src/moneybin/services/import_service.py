@@ -89,12 +89,23 @@ class CreatedAccount:
     display_name: str
 
 
-# Five digits, counted across single space/hyphen separators. Four is the
-# masked last-four banks print (and the shape of a year), so it stays; anything
-# longer in an account label is a number, not a label. Counting across the
-# separator is the load-bearing part: account numbers are written in groups, and
-# a contiguous-only rule reads "4111 1111 1111" as four safe tokens.
-_EMBEDDED_ACCOUNT_NUMBER = re.compile(r"\d(?:[ \t-]?\d){4,}")
+# Five digits, counted across any single NON-ALPHANUMERIC separator. Four is
+# the masked last-four banks print (and the shape of a year), so it stays;
+# anything longer in an account label is a number, not a label.
+#
+# Counting across the separator is the load-bearing part — a contiguous-only
+# rule reads "4111 1111 1111" as four safe tokens — and the separator set is
+# deliberately open rather than enumerated. Two rounds of review found the same
+# defect twice, first for "-" and then for "." and "/" and "_", because the
+# label parser's own trailing-token strip accepts punctuation this pattern did
+# not: each time the two disagreed about what a separator is, the disagreement
+# was a run of account digits shipped unmasked. A letter still breaks the run,
+# so "Checking 1234 Savings 5678" stays two four-digit tokens.
+#
+# The cost is over-masking a decimal in a label ("Balance 1234.56"). That is the
+# right side to err on: an over-masked label is legible, an under-masked one is
+# an account number.
+_EMBEDDED_ACCOUNT_NUMBER = re.compile(r"\d(?:[^0-9A-Za-z]?\d){4,}")
 
 
 def _mask_embedded_account_number(label: str) -> str:
@@ -1047,6 +1058,46 @@ def _resolve_binding_targets(
             )
         targets.append(by_key if by_key is not None else by_ref)
     return targets
+
+
+def _resolve_metadata_keys(
+    source_accounts: list[SourceAccount], metadata: dict[str, dict[str, str]]
+) -> dict[str, dict[str, str]]:
+    """Re-key caller metadata from positional refs onto source keys.
+
+    ``account_bindings`` has taken a ``proposal_ref`` since this gate shipped;
+    ``account_metadata`` compared against source keys alone, and the
+    confirmation masks ``source_account_key`` — so its refusal asked for a key
+    the caller could not read, and naming a newly minted account was unusable on
+    the masked path. One vocabulary answers the gate, whichever parameter it
+    arrives in.
+
+    Mirrors :func:`_resolve_binding_targets`: a real source key wins over the
+    ref it happens to spell, and an unrecognized key is passed through for the
+    caller's own unknown-key refusal to name (echoing what they sent is safe;
+    enumerating the file's real keys is not).
+    """
+    if not metadata:
+        return metadata
+    known = {src.source_account_key for src in source_accounts}
+    source_key_by_ref = {
+        proposal_ref(index): src.source_account_key
+        for index, src in enumerate(source_accounts)
+    }
+    resolved: dict[str, dict[str, str]] = {}
+    for key, fields in metadata.items():
+        target = key if key in known else source_key_by_ref.get(key, key)
+        if target in resolved:
+            # The ref and the source key for one account, sent together. Same
+            # answer-twice problem the binding half refuses: picking a winner
+            # would apply one of two metadata sets the caller asked for and
+            # never say which.
+            raise ValueError(
+                f"account_metadata names the same account twice — {key!r} and "
+                "its other referent both resolve to one account. Send one."
+            )
+        resolved[target] = fields
+    return resolved
 
 
 def _ratified_binding_refs(targets: list[str | None]) -> dict[str, str]:
@@ -2021,9 +2072,12 @@ class ImportService:
                 canonical account_id (adopt) or "new" (mint standalone),
                 ratifying the account-binding confirmation. An unbound account
                 gates when it carries weak candidates, for every caller.
-            account_metadata: Map of source_account_key -> {display_name,
-                account_subtype, last_four, currency_code} captured into
-                app.account_settings for accounts minted this import.
+            account_metadata: Map of proposal_ref ("@0") or source_account_key
+                -> {display_name, account_subtype, last_four, currency_code}
+                captured into app.account_settings for accounts minted this
+                import. Same key vocabulary as account_bindings, because the
+                confirmation masks source_account_key and the ref is the only
+                referent a caller can read back from it.
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
             observations: Buffer observations for a caller-owned transaction.
@@ -2906,13 +2960,18 @@ class ImportService:
         # (they sent them), never enumerate the file's real ones. A tabular key
         # is slugify(account_name), and an account label routinely carries the
         # number it names.
+        # Refs first: the confirmation masks source_account_key, so a caller on
+        # a multi-account file can only key metadata by the ref it showed them.
+        account_metadata = _resolve_metadata_keys(
+            source_accounts, account_metadata or {}
+        )
         known_keys = {s.source_account_key for s in source_accounts}
         if unknown_keys := set(account_metadata or {}) - known_keys:
             raise ValueError(
                 f"account_metadata references unknown source key(s): "
                 f"{sorted(unknown_keys)}. This file has {len(source_accounts)} "
-                "account(s) — key each entry by a source key exactly as the "
-                "confirmation reported it."
+                "account(s) — key each entry by its proposal_ref (@0, @1, …) as "
+                "the confirmation reported it, or by a source key."
             )
 
         # Phase 2 — gate on any account identity the caller hasn't ratified.
@@ -4947,8 +5006,9 @@ class ImportService:
                 or "new" (mint standalone), ratifying the account-binding
                 confirmation. Honored on every channel — tabular, OFX and PDF
                 all raise the same gate.
-            account_metadata: Map of source_account_key -> settings dict captured
-                for accounts minted this import. Tabular only; refused with
+            account_metadata: Map of proposal_ref ("@0") or source_account_key
+                -> settings dict captured for accounts minted this import.
+                Tabular only; refused with
                 ``import_account_signal_unsupported`` elsewhere.
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
