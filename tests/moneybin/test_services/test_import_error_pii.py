@@ -117,6 +117,111 @@ def test_empty_binding_value_does_not_echo_the_files_account_number(
     assert "@0" in message
 
 
+# A key the caller typed that is shaped like an account number — a mistyped
+# <ACCTID>, or one pasted from the wrong statement. One digit off `ACCTID`, so
+# it is genuinely unknown to the file while still being the sensitive shape.
+MISTYPED_ACCTID = "987654321099"
+
+
+def _refusal_message(exc: Exception) -> str:
+    """What the caller actually receives for this failure.
+
+    Through ``per_file_failure``, because that is the CLI's and MCP's shared
+    verdict path — and a bare ``ValueError`` is *classified*, so its message
+    survives verbatim rather than being scrubbed to the class name.
+    """
+    message, _code, _hint, _details = per_file_failure(exc)
+    return message
+
+
+def test_an_unknown_binding_key_is_not_echoed_in_full(db: Any, tmp_path: Path) -> None:
+    """A refusal must not persist the account number the caller mistyped.
+
+    Echoing the caller's own key back reads as safe — they already have it — but
+    the CLI writes this message through ``logger.error``, and a log file is
+    exactly the "artifact that outlives the session" `.claude/rules/security.md`
+    names as a boundary. The sanitizer masks recognized shapes, not every
+    issuer's numbering, so the honest fix is not to put it there.
+
+    Masked rather than dropped: the caller still has to learn *which* of their
+    keys was wrong, and on a file bound by source key the ref list alone cannot
+    tell them.
+    """
+    ofx = _ofx_with_acctid(tmp_path)
+
+    with pytest.raises(ValueError) as raised:
+        ImportService(db).import_file(
+            ofx, refresh=False, account_bindings={MISTYPED_ACCTID: "new"}
+        )
+
+    message = _refusal_message(raised.value)
+    assert MISTYPED_ACCTID not in message, f"caller key reached the wire: {message}"
+    assert MISTYPED_ACCTID not in str(raised.value)
+    # Still answerable: the masked tail identifies which key, the refs say what
+    # to send instead.
+    assert "****1099" in message, message
+    assert "@0" in message, message
+
+
+def test_an_unknown_metadata_key_is_not_echoed_in_full(db: Any, tmp_path: Path) -> None:
+    """The ``account_metadata`` twin of the binding refusal above.
+
+    Same class, same sink, different parameter — and the reason to fix it in the
+    same change is that a refusal fixed on one parameter and not the other is
+    the shape of gap this PR has already shipped twice.
+    """
+    csv = tmp_path / "txns.csv"
+    csv.write_text("Date,Description,Amount\n2024-01-15,Coffee,-4.50\n")
+
+    with pytest.raises(ValueError) as raised:
+        ImportService(db).import_file(
+            csv,
+            refresh=False,
+            confirm=True,
+            account_bindings={"@0": "new"},
+            account_metadata={MISTYPED_ACCTID: {"display_name": "X"}},
+        )
+
+    message = _refusal_message(raised.value)
+    assert MISTYPED_ACCTID not in message, f"caller key reached the wire: {message}"
+    assert "****1099" in message, message
+
+
+def test_a_duplicated_metadata_referent_is_not_echoed_in_full(
+    db: Any, tmp_path: Path
+) -> None:
+    """The same-account-twice refusal names a key the caller sent, too.
+
+    Reachable with an account column that *is* an account number, which is a
+    real tabular export shape — so this refusal can quote one even though the
+    caller supplied it.
+    """
+    csv = tmp_path / "txns.csv"
+    csv.write_text(
+        f"Date,Description,Amount,Account\n2024-01-15,Coffee,-4.50,{ACCTID}\n"
+    )
+    svc = ImportService(db)
+
+    with pytest.raises(ValueError) as raised:
+        svc.import_file(
+            csv,
+            refresh=False,
+            confirm=True,
+            account_bindings={"@0": "new"},
+            account_metadata={
+                "@0": {"display_name": "A"},
+                ACCTID: {"display_name": "B"},
+            },
+        )
+    # The refusal has to be the duplicate-referent one, not unknown-key: if the
+    # column no longer slugified to the number itself this would silently become
+    # a different test.
+    assert "same account twice" in str(raised.value), str(raised.value)
+
+    message = _refusal_message(raised.value)
+    assert ACCTID not in message, f"account number reached the wire: {message}"
+
+
 @pytest.mark.parametrize(
     ("label", "expected"),
     [

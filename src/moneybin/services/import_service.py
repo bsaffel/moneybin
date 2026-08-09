@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -151,6 +151,23 @@ def _mask_embedded_account_number(label: str) -> str:
         return f"****{digits[-4:]}"
 
     return _EMBEDDED_ACCOUNT_NUMBER.sub(_mask, label)
+
+
+def _mask_caller_keys(keys: Iterable[str]) -> str:
+    """Render caller-supplied binding/metadata keys for a refusal message.
+
+    A refusal quoting the caller's own key reads as safe — they typed it — but
+    the CLI writes these through ``logger.error``, and a log file is exactly the
+    "artifact that outlives the session" ``.claude/rules/security.md`` names as a
+    boundary. On OFX a key is the institution's ``<ACCTID>``, and the log
+    sanitizer masks recognized shapes, not every issuer's numbering.
+
+    Masked rather than omitted: the caller still has to learn *which* of their
+    keys was wrong, and the valid-ref list alone cannot tell that to someone who
+    bound by source key. Same mask as the mint report, so a key and the label
+    derived from it are never disclosed to different depths.
+    """
+    return ", ".join(repr(_mask_embedded_account_number(key)) for key in sorted(keys))
 
 
 def _created_account(
@@ -1075,7 +1092,8 @@ def _resolve_binding_targets(
             )
     if unknown := sorted((refs - valid) | (set(bindings) - refs - known)):
         raise ValueError(
-            f"account_bindings references unknown source key(s): {unknown}. "
+            f"account_bindings references unknown source key(s): "
+            f"{_mask_caller_keys(unknown)}. "
             f"This file has {len(source_accounts)} account(s) — bind by "
             f"proposal_ref ({', '.join(sorted(valid)) or 'none'}), or by a "
             "source key exactly as the confirmation reported it."
@@ -1128,8 +1146,9 @@ def _resolve_metadata_keys(
             # would apply one of two metadata sets the caller asked for and
             # never say which.
             raise ValueError(
-                f"account_metadata names the same account twice — {key!r} and "
-                "its other referent both resolve to one account. Send one."
+                f"account_metadata names the same account twice — "
+                f"{_mask_caller_keys([key])} and its other referent both "
+                "resolve to one account. Send one."
             )
         resolved[target] = fields
     return resolved
@@ -3015,7 +3034,8 @@ class ImportService:
         if unknown_keys := set(account_metadata or {}) - known_keys:
             raise ValueError(
                 f"account_metadata references unknown source key(s): "
-                f"{sorted(unknown_keys)}. This file has {len(source_accounts)} "
+                f"{_mask_caller_keys(unknown_keys)}. "
+                f"This file has {len(source_accounts)} "
                 "account(s) — key each entry by its proposal_ref (@0, @1, …) as "
                 "the confirmation reported it, or by a source key."
             )
