@@ -88,6 +88,14 @@ def _parse_kv(
 
     ``flag`` and ``fmt`` shape only the error message (e.g. ``flag="--override"``,
     ``fmt="field=column"``). Returns ``None`` for empty input.
+
+    Refuses one key given two different values. A dict silently kept the last,
+    so the caller's earlier answer vanished with nothing said and no layer below
+    ever saw a conflict to refuse — on ``--account-binding`` that settles which
+    account a file attaches to by argument order, which is precisely the
+    silent-attachment case the gate exists to prevent. Restating the *same*
+    value is agreement, not conflict, matching the rule
+    ``_apply_account_bindings`` already applies to a re-sent id.
     """
     if not values:
         return None
@@ -97,7 +105,14 @@ def _parse_kv(
             logger.error(f"❌ Invalid {flag} format (expected {fmt}): {raw!r}")
             raise typer.Exit(1)
         key, _, value = raw.partition("=")
-        result[key.strip()] = value.strip()
+        key, value = key.strip(), value.strip()
+        if key in result and result[key] != value:
+            logger.error(
+                f"❌ {flag} {key!r} was given twice with different values "
+                f"({result[key]!r} and {value!r}). Send one."
+            )
+            raise typer.Exit(1)
+        result[key] = value
     return result
 
 

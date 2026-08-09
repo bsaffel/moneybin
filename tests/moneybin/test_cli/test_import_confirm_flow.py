@@ -694,6 +694,72 @@ class TestImportFilesConfirmFlow:
         assert "checking" not in recovery
         assert "@1=<account_id|new>" in recovery
 
+    def test_repeating_one_ref_with_two_answers_is_refused(
+        self, mock_db: MagicMock, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Two answers for one account must not be settled by argument order.
+
+        ``_parse_kv`` builds a dict, so a repeated key silently kept the last
+        value — the caller's first answer vanished with nothing said, and the
+        service never saw a conflict to refuse. That is the same
+        two-answers-one-account case ``_resolve_binding_targets`` raises on when
+        it arrives as a ref *and* a source key; arriving twice under one ref is
+        not a different question, and answering it by argument order is the
+        silent-attachment failure this whole gate exists to prevent.
+
+        Refused in ``_parse_kv`` rather than per-flag, so ``--override`` and
+        ``--account-meta`` get the same treatment from one place.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--account-binding",
+                "@0=acct_a",
+                "--account-binding",
+                "@0=acct_b",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "@0" in caplog.text
+        assert "--account-binding" in caplog.text
+
+    def test_repeating_one_ref_with_the_same_answer_is_agreement(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Restating an answer is not a conflict — the service says so too.
+
+        ``_apply_account_bindings`` treats a repeated identical id as agreement
+        rather than contradiction ("an agent answering a gate re-sends what it
+        already had"), so the parser must not be stricter than the layer it
+        feeds.
+        """
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            return_value=_make_import_result(),
+        )
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--account-binding",
+                "@0=acct_a",
+                "--account-binding",
+                "@0=acct_a",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+
     def test_multi_file_refuses_account_bindings(self, tmp_path: Path) -> None:
         """Warn-and-drop is the loop the MCP twin hard-refuses for this same input.
 
