@@ -16,18 +16,18 @@ Use the first strategy that applies:
 | 3 | **UUID4 (truncated)** | User-created entity with no natural key | Merchants, rules, budgets, user-created categories |
 | 4 | **Semantic slug** | Human-authored reference data needing readable IDs | Seed data codes (`INC-SAL`), format names (`chase_credit`) |
 
-## Two account identifiers — never conflate them
+## Account identifiers — never conflate them
 
-An account carries two identifiers with opposite handling rules. Say which one
-you mean, every time; "the account key" is ambiguous and has already produced
-bugs that leak one while intending the other.
+Three fields name an account, and only one of them is unconditionally safe to
+show. Say which one you mean, every time; "the account key" is ambiguous and
+has already produced bugs that leak one while intending the other.
 
-| | The source-native key | MoneyBin's own |
-|---|---|---|
-| **Fields** | `source_account_key` | `account_id`, `proposed_account_id`, `proposal_ref` (`@0`, `@1`) |
-| **What it holds** | Whatever identifies the account *within its own source* — often the institution's identifier, sometimes not (below) | Always minted by MoneyBin |
-| **Privacy class** | `ACCOUNT_IDENTIFIER` → CRITICAL (`imports.py:115`) | `RECORD_ID` (`imports.py:121-122`) |
-| **In any surface** | Masked (`****6789`) | Printed readably |
+| | `source_account_key` | `account_id`, `proposed_account_id` | `proposal_ref` (`@0`, `@1`) |
+|---|---|---|---|
+| **What it holds** | The source-native key — often the institution's, sometimes MoneyBin-synthesized or a copied pin (below) | MoneyBin's canonical id *once the account is resolved*; the source-native key when it is not (below) | A position in this file's proposal list — always MoneyBin's |
+| **Privacy class** | `ACCOUNT_IDENTIFIER` → CRITICAL (`imports.py:115`) | `RECORD_ID` (`imports.py:121-122`) | `RECORD_ID` (`imports.py:121`) |
+| **In any surface** | Masked (`****6789`) | Printed readably | Printed readably |
+| **Unconditionally safe to show?** | No | **No** | **Yes** |
 
 **`source_account_key` is not uniformly the institution's identifier**, and
 assuming it is re-creates the conflation this section exists to prevent. Its
@@ -41,16 +41,30 @@ value depends on the channel and on what the caller pinned:
 | Bare tabular (no account column) | `_bare_account_key(file_path, source_bytes)` — MoneyBin-synthesized from filename + content |
 | Any channel with `--account-id` pinned | MoneyBin's own `account_id`, copied straight in (`import_service.py` PDF `native_key = account_id_override`; tabular `source_account_key=account_id`) |
 
-The field is masked in **every** case anyway. That is deliberate and
-fail-closed: the classification is decided by what the field *may* hold, not by
-what a given row happens to hold, and no caller can tell the cases apart from
+**`account_id` is not unconditionally MoneyBin's either.** Nine staging models
+project it as `COALESCE(links.account_id, a.account_id)`, each annotated
+*"canonical via the import-time resolver link; source-native only if
+unresolved"* — `stg_ofx__accounts.sql:25`, `stg_tabular__accounts.sql:7`,
+`stg_plaid__accounts.sql:29` and six more. `core.dim_accounts` is built from
+those models, so an account with **no resolver link** — exactly what
+`accounts links run` exists to backfill — surfaces its source-native key
+through `account_id`, a `RECORD_ID` field that every surface prints readably.
+On OFX that is a real `<ACCTID>`.
+
+This is why `proposal_ref` exists, and why it — not `account_id` — is the
+referent to put in front of a user or an agent.
+
+The source-native field is masked in **every** case anyway. That is deliberate
+and fail-closed: the classification is decided by what the field *may* hold, not
+by what a given row happens to hold, and no caller can tell the cases apart from
 outside. Three rules follow:
 
-- **Address the user and the agent with MoneyBin's identifier.** A CLI hint,
-  MCP `actions[]` entry, error message, or sidecar that names an account must
-  use `proposal_ref` or `account_id`. The source-native key is masked by the
-  time it reaches a response, so an agent told to act on it has nothing to act
-  on — it cannot reconstruct `****6789`.
+- **Address the user and the agent with `proposal_ref`.** A CLI hint, MCP
+  `actions[]` entry, error message, or sidecar that names an account inside an
+  import flow uses `@N`. The source-native key is masked by the time it reaches
+  a response, so an agent told to act on it has nothing to act on — it cannot
+  reconstruct `****6789` — and `account_id` is print-safe only for a resolved
+  account. `@N` is the only referent that is always both readable and MoneyBin's.
 - **Echoing a caller's own input back is not automatically safe.** A refusal
   that quotes the unknown key the caller passed still writes the institution's
   identifier into a log line and a response envelope. Mask on the way out
