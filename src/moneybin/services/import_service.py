@@ -959,7 +959,9 @@ def _resolve_binding_targets(
                 f"account_bindings key {key!r} is ambiguous for this file: it is "
                 f"the source key for {proposal_ref(index)} and the positional ref "
                 f"for {key}. Bind {proposal_ref(index)} by its own ref, and the "
-                "other account by its source key."
+                "other account by its source key — read it from the file itself "
+                "(the OFX <ACCTID>, or the account column's value), because the "
+                "confirmation masks it."
             )
     if unknown := sorted((refs - valid) | (set(bindings) - refs - known)):
         raise ValueError(

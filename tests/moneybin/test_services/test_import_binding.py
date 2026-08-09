@@ -15,6 +15,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.import_confirmation import ImportConfirmationRequiredError
 from moneybin.services.import_service import ImportService
 from tests.moneybin.db_helpers import create_core_tables
@@ -1774,3 +1775,48 @@ def test_one_account_split_across_statements_asks_once(
         ImportService(db).import_file(split, refresh=False, confirm=True)
 
     assert len(exc.value.outcome.account_proposals) == 1
+
+
+def test_the_ambiguous_ref_refusal_says_where_to_read_the_masked_key() -> None:
+    """The ambiguity refusal must not send the caller to a value we mask.
+
+    ``source_account_key`` is untrusted file content on OFX, so a key spelled
+    like a positional ref ("@1") can name one account while being another's
+    ref. Refusing is right — either reading answers an account the caller was
+    not looking at. But the escape it offers is the *other* account's source
+    key, and every surface that shows this gate masks that key, so a caller
+    reading the confirmation cannot comply. The file is the only place the raw
+    key is still legible, and the message has to say so.
+
+    Guards against the wording drifting back to "exactly as the confirmation
+    reported it" — true of the unknown-key refusal six lines below, false here.
+    """
+    # Private by design: this is the pure binding resolver, and reaching it
+    # through import_file would need a two-account fixture whose first ACCTID is
+    # literally "@1" to exercise one error string.
+    from moneybin.services.import_service import (  # noqa: PLC0415
+        _resolve_binding_targets,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    sources = [
+        SourceAccount(
+            source_type="ofx",
+            source_origin="bank",
+            source_account_key="@1",
+            account_name="Checking",
+        ),
+        SourceAccount(
+            source_type="ofx",
+            source_origin="bank",
+            source_account_key="9876543210",
+            account_name="Savings",
+        ),
+    ]
+
+    with pytest.raises(ValueError) as exc:
+        _resolve_binding_targets(sources, {"@0": "new", "@1": "new"})
+
+    message = str(exc.value)
+    assert "read it from the file itself" in message, message
+    # Still never names the sibling's real key — that is the masked value.
+    assert "9876543210" not in message, message
