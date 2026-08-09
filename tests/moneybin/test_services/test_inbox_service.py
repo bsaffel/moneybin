@@ -1514,7 +1514,7 @@ class TestPendingSidecarAccountHint:
 
         payload = yaml.safe_load(sidecar.read_text())
         actions = payload["actions"]
-        assert any("--account-binding statement=" in a for a in actions), actions
+        assert any("--account-binding @0=" in a for a in actions), actions
         assert any("inbox/<account-slug>" in a for a in actions), actions
         # --accept ratifies the settled mapping and pairs with the binding; no
         # standalone --mapping override for an account_confirmation.
@@ -1522,7 +1522,10 @@ class TestPendingSidecarAccountHint:
         assert all("--accept" in a for a in actions if "--account-binding" in a), (
             actions
         )
-        assert payload["account_proposals"][0]["source_account_key"] == "statement"
+        # Persisted masked, by the same declaration every other surface applies
+        # — the field is ACCOUNT_IDENTIFIER whatever the channel, and this file
+        # outlives the session. The ref above is what makes it answerable.
+        assert payload["account_proposals"][0]["source_account_key"] == "****ment"
 
     @pytest.mark.parametrize("channel", ["ofx", "pdf"])
     def test_account_confirmation_sidecar_omits_subfolder_recovery_off_tabular(
@@ -1578,6 +1581,70 @@ class TestPendingSidecarAccountHint:
         actions = payload["actions"]
         assert all("<account-slug>" not in a for a in actions), actions
         assert any("--account-binding" in a for a in actions), actions
+
+    def test_account_confirmation_sidecar_never_writes_the_account_number(
+        self, tmp_path: Path
+    ) -> None:
+        """The sidecar outlives the session, so it masks like every other surface.
+
+        ``.claude/rules/security.md`` names two boundaries that matter, and the
+        second is "any artifact that outlives the session" — a ``.pending.yml``
+        on disk is exactly that. Every other surface carrying these proposals
+        masks ``source_account_key`` (the ``<ACCTID>`` on OFX): the terminal via
+        ``_echo_account_proposals``, the CLI/MCP envelopes via
+        ``ImportInboxPendingEntry``. This file was the one that did not, and it
+        is the one that persists.
+
+        The generated ``--account-binding`` hint is the second half: keying it
+        by the raw source key put the same number back through the other door,
+        and every other surface now keys that command by ``proposal_ref``.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "statement.ofx"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("x\n")
+        acctid = "000123456789"
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="ofx",
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            proposed_mapping={},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+            account_proposals=[
+                {
+                    "source_account_key": acctid,
+                    "proposal_ref": "@0",
+                    "proposed_account_id": "prov12345678",
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                }
+            ],
+        )
+
+        import yaml
+
+        raw = sidecar.read_text()
+        assert acctid not in raw, raw
+        payload = yaml.safe_load(raw)
+        assert payload["account_proposals"][0]["source_account_key"] == "****6789"
+        # The ref stays readable — it is what the printed command binds by, so
+        # masking it would leave the file unanswerable.
+        assert payload["account_proposals"][0]["proposal_ref"] == "@0"
+        assert any("--account-binding @0=" in a for a in payload["actions"]), payload[
+            "actions"
+        ]
 
     def test_account_confirmation_multi_proposal_one_command_all_bindings(
         self, tmp_path: Path
@@ -1637,8 +1704,12 @@ class TestPendingSidecarAccountHint:
             a for a in actions if "import confirm" in a and "--account-binding" in a
         ]
         assert len(confirm_cmds) == 1, actions  # exactly one command...
-        assert "--account-binding acct-a=" in confirm_cmds[0]  # ...with both keys
-        assert "--account-binding acct-b=" in confirm_cmds[0]
+        assert "--account-binding @0=" in confirm_cmds[0]  # ...with both refs
+        assert "--account-binding @1=" in confirm_cmds[0]
+        # Keyed by ref, never by the source key: this command is persisted to a
+        # sidecar, and on OFX that key is the institution's account number.
+        assert "acct-a" not in confirm_cmds[0]
+        assert "acct-b" not in confirm_cmds[0]
         assert "--accept" in confirm_cmds[0]
         # No single-account --account-name shortcut when there are >1 accounts.
         assert all("--account-name" not in a for a in actions), actions
@@ -1713,13 +1784,21 @@ class TestPendingSidecarAccountHint:
 
         sidecar = moved.with_name(moved.name + ".pending.yml")
         payload = yaml.safe_load(sidecar.read_text())
-        actions = payload["actions"]
-        # The binding command + the persisted proposal use the MOVED-path key —
-        # the original-name key (which `import confirm <moved>` would NOT match)
-        # is gone.
-        assert any(f"--account-binding {moved_key}=" in a for a in actions), actions
-        assert not any(f"--account-binding {orig_key}=" in a for a in actions), actions
-        assert payload["account_proposals"][0]["source_account_key"] == moved_key
+        # Asserted on the service result, not the sidecar: the sidecar now
+        # persists this key masked (it outlives the session), so it can no
+        # longer witness *which* key was stored. The in-process entry still
+        # carries the raw value, which is where the rekey is observable — and
+        # the rekey is what this test is about. The original-name key would not
+        # match a re-import of the moved path.
+        stored = result.pending[0]["account_proposals"]
+        assert isinstance(stored, list)
+        assert stored[0]["source_account_key"] == moved_key
+        assert stored[0]["source_account_key"] != orig_key
+        # The command binds by ref, so a moved path cannot desynchronize it.
+        assert any("--account-binding @0=" in a for a in payload["actions"]), payload[
+            "actions"
+        ]
+        assert orig_key not in yaml.safe_dump(payload)
 
 
 class TestSyncVanishedSource:

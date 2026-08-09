@@ -639,10 +639,16 @@ def import_files_command(
                             f"Run 'moneybin import confirm {file_path_str} --accept' "
                             "as a subcommand."
                         )
-                confirm_actions.append(
-                    f"Run 'moneybin import preview {file_path_str}' to inspect the "
-                    "proposal."
-                )
+                # `import preview` runs tabular detection, with one special
+                # route for PDF — it has no OFX path at all, so offering it on
+                # that channel names a command that fails instead of inspecting
+                # anything. Same rule as the inbox subfolder recovery: an action
+                # is only worth printing on a channel that can run it.
+                if outcome.channel != "ofx":
+                    confirm_actions.append(
+                        f"Run 'moneybin import preview {file_path_str}' to inspect "
+                        "the proposal."
+                    )
             if output == OutputFormat.JSON or not sys.stdout.isatty():
                 # Non-TTY / --output json: emit the full ResponseEnvelope so
                 # CLI --output json matches the MCP envelope shape (same

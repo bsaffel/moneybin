@@ -921,6 +921,10 @@ class InboxService:
         (``sign_sample_rows``) so the flip is visible before anyone ratifies it.
         Mirrors the MCP ``_sign_confirm_actions`` treatment.
         """
+        from moneybin.privacy.payloads.imports import (  # noqa: PLC0415  # avoid an import cycle at module scope
+            ImportConfirmationAccountProposal,
+        )
+        from moneybin.privacy.redaction import redact_typed  # noqa: PLC0415
         from moneybin.services.import_confirmation import (  # noqa: PLC0415  # avoid an import cycle at module scope
             header_row_consumed_recovery,
             unreadable_date_recovery,
@@ -964,8 +968,13 @@ class InboxService:
             # --account-binding/--account-name. We don't offer a standalone
             # --accept/--mapping action (an --accept with no binding loops back
             # to the account gate). Also offer the inbox/<account-slug>/ path.
-            keys = [str(p.get("source_account_key", "")) for p in proposals] or [
-                "<source_key>"
+            # Keyed by proposal_ref, never by source_account_key: on OFX that
+            # key is the institution's <ACCTID>, and this command is written
+            # into a sidecar that outlives the session. Every other surface
+            # emitting this command already binds by ref; this was the last one
+            # keying it by the raw value.
+            keys = [str(p.get("proposal_ref", "")) for p in proposals] or [
+                "<proposal_ref>"
             ]
             # One command must carry a binding for every proposal — the gate is
             # all-or-nothing, so supplying only some keys re-prompts and persists
@@ -976,7 +985,7 @@ class InboxService:
             actions.append(
                 f"moneybin import confirm {quoted_path} --accept {bindings} "
                 "(adopt existing accounts, or 'new' to mint distinct ones; "
-                "supply every source key in this one command)"
+                "supply every proposal ref in this one command)"
             )
             if len(keys) == 1:
                 actions.append(
@@ -1044,7 +1053,18 @@ class InboxService:
             "flagged": list(flagged),
             "missing_required": list(missing_required),
             "unmapped_columns": list(unmapped_columns),
-            "account_proposals": list(proposals),
+            # Masked by the same declaration every other surface uses. A
+            # sidecar is the one artifact here that outlives the session, which
+            # `.claude/rules/security.md` names as a boundary that matters in
+            # its own right — so it is the last place a raw <ACCTID> should
+            # persist, not the one place exempt because the statement sits
+            # beside it.
+            "account_proposals": [
+                redact_typed(
+                    p, consent=None, declared_type=ImportConfirmationAccountProposal
+                )
+                for p in proposals
+            ],
             "actions": actions,
         }
         sidecar.write_text(yaml.safe_dump(payload, sort_keys=False))

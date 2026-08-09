@@ -117,6 +117,44 @@ def test_empty_binding_value_does_not_echo_the_files_account_number(
     assert "@0" in message
 
 
+def test_a_minted_accounts_display_name_does_not_carry_an_account_number(
+    db: Any, tmp_path: Path
+) -> None:
+    """The mint report names the account without republishing its number.
+
+    ``CreatedAccount.display_name`` is declared ``USER_NOTE`` (MEDIUM) and
+    documented as safe to show, and it reaches the terminal, the CLI/MCP
+    ``accounts_created`` rows and the inbox drain unmasked. For tabular it is
+    derived from the file's own account column via ``parse_account_label``,
+    which strips only a *recognized masked* last-four — ``(...1789)``, ``x1789``,
+    a bare trailing group. A genuinely unmasked full number matches none of
+    those patterns and passed through whole, so the one shape that actually
+    needed stripping was the one that survived.
+
+    The label stays readable: only the digit run is masked, because the point
+    of this field is to name what was created.
+    """
+    csv = tmp_path / "txns.csv"
+    csv.write_text(
+        f"Date,Description,Amount,Account\n2024-01-15,Coffee,-4.50,Checking {ACCTID}\n"
+    )
+
+    result = import_answering_gate(
+        ImportService(db),
+        csv,
+        refresh=False,
+        confirm=True,
+        auto_accept=True,
+    )
+
+    created = result.accounts_created
+    assert len(created) == 1, created
+    assert ACCTID not in created[0].display_name, created[0].display_name
+    # Still names the account — masking the whole label would defeat the field.
+    assert created[0].display_name.startswith("Checking")
+    assert created[0].display_name.endswith(ACCTID[-4:])
+
+
 def test_unknown_account_metadata_key_does_not_list_the_real_keys(
     db: Any, tmp_path: Path
 ) -> None:

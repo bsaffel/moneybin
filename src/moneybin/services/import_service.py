@@ -9,6 +9,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
@@ -88,6 +89,29 @@ class CreatedAccount:
     display_name: str
 
 
+# Five, not four: a four-digit group is the masked last-four banks print, and
+# `parse_account_label` already strips the ones it recognizes. Anything longer
+# in an account label is a number, not a label.
+_EMBEDDED_ACCOUNT_NUMBER = re.compile(r"\d{5,}")
+
+
+def _mask_embedded_account_number(label: str) -> str:
+    """Mask an account number embedded in a derived account label.
+
+    ``parse_account_label`` strips a *recognized masked* last-four — ``(...1789)``,
+    ``x1789``, a bare trailing group — so the shape it leaves untouched is the
+    one that matters: a full, unmasked number in the source's account column
+    survives whole. That value becomes ``CreatedAccount.display_name``, which is
+    declared ``USER_NOTE`` and shown unmasked on every surface that reports a
+    mint.
+
+    Masks the run rather than the whole string, because naming what was created
+    is the entire purpose of the field: "Checking 987654321098" has to stay
+    "Checking ****1098" and not become "****1098".
+    """
+    return _EMBEDDED_ACCOUNT_NUMBER.sub(lambda m: f"****{m.group()[-4:]}", label)
+
+
 def _created_account(
     src: SourceAccount,
     resolved: ResolvedAccount,
@@ -107,9 +131,15 @@ def _created_account(
     """
     if resolved.outcome != "minted_new":
         return None
+    if display_name:
+        # The caller's own chosen name, which `_capture_new_account_metadata`
+        # also writes to `app.account_settings` — masking the announcement of a
+        # name they typed and will see everywhere else would only make the two
+        # disagree.
+        return CreatedAccount(account_id=resolved.account_id, display_name=display_name)
     return CreatedAccount(
         account_id=resolved.account_id,
-        display_name=display_name or src.account_name,
+        display_name=_mask_embedded_account_number(src.account_name),
     )
 
 
@@ -581,10 +611,15 @@ def reject_unhonored_account_signals(
     if unhonored is None:
         return
     accepted = ", ".join(sorted(honored)) or "none"
+    # Names both spellings: this is the one call site the CLI and the MCP tool
+    # share, and a CLI user has no parameter called `account_bindings` any more
+    # than an agent has a `--account-binding` flag. A refusal that names the
+    # other surface's vocabulary is not actionable on the one that raised it.
     raise UserError(
         f"{unhonored} is not supported for a {file_type} import — this channel "
         f"accepts {accepted}. Name the account per detected source account with "
-        "account_bindings instead; the import stops and lists them when it "
+        "an account binding instead (--account-binding on the CLI, "
+        "account_bindings via MCP); the import stops and lists them when it "
         "cannot resolve one on its own.",
         code=error_codes.IMPORT_ACCOUNT_SIGNAL_UNSUPPORTED,
     )
