@@ -29,7 +29,7 @@ from sqlglot import exp
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.log_sanitizer import sql_digest
+from moneybin.log_sanitizer import mask_pii_shaped, sql_digest
 from moneybin.privacy.redaction import redact_records
 from moneybin.privacy.sql_lineage import (
     FAIL_CLOSED_CLASS,
@@ -384,6 +384,25 @@ def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None
         )
 
 
+# The DuckDB binder/catalog message is two parts: an identifier-bearing head
+# ('Referenced column "x" not found', 'Candidate bindings: "y"') and a
+# `LINE n:` tail that echoes the query VERBATIM, literal values included. The
+# head names only identifiers `sql_schema` already publishes; the tail is the
+# leak the blanket suppression was protecting against. Split, keep the head,
+# and run it through the PII net anyway — cheap, and fail-closed.
+_LINE_ECHO = re.compile(r"^LINE \d+:", re.MULTILINE)
+
+
+def _identifier_detail(exc: Exception) -> str | None:
+    """The identifier-bearing head of a DuckDB catalog/binder message."""
+    text = str(exc)
+    match = _LINE_ECHO.search(text)
+    if match is not None:
+        text = text[: match.start()]
+    masked, _ = mask_pii_shaped(text.strip())
+    return masked or None
+
+
 def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryResult:
     """Run a read-only SQL query with full privacy enforcement.
 
@@ -459,14 +478,18 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         output_classes = resolve_output_classes(qtree, snapshot, query)
         columns, rows, truncated = _fetch(db, query, max_rows)
     # SqlSchemaError comes from the lineage qualify step; CatalogException from
-    # DuckDB at execute time. Both mean "table/column doesn't exist". (Parsing
-    # happens above at parse_cached, outside this block, so SqlParseError can't
-    # surface here.)
-    except (SqlSchemaError, duckdb.CatalogException) as e:
-        # str(e) reaches neither the client nor the log: a DuckDB or lineage
-        # message can quote the query verbatim, literal values included, and the
-        # log file is the more durable of the two boundaries. `sql_digest` says
-        # why the formatter cannot be relied on to catch it.
+    # DuckDB at execute time for an unknown TABLE; BinderException from DuckDB
+    # at execute time for an unknown COLUMN (CatalogException is tables only —
+    # a column DuckDB cannot bind previously fell through to the generic
+    # handler below and returned "Query execution failed." with no name). All
+    # three mean "table/column doesn't exist". (Parsing happens above at
+    # parse_cached, outside this block, so SqlParseError can't surface here.)
+    except (SqlSchemaError, duckdb.CatalogException, duckdb.BinderException) as e:
+        # str(e) still reaches neither the log nor the message; only the
+        # identifier head reaches `hint`. A DuckDB or lineage message can quote
+        # the query verbatim, literal values included, and the log file is the
+        # more durable of the two boundaries. `sql_digest` says why the
+        # formatter cannot be relied on to catch it.
         logger.warning(
             f"sql_query unknown table/column: {type(e).__name__} "
             f"(sql sha256={sql_digest(query)})"
@@ -474,8 +497,11 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         raise UserError(
             "Unknown table or column.",
             code=error_codes.SQL_UNKNOWN_TABLE,
+            hint=_identifier_detail(e),
         ) from e
     except duckdb.Error as e:
+        # No detail: ConversionException and friends quote the offending VALUE
+        # in the head itself, so there is no safe substring to thread.
         logger.warning(
             f"sql_query execution error: {type(e).__name__} "
             f"(sql sha256={sql_digest(query)})"
@@ -516,6 +542,19 @@ def _fetch_metadata(
     """
     try:
         return _fetch(db, query, max_rows)
+    # See execute_sql_query: DuckDB raises BinderException for an unknown
+    # COLUMN and CatalogException for an unknown TABLE; both get the same
+    # named-identifier treatment here as the data path.
+    except (duckdb.CatalogException, duckdb.BinderException) as e:
+        logger.warning(
+            f"sql_query metadata unknown table/column: {type(e).__name__} "
+            f"(sql sha256={sql_digest(query)})"
+        )
+        raise UserError(
+            "Unknown table or column.",
+            code=error_codes.SQL_UNKNOWN_TABLE,
+            hint=_identifier_detail(e),
+        ) from e
     except duckdb.Error as e:
         # See execute_sql_query: keep str(e) out of both the envelope and the log.
         logger.warning(

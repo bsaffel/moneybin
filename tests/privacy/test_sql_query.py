@@ -683,6 +683,59 @@ def test_unknown_table_error_omits_raw_detail(populated_db: Database) -> None:
     assert ei.value.details is None
 
 
+def test_unknown_column_returns_unknown_table_code_and_names_the_column(
+    populated_db: Database,
+) -> None:
+    """An unknown COLUMN classifies the same as an unknown table and is named.
+
+    DuckDB raises BinderException here, not CatalogException.
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            "SELECT nonexistent_col FROM core.fct_transactions",
+            max_rows=10,
+        )
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert "nonexistent_col" in (ei.value.hint or "")
+
+
+def test_unknown_column_hint_does_not_echo_query_literals(
+    populated_db: Database,
+) -> None:
+    """The hint carries the identifier head only, never the ``LINE n:`` tail.
+
+    That tail echoes the submitted query verbatim, literals included.
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            "SELECT nosuchcol FROM core.fct_transactions WHERE description = "
+            "'123-45-6789'",
+            max_rows=10,
+        )
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert "123-45-6789" not in (ei.value.hint or "")
+    assert "LINE" not in (ei.value.hint or "")
+
+
+def test_conversion_error_still_says_nothing(populated_db: Database) -> None:
+    """ConversionException stays in the generic no-detail bucket.
+
+    It quotes the offending VALUE in its head, not just the ``LINE`` tail, so
+    there is no safe substring of it to thread through.
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            "SELECT CAST('ACCT-12345678' AS INTEGER) AS n",
+            max_rows=10,
+        )
+    assert ei.value.code == error_codes.SQL_QUERY_ERROR
+    assert ei.value.hint is None
+    assert "ACCT-12345678" not in ei.value.message
+
+
 def test_truncation_sets_total_count(populated_db: Database) -> None:
     """When rows exceed max_rows, records are capped and total_count signals more."""
     _seed_txn(populated_db)
@@ -1524,9 +1577,10 @@ def test_unknown_table_log_names_the_error_type_not_the_query(
     the failing statement writes any inline literal to a file
     ``.claude/rules/security.md`` forbids it in.
 
-    An unknown *table*, not an unknown column: a column DuckDB cannot bind is
-    not a lineage failure at all — it reaches the execution handler below, so a
-    column fixture would leave this site untested and that one asserted twice.
+    An unknown *table* exercises CatalogException specifically. The unknown-
+    *column* case (BinderException, same handler, same log line) has its own
+    fixture in ``test_unknown_column_hint_does_not_echo_query_literals``,
+    which also pins the identifier-detail masking this handler performs.
     """
     with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
         with pytest.raises(UserError) as ei:
@@ -1567,10 +1621,17 @@ def test_execution_error_log_names_the_error_type_not_the_query(
     )
 
 
-def test_metadata_error_log_names_the_error_type_not_the_query(
+def test_metadata_unknown_column_log_names_the_error_type_not_the_query(
     populated_db: Database, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The DESCRIBE/SHOW branch has its own handler, so it needs its own guard."""
+    """The DESCRIBE/SHOW branch has its own handler, so it needs its own guard.
+
+    DESCRIBE only binds the inner query, never executes it, so an unknown
+    column there raises DuckDB's BinderException — the same exception the data
+    path routes to SQL_UNKNOWN_TABLE. This fixture used to land in the
+    metadata path's generic bucket (SQL_QUERY_ERROR, no detail); it now gets
+    the same named-identifier treatment as the data path.
+    """
     with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
         with pytest.raises(UserError) as ei:
             execute_sql_query(
@@ -1579,9 +1640,9 @@ def test_metadata_error_log_names_the_error_type_not_the_query(
                 f"WHERE display_name = '{_MERCHANT}'",
                 max_rows=10,
             )
-    assert ei.value.code == error_codes.SQL_QUERY_ERROR
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
     cause = ei.value.__cause__
     assert cause is not None
     _assert_log_names_the_failure_without_quoting_it(
-        caplog, cause, "sql_query metadata error"
+        caplog, cause, "sql_query metadata unknown table/column"
     )
