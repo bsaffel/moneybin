@@ -462,14 +462,22 @@ def _combined_class(classes: list[DataClass]) -> DataClass:
     the position, so collapsing it would discard a correct, more specific answer
     (and turn ``SELECT last_four`` into a whole mask).
 
-    Below CRITICAL every transform is passthrough, so the class is pure
-    reporting and the identified max is the more informative answer. Collapsing
-    there would also inflate a HIGH bound to CRITICAL — the over-classification
-    this module must not introduce.
+    Below CRITICAL every transform is passthrough except FLOORED, which is
+    sticky against a LOW-tier tie (see the check below) because it is the one
+    that masks. Elsewhere the identified max is the more informative answer;
+    collapsing there would also inflate a HIGH bound to CRITICAL — the
+    over-classification this module must not introduce.
 
     ``classes`` must be non-empty; every caller already guards that.
     """
     best = max(classes, key=lambda c: c.tier)
+    # FLOORED is sticky among LOW classes. Every LOW transform except this one
+    # is passthrough, so a bare `max` — which returns the FIRST maximal element
+    # — would drop the content net based on the order the sources happened to
+    # appear in. Above LOW the higher tier genuinely describes the value and
+    # masks at least as strongly, so it wins.
+    if best.tier is Tier.LOW and DataClass.FLOORED in classes:
+        return DataClass.FLOORED
     if best.tier is not Tier.CRITICAL:
         return best
     at_top = {c for c in classes if c.tier is Tier.CRITICAL}
@@ -597,10 +605,11 @@ def _table_scope_max(
     #   * Reporting `institution_account_number` for a whole-row struct claims a
     #     precision this path does not have.
     #
-    # Below CRITICAL every transform is passthrough today, so the class is pure
-    # reporting and the identified max is the more informative answer. Reporting
-    # UNRESOLVED there would also inflate a HIGH bound to CRITICAL, which is the
-    # over-classification this floor must not introduce.
+    # Below CRITICAL every transform is passthrough except FLOORED, so the
+    # class is pure reporting for every other candidate and the identified max
+    # is the more informative answer. Reporting UNRESOLVED there would also
+    # inflate a HIGH bound to CRITICAL, which is the over-classification this
+    # floor must not introduce.
     return FAIL_CLOSED_CLASS if best.tier is Tier.CRITICAL else best
 
 
@@ -669,9 +678,10 @@ def _conservative_floor(
     #   * Naming any specific CRITICAL class here claims a precision this path
     #     does not have, and CRITICAL transforms are not interchangeable.
     #
-    # Below CRITICAL every transform is passthrough, so the class is pure
-    # reporting: the more specific of the two floors is kept, and reporting
-    # UNRESOLVED there would inflate a HIGH bound to CRITICAL.
+    # Below CRITICAL every transform is passthrough except FLOORED, so the
+    # class is pure reporting for every other candidate: the more specific of
+    # the two floors is kept, and reporting UNRESOLVED there would inflate a
+    # HIGH bound to CRITICAL.
     return FAIL_CLOSED_CLASS if floor.tier is Tier.CRITICAL else floor
 
 

@@ -20,6 +20,7 @@ from moneybin.privacy.sql_lineage import (
     ProjectionSource,
     SqlParseError,
     _class_of_key,  # pyright: ignore[reportPrivateUsage]
+    _combined_class,  # pyright: ignore[reportPrivateUsage]
     derive_query_tier,
     expand_star,
     get_current_schema_snapshot,
@@ -1382,3 +1383,22 @@ def test_union_projection_sources_keep_an_agreed_upstream(
     sources = resolve_projection_sources(tree, snapshot)
 
     assert sources["a"].upstream == "core.dim_accounts.account_id"
+
+
+@pytest.mark.parametrize(
+    "classes",
+    [
+        [DataClass.FLOORED, DataClass.CATEGORY],
+        [DataClass.CATEGORY, DataClass.FLOORED],
+    ],
+)
+def test_floored_is_sticky_regardless_of_source_order(
+    classes: list[DataClass],
+) -> None:
+    assert _combined_class(classes) is DataClass.FLOORED
+
+
+def test_floored_does_not_outrank_a_higher_tier() -> None:
+    assert _combined_class([DataClass.FLOORED, DataClass.TXN_AMOUNT]) is (
+        DataClass.TXN_AMOUNT
+    )

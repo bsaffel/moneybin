@@ -1593,10 +1593,10 @@ def test_unanimous_critical_class_keeps_its_own_transform(
 @pytest.mark.parametrize(
     ("case", "sql", "expected_class", "expected_tier", "expected_value"),
     [
-        # Below CRITICAL every transform is passthrough, so the class is pure
-        # reporting and the merge must still report the max — unchanged by this
-        # fix. A collapse that reached below CRITICAL would both mask these
-        # values and inflate their tier.
+        # Below CRITICAL every transform is passthrough except FLOORED, which
+        # none of these ties involve, so the merge still reports the plain max
+        # — unchanged by this fix. A collapse that reached below CRITICAL would
+        # both mask these values and inflate their tier.
         (
             "low-low-tie-in-one-projection",
             "SELECT institution_name || account_type AS x FROM core.dim_accounts",
@@ -1629,7 +1629,7 @@ def test_below_critical_merge_behaviour_is_unchanged(
     expected_value: str,
     populated_db: Database,
 ) -> None:
-    """Ties below CRITICAL keep the existing max-by-tier answer, unmasked."""
+    """Ties below CRITICAL that skip FLOORED keep the max-by-tier answer, unmasked."""
     populated_db.execute(
         "INSERT INTO core.dim_accounts (account_id, routing_number, last_four, "
         "account_type, institution_name, display_name) "
