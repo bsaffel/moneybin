@@ -88,6 +88,16 @@ def mask_pii_shaped(text: str) -> tuple[str, bool]:
     (``SELECT ({'a':1})['Payment $1,234.56 to Dr Smith']`` passes through
     unmasked) — the point is that a dollar amount there is the user's own
     financial data, which the hint should let them read.
+
+    That pass-through is not total, and the exception is worth stating: an
+    amount written WITHOUT thousands separators is an unbroken run of digits,
+    so ``$12345678.00`` trips ``_mask_account`` and comes back
+    ``$****...5678.00``. Adding ``_mask_dollar`` here would fix the mangling by
+    masking every amount, which defeats the exclusion this docstring exists to
+    explain. The account net is deliberately over-broad (see its own comment),
+    and over-masking is the safe direction for a backstop, so the mangling
+    stands — pinned by ``test_mask_pii_shaped_mangles_an_uncommad_large_amount``
+    so it is a known cost rather than a surprise.
     """
     result, ssn_masked = _mask_ssn(text)
     result, account_masked = _mask_account(result)

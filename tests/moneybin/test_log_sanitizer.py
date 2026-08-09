@@ -16,6 +16,21 @@ def test_mask_pii_shaped_masks_ssn_and_account_shapes_not_amounts() -> None:
     assert did_mask is True
 
 
+def test_mask_pii_shaped_mangles_an_uncommad_large_amount() -> None:
+    """The amount pass-through has one hole, and it is an accepted cost.
+
+    ``mask_pii_shaped`` runs no dollar pass, so an amount written without
+    thousands separators is just an unbroken digit run and ``_mask_account``
+    claims it. Adding ``_mask_dollar`` would mask every amount and defeat the
+    exclusion; the account net is deliberately over-broad and over-masking is
+    the safe direction, so this is pinned rather than fixed. The comma'd form
+    on the same line is the control: it survives untouched.
+    """
+    masked, did_mask = mask_pii_shaped("paid $12345678.00 and $1,234.56")
+    assert masked == "paid $****...5678.00 and $1,234.56"
+    assert did_mask is True
+
+
 def test_mask_pii_shaped_reports_no_mask_on_clean_text() -> None:
     masked, did_mask = mask_pii_shaped('Referenced column "trade_date" not found')
     assert masked == 'Referenced column "trade_date" not found'
