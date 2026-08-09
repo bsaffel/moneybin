@@ -68,7 +68,10 @@ outside. Three rules follow:
 - **Echoing a caller's own input back is not automatically safe.** A refusal
   that quotes the unknown key the caller passed still writes the institution's
   identifier into a log line and a response envelope. Mask on the way out
-  regardless of who supplied it.
+  regardless of who supplied it. The masked form — and only the masked form —
+  is what AGENTS.md's "no PII or financial data in logs" rule carves out for a
+  refusal: the caller who passed several keys has to learn which one was
+  rejected, and a count cannot tell them.
 - **Never narrow the mask by arguing a particular key is synthetic.** "This
   channel derives its key from the filename, so it is not PII" is true of the
   value and wrong about the field: the same column carries a real `<ACCTID>`
