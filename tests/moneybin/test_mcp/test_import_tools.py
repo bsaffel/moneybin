@@ -3863,6 +3863,67 @@ class TestImportFilesConfirmationRequired:
         # No CLI escape hatch: naming one here is what the bug looked like.
         assert "moneybin " not in action
 
+    async def test_the_registered_inbox_tool_keeps_the_minted_account_hint(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The registered tool is the coarse one, so it is the one that must say it.
+
+        ``import_inbox_sync`` builds the mint hint, but generic clients never
+        call it — ``import_inbox_sync_coarse`` is what the standard registry
+        exposes, and it rebuilt ``actions`` from scratch. So an agent draining
+        the inbox received ``accounts_created`` in the payload with no
+        instruction to report or correct the account, while every other import
+        surface carries one. An unattended drain is where an unannounced
+        account is *least* likely to be noticed.
+
+        The hint is recomputed from the response's own ``processed`` rows
+        through the same helper the narrow tool uses, rather than string-matched
+        out of ``actions`` — the wrapper deliberately drops the narrow tool's
+        other hints, and a filter would have to know which sentence to keep.
+        """
+        from moneybin.mcp.tools.import_tools import import_inbox_sync_coarse
+
+        sync_result = SimpleNamespace(
+            processed=[
+                {
+                    "filename": "statement.csv",
+                    "transactions": 2,
+                    "accounts_created": [
+                        {"account_id": "acct_new01", "display_name": "Checking"}
+                    ],
+                }
+            ],
+            failed=[],
+            pending=[],
+            skipped=[],
+            ignored=[],
+            transforms_applied=True,
+            transforms_duration_seconds=0.1,
+            transforms_error=None,
+        )
+        service = MagicMock()
+        service.sync.return_value = sync_result
+
+        def _fake_inbox_service(**_kw: object) -> MagicMock:
+            return service
+
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox.InboxService", _fake_inbox_service
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox.get_database", _fake_database
+        )
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_inbox._uncategorized_count", lambda: 0
+        )
+
+        result = await import_inbox_sync_coarse(refresh=False)
+
+        actions = " ".join(result.actions or [])
+        assert "created 1 new account" in actions, result.actions
+        # The wrapper's own staged-import hint is not lost to the merge.
+        assert "import_status" in actions, result.actions
+
     async def test_import_files_that_created_nothing_hints_nothing(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:

@@ -2513,16 +2513,26 @@ def import_inbox_sync_coarse(
     refresh: bool = True,
 ) -> ResponseEnvelope[ImportInboxSyncPayload]:
     """Drain the inbox with staged-import-only next actions."""
-    from moneybin.mcp.tools.import_inbox import import_inbox_sync
+    from moneybin.mcp.tools.import_inbox import (
+        import_inbox_sync,
+        minted_account_count,
+    )
 
     response = inspect.unwrap(import_inbox_sync)(refresh=refresh)
-    return replace(
-        response,
-        actions=[
-            "Use import_status(sections=['inbox', 'imports']) to inspect the "
-            "result and any remaining pending files."
-        ],
-    )
+    actions = [
+        "Use import_status(sections=['inbox', 'imports']) to inspect the "
+        "result and any remaining pending files."
+    ]
+    # This wrapper narrows the narrow tool's hints on purpose — most of them
+    # name surfaces a coarse caller should not be sent to. The mint hint is the
+    # exception: this is the tool the standard registry exposes, so dropping it
+    # meant an agent got `accounts_created` in the payload and no instruction to
+    # report or correct it, alone among every import surface. Recomputed from
+    # the response rather than filtered out of `response.actions`, so the
+    # wrapper never has to know which sentence to keep.
+    if minted := accounts_created_action(minted_account_count(response.data.processed)):
+        actions.insert(0, minted)
+    return replace(response, actions=actions)
 
 
 @mcp_tool(read_only=False)

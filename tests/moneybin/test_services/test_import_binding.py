@@ -18,6 +18,7 @@ from moneybin.errors import UserError
 from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.import_confirmation import ImportConfirmationRequiredError
 from moneybin.services.import_service import ImportService
+from tests.import_helpers import import_answering_gate
 from tests.moneybin.db_helpers import create_core_tables
 
 _STANDARD_CSV = Path(__file__).parents[2] / "fixtures" / "tabular" / "standard.csv"
@@ -1438,6 +1439,74 @@ def test_account_metadata_refuses_one_account_named_by_both_referents(
                 key: {"display_name": "By source key"},
             },
         )
+
+
+def test_the_answering_helper_refuses_to_answer_a_real_identity_question(
+    db: Database,
+) -> None:
+    """The helper's one safety property, asserted directly for the first time.
+
+    ``import_answering_gate`` binds "new" for tests whose account is incidental,
+    and most of the suite reaches the gate through it. Its whole licence to do
+    that is this branch: a proposal carrying merge candidates is a real identity
+    question, so the helper re-raises instead of answering. If that condition
+    ever flipped, dozens of unrelated tests would quietly start auto-answering
+    the matcher — green, and proving nothing — which is precisely the failure
+    `.claude/rules/testing.md` ("No Shortcuts") exists to prevent.
+
+    The twin is what makes this fixture isolate the candidates branch rather
+    than the reason check above it: the gate raised here *is* an
+    ``account_confirmation``, asserted below, so only the candidates arm can be
+    what re-raised.
+    """
+    _seed_twin(db, _OFX_TWIN)
+    svc = ImportService(db)
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        import_answering_gate(svc, _MINIMAL_OFX, refresh=False, confirm=True)
+
+    outcome = exc.value.outcome
+    assert outcome.reason == "account_confirmation"
+    assert outcome.account_proposals[0]["candidates"], outcome.account_proposals
+    # Re-raised unchanged, so the caller sees the question the resolver asked.
+    linked = db.execute("SELECT COUNT(*) FROM app.account_links").fetchone()
+    assert linked is not None and linked[0] == 0
+
+
+def test_the_contradiction_refusal_names_the_parameter_the_caller_used(
+    db: Database, tmp_path: Path
+) -> None:
+    """A refusal that names the wrong parameter sends the caller looking for it.
+
+    The same ``explicit_account_id`` arrives from two places — ``account_bindings``
+    and the direct ``account_id`` — and the refusal named the first one either
+    way. An agent debugging the message would go hunting for an
+    ``account_bindings`` argument it never sent, on a path where the fix is to
+    change ``account_id``.
+    """
+    _seed_existing_account(db, account_id="acct_other01", display_name="Other")
+    # The id is "pinned" so that it collides with the source key the first
+    # import accepts: on the `account_id` path the pin *is* the source key, and
+    # that collision is what makes the second import contradictory.
+    _seed_existing_account(db, account_id="pinned", display_name="Pinned")
+    svc = ImportService(db)
+
+    named = tmp_path / "named.csv"
+    named.write_text(
+        "Date,Description,Amount,Account Name\n2026-01-15,Coffee,-12.50,pinned\n"
+    )
+    svc.import_file(
+        named, refresh=False, confirm=True, account_bindings={"@0": "acct_other01"}
+    )
+
+    plain = tmp_path / "plain.csv"
+    plain.write_text("Date,Description,Amount\n2026-01-16,Groceries,-20.00\n")
+    with pytest.raises(ValueError, match="account_id pins") as exc:
+        svc.import_file(plain, refresh=False, confirm=True, account_id="pinned")
+
+    # The refusal still says what to do; only the misattribution is gone.
+    assert "account_bindings" not in str(exc.value), str(exc.value)
+    assert "acct_other01" in str(exc.value)
 
 
 def test_a_raw_source_key_still_binds(db: Database) -> None:

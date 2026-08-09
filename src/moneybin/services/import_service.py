@@ -1284,7 +1284,9 @@ def _refuse_unknown_binding_targets(
 
 
 def _refuse_contradicted_bindings(
-    resolver: AccountResolver, source_accounts: list[SourceAccount]
+    resolver: AccountResolver,
+    source_accounts: list[SourceAccount],
+    binding_targets: list[str | None],
 ) -> None:
     """Reject a binding the resolver would later refuse, before anything loads.
 
@@ -1301,6 +1303,11 @@ def _refuse_contradicted_bindings(
     binding over an existing native key adopts at the ladder's strong-ref step
     instead of minting, which is the documented re-import idempotency, not a
     contradiction.
+
+    ``binding_targets`` says which parameter supplied each id — non-None for an
+    ``account_bindings`` answer, None for the direct ``account_id``. The message
+    names it, because a refusal that cites an argument the caller never sent
+    sends them looking for it instead of at the one they have to change.
     """
     for index, src in enumerate(source_accounts):
         if not src.explicit_account_id:
@@ -1310,11 +1317,15 @@ def _refuse_contradicted_bindings(
             continue
         # Names the positional ref, never source_account_key, for the reason
         # _apply_account_bindings documents: this reaches an MCP caller intact.
+        supplied_by = (
+            f"account_bindings binds {proposal_ref(index)}"
+            if binding_targets[index] is not None
+            else f"account_id pins {proposal_ref(index)}"
+        )
         raise ValueError(
-            f"account_bindings binds {proposal_ref(index)} to "
-            f"{src.explicit_account_id!r}, but this file's account is already "
-            f"accepted onto {existing!r}. Bind it to {existing!r}, or re-point "
-            "the existing link first."
+            f"{supplied_by} to {src.explicit_account_id!r}, but this file's "
+            f"account is already accepted onto {existing!r}. Bind it to "
+            f"{existing!r}, or re-point the existing link first."
         )
 
 
@@ -1985,7 +1996,7 @@ class ImportService:
         )
         ratified = _ratified_binding_refs(binding_targets)
         _refuse_unknown_binding_targets(resolver, source_accounts, bindings or {})
-        _refuse_contradicted_bindings(resolver, source_accounts)
+        _refuse_contradicted_bindings(resolver, source_accounts, binding_targets)
         wanted_fallback = set(fallback_keys)
         proposals: list[AccountProposalDict] = []
         # enumerate over the FULL list, not the surfaced subset: bindings are

@@ -81,7 +81,7 @@ $ moneybin import files statement.ofx
   Transactions: 2
 ✅ statement.ofx [ofx] — 2 rows
 👀 Created account: sample_bank CHECKING (e3a84714695d)
-   Rename with 'moneybin accounts set <account_id> --display-name'; if it duplicates an account you already have, 'moneybin accounts links run' proposes the merge.
+   Rename with 'moneybin accounts set <account_id> --display-name <name>'; if it duplicates an account you already have, 'moneybin accounts links run' proposes the merge.
 ```
 
 The same two fields reach every other surface: `accounts_created` on the

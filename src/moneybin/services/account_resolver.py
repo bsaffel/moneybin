@@ -351,6 +351,16 @@ class AccountResolver:
             # carried no identity signal. Carry that through: on a first import
             # the pick-list comes back empty, and without this the proposal would
             # be indistinguishable from a confident mint and pass unasked.
+            #
+            # Deliberately the caller's `fallback`, NOT the widened
+            # `fallback or src.last_four is None` used for the search above. The
+            # two answer different questions: the search widens because a null
+            # last_four cannot support a strong match, while this field says
+            # whether the source named an account at all. Widening it here would
+            # make `requires_confirm` true for every named account that has no
+            # last_four and matches nothing — a first-contact "Checking" column
+            # would start gating instead of minting, which is the behavior
+            # `test_a_named_first_contact_mint_loads_without_asking` pins.
             identity_unknown=fallback,
         )
 

@@ -220,7 +220,12 @@ def import_files_command(
         None,
         "--account-id",
         "-a",
-        help="Account identifier (bypasses name matching). Single-file mode only.",
+        help=(
+            "Account identifier (bypasses name matching). Single-file mode only. "
+            "Not honored for OFX/QFX/QBO, which name their own accounts and can "
+            "carry several — use --account-binding there; supplying it is "
+            "refused rather than ignored."
+        ),
     ),
     account_name: str | None = typer.Option(
         None,
@@ -1687,7 +1692,12 @@ def import_confirm_command(
     account_id: str | None = typer.Option(
         None,
         "--account-id",
-        help="Account ID to associate with imported transactions.",
+        help=(
+            "Account ID to associate with imported transactions. Not honored "
+            "for OFX/QFX/QBO, which name their own accounts and can carry "
+            "several — use --account-binding there; supplying it is refused "
+            "rather than ignored."
+        ),
     ),
     account_name: str | None = typer.Option(
         None,
