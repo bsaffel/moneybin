@@ -68,7 +68,9 @@ def handle_cli_errors(
     DatabaseLockError, DatabaseNotInitializedError, etc.) and exits with
     code 1. When the active output format is JSON (set via ``output_option``
     callback), emits a structured error envelope to stdout; otherwise logs
-    with the standard ❌ prefix. Unrecognized exceptions propagate unchanged.
+    the message with the standard ❌ prefix and prints any hint straight to
+    stderr (never through the logger — see the text-mode branch below).
+    Unrecognized exceptions propagate unchanged.
 
     On JSON-mode failure, writes a ``privacy.log.jsonl`` audit row mirroring
     the success-path entry render_or_json writes — keeps failed/blocked CLI
@@ -128,7 +130,20 @@ def handle_cli_errors(
             else:
                 logger.error(f"❌ {user_error.message}")
                 if user_error.hint:
-                    logger.info(user_error.hint)
+                    # NOT logger.info: the root logger runs at INFO and the
+                    # file handler is unfiltered (`_ConsoleNoiseFilter` only
+                    # guards the console handler — see its docstring), so a
+                    # logged hint persists to the durable cli_YYYY-MM-DD.log.
+                    # `hint` is not always MoneyBin-authored: `sql_query`'s
+                    # hint threads the head of a DuckDB binder/catalog
+                    # message, which can carry text the caller typed into
+                    # the query. `message` above stays on the logger — it IS
+                    # a fixed MoneyBin string. This mirrors the "Secrets in
+                    # Error Output" pattern (cli.md): text that must reach
+                    # the console but never the log file goes straight to
+                    # stderr via typer.echo, bypassing the logging pipeline
+                    # entirely.
+                    typer.echo(user_error.hint, err=True)
             raise typer.Exit(1) from e
 
 

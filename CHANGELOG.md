@@ -1014,6 +1014,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   could not be bound to the schema."
 
 ### Security
+- **A `UserError` hint shown on the CLI no longer reaches the durable log
+  file.** `handle_cli_errors` — the shared error path behind nearly every
+  `moneybin` command — logged the hint via `logger.info`, and the CLI's file
+  handler has no level filter (`_ConsoleNoiseFilter` guards the console
+  handler only), so every hint was written to `cli_YYYY-MM-DD.log`. Harmless
+  while every hint was a fixed MoneyBin-authored string; `sql_query`'s new
+  hint (above) is not — it threads the head of a DuckDB binder/catalog
+  message, which can carry text the caller typed into the query. The hint
+  still prints to the console, now via `typer.echo(..., err=True)`, the same
+  mechanism `cli.md`'s "Secrets in Error Output" rule already uses to keep
+  recovery text out of the log pipeline; only its destination changed.
 - **Fixed a redaction bypass that returned a source account identifier in the
   clear through `import_confirm`'s `confirmation_required` envelope (#372).**
   The tool declares `dynamic_classification=True`, and the decorator skips

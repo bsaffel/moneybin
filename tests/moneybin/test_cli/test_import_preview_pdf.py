@@ -198,6 +198,12 @@ def test_preview_routes_a_tcc_denial_through_the_classifier(
 
     Darwin is pinned rather than read from the host so the conjunction under
     test is the code's, not the runner's — CI is Linux.
+
+    The ❌ message still routes through the logger (assert on caplog); the 💡
+    hint goes straight to stderr via ``typer.echo`` and never touches the log
+    (`handle_cli_errors`, so it never carries a DuckDB error's caller-authored
+    text into a durable file) — CliRunner's default ``mix_stderr=True`` folds
+    that into ``result.output``, so the hint assertions move there.
     """
     monkeypatch.setattr("moneybin.errors.platform.system", lambda: "Darwin")
     # The classifier reads `exc.filename`, so the protected root is expressed
@@ -218,9 +224,9 @@ def test_preview_routes_a_tcc_denial_through_the_classifier(
     assert result.exit_code == 1
     # Both halves matter: what failed, and the one-click OS fix for it.
     assert "Operation not permitted" in caplog.text
-    assert "Full Disk Access" in caplog.text
+    assert "Full Disk Access" in result.output
     # The pane the hardcoded advice used to name.
-    assert "Files and Folders" not in caplog.text
+    assert "Files and Folders" not in result.output
 
 
 def test_preview_does_not_offer_the_tcc_remedy_for_a_mode_denial(
@@ -232,6 +238,12 @@ def test_preview_does_not_offer_the_tcc_remedy_for_a_mode_denial(
     every PermissionError, so this case got advice that could not fix it. No
     platform pin is needed — the EACCES branch returns before any platform
     test, which is itself the property being checked.
+
+    The ❌ message routes through the logger (caplog); the 💡 hint goes
+    straight to stderr via ``typer.echo`` and never touches the log — see
+    ``test_preview_routes_a_tcc_denial_through_the_classifier`` above for why
+    — so the hint assertions read ``result.output`` instead (CliRunner's
+    default ``mix_stderr=True`` folds it in).
     """
     _patch_service(
         mocker,
@@ -245,8 +257,8 @@ def test_preview_does_not_offer_the_tcc_remedy_for_a_mode_denial(
 
     assert result.exit_code == 1
     assert "Permission denied" in caplog.text
-    assert "chmod" in caplog.text
-    assert "Full Disk Access" not in caplog.text
+    assert "chmod" in result.output
+    assert "Full Disk Access" not in result.output
 
 
 def _patch_key_failure(mocker: MockerFixture, db_path: Path) -> None:
