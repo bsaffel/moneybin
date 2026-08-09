@@ -1009,30 +1009,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now states the truth: account/routing numbers are masked, all other fields
   reach the model provider as-is, and there is no consent gate yet.
 - **`sql_query` and `moneybin sql query` now name the column an unknown-column
-  query got wrong, instead of a bare "Query execution failed."** DuckDB raises
-  `BinderException` for an unknown column, not `CatalogException` — the handler
-  caught only the latter, so the unknown-column case fell through to the
-  generic no-detail bucket under the `sql_query_error` code. It is now
-  classified the same as an unknown table, under `sql_unknown_table`, with a
-  hint naming the identifier DuckDB could not resolve; an agent branching on
-  the error code should update. `sql_unknown_table` also covers every other
-  binder/catalog rejection (a negative `LIMIT`, an out-of-range `GROUP BY`
-  term, a malformed regex, and more) — not only a missing table or column — so
-  its top-level message changed from "Unknown table or column." to "Query
-  could not be bound to the schema."
+  query got wrong, instead of a bare "Query execution failed." (#382).** DuckDB
+  raises `BinderException` for an unknown column rather than `CatalogException`,
+  so that case fell through to the generic no-detail bucket; it now returns
+  `sql_unknown_table` with a hint naming the unresolved identifier, and an agent
+  branching on the error code should update. That code covers every
+  binder/catalog rejection — a negative `LIMIT`, an out-of-range `GROUP BY`
+  term, a malformed regex — so its message widened from "Unknown table or
+  column." to "Query could not be bound to the schema."
 
 ### Security
-- **A `UserError` hint shown on the CLI no longer reaches the durable log
-  file.** `handle_cli_errors` — the shared error path behind nearly every
-  `moneybin` command — logged the hint via `logger.info`, and the CLI's file
-  handler has no level filter (`_ConsoleNoiseFilter` guards the console
-  handler only), so every hint was written to `cli_YYYY-MM-DD.log`. Harmless
-  while every hint was a fixed MoneyBin-authored string; `sql_query`'s new
-  hint (above) is not — it threads the head of a DuckDB binder/catalog
-  message, which can carry text the caller typed into the query. The hint
-  still prints to the console, now via `typer.echo(..., err=True)`, the same
-  mechanism `cli.md`'s "Secrets in Error Output" rule already uses to keep
-  recovery text out of the log pipeline; only its destination changed.
+- **A `UserError` hint shown on the CLI no longer reaches the durable log file
+  (#382).** `handle_cli_errors` logged every hint via `logger.info` and the CLI
+  file handler has no level filter, which became a disclosure once `sql_query`'s
+  new hint started carrying text the caller typed into the query. The hint still
+  prints to the console, now via `typer.echo(..., err=True)`; only its
+  destination changed.
 - **Fixed a redaction bypass that returned a source account identifier in the
   clear through `import_confirm`'s `confirmation_required` envelope (#372).**
   The tool declares `dynamic_classification=True`, and the decorator skips

@@ -728,11 +728,12 @@ def test_binder_error_head_without_a_line_marker_can_carry_caller_text(
 ) -> None:
     """Some BinderExceptions carry no ``LINE n:`` tail at all — pin that shape.
 
-    ``SELECT ({'a':1})['<literal>']`` is DuckDB's struct key-lookup error: the
-    entire message IS the first line, with no ``LINE`` marker and no
-    ``Candidate `` enumeration for ``_identifier_detail`` to split on — the
-    struct literal here has only one key (``a``), so DuckDB's "did you mean"
-    suggester has nothing else to list. The literal the caller wrote reaches
+    ``SELECT ({'a':1})['<literal>']`` is DuckDB's struct key-lookup error: it
+    carries no ``LINE`` marker at all, so the ``LINE`` split has nothing to cut.
+    (It does emit a ``Candidate Entries: "a"`` clause, which the candidate-
+    enumeration split drops — but that clause lists only the literal's own key,
+    so dropping it removes nothing the caller did not write.) The literal the
+    caller wrote reaches
     ``hint`` unmodified — this module documents that as an accepted contract,
     not a gap (see the comment above the ``except`` clause in
     ``execute_sql_query``): the first line quotes only what the caller typed.
