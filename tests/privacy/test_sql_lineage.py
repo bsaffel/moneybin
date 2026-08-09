@@ -1478,14 +1478,22 @@ def test_table_scope_max_carries_floored(
 def test_conservative_floor_merge_carries_floored(
     populated_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """_conservative_floor's own merge must not drop a FLOORED scope max.
+    """_conservative_floor's own per-select loop must not drop a FLOORED scope max.
 
     Mocks its two callees directly (rather than ``_class_of_key``) so this
-    isolates ``_conservative_floor``'s own per-select loop and table_dc merge
-    from whether ``_scope_input_max`` / ``_table_scope_max`` are themselves
-    correct — a ``_class_of_key`` patch would let ``_table_scope_max``'s own
-    (separately tested) fix silently rescue a still-broken merge here, since
-    it walks every column of the same table and would also see FLOORED.
+    isolates ``_conservative_floor``'s own accumulation from whether
+    ``_scope_input_max`` / ``_table_scope_max`` are themselves correct — a
+    ``_class_of_key`` patch would let ``_table_scope_max``'s own (separately
+    tested) fix silently rescue a still-broken loop here, since it walks
+    every column of the same table and would also see FLOORED.
+
+    This pins the per-select loop (:658) specifically: ``_scope_input_max``
+    returns FLOORED here, so ``best`` is already FLOORED by the time the
+    ``table_dc`` merge (:660) runs, and that merge cannot discriminate a
+    fixed implementation from a strict-`>` one on this fixture — either way
+    it returns the ``best`` it was handed. See
+    ``test_conservative_floor_table_dc_merge_carries_floored`` for the
+    sibling fixture that isolates :660 instead.
     """
     import moneybin.privacy.sql_lineage as lin
 
@@ -1522,3 +1530,39 @@ def test_table_scope_max_critical_control_is_unaffected(populated_db: Database) 
     tree = parse_cached("SELECT account_id FROM core.dim_accounts")
 
     assert _table_scope_max(tree, snapshot, "") is FAIL_CLOSED_CLASS
+
+
+def test_conservative_floor_table_dc_merge_carries_floored(
+    populated_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_conservative_floor's table_dc merge (:660) must not drop a FLOORED table max.
+
+    Mirror of ``test_conservative_floor_merge_carries_floored`` with the two
+    callees' roles swapped: ``_scope_input_max`` returns AGGREGATE, so the
+    per-select loop's ``best`` going into the merge is AGGREGATE, not
+    FLOORED. Only the ``floor = _combined_class([best, table_dc])`` merge
+    itself can then carry FLOORED into the result — the sibling test above
+    can't pin that merge, because there ``best`` is already FLOORED before
+    the merge runs (a strict-`>` pre-fix merge returns `best` unchanged on a
+    LOW-tier tie, so it stays green either way). This fixture fails on a
+    strict-`>` merge and only passes when the merge itself is FLOORED-sticky.
+    """
+    import moneybin.privacy.sql_lineage as lin
+
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT class FROM core.dim_categories")
+
+    def fake_scope_input_max(
+        select: object, snapshot: object, sql_for_log: object
+    ) -> DataClass:
+        return DataClass.AGGREGATE
+
+    def fake_table_scope_max(
+        tree: object, snapshot: object, sql_for_log: object
+    ) -> DataClass:
+        return DataClass.FLOORED
+
+    monkeypatch.setattr(lin, "_scope_input_max", fake_scope_input_max)
+    monkeypatch.setattr(lin, "_table_scope_max", fake_table_scope_max)
+
+    assert _conservative_floor(tree, snapshot, "") is DataClass.FLOORED

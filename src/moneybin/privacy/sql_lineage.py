@@ -486,7 +486,7 @@ def _combined_class(classes: list[DataClass]) -> DataClass:
 def _scope_input_max(
     select: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """Max-tier class among ``select``'s input columns; AGGREGATE if none resolve.
+    """Max-tier of ``select``'s inputs, FLOORED sticky at a tie; else AGGREGATE.
 
     Alias resolution is local to ``select``: ``collect_input_columns`` builds the
     alias map from this subtree alone. That locality is the point — a UNION can
@@ -557,7 +557,7 @@ def _tables_in_scope(tree: exp.Expr, snapshot: SchemaSnapshot) -> set[tuple[str,
 def _table_scope_max(
     tree: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """Max-tier class over EVERY column of every classified table ``tree`` reads.
+    """Max tier over EVERY column of every classified table ``tree`` reads; FLOORED tie.
 
     The column-reference floor (``_scope_input_max``) can only see columns the
     query NAMES. A projection that names none — ``SELECT dim_accounts FROM
@@ -614,7 +614,7 @@ def _table_scope_max(
 def _conservative_floor(
     tree: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """The tier an unresolved projection takes: max over EVERY scope in ``tree``.
+    """The tier an unresolved projection takes: max over EVERY scope; FLOORED sticky.
 
     **THE INVARIANT, stated once:** a projection is classified LOW only when we
     positively established what it is. Anything unresolved, opaque, or
@@ -626,7 +626,8 @@ def _conservative_floor(
     other:
 
     * **Per-scope column max** (``_scope_input_max`` over every SELECT in the
-      tree). Precise where the query names its columns. Walking every SELECT —
+      tree, FLOORED sticky at a LOW tie). Precise where the query names its
+      columns. Walking every SELECT —
       each with its own local alias map, so per-branch alias correctness
       survives — is what keeps a CTE body (``SELECT v FROM c15``) or a
       CTE-only UNION branch from flooring at AGGREGATE and propagating that LOW
