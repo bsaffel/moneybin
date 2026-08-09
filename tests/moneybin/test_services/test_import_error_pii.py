@@ -118,23 +118,37 @@ def test_empty_binding_value_does_not_echo_the_files_account_number(
     assert "@0" in message
 
 
-def test_masking_a_hostile_account_label_terminates(db: Any, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("hostile", "shape"),
+    [
+        (("1" + " " * 64) * 4 + "x", "whitespace-run-alternation"),
+        ("A" * 30_000 + "1x2x3x4xZ", "long-alphabetic-prefix"),
+    ],
+    ids=["whitespace-run-alternation", "long-alphabetic-prefix"],
+)
+def test_masking_a_hostile_account_label_terminates(
+    db: Any, tmp_path: Path, hostile: str, shape: str
+) -> None:
     """The mask runs on untrusted file content, so it must not be exponential.
 
     ``_created_account`` masks ``src.account_name``, which on tabular is a cell
     the file supplied — so a label is attacker-controlled in the same sense any
-    imported field is. The gap alternation had two branches that could each
-    match a run of whitespace in many ways, and a label that ultimately fails to
-    match made the engine try all of them: 165 characters took 0.53s, and every
-    additional pair of spaces doubled it.
+    imported field is.
+
+    Two distinct blow-ups, found a round apart, which is why this is a grid:
+
+    - *whitespace-run-alternation* — the gap's second branch could place its
+      whitespace atom at any of N positions in a run of N spaces, so a label
+      that ultimately failed to match cost 2^N. 165 characters took 0.53s.
+    - *long-alphabetic-prefix* — the leading ``[A-Za-z]*`` was retried from
+      every character of a long letter run, rescanning it each time: quadratic,
+      1.2s at 20k characters. Fixed by a lookbehind that lets a match begin only
+      at a token boundary, so the retry costs O(1) instead of O(n).
 
     Asserted as a wall-clock bound rather than a pattern property because that
-    is the failure a user experiences — a hung import. The margin is ~30×: this
-    input took minutes before the fix and is instant after it.
+    is the failure a user experiences — a hung import.
     """
     from moneybin.services.import_service import mask_embedded_account_number
-
-    hostile = ("1" + " " * 64) * 4 + "x"
 
     start = time.perf_counter()
     mask_embedded_account_number(hostile)

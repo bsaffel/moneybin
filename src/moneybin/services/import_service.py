@@ -132,8 +132,16 @@ class CreatedAccount:
 # right side to err on: an over-masked label is legible, an under-masked one is
 # an account number.
 _ACCOUNT_NUMBER_GAP = r"(?:[^\s\d]*|[^\s0-9A-Za-z]*\s[^0-9A-Za-z]*)"
+# The lookbehind is the other half of keeping this linear. Without it the
+# leading [A-Za-z]* is retried from every character of a long letter run,
+# rescanning the whole run each time — quadratic, 1.2s on a 20k-character label,
+# and labels come from the file. A match can only begin where the identifier
+# does, so requiring a non-alphanumeric (or string start) before it makes every
+# interior retry fail in O(1) instead of O(n). It changes no result: a match
+# that could start mid-token is already found from that token's start, where the
+# greedy prefix covers the same span.
 _EMBEDDED_ACCOUNT_NUMBER = re.compile(
-    rf"[A-Za-z]*\d(?:{_ACCOUNT_NUMBER_GAP}\d){{4,}}[A-Za-z]*"
+    rf"(?<![0-9A-Za-z])[A-Za-z]*\d(?:{_ACCOUNT_NUMBER_GAP}\d){{4,}}[A-Za-z]*"
 )
 
 
@@ -3697,7 +3705,7 @@ class ImportService:
             resolved_alias=resolved_alias,
             account_id_override=account_id,
         )
-        self._gate_account_proposals(
+        gated = self._gate_account_proposals(
             AccountResolver(self._db, actor="system"),
             [identity.source],
             account_bindings,
@@ -3729,8 +3737,7 @@ class ImportService:
             decision=decision,
             doc=doc,
             save_format=save_format,
-            account_id_override=account_id,
-            account_bindings=account_bindings,
+            bound_source=gated[0],
             rung="bridge",
             in_outer_txn=in_outer_txn,
             emit_metrics=emit_metrics,
@@ -4335,13 +4342,19 @@ class ImportService:
         # resolves an account identity — a seeded document writes no link, so
         # there is nothing to ratify. The identity scope is the issuer slug, so
         # this asks once per card, not once per statement.
+        # Carries the gated identity across `begin_import` to the dispatch
+        # below. Declared here because the gate and the load sit in two separate
+        # `outcome == "transactions"` blocks with the import-log write between
+        # them — the compiler cannot see that the second implies the first, which
+        # is exactly the coupling that let the load re-derive its own copy.
+        pdf_bound: SourceAccount | None = None
         if decision.outcome == "transactions":
             identity = _pdf_source_account(
                 decision,
                 resolved_alias=resolved_alias,
                 account_id_override=account_id,
             )
-            self._gate_account_proposals(
+            gated = self._gate_account_proposals(
                 AccountResolver(self._db, actor="system"),
                 [identity.source],
                 account_bindings,
@@ -4350,6 +4363,7 @@ class ImportService:
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
+            pdf_bound = gated[0]
 
         # Committing to a write — open the import_log row now.
         import_id = import_log.begin_import(
@@ -4367,6 +4381,11 @@ class ImportService:
         # ------------------------------------------------------------------
 
         if decision.outcome == "transactions":
+            if pdf_bound is None:  # pragma: no cover — set under this same test
+                raise ValueError(
+                    "PDF routing reached the transactions load without an "
+                    "account-identity gate."
+                )
             return self._import_pdf_transactions(
                 canonical=canonical,
                 resolved_alias=resolved_alias,
@@ -4375,8 +4394,7 @@ class ImportService:
                 decision=decision,
                 doc=doc,
                 save_format=save_format,
-                account_id_override=account_id,
-                account_bindings=account_bindings,
+                bound_source=pdf_bound,
                 sign_override=sign,
                 in_outer_txn=in_outer_txn,
                 emit_metrics=emit_metrics,
@@ -4469,8 +4487,7 @@ class ImportService:
         decision: "RouteDecision",
         doc: "PdfDocument",
         save_format: bool = True,
-        account_id_override: str | None = None,
-        account_bindings: dict[str, str] | None = None,
+        bound_source: SourceAccount,
         rung: Literal["deterministic", "bridge"] = "deterministic",
         sign_override: str | None = None,
         in_outer_txn: bool = False,
@@ -4488,11 +4505,14 @@ class ImportService:
         semantics so a user/agent importing a one-off or sensitive statement can
         avoid persisting the layout fingerprint.
 
-        ``account_id_override`` short-circuits the issuer-slug + masked-account
-        prefix logic and uses the supplied value verbatim. Required when the
-        statement contains no account anchor and the user/agent wants the rows
-        attached to an existing ``dim_accounts`` row rather than the
-        filename-derived alias.
+        ``bound_source`` is the account ``_gate_account_proposals`` returned,
+        already carrying the caller's binding answer. It is a parameter rather
+        than a derivation because this function used to re-derive it — same
+        inputs, same helpers, a second copy — and OFX and tabular already thread
+        the gate's return value instead. Two derivations that must agree are
+        correct only by call-site convention; the one a reviewer worried about
+        is the one where an edit reaches a single copy and rows bind to an
+        account the gate never surfaced. There is now nothing to disagree with.
 
         ``sign_override`` is the caller's explicit ``sign=`` (already applied to
         ``decision.recipe`` by the gate). On a REPLAY it re-persists the corrected
@@ -4514,20 +4534,9 @@ class ImportService:
                 "PDF routing returned outcome='transactions' but recipe is None"
             )
 
-        # The same derivation the confirm gate ran before begin_import, with the
-        # caller's binding answer folded in, so the identity the user ratified is
-        # exactly the one bound here.
-        bound_pdf_accounts, _pdf_binding_targets = _apply_account_bindings(
-            [
-                _pdf_source_account(
-                    decision,
-                    resolved_alias=resolved_alias,
-                    account_id_override=account_id_override,
-                ).source
-            ],
-            account_bindings or {},
-        )
-        source_account = bound_pdf_accounts[0]
+        # The identity the confirm gate produced, threaded in rather than
+        # re-derived, so the ratified account and the bound one are one object.
+        source_account = bound_source
         account_id = source_account.source_account_key
         # Identity scope (issuer slug) and fingerprint, both used further down for
         # the raw account row and the format-recipe save. Read off the derivation
