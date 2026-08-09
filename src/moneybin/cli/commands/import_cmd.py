@@ -737,17 +737,22 @@ def import_files_command(
 
     classes_returned: list[str] | None = None
     if any(_gates_an_account(f) for f in files_list):
+        from moneybin.cli.output import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+            derive_log_sensitivity,
+        )
         from moneybin.privacy.introspection import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
-            derive_tier,
             extract_data_classes,
         )
         from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
             ImportConfirmationPayload,
         )
 
+        # `derive_log_sensitivity`, not a second inline `derive_tier` call: it
+        # is the existing helper for exactly this question and already serves
+        # the audit path, so one function answers it everywhere.
         batch_sensitivity = cast(
             'Literal["low", "medium", "high", "critical"]',
-            derive_tier(ImportConfirmationPayload).name.lower(),
+            derive_log_sensitivity(ImportConfirmationPayload, batch_sensitivity),
         )
         classes_returned = sorted(
             c.value for c in extract_data_classes(ImportConfirmationPayload)

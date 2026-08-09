@@ -1041,9 +1041,7 @@ def _resolve_binding_targets(
     return targets
 
 
-def _ratified_binding_refs(
-    source_accounts: list[SourceAccount], bindings: dict[str, str]
-) -> dict[str, str]:
+def _ratified_binding_refs(targets: list[str | None]) -> dict[str, str]:
     """The caller's answers, re-keyed from whatever they sent to positional refs.
 
     A surface replaying these must not replay the caller's own keys: on OFX a
@@ -1052,26 +1050,30 @@ def _ratified_binding_refs(
     a bound account is skipped by :meth:`_gate_account_proposals` and so never
     reaches ``account_proposals`` for a surface to look its ref up in.
 
+    Takes the resolved targets rather than re-deriving them, so the refs cannot
+    disagree with the bindings that were actually applied.
+
     Total by construction, so a surface can drop the caller's dict entirely:
     :func:`_resolve_binding_targets` raises on a key naming no account in this
     file, and any account a binding names is bound, so every surviving entry
     lands here.
     """
-    if not bindings:
-        return {}
     return {
         proposal_ref(index): target
-        for index, target in enumerate(
-            _resolve_binding_targets(source_accounts, bindings)
-        )
+        for index, target in enumerate(targets)
         if target is not None
     }
 
 
 def _apply_account_bindings(
     source_accounts: list[SourceAccount], bindings: dict[str, str]
-) -> list[SourceAccount]:
+) -> tuple[list[SourceAccount], list[str | None]]:
     """Fold each source account's binding into the resolver's input fields.
+
+    Returns the bound accounts and the per-account targets it resolved to reach
+    them. Handing the targets back is what lets :func:`_ratified_binding_refs`
+    re-key the same answers without resolving them a second time — two
+    resolutions of one input could only ever agree or be a bug.
 
     A binding value of ``"new"`` sets ``force_standalone`` (mint a fresh
     account, skip the merge-candidate pass); any other value is an existing
@@ -1089,7 +1091,7 @@ def _apply_account_bindings(
     number and this ValueError reaches an MCP caller intact.
     """
     if not bindings:
-        return source_accounts
+        return source_accounts, [None] * len(source_accounts)
     targets = _resolve_binding_targets(source_accounts, bindings)
     bound: list[SourceAccount] = []
     for index, (src, target) in enumerate(zip(source_accounts, targets, strict=True)):
@@ -1139,7 +1141,7 @@ def _apply_account_bindings(
             )
         else:
             bound.append(dataclasses.replace(src, explicit_account_id=target))
-    return bound
+    return bound, targets
 
 
 def _refuse_unknown_binding_targets(
@@ -1884,8 +1886,10 @@ class ImportService:
         histogram it used to feed would read zero for the interactive path.
         ``disposition="rollback"`` because raising is this call's success case.
         """
-        source_accounts = _apply_account_bindings(source_accounts, bindings or {})
-        ratified = _ratified_binding_refs(source_accounts, bindings or {})
+        source_accounts, binding_targets = _apply_account_bindings(
+            source_accounts, bindings or {}
+        )
+        ratified = _ratified_binding_refs(binding_targets)
         _refuse_unknown_binding_targets(resolver, source_accounts, bindings or {})
         _refuse_contradicted_bindings(resolver, source_accounts)
         wanted_fallback = set(fallback_keys)
@@ -4362,7 +4366,7 @@ class ImportService:
         # The same derivation the confirm gate ran before begin_import, with the
         # caller's binding answer folded in, so the identity the user ratified is
         # exactly the one bound here.
-        source_account = _apply_account_bindings(
+        bound_pdf_accounts, _pdf_binding_targets = _apply_account_bindings(
             [
                 _pdf_source_account(
                     decision,
@@ -4371,7 +4375,8 @@ class ImportService:
                 ).source
             ],
             account_bindings or {},
-        )[0]
+        )
+        source_account = bound_pdf_accounts[0]
         account_id = source_account.source_account_key
         # Identity scope (issuer slug) and fingerprint, both used further down for
         # the raw account row and the format-recipe save. Read off the derivation

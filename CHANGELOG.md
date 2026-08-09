@@ -412,7 +412,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
-- **Every import now stops before it merges a file into an account you already
+- **Breaking:** **Every import now stops before it merges a file into an
+  account you already
   have.** Previously only CSV/Excel stopped to ask; OFX and PDF resolved and
   bound the account on their own, so the one moment MoneyBin could be wrong
   about *whose* transactions these are went by unseen. All three channels now
@@ -462,7 +463,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refuses it alongside several paths rather than dropping it: run those calls
   one file at a time. It also cannot contradict an `--account-id` pin on the
   same account — send whichever one you mean.
-- **An account you named on a file type that cannot use it is now an error
+- **Breaking:** **An account you named on a file type that cannot use it is now
+  an error
   instead of silence.** `--account-name` and `--account-meta` reached only
   spreadsheet imports, and `--account-id` only spreadsheets and PDFs; passing
   one with any other file type was accepted and discarded, so the import bound

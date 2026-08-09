@@ -204,12 +204,15 @@ def inbox_default(
         # declarations rather than restated, so they move together.
         classes_returned: list[str] | None = None
         if any(p.get("account_proposals") for p in result.pending):
-            from moneybin.privacy.introspection import derive_tier, extract_data_classes
+            from moneybin.cli.output import derive_log_sensitivity
+            from moneybin.privacy.introspection import extract_data_classes
             from moneybin.privacy.payloads.imports import ImportConfirmationPayload
 
+            # The same helper the audit path uses, rather than a second inline
+            # derive_tier call beside it.
             sensitivity = cast(
                 'Literal["low", "medium", "high", "critical"]',
-                derive_tier(ImportConfirmationPayload).name.lower(),
+                derive_log_sensitivity(ImportConfirmationPayload, sensitivity),
             )
             classes_returned = sorted(
                 c.value for c in extract_data_classes(ImportConfirmationPayload)
