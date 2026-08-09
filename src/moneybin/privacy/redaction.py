@@ -40,6 +40,7 @@ from typing import Annotated, Any, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
+from moneybin.log_sanitizer import mask_pii_shaped
 from moneybin.privacy.taxonomy import DataClass
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,33 @@ def _passthrough(value: Any, _consent: ConsentSet | None) -> Any:
     return value
 
 
+def _mask_floored(value: Any, _consent: ConsentSet | None) -> Any:
+    """FLOORED → pass through, masking only account/routing/SSN shapes.
+
+    Typed ``Any`` for the same reason as ``_mask_unresolved``: an undeclared
+    raw/prep column's TYPE is unknown too, and this transform must not raise on
+    a STRUCT or a BIGINT and fail the query OPEN through the caller's handler.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        masked, _ = mask_pii_shaped(value)
+        return masked
+    # bool before int: bool subclasses int, and True is not a digit string.
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        masked, did_mask = mask_pii_shaped(str(value))
+        return masked if did_mask else value
+    if isinstance(value, dict):
+        return {key: _mask_floored(item, _consent) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_floored(item, _consent) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mask_floored(item, _consent) for item in value)
+    return value
+
+
 def _literal_values(declared_type: Any) -> tuple[Any, ...] | None:
     """Return a field's literal values after unwrapping ``Annotated``."""
     if get_origin(declared_type) is Annotated:
@@ -190,6 +218,9 @@ _TRANSFORMS: dict[DataClass, Any] = {
     DataClass.AGGREGATE: _passthrough,
     DataClass.RECORD_ID: _passthrough,
     DataClass.TIMESTAMP_OBSERVABILITY: _passthrough,
+    # LOW-tier, but not passthrough: an undeclared raw/prep column's content
+    # net, masking only account/routing/SSN shapes (see FLOORED's docstring).
+    DataClass.FLOORED: _mask_floored,
 }
 
 

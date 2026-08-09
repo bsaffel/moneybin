@@ -74,6 +74,13 @@ class DataClass(StrEnum):
     # ``CLASSIFICATION`` or a ``@report(classes=…)`` map — declaring a column
     # "unresolved" defeats the completeness tests that exist to catch gaps.
     UNRESOLVED = "unresolved"
+    # Not a classification either — the absence of a DECLARED one, in a schema
+    # where declaring every column was never the plan. Assigned by
+    # ``_class_of_key`` to an undeclared raw/prep column. Unlike UNRESOLVED it
+    # is LOW and passes values through, masking only account/routing/SSN
+    # SHAPES: raw/prep exist to be read while debugging an import. Never write
+    # it into ``CLASSIFICATION`` or a ``@report(classes=…)`` map.
+    FLOORED = "floored"
 
     @property
     def tier(self) -> Tier:
@@ -100,6 +107,7 @@ _TIER_BY_CLASS: dict[DataClass, Tier] = {
     DataClass.RECORD_ID: Tier.LOW,
     DataClass.TIMESTAMP_OBSERVABILITY: Tier.LOW,
     DataClass.UNRESOLVED: Tier.CRITICAL,
+    DataClass.FLOORED: Tier.LOW,
 }
 
 # Keyed by (schema, table) -> {column: DataClass}. Every column in
