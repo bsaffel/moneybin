@@ -16,6 +16,93 @@ Use the first strategy that applies:
 | 3 | **UUID4 (truncated)** | User-created entity with no natural key | Merchants, rules, budgets, user-created categories |
 | 4 | **Semantic slug** | Human-authored reference data needing readable IDs | Seed data codes (`INC-SAL`), format names (`chase_credit`) |
 
+## Account identifiers — never conflate them
+
+Three fields name an account, and only one of them is unconditionally safe to
+show. Say which one you mean, every time; "the account key" is ambiguous and
+has already produced bugs that leak one while intending the other.
+
+| | `source_account_key` | `account_id`, `proposed_account_id` | `proposal_ref` (`@0`, `@1`) |
+|---|---|---|---|
+| **What it holds** | The source-native key — often the institution's, sometimes MoneyBin-synthesized or a copied pin (below) | Three different things: MoneyBin's canonical id once the account is resolved, the source-native key when it is not, and a throwaway preview id on the mint path (all below) | A position in this file's full detected source-account list — always MoneyBin's (below) |
+| **Privacy class** | `ACCOUNT_IDENTIFIER` → CRITICAL (`imports.py:115`) | `RECORD_ID` (`imports.py:86`, `:108`, `:122`) | `RECORD_ID` (`imports.py:121`) |
+| **In any surface** | Masked (`****6789`) | Printed readably | Printed readably |
+| **Unconditionally safe to show?** | **No** | **No** | **Yes** |
+
+**`source_account_key` is not uniformly the institution's identifier**, and
+assuming it is re-creates the conflation this section exists to prevent. Its
+value depends on the channel and on what the caller pinned:
+
+| Case | What `source_account_key` holds |
+|---|---|
+| OFX | `<ACCTID>` — the institution's |
+| PDF with a readable account anchor | `{issuer_slug}_{slugify(masked_acct)}` — MoneyBin-synthesized *from* institution-derived parts, not issued by the institution (`import_service.py:1433-1446`) |
+| PDF with no anchor | a filename-derived alias — MoneyBin-synthesized |
+| Bare tabular (no account column) | `_bare_account_key(file_path, source_bytes)` — MoneyBin-synthesized from filename + content |
+| Any channel with `--account-id` pinned | MoneyBin's own `account_id`, copied straight in (`import_service.py` PDF `native_key = account_id_override`; tabular `source_account_key=account_id`) |
+
+**`account_id` is not unconditionally MoneyBin's either.** Nine staging models
+project it as `COALESCE(links.account_id, a.account_id)`, each annotated
+*"canonical via the import-time resolver link; source-native only if
+unresolved"* — `stg_ofx__accounts.sql:25`, `stg_tabular__accounts.sql:7`,
+`stg_plaid__accounts.sql:29` and six more. `core.dim_accounts` is built from
+those models, so an account with **no resolver link** — exactly what
+`accounts links run` exists to backfill — surfaces its source-native key
+through `account_id`, a `RECORD_ID` field that every surface prints readably.
+On OFX that is a real `<ACCTID>`.
+
+**`proposed_account_id` on the mint path is neither.** When
+`AccountResolver.propose()` finds no account to adopt (`is_new=True`) it returns
+a preview `uuid.uuid4().hex[:12]` that its own docstring calls "NOT written
+anywhere" — `resolve()` mints a *different* real id when the import commits
+(`account_resolver.py:288-290`, and `:324-346` returns it). Retaining one as a
+later reference resolves to nothing. It is display-only, and only for the life
+of the proposal.
+
+This is why `proposal_ref` exists, and why it — not `account_id` — is the
+referent to put in front of a user or an agent.
+
+**`@N` indexes the file's full detected source-account list, not the proposals
+you can see.** `_gate_account_proposals` enumerates every source account and
+omits the ones already bound or not confirming, so a file's only *visible*
+proposal is legitimately `@1` when `@0` was answered in an earlier call
+(`import_service.py:2060`, and `:1101` builds the valid set from
+`range(len(source_accounts))`; pinned by `test_import_binding.py:165-193`).
+Renumbering the surfaced list to start at `@0` would bind the wrong account.
+
+The source-native field is masked in **every** case anyway. That is deliberate
+and fail-closed: the classification is decided by what the field *may* hold, not
+by what a given row happens to hold, and no caller can tell the cases apart from
+outside. Three rules follow:
+
+- **Address the user and the agent with `proposal_ref`.** A CLI hint, MCP
+  `actions[]` entry, error message, or sidecar that names an account inside an
+  import flow uses `@N`. The source-native key is masked by the time it reaches
+  a response, so an agent told to act on it has nothing to act on — it cannot
+  reconstruct `****6789` — and `account_id` is print-safe only for a resolved
+  account. `@N` is the only referent that is always both readable and MoneyBin's.
+  It is not, however, universally *bindable*: on OFX the source key is untrusted
+  file content, so a key spelled `@0` is simultaneously one account's key and
+  another's ref. `_resolve_binding_targets` refuses that rather than guess
+  (`import_service.py:1110-1118`) and sends the caller to the file itself — the
+  one place the raw key stays legible once the confirmation has masked it.
+- **Echoing a caller's own input back is not automatically safe.** A refusal
+  that quotes the unknown key the caller passed still writes the institution's
+  identifier into a log line and a response envelope. Mask on the way out
+  regardless of who supplied it. The masked form — and only the masked form —
+  is what AGENTS.md's "no PII or financial data in logs" rule carves out for a
+  refusal: the caller who passed several keys has to learn which one was
+  rejected, and a count cannot tell them. Mind the shortfall, though: the
+  masker is digit-pattern based (`mask_embedded_account_number`), so it leaves
+  a key carrying fewer than five digits unchanged — `'1234'` and `'ACCT-XY9Z'`
+  both render verbatim, and `import_cmd.py:812` writes that refusal to
+  `logger.error`. Passing through the masker is not what makes a key safe.
+- **Never narrow the mask by arguing a particular key is synthetic.** "This
+  channel derives its key from the filename, so it is not PII" is true of the
+  value and wrong about the field: the same column carries a real `<ACCTID>`
+  on the next row. Masking is decided per field, once, on the worst case it can
+  hold.
+
 ## Content Hashes
 
 For records whose identity *is* their content — reimporting the same file must produce the same IDs.
