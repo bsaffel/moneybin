@@ -456,9 +456,10 @@ def test_declared_classes_match_derivation() -> None:
     ``report_class_derivation.py``) recomputes each column's class from the
     SQLMesh model source; this compares it against the declared contract via
     ``_declaration_is_safe`` — **tier, then mask strength**, not class
-    identity. Over-declaring is safe below CRITICAL (every transform there is
-    passthrough) but not automatically safe at CRITICAL, where the four classes
-    share a tier and differ in transform; see that helper. Only a declaration
+    identity. Over-declaring is safe below CRITICAL except over ``FLOORED``
+    (every other transform there is passthrough) and not automatically safe
+    at CRITICAL, where the four classes share a tier and differ in transform;
+    see that helper. Only a declaration
     that masks strictly more weakly than derivation requires an explicit,
     reasoned ``class_downgrades`` entry.
 
@@ -650,7 +651,8 @@ def test_core_declared_classes_match_derivation() -> None:
             DataClass.TXN_AMOUNT,
             DataClass.CATEGORY,
             True,
-            "below-CRITICAL over-declare: every transform there is passthrough",
+            "below-CRITICAL over-declare: neither class here is FLOORED, so "
+            "both transforms are passthrough",
         ),
         (
             DataClass.ACCOUNT_IDENTIFIER,

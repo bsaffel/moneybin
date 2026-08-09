@@ -133,13 +133,24 @@ def _mask_floored(value: Any, _consent: ConsentSet | None) -> Any:
     Typed ``Any`` for the same reason as ``_mask_unresolved``: an undeclared
     raw/prep column's TYPE is unknown too, and this transform must not raise on
     a STRUCT or a BIGINT and fail the query OPEN through the caller's handler.
+
+    The net covers ``str`` and ``int`` only — ``float``, ``Decimal``, and
+    ``bytes`` pass through untouched, deliberately. prep amounts are DECIMAL
+    written without thousands separators, so netting them would mask most
+    large amounts, the same un-comma'd-amount hole
+    ``test_mask_pii_shaped_mangles_an_uncommad_large_amount`` already pins.
+    The resulting asymmetry is real and accepted: a BIGINT amount-in-cents IS
+    masked here while a DECIMAL account number is not.
     """
     if value is None:
         return None
     if isinstance(value, str):
         masked, _ = mask_pii_shaped(value)
         return masked
-    # bool before int: bool subclasses int, and True is not a digit string.
+    # bool subclasses int, so this branch is inert today: str(bool) is never a
+    # digit run, so the int branch below already returns a bool unchanged.
+    # Kept explicit so a future change to the int branch can't start masking a
+    # bool without a test noticing.
     if isinstance(value, bool):
         return value
     if isinstance(value, int):

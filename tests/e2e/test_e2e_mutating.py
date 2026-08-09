@@ -1788,8 +1788,9 @@ class TestUserReports:
         assert entries[0]["tier"] == "user"
 
         # The report returns its own row: derived classes let `name` through
-        # (USER_NOTE is MEDIUM, and every transform below CRITICAL is
-        # passthrough), so this also proves the class map is not over-masking.
+        # (USER_NOTE is MEDIUM and passthrough — FLOORED is the only
+        # below-CRITICAL class that masks), so this also proves the class map
+        # is not over-masking.
         ran = run_cli("reports", "run", report_id, "--output", "json", env=env)
         ran.assert_success()
         rows = json.loads(ran.stdout)["data"]

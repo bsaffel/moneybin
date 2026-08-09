@@ -22,6 +22,16 @@ def test_record_id_is_low() -> None:
     assert DataClass.RECORD_ID.tier is Tier.LOW
 
 
+def test_floored_is_low() -> None:
+    """Pinned: Task 6's query gate keys off this tier to consent-gate raw/prep.
+
+    A silent flip to MEDIUM/HIGH would leave the whole privacy suite green —
+    every other FLOORED assertion holds at any tier — so only a direct pin
+    catches it.
+    """
+    assert DataClass.FLOORED.tier is Tier.LOW
+
+
 def test_dataclass_values_are_lowercase_snake() -> None:
     for member in DataClass:
         assert member.value == member.name.lower(), (

@@ -1180,11 +1180,12 @@ def test_reclassify_allows_a_downgrade_beside_an_unmoved_parameter(
 def test_every_admitted_downgrade_drops_the_tier_and_never_masks_more_weakly() -> None:
     """The rule as a property over the whole enum, not one fixture pair.
 
-    A tier drop that *raises* mask strength is not constructible today — below
-    CRITICAL every transform is passthrough — so a fixture-based test of the
-    mask-strength half would be vacuous. Sweeping every pair keeps the guard
-    honest if a future ``DataClass`` changes that, and asserting the admitted
-    set is non-empty is what keeps the sweep itself from passing vacuously.
+    A tier drop that *raises* mask strength — e.g. ``BALANCE`` → ``FLOORED`` —
+    is now constructible and correctly excluded from ``admitted`` below; before
+    ``FLOORED``, every below-CRITICAL transform was passthrough, so no fixture
+    pair could exercise that rejection. Sweeping every pair keeps the guard
+    honest as the enum grows, and asserting the admitted set is non-empty is
+    what keeps the sweep itself from passing vacuously.
     """
     admitted = [
         (from_class, to_class)

@@ -171,9 +171,11 @@ but `ROUTING_NUMBER`/`UNRESOLVED` mask wholly while
 (`"****" + value[-4:]`), and runtime masking keys off the **declared** class —
 so declaring `ACCOUNT_IDENTIFIER` where derivation says `ROUTING_NUMBER` sits
 at the same tier yet publishes the real routing number's last four digits.
-Below CRITICAL every transform is passthrough, so strength is constant there
-and the ordering reduces to the tier comparison; over-declaring across tiers
-stays safe and stays silent. Strength is measured from `redaction.py`'s
+Below CRITICAL every transform is passthrough except `FLOORED`, so strength is
+otherwise constant there and the ordering reduces to the tier comparison;
+over-declaring across tiers stays safe and stays silent. A passthrough
+declaration over a `FLOORED` derivation is the one below-CRITICAL exception —
+unsafe, same reasoning as at CRITICAL. Strength is measured from `redaction.py`'s
 `_TRANSFORMS` (`redaction.mask_strength`) rather than from a second
 hand-maintained list, so adding a `DataClass` cannot weaken the guard without
 failing a test.
