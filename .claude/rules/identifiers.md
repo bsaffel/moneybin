@@ -16,6 +16,31 @@ Use the first strategy that applies:
 | 3 | **UUID4 (truncated)** | User-created entity with no natural key | Merchants, rules, budgets, user-created categories |
 | 4 | **Semantic slug** | Human-authored reference data needing readable IDs | Seed data codes (`INC-SAL`), format names (`chase_credit`) |
 
+## Two account identifiers — never conflate them
+
+An account carries two identifiers with opposite handling rules. Say which one
+you mean, every time; "the account key" is ambiguous and has already produced
+bugs that leak one while intending the other.
+
+| | The institution's | MoneyBin's own |
+|---|---|---|
+| **Fields** | `source_account_key` | `account_id`, `proposed_account_id`, `proposal_ref` (`@0`, `@1`) |
+| **Where it comes from** | OFX `<ACCTID>`, PDF issuer + last four, tabular's slugified account column | Minted by MoneyBin |
+| **Privacy class** | `ACCOUNT_IDENTIFIER` → CRITICAL (`imports.py:115`) | `RECORD_ID` (`imports.py:121-122`) |
+| **In any surface** | Masked (`****6789`) | Printed readably |
+
+Two rules follow:
+
+- **Address the user and the agent with MoneyBin's identifier.** A CLI hint,
+  MCP `actions[]` entry, error message, or sidecar that names an account must
+  use `proposal_ref` or `account_id`. The institution's key is masked by the
+  time it reaches a response, so an agent told to act on it has nothing to act
+  on — it cannot reconstruct `****6789`.
+- **Echoing a caller's own input back is not automatically safe.** A refusal
+  that quotes the unknown key the caller passed still writes the institution's
+  identifier into a log line and a response envelope. Mask on the way out
+  regardless of who supplied it.
+
 ## Content Hashes
 
 For records whose identity *is* their content — reimporting the same file must produce the same IDs.
