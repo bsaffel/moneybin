@@ -93,25 +93,39 @@ class CreatedAccount:
 # the masked last-four banks print (and the shape of a year), so it stays;
 # anything longer in an account label is a number, not a label.
 #
-# Counting across the separator is the load-bearing part — a contiguous-only
-# rule reads "4111 1111 1111" as four safe tokens — and the separator is bounded
-# by *length*, not by character class. Three rounds of review found the same
-# defect three times: first "-", then "." and "/" and "_", then letters
-# ("Brokerage 12AB34CD56", the shape brokerage accounts actually use). Each
-# enumeration was a guess about how numbers are written, and each gap between
-# the guess and the label parser's own trailing-token strip was a run of account
-# digits shipped unmasked. A length bound has no such gap to widen.
+# **A whole word ends an account number. Nothing else does.**
 #
-# Three characters is what separates an identifier from a sentence: wide enough
-# for "12AB34" and "1234 - 5678", too narrow for "Checking 1234 Savings 5678",
-# which stays two four-digit tokens rather than one eight-digit number. The
-# leading and trailing [A-Za-z]* take the rest of the token, so "X12345678"
-# masks whole instead of leaving an "X" stub.
+# That sentence is the rule, and it is the fourth attempt at it. The first three
+# each described the *gap* between two digits and each shipped a leak: "-", then
+# any single non-alphanumeric ("." "/" "_"), then any run of three ("12AB34CD56"
+# masked but "12ABCD34EFGH56" did not). Every one was a guess about how account
+# numbers are punctuated, and an issuer who punctuated them differently walked
+# straight through. Stop guessing at the gap's *shape* and name what actually
+# separates two labels: a word.
+#
+# So a run of digits continues across a gap that is either
+#
+#   - whitespace-free  — "12ABCD34", "1234-5678", "12X3456789": letters and
+#     punctuation inside one token are part of the identifier, however long; or
+#   - letter-free      — "4111 1111 1111", "1234 - 5678": spacing and
+#     punctuation between digit groups, however long.
+#
+# and stops at a gap that is neither, which is exactly a whitespace-delimited
+# alphabetic word: "Checking 1234 Savings 5678" stays two safe four-digit
+# tokens, and "401K Plan 2024 Rewards" keeps its name instead of collapsing to
+# "****2024". The two branches are disjoint (zero whitespace vs. at least one),
+# so there is no ambiguity for the engine to backtrack through.
+#
+# The leading and trailing [A-Za-z]* take the rest of the token, so "X12345678"
+# masks whole rather than leaving an "X" stub that publishes the prefix.
 #
 # The cost is over-masking a decimal in a label ("Balance 1234.56"). That is the
 # right side to err on: an over-masked label is legible, an under-masked one is
 # an account number.
-_EMBEDDED_ACCOUNT_NUMBER = re.compile(r"[A-Za-z]*\d(?:[^\d]{0,3}\d){4,}[A-Za-z]*")
+_ACCOUNT_NUMBER_GAP = r"(?:[^\s\d]*|[^0-9A-Za-z]*\s[^0-9A-Za-z]*)"
+_EMBEDDED_ACCOUNT_NUMBER = re.compile(
+    rf"[A-Za-z]*\d(?:{_ACCOUNT_NUMBER_GAP}\d){{4,}}[A-Za-z]*"
+)
 
 
 def _mask_embedded_account_number(label: str) -> str:

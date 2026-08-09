@@ -654,12 +654,9 @@ def import_files_command(
                             f"Run 'moneybin import confirm {file_path_str} --accept' "
                             "as a subcommand."
                         )
-                # `import preview` runs tabular detection, with one special
-                # route for PDF — it has no OFX path at all, so offering it on
-                # that channel names a command that fails instead of inspecting
-                # anything. Same rule as the inbox subfolder recovery: an action
-                # is only worth printing on a channel that can run it.
-                if outcome.channel != "ofx":
+                # Same rule as the inbox subfolder recovery: an action is only
+                # worth printing on a channel that can run it.
+                if _can_preview(outcome):
                     confirm_actions.append(
                         f"Run 'moneybin import preview {file_path_str}' to inspect "
                         "the proposal."
@@ -1402,6 +1399,22 @@ def _sign_recovery_commands(
     ]
 
 
+def _can_preview(outcome: ConfirmationRequired) -> bool:
+    """Whether ``moneybin import preview`` can actually inspect this file.
+
+    ``import preview`` runs tabular format detection with one special route for
+    PDF; it has no OFX path at all, so offering it there names a command that
+    fails instead of inspecting anything.
+
+    A predicate rather than the fourth copy of ``outcome.channel != "ofx"``:
+    this hint is printed from four places (the ``import files`` envelope, the
+    text-mode prompt, and both of ``import confirm``'s recovery paths), the
+    first fix reached only one of them, and a reviewer found each survivor in a
+    separate round. One definition is what stops that.
+    """
+    return outcome.channel != "ofx"
+
+
 def _sign_direction(
     outcome: ConfirmationRequired,
 ) -> tuple[str | None, str | None]:
@@ -1610,9 +1623,10 @@ def _render_confirmation_prompt(
                 f"     moneybin import confirm {quoted_path} --accept   "
                 "(dedicated confirm subcommand)"
             )
-    typer.echo(
-        f"     moneybin import preview {quoted_path}   (inspect proposal in detail)"
-    )
+    if _can_preview(outcome):
+        typer.echo(
+            f"     moneybin import preview {quoted_path}   (inspect proposal in detail)"
+        )
     typer.echo()
 
 
@@ -1911,9 +1925,10 @@ def import_confirm_command(
                     f"Re-run 'moneybin import confirm {file_path} --accept' "
                     "to accept the proposed mapping as-is."
                 )
-        confirm_actions.append(
-            f"Run 'moneybin import preview {file_path}' to inspect the proposal."
-        )
+        if _can_preview(outcome):
+            confirm_actions.append(
+                f"Run 'moneybin import preview {file_path}' to inspect the proposal."
+            )
         if output == OutputFormat.JSON or not sys.stdout.isatty():
             envelope = build_envelope(
                 data=envelope_data,
@@ -1984,10 +1999,11 @@ def import_confirm_command(
                 f" — {outcome.error_message}" if outcome.error_message else ""
             )
             logger.error(msg)
-            logger.info(
-                "💡 Inspect the proposal with 'moneybin import preview "
-                f"{file_path}' and re-run with a corrected --mapping."
-            )
+            if _can_preview(outcome):
+                logger.info(
+                    "💡 Inspect the proposal with 'moneybin import preview "
+                    f"{file_path}' and re-run with a corrected --mapping."
+                )
         raise typer.Exit(1) from e
 
     if bridge_result is not None:

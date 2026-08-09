@@ -832,6 +832,119 @@ class TestImportFilesConfirmFlow:
         # Required by the command's own guard, and what InboxService emits.
         assert "--accept" in recovery
 
+    # Only the cells that actually reach a print site. `confirm` on a TTY takes
+    # the account_confirmation branch and exits before any preview hint, so
+    # including it would add a cell that passes with the guard removed —
+    # coverage that reads real and proves nothing.
+    @pytest.mark.parametrize(
+        ("command", "tty"),
+        [("files", True), ("files", False), ("confirm", False)],
+    )
+    def test_an_ofx_gate_never_names_import_preview(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        command: str,
+        tty: bool,
+    ) -> None:
+        """`import preview` has no OFX path, so no OFX recovery may name it.
+
+        The grid is the test. This hint is printed from four places — the
+        `import files` envelope, the shared text prompt, and both of
+        `import confirm`'s recovery paths — and they were written far enough
+        apart that fixing one taught nothing about the others: the first round
+        guarded the `import files` envelope alone, and a reviewer found a
+        survivor in the very next round. Asserting per entry point *and* per
+        render mode is what makes the next survivor fail here instead of
+        shipping.
+
+        Pasting it costs a full round trip to learn nothing: `import preview`
+        runs tabular detection with one special route for PDF, so on OFX it
+        fails rather than inspecting the proposal the caller was told to read.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        outcome = ConfirmationRequired(
+            channel="ofx",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("1111")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = tty
+
+        argv = [command, str(ofx_file)]
+        if command == "confirm":
+            argv.append("--accept")
+        if not tty:
+            argv.extend(["--output", "json"])
+
+        caplog.set_level(logging.INFO, logger="moneybin.cli.commands.import_cmd")
+        result = runner.invoke(app, argv)
+
+        # Both sinks, because one of the four sites emits through `logger.info`
+        # rather than `typer.echo` — asserting on `result.output` alone would
+        # pass while that site printed the dead command.
+        emitted = result.output + caplog.text
+        assert "import preview" not in emitted, emitted
+        # The recovery that *does* run on this channel is still offered, so this
+        # asserts a narrowed hint rather than a silenced one.
+        assert "--account-binding" in emitted, emitted
+
+    def test_an_ofx_confirm_failure_never_names_import_preview(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The fourth print site: `import confirm`'s catch-all failure hint.
+
+        Separate from the grid above because no cell of it reaches here — the
+        catch-all fires only for a reason none of the named branches claim, and
+        it is the one site that emits through ``logger.info``. Its hint named
+        both `import preview` and a corrected `--mapping`, neither of which
+        exists on OFX, so the whole line was unrunnable on this channel.
+        """
+        ofx_file = tmp_path / "statement.ofx"
+        ofx_file.write_text("OFXHEADER:100\n")
+        outcome = ConfirmationRequired(
+            channel="ofx",
+            confidence=Confidence(
+                score=0.2, tier="low", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={}, sample_values={}, unmapped_columns=()
+            ),
+            reason="unknown_layout",
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        caplog.set_level(logging.INFO, logger="moneybin.cli.commands.import_cmd")
+        result = runner.invoke(app, ["confirm", str(ofx_file), "--accept"])
+
+        emitted = result.output + caplog.text
+        assert "import preview" not in emitted, emitted
+        # The failure itself is still reported — this narrows the recovery, it
+        # does not swallow the error.
+        assert "unknown_layout" in emitted, emitted
+
     def test_the_recovery_action_never_carries_the_account_number(
         self,
         mock_db: MagicMock,

@@ -143,14 +143,27 @@ def test_empty_binding_value_does_not_echo_the_files_account_number(
         # character class, so letters no longer end it.
         ("Brokerage 12AB34CD56", "Brokerage ****3456"),
         ("IRA 12X3456789", "IRA ****6789"),
+        # Letter groups of any length. Bounding the gap at three characters was
+        # the third enumeration to leak: `ABCD` is not a word, it is the middle
+        # of an identifier, and no digit-count-per-group rule can tell them
+        # apart. The rule is about words, so the gap length is unbounded.
+        ("Brokerage 12ABCD34EFGH56", "Brokerage ****3456"),
+        # Trailing text, so the parser's last-four strip does not fire first and
+        # the mask is the only thing standing between this and the wire.
+        ("Acct 1234WXYZ5678 IRA", "Acct ****5678 IRA"),
         # A letter prefix or suffix belongs to the identifier, not to the name,
         # so the mask swallows the whole token rather than leaving a stub.
         ("Brokerage X12345678", "Brokerage ****5678"),
         ("Checking 12345XY", "Checking ****2345"),
-        # A whole *word* still breaks the run — two separate four-digit tokens
-        # are not one eight-digit number. This is the boundary the length bound
-        # exists to keep: wide enough for `12AB34`, too narrow for ` Savings `.
+        # A whole *word* breaks the run — two separate four-digit tokens are not
+        # one eight-digit number. This is the boundary, and it is the entire
+        # rule: `Savings` is whitespace-delimited and alphabetic, `ABCD` above is
+        # neither. A label that starts with digits survives for the same reason.
         ("Checking 1234 Savings 5678", "Checking 1234 Savings"),
+        # Seven digits, and none of it an account number. Masking from the first
+        # digit to the last would leave "****2024" — no name at all, which
+        # defeats the field. The word between them is what keeps it whole.
+        ("401K Plan 2024 Rewards", "401K Plan 2024 Rewards"),
         # A bare trailing four-digit group is the masked last-four banks print,
         # and parse_account_label lifts it out into `last_four` — so the label
         # arrives already stripped and there is nothing left for the mask to
