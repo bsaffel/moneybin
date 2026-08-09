@@ -384,31 +384,68 @@ def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None
         )
 
 
-# The DuckDB binder/catalog message is two parts: an identifier-bearing head
-# ('Referenced column "x" not found', 'Candidate bindings: "y"') and a
-# `LINE n:` tail that echoes the query VERBATIM, literal values included.
-# Dropping the tail removes the query-echo leak the blanket suppression was
-# protecting against.
+# The DuckDB binder/catalog message has up to three parts: an identifier-
+# bearing first line ('Referenced column "x" not found', 'Could not find key
+# "y" in struct'), an optional candidate-enumeration clause ('Candidate
+# bindings: "a", "b"', 'Candidate Entries: "c"', 'Candidate functions: ...'),
+# and a `LINE n:` tail that echoes the query VERBATIM, literal values
+# included. Dropping the tail removes the query-echo leak the blanket
+# suppression was protecting against.
 #
-# The head is not risk-free on its own: DuckDB echoes whatever identifier the
-# CALLER wrote, verbatim, including a quoted string naming no real column —
-# `SELECT "4111 1111 1111 1111" FROM core.fct_transactions` puts that exact
-# text in the head, not just names `sql_schema` already publishes. This is a
-# round-trip of caller-authored text, not a new disclosure, but it is not
-# nothing either, so `mask_pii_shaped` runs over the head as a backstop.
-# That backstop is narrow: it catches exactly two shapes, an SSN
-# (`NNN-NN-NNNN`) and 8+ consecutive digits (see log_sanitizer.py) — not
-# general PII. A quoted name, address, or other free text the caller wrote
-# passes through unmasked.
+# The first line is not risk-free on its own: DuckDB echoes whatever
+# identifier the CALLER wrote, verbatim, including a quoted string naming no
+# real column — `SELECT "4111 1111 1111 1111" FROM core.fct_transactions`
+# puts that exact text in the head, not just names `sql_schema` already
+# publishes. This is a round-trip of caller-authored text, not a new
+# disclosure, but it is not nothing either, so `mask_pii_shaped` runs over the
+# head as a backstop. That backstop is narrow: it catches exactly two shapes,
+# an SSN (`NNN-NN-NNNN`) and 8+ consecutive digits (see log_sanitizer.py) —
+# not general PII. A quoted name, address, or other free text the caller
+# wrote passes through unmasked. A CatalogException's first line can also
+# carry a `Did you mean "x"?` suggestion DuckDB derived from its own catalog
+# (a table or function name) — not caller-authored, but not row data either,
+# and no more than `SHOW ALL TABLES` already discloses (see
+# `test_show_all_tables_exposes_internal_shape_but_no_values`).
+#
+# The candidate-enumeration clause is where a STORED ROW VALUE can leak.
+# DuckDB derives PIVOT/UNPIVOT output column names, and SUMMARIZE/struct-key
+# names, from actual row data — a routing number's digit prefix becomes a
+# PIVOT column name, a merchant name becomes a struct key — and when a query
+# references a name that's a near-miss for one of those, DuckDB's "did you
+# mean" suggester lists the real ones it has, verbatim, in this clause. This
+# is unlike the first line: it is DuckDB's own enumeration, not an echo of
+# what the caller typed, and it can name text no CALLER ever wrote. There is
+# no reusable syntactic detector for "this query used a construct that derives
+# names from row data" — PIVOT/UNPIVOT/SUMMARIZE/struct access are unrelated
+# grammar productions, and a new one could ship in any DuckDB release — so
+# rather than enumerate constructs (which rots the moment DuckDB adds one),
+# this drops the clause structurally: whatever marker introduces it. A survey
+# across unknown column/table/function/schema, near-misses against PIVOT and
+# struct-key output, ambiguous references, and malformed GROUP BY/LIMIT/regex
+# found the row-derived text always behind this marker and never on the first
+# line — see `test_binder_error_head_without_a_line_marker_can_carry_caller_text`
+# and the PIVOT/struct-key tests beside it for the pinned cases.
 _LINE_ECHO = re.compile(r"^LINE \d+:", re.MULTILINE)
+_CANDIDATE_ENUMERATION = re.compile(r"Candidate \w+:")
 
 
 def _identifier_detail(exc: Exception) -> str | None:
-    """The identifier-bearing head of a DuckDB catalog/binder message."""
+    """The identifier-bearing head of a DuckDB catalog/binder message.
+
+    Truncates at whichever of the `LINE n:` query echo or the
+    candidate-enumeration clause (`Candidate bindings:`, `Candidate Entries:`,
+    `Candidate functions:`) comes first — both can follow the first line, in
+    either order depending on the error shape, and either can carry text this
+    primitive must not thread through (see the module comment above).
+    """
     text = str(exc)
-    match = _LINE_ECHO.search(text)
-    if match is not None:
-        text = text[: match.start()]
+    cutoffs = [
+        m.start()
+        for m in (_LINE_ECHO.search(text), _CANDIDATE_ENUMERATION.search(text))
+        if m is not None
+    ]
+    if cutoffs:
+        text = text[: min(cutoffs)]
     masked, _ = mask_pii_shaped(text.strip())
     return masked or None
 
@@ -496,19 +533,26 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     # parse_cached, outside this block, so SqlParseError can't surface here.)
     except (SqlSchemaError, duckdb.CatalogException, duckdb.BinderException) as e:
         # `hint` below is where the head described above (module comment,
-        # `_LINE_ECHO`) reaches the caller — not just identifiers, caller-
-        # authored STRING LITERALS too. It reaches the MCP error envelope and
-        # the CLI console (stderr) — never the log file, which
-        # `handle_cli_errors` (cli/utils.py) echoes deliberately to keep it
-        # out of. `str(e)` and the log line right below never carry it
-        # either; that line names only the exception TYPE.
+        # `_LINE_ECHO`, `_CANDIDATE_ENUMERATION`) reaches the caller — not
+        # just identifiers, caller-authored STRING LITERALS too. It reaches
+        # the MCP error envelope and the CLI console (stderr) — never the log
+        # file, which `handle_cli_errors` (cli/utils.py) echoes deliberately
+        # to keep it out of. `str(e)` and the log line right below never
+        # carry it either; that line names only the exception TYPE.
         #
-        # What makes threading it acceptable: a binder or catalog error is
-        # raised BEFORE execution, so its message can only quote text the
-        # CALLER typed into the query — never a STORED ROW VALUE.
-        # `duckdb.ConversionException` is the counterexample that draws that
-        # line: it fires evaluating a row at fetch time, so its head quotes
-        # the offending stored value itself — why that family stays in the
+        # A binder or catalog error is raised BEFORE execution, so it is NOT
+        # true that its message can only quote text the CALLER typed: DuckDB
+        # derives PIVOT/UNPIVOT/SUMMARIZE output column names and struct keys
+        # from STORED ROW VALUES, and a near-miss reference to one makes
+        # DuckDB's own suggester name the real ones in a candidate-enumeration
+        # clause — that clause is what `_CANDIDATE_ENUMERATION` strips. What
+        # survives after both truncations is the first line, which in every
+        # shape probed quotes only the caller's own reference (plus, for a
+        # CatalogException, a same-catalog `Did you mean` name — see the
+        # module comment). `duckdb.ConversionException` is the case that
+        # still can't be threaded at all: it fires evaluating a row at fetch
+        # time, so its FIRST LINE quotes the offending stored value directly,
+        # with no marker to truncate at — why that family stays in the
         # silent, no-hint bucket below instead of being threaded here.
         logger.warning(
             f"sql_query unknown table/column: {type(e).__name__} "

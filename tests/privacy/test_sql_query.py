@@ -729,14 +729,20 @@ def test_binder_error_head_without_a_line_marker_can_carry_caller_text(
     """Some BinderExceptions carry no ``LINE n:`` tail at all — pin that shape.
 
     ``SELECT ({'a':1})['<literal>']`` is DuckDB's struct key-lookup error: the
-    entire message IS the head, with no ``LINE`` marker for
-    ``_identifier_detail`` to split on. The literal the caller wrote reaches
+    entire message IS the first line, with no ``LINE`` marker and no
+    ``Candidate `` enumeration for ``_identifier_detail`` to split on — the
+    struct literal here has only one key (``a``), so DuckDB's "did you mean"
+    suggester has nothing else to list. The literal the caller wrote reaches
     ``hint`` unmodified — this module documents that as an accepted contract,
     not a gap (see the comment above the ``except`` clause in
-    ``execute_sql_query``): a binder error is raised BEFORE execution, so it
-    can only ever quote text the CALLER put into the query, never a value
-    stored in a row. Making the ``LINE`` split fail-closed to plug this was
-    tried and rejected — see the module comment above ``_LINE_ECHO`` for the
+    ``execute_sql_query``): the first line quotes only what the caller typed.
+    (A struct key DuckDB derives from row data, not a literal, is the
+    genuinely dangerous shape — see
+    ``test_pivot_near_miss_hint_omits_row_derived_candidate_prefixes`` and
+    ``test_struct_key_near_miss_hint_omits_row_derived_candidate_keys``
+    below, where the candidate-enumeration clause carries exactly that and is
+    dropped.) Making the ``LINE`` split fail-closed to plug this was tried
+    and rejected — see the module comment above ``_LINE_ECHO`` for the
     genuinely useful no-marker messages (e.g. a GROUP BY error) that would
     break instead.
 
@@ -755,6 +761,99 @@ def test_binder_error_head_without_a_line_marker_can_carry_caller_text(
     assert literal in (ei.value.hint or "")
     assert literal not in ei.value.message
     assert literal not in caplog.text
+
+
+def test_pivot_near_miss_hint_omits_row_derived_candidate_prefixes(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A near-miss PIVOT reference must not leak candidate routing-number prefixes.
+
+    DuckDB names PIVOT output columns from the pivoted expression's runtime
+    VALUES — here, ``substr(routing_number, 1, 4)`` over three distinct
+    accounts. Referencing a near-miss column (``"0211"``, one digit off every
+    real prefix) makes DuckDB's binder list the real prefixes it has in a
+    ``Candidate bindings:`` clause, verbatim:
+
+        Binder Error: Referenced column "0211" not found in FROM clause!
+        Candidate bindings: "0210", "0260", "1210"
+
+    Those prefixes are read out of STORED rows, not typed by the caller, and
+    a 4-digit run passes `mask_pii_shaped`'s 8+-consecutive-digit backstop
+    clean. Only truncating at the ``Candidate `` marker keeps them out of the
+    hint. The literal the caller DID type (``"0211"``) is expected to survive
+    in the first line — it identifies which reference failed without
+    revealing any account's real prefix.
+    """
+    database = populated_db
+    database.execute(
+        "INSERT INTO core.dim_accounts "
+        "(account_id, routing_number, last_four, account_type) VALUES "
+        "('ACC1', '021000021', '1111', 'checking'),"
+        "('ACC2', '121000248', '2222', 'checking'),"
+        "('ACC3', '026009593', '3333', 'checking')"
+    )
+    with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
+        with pytest.raises(UserError) as ei:
+            execute_sql_query(
+                database,
+                'SELECT "0211" FROM '
+                "(PIVOT core.dim_accounts ON substr(routing_number,1,4) "
+                "USING count(*))",
+                max_rows=10,
+            )
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    hint = ei.value.hint or ""
+    assert "0211" in hint
+    for real_prefix in ("0210", "0260", "1210"):
+        assert real_prefix not in hint
+    assert "Candidate" not in hint
+    assert "LINE" not in hint
+    for real_prefix in ("0210", "0260", "1210"):
+        assert real_prefix not in ei.value.message
+        assert real_prefix not in caplog.text
+
+
+def test_struct_key_near_miss_hint_omits_row_derived_candidate_keys(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A near-miss struct-key reference must not leak the real keys from a row.
+
+    Struct keys DuckDB derives from a row's own data — here, merchant names
+    aggregated into a MAP — surface the same way: an unknown key lookup lists
+    the real keys it has under ``Candidate Entries:``. The literal the caller
+    typed (an intentional misspelling) is expected to survive in the first
+    line; the real merchant names must not.
+    """
+    database = populated_db
+    # A curly-brace literal builds a STRUCT, whose field names are part of the
+    # static TYPE — unlike MAP, where a missing-key lookup returns NULL at
+    # runtime instead of raising. That static typing is what makes DuckDB's
+    # binder able to name the real keys before the query ever executes.
+    database.execute("""
+        CREATE TABLE core.fct_transactions_by_merchant AS
+        SELECT {
+            'acme plumbing llc': 1,
+            'bobs burgers': 2,
+            'carla consulting': 3
+        } AS merchant_counts
+    """)
+    with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
+        with pytest.raises(UserError) as ei:
+            execute_sql_query(
+                database,
+                "SELECT merchant_counts['acme plumbing llx'] "
+                "FROM core.fct_transactions_by_merchant",
+                max_rows=10,
+            )
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    hint = ei.value.hint or ""
+    assert "acme plumbing llx" in hint
+    for real_key in ("acme plumbing llc", "bobs burgers", "carla consulting"):
+        assert real_key not in hint
+    assert "Candidate" not in hint
+    for real_key in ("acme plumbing llc", "bobs burgers", "carla consulting"):
+        assert real_key not in ei.value.message
+        assert real_key not in caplog.text
 
 
 def test_conversion_error_still_says_nothing(populated_db: Database) -> None:
@@ -1681,6 +1780,35 @@ def test_metadata_unknown_column_log_names_the_error_type_not_the_query(
     assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
     cause = ei.value.__cause__
     assert cause is not None
+    _assert_log_names_the_failure_without_quoting_it(
+        caplog, cause, "sql_query metadata unknown table/column"
+    )
+
+
+def test_metadata_unknown_table_log_names_the_error_type_not_the_query(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The metadata path's ``except`` clause also covers CatalogException.
+
+    ``test_metadata_unknown_column_log_names_the_error_type_not_the_query``
+    above exercises the BinderException half of
+    ``except (duckdb.CatalogException, duckdb.BinderException)`` in
+    ``_fetch_metadata`` — an unknown COLUMN inside a wrapped ``DESCRIBE
+    SELECT``. This is the other half: ``DESCRIBE`` on a TABLE that doesn't
+    exist raises CatalogException directly (no wrapped SELECT needed), and
+    must classify, log, and mask identically.
+    """
+    with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
+        with pytest.raises(UserError) as ei:
+            execute_sql_query(
+                populated_db,
+                "DESCRIBE core.nonexistent_table",
+                max_rows=10,
+            )
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    cause = ei.value.__cause__
+    assert cause is not None
+    assert isinstance(cause, duckdb.CatalogException)
     _assert_log_names_the_failure_without_quoting_it(
         caplog, cause, "sql_query metadata unknown table/column"
     )
