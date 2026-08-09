@@ -705,17 +705,21 @@ def test_unknown_column_hint_does_not_echo_query_literals(
 ) -> None:
     """The hint carries the identifier head only, never the ``LINE n:`` tail.
 
-    That tail echoes the submitted query verbatim, literals included.
+    That tail echoes the submitted query verbatim, literals included. The
+    literal here (``'Dr Smith Cardiology'``) is deliberately a shape
+    ``mask_pii_shaped`` does not catch — no SSN pattern, no 8+ consecutive
+    digits — so a pass here can only be explained by the ``LINE`` split, not
+    by the PII-mask backstop also stripping it.
     """
     with pytest.raises(UserError) as ei:
         execute_sql_query(
             populated_db,
             "SELECT nosuchcol FROM core.fct_transactions WHERE description = "
-            "'123-45-6789'",
+            "'Dr Smith Cardiology'",
             max_rows=10,
         )
     assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
-    assert "123-45-6789" not in (ei.value.hint or "")
+    assert "Dr Smith Cardiology" not in (ei.value.hint or "")
     assert "LINE" not in (ei.value.hint or "")
 
 

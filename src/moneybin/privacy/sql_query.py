@@ -386,10 +386,20 @@ def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None
 
 # The DuckDB binder/catalog message is two parts: an identifier-bearing head
 # ('Referenced column "x" not found', 'Candidate bindings: "y"') and a
-# `LINE n:` tail that echoes the query VERBATIM, literal values included. The
-# head names only identifiers `sql_schema` already publishes; the tail is the
-# leak the blanket suppression was protecting against. Split, keep the head,
-# and run it through the PII net anyway — cheap, and fail-closed.
+# `LINE n:` tail that echoes the query VERBATIM, literal values included.
+# Dropping the tail removes the query-echo leak the blanket suppression was
+# protecting against.
+#
+# The head is not risk-free on its own: DuckDB echoes whatever identifier the
+# CALLER wrote, verbatim, including a quoted string naming no real column —
+# `SELECT "4111 1111 1111 1111" FROM core.fct_transactions` puts that exact
+# text in the head, not just names `sql_schema` already publishes. This is a
+# round-trip of caller-authored text, not a new disclosure, but it is not
+# nothing either, so `mask_pii_shaped` runs over the head as a backstop.
+# That backstop is narrow: it catches exactly two shapes, an SSN
+# (`NNN-NN-NNNN`) and 8+ consecutive digits (see log_sanitizer.py) — not
+# general PII. A quoted name, address, or other free text the caller wrote
+# passes through unmasked.
 _LINE_ECHO = re.compile(r"^LINE \d+:", re.MULTILINE)
 
 
@@ -497,7 +507,16 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         raise UserError(
             "Unknown table or column.",
             code=error_codes.SQL_UNKNOWN_TABLE,
-            hint=_identifier_detail(e),
+            # SqlSchemaError gets no hint. Its messages are safe today only as
+            # a side effect of `_qualified` in sql_lineage.py calling
+            # `qualify(..., validate_qualify_columns=False)` — a flag chosen
+            # for fallback behavior ("don't raise on unresolved"), not for
+            # message safety. Flip it and sqlglot's OptimizeError starts
+            # embedding the raw query with no `LINE n:` marker for
+            # `_identifier_detail` to split on, silently piping the query into
+            # this hint. DuckDB's own CatalogException/BinderException don't
+            # depend on that flag, so only they get the identifier thread.
+            hint=_identifier_detail(e) if isinstance(e, duckdb.Error) else None,
         ) from e
     except duckdb.Error as e:
         # No detail: ConversionException and friends quote the offending VALUE
