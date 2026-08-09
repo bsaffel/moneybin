@@ -24,7 +24,7 @@ has already produced bugs that leak one while intending the other.
 
 | | `source_account_key` | `account_id`, `proposed_account_id` | `proposal_ref` (`@0`, `@1`) |
 |---|---|---|---|
-| **What it holds** | The source-native key — often the institution's, sometimes MoneyBin-synthesized or a copied pin (below) | MoneyBin's canonical id *once the account is resolved*; the source-native key when it is not (below) | A position in this file's proposal list — always MoneyBin's |
+| **What it holds** | The source-native key — often the institution's, sometimes MoneyBin-synthesized or a copied pin (below) | MoneyBin's canonical id *once the account is resolved*; the source-native key when it is not (below) | A position in this file's full detected source-account list — always MoneyBin's (below) |
 | **Privacy class** | `ACCOUNT_IDENTIFIER` → CRITICAL (`imports.py:115`) | `RECORD_ID` (`imports.py:121-122`) | `RECORD_ID` (`imports.py:121`) |
 | **In any surface** | Masked (`****6789`) | Printed readably | Printed readably |
 | **Unconditionally safe to show?** | No | **No** | **Yes** |
@@ -54,6 +54,14 @@ On OFX that is a real `<ACCTID>`.
 This is why `proposal_ref` exists, and why it — not `account_id` — is the
 referent to put in front of a user or an agent.
 
+**`@N` indexes the file's full detected source-account list, not the proposals
+you can see.** `_gate_account_proposals` enumerates every source account and
+omits the ones already bound or not confirming, so a file's only *visible*
+proposal is legitimately `@1` when `@0` was answered in an earlier call
+(`import_service.py:2060`, and `:1101` builds the valid set from
+`range(len(source_accounts))`; pinned by `test_import_binding.py:165-193`).
+Renumbering the surfaced list to start at `@0` would bind the wrong account.
+
 The source-native field is masked in **every** case anyway. That is deliberate
 and fail-closed: the classification is decided by what the field *may* hold, not
 by what a given row happens to hold, and no caller can tell the cases apart from
@@ -65,6 +73,11 @@ outside. Three rules follow:
   a response, so an agent told to act on it has nothing to act on — it cannot
   reconstruct `****6789` — and `account_id` is print-safe only for a resolved
   account. `@N` is the only referent that is always both readable and MoneyBin's.
+  It is not, however, universally *bindable*: on OFX the source key is untrusted
+  file content, so a key spelled `@0` is simultaneously one account's key and
+  another's ref. `_resolve_binding_targets` refuses that rather than guess
+  (`import_service.py:1110-1118`) and sends the caller to the file itself — the
+  one place the raw key stays legible once the confirmation has masked it.
 - **Echoing a caller's own input back is not automatically safe.** A refusal
   that quotes the unknown key the caller passed still writes the institution's
   identifier into a log line and a response envelope. Mask on the way out
