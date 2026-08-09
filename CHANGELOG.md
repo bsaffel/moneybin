@@ -601,6 +601,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   will see `import_confirm` move band.
 
 ### Fixed
+- **A saved PDF recipe that misreads a masked account number now repairs
+  itself (#380).** Recipes saved before the anchor fix in #371 read
+  `Account Number: XXXX XXXX XXXX 1234` as the bare mask, producing an account
+  with no last four that MoneyBin could not connect to the same card arriving by
+  OFX, CSV, or a bank connection — and because those statements still reconcile
+  to the cent, nothing flagged it. MoneyBin now treats a digit-free account id as
+  a stale-recipe signal and re-derives the saved recipe in place, audited and
+  reversible through `system audit undo`.
 - **An OFX transaction whose id changed between imports is no longer counted
   twice.** Some institutions stamp two distinct transactions with one `FITID` —
   a foreign purchase and its fee, for instance. MoneyBin gives every member of

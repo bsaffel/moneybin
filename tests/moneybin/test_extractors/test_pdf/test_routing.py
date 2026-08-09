@@ -25,6 +25,7 @@ at "Total:".
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -1233,6 +1234,179 @@ def test_replay_failure_re_derives_and_recovers_the_dropped_row(
     # re-derived — not a first-contact save under a new name.
     assert decision.matched_format_name == "chase_checking_pdf"
     assert len(decision.rows) == 3
+    assert decision.rederived_reason is not None
+    assert "stopped reconciling" in decision.rederived_reason
+
+
+def _frozen_anchor_recipe_dict() -> dict[str, Any]:
+    """A recipe frozen before the masked-account anchor fix.
+
+    ``account_id`` leads with the stop-at-whitespace pattern that DEFAULT_ANCHORS
+    has since demoted to last. Every other anchor is current, and the balance and
+    period anchors are present, so the replay still reconciles — the recipe is
+    wrong in exactly one way.
+    """
+    return {
+        **_valid_recipe_dict(),
+        "metadata_anchors": [
+            {
+                "name": "account_id",
+                "pattern": r"Account\s+Number[:\s]+(\S+)",
+                "cast": "str",
+            },
+            {
+                "name": "account_id",
+                "pattern": r"Account\s+ending\s+in\s+(\d+)",
+                "cast": "str",
+            },
+            {
+                "name": "period_start",
+                "pattern": r"Statement\s+Period:\s+(\d{2}/\d{2}/\d{4})",
+                "cast": "date",
+            },
+            {
+                "name": "period_end",
+                "pattern": r"To:\s+(\d{2}/\d{2}/\d{4})",
+                "cast": "date",
+            },
+            {
+                "name": "opening_balance",
+                "pattern": r"Beginning\s+Balance[:\s]+\$?([\d,]+\.\d{2})",
+                "cast": "decimal",
+            },
+            {
+                "name": "closing_balance",
+                "pattern": r"Ending\s+Balance[:\s]+\$?([\d,]+\.\d{2})",
+                "cast": "decimal",
+            },
+        ],
+    }
+
+
+def _masked_account_doc() -> PdfDocument:
+    """A Chase statement that masks all but the trailing group of its account number."""
+    lines = _standard_text_lines()
+    lines[1] = "Account Number: XXXX XXXX XXXX 1234"
+    return _make_doc(text_lines=lines, tables=[_standard_table()])
+
+
+def test_replay_capturing_a_digitless_account_id_re_derives(db: Database) -> None:
+    """A recipe frozen before the masked-account anchor fix repairs itself.
+
+    The saved recipe's leading ``account_id`` anchor stops at the first
+    whitespace, so a masked account line yields the bare mask — a digit-free key
+    that becomes a placeholder account with a null last_four downstream. The
+    statement reconciles to the cent, so the reconciliation trigger never fires
+    and the broken recipe would otherwise survive every future statement.
+    """
+    _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+    before = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
+
+    decision = route_pdf_import(_masked_account_doc(), db)
+
+    after = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
+    assert decision.outcome == "transactions"
+    assert decision.rederived is True
+    # The same saved format, repaired — not a first-contact save under a new name.
+    assert decision.matched_format_name == "chase_checking_pdf"
+    assert decision.metadata.account_id is not None
+    assert any(char.isdigit() for char in decision.metadata.account_id)
+    # The reason the service persists into app.audit_log has to name the trigger
+    # that actually fired: this replay reconciled to the cent.
+    assert decision.rederived_reason is not None
+    assert "digit-free mask" in decision.rederived_reason
+
+
+def test_replay_capturing_a_digitful_account_id_does_not_re_derive(
+    db: Database,
+) -> None:
+    """The negative case: a healthy replay must not be re-derived.
+
+    Same frozen recipe, but an unmasked account line the old anchor reads
+    correctly. Without this, the trigger could fire on every replay and the
+    positive test above would still pass.
+    """
+    _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+    before = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
+
+    decision = route_pdf_import(_standard_doc(), db)
+
+    # Self-heal was never entered at all, so no outcome was recorded.
+    after = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before
+    assert decision.outcome == "transactions"
+    assert decision.rederived is False
+    assert decision.metadata.account_id == "1234"
+
+
+def _fully_masked_account_doc() -> PdfDocument:
+    """A Chase statement whose account line discloses no digits at all."""
+    lines = _standard_text_lines()
+    lines[1] = "Account Number: XXXX"
+    return _make_doc(text_lines=lines, tables=[_standard_table()])
+
+
+def test_replay_is_not_re_derived_when_the_account_id_cannot_gain_a_digit(
+    db: Database,
+) -> None:
+    """A statement that genuinely discloses no digits is left alone.
+
+    The trigger fires — the captured id is digit-free — but current anchors read
+    the same digit-free value, so "repairing" would bump the recipe version and
+    write an audit row on every future import of this layout while the account
+    identity never improves. The same reasoning excludes a *missing* id.
+    """
+    _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+    before = PDF_SELF_HEAL_TOTAL.labels(outcome="no_identity_gain")._value.get()  # type: ignore[reportPrivateUsage]
+
+    decision = route_pdf_import(_fully_masked_account_doc(), db)
+
+    after = PDF_SELF_HEAL_TOTAL.labels(outcome="no_identity_gain")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
+    assert decision.outcome == "transactions"
+    assert decision.rederived is False
+    assert decision.rederived_reason is None
+    assert decision.metadata.account_id == "XXXX"
+
+
+def test_declining_a_digitless_repair_logs_that_the_statement_still_loads(
+    db: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A decline is only "routing to seed" when the replay had nothing loadable.
+
+    The digitless trigger fires on a replay that already reconciled, so declining
+    the repair lets the statement load under the account id the saved recipe
+    read. Reporting that as withheld tells an operator a problematic import was
+    stopped when it landed — the same class of false claim as an audit reason
+    naming the wrong trigger.
+    """
+    _save_chase_format(db, recipe=_frozen_anchor_recipe_dict())
+    # Replay reads the text (masked account line, reconciles); derivation reads
+    # the tables, and an unparseable amount makes the re-derivation fail. So the
+    # trigger is the digit-free id, never reconciliation.
+    doc = _make_doc(
+        text_lines=_masked_account_doc().text_lines,
+        tables=[
+            PdfTable(
+                page=1,
+                header=_HEADERS,
+                rows=[
+                    ["01/15/2024", "Coffee Shop", "-50.00"],
+                    ["01/20/2024", "Paycheck", "n/a"],
+                ],
+            )
+        ],
+    )
+
+    with caplog.at_level(logging.INFO, logger="moneybin.extractors.pdf.routing"):
+        decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.rederived is False
+    assert "routing to seed" not in caplog.text
+    assert "loading the statement under the account id" in caplog.text
 
 
 def test_self_heal_falls_back_to_seed_when_the_document_is_underivable(

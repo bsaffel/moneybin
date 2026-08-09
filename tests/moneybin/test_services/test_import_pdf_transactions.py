@@ -314,6 +314,7 @@ def test_pdf_saved_recipe_bookkeeping_re_raises_inside_outer_transaction(
         matched_format_name="saved_pdf",
         recipe=recipe,
         fp={"issuer": "Example"},
+        rederived_reason="saved recipe stopped reconciling",
     )
     service = ImportService(db)
 
@@ -337,6 +338,35 @@ def test_pdf_saved_recipe_bookkeeping_re_raises_inside_outer_transaction(
         )
 
     assert bump.call_args.kwargs["in_outer_txn"] is True
+
+
+def test_pdf_self_heal_persists_the_reason_the_decision_carries(db: Database) -> None:
+    """The durable audit reason names the trigger that actually fired.
+
+    ``app.audit_log`` is what an operator reads back through ``system audit``, so
+    a repair triggered by a digit-free account id must not record that the recipe
+    stopped reconciling — that replay reconciled to the cent.
+    """
+    recipe = MagicMock()
+    recipe.model_dump.return_value = {"sign_convention": "negative_is_expense"}
+    decision = SimpleNamespace(
+        matched_format_name="saved_pdf",
+        recipe=recipe,
+        fp={"issuer": "Example"},
+        rederived_reason="saved recipe read the account number as a digit-free mask",
+    )
+
+    service = ImportService(db)
+
+    with patch.object(PdfFormatsRepo, "bump_version") as bump:
+        service._persist_self_healed_recipe(  # type: ignore[reportPrivateUsage]
+            decision,  # type: ignore[reportArgumentType]  # stands in for the fields read
+            import_id="imp_reason",
+        )
+
+    assert bump.call_args.kwargs["reason"] == (
+        "saved recipe read the account number as a digit-free mask"
+    )
 
 
 # ---------------------------------------------------------------------------
