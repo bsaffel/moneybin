@@ -590,10 +590,17 @@ class TestImportFilesConfirmFlow:
         """A partial answer must survive into the command that completes it.
 
         Retries persist no state, so every binding has to be re-sent together.
-        The recovery builder accepts ``account_bindings`` and merges them —
-        ``import confirm``'s own handler passes them — but ``import files`` did
-        not, so a two-account file answered one at a time printed a command that
-        dropped the first answer and could never converge.
+        ``import files`` did not forward the answers already given, so a
+        two-account file answered one at a time printed a command that dropped
+        the first answer and could never converge.
+
+        The answer comes back as its ref, never as the key the caller typed.
+        ``checking`` is the answered account, so the gate skipped it and it is
+        absent from ``account_proposals`` — the earlier version of this test
+        asserted the raw key was echoed "because it names no proposal here",
+        which is what kept a tabular source key (``slugify(account_name)``, and
+        a real label routinely carries the number) in an unredacted
+        ``actions[]``.
         """
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
@@ -606,7 +613,8 @@ class TestImportFilesConfirmFlow:
                 field_mapping={}, sample_values={}, unmapped_columns=()
             ),
             reason="account_confirmation",
-            account_proposals=[_account_proposal_dict("savings")],
+            account_proposals=[_account_proposal_dict("savings", ref="@1")],
+            ratified_bindings={"@0": "acct_known01"},
         )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
@@ -627,10 +635,11 @@ class TestImportFilesConfirmFlow:
 
         payload = json.loads(result.output)
         recovery = next(a for a in payload["actions"] if "--account-binding" in a)
-        assert "checking=acct_known01" in recovery
-        # The generated half is keyed by ref; the carried key names no proposal
-        # in this outcome, so it can only be echoed back as the caller sent it.
-        assert "@0=<account_id|new>" in recovery
+        # The answer survives — under its ref, and the key the caller typed is
+        # nowhere in the line.
+        assert "@0=acct_known01" in recovery
+        assert "checking" not in json.dumps(payload["actions"])
+        assert "@1=<account_id|new>" in recovery
 
     def test_interactive_account_recovery_replays_the_bindings_already_supplied(
         self,
@@ -660,7 +669,8 @@ class TestImportFilesConfirmFlow:
                 field_mapping={}, sample_values={}, unmapped_columns=()
             ),
             reason="account_confirmation",
-            account_proposals=[_account_proposal_dict("savings")],
+            account_proposals=[_account_proposal_dict("savings", ref="@1")],
+            ratified_bindings={"@0": "acct_known01"},
         )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
@@ -678,8 +688,11 @@ class TestImportFilesConfirmFlow:
         recovery = next(
             line for line in result.output.splitlines() if "--account-binding" in line
         )
-        assert "checking=acct_known01" in recovery
-        assert "@0=<account_id|new>" in recovery
+        # Ref-keyed on this branch too. The terminal is a friendlier audience
+        # than a JSON pipe, but one builder serves both, so neither can drift.
+        assert "@0=acct_known01" in recovery
+        assert "checking" not in recovery
+        assert "@1=<account_id|new>" in recovery
 
     def test_multi_file_refuses_account_bindings(self, tmp_path: Path) -> None:
         """Warn-and-drop is the loop the MCP twin hard-refuses for this same input.
@@ -859,13 +872,20 @@ class TestImportFilesConfirmFlow:
         mocker: Any,
         tmp_path: Path,
     ) -> None:
-        """Re-keying only the generated half would leave the leak in place.
+        """Re-keying only the surfaced half would leave the leak in place.
 
         A two-account statement answered one at a time is exactly why the
         recovery replays the bindings already given — and replaying the
         caller's own ``<ACCTID>`` key puts the account number back into
         ``actions[]`` through the other door. Every key in the printed command
         is a ref, so the whole line is safe to hand to a script.
+
+        The answered account is **absent** from ``account_proposals``:
+        ``_gate_account_proposals`` skips every account a binding already
+        decided, so a fixture that keeps it here describes a state the service
+        cannot produce — and re-keying from the surfaced proposals alone then
+        looks sufficient when it is not. ``ratified_bindings`` carries the
+        answer instead, keyed by the ref only the gate can assign.
         """
         ofx_file = tmp_path / "statement.ofx"
         ofx_file.write_text("OFXHEADER:100\n")
@@ -879,10 +899,8 @@ class TestImportFilesConfirmFlow:
                 field_mapping={}, sample_values={}, unmapped_columns=()
             ),
             reason="account_confirmation",
-            account_proposals=[
-                _account_proposal_dict(answered),
-                _account_proposal_dict(pending, ref="@1"),
-            ],
+            account_proposals=[_account_proposal_dict(pending, ref="@1")],
+            ratified_bindings={"@0": "acct_known01"},
         )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
@@ -2185,7 +2203,10 @@ class TestImportConfirmCommand:
                 unmapped_columns=(),
             ),
             reason="account_confirmation",
-            account_proposals=[_account_proposal_dict("card-abc")],
+            account_proposals=[_account_proposal_dict("card-abc", ref="@2")],
+            # `settled` and `minted` were answered, so the gate skipped both and
+            # neither appears above; their answers survive here, ref-keyed.
+            ratified_bindings={"@0": "acct-123", "@1": "new"},
         )
         mocker.patch(
             "moneybin.services.import_service.ImportService.import_file",
@@ -2230,13 +2251,19 @@ class TestImportConfirmCommand:
         assert tokens[tokens.index("--account-id") + 1] == "acct-explicit"
         assert tokens[tokens.index("--account-name") + 1] == "Card Account"
         assert tokens[tokens.index("--mapping") + 1] == "description=Memo"
+        # Every binding key is a ref — the two answers already given and the one
+        # still open alike. The caller's own keys are absent from the line.
         assert {
             tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-binding"
         } == {
-            "settled=acct-123",
-            "minted=new",
-            "@0=<account_id|new>",
+            "@0=acct-123",
+            "@1=new",
+            "@2=<account_id|new>",
         }
+        # --account-meta stays source-keyed: account_metadata accepts source
+        # keys only (the gate refuses a "@0" as an unknown key), so re-keying it
+        # would print a command that fails. Teaching it the @N vocabulary is the
+        # separate change that closes this last raw key.
         assert {
             tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
         } == {

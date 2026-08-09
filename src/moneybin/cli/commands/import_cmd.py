@@ -612,7 +612,7 @@ def import_files_command(
                     # every binding re-sent together or the printed command
                     # drops the answer already given and never converges.
                     confirm_actions.append(
-                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_bindings=account_bindings, confirm_sign=confirm_sign, sign=sign)}` "
+                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign)}` "
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
@@ -1170,7 +1170,6 @@ def _account_recovery_command(
     institution: str | None = None,
     account_id: str | None = None,
     account_name: str | None = None,
-    account_bindings: dict[str, str] | None = None,
     account_metadata: dict[str, dict[str, str]] | None = None,
     confirm_sign: bool = False,
     sign: SignConventionType | None = None,
@@ -1197,19 +1196,16 @@ def _account_recovery_command(
     # contract unchanged (cli.md). A ref names the same account and discloses
     # nothing, which is what it exists for.
     #
-    # Carried bindings are re-keyed too, not just the generated ones: the
-    # replay exists for the two-account file answered one at a time, so leaving
-    # the caller's own key raw would put the account number back through the
-    # other door. A key naming no proposal in this outcome cannot be re-keyed
-    # and is echoed as sent — the resolver refuses it upstream anyway.
-    ref_by_source_key = {
-        str(proposal["source_account_key"]): str(proposal["proposal_ref"])
-        for proposal in outcome.account_proposals
-    }
-    bindings = {
-        ref_by_source_key.get(key, key): value
-        for key, value in (account_bindings or {}).items()
-    }
+    # The caller's own `account_bindings` is deliberately NOT read here. The
+    # replay exists for the two-account file answered one at a time, and an
+    # answered account is skipped by the gate — so it is absent from
+    # `account_proposals`, and re-keying against those alone would find no
+    # entry and fall back to echoing the caller's raw <ACCTID>. The gate hands
+    # the same answers over already keyed by ref (`ratified_bindings`), which
+    # is the only layer that still knows each account's position. Nothing is
+    # lost by ignoring the caller's dict: a key naming no account in the file
+    # raises upstream, so every answer they sent is represented there.
+    bindings = dict(outcome.ratified_bindings)
     for proposal in outcome.account_proposals:
         bindings.setdefault(str(proposal["proposal_ref"]), "<account_id|new>")
     if not bindings:
@@ -1532,7 +1528,6 @@ def _render_confirmation_prompt(
                 institution=institution,
                 account_id=account_id,
                 account_name=account_name,
-                account_bindings=account_bindings,
                 account_metadata=account_metadata,
                 confirm_sign=confirm_sign,
                 sign=sign,
@@ -1832,7 +1827,7 @@ def import_confirm_command(
             # partial state, and add the missing binding. Generic alternate
             # mapping hints remain irrelevant here.
             confirm_actions.append(
-                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign, bridge_response=bridge_response)}` "
+                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign, bridge_response=bridge_response)}` "
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
@@ -1901,7 +1896,6 @@ def import_confirm_command(
                     institution=institution,
                     account_id=account_id,
                     account_name=account_name,
-                    account_bindings=parsed_bindings,
                     account_metadata=parsed_metadata,
                     confirm_sign=confirm_sign,
                     sign=sign,

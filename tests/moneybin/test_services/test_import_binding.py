@@ -115,6 +115,86 @@ def test_human_import_gates_on_weak_account_candidate(
         assert n is not None and n[0] == expected, table
 
 
+# An <ACCTID> pair long enough that no other field could produce either by
+# accident, so an assertion that one did NOT reach a surface means what it says.
+_FIRST_ACCTID = "000123456789"
+_SECOND_ACCTID = "000987654321"
+
+
+def _multi_account_ofx(tmp_path: Path) -> Path:
+    """The two-account fixture, re-keyed to account numbers worth protecting."""
+    source = _MULTI_ACCOUNT_OFX.read_text(encoding="utf-8")
+    ofx = tmp_path / "two-accounts.ofx"
+    ofx.write_text(
+        source.replace(
+            "<ACCTID>CHECKING1</ACCTID>", f"<ACCTID>{_FIRST_ACCTID}</ACCTID>"
+        ).replace("<ACCTID>SAVINGS1</ACCTID>", f"<ACCTID>{_SECOND_ACCTID}</ACCTID>"),
+        encoding="utf-8",
+    )
+    return ofx
+
+
+def _seed_both_multi_bank_twins(db: Database) -> None:
+    """A weak twin for each account, so both identities are real questions."""
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "(account_id, display_name, institution_slug, last_four) "
+        "VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
+        [
+            "acct_first01",
+            "First Twin",
+            "multi-bank",
+            _FIRST_ACCTID[-4:],
+            "acct_second01",
+            "Second Twin",
+            "multi-bank",
+            _SECOND_ACCTID[-4:],
+        ],
+    )
+
+
+def test_an_answered_account_leaves_its_ref_behind_not_its_number(
+    db: Database, tmp_path: Path
+) -> None:
+    """The gate re-keys the caller's answers, because only it can.
+
+    A two-account statement is answered one at a time, and the second call has
+    to replay the first answer or the gate re-asks and never converges. But an
+    account a binding already decided is skipped by ``_gate_account_proposals``,
+    so it is *absent* from ``account_proposals`` — a surface replaying the
+    caller's own key has no proposal to re-key it from and echoes it verbatim.
+    On OFX that key is the ``<ACCTID>``, an account number, and the CLI renders
+    the replay into ``actions[]``, which sits outside the redaction walk.
+
+    ``ratified_bindings`` closes that: the ref is the account's index in the
+    file, so this layer is the only one that can name it once the proposal is
+    gone.
+    """
+    ofx = _multi_account_ofx(tmp_path)
+    _seed_both_multi_bank_twins(db)
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).import_file(
+            ofx,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={_FIRST_ACCTID: "acct_first01"},
+        )
+
+    outcome = exc.value.outcome
+    # The answered account is gone from the gate — that absence is the defect's
+    # whole cause, so assert it rather than assume it.
+    assert [p["source_account_key"] for p in outcome.account_proposals] == [
+        _SECOND_ACCTID
+    ]
+    assert [p["proposal_ref"] for p in outcome.account_proposals] == ["@1"]
+    # ...and this is where its answer survives instead: keyed by ref, never by
+    # the number the caller had to type.
+    assert outcome.ratified_bindings == {"@0": "acct_first01"}
+
+
 def test_agent_import_gates_on_weak_account_candidate(
     db: Database,
 ) -> None:

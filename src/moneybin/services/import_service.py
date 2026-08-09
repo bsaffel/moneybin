@@ -985,6 +985,33 @@ def _resolve_binding_targets(
     return targets
 
 
+def _ratified_binding_refs(
+    source_accounts: list[SourceAccount], bindings: dict[str, str]
+) -> dict[str, str]:
+    """The caller's answers, re-keyed from whatever they sent to positional refs.
+
+    A surface replaying these must not replay the caller's own keys: on OFX a
+    key is the ``<ACCTID>``, and the CLI renders the replay into ``actions[]``,
+    which sits outside the redaction walk. Re-keying has to happen here because
+    a bound account is skipped by :meth:`_gate_account_proposals` and so never
+    reaches ``account_proposals`` for a surface to look its ref up in.
+
+    Total by construction, so a surface can drop the caller's dict entirely:
+    :func:`_resolve_binding_targets` raises on a key naming no account in this
+    file, and any account a binding names is bound, so every surviving entry
+    lands here.
+    """
+    if not bindings:
+        return {}
+    return {
+        proposal_ref(index): target
+        for index, target in enumerate(
+            _resolve_binding_targets(source_accounts, bindings)
+        )
+        if target is not None
+    }
+
+
 def _apply_account_bindings(
     source_accounts: list[SourceAccount], bindings: dict[str, str]
 ) -> list[SourceAccount]:
@@ -1802,6 +1829,7 @@ class ImportService:
         ``disposition="rollback"`` because raising is this call's success case.
         """
         source_accounts = _apply_account_bindings(source_accounts, bindings or {})
+        ratified = _ratified_binding_refs(source_accounts, bindings or {})
         _refuse_unknown_binding_targets(resolver, source_accounts, bindings or {})
         _refuse_contradicted_bindings(resolver, source_accounts)
         wanted_fallback = set(fallback_keys)
@@ -1864,6 +1892,7 @@ class ImportService:
                 ),
                 reason="account_confirmation",
                 account_proposals=proposals,
+                ratified_bindings=ratified,
             )
         )
 
