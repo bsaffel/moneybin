@@ -92,7 +92,11 @@ outside. Three rules follow:
   regardless of who supplied it. The masked form — and only the masked form —
   is what AGENTS.md's "no PII or financial data in logs" rule carves out for a
   refusal: the caller who passed several keys has to learn which one was
-  rejected, and a count cannot tell them.
+  rejected, and a count cannot tell them. Mind the shortfall, though: the
+  masker is digit-pattern based (`mask_embedded_account_number`), so it leaves
+  a key carrying fewer than five digits unchanged — `'1234'` and `'ACCT-XY9Z'`
+  both render verbatim, and `import_cmd.py:812` writes that refusal to
+  `logger.error`. Passing through the masker is not what makes a key safe.
 - **Never narrow the mask by arguing a particular key is synthetic.** "This
   channel derives its key from the filename, so it is not PII" is true of the
   value and wrong about the field: the same column carries a real `<ACCTID>`
