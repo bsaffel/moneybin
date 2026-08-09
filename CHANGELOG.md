@@ -1008,8 +1008,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "degrade to aggregates" without consent — no such behavior is implemented. It
   now states the truth: account/routing numbers are masked, all other fields
   reach the model provider as-is, and there is no consent gate yet.
+- **`sql_query` and `moneybin sql query` now name the column an unknown-column
+  query got wrong, instead of a bare "Query execution failed." (#382).** DuckDB
+  raises `BinderException` for an unknown column, so that case fell through to a
+  generic no-detail bucket; it now returns `sql_unknown_table` with a hint naming
+  the unresolved identifier, and that code's message widened to "Query could not
+  be bound to the schema." because it covers every binder rejection rather than
+  only a missing table or column — an agent branching on the error code should
+  update.
 
 ### Security
+- **A `UserError` hint shown on the CLI no longer reaches the durable log file
+  (#382).** `handle_cli_errors` logged every hint via `logger.info` and the CLI
+  file handler has no level filter, which became a disclosure once `sql_query`'s
+  new hint started carrying caller-typed text; the hint now prints to the
+  console via `typer.echo(..., err=True)` instead, so only its destination
+  changed.
 - **Fixed a redaction bypass that returned a source account identifier in the
   clear through `import_confirm`'s `confirmation_required` envelope (#372).**
   The tool declares `dynamic_classification=True`, and the decorator skips

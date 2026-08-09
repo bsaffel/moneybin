@@ -29,7 +29,7 @@ from sqlglot import exp
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.log_sanitizer import sql_digest
+from moneybin.log_sanitizer import mask_pii_shaped, sql_digest
 from moneybin.privacy.redaction import redact_records
 from moneybin.privacy.sql_lineage import (
     FAIL_CLOSED_CLASS,
@@ -384,6 +384,72 @@ def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None
         )
 
 
+# The DuckDB binder/catalog message has up to three parts: an identifier-
+# bearing first line ('Referenced column "x" not found', 'Could not find key
+# "y" in struct'), an optional candidate-enumeration clause ('Candidate
+# bindings: "a", "b"', 'Candidate Entries: "c"', 'Candidate functions: ...'),
+# and a `LINE n:` tail that echoes the query VERBATIM, literal values
+# included. Dropping the tail removes the query-echo leak the blanket
+# suppression was protecting against.
+#
+# The first line is not risk-free on its own: DuckDB echoes whatever
+# identifier the CALLER wrote, verbatim, including a quoted string naming no
+# real column — `SELECT "4111 1111 1111 1111" FROM core.fct_transactions`
+# puts that exact text in the head, not just names `sql_schema` already
+# publishes. This is a round-trip of caller-authored text, not a new
+# disclosure, but it is not nothing either, so `mask_pii_shaped` runs over the
+# head as a backstop. That backstop is narrow: it catches exactly two shapes,
+# an SSN (`NNN-NN-NNNN`) and 8+ consecutive digits (see log_sanitizer.py) —
+# not general PII. A quoted name, address, or other free text the caller
+# wrote passes through unmasked. A CatalogException's first line can also
+# carry a `Did you mean "x"?` suggestion DuckDB derived from its own catalog
+# (a table or function name) — not caller-authored, but not row data either,
+# and no more than `SHOW ALL TABLES` already discloses (see
+# `test_show_all_tables_exposes_internal_shape_but_no_values`).
+#
+# The candidate-enumeration clause is where a STORED ROW VALUE can leak.
+# DuckDB derives PIVOT/UNPIVOT output column names, and SUMMARIZE/struct-key
+# names, from actual row data — a routing number's digit prefix becomes a
+# PIVOT column name, a merchant name becomes a struct key — and when a query
+# references a name that's a near-miss for one of those, DuckDB's "did you
+# mean" suggester lists the real ones it has, verbatim, in this clause. This
+# is unlike the first line: it is DuckDB's own enumeration, not an echo of
+# what the caller typed, and it can name text no CALLER ever wrote. There is
+# no reusable syntactic detector for "this query used a construct that derives
+# names from row data" — PIVOT/UNPIVOT/SUMMARIZE/struct access are unrelated
+# grammar productions, and a new one could ship in any DuckDB release — so
+# rather than enumerate constructs (which rots the moment DuckDB adds one),
+# this drops the clause structurally: whatever marker introduces it. A survey
+# across unknown column/table/function/schema, near-misses against PIVOT and
+# struct-key output, ambiguous references, and malformed GROUP BY/LIMIT/regex
+# found the row-derived text always behind this marker and never on the first
+# line — see `test_binder_error_head_without_a_line_marker_can_carry_caller_text`
+# and the PIVOT/struct-key tests beside it for the pinned cases.
+_LINE_ECHO = re.compile(r"^LINE \d+:", re.MULTILINE)
+_CANDIDATE_ENUMERATION = re.compile(r"Candidate \w+:")
+
+
+def _identifier_detail(exc: Exception) -> str | None:
+    """The identifier-bearing head of a DuckDB catalog/binder message.
+
+    Truncates at whichever of the `LINE n:` query echo or the
+    candidate-enumeration clause (`Candidate bindings:`, `Candidate Entries:`,
+    `Candidate functions:`) comes first — both can follow the first line, in
+    either order depending on the error shape, and either can carry text this
+    primitive must not thread through (see the module comment above).
+    """
+    text = str(exc)
+    cutoffs = [
+        m.start()
+        for m in (_LINE_ECHO.search(text), _CANDIDATE_ENUMERATION.search(text))
+        if m is not None
+    ]
+    if cutoffs:
+        text = text[: min(cutoffs)]
+    masked, _ = mask_pii_shaped(text.strip())
+    return masked or None
+
+
 def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryResult:
     """Run a read-only SQL query with full privacy enforcement.
 
@@ -459,23 +525,62 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         output_classes = resolve_output_classes(qtree, snapshot, query)
         columns, rows, truncated = _fetch(db, query, max_rows)
     # SqlSchemaError comes from the lineage qualify step; CatalogException from
-    # DuckDB at execute time. Both mean "table/column doesn't exist". (Parsing
-    # happens above at parse_cached, outside this block, so SqlParseError can't
-    # surface here.)
-    except (SqlSchemaError, duckdb.CatalogException) as e:
-        # str(e) reaches neither the client nor the log: a DuckDB or lineage
-        # message can quote the query verbatim, literal values included, and the
-        # log file is the more durable of the two boundaries. `sql_digest` says
-        # why the formatter cannot be relied on to catch it.
+    # DuckDB at execute time for an unknown TABLE; BinderException from DuckDB
+    # at execute time for an unknown COLUMN (CatalogException is tables only —
+    # a column DuckDB cannot bind previously fell through to the generic
+    # handler below and returned "Query execution failed." with no name). All
+    # three mean "table/column doesn't exist". (Parsing happens above at
+    # parse_cached, outside this block, so SqlParseError can't surface here.)
+    except (SqlSchemaError, duckdb.CatalogException, duckdb.BinderException) as e:
+        # `hint` below is where the head described above (module comment,
+        # `_LINE_ECHO`, `_CANDIDATE_ENUMERATION`) reaches the caller — not
+        # just identifiers, caller-authored STRING LITERALS too. It reaches
+        # the MCP error envelope and the CLI console (stderr) — never the log
+        # file, which `handle_cli_errors` (cli/utils.py) echoes deliberately
+        # to keep it out of. `str(e)` and the log line right below never
+        # carry it either; that line names only the exception TYPE.
+        #
+        # A binder or catalog error is raised BEFORE execution, so it is NOT
+        # true that its message can only quote text the CALLER typed: DuckDB
+        # derives PIVOT/UNPIVOT/SUMMARIZE output column names and struct keys
+        # from STORED ROW VALUES, and a near-miss reference to one makes
+        # DuckDB's own suggester name the real ones in a candidate-enumeration
+        # clause — that clause is what `_CANDIDATE_ENUMERATION` strips. What
+        # survives after both truncations is the first line, which in every
+        # shape probed quotes only the caller's own reference (plus, for a
+        # CatalogException, a same-catalog `Did you mean` name — see the
+        # module comment). `duckdb.ConversionException` is the case that
+        # still can't be threaded at all: it fires evaluating a row at fetch
+        # time, so its FIRST LINE quotes the offending stored value directly,
+        # with no marker to truncate at — why that family stays in the
+        # silent, no-hint bucket below instead of being threaded here.
         logger.warning(
             f"sql_query unknown table/column: {type(e).__name__} "
             f"(sql sha256={sql_digest(query)})"
         )
         raise UserError(
-            "Unknown table or column.",
+            "Query could not be bound to the schema.",
             code=error_codes.SQL_UNKNOWN_TABLE,
+            # This code now means "binder or catalog rejection" — broader
+            # than its name: negative LIMIT/OFFSET, an out-of-range GROUP BY
+            # term, a malformed regex, and more, not only a missing table or
+            # column. A rename/split is a public-contract change under
+            # separate review; the code stays as-is for now.
+            #
+            # SqlSchemaError gets no hint. Its messages are safe today only as
+            # a side effect of `_qualified` in sql_lineage.py calling
+            # `qualify(..., validate_qualify_columns=False)` — a flag chosen
+            # for fallback behavior ("don't raise on unresolved"), not for
+            # message safety. Flip it and sqlglot's OptimizeError starts
+            # embedding the raw query with no `LINE n:` marker for
+            # `_identifier_detail` to split on, silently piping the query into
+            # this hint. DuckDB's own CatalogException/BinderException don't
+            # depend on that flag, so only they get the identifier thread.
+            hint=_identifier_detail(e) if isinstance(e, duckdb.Error) else None,
         ) from e
     except duckdb.Error as e:
+        # No detail: ConversionException and friends quote the offending VALUE
+        # in the head itself, so there is no safe substring to thread.
         logger.warning(
             f"sql_query execution error: {type(e).__name__} "
             f"(sql sha256={sql_digest(query)})"
@@ -516,6 +621,22 @@ def _fetch_metadata(
     """
     try:
         return _fetch(db, query, max_rows)
+    # See execute_sql_query: DuckDB raises BinderException for an unknown
+    # COLUMN and CatalogException for an unknown TABLE; both get the same
+    # named-identifier treatment here as the data path.
+    except (duckdb.CatalogException, duckdb.BinderException) as e:
+        logger.warning(
+            f"sql_query metadata unknown table/column: {type(e).__name__} "
+            f"(sql sha256={sql_digest(query)})"
+        )
+        raise UserError(
+            "Query could not be bound to the schema.",
+            # See execute_sql_query: this code now means "binder or catalog
+            # rejection", broader than its name; a rename is under separate
+            # review.
+            code=error_codes.SQL_UNKNOWN_TABLE,
+            hint=_identifier_detail(e),
+        ) from e
     except duckdb.Error as e:
         # See execute_sql_query: keep str(e) out of both the envelope and the log.
         logger.warning(
