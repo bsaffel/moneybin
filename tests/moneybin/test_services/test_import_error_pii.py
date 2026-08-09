@@ -117,6 +117,55 @@ def test_empty_binding_value_does_not_echo_the_files_account_number(
     assert "@0" in message
 
 
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [
+        # Contiguous — the shape parse_account_label leaves entirely alone.
+        (f"Checking {ACCTID}", "Checking ****1098"),
+        # Grouped. parse_account_label strips only the trailing four-digit
+        # token, so the *prefix* of the number survives into the label — and a
+        # contiguous-run mask matches none of it, because every remaining run
+        # is four digits.
+        ("Checking 1234-5678-9012", "Checking ****5678"),
+        ("Checking 4111 1111 1111 1111", "Checking ****1111"),
+        # A bare trailing four-digit group is the masked last-four banks print,
+        # and parse_account_label lifts it out into `last_four` — so the label
+        # arrives already stripped and there is nothing left for the mask to
+        # find. Pinned because it is the boundary: one digit more and the mask
+        # has to act.
+        ("Checking 1789", "Checking"),
+        ("Savings 2024", "Savings"),
+    ],
+)
+def test_a_minted_accounts_display_name_masks_every_account_number_shape(
+    db: Any, tmp_path: Path, label: str, expected: str
+) -> None:
+    """Grouped numbers are the shape that survives both stages.
+
+    ``parse_account_label`` removes a recognized trailing four-digit token, so
+    ``Checking 4111 1111 1111 1111`` arrives as ``Checking 4111 1111 1111`` —
+    twelve digits of a card number, in a field declared safe to show. Masking
+    only contiguous runs of five or more leaves that untouched, because each
+    group is four.
+
+    Exact equality on both directions: masking too little publishes a number,
+    masking too much turns the mint report into ``****1098`` and defeats the
+    field's purpose, which is to name what was created.
+    """
+    csv = tmp_path / "txns.csv"
+    csv.write_text(
+        f"Date,Description,Amount,Account\n2024-01-15,Coffee,-4.50,{label}\n"
+    )
+
+    result = import_answering_gate(
+        ImportService(db), csv, refresh=False, confirm=True, auto_accept=True
+    )
+
+    created = result.accounts_created
+    assert len(created) == 1, created
+    assert created[0].display_name == expected
+
+
 def test_a_minted_accounts_display_name_does_not_carry_an_account_number(
     db: Any, tmp_path: Path
 ) -> None:

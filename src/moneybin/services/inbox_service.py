@@ -538,13 +538,20 @@ class InboxService:
         # The sidecar recommends this very layout as a recovery, so it has to
         # work on every channel.
         hint = account_hint if isinstance(account_hint, str) else None
-        if hint is not None and not honors_account_name(src):
-            logger.info(
-                f"Inbox folder hint not applicable to this file type, importing "
-                f"without it: {rel_filename}"
-            )
-            hint = None
         try:
+            # Inside the guard, not before it: honors_account_name routes
+            # through _detect_file_type, whose OFX sniff re-raises a read error
+            # rather than guessing from a suffix it could not verify. Asked
+            # above this try, one locked file would abort the whole drain
+            # instead of failing alone — and draining unattended is the point.
+            if hint is not None and not honors_account_name(src):
+                # The suffix, never rel_filename: that path carries the account
+                # folder the user named, and this is a persistent log.
+                logger.info(
+                    "Inbox folder hint not applicable to this file type, "
+                    f"importing without it ({src.suffix.lstrip('.') or 'unknown'})"
+                )
+                hint = None
             import_result = importer.import_file(
                 str(src),
                 refresh=False,

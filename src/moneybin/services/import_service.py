@@ -89,27 +89,35 @@ class CreatedAccount:
     display_name: str
 
 
-# Five, not four: a four-digit group is the masked last-four banks print, and
-# `parse_account_label` already strips the ones it recognizes. Anything longer
-# in an account label is a number, not a label.
-_EMBEDDED_ACCOUNT_NUMBER = re.compile(r"\d{5,}")
+# Five digits, counted across single space/hyphen separators. Four is the
+# masked last-four banks print (and the shape of a year), so it stays; anything
+# longer in an account label is a number, not a label. Counting across the
+# separator is the load-bearing part: account numbers are written in groups, and
+# a contiguous-only rule reads "4111 1111 1111" as four safe tokens.
+_EMBEDDED_ACCOUNT_NUMBER = re.compile(r"\d(?:[ \t-]?\d){4,}")
 
 
 def _mask_embedded_account_number(label: str) -> str:
     """Mask an account number embedded in a derived account label.
 
-    ``parse_account_label`` strips a *recognized masked* last-four — ``(...1789)``,
-    ``x1789``, a bare trailing group — so the shape it leaves untouched is the
-    one that matters: a full, unmasked number in the source's account column
-    survives whole. That value becomes ``CreatedAccount.display_name``, which is
-    declared ``USER_NOTE`` and shown unmasked on every surface that reports a
-    mint.
+    ``parse_account_label`` lifts out a *recognized masked* last-four —
+    ``(...1789)``, ``x1789``, a bare trailing group — so the shapes it leaves
+    behind are the ones that matter, and grouping is what makes them dangerous:
+    ``Checking 4111 1111 1111 1111`` loses only its final token and arrives as
+    ``Checking 4111 1111 1111``, twelve digits of a card number in a field
+    declared ``USER_NOTE`` and shown unmasked wherever a mint is reported.
 
     Masks the run rather than the whole string, because naming what was created
-    is the entire purpose of the field: "Checking 987654321098" has to stay
-    "Checking ****1098" and not become "****1098".
+    is the entire purpose of the field: "Checking 987654321098" has to become
+    "Checking ****1098", not "****1098". The kept four are the run's last four
+    *digits*, so a grouped number and a contiguous one mask alike.
     """
-    return _EMBEDDED_ACCOUNT_NUMBER.sub(lambda m: f"****{m.group()[-4:]}", label)
+
+    def _mask(match: re.Match[str]) -> str:
+        digits = re.sub(r"\D", "", match.group())
+        return f"****{digits[-4:]}"
+
+    return _EMBEDDED_ACCOUNT_NUMBER.sub(_mask, label)
 
 
 def _created_account(

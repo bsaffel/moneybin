@@ -453,14 +453,26 @@ class AccountResolver:
         through as a binding target and step 0 would write a fresh accepted
         link onto it, resurrecting the merged-away account as a second,
         disconnected transaction stream.
+
+        **Links outrank the dim for any id they know.** Filtering the links arm
+        alone left the same resurrection open through the other one: the merge
+        path (``AccountLinksService.set``) repoints and refreshes nothing but a
+        metrics gauge, so ``dim_accounts`` still carries the merged-away row
+        until the next transform — and a "yes" from that stale materialization
+        is exactly the answer the filter was added to prevent. Rows present but
+        none accepted therefore means *merged away*, full stop; the dim does not
+        get to overrule it. The dim arm still answers for an id links have never
+        seen, which is the case it exists for — an account created by sync or
+        backfill rather than by an import.
         """
         row = self._db.execute(
-            f"SELECT 1 FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized value
-            "WHERE status = 'accepted' AND account_id = ? LIMIT 1",
+            f"SELECT COUNT(*) AS total, "  # noqa: S608  # TableRef + parameterized value
+            "COUNT(*) FILTER (WHERE status = 'accepted') AS accepted "
+            f"FROM {ACCOUNT_LINKS.full_name} WHERE account_id = ?",
             [account_id],
         ).fetchone()
-        if row is not None:
-            return True
+        if row is not None and row[0]:
+            return bool(row[1])
         try:
             row = self._db.execute(
                 f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value

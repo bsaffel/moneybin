@@ -478,6 +478,60 @@ class TestSyncHappyPath:
 
         assert captured_kwargs["account_name"] == "chase-checking"
 
+    def test_an_unreadable_subfolder_file_fails_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One unreadable file must not take the rest of the drain with it.
+
+        Deciding whether to forward the folder hint means asking
+        ``honors_account_name``, which routes through ``_detect_file_type`` —
+        and its OFX sniff deliberately re-raises ``PermissionError`` rather than
+        guessing from a suffix it could not verify. Asked *before* the per-file
+        guard, that read error escapes ``_sync_one`` and aborts the whole drain,
+        so a single locked file in one account folder strands every other file
+        behind it. The batch is the thing the inbox exists to drain unattended.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **_kwargs: object) -> ImportResult:
+                return ImportResult(file_path=path, file_type="ofx", transactions=1)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", _fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        sub = svc.inbox_dir / "chase-checking"
+        sub.mkdir()
+        (sub / "a-unreadable.ofx").write_text("OFXHEADER:100")
+        (sub / "b-fine.ofx").write_text("OFXHEADER:100")
+
+        real_detect = mod.honors_account_name
+
+        def _detect(path: Path) -> bool:
+            if path.name == "a-unreadable.ofx":
+                raise PermissionError(13, "Permission denied")
+            return real_detect(path)
+
+        monkeypatch.setattr(mod, "honors_account_name", _detect)
+
+        result = svc.sync(year_month="2026-05")
+
+        assert [f["filename"] for f in result.failed] == [
+            "chase-checking/a-unreadable.ofx"
+        ]
+        assert [p["filename"] for p in result.processed] == [
+            "chase-checking/b-fine.ofx"
+        ]
+
     @pytest.mark.parametrize("channel_file", ["statement.ofx", "statement.pdf"])
     def test_subfolder_hint_does_not_fail_a_channel_that_cannot_use_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, channel_file: str

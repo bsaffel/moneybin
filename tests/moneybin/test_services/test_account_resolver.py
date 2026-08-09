@@ -103,6 +103,45 @@ def test_a_merged_away_account_is_no_longer_known(db: Database) -> None:
     assert resolver.knows_account_id("acct_canonical") is True
 
 
+def test_a_merge_is_believed_before_core_catches_up(db: Database) -> None:
+    """The dim lags a merge, so a reversed link has to outrank it.
+
+    The test above materializes ``core`` *after* the merge, which is the state
+    only a refresh produces. The real one is the opposite: the merge path
+    (``AccountLinksService.set``) repoints links and refreshes nothing but a
+    metrics gauge, so ``dim_accounts`` still carries the merged-away row until
+    the next transform. The links arm correctly says "not accepted" and the dim
+    arm then answered "yes" anyway — reopening the same resurrection the
+    accepted-only filter was added to close, through the other arm.
+
+    Links are the authority on an id they know: rows present but none accepted
+    means merged away, and the stale materialization does not get a vote. The
+    dim arm still answers for an id links have never seen — an account created
+    by sync or backfill rather than by import — which is the capability it
+    exists for.
+    """
+    create_core_tables(db)
+    resolver = AccountResolver(db, actor="system")
+    resolver.resolve(_src(explicit_account_id="acct_merged_away"))
+    row = db.conn.execute(
+        "SELECT link_id FROM app.account_links WHERE ref_value = 'wf-checking'"
+    ).fetchone()
+    assert row is not None
+    AccountLinksRepo(db).repoint(
+        link_id=row[0],
+        new_account_id="acct_canonical",
+        decided_by="user",
+        actor="system",
+    )
+    # Core has NOT been refreshed since the merge: the row is still there.
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_merged_away", "Stale Materialization"],
+    )
+
+    assert resolver.knows_account_id("acct_merged_away") is False
+
+
 def test_an_account_minted_this_batch_is_known_before_any_refresh(
     db: Database,
 ) -> None:
