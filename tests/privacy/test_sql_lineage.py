@@ -21,6 +21,9 @@ from moneybin.privacy.sql_lineage import (
     SqlParseError,
     _class_of_key,  # pyright: ignore[reportPrivateUsage]
     _combined_class,  # pyright: ignore[reportPrivateUsage]
+    _conservative_floor,  # pyright: ignore[reportPrivateUsage]
+    _scope_input_max,  # pyright: ignore[reportPrivateUsage]
+    _table_scope_max,  # pyright: ignore[reportPrivateUsage]
     derive_query_tier,
     expand_star,
     get_current_schema_snapshot,
@@ -1398,7 +1401,124 @@ def test_floored_is_sticky_regardless_of_source_order(
     assert _combined_class(classes) is DataClass.FLOORED
 
 
-def test_floored_does_not_outrank_a_higher_tier() -> None:
-    assert _combined_class([DataClass.FLOORED, DataClass.TXN_AMOUNT]) is (
-        DataClass.TXN_AMOUNT
+@pytest.mark.parametrize(
+    ("classes", "expected"),
+    [
+        ([DataClass.FLOORED, DataClass.USER_NOTE], DataClass.USER_NOTE),
+        ([DataClass.FLOORED, DataClass.TXN_AMOUNT], DataClass.TXN_AMOUNT),
+        (
+            [DataClass.FLOORED, DataClass.ROUTING_NUMBER, DataClass.ROUTING_NUMBER],
+            DataClass.ROUTING_NUMBER,
+        ),
+        (
+            [
+                DataClass.FLOORED,
+                DataClass.ROUTING_NUMBER,
+                DataClass.ACCOUNT_IDENTIFIER,
+            ],
+            FAIL_CLOSED_CLASS,
+        ),
+    ],
+    ids=["medium", "high", "critical-unanimous", "critical-split"],
+)
+def test_floored_does_not_outrank_a_higher_tier(
+    classes: list[DataClass], expected: DataClass
+) -> None:
+    assert _combined_class(classes) is expected
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: FLOORED must also survive the conservative-fallback
+# accumulators (_scope_input_max, _table_scope_max, _conservative_floor).
+# Each seeds `best = DataClass.AGGREGATE` (LOW) and previously advanced only
+# on strict `dc.tier > best.tier` — since FLOORED is also LOW, that strict
+# comparison can never select it, deterministically, regardless of source
+# order. This is a from-scratch bug (not an ordering tie), distinct from
+# `_combined_class`'s own stickiness fix above.
+# ---------------------------------------------------------------------------
+
+
+def test_scope_input_max_carries_floored(
+    populated_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FLOORED must survive _scope_input_max's own LOW-tier accumulation."""
+    import moneybin.privacy.sql_lineage as lin
+
+    snapshot = get_current_schema_snapshot(populated_db)
+    select = parse_cached("SELECT dim_categories.class FROM core.dim_categories").find(
+        exp.Select
     )
+    assert select is not None
+
+    def always_floored(key: tuple[str, str, str]) -> DataClass:  # noqa: ARG001
+        return DataClass.FLOORED
+
+    monkeypatch.setattr(lin, "_class_of_key", always_floored)
+
+    assert _scope_input_max(select, snapshot, "") is DataClass.FLOORED
+
+
+def test_table_scope_max_carries_floored(
+    populated_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FLOORED must survive _table_scope_max's own LOW-tier accumulation."""
+    import moneybin.privacy.sql_lineage as lin
+
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT class FROM core.dim_categories")
+
+    def always_floored(key: tuple[str, str, str]) -> DataClass:  # noqa: ARG001
+        return DataClass.FLOORED
+
+    monkeypatch.setattr(lin, "_class_of_key", always_floored)
+
+    assert _table_scope_max(tree, snapshot, "") is DataClass.FLOORED
+
+
+def test_conservative_floor_merge_carries_floored(
+    populated_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_conservative_floor's own merge must not drop a FLOORED scope max.
+
+    Mocks its two callees directly (rather than ``_class_of_key``) so this
+    isolates ``_conservative_floor``'s own per-select loop and table_dc merge
+    from whether ``_scope_input_max`` / ``_table_scope_max`` are themselves
+    correct — a ``_class_of_key`` patch would let ``_table_scope_max``'s own
+    (separately tested) fix silently rescue a still-broken merge here, since
+    it walks every column of the same table and would also see FLOORED.
+    """
+    import moneybin.privacy.sql_lineage as lin
+
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT class FROM core.dim_categories")
+
+    def fake_scope_input_max(
+        select: object, snapshot: object, sql_for_log: object
+    ) -> DataClass:
+        return DataClass.FLOORED
+
+    def fake_table_scope_max(
+        tree: object, snapshot: object, sql_for_log: object
+    ) -> DataClass:
+        return DataClass.AGGREGATE
+
+    monkeypatch.setattr(lin, "_scope_input_max", fake_scope_input_max)
+    monkeypatch.setattr(lin, "_table_scope_max", fake_table_scope_max)
+
+    assert _conservative_floor(tree, snapshot, "") is DataClass.FLOORED
+
+
+def test_table_scope_max_high_control_is_unaffected(populated_db: Database) -> None:
+    """Above-LOW behaviour must stay identical: a lone HIGH class still wins."""
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT account_id FROM core.fct_balances")
+
+    assert _table_scope_max(tree, snapshot, "") is DataClass.BALANCE
+
+
+def test_table_scope_max_critical_control_is_unaffected(populated_db: Database) -> None:
+    """Above-LOW behaviour must stay identical: disagreeing CRITICAL still fails closed."""
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT account_id FROM core.dim_accounts")
+
+    assert _table_scope_max(tree, snapshot, "") is FAIL_CLOSED_CLASS

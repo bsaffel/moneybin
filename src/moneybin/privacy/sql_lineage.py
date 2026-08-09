@@ -462,10 +462,9 @@ def _combined_class(classes: list[DataClass]) -> DataClass:
     the position, so collapsing it would discard a correct, more specific answer
     (and turn ``SELECT last_four`` into a whole mask).
 
-    Below CRITICAL every transform is passthrough except FLOORED, which is
-    sticky against a LOW-tier tie (see the check below) because it is the one
-    that masks. Elsewhere the identified max is the more informative answer;
-    collapsing there would also inflate a HIGH bound to CRITICAL — the
+    Below CRITICAL, FLOORED is sticky against a LOW-tier tie — see the check
+    below for why. Otherwise the identified max is the more informative
+    answer; collapsing there would inflate a HIGH bound to CRITICAL, the
     over-classification this module must not introduce.
 
     ``classes`` must be non-empty; every caller already guards that.
@@ -510,8 +509,7 @@ def _scope_input_max(
     best: DataClass = DataClass.AGGREGATE
     for key in collect_input_columns(select, snapshot):
         dc = _class_of_key(key) or _coverage_gap_class(key, sql_for_log)
-        if dc.tier > best.tier:
-            best = dc
+        best = _combined_class([best, dc])
     return best
 
 
@@ -591,8 +589,7 @@ def _table_scope_max(
             dc = _class_of_key(key)
             if dc is None:
                 return _coverage_gap_class(key, sql_for_log)
-            if dc.tier > best.tier:
-                best = dc
+            best = _combined_class([best, dc])
     # A table-level bound names a TIER, never a column. At CRITICAL that
     # distinction is load-bearing, so the bound is reported as UNRESOLVED rather
     # than as whichever CRITICAL column sorted first:
@@ -605,9 +602,10 @@ def _table_scope_max(
     #   * Reporting `institution_account_number` for a whole-row struct claims a
     #     precision this path does not have.
     #
-    # Below CRITICAL every transform is passthrough except FLOORED, so the
-    # class is pure reporting for every other candidate and the identified max
-    # is the more informative answer. Reporting UNRESOLVED there would also
+    # Below CRITICAL, the loop above merges each column via `_combined_class`,
+    # so a FLOORED column keeps this bound sticky the same way it keeps a
+    # projection sticky — never silently outvoted by an AGGREGATE/CATEGORY/etc.
+    # sibling column in the same table. Reporting UNRESOLVED there would
     # inflate a HIGH bound to CRITICAL, which is the over-classification this
     # floor must not introduce.
     return FAIL_CLOSED_CLASS if best.tier is Tier.CRITICAL else best
@@ -657,10 +655,9 @@ def _conservative_floor(
     best: DataClass = DataClass.AGGREGATE
     for select in tree.find_all(exp.Select):
         dc = _scope_input_max(select, snapshot, sql_for_log)
-        if dc.tier > best.tier:
-            best = dc
+        best = _combined_class([best, dc])
     table_dc = _table_scope_max(tree, snapshot, sql_for_log)
-    floor = table_dc if table_dc.tier > best.tier else best
+    floor = _combined_class([best, table_dc])
     # A floor is a BOUND over what the query could touch — never a statement
     # about the projection, which is by definition unresolved on this path. At
     # CRITICAL that distinction leaks, so ANY critical floor collapses to the
@@ -678,10 +675,11 @@ def _conservative_floor(
     #   * Naming any specific CRITICAL class here claims a precision this path
     #     does not have, and CRITICAL transforms are not interchangeable.
     #
-    # Below CRITICAL every transform is passthrough except FLOORED, so the
-    # class is pure reporting for every other candidate: the more specific of
-    # the two floors is kept, and reporting UNRESOLVED there would inflate a
-    # HIGH bound to CRITICAL.
+    # Below CRITICAL, both merges above (the per-select loop and this one) go
+    # through `_combined_class`, so a FLOORED column stays sticky through
+    # either floor rather than losing to a same-tier sibling; otherwise the
+    # more specific of the two floors is kept. Reporting UNRESOLVED there would
+    # inflate a HIGH bound to CRITICAL.
     return FAIL_CLOSED_CLASS if floor.tier is Tier.CRITICAL else floor
 
 
