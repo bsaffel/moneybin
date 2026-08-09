@@ -3894,7 +3894,14 @@ class TestImportFilesConfirmationRequired:
                 }
             ],
             failed=[],
-            pending=[],
+            pending=[
+                {
+                    "filename": "statement.ofx",
+                    "reason": "account_confirmation",
+                    "channel": "ofx",
+                    "tier": "high",
+                }
+            ],
             skipped=[],
             ignored=[],
             transforms_applied=True,
@@ -3921,8 +3928,17 @@ class TestImportFilesConfirmationRequired:
 
         actions = " ".join(result.actions or [])
         assert "created 1 new account" in actions, result.actions
+        # The recovery for a file the drain parked in pending/. `import_status`
+        # cannot substitute: it enumerates inbox/, not pending/, and offers no
+        # way to answer a proposal — so dropping this strands the agent on the
+        # one outcome that needs it, and invites a re-import of the pending path
+        # that never archives.
+        assert "--account-binding" in actions, result.actions
         # The wrapper's own staged-import hint is not lost to the merge.
         assert "import_status" in actions, result.actions
+        # ...and the hint that named a tool nobody registered is gone from the
+        # narrow tool entirely, rather than being filtered out here.
+        assert "transactions.search" not in actions, result.actions
 
     async def test_import_files_that_created_nothing_hints_nothing(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

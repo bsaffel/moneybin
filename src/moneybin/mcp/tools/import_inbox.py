@@ -41,19 +41,13 @@ def _uncategorized_count() -> int:
         return 0
 
 
-def minted_account_count(processed: Sequence[Mapping[str, object]]) -> int:
+def _minted_count(processed: Sequence[Mapping[str, object]]) -> int:
     """Count accounts the drain minted across every imported file.
 
     The rows arrive as service-shaped ``dict[str, object]``, so the list is
     checked rather than assumed: a malformed entry must undercount, never raise
     on the drain's own success path.
 
-    Shared with ``import_inbox_sync_coarse``, which is the tool the standard
-    registry actually exposes and which rebuilds ``actions`` from scratch. It
-    recomputes the count from its own response rather than string-matching the
-    hint back out, so the two cannot report different numbers. Typed as
-    ``Mapping`` for that second caller: its rows are ``ImportInboxProcessedEntry``
-    TypedDicts, which are not assignable to ``dict[str, object]``.
     """
     total = 0
     for entry in processed:
@@ -89,7 +83,9 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
         service = InboxService(db=db, settings=get_settings())
         sync_result = service.sync(refresh=refresh)
 
-    actions: list[str] = ["Use transactions.search to view newly imported transactions"]
+    # `transactions`, not `transactions.search` — the latter is not a registered
+    # tool and never was, so an agent following it called nothing.
+    actions: list[str] = ["Use transactions to view newly imported transactions"]
     # The drain mints accounts under exactly the conditions import_files does,
     # and the same "gate the merge, not the mint" bargain applies: no confirm, so
     # the surface has to name what it created. Same helper as import_files —
@@ -97,9 +93,7 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
     # noticed, not where a weaker hint is acceptable.
     from moneybin.mcp.tools.import_tools import accounts_created_action  # noqa: PLC0415
 
-    if minted_action := accounts_created_action(
-        minted_account_count(sync_result.processed)
-    ):
+    if minted_action := accounts_created_action(_minted_count(sync_result.processed)):
         actions.insert(0, minted_action)
     account_pending = [
         p for p in sync_result.pending if p.get("reason") == "account_confirmation"
