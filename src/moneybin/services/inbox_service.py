@@ -38,6 +38,7 @@ from moneybin.metrics.registry import (
 from moneybin.services.account_resolution_types import AccountProposalDict
 from moneybin.services.import_service import (
     ImportService,
+    honors_account_name,
     rekey_bare_proposals_for_path,
 )
 
@@ -529,11 +530,25 @@ class InboxService:
         actor_kind: Literal["human", "agent"] = (
             "human" if src.suffix.lower() == ".pdf" else "agent"
         )
+        # The subfolder name is a filing convention, not a caller signal, so it
+        # only rides along where the channel honors it. `account_name` is
+        # tabular-only, and `reject_unhonored_account_signals` refuses it
+        # elsewhere — correctly, for a flag someone typed, but that refusal
+        # would file a valid OFX or PDF under failed/ for sitting in a folder.
+        # The sidecar recommends this very layout as a recovery, so it has to
+        # work on every channel.
+        hint = account_hint if isinstance(account_hint, str) else None
+        if hint is not None and not honors_account_name(src):
+            logger.info(
+                f"Inbox folder hint not applicable to this file type, importing "
+                f"without it: {rel_filename}"
+            )
+            hint = None
         try:
             import_result = importer.import_file(
                 str(src),
                 refresh=False,
-                account_name=account_hint if isinstance(account_hint, str) else None,
+                account_name=hint,
                 actor_kind=actor_kind,
             )
         except ImportConfirmationRequiredError as e:

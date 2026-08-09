@@ -527,6 +527,27 @@ _HONORED_ACCOUNT_SIGNALS: dict[str, frozenset[str]] = {
 }
 
 
+def honors_account_name(file_path: Path) -> bool:
+    """Whether this file's channel forwards ``account_name`` to the resolver.
+
+    For a caller-supplied name the answer is enforced by
+    :func:`reject_unhonored_account_signals` — passing one to a channel that
+    would discard it is an error worth stopping for. This is the question its
+    *other* caller has to ask first: the inbox's ``inbox/<account-slug>/``
+    layout is a filing convention the user never passed as a signal, so a
+    folder name must not fail an import the way a wrong flag should. Reads the
+    same table the refusal reads, so the two cannot drift.
+
+    False for a file no channel claims: ``import_file`` raises on it anyway,
+    with a better message than this helper could give.
+    """
+    try:
+        file_type = _detect_file_type(file_path)
+    except ValueError:
+        return False
+    return "account_name" in _HONORED_ACCOUNT_SIGNALS.get(file_type, frozenset())
+
+
 def reject_unhonored_account_signals(
     file_type: str,
     *,

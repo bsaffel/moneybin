@@ -478,6 +478,68 @@ class TestSyncHappyPath:
 
         assert captured_kwargs["account_name"] == "chase-checking"
 
+    @pytest.mark.parametrize("channel_file", ["statement.ofx", "statement.pdf"])
+    def test_subfolder_hint_does_not_fail_a_channel_that_cannot_use_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, channel_file: str
+    ) -> None:
+        """The hint is an inbox convention, not a caller signal, on every channel.
+
+        ``_sync_one`` forwards the ``inbox/<account-slug>/`` folder name as
+        ``account_name`` for whatever it finds there, but ``account_name`` is
+        honored only by tabular — ``_HONORED_ACCOUNT_SIGNALS`` gives ``ofx`` an
+        empty set and ``pdf`` only ``account_id``. So the refusal that exists to
+        stop a caller from *believing they chose* an account fires on a folder
+        name the user never passed as a signal, and the drain files a valid
+        statement under ``failed/``.
+
+        The sidecar makes it worse by recommending exactly this: "move the file
+        into inbox/<account-slug>/ and re-run sync". That recovery has to work.
+
+        Driven against the real refusal rather than a restated copy, so the two
+        cannot drift: the fake importer calls the same function ``import_file``
+        calls, in the same position — right after the file type is known.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import (
+            ImportResult,
+            reject_unhonored_account_signals,
+        )
+
+        class GuardedImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> ImportResult:
+                file_type = "pdf" if path.endswith(".pdf") else "ofx"
+                reject_unhonored_account_signals(
+                    file_type,
+                    account_id=kwargs.get("account_id"),  # type: ignore[arg-type]
+                    account_name=kwargs.get("account_name"),  # type: ignore[arg-type]
+                )
+                return ImportResult(file_path=path, file_type=file_type)
+
+        monkeypatch.setattr(mod, "ImportService", GuardedImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", _fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        sub = svc.inbox_dir / "chase-checking"
+        sub.mkdir()
+        # Per-channel content, because _detect_file_type sniffs magic bytes
+        # before trusting an ambiguous suffix: OFX text in a .pdf would be
+        # routed to the ofx channel and the pdf case would never run.
+        sub.joinpath(channel_file).write_text(
+            "%PDF-1.4\n" if channel_file.endswith(".pdf") else "OFXHEADER:100"
+        )
+
+        result = svc.sync(year_month="2026-05")
+
+        assert result.failed == [], result.failed
+        assert len(result.processed) == 1
+
 
 class TestSyncRefreshOnce:
     """Regression: refresh runs exactly once per sync() call, not per file."""
