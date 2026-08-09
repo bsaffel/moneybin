@@ -22,24 +22,44 @@ An account carries two identifiers with opposite handling rules. Say which one
 you mean, every time; "the account key" is ambiguous and has already produced
 bugs that leak one while intending the other.
 
-| | The institution's | MoneyBin's own |
+| | The source-native key | MoneyBin's own |
 |---|---|---|
 | **Fields** | `source_account_key` | `account_id`, `proposed_account_id`, `proposal_ref` (`@0`, `@1`) |
-| **Where it comes from** | OFX `<ACCTID>`, PDF issuer + last four, tabular's slugified account column | Minted by MoneyBin |
+| **What it holds** | Whatever identifies the account *within its own source* — often the institution's identifier, sometimes not (below) | Always minted by MoneyBin |
 | **Privacy class** | `ACCOUNT_IDENTIFIER` → CRITICAL (`imports.py:115`) | `RECORD_ID` (`imports.py:121-122`) |
 | **In any surface** | Masked (`****6789`) | Printed readably |
 
-Two rules follow:
+**`source_account_key` is not uniformly the institution's identifier**, and
+assuming it is re-creates the conflation this section exists to prevent. Its
+value depends on the channel and on what the caller pinned:
+
+| Case | What `source_account_key` holds |
+|---|---|
+| OFX | `<ACCTID>` — the institution's |
+| PDF with a readable account anchor | issuer + last four — the institution's |
+| PDF with no anchor | a filename-derived alias — MoneyBin-synthesized |
+| Bare tabular (no account column) | `_bare_account_key(file_path, source_bytes)` — MoneyBin-synthesized from filename + content |
+| Any channel with `--account-id` pinned | MoneyBin's own `account_id`, copied straight in (`import_service.py` PDF `native_key = account_id_override`; tabular `source_account_key=account_id`) |
+
+The field is masked in **every** case anyway. That is deliberate and
+fail-closed: the classification is decided by what the field *may* hold, not by
+what a given row happens to hold, and no caller can tell the cases apart from
+outside. Three rules follow:
 
 - **Address the user and the agent with MoneyBin's identifier.** A CLI hint,
   MCP `actions[]` entry, error message, or sidecar that names an account must
-  use `proposal_ref` or `account_id`. The institution's key is masked by the
+  use `proposal_ref` or `account_id`. The source-native key is masked by the
   time it reaches a response, so an agent told to act on it has nothing to act
   on — it cannot reconstruct `****6789`.
 - **Echoing a caller's own input back is not automatically safe.** A refusal
   that quotes the unknown key the caller passed still writes the institution's
   identifier into a log line and a response envelope. Mask on the way out
   regardless of who supplied it.
+- **Never narrow the mask by arguing a particular key is synthetic.** "This
+  channel derives its key from the filename, so it is not PII" is true of the
+  value and wrong about the field: the same column carries a real `<ACCTID>`
+  on the next row. Masking is decided per field, once, on the worst case it can
+  hold.
 
 ## Content Hashes
 
