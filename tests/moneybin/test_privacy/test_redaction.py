@@ -290,6 +290,42 @@ def test_import_files_preserves_bridge_input_but_masks_explicit_account_keys() -
     assert confirmation["account_proposals"][0]["source_account_key"] == "****5678"
 
 
+def test_account_proposal_ref_survives_the_mask_that_hides_its_key() -> None:
+    """The positional referent stays readable in the payload that masks the key.
+
+    Both fields ride the same proposal. If ``proposal_ref`` masked alongside
+    ``source_account_key`` the gate would be unanswerable from the envelope —
+    which is the whole reason the ref exists. Asserted on the pydantic payload
+    rather than the raw TypedDict: validation there drops any key the proposal
+    does not declare, so this fails if the field is missing as well as if it
+    is classified into a masking class.
+    """
+    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415
+        ImportConfirmRequiredPayload,
+    )
+
+    payload = ImportConfirmRequiredPayload(
+        preview_id="prev_1",
+        channel="ofx",
+        tier="high",
+        score=0.9,
+        reason="account_confirmation",
+        account_proposals=[
+            {
+                "source_account_key": "12345678",
+                "proposal_ref": "@0",
+                "requires_confirm": True,
+            }
+        ],
+    )
+
+    out = redact_typed(payload, consent=None)
+
+    proposal = out.account_proposals[0]
+    assert proposal["source_account_key"] == "****5678"
+    assert proposal["proposal_ref"] == "@0"
+
+
 def test_typed_dict_union_selects_the_matching_discriminator_arm() -> None:
     """A later TypedDict arm cannot leak a CRITICAL-only field."""
     payload = _TypedDictUnionPayload(
@@ -456,3 +492,23 @@ def test_unclassified_type_passes_through_with_warning(
     with caplog.at_level("WARNING", logger="moneybin.privacy.redaction"):
         out = redact_typed(_Untyped(x="raw"), consent=None)
     assert out.x == "raw"
+
+
+def test_declared_type_redacts_a_typeddict_no_parent_declares() -> None:
+    """A TypedDict is a bare ``dict`` at runtime, so it must be named explicitly.
+
+    ``type(obj)`` on a TypedDict instance returns ``dict``, which carries no
+    ``Annotated`` field — so the default path masks nothing and returns the
+    value unchanged. That is only safe while some typed parent declares the
+    field; a payload assembled into a bare dict has no such parent, and the CLI
+    batch-import row is exactly that case. Passing ``declared_type`` restores
+    the declarations the runtime type lost.
+    """
+    row: _SecretUnionArm = {"kind": "secret", "account_id": "000123456789"}
+
+    # Without it: the annotations are unreachable and the value ships raw.
+    assert redact_typed(row, consent=None) == row
+
+    masked = redact_typed(row, consent=None, declared_type=_SecretUnionArm)
+    assert masked["account_id"] == "****6789"
+    assert masked["kind"] == "secret"

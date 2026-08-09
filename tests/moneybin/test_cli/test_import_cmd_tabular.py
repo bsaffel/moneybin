@@ -94,6 +94,7 @@ class TestImportFileAccountName:
             auto_accept=False,
             confirm=False,
             actor_kind="human",
+            account_bindings=None,
         )
 
 
@@ -525,9 +526,18 @@ class TestPreview:
     ) -> None:
         """Preview must classify a read denial — every sibling import command does.
 
-        Both the ❌ message and the 💡 hint route through the logger to stderr
-        (per cli.md), which CliRunner keeps out of ``result.output`` — so assert
-        on caplog. ``result.exception`` is the load-bearing check: an unwrapped
+        The ❌ message still routes through the logger to stderr (per cli.md),
+        which CliRunner keeps out of ``result.output`` — so that half is
+        asserted on caplog. The 💡 hint no longer does: ``handle_cli_errors``
+        prints it straight to stderr via ``typer.echo`` instead of
+        ``logger.info``, specifically so it never reaches the durable CLI log
+        file (a DuckDB-error hint can carry caller-authored query text — see
+        ``tests/moneybin/test_cli/test_handle_cli_errors.py``). Since click
+        8.2, ``result.output`` is its own stream mixing stdout and stderr in
+        write order (``mix_stderr`` is gone — ``CliRunner.__init__`` no
+        longer takes it), so a direct ``typer.echo(err=True)`` lands there
+        too, and the hint is asserted there instead.
+        ``result.exception`` is the load-bearing check: an unwrapped
         PermissionError also yields exit code 1 under CliRunner, so the exit
         code alone cannot distinguish classified from unhandled.
         """
@@ -544,12 +554,12 @@ class TestPreview:
 
         assert result.exit_code == 1
         assert not isinstance(result.exception, PermissionError)
-        # Both guards must stand alone: the ❌ record has to name THIS failure
-        # (not merely be some classified error), and the 💡 hint has to be the
-        # mode-denial one. Asserting only `startswith("❌ ")` would pass for any
-        # classified error at all.
+        # The ❌ record has to name THIS failure (not merely be some
+        # classified error) — asserting only `startswith("❌ ")` would pass
+        # for any classified error at all.
         assert any(
             r.message.startswith("❌ ") and "Permission denied" in r.message
             for r in caplog.records
         )
-        assert "chmod" in caplog.text
+        # The 💡 hint has to be the mode-denial one, not just any hint.
+        assert "chmod" in result.output

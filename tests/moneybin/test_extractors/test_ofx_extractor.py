@@ -734,7 +734,7 @@ class TestOFXAccountTypeDerivation:
         self, declared: str, kind: int, expected: str | None
     ) -> None:
         from moneybin.extractors.ofx.extractor import (  # noqa: PLC0415
-            _ofx_account_type,  # pyright: ignore[reportPrivateUsage]
+            ofx_account_type,
         )
 
-        assert _ofx_account_type(self._account(declared, kind)) == expected
+        assert ofx_account_type(self._account(declared, kind)) == expected

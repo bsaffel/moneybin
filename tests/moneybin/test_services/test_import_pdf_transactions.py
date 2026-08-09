@@ -31,6 +31,8 @@ from moneybin.services.import_confirmation import (
     SignConventionProposal,
 )
 from moneybin.services.import_service import ImportService
+from tests.import_helpers import import_answering_gate
+from tests.moneybin.db_helpers import create_core_tables
 from tests.moneybin.pdf_statement_fixtures import (
     write_card_statement_pdf,
     write_checking_statement_pdf,
@@ -96,6 +98,24 @@ def _standard_doc(
     )
 
 
+def _anchorless_doc(opening: str = "1000.00", closing: str = "1100.00") -> PdfDocument:
+    """The standard statement with its account-number line removed.
+
+    Everything else still reads — issuer, balances, rows — so routing reaches
+    ``transactions`` exactly as usual. Only the account identity is missing,
+    which is the whole point: it isolates the derivation that falls back to the
+    filename stem.
+    """
+    return _make_doc(
+        text_lines=[
+            line
+            for line in _standard_text_lines(opening, closing)
+            if not line.startswith("Account Number:")
+        ],
+        tables=[_standard_table()],
+    )
+
+
 def _valid_recipe_dict() -> dict[str, Any]:
     # `metadata_anchors` omitted → None → routing falls back to DEFAULT_ANCHORS
     # for capture_metadata, so opening/closing balance anchors find values and
@@ -155,6 +175,23 @@ def _service_with_fake_pdf(
     return svc, fake_pdf
 
 
+def _seed_chase_twin(db: Database, account_id: str = "acct_existing01") -> None:
+    """An existing Chase ...1234 account, so the statement's identity is a question.
+
+    Candidates are what make the account gate fire: a mint with nothing to merge
+    into proceeds and is reported instead. Every test below that asserts on the
+    gate has to give the resolver something the statement could plausibly BE,
+    which is the case the gate exists for — a weak institution+last4 merge.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "(account_id, display_name, institution_slug, last_four) "
+        "VALUES (?, ?, ?, ?)",
+        [account_id, "Chase Card", "chase", "1234"],
+    )
+
+
 def _count(db: Database, query: str) -> int:
     """Return one COUNT(*) result."""
     row = db.execute(query).fetchone()
@@ -181,7 +218,8 @@ def test_pdf_transaction_import_joins_outer_transaction_and_buffers_metrics(
             "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
             return_value=doc,
         ):
-            result = svc.import_file(
+            result = import_answering_gate(
+                svc,
                 fake_pdf,
                 refresh=False,
                 in_outer_txn=True,
@@ -223,7 +261,8 @@ def test_pdf_seed_import_joins_outer_transaction_and_buffers_metrics(
             "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
             return_value=doc,
         ):
-            result = svc.import_file(
+            result = import_answering_gate(
+                svc,
                 fake_pdf,
                 refresh=False,
                 in_outer_txn=True,
@@ -263,7 +302,8 @@ def test_pdf_extraction_failure_metric_can_be_buffered(
         ),
         pytest.raises(ValueError, match="bad PDF"),
     ):
-        svc.import_file(
+        import_answering_gate(
+            svc,
             fake_pdf,
             refresh=False,
             emit_metrics=False,
@@ -314,6 +354,7 @@ def test_pdf_saved_recipe_bookkeeping_re_raises_inside_outer_transaction(
         matched_format_name="saved_pdf",
         recipe=recipe,
         fp={"issuer": "Example"},
+        rederived_reason="saved recipe stopped reconciling",
     )
     service = ImportService(db)
 
@@ -339,6 +380,35 @@ def test_pdf_saved_recipe_bookkeeping_re_raises_inside_outer_transaction(
     assert bump.call_args.kwargs["in_outer_txn"] is True
 
 
+def test_pdf_self_heal_persists_the_reason_the_decision_carries(db: Database) -> None:
+    """The durable audit reason names the trigger that actually fired.
+
+    ``app.audit_log`` is what an operator reads back through ``system audit``, so
+    a repair triggered by a digit-free account id must not record that the recipe
+    stopped reconciling — that replay reconciled to the cent.
+    """
+    recipe = MagicMock()
+    recipe.model_dump.return_value = {"sign_convention": "negative_is_expense"}
+    decision = SimpleNamespace(
+        matched_format_name="saved_pdf",
+        recipe=recipe,
+        fp={"issuer": "Example"},
+        rederived_reason="saved recipe read the account number as a digit-free mask",
+    )
+
+    service = ImportService(db)
+
+    with patch.object(PdfFormatsRepo, "bump_version") as bump:
+        service._persist_self_healed_recipe(  # type: ignore[reportPrivateUsage]
+            decision,  # type: ignore[reportArgumentType]  # stands in for the fields read
+            import_id="imp_reason",
+        )
+
+    assert bump.call_args.kwargs["reason"] == (
+        "saved recipe read the account number as a digit-free mask"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 1: First contact — auto-derive, routes to tabular_transactions, saves format
 # ---------------------------------------------------------------------------
@@ -356,7 +426,7 @@ def test_pdf_first_contact_routes_to_transactions_and_saves_format(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
         return_value=doc,
     ):
-        result = svc.import_file(fake_pdf, refresh=False)
+        result = import_answering_gate(svc, fake_pdf, refresh=False)
 
     assert result.file_type == "pdf"
     assert result.import_id is not None
@@ -418,7 +488,7 @@ def test_pdf_replay_uses_saved_format(db: Database, tmp_path: Path) -> None:
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
         return_value=doc,
     ):
-        result = svc.import_file(fake_pdf, refresh=False)
+        result = import_answering_gate(svc, fake_pdf, refresh=False)
 
     assert result.file_type == "pdf"
     assert result.transactions > 0
@@ -456,7 +526,7 @@ def test_pdf_replay_reconciliation_fail_falls_back_to_seed(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
         return_value=doc,
     ):
-        result = svc.import_file(fake_pdf, refresh=False)
+        result = import_answering_gate(svc, fake_pdf, refresh=False)
 
     assert result.file_type == "pdf"
     # Seed path: details has seed_rows key
@@ -494,7 +564,7 @@ def test_pdf_low_confidence_or_no_table_falls_back_to_seed(
         # No tables → write_pdf_seed gets called; but no selectable tables either.
         # write_pdf_seed will produce 0 rows, which raises ValueError.
         with pytest.raises(ValueError, match="No tables extracted"):
-            svc.import_file(fake_pdf, refresh=False)
+            import_answering_gate(svc, fake_pdf, refresh=False)
 
     # No tabular_transactions rows
     txn_count = db.execute(
@@ -524,7 +594,7 @@ def test_pdf_revert_clears_tabular_transactions(db: Database, tmp_path: Path) ->
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
         return_value=doc,
     ):
-        result = svc.import_file(fake_pdf, refresh=False)
+        result = import_answering_gate(svc, fake_pdf, refresh=False)
 
     assert result.import_id is not None
     assert result.transactions > 0
@@ -594,7 +664,7 @@ def test_pdf_reimport_count_matches_conflict_key(db: Database, tmp_path: Path) -
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
         return_value=doc,
     ):
-        first = svc.import_file(fake_pdf, refresh=False)
+        first = import_answering_gate(svc, fake_pdf, refresh=False)
 
     assert first.transactions == 2
     assert first.details["transactions"] == 2
@@ -607,7 +677,7 @@ def test_pdf_reimport_count_matches_conflict_key(db: Database, tmp_path: Path) -
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
         return_value=doc,
     ):
-        second = svc.import_file(fake_pdf_2, refresh=False)
+        second = import_answering_gate(svc, fake_pdf_2, refresh=False)
 
     # Second import from a different path: rows DO land (PK includes
     # source_file). The honest count is 2 inserted, 2 extracted.
@@ -639,7 +709,7 @@ def test_pdf_duplicate_format_name_is_swallowed(db: Database, tmp_path: Path) ->
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
         return_value=doc,
     ):
-        svc.import_file(fake_pdf, refresh=False)
+        import_answering_gate(svc, fake_pdf, refresh=False)
 
     # Delete the saved-format fingerprint from the routing side so the second
     # import takes the "auto-derive again, try save_new" path instead of replay.
@@ -654,7 +724,7 @@ def test_pdf_duplicate_format_name_is_swallowed(db: Database, tmp_path: Path) ->
         return_value=doc,
     ):
         # Should not raise — ConstraintException on save_new is logged and skipped.
-        result = svc.import_file(fake_pdf_2, refresh=False)
+        result = import_answering_gate(svc, fake_pdf_2, refresh=False)
 
     assert result.file_type == "pdf"
     # Still exactly one format row (no duplicate save).
@@ -692,7 +762,7 @@ def test_pdf_transactions_path_cleanup_on_ingest_failure(
         return_value=doc,
     ):
         with pytest.raises(RuntimeError, match="simulated"):
-            svc.import_file(fake_pdf, refresh=False)
+            import_answering_gate(svc, fake_pdf, refresh=False)
 
     # Cleanup ran: no tabular_transactions rows survive the failure
     rows = db.execute(
@@ -745,7 +815,8 @@ def test_pdf_resolver_failure_finalizes_import_and_records_the_failure_metric(
         ),
         pytest.raises(RuntimeError, match="simulated resolver failure"),
     ):
-        svc.import_file(
+        import_answering_gate(
+            svc,
             fake_pdf,
             refresh=False,
             emit_metrics=False,
@@ -849,7 +920,7 @@ def test_a_fully_masked_pdf_account_registers_through_the_resolver(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
         return_value=doc,
     ):
-        result = svc.import_file(fake_pdf, refresh=False)
+        result = import_answering_gate(svc, fake_pdf, refresh=False)
 
     assert result.transactions == 2
     native_row = db.execute(
@@ -895,7 +966,7 @@ def test_consecutive_statements_of_one_card_share_one_account(
             "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
             return_value=doc,
         ):
-            svc.import_file(pdf, refresh=False)
+            import_answering_gate(svc, pdf, refresh=False)
 
     accounts = db.execute(
         "SELECT DISTINCT account_id FROM app.account_links "
@@ -927,7 +998,9 @@ def test_account_id_override_pins_identity_through_the_resolver(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
         return_value=doc,
     ):
-        result = svc.import_file(pdf, refresh=False, account_id="my_pinned_account")
+        result = import_answering_gate(
+            svc, pdf, refresh=False, account_id="my_pinned_account"
+        )
 
     assert result.transactions == 2
     # The rows carry the pinned id, not an issuer+mask key derived from the PDF.
@@ -979,7 +1052,7 @@ def test_pdf_first_contact_save_format_false_suppresses_recipe(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
         return_value=doc,
     ):
-        result = svc.import_file(fake_pdf, refresh=False, save_format=False)
+        result = import_answering_gate(svc, fake_pdf, refresh=False, save_format=False)
 
     assert result.file_type == "pdf"
     assert result.transactions > 0
@@ -1037,7 +1110,7 @@ def test_pdf_replay_invalid_recipe_auto_bumps_format(
     with patch(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
     ):
-        svc.import_file(fake_pdf, refresh=False)
+        import_answering_gate(svc, fake_pdf, refresh=False)
 
     fp = compute_fingerprint(doc)
     saved = PdfFormatsRepo(db).get_by_fingerprint(fp)
@@ -1064,7 +1137,7 @@ def test_pdf_replay_invalid_recipe_auto_bumps_format(
     with patch(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
     ):
-        result = svc.import_file(fake_pdf, refresh=False)
+        result = import_answering_gate(svc, fake_pdf, refresh=False)
     assert result.file_type == "pdf"  # import did not dead-end
 
     row = db.execute(
@@ -1112,7 +1185,7 @@ def test_pdf_scanned_no_text_layer_raises_unsupported(
         return_value=scanned,
     ):
         with pytest.raises(UserError) as exc_info:
-            svc.import_file(fake_pdf, refresh=False)
+            import_answering_gate(svc, fake_pdf, refresh=False)
 
     assert exc_info.value.code == error_codes.IMPORT_PDF_NO_TEXT_LAYER
     assert "vision-capable" in exc_info.value.message
@@ -1160,7 +1233,7 @@ def test_card_statement_import_requires_confirmation(
     svc = ImportService(db)
 
     with pytest.raises(ImportConfirmationRequiredError) as exc:
-        svc.import_file(pdf, refresh=False)
+        import_answering_gate(svc, pdf, refresh=False)
 
     outcome = exc.value.outcome
     assert outcome.channel == "pdf"
@@ -1187,7 +1260,7 @@ def test_confirmed_card_statement_records_charges_as_expenses(
     pdf = write_card_statement_pdf(tmp_path)
     svc = ImportService(db)
 
-    svc.import_file(pdf, refresh=False, confirm=True)
+    import_answering_gate(svc, pdf, refresh=False, confirm=True)
 
     assert _amounts(db) == [Decimal("-150.00"), Decimal("50.00")]
 
@@ -1200,7 +1273,7 @@ def test_sign_override_overrules_the_card_detector(
     pdf = write_card_statement_pdf(tmp_path)
     svc = ImportService(db)
 
-    svc.import_file(pdf, refresh=False, sign="negative_is_expense")
+    import_answering_gate(svc, pdf, refresh=False, sign="negative_is_expense")
 
     assert _amounts(db) == [Decimal("-50.00"), Decimal("150.00")]  # as printed
 
@@ -1211,7 +1284,8 @@ def test_replayed_card_format_needs_no_second_confirmation(
 ) -> None:
     """The confirm is once per FORMAT, not once per statement."""
     svc = ImportService(db)
-    svc.import_file(
+    import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="01"),
         refresh=False,
         confirm=True,
@@ -1219,7 +1293,9 @@ def test_replayed_card_format_needs_no_second_confirmation(
     )
 
     # Second month, same layout -> replays the saved recipe, no confirm.
-    svc.import_file(write_card_statement_pdf(tmp_path, month="02"), refresh=False)
+    import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="02"), refresh=False
+    )
 
     assert _row_count(db) == 4
     # Both statements inverted — every charge an expense, every payment a credit.
@@ -1244,7 +1320,7 @@ def test_checking_statement_imports_without_a_sign_confirm(
     pdf = write_checking_statement_pdf(tmp_path)
     svc = ImportService(db)
 
-    result = svc.import_file(pdf, refresh=False)
+    result = import_answering_gate(svc, pdf, refresh=False)
 
     assert result.transactions == 2
     assert _amounts(db) == [Decimal("-50.00"), Decimal("150.00")]  # as printed
@@ -1267,7 +1343,7 @@ def test_sign_override_shape_mismatch_names_the_shape_the_recipe_extracts(
     svc = ImportService(db)
 
     with pytest.raises(UserError) as exc:
-        svc.import_file(pdf, refresh=False, sign="split_debit_credit")
+        import_answering_gate(svc, pdf, refresh=False, sign="split_debit_credit")
 
     assert exc.value.code == "import_invalid_sign_convention"
     assert "single amount column" in exc.value.message
@@ -1291,7 +1367,8 @@ def test_sign_override_replays_without_asking_again(
     """
     svc = ImportService(db)
 
-    first = svc.import_file(
+    first = import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="01"),
         refresh=False,
         sign="negative_is_expense",
@@ -1300,8 +1377,8 @@ def test_sign_override_replays_without_asking_again(
     assert first.sign_override_replayed is False
 
     # Next month, same layout, no flags. The saved override must replay.
-    second = svc.import_file(
-        write_card_statement_pdf(tmp_path, month="02"), refresh=False
+    second = import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="02"), refresh=False
     )
 
     assert second.transactions == 2
@@ -1332,8 +1409,8 @@ def test_confirm_does_not_ratify_the_sign_convention(
     import json as _json
 
     svc = ImportService(db)
-    svc.import_file(
-        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
     )
 
     row = db.execute("SELECT extraction_recipe FROM app.pdf_formats").fetchone()
@@ -1344,7 +1421,9 @@ def test_confirm_does_not_ratify_the_sign_convention(
 
     # The card's fingerprint-identical twin: the guard must still refuse to replay
     # the card recipe onto it, so its rows land as printed.
-    result = svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
+    result = import_answering_gate(
+        svc, write_checking_statement_pdf(tmp_path), refresh=False
+    )
 
     assert result.sign_override_replayed is False
     assert _amounts(db) == [
@@ -1376,11 +1455,11 @@ def test_sign_gate_metric_records_all_three_outcomes(
     def _count(outcome: str) -> float:
         return PDF_SIGN_GATE_TOTAL.labels(outcome=outcome)._value.get()  # type: ignore[reportPrivateUsage]
 
+    svc = ImportService(db)
+
     proposed_before = _count("proposed")
     overridden_before = _count("overridden")
     confirmed_before = _count("confirmed")
-
-    svc = ImportService(db)
 
     with pytest.raises(ImportConfirmationRequiredError):
         svc.import_file(
@@ -1434,7 +1513,8 @@ def test_a_corrected_sign_override_on_a_replay_persists_and_sticks(
 
     # 1. The user asserts the WRONG convention on first contact — and it sticks:
     #    the recipe is saved, and every future statement of this layout replays it.
-    svc.import_file(
+    import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="01"),
         refresh=False,
         sign="negative_is_income",
@@ -1442,7 +1522,8 @@ def test_a_corrected_sign_override_on_a_replay_persists_and_sticks(
     assert _amounts(db) == [Decimal("-150.00"), Decimal("50.00")]  # inverted
 
     # 2. Next statement, corrected: `sign=` on a replay of the saved format.
-    second = svc.import_file(
+    second = import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="02"),
         refresh=False,
         sign="negative_is_expense",
@@ -1462,7 +1543,9 @@ def test_a_corrected_sign_override_on_a_replay_persists_and_sticks(
     #    discriminate a corrected replay from the stale inverted one.)
     third_dir = tmp_path / "later"
     third_dir.mkdir()
-    third = svc.import_file(write_card_statement_pdf(third_dir), refresh=False)
+    third = import_answering_gate(
+        svc, write_card_statement_pdf(third_dir), refresh=False
+    )
 
     assert third.transactions == 2
     assert third.sign_override_replayed is True
@@ -1488,13 +1571,15 @@ def test_sign_override_typed_on_a_replay_is_not_reported_as_a_saved_replay(
     providing right now.
     """
     svc = ImportService(db)
-    svc.import_file(
+    import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="01"),
         refresh=False,
         sign="negative_is_income",
     )
 
-    second = svc.import_file(
+    second = import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="02"),
         refresh=False,
         sign="negative_is_expense",
@@ -1514,13 +1599,15 @@ def test_repeating_the_same_sign_override_does_not_bump_the_version(
     after_value.
     """
     svc = ImportService(db)
-    svc.import_file(
+    import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="01"),
         refresh=False,
         sign="negative_is_expense",
     )
 
-    svc.import_file(
+    import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="02"),
         refresh=False,
         sign="negative_is_expense",
@@ -1550,12 +1637,13 @@ def test_a_redundant_sign_override_does_not_disarm_the_polarity_guard(
     svc = ImportService(db)
 
     # 1. A genuine card, confirmed. Saved: negative_is_income, guard armed.
-    svc.import_file(
-        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
     )
 
     # 2. Next month's card, with the convention already in force re-typed.
-    second = svc.import_file(
+    second = import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="02"),
         refresh=False,
         sign="negative_is_income",
@@ -1570,7 +1658,9 @@ def test_a_redundant_sign_override_does_not_disarm_the_polarity_guard(
 
     # 3. The card's fingerprint-identical checking twin. The guard must still
     #    refuse to replay the card recipe onto it: its rows land as printed.
-    third = svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
+    third = import_answering_gate(
+        svc, write_checking_statement_pdf(tmp_path), refresh=False
+    )
 
     assert third.sign_override_replayed is False
     assert _amounts(db) == [
@@ -1595,11 +1685,12 @@ def test_no_save_format_does_not_rewrite_the_saved_recipe_on_a_sign_override(
     saved recipe's convention, bump its version, or leave an audit row.
     """
     svc = ImportService(db)
-    svc.import_file(
-        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
     )
 
-    svc.import_file(
+    import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="02"),
         refresh=False,
         sign="negative_is_expense",
@@ -1636,7 +1727,9 @@ def test_confirmed_card_statement_types_the_account_credit(
 ) -> None:
     """A confirmed card is a FACT about the account — keep it, don't discard it."""
     svc = ImportService(db)
-    svc.import_file(write_card_statement_pdf(tmp_path), refresh=False, confirm=True)
+    import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path), refresh=False, confirm=True
+    )
 
     row = db.execute(
         "SELECT account_type FROM raw.tabular_accounts WHERE source_type = 'pdf'"
@@ -1651,7 +1744,7 @@ def test_checking_statement_leaves_account_type_null(
 ) -> None:
     """We only assert a type we actually established. No guessing."""
     svc = ImportService(db)
-    svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
+    import_answering_gate(svc, write_checking_statement_pdf(tmp_path), refresh=False)
 
     row = db.execute(
         "SELECT account_type FROM raw.tabular_accounts WHERE source_type = 'pdf'"
@@ -1686,7 +1779,9 @@ def test_transaction_ids_are_stable_across_sign_conventions(
     svc = ImportService(db)
     pdf = write_card_statement_pdf(tmp_path)
 
-    svc.import_file(pdf, refresh=False, sign="negative_is_expense", save_format=False)
+    import_answering_gate(
+        svc, pdf, refresh=False, sign="negative_is_expense", save_format=False
+    )
     as_expense = {
         r[0]
         for r in db.execute(
@@ -1695,7 +1790,7 @@ def test_transaction_ids_are_stable_across_sign_conventions(
     }
     db.execute("DELETE FROM raw.tabular_transactions")
 
-    svc.import_file(pdf, refresh=False, confirm=True, save_format=False)
+    import_answering_gate(svc, pdf, refresh=False, confirm=True, save_format=False)
     as_income = {
         r[0]
         for r in db.execute(
@@ -1719,8 +1814,8 @@ def test_a_saved_recipe_that_stops_reconciling_is_repaired_and_versioned(
     broken recipe would re-break on the very next statement of this layout.
     """
     svc = ImportService(db)
-    svc.import_file(
-        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
     )
     recipe, _, version = _saved_pdf_format(db)
     assert version == 1
@@ -1742,8 +1837,8 @@ def test_a_saved_recipe_that_stops_reconciling_is_repaired_and_versioned(
         name_row[0], broken, reason="test: simulate a stale saved recipe", actor="test"
     )
 
-    result = svc.import_file(
-        write_card_statement_pdf(tmp_path, month="02"), refresh=False
+    result = import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="02"), refresh=False
     )
 
     # The statement lands in full rather than seeding.
@@ -1771,8 +1866,8 @@ def test_no_save_format_lands_the_rows_but_does_not_persist_the_repair(
     ``app.pdf_formats`` anything. The user still gets their rows.
     """
     svc = ImportService(db)
-    svc.import_file(
-        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
     )
     recipe, _, _ = _saved_pdf_format(db)
     name_row = db.execute("SELECT name FROM app.pdf_formats").fetchone()
@@ -1788,7 +1883,8 @@ def test_no_save_format_lands_the_rows_but_does_not_persist_the_repair(
         name_row[0], broken, reason="test: simulate a stale saved recipe", actor="test"
     )
 
-    result = svc.import_file(
+    result = import_answering_gate(
+        svc,
         write_card_statement_pdf(tmp_path, month="02"),
         refresh=False,
         save_format=False,
@@ -1816,8 +1912,8 @@ def test_a_repair_that_un_inverts_the_ledger_is_gated(
     twin as negative_is_expense.
     """
     svc = ImportService(db)
-    svc.import_file(
-        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
     )
     recipe, _, _ = _saved_pdf_format(db)
     name_row = db.execute("SELECT name FROM app.pdf_formats").fetchone()
@@ -1837,7 +1933,9 @@ def test_a_repair_that_un_inverts_the_ledger_is_gated(
     )
 
     with pytest.raises(ImportConfirmationRequiredError) as exc:
-        svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
+        import_answering_gate(
+            svc, write_checking_statement_pdf(tmp_path), refresh=False
+        )
 
     assert exc.value.outcome.reason == "sign_convention"
     # The direction has to travel with the proposal. Every surface renders the
@@ -1865,8 +1963,8 @@ def test_confirming_a_sign_flipping_repair_lets_it_land(
     non-transaction decisions.
     """
     svc = ImportService(db)
-    svc.import_file(
-        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
     )
     recipe, _, _ = _saved_pdf_format(db)
     name_row = db.execute("SELECT name FROM app.pdf_formats").fetchone()
@@ -1882,8 +1980,345 @@ def test_confirming_a_sign_flipping_repair_lets_it_land(
         name_row[0], broken, reason="test: simulate a stale saved recipe", actor="test"
     )
 
-    result = svc.import_file(
-        write_card_statement_pdf(tmp_path, month="02"), refresh=False, confirm=True
+    result = import_answering_gate(
+        svc, write_card_statement_pdf(tmp_path, month="02"), refresh=False, confirm=True
     )
 
     assert result.transactions == 2
+
+
+@pytest.mark.integration
+def test_pdf_import_gates_account_identity_before_begin_import(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """A PDF statement's account identity gets a pre-load confirm, like every channel.
+
+    The gap PR #375 named and left open, and this session's primary target:
+    ``_import_pdf_transactions`` called ``resolve()`` directly, so a statement
+    minted a new account — or adopted an existing one on a weak
+    institution+last4 signal — with nothing ever surfaced. A wrong silent *merge*
+    is the expensive case: it is hard to notice and hard to undo, and it is
+    exactly what the seeded twin below sets up.
+
+    The gate belongs after the sign gate and before ``begin_import``, the
+    position the sign gate already established: a confirmation is not a failed
+    import, so it must not strand an ``import_log`` row in "importing" or leave
+    a "failed" row for an import that never started.
+    """
+    _seed_chase_twin(db)
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        # Never the answering helper here: the gate itself is under test.
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
+
+    outcome = exc.value.outcome
+    assert outcome.reason == "account_confirmation"
+    assert outcome.channel == "pdf"
+    # The issuer-slug + masked-account native key is what the user binds.
+    assert [p["source_account_key"] for p in outcome.account_proposals] == [
+        "chase_1234"
+    ]
+    # Nothing loaded, no batch opened, no link written, no recipe saved.
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
+    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.pdf_formats") == 0
+
+
+@pytest.mark.integration
+def test_pdf_with_no_account_anchor_gates_before_minting(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """A statement naming no account is ``identity_unknown``, not a confident mint.
+
+    With no readable account number the source-native key falls back to the
+    filename stem, so proceeding silently would attach a card's whole history to
+    a guess about what the file happened to be called. No twin is seeded here on
+    purpose: the point is that a proposal with an EMPTY candidate list still has
+    to stop, which is the half ``identity_unknown`` exists to express — the
+    tabular bare-file branch already opts in this way via ``fallback_keys``.
+    """
+    create_core_tables(db)
+    doc = _anchorless_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
+
+    outcome = exc.value.outcome
+    assert outcome.reason == "account_confirmation"
+    assert outcome.channel == "pdf"
+    [proposal] = outcome.account_proposals
+    assert proposal["candidates"] == []
+    assert proposal["is_new"] is True
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
+
+
+@pytest.mark.integration
+def test_pinning_an_anchorless_pdf_does_not_teach_the_filename(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """A pin must not promote a filename guess to a strong ``source_native`` ref.
+
+    ``unpinned_account_key`` exists so a pin also teaches what the document
+    yields on its own, sparing the next unpinned statement a second account.
+    When the document yields nothing, that key is the file stem — and accepting
+    it means any later same-named statement from the same issuer adopts this
+    account with no confirm, merging two cards on the strength of a filename.
+    """
+    _seed_chase_twin(db)
+    doc = _anchorless_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_existing01",
+        )
+
+    taught = db.execute(
+        "SELECT ref_value FROM app.account_links "
+        "WHERE ref_kind = 'source_native' AND status = 'accepted'"
+    ).fetchall()
+    # Only the pin's own self-map; never the "statement" stem.
+    assert [row[0] for row in taught] == ["acct_existing01"]
+
+
+@pytest.mark.integration
+def test_pdf_binding_new_mints_and_loads(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Answering the PDF gate with `new` mints a distinct account and loads the rows.
+
+    The seeded twin is what raises the gate, so `new` here carries its real
+    meaning: "not that existing Chase ...1234 account — keep this one separate."
+    """
+    _seed_chase_twin(db)
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        # Plain import_file throughout: the binding IS the subject here, so a
+        # helper that supplies one would answer the question under test.
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
+    key = exc.value.outcome.account_proposals[0]["source_account_key"]
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        result = svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: "new"},
+        )
+    assert result.transactions == 2
+    row = db.execute(
+        "SELECT account_id FROM app.account_links WHERE ref_kind='source_native' "
+        "AND ref_value=? AND status='accepted'",
+        [key],
+    ).fetchone()
+    assert row is not None and row[0]
+
+
+@pytest.mark.integration
+def test_pdf_second_statement_does_not_re_ask(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Next month's statement of the same card imports silently.
+
+    The identity scope is the issuer slug, deliberately identical across every
+    statement of one card, so the second statement hits ``source_native`` and
+    passes the gate without a confirm. This is the property that keeps the
+    gate's volume tied to new account identities rather than to statements —
+    a per-statement confirm would be a design failure.
+
+    The seeded twin makes the FIRST statement gate; the assertion is that the
+    second one doesn't, having been answered once.
+    """
+    _seed_chase_twin(db)
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(fake_pdf, refresh=False, confirm=True, actor_kind="human")
+    key = exc.value.outcome.account_proposals[0]["source_account_key"]
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={key: "new"},
+        )
+
+    # Next month: same card, different statement period and balances.
+    # Plain import_file: "did it re-ask?" is the assertion, and the answering
+    # helper would silently absorb a second ask and report success.
+    next_doc = _standard_doc(opening="1100.00", closing="1200.00")
+    next_pdf = tmp_path / "statement_february.pdf"
+    next_pdf.write_bytes(b"%PDF-1.4 fake february")
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=next_doc,
+    ):
+        result = svc.import_file(
+            next_pdf, refresh=False, confirm=True, actor_kind="human"
+        )
+    assert result.transactions == 2
+
+
+@pytest.mark.integration
+def test_account_id_pin_teaches_the_statements_own_key(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """Pinning with --account-id must teach the key the statement derives on its own.
+
+    ``account_id_override`` replaces the source-native key with the canonical id,
+    so the ladder wrote only ``<canonical> -> <canonical>``. The key the document
+    actually yields ("chase_1234") was never linked, so the *next* statement of
+    the same card — imported without the pin, as any drop-folder or inbox run
+    would — found no link and minted a second account for the same card.
+
+    The pin must write both links: the canonical self-map the staging JOIN needs,
+    and the statement's own derived key pointing at the same account.
+    """
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        ["acct_pinned01", "Chase Card"],
+    )
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        import_answering_gate(
+            svc,
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+        )
+
+    linked = dict(
+        db.execute(
+            "SELECT ref_value, account_id FROM app.account_links "
+            "WHERE ref_kind='source_native' AND status='accepted'"
+        ).fetchall()
+    )
+    # Both keys resolve to the pinned account: the canonical self-map, and the
+    # key this statement derives without the pin.
+    assert linked == {
+        "acct_pinned01": "acct_pinned01",
+        "chase_1234": "acct_pinned01",
+    }
+
+
+@pytest.mark.integration
+def test_account_id_pin_does_not_repoint_an_existing_key(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """The forward-teaching link never steals a key already bound elsewhere.
+
+    If "chase_1234" is already accepted onto another account, pinning a statement
+    to a different account must not re-point it. Re-pointing is an explicit,
+    surfaced operation, never an import-time side effect. The import proceeds on
+    the pin the caller gave; only the extra teaching link is skipped.
+    """
+    create_core_tables(db)
+    for account_id, name in (
+        ("acct_pinned01", "Chase Card"),
+        ("acct_other01", "Other"),
+    ):
+        db.conn.execute(
+            "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+            [account_id, name],
+        )
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    # First: bind chase_1234 to acct_other01. The binding is stated outright
+    # rather than read off a gate — the statement's own derived key is asserted
+    # verbatim at the bottom of this test, so naming it here is the same fact,
+    # and this test is about where the key POINTS, not about what raised it.
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"chase_1234": "acct_other01"},
+        )
+
+    # Now pin a statement of the same card to a DIFFERENT account.
+    other_pdf = tmp_path / "statement_pinned.pdf"
+    other_pdf.write_bytes(b"%PDF-1.4 fake pinned")
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        result = svc.import_file(
+            other_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_id="acct_pinned01",
+        )
+    assert result.transactions == 2
+
+    linked = dict(
+        db.execute(
+            "SELECT ref_value, account_id FROM app.account_links "
+            "WHERE ref_kind='source_native' AND status='accepted'"
+        ).fetchall()
+    )
+    # chase_1234 keeps its original binding; the pin still self-maps.
+    assert linked["chase_1234"] == "acct_other01"
+    assert linked["acct_pinned01"] == "acct_pinned01"

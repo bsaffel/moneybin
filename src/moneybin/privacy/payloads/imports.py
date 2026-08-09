@@ -20,13 +20,16 @@ Tier derivation summary:
   - ``ImportRevertPayload``        → Tier.LOW (RECORD_ID + TXN_TYPE)
   - ``ImportFormatRow``            → Tier.LOW (format metadata only)
   - ``ImportFormatsPayload``       → Tier.LOW (list of ImportFormatRow)
-  - ``ImportInboxSyncPayload``     → Tier.MEDIUM (transforms_error = DESCRIPTION;
+  - ``ImportInboxSyncPayload``     → Tier.CRITICAL (pending[].account_proposals[]
+                                     .source_account_key = ACCOUNT_IDENTIFIER;
+                                     transforms_error = DESCRIPTION and the
                                      failed list may contain error strings)
   - ``ImportInboxPendingPayload``  → Tier.LOW (filename/account metadata only)
   - ``ImportLabelsSetPayload``     → Tier.MEDIUM (labels = USER_NOTE)
   - ``ImportConfirmCoarsePayload`` → Tier.MEDIUM (union max; reject_reason on
-                                     ImportPdfBridgeInvalidPayload = DESCRIPTION,
-                                     every other member field is LOW);
+                                     ImportPdfBridgeInvalidPayload = DESCRIPTION
+                                     and accounts_created[].display_name =
+                                     USER_NOTE; every other member field is LOW);
                                      confirmation_required re-surfaces build a
                                      raw dict envelope instead (see
                                      import_tools.py)
@@ -86,10 +89,36 @@ class ImportConfirmationAccountCandidate(TypedDict, total=False):
     signal: Annotated[str, DataClass.TXN_TYPE]
 
 
+class ImportCreatedAccount(TypedDict, total=False):
+    """One canonical account an import minted.
+
+    Same two fields, and the same classes, as an existing-account candidate: a
+    minted account is the account a candidate would have been, and USER_NOTE is
+    what ``core.dim_accounts.display_name`` carries everywhere else.
+
+    There is no ``source_account_key`` field, because that is the file's native
+    key (an OFX ``<ACCTID>`` is an account number) and the opaque ``account_id``
+    already names the row. That is a statement about the schema, not about the
+    values: on the PDF channel ``display_name`` is the document alias, which for
+    a statement with no account anchor is also the derived source key. The alias
+    is ``slugify(file_path.stem)`` — a path the caller supplied and, in
+    ``import_files`` responses, already readable in the same row's ``path``.
+    """
+
+    account_id: Annotated[str, DataClass.RECORD_ID]
+    display_name: Annotated[str, DataClass.USER_NOTE]
+
+
 class ImportConfirmationAccountProposal(TypedDict, total=False):
     """One source-account resolution proposal."""
 
     source_account_key: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    # The one key in this proposal a masking surface leaves readable, and
+    # deliberately so: source_account_key is CRITICAL, so an agent reading a
+    # gated response has no other way to name which account it is answering.
+    # A positional referent ("@0") discloses nothing beyond how many accounts
+    # the file the caller already holds contains.
+    proposal_ref: Annotated[str, DataClass.RECORD_ID]
     proposed_account_id: Annotated[str | None, DataClass.RECORD_ID]
     is_new: Annotated[bool, DataClass.TXN_TYPE]
     adopted_via: Annotated[str | None, DataClass.TXN_TYPE]
@@ -104,6 +133,51 @@ class ImportConfirmationPayload(TypedDict, total=False):
     tier: Annotated[str, DataClass.AGGREGATE]
     score: Annotated[float, DataClass.AGGREGATE]
     reason: Annotated[str, DataClass.TXN_TYPE]
+    error_message: Annotated[str, DataClass.DESCRIPTION]
+    proposed_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
+    samples: Annotated[dict[str, list[str]], DataClass.DESCRIPTION]
+    flagged: Annotated[list[str], DataClass.TXN_TYPE]
+    missing_required: Annotated[list[str], DataClass.TXN_TYPE]
+    unmapped_columns: Annotated[list[str], DataClass.TXN_TYPE]
+    bridge_payload: ImportConfirmationBridgePayload | None
+    sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    sign_prior_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
+    sign_sample_rows: list[ImportConfirmationSignSample]
+    account_proposals: list[ImportConfirmationAccountProposal]
+
+
+@dataclass(frozen=True, slots=True)
+class CLIConfirmationRequiredPayload:
+    """The CLI's ``confirmation_required`` envelope ``data``.
+
+    A dataclass rather than the ``ImportConfirmationPayload`` TypedDict it
+    otherwise mirrors, because ``render_or_json`` gates the redaction walk on
+    ``type(envelope.data)`` and a TypedDict instance is a bare ``dict`` at
+    runtime — it carries no annotation to find, so the walk is skipped and
+    ``account_proposals[].source_account_key`` (the institution's own account
+    number on the OFX channel) ships in cleartext on the surface built to be
+    machine-read.
+
+    Distinct from MCP's ``ImportConfirmRequiredPayload``, which requires a
+    ``preview_id`` the CLI never mints — previews are an MCP concept. The nested
+    types are shared, so both surfaces mask the same fields by the same
+    declarations rather than by two hand-maintained lists.
+
+    Every field is emitted unconditionally, matching the dict this replaced:
+    ``confirmation_payload_dict`` returns all keys on every channel, so the
+    serialized shape is unchanged.
+    """
+
+    status: Annotated[str, DataClass.TXN_TYPE]
+    channel: Annotated[str, DataClass.TXN_TYPE]
+    tier: Annotated[str, DataClass.AGGREGATE]
+    score: Annotated[float, DataClass.AGGREGATE]
+    reason: Annotated[str, DataClass.TXN_TYPE]
+    # str, not str | None: the only construction path is
+    # confirmation_payload_dict(), and ConfirmationRequired.error_message
+    # defaults to "". Matches ImportConfirmationPayload, the type this mirrors
+    # field for field.
     error_message: Annotated[str, DataClass.DESCRIPTION]
     proposed_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
     samples: Annotated[dict[str, list[str]], DataClass.DESCRIPTION]
@@ -148,6 +222,10 @@ class ImportPerFileRow:
     # True when a saved `sign=` override replayed onto this PDF, bypassing the
     # credit-card marker detector for its format.
     sign_override_replayed: Annotated[bool, DataClass.TXN_TYPE] = False
+    # Accounts this file minted. A first-contact mint no longer raises a
+    # confirmation, so this row is where an agent learns an account came into
+    # existence; empty on every re-import, which is the common case.
+    accounts_created: list[ImportCreatedAccount] = field(default_factory=list)
     # Populated only when status == "confirmation_required": typed detector
     # proposal + samples + flagged + missing_required so nested CRITICAL PDF
     # bridge values receive the same redaction as import_preview.
@@ -435,20 +513,69 @@ class ImportFormatsPayload:
 # ---------------------------------------------------------------------------
 
 
+class ImportInboxProcessedEntry(TypedDict, total=False):
+    """One file the inbox drain imported successfully.
+
+    Declared rather than opaque for the same reason as
+    ``ImportInboxPendingEntry``: ``accounts_created[].display_name`` is the
+    source's own label for an account it just minted (USER_NOTE → MEDIUM), and
+    an opaque ``dict[str, object]`` would have handed the whole row one class.
+    Key omission is the contract — ``accounts_created`` is absent when the file
+    adopted every account, which is the common re-import case.
+    """
+
+    filename: Annotated[str, DataClass.RECORD_ID]
+    moved_to: Annotated[str, DataClass.RECORD_ID]
+    transactions: Annotated[int, DataClass.AGGREGATE]
+    file_type: Annotated[str, DataClass.TXN_TYPE]
+    sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE]
+    sign_override_replayed: Annotated[bool, DataClass.TXN_TYPE]
+    accounts_created: list[ImportCreatedAccount]
+
+
+class ImportInboxPendingEntry(TypedDict, total=False):
+    """One file the inbox drain routed to ``pending/`` awaiting confirmation.
+
+    A TypedDict rather than a dataclass because key omission is this entry's
+    contract: ``moved_to``, ``sidecar``, and ``account_proposals`` are absent
+    when the file never moved or the gate carried no account proposal, and a
+    dataclass would start emitting them as ``null`` on every row.
+
+    Declared at all so the redaction walk can descend. The field this exists for
+    is ``account_proposals[].source_account_key``, which on the OFX channel is
+    the ``<ACCTID>`` the institution issued (ACCOUNT_IDENTIFIER → CRITICAL). An
+    opaque ``dict[str, object]`` gives the walk one class for the whole entry,
+    so the nested key inherited the entry's tier instead of its own.
+    """
+
+    filename: Annotated[str, DataClass.RECORD_ID]
+    channel: Annotated[str, DataClass.TXN_TYPE]
+    tier: Annotated[str, DataClass.AGGREGATE]
+    score: Annotated[float, DataClass.AGGREGATE]
+    reason: Annotated[str, DataClass.TXN_TYPE]
+    moved_to: Annotated[str, DataClass.RECORD_ID]
+    sidecar: Annotated[str, DataClass.RECORD_ID]
+    account_proposals: list[ImportConfirmationAccountProposal]
+
+
 @dataclass(frozen=True, slots=True)
 class ImportInboxSyncPayload:
     """Payload for ``import_inbox_sync`` — drain result.
 
-    ``processed``, ``skipped``, ``ignored`` are opaque per-file metadata dicts
-    with no PII fields; annotated as AGGREGATE (LOW).
+    ``skipped`` and ``ignored`` are opaque per-file metadata dicts with no PII
+    fields; annotated as AGGREGATE (LOW).
     ``failed`` may contain error strings (DESCRIPTION, MEDIUM) — pushed by
     the service layer and user-visible in the tool's action hints.
+    ``processed`` names the accounts a drain minted, so it is typed per-entry
+    rather than opaque; see ``ImportInboxProcessedEntry``.
+    ``pending`` carries the account-confirmation gate's proposals, so it is
+    typed per-entry rather than opaque; see ``ImportInboxPendingEntry``.
     ``transforms_error`` is a free-text error string (DESCRIPTION, MEDIUM).
     """
 
-    processed: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
+    processed: list[ImportInboxProcessedEntry]
     failed: Annotated[list[dict[str, object]], DataClass.DESCRIPTION]
-    pending: Annotated[list[dict[str, object]], DataClass.DESCRIPTION]
+    pending: list[ImportInboxPendingEntry]
     skipped: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     ignored: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     transforms_applied: Annotated[bool, DataClass.TXN_TYPE]
@@ -554,6 +681,8 @@ class ImportTabularConfirmCoarsePayload(BaseModel):
     merged_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
     status: Annotated[Literal["complete"], DataClass.TXN_TYPE] = "complete"
     format_name: Annotated[str | None, DataClass.RECORD_ID] = None
+    accounts_created: list[ImportCreatedAccount] = Field(default_factory=list)
+    """Accounts this confirmed import minted; empty when it adopted existing ones."""
 
 
 class ImportPdfBridgeAppliedPayload(BaseModel):
@@ -570,6 +699,8 @@ class ImportPdfBridgeAppliedPayload(BaseModel):
     merged_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
     status: Annotated[Literal["applied"], DataClass.TXN_TYPE] = "applied"
     format_name: Annotated[str | None, DataClass.RECORD_ID]
+    accounts_created: list[ImportCreatedAccount] = Field(default_factory=list)
+    """Accounts this confirmed import minted; empty when it adopted existing ones."""
 
 
 class ImportPdfSignAppliedPayload(BaseModel):
@@ -585,6 +716,8 @@ class ImportPdfSignAppliedPayload(BaseModel):
     rows_loaded: Annotated[int, DataClass.AGGREGATE]
     status: Annotated[Literal["applied"], DataClass.TXN_TYPE] = "applied"
     format_name: Annotated[str | None, DataClass.RECORD_ID]
+    accounts_created: list[ImportCreatedAccount] = Field(default_factory=list)
+    """Accounts this confirmed import minted; empty when it adopted existing ones."""
 
 
 class ImportPdfBridgeInvalidPayload(BaseModel):

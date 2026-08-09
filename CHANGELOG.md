@@ -412,6 +412,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **Breaking:** **Every import now stops before it merges a file into an
+  account you already
+  have.** Previously only CSV/Excel stopped to ask; OFX and PDF resolved and
+  bound the account on their own, so the one moment MoneyBin could be wrong
+  about *whose* transactions these are went by unseen. All three channels now
+  stop when a file could plausibly be an existing account — showing which ones
+  — and load nothing until you answer. Answer with
+  `--account-binding REF=ACCOUNT_ID` (or `=new` to keep it separate) on
+  `moneybin import files`, or the `account_bindings` parameter on the
+  `import_files` and `import_confirm` tools. Pinning up front with
+  `--account-id` / `--account-name` still skips the question entirely, and a
+  statement for an account you have already confirmed is still silent — you
+  answer once per account, not once per file.
+
+  **A file that matches nothing is not a question, so it is not asked.** Its
+  account is created and named back to you instead: `👀 Created account:
+  sample_bank CHECKING (e3a84714695d)`, with the rename and merge commands on
+  the next line. The same pair of fields arrives as `accounts_created` on
+  `--output json`, on the `import_files` per-file rows, and on
+  `import_confirm`. Asking here charged one confirmation per file on a first
+  import, each with exactly one answer available. The exception is a file that
+  states no account at all — a bare Date/Description/Amount CSV, or a PDF
+  statement with no readable account number. There the only name available is
+  the filename, and MoneyBin asks rather than guessing.
+
+  Each account the gate shows is labeled `@0`, `@1`, … for the file in front
+  of you, and that label is what `REF` takes — the account's own key works
+  too. The labels are why an assistant can answer this at all: the key is an
+  account identifier, so it reaches an assistant masked as `****1234`, and a
+  question you can only answer by typing something you cannot read is not a
+  question. The labels number the file's accounts, so `@0` means the same
+  account whether you answer the first time or the fourth. They are not names
+  to keep: they mean nothing on the next import.
+
+  Two behavior changes fall out of this. **An agent no longer gets a
+  different answer than you do:** it used to be allowed past this question,
+  quietly creating a provisional account and filing a suggestion for you to
+  review later, which put MoneyBin's weakest guess into effect on the surface
+  where nobody is watching. It now stops exactly where you would.
+  **Imports no longer add to the account-review queue** — the suggestions
+  arrive while you are importing instead of accumulating for later. That
+  queue still exists and is still filled by account sync.
+
+  *Upgrading:* nothing to migrate, and no re-import is needed. Scripted
+  imports of OFX or PDF files that resemble an account you already have will
+  now stop and ask; add `--account-binding` (or an `--account-id` pin) to
+  those calls. A known account, and a genuinely new one, keep importing
+  unattended. `--account-binding` answers one file, so `moneybin import files`
+  refuses it alongside several paths rather than dropping it: run those calls
+  one file at a time. It also cannot contradict an `--account-id` pin on the
+  same account — send whichever one you mean.
+- **Breaking:** **An account you named on a file type that cannot use it is now
+  an error
+  instead of silence.** `--account-name` and `--account-meta` reached only
+  spreadsheet imports, and `--account-id` only spreadsheets and PDFs; passing
+  one with any other file type was accepted and discarded, so the import bound
+  whatever it worked out for itself while you believed you had chosen. Each of
+  those combinations now refuses before anything loads and points at
+  `--account-binding`, which every file type honors. The MCP tools refuse the
+  same combinations, from the same table. (Error code
+  `import_pdf_account_signal_unsupported` is replaced by
+  `import_account_signal_unsupported`, since the refusal is no longer
+  PDF-only.)
+- **`moneybin import confirm` takes `--institution`.** An OFX whose issuer is
+  underivable from `<FI><ORG>`, the FID lookup, and the filename fails before
+  the account question is ever reached, so the only way to reach that question
+  is `moneybin import files <file> --institution <name>`. The recovery command
+  printed there dropped the override, so pasting it hit the institution error
+  again. It now carries it, and `import confirm` accepts it. Refused alongside
+  `--bridge-response`, which has no institution to apply.
 - **Cross-source duplicates now auto-merge on description agreement rather than
   on the calendar date, and the candidate window widens from 3 days to 5
   (#377).** Previously any pair landing on the same day merged silently no
@@ -601,6 +671,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   will see `import_confirm` move band.
 
 ### Fixed
+- **A saved PDF recipe that misreads a masked account number now repairs
+  itself (#380).** Recipes saved before the anchor fix in #371 read
+  `Account Number: XXXX XXXX XXXX 1234` as the bare mask, producing an account
+  with no last four that MoneyBin could not connect to the same card arriving by
+  OFX, CSV, or a bank connection — and because those statements still reconcile
+  to the cent, nothing flagged it. MoneyBin now treats a digit-free account id as
+  a stale-recipe signal and re-derives the saved recipe in place, audited and
+  reversible through `system audit undo`.
 - **An OFX transaction whose id changed between imports is no longer counted
   twice.** Some institutions stamp two distinct transactions with one `FITID` —
   a foreign purchase and its fee, for instance. MoneyBin gives every member of
@@ -1000,8 +1078,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "degrade to aggregates" without consent — no such behavior is implemented. It
   now states the truth: account/routing numbers are masked, all other fields
   reach the model provider as-is, and there is no consent gate yet.
+- **`sql_query` and `moneybin sql query` now name the column an unknown-column
+  query got wrong, instead of a bare "Query execution failed." (#382).** DuckDB
+  raises `BinderException` for an unknown column, so that case fell through to a
+  generic no-detail bucket; it now returns `sql_unknown_table` with a hint naming
+  the unresolved identifier, and that code's message widened to "Query could not
+  be bound to the schema." because it covers every binder rejection rather than
+  only a missing table or column — an agent branching on the error code should
+  update.
 
 ### Security
+- **A `UserError` hint shown on the CLI no longer reaches the durable log file
+  (#382).** `handle_cli_errors` logged every hint via `logger.info` and the CLI
+  file handler has no level filter, which became a disclosure once `sql_query`'s
+  new hint started carrying caller-typed text; the hint now prints to the
+  console via `typer.echo(..., err=True)` instead, so only its destination
+  changed.
 - **Fixed a redaction bypass that returned a source account identifier in the
   clear through `import_confirm`'s `confirmation_required` envelope (#372).**
   The tool declares `dynamic_classification=True`, and the decorator skips

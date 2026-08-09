@@ -292,15 +292,24 @@ def _scrub_embedded_pii(text: str) -> str:  # pyright: ignore[reportUnusedFuncti
     return text
 
 
-def redact_typed(obj: Any, consent: ConsentSet | None) -> Any:
+def redact_typed(
+    obj: Any, consent: ConsentSet | None, declared_type: Any = None
+) -> Any:
     """Walk ``obj`` recursively and return a redacted copy.
 
     The structure is preserved (dataclasses → dataclasses with the
     same shape, lists → lists, etc.). Only field values where the
     field's ``Annotated`` metadata includes a ``DataClass`` are
     transformed; everything else is copied through.
+
+    ``declared_type`` names the type to walk when ``obj`` cannot report its own.
+    A TypedDict instance is a bare ``dict`` at runtime, so ``type(obj)`` loses
+    every annotation and the walk masks nothing — pass the TypedDict explicitly
+    to redact one that is not reached through a typed parent. Dataclass and
+    Pydantic payloads carry their annotations on the instance and need it only
+    when the declared type is narrower than the runtime one.
     """
-    return _redact(obj, consent, type(obj))
+    return _redact(obj, consent, type(obj) if declared_type is None else declared_type)
 
 
 def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:

@@ -29,6 +29,37 @@ def test_handle_cli_errors_translates_key_error_to_exit(
     assert "locked" in caplog.text
 
 
+def test_handle_cli_errors_hint_reaches_console_not_log(
+    capsys: pytest.CaptureFixture[str],
+    caplog: LogCaptureFixture,
+) -> None:
+    """A UserError's hint is rendered to the user but never written to the log.
+
+    `sql_query`'s hint can carry the head of a DuckDB binder/catalog message,
+    which — unlike every other hint in the codebase — may include text the
+    caller typed into the query (see
+    tests/privacy/test_sql_query.py::test_binder_error_head_without_a_line_marker_can_carry_caller_text).
+    The file log handler is unfiltered (`_ConsoleNoiseFilter` only guards the
+    console handler, per its own docstring), so a hint routed through
+    `logger.info` would persist to the durable `cli_YYYY-MM-DD.log`.
+
+    `DatabaseLockError`'s hint is a static, safe string — deliberately chosen
+    over `sql_query`'s dynamic one so this test isolates the DELIVERY
+    MECHANISM (does a hint reach the console without touching the log?) from
+    the content-masking question `test_sql_query.py` already covers.
+    """
+    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.database import DatabaseLockError
+
+    hint_text = "Run 'moneybin db ps' for details or wait and retry"
+    with caplog.at_level("INFO"), pytest.raises(typer.Exit):
+        with handle_cli_errors():
+            raise DatabaseLockError("busy")
+
+    assert hint_text not in caplog.text
+    assert hint_text in capsys.readouterr().err
+
+
 def test_handle_cli_errors_translates_file_not_found_in_block(
     caplog: LogCaptureFixture,
 ) -> None:

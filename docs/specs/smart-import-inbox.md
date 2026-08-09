@@ -130,10 +130,11 @@ $ moneybin import inbox
 ✓ chase-checking/march.ofx              →  imported (118 transactions)
 👀 unknown-bank.csv                     →  pending confirmation (tier=low)
    Account identity needed — run 'moneybin import confirm
-   pending/2026-05/unknown-bank.csv --accept --account-binding <source_key>=<account_id|new>'
-   (=account_id adopts an existing account, =new mints one; or move the file
-   into inbox/<account-slug>/ and re-sync):
-     source key: unknown-bank-<hash>
+   pending/2026-05/unknown-bank.csv --accept --account-binding @N=<account_id|new>'
+   (@N is the ref beside each proposal below; =account_id adopts an existing
+   account, =new mints one; or move the file into inbox/<account-slug>/ and
+   re-sync):
+     @0  account: ****hash
        9f8e7d6c5b4a  Wells Fargo Checking ••9940
 Done: 1 imported, 0 failed, 1 pending.
 ```
@@ -184,7 +185,7 @@ projection of the existing `import_status` tool.
   resolver supplies a **fallback** candidate list — the institution-scoped
   accounts if any match, else all accounts (capped) — so the gate is never a
   dead end with `candidates: []`.
-- **Actions hints:** when any `account_confirmation` pending entries are returned: `"Some pending files need an account identity — run moneybin import confirm <pending-path> --accept --account-binding <source_key>=<account_id|new> (--accept ratifies the settled mapping; source_key + candidate accounts are in each pending entry's account_proposals, also mirrored in the .pending.yml sidecar), or move the file into inbox/<account-slug>/ and re-run import_inbox_sync."`
+- **Actions hints:** when any `account_confirmation` pending entries are returned: `"Some pending files need an account identity — run moneybin import confirm <pending-path> --accept --account-binding @N=<account_id|new> (--accept ratifies the settled mapping; @N is the proposal_ref on each data.pending[].account_proposals[] entry)"`. Bindings are keyed by `proposal_ref`, not `source_account_key`: that key is the institution's `<ACCTID>` on OFX, so every surface carrying these proposals masks it — including the `.pending.yml` sidecar, which outlives the session. The subfolder alternative (`", or move the file into inbox/<account-slug>/ and re-run import_inbox_sync"`) is appended only when a tabular file is among the pending entries; `account_name` is tabular-only, so on OFX and PDF the folder hint is dropped and that move would return the file to the same gate.
 
 ### Inbox status projection
 

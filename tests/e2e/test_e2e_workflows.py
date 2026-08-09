@@ -518,18 +518,29 @@ class TestSingleAccountConfirmPipeline:
         assert len(proposals) >= 1, (
             f"Expected at least one account proposal, got {proposals!r}"
         )
+        # The gate reports the source key masked ("****" + last 4, from
+        # _mask_account_identifier): the confirmation payload is one declaration
+        # across every channel, and on OFX that key is the <ACCTID> the
+        # institution issued. It is deliberately not typeable, so proposal_ref is
+        # the referent a caller echoes back.
         source_key = proposals[0]["source_account_key"]
-        assert source_key, f"source_account_key must be non-empty, got {source_key!r}"
+        assert source_key.startswith("****"), (
+            f"source_account_key must reach the caller masked, got {source_key!r}"
+        )
+        ref = proposals[0]["proposal_ref"]
+        assert ref == "@0", f"the first proposal's ref must be @0, got {ref!r}"
 
-        # Step 2: Resolve — accept the mapping and bind the proposed source key to
-        # a new account so the import can complete.
+        # Step 2: Resolve — accept the mapping and bind by the positional ref so
+        # the import can complete. Binding the masked key instead is refused; that
+        # refusal is covered by test_import_binding.py, which also proves the
+        # message never names the institution's key.
         result = run_cli(
             "import",
             "confirm",
             str(fixture),
             "--accept",
             "--account-binding",
-            f"{source_key}=new",
+            f"{ref}=new",
             env=env,
         )
         result.assert_success()

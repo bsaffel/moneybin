@@ -9,12 +9,13 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
 
 import duckdb
 
@@ -52,20 +53,169 @@ from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
 from moneybin.services.account_resolution_types import (
     AccountProposalDict,
+    ResolvedAccount,
     SourceAccount,
 )
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_confirmation import (
     ActorKind,
+    Channel,
     ConfirmationRequired,
     ImportConfirmationRequiredError,
+    ProposedMapping,
     SignConventionProposal,
 )
 from moneybin.services.refresh import refresh as _refresh
 from moneybin.utils.file import source_sha256
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class CreatedAccount:
+    """One canonical account an import minted.
+
+    The visible half of "gate the merge, not the mint": a first-contact mint no
+    longer stops the import, so the import has to say what it created. Both
+    fields are safe to show — ``account_id`` is an opaque uuid4[:12], and
+    ``display_name`` is the source's own label for the account (the tabular
+    account column, ``<institution> <type>`` for OFX, the document alias for
+    PDF), never its ``source_account_key``, which is an account number on
+    several channels.
+    """
+
+    account_id: str
+    display_name: str
+
+
+# Five digits, counted across any single NON-ALPHANUMERIC separator. Four is
+# the masked last-four banks print (and the shape of a year), so it stays;
+# anything longer in an account label is a number, not a label.
+#
+# **A whole word ends an account number. Nothing else does.**
+#
+# That sentence is the rule, and it is the fourth attempt at it. The first three
+# each described the *gap* between two digits and each shipped a leak: "-", then
+# any single non-alphanumeric ("." "/" "_"), then any run of three ("12AB34CD56"
+# masked but "12ABCD34EFGH56" did not). Every one was a guess about how account
+# numbers are punctuated, and an issuer who punctuated them differently walked
+# straight through. Stop guessing at the gap's *shape* and name what actually
+# separates two labels: a word.
+#
+# So a run of digits continues across a gap that is either
+#
+#   - whitespace-free  — "12ABCD34", "1234-5678", "12X3456789": letters and
+#     punctuation inside one token are part of the identifier, however long; or
+#   - letter-free      — "4111 1111 1111", "1234 - 5678": spacing and
+#     punctuation between digit groups, however long.
+#
+# and stops at a gap that is neither, which is exactly a whitespace-delimited
+# alphabetic word: "Checking 1234 Savings 5678" stays two safe four-digit
+# tokens, and "401K Plan 2024 Rewards" keeps its name instead of collapsing to
+# "****2024".
+#
+# Every quantifier here must have exactly one way to match a given gap, because
+# this runs on file-supplied labels and a failed match backtracks through every
+# alternative. An earlier version wrote the second branch as
+# `[^0-9A-Za-z]*\s[^0-9A-Za-z]*`, whose leading run can itself match whitespace
+# — so a run of N spaces had N places to put the `\s`, and a label that ended up
+# not matching cost 2^N. 165 characters took half a second; every further pair
+# of spaces doubled it. Excluding whitespace from the leading run pins `\s` to
+# the *first* one, which leaves a single parse. The two branches are disjoint on
+# whitespace count (zero vs. at least one), so no gap can take both.
+#
+# The leading and trailing [A-Za-z]* take the rest of the token, so "X12345678"
+# masks whole rather than leaving an "X" stub that publishes the prefix.
+#
+# The cost is over-masking a decimal in a label ("Balance 1234.56"). That is the
+# right side to err on: an over-masked label is legible, an under-masked one is
+# an account number.
+_ACCOUNT_NUMBER_GAP = r"(?:[^\s\d]*|[^\s0-9A-Za-z]*\s[^0-9A-Za-z]*)"
+# The lookbehind is the other half of keeping this linear. Without it the
+# leading [A-Za-z]* is retried from every character of a long letter run,
+# rescanning the whole run each time — quadratic, 1.2s on a 20k-character label,
+# and labels come from the file. A match can only begin where the identifier
+# does, so requiring a non-alphanumeric (or string start) before it makes every
+# interior retry fail in O(1) instead of O(n). It changes no result: a match
+# that could start mid-token is already found from that token's start, where the
+# greedy prefix covers the same span.
+_EMBEDDED_ACCOUNT_NUMBER = re.compile(
+    rf"(?<![0-9A-Za-z])[A-Za-z]*\d(?:{_ACCOUNT_NUMBER_GAP}\d){{4,}}[A-Za-z]*"
+)
+
+
+def mask_embedded_account_number(label: str) -> str:
+    """Mask an account number embedded in a derived account label.
+
+    ``parse_account_label`` lifts out a *recognized masked* last-four —
+    ``(...1789)``, ``x1789``, a bare trailing group — so the shapes it leaves
+    behind are the ones that matter, and grouping is what makes them dangerous:
+    ``Checking 4111 1111 1111 1111`` loses only its final token and arrives as
+    ``Checking 4111 1111 1111``, twelve digits of a card number in a field
+    declared ``USER_NOTE`` and shown unmasked wherever a mint is reported.
+
+    Masks the run rather than the whole string, because naming what was created
+    is the entire purpose of the field: "Checking 987654321098" has to become
+    "Checking ****1098", not "****1098". The kept four are the run's last four
+    *digits*, so a grouped number, a contiguous one, and an alphanumeric one
+    mask alike — and the suffix stays four digits, the form every other masked
+    surface in the codebase shows.
+    """
+
+    def _mask(match: re.Match[str]) -> str:
+        digits = re.sub(r"\D", "", match.group())
+        return f"****{digits[-4:]}"
+
+    return _EMBEDDED_ACCOUNT_NUMBER.sub(_mask, label)
+
+
+def _mask_caller_keys(keys: Iterable[str]) -> str:
+    """Render caller-supplied binding/metadata keys for a refusal message.
+
+    A refusal quoting the caller's own key reads as safe — they typed it — but
+    the CLI writes these through ``logger.error``, and a log file is exactly the
+    "artifact that outlives the session" ``.claude/rules/security.md`` names as a
+    boundary. On OFX a key is the institution's ``<ACCTID>``, and the log
+    sanitizer masks recognized shapes, not every issuer's numbering.
+
+    Masked rather than omitted: the caller still has to learn *which* of their
+    keys was wrong, and the valid-ref list alone cannot tell that to someone who
+    bound by source key. Same mask as the mint report, so a key and the label
+    derived from it are never disclosed to different depths.
+    """
+    return ", ".join(repr(mask_embedded_account_number(key)) for key in sorted(keys))
+
+
+def _created_account(
+    src: SourceAccount,
+    resolved: ResolvedAccount,
+    *,
+    display_name: str | None = None,
+) -> CreatedAccount | None:
+    """The account this resolve minted, or None when it adopted an existing one.
+
+    One definition of "created" for all three channels, so a new channel cannot
+    report a different set than the one it bound.
+
+    ``display_name`` is the caller's ``account_metadata`` value when they
+    supplied one. It has to win: ``_capture_new_account_metadata`` writes it to
+    ``app.account_settings`` and ``dim_accounts`` COALESCEs that arm ahead of
+    everything derived, so reporting the source label would announce the mint
+    under a name the user then cannot find.
+    """
+    if resolved.outcome != "minted_new":
+        return None
+    if display_name:
+        # The caller's own chosen name, which `_capture_new_account_metadata`
+        # also writes to `app.account_settings` — masking the announcement of a
+        # name they typed and will see everywhere else would only make the two
+        # disagree.
+        return CreatedAccount(account_id=resolved.account_id, display_name=display_name)
+    return CreatedAccount(
+        account_id=resolved.account_id,
+        display_name=mask_embedded_account_number(src.account_name),
+    )
 
 
 @dataclass
@@ -89,6 +239,14 @@ class ImportResult:
     replay is surfaced rather than applied silently."""
     import_id: str | None = None
     """UUID of the raw.import_log row this import created."""
+    accounts_created: tuple[CreatedAccount, ...] = ()
+    """Canonical accounts this import minted; empty when every account was adopted.
+
+    Populated at each channel's ``resolve()`` pass, filtered to
+    ``outcome == "minted_new"`` — the same filter ``_capture_new_account_metadata``
+    uses, and for the same reason: a ``pending_review`` provisional is
+    ``is_new`` too, but a later accept abandons its id, so reporting it would
+    name an account the user can never find."""
     pdf_format_name: str | None = None
     """Name a PDF recipe was actually persisted under, or None if not saved
     (save_format off, or save_new skipped/failed). Set only on a confirmed
@@ -209,6 +367,12 @@ class PerFileResult:
     sign_override_replayed: bool = False
     """Mirrors ``ImportResult.sign_override_replayed`` for batch imports — a saved
     `sign=` override replayed onto this file, bypassing the card-marker detector."""
+
+    accounts_created: tuple[CreatedAccount, ...] = ()
+    """Mirrors ``ImportResult.accounts_created`` for batch imports.
+
+    Per file, not per batch: a ten-file import that mints one account has to say
+    which file brought it."""
 
     confirmation_payload: dict[str, object] | None = None
     """Populated only when status == 'confirmation_required': detector proposal
@@ -353,6 +517,10 @@ class BridgeApplyResult:
     actual_row_count: int
     rows_diverged: bool
     reject_reason: str | None = None
+    accounts_created: tuple[CreatedAccount, ...] = ()
+    """Mirrors ``ImportResult.accounts_created`` — the bridge is an import path
+    like any other, and its caller never sees the underlying ``ImportResult``.
+    Always empty on ``outcome='invalid'``: nothing loaded, so nothing minted."""
 
 
 @dataclass(frozen=True)
@@ -447,6 +615,101 @@ def _validate_date_format_override(
         f"{date_column!r} column. Importing with it would drop most rows. "
         "Check the format against the column's own values.",
         code=error_codes.IMPORT_INVALID_DATE_FORMAT,
+    )
+
+
+# What each channel's import path can actually forward to the resolver.
+# ``account_bindings`` is absent by design: every channel honors it, because it
+# is the answer to the account gate they all raise.
+_HONORED_ACCOUNT_SIGNALS: dict[str, frozenset[str]] = {
+    "tabular": frozenset({"account_id", "account_name", "account_metadata"}),
+    # OFX names its own accounts (``<ACCTID>``) and a file can carry several,
+    # so a single whole-file pin has no coherent target.
+    "ofx": frozenset(),
+    # A PDF is one statement, so a single pin does have a target; the tabular
+    # naming arguments still bottom out in ``_import_tabular`` only.
+    "pdf": frozenset({"account_id"}),
+}
+
+
+def channel_honors_account_name(channel: str) -> bool:
+    """Whether this channel's import path forwards ``account_name``.
+
+    The channel-keyed form of :func:`honors_account_name`, for the callers that
+    already know the channel and have no file to sniff — the inbox sidecar
+    decides which account recoveries to print from the pending row's own
+    ``channel``. Spelling that as ``channel == "tabular"`` would put a second
+    copy of the table beside this one, and the next channel to gain
+    ``account_name`` would have to remember both.
+    """
+    return "account_name" in _HONORED_ACCOUNT_SIGNALS.get(channel, frozenset())
+
+
+def honors_account_name(file_path: Path) -> bool:
+    """Whether this file's channel forwards ``account_name`` to the resolver.
+
+    For a caller-supplied name the answer is enforced by
+    :func:`reject_unhonored_account_signals` — passing one to a channel that
+    would discard it is an error worth stopping for. This is the question its
+    *other* caller has to ask first: the inbox's ``inbox/<account-slug>/``
+    layout is a filing convention the user never passed as a signal, so a
+    folder name must not fail an import the way a wrong flag should. Reads the
+    same table the refusal reads, so the two cannot drift.
+
+    False for a file no channel claims: ``import_file`` raises on it anyway,
+    with a better message than this helper could give.
+    """
+    try:
+        file_type = _detect_file_type(file_path)
+    except ValueError:
+        return False
+    return channel_honors_account_name(file_type)
+
+
+def reject_unhonored_account_signals(
+    file_type: str,
+    *,
+    account_id: str | None = None,
+    account_name: str | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
+) -> None:
+    """Refuse an account signal this channel's import path would discard.
+
+    These arguments used to be accepted and dropped on the channels that never
+    forwarded them, which is the failure that cannot be noticed: the import
+    binds whatever the extractor inferred while the caller believes they chose,
+    and nothing at the call site suggests looking. A wrong account is expensive
+    to find later and expensive to undo.
+
+    Refuses on the first unhonored signal rather than reporting all of them —
+    the caller has to fix one to get to the next, and a channel table beats a
+    list of names for understanding why.
+    """
+    honored = _HONORED_ACCOUNT_SIGNALS.get(file_type)
+    if honored is None:  # pragma: no cover — _detect_file_type raised already
+        return
+    supplied = (
+        ("account_id", account_id),
+        ("account_name", account_name),
+        ("account_metadata", account_metadata),
+    )
+    unhonored = next(
+        (name for name, value in supplied if value and name not in honored), None
+    )
+    if unhonored is None:
+        return
+    accepted = ", ".join(sorted(honored)) or "none"
+    # Names both spellings: this is the one call site the CLI and the MCP tool
+    # share, and a CLI user has no parameter called `account_bindings` any more
+    # than an agent has a `--account-binding` flag. A refusal that names the
+    # other surface's vocabulary is not actionable on the one that raised it.
+    raise UserError(
+        f"{unhonored} is not supported for a {file_type} import — this channel "
+        f"accepts {accepted}. Name the account per detected source account with "
+        "an account binding instead (--account-binding on the CLI, "
+        "account_bindings via MCP); the import stops and lists them when it "
+        "cannot resolve one on its own.",
+        code=error_codes.IMPORT_ACCOUNT_SIGNAL_UNSUPPORTED,
     )
 
 
@@ -767,44 +1030,511 @@ def _validate_account_metadata(metadata: dict[str, dict[str, str]] | None) -> No
         )
 
 
+_PROPOSAL_REF_PREFIX = "@"
+
+
+def proposal_ref(index: int) -> str:
+    """Positional referent for the ``index``-th source account in a file.
+
+    Every channel derives ``source_account_key`` from file content — an OFX
+    ``<ACCTID>``, a PDF's issuer+last4, a tabular account-name column — and that
+    key is an ACCOUNT_IDENTIFIER, so any masking surface hands it back as
+    ``****1234``. A caller reading the gate through one of those surfaces can
+    see the proposal but cannot reproduce the key needed to answer it.
+
+    This names the account by position instead, which discloses nothing and is
+    reproducible from the same bytes on the answering call. It is a referent for
+    one exchange, not an identifier: MoneyBin already knows which account is
+    which, so the caller only has to point at one of the ones it just listed.
+
+    ``@`` rather than ``#`` because a binding is typed at a shell prompt —
+    ``--account-binding #0=new`` starts a comment and drops the rest of the
+    line.
+    """
+    return f"{_PROPOSAL_REF_PREFIX}{index}"
+
+
+def is_proposal_ref(key: str) -> bool:
+    """Whether a caller's binding/metadata key is a positional ref, not a raw key.
+
+    One definition, because two callers ask for opposite reasons and a
+    disagreement between them is a leak either way: ``_resolve_binding_targets``
+    asks so it can resolve refs against positions, and the CLI's sign recovery
+    asks so it can print refs and drop raw keys — that path has no proposals to
+    re-key from, and a raw ``source_account_key`` in ``actions[]`` sits outside
+    the redaction walk.
+    """
+    return key.startswith(_PROPOSAL_REF_PREFIX)
+
+
+def _resolve_binding_targets(
+    source_accounts: list[SourceAccount], bindings: dict[str, str]
+) -> list[str | None]:
+    """Per-source-account binding target, accepting a raw key or a positional ref.
+
+    Raises when the two forms name one account with different targets: choosing
+    a winner would bind an account to one of two ids the caller asked for, and
+    the caller would never learn which — the unrecoverable-by-surprise merge
+    this gate exists to prevent.
+
+    Also raises on a key — ref or raw — that names no account in this file.
+    Left unchecked either reads as "no binding for this account", so the import
+    re-gates with nothing to distinguish a mistyped answer from no answer, and
+    the caller re-sends the same binding forever.
+
+    The message never names the file's own source keys. An OFX ``<ACCTID>`` is
+    an account number, and this ValueError reaches an MCP caller through
+    ``per_file_failure`` — echoing the caller's own unknown keys back is safe
+    (they sent them), listing the real ones is not.
+
+    A real source key wins over the positional vocabulary it happens to look
+    like, but only where the two readings name the same account.
+    ``source_account_key`` is untrusted file content on OFX (the ``<ACCTID>``
+    verbatim), so a key of "@0" would otherwise bind both its own account AND
+    proposal zero — one answer silently merging two accounts. When the readings
+    name *different* accounts the key is refused instead of resolved: picking
+    either one delivers the answer to an account the caller was not looking at
+    and leaves the other gated behind a ref that no longer reaches it.
+    """
+    known = {src.source_account_key for src in source_accounts}
+    refs = {key for key in bindings if is_proposal_ref(key) and key not in known}
+    valid = {proposal_ref(index) for index in range(len(source_accounts))}
+    # A key that is BOTH a real source key and a valid ref for a *different*
+    # position has no safe reading. Source-key-wins (below) would answer the
+    # account whose key it spells while the caller was looking at the other
+    # account's ref — and through a masking surface that ref is the only
+    # referent they can reproduce, so the miss is invisible and unrecoverable.
+    # Same index is not ambiguous: both readings name the one account.
+    for index, src in enumerate(source_accounts):
+        key = src.source_account_key
+        if key in bindings and key in valid and key != proposal_ref(index):
+            raise ValueError(
+                f"account_bindings key {key!r} is ambiguous for this file: it is "
+                f"the source key for {proposal_ref(index)} and the positional ref "
+                f"for {key}. Bind {proposal_ref(index)} by its own ref, and the "
+                "other account by its source key — read it from the file itself "
+                "(the OFX <ACCTID>, or the account column's value), because the "
+                "confirmation masks it."
+            )
+    if unknown := sorted((refs - valid) | (set(bindings) - refs - known)):
+        raise ValueError(
+            f"account_bindings references unknown source key(s): "
+            f"{_mask_caller_keys(unknown)}. "
+            f"This file has {len(source_accounts)} account(s) — bind by "
+            f"proposal_ref ({', '.join(sorted(valid)) or 'none'}), or by a "
+            "source key exactly as the confirmation reported it."
+        )
+    targets: list[str | None] = []
+    for index, src in enumerate(source_accounts):
+        by_key = bindings.get(src.source_account_key)
+        ref = proposal_ref(index)
+        by_ref = None if ref in known else bindings.get(ref)
+        if by_key is not None and by_ref is not None and by_key != by_ref:
+            raise ValueError(
+                f"account_bindings has conflicting values for the same account: "
+                f"{proposal_ref(index)}={by_ref!r} and its source key "
+                f"={by_key!r}. Send one."
+            )
+        targets.append(by_key if by_key is not None else by_ref)
+    return targets
+
+
+def _resolve_metadata_keys(
+    source_accounts: list[SourceAccount], metadata: dict[str, dict[str, str]]
+) -> dict[str, dict[str, str]]:
+    """Re-key caller metadata from positional refs onto source keys.
+
+    ``account_bindings`` has taken a ``proposal_ref`` since this gate shipped;
+    ``account_metadata`` compared against source keys alone, and the
+    confirmation masks ``source_account_key`` — so its refusal asked for a key
+    the caller could not read, and naming a newly minted account was unusable on
+    the masked path. One vocabulary answers the gate, whichever parameter it
+    arrives in.
+
+    Mirrors :func:`_resolve_binding_targets`: a real source key wins over the
+    ref it happens to spell, and an unrecognized key is passed through for the
+    caller's own unknown-key refusal to name (echoing what they sent is safe;
+    enumerating the file's real keys is not).
+    """
+    if not metadata:
+        return metadata
+    known = {src.source_account_key for src in source_accounts}
+    source_key_by_ref = {
+        proposal_ref(index): src.source_account_key
+        for index, src in enumerate(source_accounts)
+    }
+    resolved: dict[str, dict[str, str]] = {}
+    for key, fields in metadata.items():
+        target = key if key in known else source_key_by_ref.get(key, key)
+        if target in resolved:
+            # The ref and the source key for one account, sent together. Same
+            # answer-twice problem the binding half refuses: picking a winner
+            # would apply one of two metadata sets the caller asked for and
+            # never say which.
+            raise ValueError(
+                f"account_metadata names the same account twice — "
+                f"{_mask_caller_keys([key])} and its other referent both "
+                "resolve to one account. Send one."
+            )
+        resolved[target] = fields
+    return resolved
+
+
+def _ratified_binding_refs(targets: list[str | None]) -> dict[str, str]:
+    """The caller's answers, re-keyed from whatever they sent to positional refs.
+
+    A surface replaying these must not replay the caller's own keys: on OFX a
+    key is the ``<ACCTID>``, and the CLI renders the replay into ``actions[]``,
+    which sits outside the redaction walk. Re-keying has to happen here because
+    a bound account is skipped by :meth:`_gate_account_proposals` and so never
+    reaches ``account_proposals`` for a surface to look its ref up in.
+
+    Takes the resolved targets rather than re-deriving them, so the refs cannot
+    disagree with the bindings that were actually applied.
+
+    Total by construction, so a surface can drop the caller's dict entirely:
+    :func:`_resolve_binding_targets` raises on a key naming no account in this
+    file, and any account a binding names is bound, so every surviving entry
+    lands here.
+    """
+    return {
+        proposal_ref(index): target
+        for index, target in enumerate(targets)
+        if target is not None
+    }
+
+
 def _apply_account_bindings(
     source_accounts: list[SourceAccount], bindings: dict[str, str]
-) -> list[SourceAccount]:
+) -> tuple[list[SourceAccount], list[str | None]]:
     """Fold each source account's binding into the resolver's input fields.
+
+    Returns the bound accounts and the per-account targets it resolved to reach
+    them. Handing the targets back is what lets :func:`_ratified_binding_refs`
+    re-key the same answers without resolving them a second time — two
+    resolutions of one input could only ever agree or be a bug.
 
     A binding value of ``"new"`` sets ``force_standalone`` (mint a fresh
     account, skip the merge-candidate pass); any other value is an existing
     canonical ``account_id`` to adopt (``explicit_account_id``). Unbound
     accounts pass through unchanged so the gate can still surface them.
 
+    A binding is keyed by either the raw ``source_account_key`` or the
+    positional ``proposal_ref`` the gate surfaced — see :func:`proposal_ref`.
+
     Raises ``ValueError`` on an empty binding value — ``explicit_account_id=""``
     is falsy and would silently fall through to a fresh mint as if no binding
-    were given, discarding the caller's intent ("magic stays visible").
+    were given, discarding the caller's intent ("magic stays visible"). That
+    message names the positional ref, never the source key, for the reason
+    :func:`_resolve_binding_targets` documents: on OFX the key is an account
+    number and this ValueError reaches an MCP caller intact.
     """
     if not bindings:
-        return source_accounts
+        return source_accounts, [None] * len(source_accounts)
+    targets = _resolve_binding_targets(source_accounts, bindings)
     bound: list[SourceAccount] = []
-    for src in source_accounts:
-        target = bindings.get(src.source_account_key)
+    for index, (src, target) in enumerate(zip(source_accounts, targets, strict=True)):
         if target is None:
             bound.append(src)
-        elif target == "new":
+            continue
+        if not target.strip():
+            # Reject whitespace-only too: CLI input is not stripped (_parse_kv
+            # keeps the raw value) and MCP passes JSON as-is, so a bare-spaces
+            # value would otherwise be truthy and bind a bogus account_id.
+            # Checked before the pin conflict below so a blank value is reported
+            # as blank rather than as a contradiction of some other id.
+            raise ValueError(
+                f"account_bindings entry for {proposal_ref(index)} has an empty "
+                'value; use an existing account_id or "new".'
+            )
+        if target.strip().lower() == "new" and target != "new":
+            # "New", "NEW", "new " all fall through to the adopt branch below
+            # and become an explicit_account_id. The unknown-target refusal
+            # catches them, but in the vocabulary of ids rather than of the
+            # keyword the caller plainly meant. Folding case and surrounding
+            # space into the keyword instead would be a guess: an account_id is
+            # opaque, so "New" cannot be proven to be the keyword rather than
+            # an id ("magic stays visible"). Name the near miss and stop.
+            raise ValueError(
+                f"account_bindings entry for {proposal_ref(index)} is {target!r}; "
+                'the mint keyword is exactly "new" (lowercase, no surrounding '
+                "spaces). Every other value is read as an existing account_id."
+            )
+        if src.explicit_account_id and target != src.explicit_account_id:
+            # A caller-supplied account_id already answered this account. The
+            # binding used to overwrite it (or clear it, on "new") with nothing
+            # said, so the pin the caller asked for vanished — the same
+            # two-answers-one-account conflict _resolve_binding_targets refuses,
+            # arriving through two parameters instead of one. Restating the same
+            # id is agreement, not conflict: an agent answering a gate re-sends
+            # what it already had.
+            raise ValueError(
+                f"account_bindings binds {proposal_ref(index)} to {target!r}, "
+                f"but account_id pinned {src.explicit_account_id!r}. Send one."
+            )
+        if target == "new":
             bound.append(
                 dataclasses.replace(
                     src, force_standalone=True, explicit_account_id=None
                 )
             )
-        elif not target.strip():
-            # Reject whitespace-only too: CLI input is not stripped (_parse_kv
-            # keeps the raw value) and MCP passes JSON as-is, so a bare-spaces
-            # value would otherwise be truthy and bind a bogus account_id.
-            raise ValueError(
-                f"account_bindings for source key {src.source_account_key!r} "
-                'has an empty value; use an existing account_id or "new".'
-            )
         else:
             bound.append(dataclasses.replace(src, explicit_account_id=target))
-    return bound
+    return bound, targets
+
+
+def _refuse_unknown_binding_targets(
+    resolver: AccountResolver,
+    source_accounts: list[SourceAccount],
+    bindings: dict[str, str],
+) -> None:
+    """Reject a binding onto an account id this database does not have.
+
+    Step 0 of the ladder adopts ``explicit_account_id`` verbatim and reports
+    ``outcome="adopted_strong"``, ``is_new=False`` — so an id naming nothing
+    became a canonical account with no mint announced and no ``accounts_created``
+    entry carrying it. The statement's rows then landed under an account the
+    caller invented by typo, under a name no surface would ever show them. That
+    is what the shared reference-resolution contract exists to prevent: a write
+    never invents its own target (``.claude/rules/mcp.md``, "Entity resolution").
+
+    Scoped to values that arrived through ``account_bindings``, which is why it
+    reads them rather than every ``explicit_account_id``. A binding answers a
+    confirmation that *just enumerated* the ids worth naming, so one that
+    matches none of them is a typo by construction. The ``account_id``
+    parameter is a different contract: it names the account this file becomes,
+    minting under that id when it is unknown, and validating it would delete
+    that capability rather than protect it.
+
+    Runs before the contradiction refusal below: when a binding is both unknown
+    and contradicting, "no such account" is the more useful answer.
+    """
+    bound_ids = {value for value in bindings.values() if value != "new"}
+    if not bound_ids:
+        return
+    for index, src in enumerate(source_accounts):
+        account_id = src.explicit_account_id
+        if not account_id or account_id not in bound_ids:
+            continue
+        if resolver.knows_account_id(account_id):
+            continue
+        # Names the positional ref, never source_account_key, for the reason
+        # _apply_account_bindings documents: this reaches an MCP caller intact.
+        # The id itself is echoed back because the caller is the one who sent it.
+        raise ValueError(
+            f"account_bindings binds {proposal_ref(index)} to {account_id!r}, "
+            "which is not an account in this database. Use an id the "
+            'confirmation offered as a candidate, or "new" to mint one.'
+        )
+
+
+def _refuse_contradicted_bindings(
+    resolver: AccountResolver,
+    source_accounts: list[SourceAccount],
+    binding_targets: list[str | None],
+) -> None:
+    """Reject a binding the resolver would later refuse, before anything loads.
+
+    A bound account skips the proposal loop, so it used to reach ``resolve()``
+    unchecked — and on OFX that happens *after* the raw frames are ingested.
+    ``_write_native_mapping``'s conflict guard then raised with the rows already
+    written and nothing to remove them: the batch finalized ``failed``, but
+    ``prep.stg_ofx__transactions`` filters on ``_row_num``, not import status,
+    so the statement still surfaced — joined to the very account the binding was
+    trying to move it away from. Asking here makes the refusal cost nothing,
+    and gives the caller a message naming what to send instead.
+
+    Only ``explicit_account_id`` is checked. A ``force_standalone`` ("new")
+    binding over an existing native key adopts at the ladder's strong-ref step
+    instead of minting, which is the documented re-import idempotency, not a
+    contradiction.
+
+    ``binding_targets`` says which parameter supplied each id — non-None for an
+    ``account_bindings`` answer, None for the direct ``account_id``. The message
+    names it, because a refusal that cites an argument the caller never sent
+    sends them looking for it instead of at the one they have to change.
+    """
+    for index, src in enumerate(source_accounts):
+        if not src.explicit_account_id:
+            continue
+        existing = resolver.accepted_native_account_id(src)
+        if existing is None or existing == src.explicit_account_id:
+            continue
+        # Names the positional ref, never source_account_key, for the reason
+        # _apply_account_bindings documents: this reaches an MCP caller intact.
+        supplied_by = (
+            f"account_bindings binds {proposal_ref(index)}"
+            if binding_targets[index] is not None
+            else f"account_id pins {proposal_ref(index)}"
+        )
+        raise ValueError(
+            f"{supplied_by} to {src.explicit_account_id!r}, but this file's "
+            f"account is already accepted onto {existing!r}. Bind it to "
+            f"{existing!r}, or re-point the existing link first."
+        )
+
+
+class PdfAccountIdentity(NamedTuple):
+    """What a PDF statement says about its account, and whether it said anything.
+
+    ``identity_unknown`` is returned beside the account rather than derived again
+    at each call site: the gate and the resolve pass have to agree about whether
+    the file stated an identity, and re-testing the anchor separately is exactly
+    the drift ``_pdf_source_account``'s own contract rules out.
+    """
+
+    source: SourceAccount
+    identity_unknown: bool
+
+    @property
+    def fallback_keys(self) -> tuple[str, ...]:
+        """The gate's ``fallback_keys`` argument for this identity."""
+        return (self.source.source_account_key,) if self.identity_unknown else ()
+
+
+def _pdf_source_account(
+    decision: "RouteDecision",
+    *,
+    resolved_alias: str,
+    account_id_override: str | None,
+) -> PdfAccountIdentity:
+    """Derive the account identity a PDF statement presents, without resolving.
+
+    Shared by the confirm gate (which runs before ``begin_import``) and the
+    resolve pass in ``_import_pdf_transactions``, so the identity the user
+    ratifies is exactly the one bound.
+
+    The source-native key is issuer-slug-prefixed so the same masked suffix
+    ("...1234") from two different banks doesn't collide on one
+    core.dim_accounts row. Its scope (``source_origin``) is the issuer slug and
+    must be IDENTICAL across every statement of one card: the strong-ref lookup
+    and the staging JOINs both key on (source_type, source_origin, ref_value), so
+    a per-file value would make each statement miss its own prior link and mint a
+    fresh account every month — and, now, re-ask the confirm every month.
+    Deliberately NOT matched_format_name: that is None on first contact and set
+    from the second statement on, so it differs across exactly the two imports
+    this needs to unify. ``resolved_alias`` stays the per-file scope for
+    raw.import_log and the raw.pdf_<alias> view, which are genuinely per-document
+    and which revert depends on.
+
+    A statement with no readable account number has no identity of its own: the
+    key falls back to the filename stem, so the returned
+    ``identity_unknown`` sends it through the gate's ``fallback_keys`` path — the
+    same one the bare single-account tabular import takes, and for the same
+    reason. Minting on a filename is the guess "magic stays visible" forbids
+    doing silently.
+    """
+    from moneybin.utils import slugify
+
+    if decision.fp is None:
+        # Defensive: route_pdf_import attaches fp on every outcome that reaches
+        # the transactions path; this guards a hand-built RouteDecision.
+        raise ValueError("PDF routing returned outcome='transactions' but fp is None")
+    issuer_slug = slugify(decision.fp.get("issuer", "unknown"))
+    # Mask the captured account identifier BEFORE slugifying it into the
+    # source-native key. The captured value may be a full unmasked institution
+    # account number ("Account Number: 123456789"), and storing that verbatim
+    # leaks it through every downstream surface that treats account_id as an
+    # opaque identifier.
+    masked_acct = _to_account_number_mask(decision.metadata.account_id)
+    # Whether the DOCUMENT named an account, captured before the override branch
+    # below clears masked_acct. Without an anchor the key below is the filename
+    # stem, which is a guess about what the file was called — not an identity the
+    # statement stated.
+    anchored = bool(masked_acct)
+    derived_key = (
+        f"{issuer_slug}_{slugify(masked_acct)}" if masked_acct else resolved_alias
+    )
+    if account_id_override:
+        # Explicit override — agents/users can pin a statement whose text omits
+        # an account anchor to an existing dim_accounts row instead of accepting
+        # the filename-derived alias and creating a fresh entry. The derived key
+        # rides along as unpinned_account_key so the pin also teaches the
+        # resolver what this document yields on its own; without that, the next
+        # unpinned statement of the same card mints a second account.
+        native_key = account_id_override
+        masked_acct = None
+    else:
+        native_key = derived_key
+    return PdfAccountIdentity(
+        source=SourceAccount(
+            source_type="pdf",
+            source_origin=issuer_slug,
+            source_account_key=native_key,
+            account_name=resolved_alias,
+            institution=decision.fp.get("issuer") or None,
+            # None for a digits-free token ("xxxx"), which correctly denies the
+            # institution+last4 signal and routes to name review rather than
+            # inventing a strong match.
+            last_four=_last4_from_account_number(masked_acct),
+            explicit_account_id=account_id_override,
+            # Only teach a key the DOCUMENT yields. Unanchored, the derived key
+            # is the file stem, and accepting it as a source_native ref would let
+            # any later same-named statement from this issuer adopt the pinned
+            # account with no confirm — a silent cross-account merge on the
+            # strength of a filename.
+            unpinned_account_key=(
+                derived_key if account_id_override and anchored else None
+            ),
+        ),
+        identity_unknown=not anchored,
+    )
+
+
+def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccount]:
+    """Enumerate the account identities an OFX file presents, without resolving.
+
+    Reads the parsed ofxparse object rather than the extractor's DataFrame so it
+    can run *before* ``begin_import`` — the confirm gate has to stop the import
+    before any batch is opened or any row is ingested.
+
+    One list serves both the gate and the resolve pass. Deriving them separately
+    would let the gate propose one identity while resolve binds another; the
+    field derivation is shared with the extractor (``none_if_blank``,
+    ``ofx_account_type``) for the same reason.
+
+    Deduped by ``<ACCTID>``, because ofxparse emits one ``Account`` per statement
+    response with no de-dup of its own: an export that splits one card across two
+    ``<STMTRS>`` blocks would otherwise surface it as two independent identities,
+    ask about each, and let two different answers write one native key under two
+    canonical accounts. ACCTID alone is the right key — it *is* the
+    ``source_account_key`` every downstream link and staging JOIN uses, so two
+    entries sharing one cannot resolve to different accounts by design.
+    """
+    from moneybin.extractors.institution_resolution import slug_for_fid
+    from moneybin.extractors.ofx.extractor import none_if_blank, ofx_account_type
+
+    accounts: list[SourceAccount] = []
+    seen: set[str] = set()
+    for account in parsed_ofx.accounts:
+        acctid: str | None = account.account_id
+        if not acctid or acctid in seen:
+            continue
+        seen.add(acctid)
+        routing = none_if_blank(account.routing_number)
+        institution = account.institution
+        fid = none_if_blank(institution.fid if institution else None)
+        accounts.append(
+            SourceAccount(
+                source_type="ofx",
+                source_origin=source_origin,
+                source_account_key=acctid,
+                account_name=f"{source_origin} {ofx_account_type(account) or ''}".strip(),
+                # full_number is a strong ref ONLY when institution/routing-scoped
+                # (contains ':'); a bare number is demoted to a candidate signal.
+                account_number=f"{routing}:{acctid}" if routing else None,
+                last_four=acctid[-4:],
+                # The FID slug, not source_origin. source_origin comes from <ORG>,
+                # which is a routing code for some issuers ("B1" = Chase), and it
+                # must stay untouched because downstream identity keys on it.
+                # Matching needs the same canonical slug
+                # core.dim_accounts.institution_slug carries, so resolve it from
+                # the FID and fall back to source_origin when the FID is
+                # unregistered.
+                institution=slug_for_fid(fid) or source_origin,
+            )
+        )
+    return accounts
 
 
 class ImportService:
@@ -927,6 +1657,7 @@ class ImportService:
         institution: str | None = None,
         force: bool = False,
         interactive: bool = False,
+        account_bindings: dict[str, str] | None = None,
     ) -> ImportResult:
         """Import an OFX/QFX/QBO file via the shared import-batch pipeline.
 
@@ -938,19 +1669,22 @@ class ImportService:
                 The previous batch is left in place; this creates a new batch.
             interactive: If True, prompt for institution when the chain yields
                 nothing. False for --yes, MCP, and scripts.
+            account_bindings: Answers to a prior account-confirmation gate, keyed
+                by OFX ``<ACCTID>``: an existing account_id to adopt, or "new".
 
         Returns:
             ImportResult with summary.
 
         Raises:
             ValueError: On re-import without force, or when institution can't be derived.
+            ImportConfirmationRequiredError: When an account identity in the file
+                is not yet ratified. Raised before any batch is opened.
         """
         import ofxparse  # type: ignore[import-untyped]
 
         from moneybin.extractors.institution_resolution import (
             InstitutionResolutionError,
             resolve_institution,
-            slug_for_fid,
         )
         from moneybin.extractors.ofx import OFXExtractor
         from moneybin.extractors.ofx.extractor import preprocess_ofx_content
@@ -1049,6 +1783,19 @@ class ImportService:
             ).inc()
             raise ValueError(str(e)) from e
 
+        # Enumerate the account identities this file presents and gate on any
+        # that aren't ratified yet — BEFORE begin_import, so a gated import opens
+        # no batch, ingests no rows, and writes no links. An OFX <ACCTID> is a
+        # stable institution-assigned key, so the answer binds for good: the next
+        # import of the same account adopts via source_native without re-asking.
+        resolver = AccountResolver(self._db, actor="system")
+        source_accounts = self._gate_account_proposals(
+            resolver,
+            _ofx_source_accounts(parsed_ofx, source_origin),
+            account_bindings,
+            channel="ofx",
+        )
+
         # OFX <ACCTID> values are institution-assigned account numbers, not
         # display names. We pass them through to import_log as-is — the
         # naming asymmetry with tabular's account_names is intentional and
@@ -1123,40 +1870,18 @@ class ImportService:
         # raw.ofx_accounts.account_id still holds the source-native ACCTID. Runs
         # after the raw load so links exist iff their raw account rows landed; a
         # separate try/except finalizes 'failed' rather than leaving the batch
-        # stuck in 'importing'.
+        # stuck in 'importing'. Resolves the SAME list the gate proposed, so the
+        # identity confirmed above is exactly the one bound here.
         try:
-            resolver = AccountResolver(self._db, actor="system")
-            for row in data["accounts"].iter_rows(named=True):
-                acctid: str | None = row["account_id"]
-                if not acctid:
-                    continue
-                routing = row.get("routing_number")
-                # full_number is a strong ref ONLY when institution/routing-scoped
-                # (contains ':'); a bare number is demoted to a candidate signal.
-                scoped_number = f"{routing}:{acctid}" if routing else None
-                resolved_account = resolver.resolve(
-                    SourceAccount(
-                        source_type="ofx",
-                        source_origin=source_origin,
-                        source_account_key=acctid,
-                        account_name=f"{source_origin} "
-                        f"{row.get('account_type') or ''}".strip(),
-                        account_number=scoped_number,
-                        last_four=acctid[-4:],
-                        # The FID slug, not source_origin. source_origin comes
-                        # from <ORG>, which is a routing code for some issuers
-                        # ("B1" = Chase), and it must stay untouched because
-                        # downstream identity keys on it. Matching needs the
-                        # same canonical slug core.dim_accounts.institution_slug
-                        # carries, so resolve it from the FID and fall back to
-                        # source_origin when the FID is unregistered.
-                        institution=slug_for_fid(row.get("institution_fid"))
-                        or source_origin,
-                    )
-                )
+            created: list[CreatedAccount] = []
+            for src in source_accounts:
+                resolved_account = resolver.resolve(src)
                 ACCOUNT_LINK_OUTCOMES_TOTAL.labels(
                     result=resolved_account.outcome
                 ).inc()
+                if minted := _created_account(src, resolved_account):
+                    created.append(minted)
+            result.accounts_created = tuple(created)
         except Exception:
             import_log.finalize_import(
                 self._db,
@@ -1254,55 +1979,130 @@ class ImportService:
         self,
         resolver: AccountResolver,
         source_accounts: list[SourceAccount],
+        bindings: dict[str, str] | None,
         *,
-        actor_kind: "ActorKind",
-        resolved_mapping: dict[str, str],
-    ) -> None:
-        """Surface weak account-merge candidates for confirmation before load.
+        channel: Channel,
+        resolved_mapping: dict[str, str] | None = None,
+        fallback_keys: Collection[str] = (),
+        emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
+    ) -> list[SourceAccount]:
+        """Fold in the caller's answers, then stop on any identity still open.
 
-        Interactive-human first contact only: when an unbound source account
-        resolves to weak merge candidate(s), raise
-        ``ImportConfirmationRequiredError`` (no rows load) so the human ratifies
-        the account identity (adopt a candidate or declare ``"new"``). Agent /
-        non-interactive imports never gate here — they mint+propose and the
-        proposal stays visible in the account-link review queue (M1S.5), per
-        ``account-identity-resolution.md`` Decision 7.
+        Returns the ratified accounts for the resolve pass. Applying the
+        bindings here rather than at each call site is what makes "gate what you
+        are about to resolve" structural: every channel used to apply-then-gate
+        as two statements, and a channel that forgot the first got a gate it
+        could never satisfy.
+
+        Propose-then-bind: ``propose()`` is read-only, so an unratified identity
+        raises ``ImportConfirmationRequiredError`` (no rows load, no links
+        written) and the caller answers with an ``account_bindings`` entry —
+        adopt an existing id, or declare ``"new"``. Only then does ``resolve()``
+        write anything.
+
+        The predicate is ``AccountProposal.requires_confirm`` in full, both
+        clauses: weak merge candidates surface, and so does a source that stated
+        no identity at all (``identity_unknown``). A first-contact mint of a
+        STATED identity does not — it has nothing to merge into and no other
+        answer available, so gating it made a first import of N files cost N
+        confirms that each had exactly one legal answer. It is reported instead,
+        through ``accounts_created``. A remembered binding never re-asks: the
+        second import of the same source hits ``source_native`` in the
+        resolution ladder, sets ``adopted_via``, and passes straight through.
+        The confirm therefore costs one answer per new account identity, once,
+        not one per file.
+
+        Actor-independent by design: an agent never self-picks an account
+        identity. It receives the same pre-load stop as a human, surfaced as a
+        ``confirmation_required`` envelope. This deliberately drops the earlier
+        non-human early return, under which agent-driven imports bound accounts
+        with no confirm at all — the path most likely to run unattended and
+        least likely to have a wrong binding noticed.
+
+        ``fallback_keys`` names the source keys that get ``propose(fallback=True)``
+        — a decision-support pick-list of existing accounts instead of an empty
+        ``candidates``, and the flag that sets ``identity_unknown``. Two sources
+        opt in, both for the same reason: the bare single-account tabular import
+        (no ``--account-name``, no account column) and a PDF whose text yields no
+        account anchor. Each would otherwise mint under a filename guess, and an
+        empty pick-list would force the user to type a raw account id. Every
+        other source leaves it off, because a named account that matches nothing
+        should mint, not be offered an unrelated list.
+
+        Metrics are emitted here rather than left to ``resolve()``. The gate
+        answers every weak candidate before resolution runs, so no import
+        reaches ``resolve()``'s candidate pass any more — the confidence
+        histogram it used to feed would read zero for the interactive path.
+        ``disposition="rollback"`` because raising is this call's success case.
         """
-        if actor_kind != "human":
-            return
+        source_accounts, binding_targets = _apply_account_bindings(
+            source_accounts, bindings or {}
+        )
+        ratified = _ratified_binding_refs(binding_targets)
+        _refuse_unknown_binding_targets(resolver, source_accounts, bindings or {})
+        _refuse_contradicted_bindings(resolver, source_accounts, binding_targets)
+        wanted_fallback = set(fallback_keys)
         proposals: list[AccountProposalDict] = []
-        for src in source_accounts:
+        # enumerate over the FULL list, not the surfaced subset: bindings are
+        # applied above, so a ref can only index the file's own accounts.
+        # Numbering what gets surfaced would shift every ref as soon as one
+        # account resolved strongly.
+        for index, src in enumerate(source_accounts):
             # A bound account (explicit_account_id / force_standalone) is already
-            # decided; only ambiguous unbound accounts gate.
+            # decided; only unratified accounts gate.
             if src.explicit_account_id or src.force_standalone:
                 continue
-            proposal = resolver.propose(src)
-            if proposal.candidates:
-                proposals.append(proposal.to_dict())
+            proposal = resolver.propose(
+                src, fallback=src.source_account_key in wanted_fallback
+            )
+            if proposal.requires_confirm:
+                proposals.append(proposal.to_dict(proposal_ref=proposal_ref(index)))
         if not proposals:
-            return
+            return source_accounts
         from moneybin.extractors.confidence import Confidence
-        from moneybin.services.import_confirmation import (
-            ConfirmationRequired,
-            ImportConfirmationRequiredError,
-            ProposedMapping,
+        from moneybin.metrics.registry import (
+            ACCOUNT_LINK_CONFIDENCE,
+            IMPORT_CONFIRMATIONS_TOTAL,
+        )
+
+        for surfaced in proposals:
+            for candidate in surfaced["candidates"]:
+                record_observation(
+                    ACCOUNT_LINK_CONFIDENCE,
+                    candidate["confidence"],
+                    labels={},
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                    disposition="rollback",
+                )
+        record_counter(
+            IMPORT_CONFIRMATIONS_TOTAL,
+            # tier mirrors the Confidence below: the layout is settled, only the
+            # account identity is open.
+            labels={"channel": channel, "tier": "high", "outcome": "proposed"},
+            emit_metrics=emit_metrics,
+            observations=observations,
+            disposition="rollback",
         )
 
         raise ImportConfirmationRequiredError(
             ConfirmationRequired(
-                channel="tabular",
-                # The column layout is already resolved; only the account
-                # identity is in question. high/1.0 reflects the settled mapping.
+                channel=channel,
+                # The layout is already settled (tabular: the column mapping
+                # resolved; ofx/pdf: nothing to map). Only the account identity
+                # is in question, so high/1.0 is honest.
                 confidence=Confidence(
                     score=1.0, tier="high", flagged=(), missing_required=()
                 ),
                 proposed=ProposedMapping(
-                    field_mapping=resolved_mapping,
+                    field_mapping=resolved_mapping or {},
                     sample_values={},
                     unmapped_columns=(),
                 ),
                 reason="account_confirmation",
                 account_proposals=proposals,
+                ratified_bindings=ratified,
             )
         )
 
@@ -1359,13 +2159,16 @@ class ImportService:
             human_sign_confirmation: Explicit human approval of an inferred
                 tabular sign inversion; independent of mapping acceptance.
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
-            account_bindings: Map of source_account_key -> canonical account_id
-                (adopt) or "new" (mint standalone), ratifying the account-binding
-                confirmation. Unbound accounts with weak candidates gate for a
-                human caller.
-            account_metadata: Map of source_account_key -> {display_name,
-                account_subtype, last_four, currency_code} captured into
-                app.account_settings for accounts minted this import.
+            account_bindings: Map of proposal_ref ("@0") or source_account_key ->
+                canonical account_id (adopt) or "new" (mint standalone),
+                ratifying the account-binding confirmation. An unbound account
+                gates when it carries weak candidates, for every caller.
+            account_metadata: Map of proposal_ref ("@0") or source_account_key
+                -> {display_name, account_subtype, last_four, currency_code}
+                captured into app.account_settings for accounts minted this
+                import. Same key vocabulary as account_bindings, because the
+                confirmation masks source_account_key and the ref is the only
+                referent a caller can read back from it.
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
             observations: Buffer observations for a caller-owned transaction.
@@ -2109,6 +2912,8 @@ class ImportService:
         # native key) WITHOUT resolving, so the account-binding gate can run
         # between enumeration and the writing resolve() pass.
         source_accounts: list[SourceAccount] = []
+        # Source keys whose gate offers a fallback pick-list (see the bare branch).
+        fallback_keys: set[str] = set()
         if account_id:
             account_ids: str | list[str] = account_id
             acct_id_to_name[account_id] = account_name or account_id
@@ -2226,79 +3031,59 @@ class ImportService:
                 last_four=number_last4_by_key.get(native_key),
             )
             source_accounts.append(bare_src)
-            # No binding answer yet → surface the no-candidate account
-            # confirmation (no rows load). A later import_confirm with
-            # --account-binding <native_key>=<account_id|new> re-enters here and
-            # proceeds through Phase 2; --account-name re-enters the branch above.
-            # Elicit only when genuinely unknown: no confirm answer at all AND no
-            # prior accepted source_native for this exact content. Use `not
-            # bindings` (not `native_key not in bindings`) so a binding with a
-            # MISTYPED key doesn't silently re-elicit — it falls through to the
-            # Phase-2 known_keys check below, which fails loud ("magic stays
-            # visible"). An exact-same-file re-import adopts via resolve() Step-1
-            # without re-prompting (idempotency, not a filename guess).
-            if not bindings and not resolver.source_native_exists(
-                source_type, source_origin, native_key
-            ):
-                from moneybin.extractors.confidence import Confidence
-                from moneybin.services.import_confirmation import (
-                    ConfirmationRequired,
-                    ImportConfirmationRequiredError,
-                    ProposedMapping,
-                )
+            # This source has no identity signal at all, so its gate offers a
+            # fallback pick-list of existing accounts rather than an empty
+            # candidates: [] that would force the user to type a raw account_id.
+            # The gate itself is the shared one in Phase 2 — a binding answer
+            # (--account-binding <native_key>=<account_id|new>) re-enters here,
+            # binds in Phase 2, and passes through; a MISTYPED binding key fails
+            # loud on the known_keys check rather than silently re-eliciting; and
+            # an exact-same-file re-import adopts via the resolver's source_native
+            # step without re-prompting (idempotency, not a filename guess).
+            fallback_keys.add(native_key)
 
-                # propose() (read-only) surfaces a fallback pick-list of existing
-                # accounts so the gate isn't an empty candidates: [] forcing a raw
-                # account_id; matches the multi-account gate's shape.
-                raise ImportConfirmationRequiredError(
-                    ConfirmationRequired(
-                        channel="tabular",
-                        # Layout is settled; only the account identity is open.
-                        confidence=Confidence(
-                            score=1.0, tier="high", flagged=(), missing_required=()
-                        ),
-                        proposed=ProposedMapping(
-                            field_mapping=dict(resolved.field_mapping),
-                            sample_values={},
-                            unmapped_columns=(),
-                        ),
-                        reason="account_confirmation",
-                        account_proposals=[
-                            resolver.propose(bare_src, fallback=True).to_dict()
-                        ],
-                    )
-                )
-
-        # Phase 2 — apply explicit bindings, then gate on weak account proposals.
-        # The gate raises ImportConfirmationRequiredError (no rows load) for an
-        # interactive human first-contact with ambiguous candidates.
-        #
-        # Fail loud on a binding/metadata source key that doesn't match any of
-        # this file's accounts (a typo) — silently ignoring it would do the
-        # wrong thing invisibly ("magic stays visible").
+        # Fail loud on a metadata source key that doesn't match any of this
+        # file's accounts (a typo) — silently ignoring it would do the wrong
+        # thing invisibly ("magic stays visible"). account_metadata is
+        # tabular-only; the binding half of this check lives in
+        # _resolve_binding_targets, which every channel reaches — and this
+        # message follows that one's rule: echo the caller's own unknown keys
+        # (they sent them), never enumerate the file's real ones. A tabular key
+        # is slugify(account_name), and an account label routinely carries the
+        # number it names.
+        # Refs first: the confirmation masks source_account_key, so a caller on
+        # a multi-account file can only key metadata by the ref it showed them.
+        account_metadata = _resolve_metadata_keys(
+            source_accounts, account_metadata or {}
+        )
         known_keys = {s.source_account_key for s in source_accounts}
-        for label, keyed in (
-            ("account_bindings", bindings),
-            ("account_metadata", account_metadata or {}),
-        ):
-            unknown_keys = set(keyed) - known_keys
-            if unknown_keys:
-                raise ValueError(
-                    f"{label} references unknown source key(s): "
-                    f"{sorted(unknown_keys)}. This file's source keys: "
-                    f"{sorted(known_keys)}."
-                )
-        source_accounts = _apply_account_bindings(source_accounts, bindings)
-        self._gate_account_proposals(
+        if unknown_keys := set(account_metadata or {}) - known_keys:
+            raise ValueError(
+                f"account_metadata references unknown source key(s): "
+                f"{_mask_caller_keys(unknown_keys)}. "
+                f"This file has {len(source_accounts)} "
+                "account(s) — key each entry by its proposal_ref (@0, @1, …) as "
+                "the confirmation reported it, or by a source key."
+            )
+
+        # Phase 2 — gate on any account identity the caller hasn't ratified.
+        # Raises ImportConfirmationRequiredError (no rows load) and returns the
+        # bound accounts for the resolve pass below.
+        source_accounts = self._gate_account_proposals(
             resolver,
             source_accounts,
-            actor_kind=actor_kind,
+            bindings,
+            channel="tabular",
             resolved_mapping=dict(resolved.field_mapping),
+            fallback_keys=fallback_keys,
+            emit_metrics=emit_metrics,
+            observations=observations,
         )
 
         # Phase 3 — resolve (writes native->canonical mapping + pending decisions),
         # then capture any caller-supplied metadata for accounts minted this import.
         metadata = account_metadata or {}
+        created: list[CreatedAccount] = []
         for src in source_accounts:
             resolved_account = resolver.resolve(src, in_outer_txn=in_outer_txn)
             record_counter(
@@ -2308,6 +3093,10 @@ class ImportService:
                 observations=observations,
             )
             meta = metadata.get(src.source_account_key)
+            if minted := _created_account(
+                src, resolved_account, display_name=(meta or {}).get("display_name")
+            ):
+                created.append(minted)
             if not meta:
                 continue
             # Capture only for a genuinely-new account (outcome="minted_new",
@@ -2330,6 +3119,7 @@ class ImportService:
                     "account_metadata ignored: account resolved to "
                     f"{resolved_account.outcome!r}, not a new mint."
                 )
+        result.accounts_created = tuple(created)
 
         # Create import batch
         extractor = TabularExtractor(self._db)
@@ -2739,6 +3529,7 @@ class ImportService:
         *,
         save_format: bool = True,
         account_id: str | None = None,
+        account_bindings: dict[str, str] | None = None,
         source_bytes: bytes | None = None,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
@@ -2783,6 +3574,8 @@ class ImportService:
             account_id: Pin the rows to an existing ``dim_accounts`` row when
                 the statement carries no account anchor (mirrors the tabular
                 and deterministic-PDF ``account_id`` semantics).
+            account_bindings: Answers to a prior account-confirmation gate,
+                keyed by the statement's source-native account key.
             source_bytes: Immutable PDF object captured by the preview.
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
@@ -2902,6 +3695,26 @@ class ImportService:
         #    route_forced_recipe attaches both recipe and fp on that outcome —
         #    so begin_import's row can't be stranded in "importing".
         resolved_alias = _pdf_alias(canonical)
+
+        # Account-identity gate, same position as the deterministic path's: after
+        # routing settles, before begin_import. A bridge recipe is agent-authored,
+        # so the account identity it implies is no more ratified than a
+        # deterministic one — and an agent must never self-pick an identity.
+        identity = _pdf_source_account(
+            decision,
+            resolved_alias=resolved_alias,
+            account_id_override=account_id,
+        )
+        gated = self._gate_account_proposals(
+            AccountResolver(self._db, actor="system"),
+            [identity.source],
+            account_bindings,
+            channel="pdf",
+            fallback_keys=identity.fallback_keys,
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
+
         result = ImportResult(file_path=str(canonical), file_type="pdf")
         import_id = import_log.begin_import(
             self._db,
@@ -2924,7 +3737,7 @@ class ImportService:
             decision=decision,
             doc=doc,
             save_format=save_format,
-            account_id_override=account_id,
+            bound_source=gated[0],
             rung="bridge",
             in_outer_txn=in_outer_txn,
             emit_metrics=emit_metrics,
@@ -2961,6 +3774,7 @@ class ImportService:
             actual_row_count=actual_row_count,
             rows_diverged=rows_diverged,
             reject_reason=None,
+            accounts_created=result.accounts_created,
         )
 
     def _gate_pdf_sign_convention(
@@ -3296,7 +4110,7 @@ class ImportService:
         import_id: str,
         in_outer_txn: bool = False,
     ) -> None:
-        """Write back a recipe that routing re-derived after a replay stopped reconciling.
+        """Write back a recipe that routing re-derived after finding it stale.
 
         Without this the repair is per-import: the rows land, but
         ``app.pdf_formats`` still holds the recipe that couldn't read them, so the
@@ -3313,18 +4127,19 @@ class ImportService:
         """
         name = decision.matched_format_name
         recipe = decision.recipe
-        # A re-derived decision carries both by construction (see
+        # The reason comes from the decision because only routing knows which
+        # trigger fired; a hardcoded one told every operator reading the audit
+        # log that reconciliation failed, including for repairs where it didn't.
+        reason = decision.rederived_reason
+        # A re-derived decision carries all three by construction (see
         # _attempt_self_heal). The guard satisfies the type checker.
-        if name is None or recipe is None:  # pragma: no cover
+        if name is None or recipe is None or reason is None:  # pragma: no cover
             return
         try:
             self._pdf_formats.bump_version(
                 name=name,
                 new_recipe=recipe.model_dump(),
-                reason=(
-                    "saved recipe stopped reconciling; re-derived from the "
-                    "statement and proven against it"
-                ),
+                reason=reason,
                 # "system": a detection repaired its own earlier detection. No
                 # human asserted anything here.
                 actor="system",
@@ -3354,6 +4169,7 @@ class ImportService:
         actor_kind: "ActorKind" = "human",
         sign: str | None = None,
         confirm: bool = False,
+        account_bindings: dict[str, str] | None = None,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
@@ -3394,6 +4210,9 @@ class ImportService:
                 without this, the import falls back to the filename-derived
                 alias and creates a new ``dim_accounts`` row. Mirrors the
                 tabular path's ``account_id`` semantics.
+            account_bindings: Answers to a prior account-confirmation gate,
+                keyed by the statement's source-native account key: an existing
+                account_id to adopt, or "new".
             actor_kind: 'agent' when a driving agent that can fulfill a bridge
                 extraction is present (MCP, agent-driven CLI) — enables bridge
                 escalation. 'human'/default keeps the Phase 2a seed fallback.
@@ -3519,6 +4338,34 @@ class ImportService:
         ):
             result.sign_override_replayed = True
 
+        # Account-identity gate, in the position the sign gate above established:
+        # after routing settles, before begin_import. Only the transactions path
+        # resolves an account identity — a seeded document writes no link, so
+        # there is nothing to ratify. The identity scope is the issuer slug, so
+        # this asks once per card, not once per statement.
+        # Carries the gated identity across `begin_import` to the dispatch
+        # below. Declared here because the gate and the load sit in two separate
+        # `outcome == "transactions"` blocks with the import-log write between
+        # them — the compiler cannot see that the second implies the first, which
+        # is exactly the coupling that let the load re-derive its own copy.
+        pdf_bound: SourceAccount | None = None
+        if decision.outcome == "transactions":
+            identity = _pdf_source_account(
+                decision,
+                resolved_alias=resolved_alias,
+                account_id_override=account_id,
+            )
+            gated = self._gate_account_proposals(
+                AccountResolver(self._db, actor="system"),
+                [identity.source],
+                account_bindings,
+                channel="pdf",
+                fallback_keys=identity.fallback_keys,
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+            pdf_bound = gated[0]
+
         # Committing to a write — open the import_log row now.
         import_id = import_log.begin_import(
             self._db,
@@ -3535,6 +4382,11 @@ class ImportService:
         # ------------------------------------------------------------------
 
         if decision.outcome == "transactions":
+            if pdf_bound is None:  # pragma: no cover — set under this same test
+                raise ValueError(
+                    "PDF routing reached the transactions load without an "
+                    "account-identity gate."
+                )
             return self._import_pdf_transactions(
                 canonical=canonical,
                 resolved_alias=resolved_alias,
@@ -3543,7 +4395,7 @@ class ImportService:
                 decision=decision,
                 doc=doc,
                 save_format=save_format,
-                account_id_override=account_id,
+                bound_source=pdf_bound,
                 sign_override=sign,
                 in_outer_txn=in_outer_txn,
                 emit_metrics=emit_metrics,
@@ -3636,7 +4488,7 @@ class ImportService:
         decision: "RouteDecision",
         doc: "PdfDocument",
         save_format: bool = True,
-        account_id_override: str | None = None,
+        bound_source: SourceAccount,
         rung: Literal["deterministic", "bridge"] = "deterministic",
         sign_override: str | None = None,
         in_outer_txn: bool = False,
@@ -3654,11 +4506,14 @@ class ImportService:
         semantics so a user/agent importing a one-off or sensitive statement can
         avoid persisting the layout fingerprint.
 
-        ``account_id_override`` short-circuits the issuer-slug + masked-account
-        prefix logic and uses the supplied value verbatim. Required when the
-        statement contains no account anchor and the user/agent wants the rows
-        attached to an existing ``dim_accounts`` row rather than the
-        filename-derived alias.
+        ``bound_source`` is the account ``_gate_account_proposals`` returned,
+        already carrying the caller's binding answer. It is a parameter rather
+        than a derivation because this function used to re-derive it — same
+        inputs, same helpers, a second copy — and OFX and tabular already thread
+        the gate's return value instead. Two derivations that must agree are
+        correct only by call-site convention; the one a reviewer worried about
+        is the one where an edit reaches a single copy and rows bind to an
+        account the gate never surfaced. There is now nothing to disagree with.
 
         ``sign_override`` is the caller's explicit ``sign=`` (already applied to
         ``decision.recipe`` by the gate). On a REPLAY it re-persists the corrected
@@ -3672,7 +4527,6 @@ class ImportService:
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
         from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
-        from moneybin.utils import slugify
 
         if decision.recipe is None:
             # Should never happen: route_pdf_import only emits outcome="transactions"
@@ -3681,68 +4535,26 @@ class ImportService:
                 "PDF routing returned outcome='transactions' but recipe is None"
             )
 
-        # Account ID: prefix with issuer slug so the same masked suffix
-        # (e.g. "...1234") from two different banks doesn't collide on a
-        # single core.dim_accounts row. Reuse the fingerprint already
-        # computed by route_pdf_import (attached to RouteDecision) instead
-        # of recomputing it here.
-        if decision.fp is None:
-            # Defensive: route_pdf_import attaches fp on every outcome that
-            # reaches this method; this branch is a guard against future
-            # callers that build a RouteDecision by hand.
+        # The identity the confirm gate produced, threaded in rather than
+        # re-derived, so the ratified account and the bound one are one object.
+        source_account = bound_source
+        account_id = source_account.source_account_key
+        # Identity scope (issuer slug) and fingerprint, both used further down for
+        # the raw account row and the format-recipe save. Read off the derivation
+        # above rather than recomputed, so there is one source of truth.
+        identity_origin = source_account.source_origin
+        fp = decision.fp
+        if fp is None:  # pragma: no cover — _pdf_source_account already raised
             raise ValueError(
                 "PDF routing returned outcome='transactions' but fp is None"
             )
-        fp = decision.fp
-        issuer_slug = slugify(fp.get("issuer", "unknown"))
-        # Identity scope for the source-native key. It must be IDENTICAL across
-        # every statement of one card, because the strong-ref lookup and the
-        # staging JOINs both key on (source_type, source_origin, ref_value) — a
-        # per-file value makes each statement miss its own prior link and mint a
-        # fresh account every month. This is the same exporter/format-identity
-        # rule the tabular path applies (see the derivation comment there); do
-        # NOT swap it back to the filename alias.
-        #
-        # Deliberately NOT matched_format_name: that is None on first contact and
-        # populated from the second statement on, so it would differ across
-        # exactly the two imports this needs to unify.
-        #
-        # `resolved_alias` stays the per-file scope for raw.import_log and the
-        # raw.pdf_<alias> view — those are genuinely per-document and revert
-        # depends on them.
-        identity_origin = issuer_slug
-        account_id: str
-        # Explicit account override takes precedence — agents/users can
-        # pin a PDF whose statement omits an account anchor to an existing
-        # dim_accounts row instead of accepting the filename-derived alias
-        # and creating a fresh dim_accounts entry.
-        if account_id_override:
-            account_id = account_id_override
-            masked_acct = None
-        else:
-            # Mask the captured account identifier BEFORE slugifying it into
-            # the source-native account key. The captured value may be a full
-            # unmasked institution account number ("Account Number: 123456789"),
-            # and storing that verbatim into raw.tabular_transactions.account_id
-            # / raw.tabular_accounts.account_id leaks it through every
-            # downstream surface that treats account_id as an opaque identifier.
-            masked_acct = _to_account_number_mask(decision.metadata.account_id)
-            if masked_acct:
-                account_id = f"{issuer_slug}_{slugify(masked_acct)}"
-            else:
-                # Fallback: routing requires metadata for reconciliation, but
-                # guard against a future path that relaxes that constraint.
-                account_id = resolved_alias
 
-        # The value above is a source-NATIVE key (DP-1), exactly like the
-        # tabular path's — never a canonical account id. Registering it with
+        # That key is a source-NATIVE key (DP-1), exactly like the tabular
+        # path's — never a canonical account id. Registering it with
         # AccountResolver is what writes the native->canonical mapping staging
         # joins on. Skipping that step let the raw key flow into dim_accounts as
         # an account in its own right, so the same card arriving from a second
         # source had nothing to be proposed against and both halves loaded.
-        # last_four is None for a digits-free token ("xxxx"), which correctly
-        # denies the institution+last4 signal and routes to name review rather
-        # than inventing a strong match.
         # Guarded like the OFX resolver loop: this runs after begin_import() but
         # outside the ingestion try below, so an unhandled raise here (e.g.
         # _write_native_mapping's conflict guard) would strand import_log at
@@ -3753,18 +4565,7 @@ class ImportService:
                 actor="system",
                 emit_metrics=emit_metrics,
                 observations=observations,
-            ).resolve(
-                SourceAccount(
-                    source_type="pdf",
-                    source_origin=identity_origin,
-                    source_account_key=account_id,
-                    account_name=resolved_alias,
-                    institution=fp.get("issuer") or None,
-                    last_four=_last4_from_account_number(masked_acct),
-                    explicit_account_id=account_id_override,
-                ),
-                in_outer_txn=in_outer_txn,
-            )
+            ).resolve(source_account, in_outer_txn=in_outer_txn)
         except Exception:
             try:
                 import_log.finalize_import(
@@ -3791,6 +4592,8 @@ class ImportService:
             emit_metrics=emit_metrics,
             observations=observations,
         )
+        if minted := _created_account(source_account, resolved_account):
+            result.accounts_created = (minted,)
 
         sign_conv: str = decision.recipe.sign_convention
 
@@ -4292,11 +5095,15 @@ class ImportService:
             human_sign_confirmation: Explicit human approval of an inferred
                 tabular sign inversion; never inferred from ``confirm``.
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
-            account_bindings: Map of source_account_key -> canonical account_id
-                (adopt) or "new" (mint standalone), ratifying the account-binding
-                confirmation for tabular imports.
-            account_metadata: Map of source_account_key -> settings dict captured
-                for accounts minted this import (tabular).
+            account_bindings: Map of proposal_ref ("@0", the file's first source
+                account) or source_account_key -> canonical account_id (adopt)
+                or "new" (mint standalone), ratifying the account-binding
+                confirmation. Honored on every channel — tabular, OFX and PDF
+                all raise the same gate.
+            account_metadata: Map of proposal_ref ("@0") or source_account_key
+                -> settings dict captured for accounts minted this import.
+                Tabular only; refused with
+                ``import_account_signal_unsupported`` elsewhere.
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
             observations: Buffer observations for a caller-owned transaction.
@@ -4413,11 +5220,21 @@ class ImportService:
             raise FileNotFoundError(f"File not found: {path}")
 
         file_type = _detect_file_type(path)
+        reject_unhonored_account_signals(
+            file_type,
+            account_id=account_id,
+            account_name=account_name,
+            account_metadata=account_metadata,
+        )
         logger.info(f"Importing {_display_label(file_type, path)} file: {path}")
 
         if file_type == "ofx":
             return self._import_ofx(
-                path, institution=institution, force=force, interactive=interactive
+                path,
+                institution=institution,
+                force=force,
+                interactive=interactive,
+                account_bindings=account_bindings,
             )
         if file_type == "tabular":
             return self._import_tabular(
@@ -4456,6 +5273,7 @@ class ImportService:
                 actor_kind=actor_kind,
                 sign=sign,
                 confirm=confirm,
+                account_bindings=account_bindings,
                 in_outer_txn=in_outer_txn,
                 emit_metrics=emit_metrics,
                 observations=observations,
@@ -4512,6 +5330,7 @@ class ImportService:
                         import_id=r.import_id,
                         sign_correction_suggested=r.sign_correction_suggested,
                         sign_override_replayed=r.sign_override_replayed,
+                        accounts_created=r.accounts_created,
                     )
                 )
                 any_succeeded = True

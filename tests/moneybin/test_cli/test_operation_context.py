@@ -81,3 +81,29 @@ def test_sqlmesh_command_unclassified_error_logs_label_not_function(
     logged = " ".join(r.getMessage() for r in caplog.records)
     assert "Seed materialization failed" in logged
     assert "function operation" not in logged
+
+
+def test_sqlmesh_command_hint_reaches_console_not_log(
+    stub_db: None,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A UserError's hint is rendered to the user but never written to the log.
+
+    Mirrors ``test_handle_cli_errors_hint_reaches_console_not_log``
+    (``tests/moneybin/test_cli/test_handle_cli_errors.py``) for
+    ``sqlmesh_command``'s own error-handling branch. The comment above its
+    ``typer.echo`` call says the ``logger.info`` → ``typer.echo(err=True)``
+    fix there is "kept in sync so this path doesn't quietly reacquire the
+    retired pattern" — this test is what enforces that, since nothing
+    previously did.
+    """
+    from moneybin.database import DatabaseLockError
+
+    hint_text = "Run 'moneybin db ps' for details or wait and retry"
+    with caplog.at_level("INFO"), pytest.raises(typer.Exit):
+        with sqlmesh_command("Test op"):
+            raise DatabaseLockError("busy")
+
+    assert hint_text not in caplog.text
+    assert hint_text in capsys.readouterr().err

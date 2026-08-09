@@ -45,6 +45,65 @@ _ACCOUNT_PATTERN = re.compile(r"(?<!\d)(\d{8,})(?!\d)")
 _DOLLAR_PATTERN = re.compile(r"\$[\d,]+(?:\.\d{2})?")
 
 
+def _mask_ssn(text: str) -> tuple[str, bool]:
+    """Mask SSN-shaped substrings; report whether anything matched."""
+    masked = False
+
+    def replacer(_match: re.Match[str]) -> str:
+        nonlocal masked
+        masked = True
+        return "***-**-****"
+
+    return _SSN_PATTERN.sub(replacer, text), masked
+
+
+def _mask_account(text: str) -> tuple[str, bool]:
+    """Mask account-number-shaped substrings; report whether anything matched."""
+    masked = False
+
+    def replacer(match: re.Match[str]) -> str:
+        nonlocal masked
+        masked = True
+        return f"****...{match.group(1)[-4:]}"
+
+    return _ACCOUNT_PATTERN.sub(replacer, text), masked
+
+
+def _mask_dollar(text: str) -> tuple[str, bool]:
+    """Mask dollar-amount-shaped substrings; report whether anything matched."""
+    result = _DOLLAR_PATTERN.sub("$***", text)
+    return result, result != text
+
+
+def mask_pii_shaped(text: str) -> tuple[str, bool]:
+    """Mask SSN- and account-shaped substrings; report whether anything matched.
+
+    ``SanitizedLogFormatter.format()`` does NOT call this function — it runs
+    the same three primitives (SSN, dollar, account) directly, in its own
+    order, deliberately different from the order here (see the "Order
+    matters" comment in ``format()`` below). This function is the two-of-three
+    subset ``sql_query.py`` reuses for its DuckDB-error-hint backstop. Leaving
+    dollar masking out of the pair is deliberate, not a claim the input can't
+    hold one — a caller-authored string literal in a binder-error head can
+    (``SELECT ({'a':1})['Payment $1,234.56 to Dr Smith']`` passes through
+    unmasked) — the point is that a dollar amount there is the user's own
+    financial data, which the hint should let them read.
+
+    That pass-through is not total, and the exception is worth stating: an
+    amount written WITHOUT thousands separators is an unbroken run of digits,
+    so ``$12345678.00`` trips ``_mask_account`` and comes back
+    ``$****...5678.00``. Adding ``_mask_dollar`` here would fix the mangling by
+    masking every amount, which defeats the exclusion this docstring exists to
+    explain. The account net is deliberately over-broad (see its own comment),
+    and over-masking is the safe direction for a backstop, so the mangling
+    stands — pinned by ``test_mask_pii_shaped_mangles_an_uncommad_large_amount``
+    so it is a known cost rather than a surprise.
+    """
+    result, ssn_masked = _mask_ssn(text)
+    result, account_masked = _mask_account(result)
+    return result, ssn_masked or account_masked
+
+
 class SanitizedLogFormatter(logging.Formatter):
     """Log formatter that detects and masks PII patterns.
 
@@ -90,29 +149,14 @@ class SanitizedLogFormatter(logging.Formatter):
             formatted = self._inner.format(record)
         else:
             formatted = super().format(record)
-        masked = False
 
-        # Mask SSNs
-        def ssn_replacer(match: re.Match[str]) -> str:
-            nonlocal masked
-            masked = True
-            return "***-**-****"
-
-        result = _SSN_PATTERN.sub(ssn_replacer, formatted)
-
-        # Mask dollar amounts
-        new_result = _DOLLAR_PATTERN.sub("$***", result)
-        if new_result != result:
-            masked = True
-            result = new_result
-
-        # Mask account numbers (8+ digit sequences; regex guarantees len >= 8)
-        def account_replacer(match: re.Match[str]) -> str:
-            nonlocal masked
-            masked = True
-            return f"****...{match.group(1)[-4:]}"
-
-        result = _ACCOUNT_PATTERN.sub(account_replacer, result)
+        # Order matters: dollar must run before account, or an 8+ digit
+        # amount (e.g. $12345678.00) gets read as an account number first
+        # and leaks its last four digits instead of being fully masked.
+        result, ssn_masked = _mask_ssn(formatted)
+        result, dollar_masked = _mask_dollar(result)
+        result, account_masked = _mask_account(result)
+        masked = ssn_masked or dollar_masked or account_masked
 
         # Guard against re-entrant calls: if the sanitizer's own warning record
         # is passed back through this formatter (e.g. via the root logger's file

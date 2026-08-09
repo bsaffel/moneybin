@@ -5,7 +5,36 @@ from collections.abc import Callable
 
 import pytest
 
-from moneybin.log_sanitizer import SanitizedLogFormatter
+from moneybin.log_sanitizer import SanitizedLogFormatter, mask_pii_shaped
+
+
+def test_mask_pii_shaped_masks_ssn_and_account_shapes_not_amounts() -> None:
+    masked, did_mask = mask_pii_shaped(
+        "ssn 123-45-6789 acct 987654321 amount $1,234.56"
+    )
+    assert masked == "ssn ***-**-**** acct ****...4321 amount $1,234.56"
+    assert did_mask is True
+
+
+def test_mask_pii_shaped_mangles_an_uncommad_large_amount() -> None:
+    """The amount pass-through has one hole, and it is an accepted cost.
+
+    ``mask_pii_shaped`` runs no dollar pass, so an amount written without
+    thousands separators is just an unbroken digit run and ``_mask_account``
+    claims it. Adding ``_mask_dollar`` would mask every amount and defeat the
+    exclusion; the account net is deliberately over-broad and over-masking is
+    the safe direction, so this is pinned rather than fixed. The comma'd form
+    on the same line is the control: it survives untouched.
+    """
+    masked, did_mask = mask_pii_shaped("paid $12345678.00 and $1,234.56")
+    assert masked == "paid $****...5678.00 and $1,234.56"
+    assert did_mask is True
+
+
+def test_mask_pii_shaped_reports_no_mask_on_clean_text() -> None:
+    masked, did_mask = mask_pii_shaped('Referenced column "trade_date" not found')
+    assert masked == 'Referenced column "trade_date" not found'
+    assert did_mask is False
 
 
 @pytest.fixture()
@@ -93,6 +122,17 @@ class TestDollarAmountMasking:
         result = formatter.format(record)
         assert "$500.00" not in result
         assert "$***" in result
+
+    def test_formatter_still_fully_masks_a_large_dollar_amount(
+        self,
+        formatter: SanitizedLogFormatter,
+        make_record: Callable[[str], logging.LogRecord],
+    ) -> None:
+        """The dollar pass must run before the account pass on an 8+ digit amount."""
+        record = make_record("Balance: $12345678.00")
+        result = formatter.format(record)
+        assert "$***" in result
+        assert "5678" not in result
 
 
 class TestCleanPassthrough:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from moneybin.database import Database
+from tests.import_helpers import import_answering_gate
 
 
 def test_multi_account_institution_is_per_account_not_tool_name(
@@ -25,7 +26,7 @@ def test_multi_account_institution_is_per_account_not_tool_name(
         "2026-01-16,Dinner,-40.00,Credit Card,Amex\n"
     )
     svc = ImportService(db)
-    svc.import_file(csv, confirm=True, actor_kind="human", refresh=False)
+    import_answering_gate(svc, csv, confirm=True, actor_kind="human", refresh=False)
     rows = db.execute(
         "SELECT account_name, institution_name FROM raw.tabular_accounts"
     ).fetchall()

@@ -30,8 +30,13 @@ from pydantic import Field, JsonValue, TypeAdapter
 from moneybin import error_codes
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from moneybin.services.import_confirmation import ConfirmationRequired
-    from moneybin.services.import_service import SavedFormatDeletePlan
+    from moneybin.services.import_service import (
+        CreatedAccount,
+        SavedFormatDeletePlan,
+    )
 
 from moneybin.config import get_settings
 from moneybin.database import get_database
@@ -49,6 +54,7 @@ from moneybin.privacy.payloads.imports import (
     ImportConfirmationPayload,
     ImportConfirmCoarsePayload,
     ImportConfirmRequiredPayload,
+    ImportCreatedAccount,
     ImportFilesPayload,
     ImportFormatInfoPayload,
     ImportFormatRow,
@@ -150,41 +156,22 @@ def _validate_file_path(file_path: str) -> Path:
 def _reject_unsupported_pdf_account_signals(
     *,
     account_name: str | None,
-    account_bindings: dict[str, str] | None,
     account_metadata: dict[str, dict[str, str]] | None,
 ) -> None:
-    """Refuse account-selection signals no PDF channel can honor.
+    """Refuse account-selection signals the PDF channel cannot honor.
 
-    Both PDF entry points bottom out in a service method that takes only
-    `account_id` — `_import_pdf` for the deterministic/sign channel and
-    `apply_pdf_bridge_response` for the bridge. Every other account signal is
-    tabular-only, so forwarding is not merely unimplemented but impossible
-    without a service-layer change. Accepting one silently would bind the rows
-    to a statement- or filename-derived account while the caller believes they
-    chose one — the failure is invisible at the call site and expensive to
-    notice later, which is exactly when a loud refusal is worth more than a
-    best-effort guess. Shared by both channels so a new signal cannot be
-    rejected on one and dropped on the other.
+    Delegates to the service's channel table, which is the same one
+    ``import_file`` enforces, so this surface and that one cannot disagree about
+    what a PDF accepts. The check lives here as well because the bridge branch
+    never forwards these two arguments to a service call at all — there is no
+    later point at which the service could see them.
     """
-    unsupported = next(
-        (
-            name
-            for name, value in (
-                ("account_name", account_name),
-                ("account_bindings", account_bindings),
-                ("account_metadata", account_metadata),
-            )
-            if value
-        ),
-        None,
+    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+        reject_unhonored_account_signals,
     )
-    if unsupported is None:
-        return
-    raise UserError(
-        f"{unsupported} is not supported for a PDF — PDF rows resolve the "
-        "account from the statement; pass account_id to pin rows to an existing "
-        "account when there is no anchor.",
-        code=error_codes.IMPORT_PDF_ACCOUNT_SIGNAL_UNSUPPORTED,
+
+    reject_unhonored_account_signals(
+        "pdf", account_name=account_name, account_metadata=account_metadata
     )
 
 
@@ -199,6 +186,46 @@ def _bridge_confirm_action(*, payload_ref: str) -> str:
         "transparency_notice — proceeding surfaces the document to you), "
         "propose a recipe + rows, then call import_confirm(preview_id=..., "
         "bridge_response={'recipe': ..., 'rows': [...]}) to reconcile and load."
+    )
+
+
+def _created_account_rows(
+    accounts: Sequence[CreatedAccount],
+) -> list[ImportCreatedAccount]:
+    """Project the accounts an import minted into the typed envelope rows."""
+    return [
+        ImportCreatedAccount(account_id=a.account_id, display_name=a.display_name)
+        for a in accounts
+    ]
+
+
+def accounts_created_action(count: int) -> str | None:
+    """Tell the agent an account came into existence, and how to correct it.
+
+    Returns None when nothing was minted. An action emitted on every import is
+    one the agent learns to skip on the import that means it — and re-import,
+    where every account is adopted, is the common case.
+
+    Names no account: the ids and labels are structured data on the result, and
+    ``actions`` is unclassified prose that the redaction pass cannot see.
+
+    The merge recovery is entirely MCP-reachable, which is easy to miss because
+    the tool named after it is not: ``accounts_links_run`` is unregistered, but
+    ``refresh_run(steps=["identity"])`` calls the same
+    ``AccountLinksService.run()``, and ``reviews`` and ``identity_links_decide``
+    carry the rest of the loop. Sending the agent to the CLI for any of it costs
+    it the one correction it can perform without the user leaving the chat.
+    """
+    if not count:
+        return None
+    return (
+        f"This import created {count} new account(s) — see accounts_created in "
+        "the result, and report them to the user: a first-contact account is "
+        "bound without asking. Rename one with accounts_set(account_id=..., "
+        "display_name=...). If one duplicates an account they already have, "
+        "refresh_run(steps=['identity']) proposes the merge, "
+        "reviews(kind='account_links') shows it, and identity_links_decide "
+        "accepts it."
     )
 
 
@@ -267,7 +294,10 @@ def _sign_confirm_actions(
 
 
 def import_files(
-    paths: list[str], refresh: bool = True, force: bool = False
+    paths: list[str],
+    refresh: bool = True,
+    force: bool = False,
+    account_bindings: dict[str, str] | None = None,
 ) -> ResponseEnvelope[ImportFilesPayload]:
     """Import one or more financial data files into MoneyBin.
 
@@ -288,6 +318,16 @@ def import_files(
             indicate the pending state, and a later refresh_run or
             refresh call will catch the data up.
         force: If True, re-import files already in the import log.
+        account_bindings: Answer to an account_confirmation this tool
+            previously returned, mapping each proposal's proposal_ref (e.g.
+            "@0" for the file's first source account) to an existing
+            account_id, or the literal "new" to mint a fresh account. The
+            proposal's source_account_key works too, but it masks in the
+            response — bind by ref. Single-path only. This ratifies an account
+            identity on any channel, including a tabular file whose column
+            mapping is already settled and which therefore stopped only on the
+            account gate. Use import_confirm when the same file also needs a
+            column mapping ratified.
 
     Returns:
         Envelope with data containing imported/failed/total counts,
@@ -302,6 +342,17 @@ def import_files(
 
     # Validate all paths upfront so a bad path fails before any service call.
     validated = [_validate_file_path(p) for p in paths]
+
+    # A source_account_key is only unambiguous within one file, and the batch
+    # path can't route bindings per-file. Refuse rather than drop them: an agent
+    # whose answer is silently ignored gets the same account_confirmation back
+    # and loops.
+    if account_bindings and len(validated) != 1:
+        raise UserError(
+            "account_bindings answers one file's account confirmation; call "
+            "import_files with a single path.",
+            code=error_codes.INFRA_INVALID_INPUT,
+        )
 
     # For single-path batches, call import_file (not import_files) so
     # ImportConfirmationRequiredError bubbles up — the batch variant catches
@@ -328,6 +379,7 @@ def import_files(
                     refresh=False,
                     force=force,
                     actor_kind="agent",
+                    account_bindings=account_bindings,
                 )
                 loaded_import_id = one.import_id
                 # Include PDFs only when the deterministic path produced rows —
@@ -461,6 +513,7 @@ def import_files(
                         import_id=one.import_id,
                         sign_correction_suggested=one.sign_correction_suggested,
                         sign_override_replayed=one.sign_override_replayed,
+                        accounts_created=one.accounts_created,
                     )
                 ],
                 transforms_applied=transforms_applied,
@@ -489,6 +542,7 @@ def import_files(
             details=r.details,
             sign_correction_suggested=r.sign_correction_suggested,
             sign_override_replayed=r.sign_override_replayed,
+            accounts_created=_created_account_rows(r.accounts_created),
             confirmation_payload=cast(
                 ImportConfirmationPayload | None, r.confirmation_payload
             ),
@@ -550,6 +604,10 @@ def import_files(
             "decision. Tell the user; change it by re-running via CLI with "
             "`moneybin import files <path> --sign <SignConventionType>`."
         )
+    if minted := accounts_created_action(
+        sum(len(r.accounts_created) for r in batch.per_file)
+    ):
+        actions.append(minted)
     if not batch.transforms_applied and batch.imported_count > 0:
         actions.append("Run refresh_run when ready to refresh derived tables")
     if batch.transforms_error:
@@ -1836,6 +1894,7 @@ def _run_import_confirm_attempt(
                         source_bytes=source_bytes,
                         save_format=save_format,
                         account_id=account_id,
+                        account_bindings=account_bindings,
                         actor_kind="agent",
                         confirm=confirm_sign,
                         refresh=False,
@@ -1850,6 +1909,7 @@ def _run_import_confirm_attempt(
                         cast(dict[str, Any], bridge_response),
                         save_format=save_format,
                         account_id=account_id,
+                        account_bindings=account_bindings,
                         source_bytes=source_bytes,
                         in_outer_txn=True,
                         emit_metrics=False,
@@ -2027,19 +2087,27 @@ def _import_confirm_coarse_confirmation_actions(
     if outcome.reason == "account_confirmation":
         # Never interpolate source_account_key here. It is the native OFX/Plaid
         # identifier (ACCOUNT_IDENTIFIER -> CRITICAL), and _import_dynamic_envelope
-        # redacts `data` only — a key named in this prose ships unmasked.
-        # account_bindings still matches on the raw key, which the agent cannot
-        # see, so multi-account binding is a CLI capability until a non-sensitive
-        # proposal handle exists.
-        actions.append(
-            f"Use import_confirm(preview_id={preview_id!r}, "
-            "account_name='<name>') to bind the single account this file "
-            f"belongs to. {len(outcome.account_proposals)} source account(s) "
-            "were detected; data.account_proposals[] describes them with "
-            "identifiers masked. Binding several accounts at once keys on the "
-            "unmasked source key, so it runs from the CLI: `moneybin import "
-            "confirm <file> --account-binding <source_key>=<account_id|new>`."
+        # redacts `data` only — a key named in this prose ships unmasked. Bind by
+        # proposal_ref instead: it rides the same proposal, survives the mask, and
+        # is what makes this answerable without leaving the surface.
+        action = (
+            f"Use import_confirm(preview_id={preview_id!r}, account_bindings=..."
+            ") to ratify the account identity. "
+            f"{len(outcome.account_proposals)} source account(s) were detected; "
+            "data.account_proposals[] describes them with identifiers masked. "
+            "Key each binding by that entry's proposal_ref and give an existing "
+            "account_id or the literal 'new' — e.g. account_bindings={'@0': "
+            "'new'}."
         )
+        if outcome.channel == "tabular":
+            # Only tabular honors it. `_reject_unsupported_pdf_account_signals`
+            # raises on account_name for a PDF, so advertising it there names a
+            # recovery that fails — and the OFX branch never reaches this text at
+            # all, since import_confirm refuses that channel first.
+            action += (
+                " account_name='<name>' also works when the file holds one account."
+            )
+        actions.append(action)
         return actions
     # Every reason the service narrows gets the same text the preview-side
     # builder uses. Two hand-kept branch lists over one set of states is what
@@ -2128,7 +2196,6 @@ async def import_confirm_coarse(
     if channel == "pdf":
         _reject_unsupported_pdf_account_signals(
             account_name=account_name,
-            account_bindings=account_bindings,
             account_metadata=account_metadata,
         )
         if pdf_sign:
@@ -2262,34 +2329,42 @@ async def import_confirm_coarse(
         rows_loaded = result.transactions
         merged_mapping = dict(result.field_mapping or {})
     if bridge_result is not None:
+        created = _created_account_rows(bridge_result.accounts_created)
         payload: Any = ImportPdfBridgeAppliedPayload(
             preview_id=preview_id,
             import_id=import_id,
             rows_loaded=rows_loaded,
             merged_mapping=merged_mapping,
             format_name=bridge_result.format_name,
+            accounts_created=created,
         )
     elif channel == "pdf":
         if result is None:
             raise RuntimeError("PDF sign import produced no result")
+        created = _created_account_rows(result.accounts_created)
         payload = ImportPdfSignAppliedPayload(
             preview_id=preview_id,
             import_id=import_id,
             rows_loaded=rows_loaded,
             format_name=result.pdf_format_name,
+            accounts_created=created,
         )
     else:
+        created = _created_account_rows(result.accounts_created) if result else []
         payload = ImportTabularConfirmCoarsePayload(
             preview_id=preview_id,
             import_id=import_id,
             rows_loaded=rows_loaded,
             merged_mapping=merged_mapping,
+            accounts_created=created,
         )
     actions = [
         f"Use import_revert(import_id='{import_id}') to undo this import.",
         "Use import_status(sections=['imports'], "
         f"import_id='{import_id}') to verify it.",
     ]
+    if minted := accounts_created_action(len(created)):
+        actions.insert(0, minted)
     if bridge_result is not None and bridge_result.rows_diverged:
         actions.insert(
             0,
@@ -2329,20 +2404,47 @@ def import_files_coarse(
     paths: list[str],
     refresh: bool = True,
     force: bool = False,
+    account_bindings: dict[str, str] | None = None,
 ) -> ResponseEnvelope[ImportFilesPayload]:
     """Import files while keeping actions inside the staged-import cohort."""
     response = import_files(
         paths=paths,
         refresh=refresh,
         force=force,
+        account_bindings=account_bindings,
     )
     actions = list(response.actions)
     for row in response.data.files:
         if row.status == "confirmation_required":
-            actions.append(
-                f"Use import_preview(file_path={row.path!r}) to begin the "
-                "reviewed confirmation workflow."
-            )
+            payload = row.confirmation_payload or {}
+            if payload.get("reason") == "account_confirmation":
+                # NOT import_preview: it refuses .ofx/.qfx/.qbo outright, and the
+                # account gate carries no error_message, so the generic hint was
+                # the only action an OFX gate got — every route the agent could
+                # take refused the file. The layout is already settled here
+                # anyway; re-calling import_files with the answer is the whole
+                # recovery on every channel.
+                #
+                # Bind by proposal_ref, never source_account_key: the key is
+                # ACCOUNT_IDENTIFIER (CRITICAL) and is masked out of `data`,
+                # while prose in actions[] ships unmasked.
+                refs = ", ".join(
+                    str(proposal.get("proposal_ref"))
+                    for proposal in payload.get("account_proposals") or []
+                )
+                actions.append(
+                    f"Use import_files(paths=[{row.path!r}], account_bindings="
+                    "{...}) to ratify this file's account identity — one path "
+                    "per call. Key each binding by a proposal_ref from "
+                    "data.files[].confirmation_payload.account_proposals[] "
+                    f"({refs or 'none'}) and give an existing account_id or the "
+                    "literal 'new'."
+                )
+            else:
+                actions.append(
+                    f"Use import_preview(file_path={row.path!r}) to begin the "
+                    "reviewed confirmation workflow."
+                )
         elif row.import_id is not None:
             actions.append(
                 "Use import_status(sections=['imports'], "
@@ -2415,12 +2517,23 @@ def import_inbox_sync_coarse(
     from moneybin.mcp.tools.import_inbox import import_inbox_sync
 
     response = inspect.unwrap(import_inbox_sync)(refresh=refresh)
+    # Appends rather than replaces, like every other *_coarse wrapper here.
+    # Replacing dropped whatever the drain had to say about what it just did,
+    # and it took two review rounds to enumerate the casualties: first the
+    # minted-account hint, then the pending-file recovery — the only way to
+    # answer an account gate, which `import_status` cannot substitute for
+    # because it enumerates inbox/ rather than pending/. Enumerating survivors
+    # was the wrong shape; anything the drain leaves behind needs its recovery
+    # to reach the caller, and the registered tool is the only one they call.
     return replace(
         response,
-        actions=[
-            "Use import_status(sections=['inbox', 'imports']) to inspect the "
-            "result and any remaining pending files."
-        ],
+        actions=list(
+            dict.fromkeys([
+                *response.actions,
+                "Use import_status(sections=['inbox', 'imports']) to inspect the "
+                "result and any remaining pending files.",
+            ])
+        ),
     )
 
 
@@ -2445,7 +2558,15 @@ def import_labels_set_coarse(
 def register_import_workflow_tools(mcp: FastMCP) -> None:
     """Register the standard seven-boundary staged-import workflow."""
     for callback, name, description in (
-        (import_files_coarse, "import_files", "Import one or more files."),
+        (
+            import_files_coarse,
+            "import_files",
+            "Import one or more files. When a file's account identity is "
+            "unresolved it imports nothing and returns account proposals whose "
+            "source_account_key is masked; answer with account_bindings="
+            '{ref: account_id or "new"}, where ref is a proposal\'s '
+            "proposal_ref (@0 is the file's first source account).",
+        ),
         (
             import_preview_coarse,
             "import_preview",
@@ -2465,8 +2586,10 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "eliciting human approval before any sign inversion. When the "
             "file's accounts are unresolved it imports nothing and returns "
             "account proposals whose source_account_key is masked; bind a "
-            "single account with account_name, or several with "
-            "moneybin import confirm <file> --account-binding.",
+            "single account with account_name, or any number with "
+            'account_bindings={ref: account_id or "new"}, where ref is a '
+            "proposal's proposal_ref (@0 is the file's first source account). "
+            "account_metadata takes the same refs to name an account it mints.",
         ),
         (
             import_status_coarse,

@@ -3,19 +3,36 @@
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.services.import_service import ImportResult
 from moneybin.services.inbox_service import (
     InboxListResult,
     InboxSyncResult,
 )
+
+
+def _make_import_result(**kwargs: Any) -> ImportResult:
+    """Factory for ImportResult with sensible defaults."""
+    defaults: dict[str, Any] = {
+        "file_path": "statement.ofx",
+        "file_type": "ofx",
+        "accounts": 1,
+        "transactions": 5,
+        "import_id": "abc123",
+    }
+    defaults.update(kwargs)
+    return ImportResult(**defaults)
 
 
 @contextmanager
@@ -180,15 +197,20 @@ def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> N
 def test_inbox_drain_json_pending_is_medium_sensitivity(
     runner: CliRunner, patch_inbox: MagicMock
 ) -> None:
-    """Pending entries carry account display names — declare medium, not low.
+    """An account_confirmation pending carries an account number — declare critical.
 
     The CLI has no privacy middleware, so the envelope's declared
-    ``summary.sensitivity`` is the only tier signal a JSON consumer sees. A
-    pending ``account_confirmation`` entry embeds ``account_proposals`` whose
-    candidates carry account display names (DESCRIPTION/medium), so the
-    envelope must declare medium — matching the MCP ``import_files`` rule
-    (medium when pending entries exist). A low envelope would ship account
-    names under a consent tier that doesn't gate them.
+    ``summary.sensitivity`` is the only tier signal a JSON consumer sees.
+
+    Reading this row for its display names alone under-declares it by two
+    tiers: ``account_proposals[].source_account_key`` is ACCOUNT_IDENTIFIER
+    (on OFX, the ``<ACCTID>`` the institution issued), which is CRITICAL, not
+    the DESCRIPTION-tier candidate labels beside it. ``_masked_pending`` masks
+    the value, but ``dataclasses.asdict`` leaves a bare dict, so
+    ``render_or_json`` can derive neither the tier nor ``classes_returned``
+    from it — whatever this branch declares is what the JSON summary and the
+    privacy-audit row say. MCP's typed ``ImportInboxSyncPayload`` calls the
+    same bytes critical, and the two surfaces must not disagree (``cli.md``).
     """
     patch_inbox.sync.return_value = InboxSyncResult(
         processed=[],
@@ -218,7 +240,186 @@ def test_inbox_drain_json_pending_is_medium_sensitivity(
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
+    assert payload["summary"]["sensitivity"] == "critical"
+
+
+def test_inbox_drain_json_minted_account_is_medium_sensitivity(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """A minted account is medium even when nothing is pending.
+
+    ``accounts_created[].display_name`` is the source's own label for an account
+    the drain just minted (USER_NOTE/medium), and a clean drain that mints is
+    the common first-import case — no pending entry to raise the tier on its
+    behalf. The tier cannot be derived here either: the branch builds its
+    payload with ``dataclasses.asdict``, so ``render_or_json`` sees a bare dict
+    and leaves the ``low`` fallback standing in the privacy audit record.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[
+            {
+                "filename": "march.ofx",
+                "transactions": 47,
+                "accounts_created": [
+                    {"account_id": "9f8e7d6c5b4a", "display_name": "Chase Checking"}
+                ],
+            }
+        ],
+        pending=[],
+    )
+
+    result = runner.invoke(app, ["import", "inbox", "--output", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
     assert payload["summary"]["sensitivity"] == "medium"
+
+
+def test_inbox_drain_names_accounts_it_minted(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """A silently minted account must be named on the drain, with its recoveries.
+
+    ``account-identity-resolution.md`` gates the merge, not the mint, and pays
+    for that by requiring every surface to name what it created. The drain is
+    the most unattended surface in the product — an account minted here is
+    exactly the one nobody watched appear — so omitting it is where "magic stays
+    visible" fails first.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[
+            {
+                "filename": "chase-checking/march.ofx",
+                "transactions": 47,
+                "accounts_created": [
+                    {"account_id": "9f8e7d6c5b4a", "display_name": "Chase Checking"}
+                ],
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    combined = result.stdout + result.stderr
+    assert "9f8e7d6c5b4a" in combined, combined
+    assert "Chase Checking" in combined, combined
+    # Both recoveries the spec names, so a surprise account is correctable
+    # without leaving the output that announced it.
+    assert "accounts set" in combined, combined
+    assert "accounts links run" in combined, combined
+
+
+def test_inbox_drain_json_masks_the_institutions_account_number(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """The JSON envelope masks the account key the text renderer already masks.
+
+    ``render_or_json`` starts its redaction walk only when
+    ``type(envelope.data)`` declares a transform, and this branch hands it
+    ``dataclasses.asdict(result)`` — a bare dict that declares nothing — so the
+    walk never reaches the nested proposals. On the OFX channel
+    ``source_account_key`` is the ``<ACCTID>`` the institution issued, so the
+    machine-readable surface was shipping a real account number while the
+    terminal beside it printed ``****6789``.
+    """
+    acctid = "000123456789"
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        failed=[],
+        pending=[
+            {
+                "filename": "statement.ofx",
+                "channel": "ofx",
+                "tier": "high",
+                "score": 1.0,
+                "reason": "account_confirmation",
+                "moved_to": "pending/2026-05/statement.ofx",
+                "sidecar": "pending/2026-05/statement.ofx.pending.yml",
+                "account_proposals": [
+                    {
+                        "source_account_key": acctid,
+                        "proposal_ref": "@0",
+                        "proposed_account_id": "prov12345678",
+                        "candidates": [],
+                    }
+                ],
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox", "--output", "json"])
+
+    assert result.exit_code == 0, result.stderr
+    assert acctid not in result.stdout, result.stdout
+    proposal = json.loads(result.stdout)["data"]["pending"][0]["account_proposals"][0]
+    assert proposal["source_account_key"] == "****6789"
+    # Ours, not the institution's — RECORD_ID, and the half the caller types.
+    assert proposal["proposal_ref"] == "@0"
+    assert proposal["proposed_account_id"] == "prov12345678"
+
+
+def test_the_drains_printed_confirm_command_actually_runs(
+    runner: CliRunner, patch_inbox: MagicMock, mocker: MockerFixture, tmp_path: Path
+) -> None:
+    """The drain's recovery hint must be a command, not a description of one.
+
+    The drain is the one surface whose recovery nobody watches get produced, and
+    its hint is assembled by hand from a persisted sidecar rather than from the
+    ConfirmationRequired the other surfaces hold — so its command name, flags,
+    and referent vocabulary are three hand-copied strings with nothing binding
+    them to the CLI they name. Verified against a drifted flag name
+    (``--account-bindings``), which this catches and which no assertion on the
+    hint text would.
+
+    It does not guard the glued-period paste bug the sign recoveries had: this
+    command is quote-delimited, so trailing prose cannot reach the argv.
+    """
+    pending_file = tmp_path / "statement.ofx"
+    pending_file.write_text("OFXHEADER:100\n")
+    patch_inbox.sync.return_value = InboxSyncResult(
+        pending=[
+            {
+                "filename": "statement.ofx",
+                "channel": "ofx",
+                "tier": "high",
+                "score": 1.0,
+                "reason": "account_confirmation",
+                "moved_to": str(pending_file),
+                "account_proposals": [
+                    {
+                        "source_account_key": "000123456789",
+                        "proposal_ref": "@0",
+                        "candidates": [],
+                    }
+                ],
+            }
+        ],
+    )
+
+    drain = runner.invoke(app, ["import", "inbox"])
+    assert drain.exit_code == 0, drain.stderr
+
+    hint = next(
+        line for line in drain.stderr.splitlines() if "--account-binding" in line
+    )
+    command = hint[hint.index("moneybin") : hint.rindex("'")]
+    # The two placeholders the caller substitutes: the ref is listed beside each
+    # proposal, and the target is theirs to choose.
+    argv = shlex.split(command.replace("@N=<account_id|new>", "@0=new"))[1:]
+
+    imported = mocker.patch(
+        "moneybin.services.import_service.ImportService.import_file",
+        return_value=_make_import_result(),
+    )
+    mocker.patch(
+        "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+    )
+
+    rerun = runner.invoke(app, argv)
+
+    assert rerun.exit_code == 0, rerun.output
+    assert imported.call_args.kwargs["account_bindings"] == {"@0": "new"}
 
 
 def test_inbox_list_prints_would_process(
@@ -279,3 +480,49 @@ def test_inbox_drain_renders_account_confirmation_pending(
     assert "--accept --account-binding" in result.stderr
     assert "1 pending" in result.stderr
     assert "--mapping" not in result.stderr
+
+
+def test_inbox_drain_names_each_proposal_by_its_ref(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """The drain listing shows the same referent the confirm gate shows.
+
+    This renderer reads proposals out of a persisted sidecar rather than a
+    ConfirmationRequired, so it is a second hand-rolled view of one object.
+    Two views that describe an account differently is how a user ends up
+    binding by a name only one of them accepts.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        failed=[],
+        pending=[
+            {
+                "filename": "statement.ofx",
+                "channel": "ofx",
+                "tier": "high",
+                "score": 1.0,
+                "reason": "account_confirmation",
+                "moved_to": "pending/2026-05/statement.ofx",
+                "sidecar": "pending/2026-05/statement.ofx.pending.yml",
+                "account_proposals": [
+                    {
+                        "source_account_key": "chase-1234",
+                        "proposal_ref": "@0",
+                        "candidates": [],
+                    }
+                ],
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "@0" in result.stderr, result.stderr
+    # Masked, not raw: `source_account_key` is ACCOUNT_IDENTIFIER on every
+    # channel, and on OFX — which this fixture is — it carries the <ACCTID> the
+    # institution issued. stderr is not exempt from the redaction contract, so
+    # the ref above is the half the user types and this is only the
+    # disambiguator that tells two proposals apart.
+    assert "chase-1234" not in result.stderr, result.stderr
+    assert "****1234" in result.stderr, result.stderr

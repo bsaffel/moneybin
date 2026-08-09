@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from moneybin.services.import_service import ImportService
+from tests.import_helpers import import_answering_gate
 from tests.scenarios._runner.loader import Scenario, SetupSpec
 from tests.scenarios._runner.runner import scenario_env
 from tests.scenarios._runner.steps import run_step
@@ -29,12 +30,13 @@ _CAPTURE = Path(__file__).parent / "data" / "fixtures" / "capture-contract"
 
 def _import_ofx(svc: ImportService) -> None:
     """OFX statement: last4 derives from <ACCTID> (1111), institution from <ORG>."""
-    svc.import_file(_XSRC / "wf_checking.qfx", refresh=False)
+    import_answering_gate(svc, _XSRC / "wf_checking.qfx", refresh=False)
 
 
 def _import_csv_with_label(svc: ImportService) -> None:
     """A CSV whose account label embeds the last 4 — captured via the label parser."""
-    svc.import_file(
+    import_answering_gate(
+        svc,
         _CAPTURE / "transactions.csv",
         account_name="Daily Expense (...1789)",
         confirm=True,
@@ -45,7 +47,8 @@ def _import_csv_with_label(svc: ImportService) -> None:
 
 def _import_bare_csv(svc: ImportService) -> None:
     """A bare CSV with no last4 anywhere — honestly binding-only."""
-    svc.import_file(
+    import_answering_gate(
+        svc,
         _CAPTURE / "transactions.csv",
         account_name="Plain Savings",
         confirm=True,
@@ -60,7 +63,8 @@ def _import_csv_number_col(svc: ImportService) -> None:
     The labels ("Checking"/"Savings") carry no digits, so last4 can only be
     captured from the mapped account-number column, not the display label.
     """
-    svc.import_file(
+    import_answering_gate(
+        svc,
         _CAPTURE / "transactions_multi_acct_number.csv",
         confirm=True,
         actor_kind="human",
