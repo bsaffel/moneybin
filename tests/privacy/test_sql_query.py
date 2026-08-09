@@ -723,6 +723,40 @@ def test_unknown_column_hint_does_not_echo_query_literals(
     assert "LINE" not in (ei.value.hint or "")
 
 
+def test_binder_error_head_without_a_line_marker_can_carry_caller_text(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Some BinderExceptions carry no ``LINE n:`` tail at all — pin that shape.
+
+    ``SELECT ({'a':1})['<literal>']`` is DuckDB's struct key-lookup error: the
+    entire message IS the head, with no ``LINE`` marker for
+    ``_identifier_detail`` to split on. The literal the caller wrote reaches
+    ``hint`` unmodified — this module documents that as an accepted contract,
+    not a gap (see the comment above the ``except`` clause in
+    ``execute_sql_query``): a binder error is raised BEFORE execution, so it
+    can only ever quote text the CALLER put into the query, never a value
+    stored in a row. Making the ``LINE`` split fail-closed to plug this was
+    tried and rejected — see the module comment above ``_LINE_ECHO`` for the
+    genuinely useful no-marker messages (e.g. a GROUP BY error) that would
+    break instead.
+
+    The literal is deliberately lowercase: DuckDB downcases struct keys in
+    this error, so an exact-match assertion needs a literal that survives
+    that unchanged.
+    """
+    literal = "acme plumbing llc"
+    with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
+        with pytest.raises(UserError) as ei:
+            execute_sql_query(
+                populated_db, f"SELECT ({{'a':1}})['{literal}']", max_rows=10
+            )
+    assert ei.value.code == error_codes.SQL_UNKNOWN_TABLE
+    assert "LINE" not in (ei.value.hint or "")
+    assert literal in (ei.value.hint or "")
+    assert literal not in ei.value.message
+    assert literal not in caplog.text
+
+
 def test_conversion_error_still_says_nothing(populated_db: Database) -> None:
     """ConversionException stays in the generic no-detail bucket.
 

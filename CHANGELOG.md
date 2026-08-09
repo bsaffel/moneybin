@@ -1000,6 +1000,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "degrade to aggregates" without consent — no such behavior is implemented. It
   now states the truth: account/routing numbers are masked, all other fields
   reach the model provider as-is, and there is no consent gate yet.
+- **`sql_query` and `moneybin sql query` now name the column an unknown-column
+  query got wrong, instead of a bare "Query execution failed."** DuckDB raises
+  `BinderException` for an unknown column, not `CatalogException` — the handler
+  caught only the latter, so the unknown-column case fell through to the
+  generic no-detail bucket under the `sql_query_error` code. It is now
+  classified the same as an unknown table, under `sql_unknown_table`, with a
+  hint naming the identifier DuckDB could not resolve; an agent branching on
+  the error code should update. `sql_unknown_table` also covers every other
+  binder/catalog rejection (a negative `LIMIT`, an out-of-range `GROUP BY`
+  term, a malformed regex, and more) — not only a missing table or column — so
+  its top-level message changed from "Unknown table or column." to "Query
+  could not be bound to the schema."
 
 ### Security
 - **Fixed a redaction bypass that returned a source account identifier in the

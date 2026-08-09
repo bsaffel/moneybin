@@ -78,10 +78,12 @@ def _mask_dollar(text: str) -> tuple[str, bool]:
 def mask_pii_shaped(text: str) -> tuple[str, bool]:
     """Mask SSN- and account-shaped substrings; report whether anything matched.
 
-    Shared by ``SanitizedLogFormatter`` (which adds its own dollar-amount pass)
-    and the ``sql_query`` content-net floor. Dollar amounts are deliberately NOT
-    masked here: a log line should never carry one, but the floor exists so a
-    user can read their own financial data.
+    ``SanitizedLogFormatter.format()`` does NOT call this function — it runs
+    the same three primitives (SSN, dollar, account) directly, in its own
+    order, deliberately different from the order here (see the "Order
+    matters" comment in ``format()`` below). This function is the two-of-three
+    subset ``sql_query.py`` reuses for its DuckDB-error-hint backstop, which
+    never carries a dollar amount to mask.
     """
     result, ssn_masked = _mask_ssn(text)
     result, account_masked = _mask_account(result)

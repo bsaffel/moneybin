@@ -495,18 +495,33 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     # three mean "table/column doesn't exist". (Parsing happens above at
     # parse_cached, outside this block, so SqlParseError can't surface here.)
     except (SqlSchemaError, duckdb.CatalogException, duckdb.BinderException) as e:
-        # str(e) still reaches neither the log nor the message; only the
-        # identifier head reaches `hint`. A DuckDB or lineage message can quote
-        # the query verbatim, literal values included, and the log file is the
-        # more durable of the two boundaries. `sql_digest` says why the
-        # formatter cannot be relied on to catch it.
+        # `hint` below is where the head described above (module comment,
+        # `_LINE_ECHO`) reaches the caller — not just identifiers, caller-
+        # authored STRING LITERALS too. It reaches two places: the MCP error
+        # envelope, and — via `handle_cli_errors` in cli/utils.py — the CLI's
+        # durable log file at INFO. `str(e)` and the log line right below
+        # never carry it; that line names only the exception TYPE.
+        #
+        # What makes threading it acceptable: a binder or catalog error is
+        # raised BEFORE execution, so its message can only quote text the
+        # CALLER typed into the query — never a STORED ROW VALUE.
+        # `duckdb.ConversionException` is the counterexample that draws that
+        # line: it fires evaluating a row at fetch time, so its head quotes
+        # the offending stored value itself — why that family stays in the
+        # silent, no-hint bucket below instead of being threaded here.
         logger.warning(
             f"sql_query unknown table/column: {type(e).__name__} "
             f"(sql sha256={sql_digest(query)})"
         )
         raise UserError(
-            "Unknown table or column.",
+            "Query could not be bound to the schema.",
             code=error_codes.SQL_UNKNOWN_TABLE,
+            # This code now means "binder or catalog rejection" — broader
+            # than its name: negative LIMIT/OFFSET, an out-of-range GROUP BY
+            # term, a malformed regex, and more, not only a missing table or
+            # column. A rename/split is a public-contract change under
+            # separate review; the code stays as-is for now.
+            #
             # SqlSchemaError gets no hint. Its messages are safe today only as
             # a side effect of `_qualified` in sql_lineage.py calling
             # `qualify(..., validate_qualify_columns=False)` — a flag chosen
@@ -570,7 +585,10 @@ def _fetch_metadata(
             f"(sql sha256={sql_digest(query)})"
         )
         raise UserError(
-            "Unknown table or column.",
+            "Query could not be bound to the schema.",
+            # See execute_sql_query: this code now means "binder or catalog
+            # rejection", broader than its name; a rename is under separate
+            # review.
             code=error_codes.SQL_UNKNOWN_TABLE,
             hint=_identifier_detail(e),
         ) from e
