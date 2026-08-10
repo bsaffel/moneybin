@@ -426,7 +426,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that predates a feed's download window reports `no shared period` rather than
   a zero that would read as evidence against a correct merge. The group header
   also states how many transactions the merge would move, so deciding no longer
-  costs a second command.
+  costs a second command (#387).
 - **One merge now reads the same way wherever it is proposed.** The CLI prompt,
   `accounts_links_set`, and `identity_links_decide` each described the same
   decision differently, and the worst of the three named both accounts by their
@@ -440,7 +440,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which the live queue produced — the prompt says so and tells you to check the
   direction before accepting. The closing paragraph now describes only the link
   kinds the batch actually contains, so a card-to-card merge is no longer warned
-  about security tax lots and hand-set price marks it never touches.
+  about security tax lots and hand-set price marks it never touches (#387).
 - **A name match no longer proposes a merge across two different stated last
   fours.** Two accounts that agree on a fuzzy name and *disagree* on a last four
   they both state are evidence of two different accounts, not one; the name rung
@@ -448,7 +448,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   account with no known last four still reaches the name rung, since vetoing
   there would drop a proposal nothing else surfaces. At the same institution the
   pair re-surfaces under `institution_reissue`, which is the signal a reissued
-  card actually carries, so the proposal is retyped rather than lost.
+  card actually carries, so the proposal is retyped rather than lost (#387).
 - **`moneybin accounts links set --into` now shows what the merge moves and asks
   before committing.** Accepting a link folds one account's whole history into
   another, and no command splits it back apart — but this was the last accept
@@ -749,7 +749,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `overlap_matched` / `overlap_comparable` now carry the measurement it looked
   like it was making. The `app.account_link_decisions.confidence_score` column
   is unchanged: it is what was recorded when the proposal was written, and the
-  audit trail keeps it.
+  audit trail keeps it (#387).
 
 ### Fixed
 - **Undoing a decision puts it back in the review queue, and the queue count now
