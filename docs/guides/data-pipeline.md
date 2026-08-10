@@ -21,9 +21,11 @@ flowchart LR
   app -- joined into --> core
   consumers -- managed writes --> app
   consumers -. read-only SQL .-> core
+  consumers -. "read-only SQL<br/>masked by value shape" .-> raw
+  consumers -. "read-only SQL<br/>masked by value shape" .-> prep
 ```
 
-The arrow direction is the rule. Data flows left to right through `raw → prep → core → reports`. Consumers read from `core` and `reports` only. Managed writes from the CLI and MCP target `app.*` (notes, tags, splits, categorizations, match decisions, balance assertions) and `raw.*` (imports and manual entry). DDL, writes to `core.*`, and any write outside the allowlist are rejected by the privacy middleware on the MCP side and are not exposed by the CLI.
+The arrow direction is the rule. Data flows left to right through `raw → prep → core → reports`. Consumers read from `core` and `reports` for analysis; the agent-safe SQL paths (`sql_query` and `moneybin sql query`) also read `raw` and `prep` for inspection, masked by value shape rather than by column declaration. Managed writes from the CLI and MCP target `app.*` (notes, tags, splits, categorizations, match decisions, balance assertions) and `raw.*` (imports and manual entry). DDL, writes to `core.*`, and any write outside the allowlist are rejected by the privacy middleware on the MCP side and are not exposed by the CLI.
 
 ## Layer reference
 
@@ -31,8 +33,8 @@ The schemas correspond exactly to the directories under `src/moneybin/sqlmesh/mo
 
 | Schema | Materialized | Owner (writes) | Consumers (reads) | Purpose |
 |---|---|---|---|---|
-| `raw` | Tables | Python loaders, manual-entry service, Plaid sync | SQLMesh staging only | Untouched source data; re-importable from the original file or API response |
-| `prep` | Views | SQLMesh | SQLMesh core | Light cleaning, type casting, source unioning; internal to the pipeline |
+| `raw` | Tables | Python loaders, manual-entry service, Plaid sync | SQLMesh staging; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Untouched source data; re-importable from the original file or API response |
+| `prep` | Views | SQLMesh | SQLMesh core; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Light cleaning, type casting, source unioning; internal to the pipeline — shapes change without notice |
 | `core` | Views and tables | SQLMesh | All consumers (CLI, MCP, SQL shell, reports) | Canonical, deduplicated, multi-source; one table per real-world entity |
 | `app` | Tables | Services, managed-write MCP, migrations | Services and `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
 | `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports(report_id=...)`, future HTTP | Curated presentation models, one per report surface; read-only by design |

@@ -131,7 +131,9 @@ class governs, and it isn't `critical`.
 
 > The operator commands `moneybin db query`, `db shell`, and `db ui` are the
 > deliberate exception — they are raw, unmasked, local operator access and print
-> a banner saying so. They involve no AI. Everything on the agent path is masked.
+> a banner saying so. They involve no AI. On the agent path every CRITICAL-classed
+> column is masked, and `raw`/`prep` values are scanned for account and SSN shapes
+> — which is weaker, and the gap is named [below](#not-masked-stated-plainly).
 
 ---
 

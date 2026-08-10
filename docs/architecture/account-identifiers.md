@@ -55,7 +55,7 @@ No `account_id` is synthesized inside MoneyBin today. The truncated-UUID4 strate
 
 Notes:
 
-- **OFX values are PII-shaped, not opaque.** `<ACCTID>` is commonly the real bank account number. The `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`) masks 9+ digit sequences in log records as a runtime safety net, but the stored value is the raw upstream value. Never use it as a display string.
+- **OFX values are PII-shaped, not opaque.** `<ACCTID>` is commonly the real bank account number. The `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`) masks unbroken runs of 8 or more digits in log records as a runtime safety net, but the stored value is the raw upstream value. Never use it as a display string.
 - **Plaid values change on re-link.** When a user reconnects an institution, Plaid issues a new `account_id`; see [Identifier stability](#identifier-stability).
 - **Tabular slugs are user-controlled.** `--account-name` is passed through to the loader as-is. Conventional usage is a lowercase-with-hyphens slug (`chase-checking`); see the data-import guide for per-format specifics.
 - **`account_id` is never empty in `core.dim_accounts`** — it is the table's grain. Empty/whitespace-only values would fail upstream loader validation before reaching the core layer; `assert_account_exists()` rejects any value that is not present.

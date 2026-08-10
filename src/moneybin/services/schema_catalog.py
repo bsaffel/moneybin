@@ -674,14 +674,24 @@ EXAMPLES: dict[str, list[Example]] = {
 }
 
 _BEYOND_NOTE = (
-    "The tables above are the curated query surface. Other schemas exist "
-    "for raw ingest (raw), staging (prep), provenance (meta), and seed "
-    "data (seeds). Use them only when the curated tables cannot answer "
-    "the question."
+    "The tables above are the curated query surface. sql_query also reads raw "
+    "ingest (raw) and staging (prep) — use them only when the curated tables "
+    "cannot answer the question, and note they carry 33 column declarations "
+    "with every other value masked only when it is SSN- or 8-or-more-digit "
+    "shaped. Provenance (meta) and seed data (seeds) exist but sql_query "
+    "refuses them; read those with moneybin db query."
 )
+# Union views: `duckdb_tables()` alone omits every `prep` model and every
+# runtime-minted `raw.gsheet_<alias>` / `raw.pdf_<alias>` seed view, so the
+# discovery query would list none of the objects this note just opened. Same
+# reasoning as `build_schema_doc` below.
 _BEYOND_QUERY = (
     "SELECT schema_name, table_name, comment FROM duckdb_tables() "
-    "WHERE schema_name NOT IN ('main', 'pg_catalog') ORDER BY 1, 2"
+    "WHERE schema_name NOT IN ('main', 'pg_catalog') "
+    "UNION ALL "
+    "SELECT schema_name, view_name AS table_name, comment FROM duckdb_views() "
+    "WHERE NOT internal AND schema_name NOT IN ('main', 'pg_catalog') "
+    "ORDER BY 1, 2"
 )
 
 

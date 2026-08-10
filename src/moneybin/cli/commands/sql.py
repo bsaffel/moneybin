@@ -58,11 +58,13 @@ def sql_query_command(
     ``core``, ``app``, ``reports``, ``raw``, and ``prep`` schemas — DESCRIBE is
     held to that same schema limit, so a catalog statement cannot inspect a table
     the data path won't read. Each output column is classified via SQL lineage;
-    CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>),
-    exactly like the typed tools and the ``sql_query`` MCP tool. Other tiers
-    (amounts, descriptions, dates) pass through in the clear, and an undeclared
-    ``raw``/``prep`` column passes through unless the value is shaped like an
-    SSN or a run of eight or more digits.
+    A column declared CRITICAL (account/routing numbers) is ALWAYS masked
+    (****<last4>), exactly like the typed tools and the ``sql_query`` MCP tool.
+    ``raw`` and ``prep`` carry 33 such declarations and no registry behind them,
+    so every other column there passes through unless the value is shaped like
+    an SSN or a run of eight or more digits — weaker than a declaration, and a
+    4-to-7 digit account number survives it. Other tiers (amounts, descriptions,
+    dates) pass through in the clear.
 
     Amounts use the accounting convention: negative = expense, positive = income.
 

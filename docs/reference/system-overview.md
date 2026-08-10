@@ -138,7 +138,7 @@ under a declared maximum. → [`mcp-server.md`](../guides/mcp-server.md)
 
 ### SQL
 
-Read-only DuckDB query. `moneybin db shell` and any DuckDB-compatible client given the profile's encryption key reach every schema; the `sql_query` MCP tool and `moneybin sql query` admit five — `core`, `app`, `reports`, `raw`, and `prep` — refuse `meta` and `seeds`, and mask `raw`/`prep` rows by value shape rather than by column declaration. External clients (DBeaver, Datasette, the plain `duckdb` CLI, Python/R notebooks) need that key — `moneybin db key` prints it for the current profile. → [`sql-access.md`](../guides/sql-access.md)
+Read-only DuckDB query. `moneybin db shell` and any DuckDB-compatible client given the profile's encryption key reach every schema; the `sql_query` MCP tool and `moneybin sql query` admit five — `core`, `app`, `reports`, `raw`, and `prep` — refuse `meta` and `seeds`, and mask `raw`/`prep` through 33 hand-written CRITICAL declarations plus a value-shape scan on every other column. External clients (DBeaver, Datasette, the plain `duckdb` CLI, Python/R notebooks) need that key — `moneybin db key` prints it for the current profile. → [`sql-access.md`](../guides/sql-access.md)
 
 ## Lifecycle of an MCP tool call
 
