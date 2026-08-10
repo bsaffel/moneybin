@@ -61,6 +61,24 @@ IDENTITY_BLAST_RADIUS_LABELS: dict[str, tuple[str, str]] = {
     "price_marks": ("price mark you set by hand", "price marks you set by hand"),
 }
 
+#: How each surface spells the command that reverses a committed merge.
+#:
+#: The one clause in this prompt that must differ by surface, and the exception
+#: that proves the rest of the module: the sentence is shared so two surfaces
+#: cannot describe one merge differently, but a recovery instruction is worth
+#: nothing unless it runs where it is read. A CLI user told to call
+#: ``system_audit_undo(operation_id=...)`` has no way to run it, and this prompt
+#: accompanies a destructive merge — the one moment the recovery path has to be
+#: reachable without a second lookup.
+#:
+#: ``surface`` is a required argument rather than a defaulted one so a third
+#: surface has to answer this question instead of silently inheriting whichever
+#: spelling happened to be the default.
+UNDO_COMMANDS: dict[str, str] = {
+    "cli": "moneybin system audit undo <operation_id>",
+    "mcp": "system_audit_undo(operation_id=...)",
+}
+
 #: What an accepted link of each kind does, in the user's terms.
 #:
 #: Rendered only for the kinds a batch actually contains. The single paragraph
@@ -207,7 +225,7 @@ def _evidence_line(overlap: LedgerOverlap) -> str:
     )
 
 
-def _account_merge_block(merge: AccountMergeFacts) -> str:
+def _account_merge_block(merge: AccountMergeFacts, undo_command: str) -> str:
     """The question, the evidence, and what the answer does — in that order."""
     absorbed, survivor = merge.absorbed, merge.survivor
     lines = [
@@ -218,8 +236,7 @@ def _account_merge_block(merge: AccountMergeFacts) -> str:
         "",
         f"The absorbed account {absorbed.account_id} is folded into "
         f"{survivor.account_id}: its transactions move onto that account's "
-        "history and nothing is deleted. Reverse with "
-        "system_audit_undo(operation_id=...).",
+        f"history and nothing is deleted. Reverse with {undo_command}.",
     ]
     if survivor.transactions == 0:
         # The reversed proposal is the expensive failure on this path: the live
@@ -251,6 +268,7 @@ def _batch_paragraph(kinds: Collection[str], *, accounts_described: bool) -> str
 def identity_confirm_message(
     blast_radius: Mapping[str, int],
     *,
+    surface: str,
     merges: Sequence[AccountMergeFacts] = (),
     kinds: Collection[str] = (),
 ) -> str:
@@ -268,13 +286,17 @@ def identity_confirm_message(
     batch actually accepts, so the closing paragraph describes those and not the
     other two. Both default to empty, which reproduces the counts-only prompt for
     a caller that has neither.
+
+    ``surface`` keys ``UNDO_COMMANDS`` — the only clause that varies by caller,
+    because the reversal has to be runnable where the sentence is read.
     """
+    undo_command = UNDO_COMMANDS[surface]
     moved = [
         f"{count} {IDENTITY_BLAST_RADIUS_LABELS[key][0 if count == 1 else 1]}"
         for key in IDENTITY_BLAST_RADIUS_CATEGORIES
         if (count := blast_radius.get(key, 0))
     ]
-    blocks = [_account_merge_block(merge) for merge in merges]
+    blocks = [_account_merge_block(merge, undo_command) for merge in merges]
     blocks.append(_batch_paragraph(kinds, accounts_described=bool(merges)))
     blocks.append(f"This batch touches: {', '.join(moved) if moved else 'no rows'}.")
     return "\n\n".join(blocks)

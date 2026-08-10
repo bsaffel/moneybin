@@ -446,7 +446,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   side by what *differs* between them (which source reported it, how much
   history it holds, the period it covers, its subtype, its currency), states
   which account is absorbed and which survives, carries the overlap evidence,
-  and names `system_audit_undo` as the reversal. When the surviving account has
+  and names the reversal in the syntax of the surface you are reading it on —
+  `moneybin system audit undo <operation_id>` at the CLI,
+  `system_audit_undo(operation_id=...)` over MCP. It is the one clause that
+  differs between the two, because a recovery command is worth nothing unless it
+  runs where it is read. When the surviving account has
   no transactions of its own — a malformed placeholder offered as the survivor,
   which the live queue produced — the prompt says so and tells you to check the
   direction before accepting. The closing paragraph now describes only the link

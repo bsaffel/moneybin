@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+from typer.testing import CliRunner
+
+from moneybin.cli.main import app as cli_app
 from moneybin.services.identity_confirmation import (
     IDENTITY_BLAST_RADIUS_CATEGORIES,
     IDENTITY_BLAST_RADIUS_LABELS,
+    UNDO_COMMANDS,
     AccountLedgerFacts,
     AccountMergeFacts,
     identity_confirm_message,
@@ -34,14 +39,17 @@ def test_the_identity_prompt_counts_every_category_it_moves() -> None:
     "security lots" and nothing else. A merge could move a user's hand-set
     valuations onto another instrument with no sentence anywhere saying so.
     """
-    message = identity_confirm_message({
-        "accounts": 0,
-        "merchants": 0,
-        "securities": 2,
-        "transactions": 7,
-        "lots": 3,
-        "price_marks": 4,
-    })
+    message = identity_confirm_message(
+        {
+            "accounts": 0,
+            "merchants": 0,
+            "securities": 2,
+            "transactions": 7,
+            "lots": 3,
+            "price_marks": 4,
+        },
+        surface="mcp",
+    )
 
     assert "4 price marks you set by hand" in message
     assert "7 transactions" in message
@@ -56,14 +64,17 @@ def test_the_identity_prompt_omits_categories_it_does_not_touch() -> None:
     that one, and would tell a user binding a price feed that the batch touches
     accounts and merchants it never opens.
     """
-    message = identity_confirm_message({
-        "accounts": 0,
-        "merchants": 0,
-        "securities": 1,
-        "transactions": 0,
-        "lots": 0,
-        "price_marks": 0,
-    })
+    message = identity_confirm_message(
+        {
+            "accounts": 0,
+            "merchants": 0,
+            "securities": 1,
+            "transactions": 0,
+            "lots": 0,
+            "price_marks": 0,
+        },
+        surface="mcp",
+    )
 
     assert "1 security" in message
     assert "account" not in message.split("This batch touches:")[-1]
@@ -157,6 +168,7 @@ def test_a_colliding_pair_still_renders_two_distinguishable_descriptions() -> No
 
     message = identity_confirm_message(
         {"accounts": 2, "transactions": 346},
+        surface="mcp",
         merges=[_merge(absorbed, survivor)],
         kinds=["account_link"],
     )
@@ -188,6 +200,7 @@ def test_an_account_fed_by_two_sources_names_both() -> None:
 
     message = identity_confirm_message(
         {"accounts": 2, "transactions": 346},
+        surface="mcp",
         merges=[_merge(absorbed, survivor)],
         kinds=["account_link"],
     )
@@ -214,6 +227,7 @@ def test_a_synced_account_is_named_by_its_channel_not_its_provider() -> None:
 
     message = identity_confirm_message(
         {"accounts": 2, "transactions": 346},
+        surface="mcp",
         merges=[_merge(absorbed, survivor)],
         kinds=["account_link"],
     )
@@ -237,6 +251,7 @@ def test_two_synced_sources_collapse_to_one_channel_label() -> None:
 
     message = identity_confirm_message(
         {"accounts": 2, "transactions": 346},
+        surface="mcp",
         merges=[_merge(absorbed, survivor)],
         kinds=["account_link"],
     )
@@ -251,6 +266,7 @@ def test_the_sentence_names_the_survivor_and_the_absorbed_account() -> None:
 
     message = identity_confirm_message(
         {"accounts": 2, "transactions": 346},
+        surface="mcp",
         merges=[_merge(absorbed, survivor)],
         kinds=["account_link"],
     )
@@ -283,6 +299,7 @@ def test_a_reversed_proposal_is_legible_as_reversed_from_the_sentence_alone() ->
 
     message = identity_confirm_message(
         {"accounts": 2, "transactions": 2342},
+        surface="mcp",
         merges=[reversed_merge],
         kinds=["account_link"],
     )
@@ -303,6 +320,7 @@ def test_the_sentence_carries_the_overlap_evidence() -> None:
 
     message = identity_confirm_message(
         {"accounts": 2, "transactions": 346},
+        surface="mcp",
         merges=[_merge(absorbed, survivor)],
         kinds=["account_link"],
     )
@@ -316,6 +334,7 @@ def test_no_comparable_period_reads_as_absent_evidence_not_as_zero_overlap() -> 
 
     message = identity_confirm_message(
         {"accounts": 2, "transactions": 346},
+        surface="mcp",
         merges=[
             _merge(
                 absorbed,
@@ -342,11 +361,53 @@ def test_the_account_paragraph_names_the_undo_path() -> None:
 
     message = identity_confirm_message(
         {"accounts": 2, "transactions": 346},
+        surface="mcp",
         merges=[_merge(absorbed, survivor)],
         kinds=["account_link"],
     )
 
     assert "system_audit_undo" in message
+
+
+@pytest.mark.parametrize("surface", sorted(UNDO_COMMANDS))
+def test_each_surface_names_the_undo_command_that_runs_there(surface: str) -> None:
+    """Derived from the mapping, so a surface added without wiring fails here.
+
+    The rest of this sentence is shared precisely so the two surfaces cannot
+    describe one merge differently. The recovery command is the exception that
+    proves it: identical text would leave one of the two audiences holding an
+    instruction it cannot run.
+    """
+    absorbed, survivor = _colliding_pair()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 346},
+        surface=surface,
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert UNDO_COMMANDS[surface] in message
+    for other, command in UNDO_COMMANDS.items():
+        if other != surface:
+            assert command not in message
+
+
+def test_the_cli_prompt_names_a_command_the_cli_actually_registers() -> None:
+    """The literal a CLI user would copy, resolved against the real command tree.
+
+    Asserting the rendered string against a hand-written expectation would only
+    prove the renderer agrees with the test. What makes the sentence true is that
+    `moneybin system audit undo` exists — so ask the CLI, which also keeps this
+    honest if the command is ever renamed.
+    """
+    words = UNDO_COMMANDS["cli"].split()
+    assert words[0] == "moneybin"
+    path = [w for w in words[1:] if not w.startswith("<")]
+
+    result = CliRunner().invoke(cli_app, [*path, "--help"])
+
+    assert result.exit_code == 0, result.output
 
 
 def test_a_two_merge_batch_describes_both_merges_in_the_batch_order() -> None:
@@ -383,6 +444,7 @@ def test_a_two_merge_batch_describes_both_merges_in_the_batch_order() -> None:
 
     message = identity_confirm_message(
         {"accounts": 4, "transactions": 403},
+        surface="mcp",
         merges=[
             _merge(first_absorbed, first_survivor),
             _merge(second_absorbed, second_survivor),
@@ -404,6 +466,7 @@ def test_the_paragraph_names_only_the_kinds_the_batch_contains() -> None:
 
     message = identity_confirm_message(
         {"accounts": 2, "transactions": 346},
+        surface="mcp",
         merges=[_merge(absorbed, survivor)],
         kinds=["account_link"],
     )
@@ -424,6 +487,7 @@ def test_a_mixed_batch_names_every_kind_it_contains_in_one_sentence() -> None:
     """
     message = identity_confirm_message(
         {"accounts": 2, "merchants": 3, "transactions": 346},
+        surface="mcp",
         kinds=["merchant_link", "account_link"],
     )
 
@@ -439,6 +503,7 @@ def test_a_security_batch_still_names_what_a_security_link_moves() -> None:
     """The other half of the kind-awareness boundary."""
     message = identity_confirm_message(
         {"securities": 2, "lots": 3, "price_marks": 4},
+        surface="mcp",
         kinds=["security_link"],
     )
 

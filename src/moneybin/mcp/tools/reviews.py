@@ -1196,6 +1196,7 @@ async def identity_links_decide_coarse(
             binding=binding if confirmation_token is None else None,
             message=identity_confirm_message(
                 binding.blast_radius,
+                surface="mcp",
                 merges=preview.merges,
                 kinds=preview.kinds,
             ),

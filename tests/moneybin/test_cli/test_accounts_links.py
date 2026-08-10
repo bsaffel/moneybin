@@ -172,7 +172,9 @@ def _previewed_merge(
     approved = _approved_merge(
         transactions=transactions, links=links, decisions=decisions
     )
-    return approved, identity_confirm_message(approved.sentence, kinds=["account_link"])
+    return approved, identity_confirm_message(
+        approved.sentence, surface="cli", kinds=["account_link"]
+    )
 
 
 def _commit_running_verifier(

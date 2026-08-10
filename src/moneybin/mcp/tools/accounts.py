@@ -625,6 +625,7 @@ def _account_confirm_message(p: _AccountMergeProposal) -> str:
     """
     merge = identity_confirm_message(
         {"accounts": 2, "transactions": p.facts.absorbed.transactions},
+        surface="mcp",
         merges=[p.facts],
         kinds=["account_link"],
     )

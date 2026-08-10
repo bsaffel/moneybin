@@ -282,7 +282,7 @@ def _merge_preview(
         decisions=impact.decision_ids,
     )
     return approved, identity_confirm_message(
-        plan.blast_radius, merges=[facts], kinds=["account_link"]
+        plan.blast_radius, surface="cli", merges=[facts], kinds=["account_link"]
     )
 
 
