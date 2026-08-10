@@ -826,11 +826,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `accounts links set` / `identity_links_decide` route, and the batched review
   route, whose inner calls join the outer transaction and return before their own
   post-commit tail. Because that pass can auto-merge rows without asking, it
-  reports what it did: the CLI prints how many were auto-merged and how many are
-  newly queued, and MCP returns `rematch_auto_merged` / `rematch_pending_review`.
-  Both are null after a reject, which runs no pass at all — distinct from a pass
-  that ran and found nothing. `--yes` waives the confirmation prompt, never the
-  report.
+  reports what it did on both: the CLI prints how many were auto-merged and how
+  many are newly queued, and `accounts_links_set` and `identity_links_decide`
+  both return `rematch_auto_merged` / `rematch_pending_review`. All are null
+  after a reject, which runs no pass at all — distinct from a pass that ran and
+  found nothing. `--yes` waives the confirmation prompt, never the report. A
+  half-failed pass says so: matching and the rebuild fail independently, and
+  either alone still leaves the merge unfinished in a way the user would
+  otherwise have to discover for themselves.
 - **`moneybin doctor` can now see a duplicate nobody proposed.** Neither existing
   invariant could. `dedup_reconciliation` asserts
   `raw_total - core_count == dedup_absorbed`, which balances whether or not a
@@ -838,9 +841,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   equation together, so it stayed green across all 377 rows. `duplicate_account_overlap`
   saw the split while it was still two accounts and stopped applying the instant
   the link was accepted, which is precisely when the rows became matchable. The
-  new `unproposed_cross_source_duplicates` warns when a cross-source pair matches
-  on amount and date within the matcher's own window and *neither* side carries a
-  match decision in any status. Requiring neither side is what makes silence
+  new `unproposed_cross_source_duplicates` warns when a pair the matcher's own
+  Tier 3 blocking test would admit — differing `source_type` **or** differing
+  `source_origin`, so two CSV integrations and two Plaid connections count —
+  matches on amount and date within the matcher's window and *neither* side
+  carries a match decision in any status, matched on the full node identity the
+  matcher uses. Correlating `account_id` is what keeps a source-native id reused
+  by an unrelated account from marking a row "already decided." Requiring neither side is what makes silence
   mean something: the matcher legitimately drops redundant and conflicting
   candidate pairs, but in both cases the dropped row is still spoken for by the
   pairing that won.

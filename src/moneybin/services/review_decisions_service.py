@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import duckdb
 from pydantic import JsonValue
@@ -53,6 +53,9 @@ from moneybin.tables import (
     USER_MERCHANTS,
 )
 
+if TYPE_CHECKING:
+    from moneybin.services.refresh import RefreshResult
+
 _IdentityRequest = (
     AccountLinkDecisionRequest
     | MerchantLinkDecisionRequest
@@ -95,6 +98,13 @@ class IdentityDecisionPlan:
     """Complete ordered identity batch plan."""
 
     items: tuple[IdentityDecisionPlanItem, ...]
+    # Outcome of the post-merge re-match, attached by ``apply_identity`` after
+    # its commit; ``None`` on a plan that has not been applied and on a batch
+    # with no accept. The plan is this path's only carrier back to the surface,
+    # and that pass can auto-merge rows without asking — so a batch that drops
+    # it returns an apparently clean merge over a silent collapse. Absent while
+    # the confirmation binding is digested, which happens strictly before apply.
+    rematch: RefreshResult | None = None
 
     @property
     def changed_count(self) -> int:
@@ -1100,14 +1110,18 @@ class ReviewDecisionsService:
         )
         if account_changed:
             account_service.record_committed_outer_decisions()
+        rematch: RefreshResult | None = None
         if account_merged:
             # Only a merge repoints links, and only a repoint makes two sources'
             # rows co-resident for the matcher's same-account blocking join. The
             # inner set() calls ran with in_outer_txn=True and returned before
             # their own post-commit tail, so this is the batch path's only seam.
-            account_service.rematch_after_merge()
+            rematch = account_service.rematch_after_merge()
         if merchant_outcomes:
             merchant_service.record_committed_outer_outcomes(merchant_outcomes)
         if security_outcomes:
             security_service.record_committed_outer_outcomes(security_outcomes)
-        return plan
+        # The plan is the only value this path returns, so it carries the pass's
+        # outcome out; without it the surface cannot report an auto-merge it did
+        # not ask for. None here means no pass ran, not a pass that found zero.
+        return replace(plan, rematch=rematch)

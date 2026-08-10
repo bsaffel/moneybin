@@ -3359,3 +3359,65 @@ def test_same_source_pair_with_no_decision_passes(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_same_source_type_from_two_origins_warns(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two CSV integrations are a cross-source pair to the matcher, so also here.
+
+    ``scoring.py::_get_candidates`` blocks Tier 3 on
+    ``source_type != source_type OR source_origin != source_origin`` — the
+    second half is what admits two separate CSV bank integrations, or two Plaid
+    connections, as candidates. Isolated by exactly one field: identical to the
+    same-source fixture above in every respect but ``source_origin``, so a warn
+    here can only come from the origin half of the predicate.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(
+        doctor_db, stid="csv1", source_type="csv", source_origin="bank_a"
+    )
+    _insert_unioned_row(
+        doctor_db, stid="csv2", source_type="csv", source_origin="bank_b"
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_another_accounts_decision_on_the_same_native_id_does_not_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source-native id is only unique within its account, so scope the lookup.
+
+    ``app.match_decisions.account_id`` is the "shared account (blocking
+    requirement for dedup)", and the matcher's own rejected-pair identity
+    (``scoring.py``) carries ``account_id`` for the same reason. An unrelated
+    account holding a decision for an identically-spelled FITID must not mark
+    this account's row as spoken for — that would silently suppress the warning
+    on exactly the pair this check exists to surface.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="shared_id", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'shared_id', 'ofx', 'bank', 'other', 'csv', 'bank',
+                  'ACC2', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]

@@ -562,6 +562,14 @@ Guard-2 free-text resolution):
   On the CLI the report is outside the confirmation branch, so `--yes` waives
   the prompt but never the disclosure.
 
+  **Both accept surfaces disclose, not only the direct one.** The batched path
+  returns just its `IdentityDecisionPlan`, so that plan carries the
+  `RefreshResult` out — `apply_identity` attaches it after its commit — and
+  `IdentityLinksDecidePayload` exposes the same two fields as
+  `AccountLinksSetPayload`. Without that, the identical merge driven through
+  `identity_links_decide` returns an apparently clean result over a silent
+  auto-merge: the same invisibility, on the other seam.
+
   A **partially failed pass reports as partial**, and the two halves fail
   independently. `RefreshResult.matching_error` means no duplicates were
   proposed at all. `RefreshResult.error` means matching succeeded — the

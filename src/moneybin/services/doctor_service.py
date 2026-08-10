@@ -2341,8 +2341,12 @@ class DoctorService:
           pairing that won.
         - Tier 2b declines a within-source pair by writing nothing at all
           (``engine._classify_pair`` returns ``None``), which is why this check
-          requires differing ``source_type`` — for same-source pairs, no row is
-          the normal resting state and would flag every ordinary near-duplicate.
+          requires the matcher's own Tier 3 test — differing ``source_type``
+          **or** differing ``source_origin``. For a pair matching on both, no
+          row is the normal resting state and flagging it would nag on every
+          ordinary near-duplicate. Testing ``source_type`` alone would be the
+          opposite error: two CSV bank integrations, or two Plaid connections,
+          are cross-source candidates the matcher does consider.
 
         Cross-source is the case where silence is diagnostic: every Tier 3 pair
         that survives assignment is persisted, ``pending`` if nothing else. So a
@@ -2362,8 +2366,10 @@ class DoctorService:
                 WITH candidates AS (
                     SELECT a.account_id,
                            a.source_type AS type_a,
+                           a.source_origin AS origin_a,
                            a.source_transaction_id AS id_a,
                            b.source_type AS type_b,
+                           b.source_origin AS origin_b,
                            b.source_transaction_id AS id_b
                     FROM {INT_TRANSACTIONS_UNIONED.full_name} AS a
                     JOIN {INT_TRANSACTIONS_UNIONED.full_name} AS b
@@ -2383,7 +2389,15 @@ class DoctorService:
                      ) <= ?
                      AND a.source_type <> 'manual'
                      AND b.source_type <> 'manual'
-                     AND a.source_type <> b.source_type
+                     -- The matcher's Tier 3 test verbatim (scoring.py
+                     -- _get_candidates): differing type OR differing origin.
+                     -- Type alone would miss two CSV bank integrations and two
+                     -- Plaid connections, which are cross-source to the matcher
+                     -- and so are exactly as capable of holding a duplicate.
+                     AND (
+                         a.source_type <> b.source_type
+                         OR a.source_origin <> b.source_origin
+                     )
                      AND (
                          a.source_type, a.source_origin, a.source_transaction_id
                      ) < (
@@ -2392,23 +2406,42 @@ class DoctorService:
                 ),
                 -- Both directions flattened: the matcher writes a pair once, in
                 -- whichever order the blocking join produced, so a row can be
-                -- spoken for from either column.
+                -- spoken for from either column. Carries the full node identity
+                -- the matcher itself uses -- (account_id, source_type,
+                -- source_origin, source_transaction_id) -- because a
+                -- source-native id is unique only within its account. An
+                -- un-namespaced FITID reused by another account would otherwise
+                -- mark this row "already decided" and suppress the warning,
+                -- most likely on two accounts at one institution: precisely the
+                -- pair an account-link merge just joined.
                 decided AS (
-                    SELECT source_transaction_id_a AS stid, source_type_a AS stype
+                    SELECT account_id AS acct,
+                           source_transaction_id_a AS stid,
+                           source_type_a AS stype,
+                           source_origin_a AS sorigin
                     FROM {MATCH_DECISIONS.full_name}
                     UNION
-                    SELECT source_transaction_id_b, source_type_b
+                    SELECT account_id,
+                           source_transaction_id_b,
+                           source_type_b,
+                           source_origin_b
                     FROM {MATCH_DECISIONS.full_name}
                 )
                 SELECT c.account_id, COUNT(*) AS pairs
                 FROM candidates AS c
                 WHERE NOT EXISTS (
                     SELECT 1 FROM decided AS d
-                    WHERE d.stid = c.id_a AND d.stype = c.type_a
+                    WHERE d.acct = c.account_id
+                      AND d.stid = c.id_a
+                      AND d.stype = c.type_a
+                      AND d.sorigin = c.origin_a
                 )
                   AND NOT EXISTS (
                     SELECT 1 FROM decided AS d
-                    WHERE d.stid = c.id_b AND d.stype = c.type_b
+                    WHERE d.acct = c.account_id
+                      AND d.stid = c.id_b
+                      AND d.stype = c.type_b
+                      AND d.sorigin = c.origin_b
                 )
                 GROUP BY c.account_id
                 ORDER BY c.account_id

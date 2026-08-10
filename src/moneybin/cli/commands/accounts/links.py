@@ -197,23 +197,27 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
         PENDING_MATCHES_HINT,
     )
 
+    # The two failures are independent — refresh() attempts the transform step
+    # whether or not the match step raised, so one call can carry both — and
+    # they say different things: nothing was proposed, *and* the merge itself
+    # is not visible yet. Neither may short-circuit the other.
     if rematch.matching_error is not None:
         logger.warning(
             "⚠️  Re-match after the merge failed, so any duplicates the merge "
             "made visible are still unproposed; re-run 'moneybin refresh'"
         )
-        return
-    merged = rematch.matches_auto_merged
-    pending = rematch.matches_pending_review
-    if not merged and not pending:
-        logger.info("Re-matched after the merge: no new duplicates found")
     else:
-        logger.info(
-            f"👀 Re-matched after the merge: {merged} auto-merged, "
-            f"{pending} new proposal(s) to review"
-        )
-        if pending:
-            logger.info(f"  💡 {PENDING_MATCHES_HINT}")
+        merged = rematch.matches_auto_merged
+        pending = rematch.matches_pending_review
+        if not merged and not pending:
+            logger.info("Re-matched after the merge: no new duplicates found")
+        else:
+            logger.info(
+                f"👀 Re-matched after the merge: {merged} auto-merged, "
+                f"{pending} new proposal(s) to review"
+            )
+            if pending:
+                logger.info(f"  💡 {PENDING_MATCHES_HINT}")
     if rematch.error is not None:
         # The counts above are true — match decisions were written — but the
         # SQLMesh apply that follows them is what rebuilds core.dim_accounts,

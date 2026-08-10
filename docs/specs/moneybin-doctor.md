@@ -84,8 +84,8 @@ A pair qualifies when it is one the matcher's own blocking join would have produ
 
 | Condition | Rejects |
 |---|---|
-| `source_type` differs on the two sides | Within-source pairs, where Tier 2b declines by writing no row at all (`engine._classify_pair` returns `None`) — silence is the normal resting state |
-| Neither side appears in `app.match_decisions`, any status, either direction | Pairs the matcher already ruled on, and pairs whose partner won a competing assignment |
+| `source_type` **or** `source_origin` differs on the two sides | Within-source pairs, where Tier 2b declines by writing no row at all (`engine._classify_pair` returns `None`) — silence is the normal resting state. This is `scoring.py::_get_candidates`' Tier 3 test verbatim; `source_type` alone would exclude two CSV bank integrations and two Plaid connections, which the matcher does treat as cross-source |
+| Neither side appears in `app.match_decisions`, any status, either direction, **matched on the full node identity** (`account_id`, `source_type`, `source_origin`, `source_transaction_id`) | Pairs the matcher already ruled on, and pairs whose partner won a competing assignment. The `account_id` correlation is load-bearing: a source-native id is unique only within its account (`identifiers.md`), so an un-namespaced FITID reused by a second account would otherwise mark this row "already decided" and suppress the warning — most likely on two accounts at one institution, which is exactly the pair an account-link merge just joined |
 
 The second condition is what makes silence diagnostic. `assign_components` legitimately drops candidate pairs — a redundant edge between rows already connected, and an edge that would co-locate two rows from one physical source — but in both cases the dropped row is spoken for by the pairing that won, so it still holds a decision. Every Tier 3 pair that survives assignment is persisted, `pending` if nothing else. A cross-source pair with *no* decision on either side was therefore never a candidate: the two rows were not in the same account the last time matching ran.
 

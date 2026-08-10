@@ -479,6 +479,45 @@ class TestLinksSet:
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_warns_about_both_failures_when_both_happened(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Match and rebuild fail independently, so neither may mask the other.
+
+        ``refresh()`` runs the transform step whether or not the match step
+        raised, so one call can carry both errors. They also tell the user two
+        different things: nothing was proposed, *and* the merge itself is not
+        visible yet. Reporting only the first leaves the second silent.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=False,
+            duration_seconds=1.0,
+            error="sqlmesh apply failed",
+            matching_error="matcher blew up",
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        warnings = [
+            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        assert any("unproposed" in m for m in warnings), (
+            f"no warning covers the failed match: {warnings}"
+        )
+        assert any("not\nreflected" in m or "not reflected" in m for m in warnings), (
+            f"no warning covers the failed rebuild: {warnings}"
+        )
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
     def test_set_standalone_calls_service_with_none(
         self,
         mock_set: MagicMock,

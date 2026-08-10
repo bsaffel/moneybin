@@ -1209,6 +1209,33 @@ async def identity_links_decide_coarse(
         expected_binding=binding,
     )
     operation_id = current_operation_id()
+    actions = [
+        "Use reviews(status='pending') to continue identity review",
+        "Use system_audit_undo(operation_id=...) to reverse this batch",
+    ]
+    # An accepted merge re-runs matching, and that pass can auto-merge rows
+    # without asking. Prepended most-urgent-first, so a partial pass outranks
+    # the proposals it did raise.
+    rematch = live.rematch
+    if rematch is not None:
+        if rematch.matches_pending_review:
+            actions.insert(
+                0,
+                f"The merge exposed {rematch.matches_pending_review} new duplicate "
+                "proposal(s) — review with reviews(kind='matches')",
+            )
+        if rematch.error is not None:
+            actions.insert(
+                0,
+                "The merge's rebuild failed, so the collapse is not reflected in "
+                "core yet — retry with refresh_run(steps=['transform'])",
+            )
+        if rematch.matching_error is not None:
+            actions.insert(
+                0,
+                "The merge's re-match failed, so duplicates it exposed are still "
+                "unproposed — retry with refresh_run(steps=['match','transform'])",
+            )
     return build_envelope(
         data=IdentityLinksDecidePayload(
             results=[
@@ -1224,11 +1251,14 @@ async def identity_links_decide_coarse(
             ],
             applied_count=live.changed_count,
             operation_id=operation_id,
+            rematch_auto_merged=None
+            if rematch is None
+            else rematch.matches_auto_merged,
+            rematch_pending_review=(
+                None if rematch is None else rematch.matches_pending_review
+            ),
         ),
-        actions=[
-            "Use reviews(status='pending') to continue identity review",
-            "Use system_audit_undo(operation_id=...) to reverse this batch",
-        ],
+        actions=actions,
     )
 
 

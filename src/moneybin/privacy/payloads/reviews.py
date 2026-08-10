@@ -453,3 +453,9 @@ class IdentityLinksDecidePayload(BaseModel):
     results: list[IdentityDecisionOutcome]
     applied_count: Annotated[int, DataClass.AGGREGATE]
     operation_id: Annotated[str, DataClass.RECORD_ID]
+    # What the merge's re-match found, mirroring AccountLinksSetPayload so the
+    # batched and direct accept paths disclose the same thing. None when the
+    # batch held no accept, which runs no match pass at all — distinct from a
+    # pass that ran and found nothing (0).
+    rematch_auto_merged: Annotated[int | None, DataClass.AGGREGATE] = None
+    rematch_pending_review: Annotated[int | None, DataClass.AGGREGATE] = None

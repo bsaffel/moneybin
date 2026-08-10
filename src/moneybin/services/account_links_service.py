@@ -649,8 +649,11 @@ class AccountLinksService:
         looks again. Skipping this is what left 377 duplicates unproposed.
 
         ``transform`` follows ``match`` so an auto-accepted edge collapses in
-        ``core`` in the same step; ``identity`` is deliberately absent, since
-        that stage calls back into this service and would recurse.
+        ``core`` in the same step; ``identity`` is deliberately absent, but not
+        for recursion — ``_run_identity_step`` calls ``run()`` (propose), never
+        ``set()``, so it cannot re-enter here. It is absent because proposing
+        new links is not this trigger's job, and running it would re-examine
+        the accounts the merge just collapsed.
 
         Callers on the batched path (``ReviewDecisionsService.apply_identity``)
         invoke this themselves after their own commit — ``set`` returns early
