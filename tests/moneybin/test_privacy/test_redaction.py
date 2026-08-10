@@ -14,11 +14,12 @@ from moneybin.privacy.redaction import (
     ConsentSet,
     MaskStrength,
     _scrub_embedded_pii,  # pyright: ignore[reportPrivateUsage]
+    is_safe_to_publish_verbatim,
     mask_strength,
     redact_records,
     redact_typed,
 )
-from moneybin.privacy.taxonomy import DataClass
+from moneybin.privacy.taxonomy import DataClass, Tier
 
 
 @dataclass(frozen=True)
@@ -468,3 +469,73 @@ def test_unclassified_type_passes_through_with_warning(
     with caplog.at_level("WARNING", logger="moneybin.privacy.redaction"):
         out = redact_typed(_Untyped(x="raw"), consent=None)
     assert out.x == "raw"
+
+
+# ---------------------------------------------------------------------------
+# The verbatim-publication gate (M2O.2 fix round 1)
+# ---------------------------------------------------------------------------
+
+
+def test_verbatim_gate_adds_exactly_floored_to_the_old_tier_rule() -> None:
+    """Exhaustive over ``DataClass``, because sampling is what hid the bug.
+
+    Three surfaces used to ask ``data_class.tier > Tier.LOW`` before publishing a
+    value verbatim. That reads a tier as a claim about *content*, which is true
+    for every class except FLOORED: FLOORED is LOW because of what its transform
+    does per value at execution, not because its values are insensitive.
+
+    The union — above-LOW **or** masks — is the fix, and this asserts its exact
+    shape rather than spot-checking it: everything the tier rule refused is still
+    refused, and FLOORED is the only addition. A subset assertion would pass just
+    as happily if the gate started refusing half the registry, and an equality
+    against a hand-typed literal would rot the next time a class is added.
+    """
+    refused_by_tier_alone = {dc for dc in DataClass if dc.tier > Tier.LOW}
+    refused_by_the_gate = {
+        dc for dc in DataClass if not is_safe_to_publish_verbatim(dc)
+    }
+
+    assert refused_by_the_gate == refused_by_tier_alone | {DataClass.FLOORED}
+
+
+@pytest.mark.parametrize(
+    "data_class",
+    [
+        DataClass.BALANCE,
+        DataClass.TXN_AMOUNT,
+        DataClass.INCOME_AMOUNT,
+        DataClass.MERCHANT_NAME,
+        DataClass.DESCRIPTION,
+        DataClass.USER_NOTE,
+        DataClass.TXN_DATE,
+    ],
+)
+def test_an_above_low_passthrough_class_is_still_refused(
+    data_class: DataClass,
+) -> None:
+    """The non-regression half — and the reason the gate is a union, not a swap.
+
+    Replacing the tier test with a bare mask-strength test looks equivalent and
+    is not. Every class below is above LOW and *passes through* today (PR 3 adds
+    their bucketing and hash placeholders), so a mask-only rule would start
+    ALLOWING a stored default on all seven — a silent widening of ``core``/``app``
+    by a change that was only supposed to add ``raw``/``prep``.
+
+    Parametrized rather than looped so each class is its own case: a loop would
+    report one failure and hide the other six.
+    """
+    assert data_class.tier > Tier.LOW
+    # The trap, asserted rather than described: a mask-only gate would allow it.
+    assert mask_strength(data_class) is MaskStrength.PASSTHROUGH
+    assert not is_safe_to_publish_verbatim(data_class)
+
+
+def test_the_gate_still_admits_the_genuinely_low_classes() -> None:
+    """The gate must not become "refuse everything" — defaults still work.
+
+    Without this, a gate that returned False unconditionally would satisfy every
+    other assertion in this file while breaking every LOW-tier stored default.
+    """
+    assert is_safe_to_publish_verbatim(DataClass.AGGREGATE)
+    assert is_safe_to_publish_verbatim(DataClass.RECORD_ID)
+    assert is_safe_to_publish_verbatim(DataClass.CATEGORY)

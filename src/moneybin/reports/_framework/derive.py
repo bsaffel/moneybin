@@ -31,7 +31,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.log_sanitizer import sql_digest
-from moneybin.privacy.redaction import mask_strength
+from moneybin.privacy.redaction import is_safe_to_publish_verbatim, mask_strength
 from moneybin.privacy.sql_lineage import (
     FAIL_CLOSED_CLASS,
     SchemaSnapshot,
@@ -50,7 +50,7 @@ from moneybin.privacy.sql_query import (
     classes_by_result_column,
     validate_read_only_query,
 )
-from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ParamSpec
 
 logger = logging.getLogger(__name__)
@@ -553,7 +553,7 @@ def _qualified_or_refuse(
 def _refuse_sensitive_defaults(
     params: Sequence[ParamSpec], parameter_classes: Mapping[str, DataClass]
 ) -> None:
-    """Refuse a stored default on a parameter classed above LOW tier.
+    """Refuse a stored default the catalog could not publish safely.
 
     ``_parameter_schema`` copies a non-required parameter's default verbatim
     into the published parameter schema, and the catalog entry classes that
@@ -561,6 +561,11 @@ def _refuse_sensitive_defaults(
     filter's default would be returned in the clear by a bare catalog listing,
     no execution required. A default masked to ``'*****'`` is not a useful
     default anyway, so the parameter becomes required instead.
+
+    The test is :func:`is_safe_to_publish_verbatim`, not ``tier > Tier.LOW``.
+    A FLOORED parameter — an undeclared ``raw``/``prep`` column — is ``Tier.LOW``
+    yet masks per value at execution, and this path never executes anything, so
+    a tier-only test published it in the clear.
 
     This lives in the same function that derives the class so no path can reach
     a stored default without passing it. The run path re-derives with defaults
@@ -570,7 +575,7 @@ def _refuse_sensitive_defaults(
         if parameter.required:
             continue
         data_class = parameter_classes.get(parameter.name, FAIL_CLOSED_CLASS)
-        if data_class.tier > Tier.LOW:
+        if not is_safe_to_publish_verbatim(data_class):
             # The name is withheld from the message and carried in `details`
             # instead. A parameter name is the author's own text — `amazon_spend`
             # is as plausible a merchant name as a filter one — and in text mode

@@ -41,7 +41,7 @@ from typing import Annotated, Any, cast, get_args, get_origin, get_type_hints
 from pydantic import BaseModel
 
 from moneybin.log_sanitizer import mask_pii_shaped
-from moneybin.privacy.taxonomy import DataClass
+from moneybin.privacy.taxonomy import DataClass, Tier
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +296,37 @@ def mask_strength(data_class: DataClass) -> MaskStrength:
     if outputs[0] == outputs[1]:
         return MaskStrength.WHOLE
     return MaskStrength.PARTIAL
+
+
+def is_safe_to_publish_verbatim(data_class: DataClass) -> bool:
+    """True when a value of ``data_class`` may appear unmasked and unexecuted.
+
+    The shared gate for surfaces that publish a *stored or bound* value outside
+    the redaction path — a parameter default copied into the catalog entry, a
+    binding spliced into rendered SQL. None of them run ``redact_records``, so
+    the class is all they have to go on.
+
+    **Both halves are load-bearing, and neither alone is correct.**
+
+    The tier half is the original rule: a class above ``Tier.LOW`` is too
+    sensitive to publish. Keeping it is what stops this from being a widening —
+    ``BALANCE``, ``TXN_AMOUNT``, ``INCOME_AMOUNT``, ``MERCHANT_NAME``,
+    ``DESCRIPTION``, ``USER_NOTE`` and ``TXN_DATE`` are all above LOW and all
+    *pass through* today (PR 3 adds their bucketing), so a mask-strength-only
+    rule would start allowing stored defaults on all seven.
+
+    The strength half is the addition. ``FLOORED`` is ``Tier.LOW`` because of
+    what its transform does — re-scanning each value at execution — not because
+    its values are insensitive, and the tier test read a tier as a claim about
+    content. Any predicate that asks "is this tier high?" before publishing a
+    value verbatim has the same bug; ask this instead.
+
+    Measured from ``mask_strength``, never from a list of "classes that mask",
+    for the reason that function's own docstring gives.
+    """
+    return data_class.tier <= Tier.LOW and mask_strength(data_class) is (
+        MaskStrength.PASSTHROUGH
+    )
 
 
 def has_active_transform(payload_type: Any) -> bool:

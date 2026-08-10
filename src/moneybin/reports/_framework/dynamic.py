@@ -22,13 +22,14 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import USER_REPORT_DRIFT_DETECTED_TOTAL
+from moneybin.privacy.redaction import is_safe_to_publish_verbatim
 from moneybin.privacy.sql_lineage import (
     FAIL_CLOSED_CLASS,
     SchemaSnapshot,
     SqlParseError,
     get_current_schema_snapshot,
 )
-from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
     OutputColumn,
@@ -372,7 +373,7 @@ def _classed_params(
     dropped: list[str] = []
     for parameter in declared:
         data_class = parameter_classes.get(parameter.name, FAIL_CLOSED_CLASS)
-        if not parameter.required and data_class.tier > Tier.LOW:
+        if not parameter.required and not is_safe_to_publish_verbatim(data_class):
             dropped.append(data_class.value)
             classed.append(
                 replace(parameter, data_class=data_class, default=None, required=True)
