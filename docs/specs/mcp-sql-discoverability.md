@@ -18,14 +18,14 @@ Existing assets this design builds on:
 - **`tables.py`** is the authoritative registry of `TableRef` constants.
 - **DuckDB catalog already carries column docs.** SQLMesh's `register_comments` propagates the inline `/* ... */` blocks on each model's final SELECT into `duckdb_columns().comment`. Schema DDL files apply table/column comments via `schema.py:_apply_comments()` on app startup. So `duckdb_tables()` and `duckdb_columns()` are the source of truth for both structure and prose — no parallel YAML to maintain.
 - **MCP resources** (`src/moneybin/mcp/resources.py`) expose one client-requested resource: `moneybin://schema`.
-- **Architecture rule**: per `mcp-architecture.md`, consumers read from **core** (analytics) and **app** (user-authored state). Raw and prep are implementation details.
+- **Architecture rule**: per `mcp-architecture.md`, consumers read from **core** (analytics) and **app** (user-authored state) for analysis. `raw` and `prep` are implementation details that the agent-safe SQL surface may nonetheless read for inspection (Layer Rule 2's fourth exception, M2O.2).
 
 ## Requirements
 
 1. The LLM connected via MCP can discover, in one resource read, every table it should query, including: schema-qualified name, table purpose, every column with type and prose comment, and 2-3 representative example queries per table.
 2. Only the curated **interface tables** appear in the resource. `raw` and `prep` stay out of it — `sql_query` reads them, but an agent finds them by catalog query rather than from the resource. `sql_query` refuses `meta` and `seeds` outright, `DESCRIBE` included; `SHOW ALL TABLES` still lists their shape, because it names no table for the gate to resolve.
 3. The interface-table set is declared **once**, at the `TableRef` definition site in `tables.py`. There is no parallel list to keep in sync.
-4. The resource includes a "beyond the interface" footer that names the other schemas with one-line purposes and provides a sample catalog query so a power user (or the LLM, when explicitly asked) can spelunk further without consulting external docs.
+4. The resource includes a "beyond the interface" footer that names the other schemas with one-line purposes and provides a catalog query so a power user (or the LLM, when explicitly asked) can spelunk further without consulting external docs. **That query must pass `sql_query`'s own schema gate**, since the footer is served only on the agent path: a `duckdb_tables()` / `duckdb_views()` SELECT is refused, because a table-valued function parses to a table node with an empty schema and an empty name that the gate can never resolve to an allowed schema. `SHOW ALL TABLES` names no table, passes, and lists views — which is what matters, since every `prep` model and every runtime-minted `raw.gsheet_<alias>` / `raw.pdf_<alias>` seed view is a view.
 5. The `sql_query` tool description includes a one-line pointer to the resource, as a fallback for clients that do not auto-load resources.
 6. A startup-time / test-time assertion catches **stale-entry drift**: every `INTERFACE_TABLES` member must exist in `duckdb_tables()`.
 7. Example queries are tested end-to-end: every example query in the catalog must parse and execute against a seeded test database without error.
@@ -106,8 +106,8 @@ INTERFACE_TABLES: tuple[TableRef, ...] = tuple(
     }
   ],
   "beyond_the_interface": {
-    "note": "The tables above are the curated query surface. Other schemas exist for raw ingest (raw), staging (prep), provenance (meta), and seed data (seeds). Use them only when the curated tables cannot answer the question.",
-    "catalog_query": "SELECT table_schema, table_name, comment FROM duckdb_tables() WHERE table_schema NOT IN ('main', 'pg_catalog') ORDER BY 1, 2"
+    "note": "The tables above are the curated query surface. sql_query also reads raw ingest (raw) and staging (prep) — use them only when the curated tables cannot answer the question ... Provenance (meta) and seed data (seeds) are not readable through this surface.",
+    "catalog_query": "SHOW ALL TABLES"
   }
 }
 ```

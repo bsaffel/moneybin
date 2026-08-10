@@ -1,5 +1,5 @@
 {
-  "sha256": "3902b725fd270e265382bad879019648e79bfd538b9b4349309324fbe2b75fc4",
+  "sha256": "97f252972058d08f8270bba331e82121142b237c2d484e17b0e9b512f2a156f3",
   "tool_count": 49,
   "tools": [
     {
@@ -3035,7 +3035,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>). core/app/reports declare a class for every column. raw and prep declare 33 and scan every other value, masking only SSN and 8-or-more-digit shapes \u2014 a 4-to-7 digit account number passes through, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
+        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>). core/app/reports declare a class for every column. raw and prep declare 33 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes \u2014 a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3056,12 +3056,12 @@
         },
         "name": "sql_query"
       },
-      "description_bytes": 788,
+      "description_bytes": 852,
       "input_schema_bytes": 150,
       "name": "sql_query",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 1128
+      "total_bytes": 1192
     },
     {
       "annotation_bytes": 89,
@@ -5013,5 +5013,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 54551
+  "total_bytes": 54615
 }

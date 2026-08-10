@@ -137,8 +137,10 @@ path restores it rather than relying on it. It masks per value, not per column: 
 `int` under the 8-digit threshold comes back an `int`, and a `DECIMAL` or `float`
 comes back unchanged, so a single column can hold mixed types after redaction.
 `exports/redaction.py` carves `FLOORED` out of `_MASKED_DUCKDB_TYPE`'s invariant
-and `_stringify_floored_columns` coerces every value in such a column to `str`
-before the writer sees it, which is what keeps the `VARCHAR` declaration honest.
+and `_stringify_floored_columns` coerces every non-`NULL` value in such a column
+to `str` before the writer sees it, which is what keeps the `VARCHAR` declaration
+honest. `NULL` is passed through as itself — a `VARCHAR` column accepts it, and
+stringifying it would write the literal `"None"` into the artifact.
 
 Two paths reach this. A saved report whose lineage carries a class through an
 expression (`SELECT length(last_four)`) without carrying the expression's type;

@@ -28,7 +28,7 @@ Capabilities below are shipped and exercised end-to-end. Work that has not shipp
 
 ## Transformations and refresh
 
-- **Layered SQLMesh pipeline** — `raw` → `prep` (staging) → `core` (canonical facts / dimensions / bridges). Plus `app.*` for user-managed state and `reports.*` for curated views. Consumers (CLI, MCP, SQL clients) read from `core.*` and `reports.*`; `prep` is internal. -> [Data pipeline guide](guides/data-pipeline.md)
+- **Layered SQLMesh pipeline** — `raw` → `prep` (staging) → `core` (canonical facts / dimensions / bridges). Plus `app.*` for user-managed state and `reports.*` for curated views. Consumers (CLI, MCP, SQL clients) read from `core.*` and `reports.*` for analysis; the agent-safe SQL paths also read `raw.*` and `prep.*` for inspection, masked by value shape rather than by column declaration. -> [Data pipeline guide](guides/data-pipeline.md)
 - **Cross-source dedup** — SHA-256 content hashes with golden-record merge across CSV, OFX, and Plaid. Config-driven source priority. Three or more copies of the same transaction collapse to one record even when duplicates span sources *and* overlapping files (N-way collapse via a union-find spanning forest). -> [Data pipeline guide](guides/data-pipeline.md)
 - **Transfer detection** — Cross-account matching with a two-signal scoring engine (date distance, keyword); produces `core.bridge_transfers` and `is_transfer` / `transfer_pair_id` on `fct_transactions`. -> [Data pipeline guide](guides/data-pipeline.md)
 - **Refresh umbrella** — `moneybin refresh` (CLI) and `refresh_run` (MCP) are the single entry point for the default `gsheet → match → transform → categorize → identity` cascade. Pass `--step` (CLI) or `steps=[...]` (MCP) to scope sub-operations. `sync pull` and `import files` invoke refresh automatically unless the caller explicitly opts out. -> [Data pipeline guide](guides/data-pipeline.md)
@@ -93,9 +93,13 @@ report alongside the eight above. It appears in `reports list`, runs through
 `reports run`, and exports through `moneybin export report` — the same catalog,
 the same response envelope, the same masking. You never declare privacy classes:
 MoneyBin derives them from the SQL at save time and stores them, so a routing
-number in your own report is masked exactly as in a built-in one. If an upstream
-column is later reclassified as more sensitive, the saved report masks that
-column instead of serving the class it captured. `reports set` re-derives on any
+number in a column MoneyBin classifies is masked exactly as in a built-in one.
+A report reading `raw.*` or `prep.*` is the one place that parity does not
+hold: those columns are largely undeclared, so a routing number there comes
+back as `****...NNNN` — last four retained — where a declared one returns
+`*****`, and a 4-to-7 digit account number passes through in full. If an
+upstream column is later reclassified as more sensitive, the saved report masks
+that column instead of serving the class it captured. `reports set` re-derives on any
 SQL or parameter change, `reports delete` is undoable via `system audit undo`,
 and `reports reclassify` lowers one column's masking floor on an explicit human
 confirmation — audited, and the only path that does so.
@@ -160,7 +164,7 @@ blocker.
 ## SQL access
 
 - **Read-only SQL** — Connect any DuckDB client to the encrypted profile file. `moneybin db shell` opens an interactive shell; DuckDB UI works on the same file. -> [SQL access guide](guides/sql-access.md)
-- **Layered schemas** — Consumers read from `core.*` and `reports.*`. Full schema reference: [Data model reference](reference/data-model.md) · [Architecture](architecture.md).
+- **Layered schemas** — Consumers read from `core.*` and `reports.*` for analysis, plus `raw.*` and `prep.*` for inspection through the agent-safe SQL paths. Full schema reference: [Data model reference](reference/data-model.md) · [Architecture](architecture.md).
 
 ## Observability
 

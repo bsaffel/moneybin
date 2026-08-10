@@ -44,10 +44,11 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
     (sqlglot). CRITICAL columns (account/routing numbers) are ALWAYS masked
     (****<last4>). ``core``/``app``/``reports`` declare a class for every
     deployed column; ``raw``/``prep`` carry 33 declarations and floor the rest
-    on a value-shape scan that masks only SSN and 8-or-more-digit shapes, so a
-    4-to-7 digit account number in an undeclared column passes through. Other
-    tiers (amounts, descriptions, dates) are returned in the clear, matching the
-    typed tools' current behavior.
+    on a value-shape scan that reaches text and integer values only, masking
+    SSN and 8-or-more-digit shapes. So a 4-to-7 digit account number in an
+    undeclared column passes through, and a ``DECIMAL`` or ``FLOAT`` one is
+    never scanned at all. Other tiers (amounts, descriptions, dates) are
+    returned in the clear, matching the typed tools' current behavior.
 
     Results are capped; when truncated, summary.has_more is true and total_count
     exceeds returned_count. For schema, columns, and example queries, read
@@ -165,8 +166,9 @@ def register_sql_tools(mcp: FastMCP) -> None:
         "Each output column is classified via SQL lineage; CRITICAL columns "
         "(account/routing numbers) are ALWAYS masked (****<last4>). "
         "core/app/reports declare a class for every column. raw and prep declare 33 "
-        "and scan every other value, masking only SSN and 8-or-more-digit shapes — a "
-        "4-to-7 digit account number passes through, so treat those two schemas as "
+        "and scan every other text or integer value, masking only SSN and "
+        "8-or-more-digit shapes — a 4-to-7 digit account number passes through, and "
+        "a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as "
         "less protected, not equally protected. "
         "Amounts use the accounting convention (negative=expense, positive=income); "
         "currency is in summary.display_currency. "

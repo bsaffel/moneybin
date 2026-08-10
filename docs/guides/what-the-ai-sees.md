@@ -100,9 +100,11 @@ column through the SQL and masks by the resolved class (a column it can't resolv
 **fails closed** to the most-sensitive treatment), while the report views mask by a **declared
 per-report column→class map** — lineage tracing is deliberately *not* used there
 (a `reports.*` view is `SELECT * FROM <internal table>`, so tracing would classify
-the pointer and leak; per ADR-013). Either way raw SQL is not a bypass: `SELECT
-last_four FROM core.dim_accounts` comes back masked, and an undeclared report
-column fails closed.
+the pointer and leak; per ADR-013). Where a column carries a declared class,
+raw SQL is not a bypass: `SELECT last_four FROM core.dim_accounts` comes back
+masked, and an undeclared report column fails closed. `raw`/`prep` columns
+mostly carry no declaration, and there the floor is a value scan — weaker, and
+named [below](#not-masked-stated-plainly).
 
 **On every typed surface the masking follows a field's declared class, not a
 content scan — so a raw account number that rides *inside* a field classified as
