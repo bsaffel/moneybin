@@ -184,6 +184,83 @@ class MatchDecisionsRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
 
+    def repoint_account(
+        self,
+        *,
+        from_account_id: str,
+        to_account_id: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> tuple[AuditEvent, ...]:
+        """Re-key decisions naming a merged-away account onto the survivor.
+
+        An account merge re-points ``app.account_links``, but a decision row
+        stores the ``account_id`` it was made under. Left behind, that row no
+        longer describes any live pair: ``get_rejected_pairs`` keys its tuple on
+        ``account_id`` and ``_fetch_active_dedup_decisions`` builds its
+        ``NodeKey`` from it, while the same transactions now sit under the
+        survivor. The rejection therefore stops matching itself, and a matcher
+        run that clears the confidence threshold can auto-accept a pair the user
+        explicitly said were not duplicates.
+
+        Both columns move. ``account_id`` is the shared account on a dedup row
+        and side A on a transfer; ``account_id_b`` is the transfer's second
+        account and is NULL for dedup. Either can name the account that just
+        went away.
+
+        One audit per row, like every other method here — the undo engine
+        replays rows individually, and a single event covering N updates could
+        not restore them one at a time. Returns the events in mutation order.
+        Re-keying is idempotent: a second call finds no rows and returns empty.
+        """
+        if from_account_id == to_account_id:
+            raise ValueError(
+                "match_decisions.repoint_account: from_account_id and "
+                f"to_account_id are both {to_account_id!r}"
+            )
+        with self._transaction(in_outer_txn=in_outer_txn):
+            rows = self._db.execute(
+                f"""
+                SELECT match_id FROM {MATCH_DECISIONS.full_name}
+                WHERE account_id = ? OR account_id_b = ?
+                ORDER BY match_id
+                """,  # noqa: S608  # TableRef + parameterized values
+                [from_account_id, from_account_id],
+            ).fetchall()
+            events: list[AuditEvent] = []
+            for (match_id,) in rows:
+                before = self._require(self._fetch_row(match_id), "match_id", match_id)
+                self._db.execute(
+                    f"""
+                    UPDATE {MATCH_DECISIONS.full_name}
+                    SET account_id = CASE WHEN account_id = ? THEN ? ELSE account_id END,
+                        account_id_b = CASE
+                            WHEN account_id_b = ? THEN ? ELSE account_id_b
+                        END
+                    WHERE match_id = ?
+                    """,  # noqa: S608  # TableRef + parameterized values
+                    [
+                        from_account_id,
+                        to_account_id,
+                        from_account_id,
+                        to_account_id,
+                        match_id,
+                    ],
+                )
+                after = self._fetch_row(match_id)
+                events.append(
+                    self._emit_audit(
+                        action="match_decision.repoint_account",
+                        target=(*self._audit_target, match_id),
+                        before=self._serialize_for_audit(before),
+                        after=self._serialize_for_audit(after),
+                        actor=actor,
+                        parent_audit_id=parent_audit_id,
+                    )
+                )
+            return tuple(events)
+
     def reverse(
         self,
         match_id: str,

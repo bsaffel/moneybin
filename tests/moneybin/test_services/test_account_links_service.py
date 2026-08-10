@@ -724,6 +724,47 @@ def test_set_accept_reruns_the_matcher(
     rematch.assert_called_once_with(db, steps=["match", "transform"])
 
 
+def test_set_accept_carries_a_rejected_pair_onto_the_survivor(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """A user's "these are not duplicates" must survive the account merge.
+
+    ``get_rejected_pairs`` keys its tuple on ``account_id`` and the matcher
+    checks membership by exact tuple, so a rejection left on the merged-away
+    provisional stops matching the live pair — which now sits under the
+    survivor. The re-match fired on the very next line would then treat it as
+    brand new and, above ``high_confidence_threshold`` with agreeing
+    descriptions, auto-accept the pair the user explicitly rejected.
+    """
+    from moneybin.matching.persistence import get_rejected_pairs
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00001",
+        source_transaction_id_a="ofx1",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="csv1",
+        source_type_b="csv",
+        source_origin_b="bank",
+        account_id=_PROV1,
+        confidence_score=0.99,
+        match_signals={},
+        match_status="rejected",
+        match_tier="3",
+        decided_by="user",
+        actor="test",
+    )
+
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    pairs = get_rejected_pairs(db)
+    assert [p["account_id"] for p in pairs] == [_CAND_A], (
+        "the rejection must name the surviving account, or it stops matching "
+        "the pair it was made about"
+    )
+
+
 def test_set_standalone_does_not_rerun_the_matcher(
     seeded: AccountLinksService, rematch: MagicMock
 ) -> None:

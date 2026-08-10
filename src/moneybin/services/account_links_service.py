@@ -24,6 +24,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.account_resolution_types import (
     PendingLinkCandidate,
     PendingLinkGroup,
@@ -567,6 +568,21 @@ class AccountLinksService:
                         actor=self._actor,
                         in_outer_txn=True,
                     )
+                # Carry existing match decisions onto the survivor in the same
+                # transaction. They store the account_id they were made under,
+                # and both the rejected-pair key and the active-edge NodeKey are
+                # built from it — so a decision left on the merged-away account
+                # stops describing any live pair. The rejection in particular
+                # stops matching itself, and the re-match below can then
+                # auto-accept a pair the user explicitly rejected. Ordering is
+                # load-bearing: this must precede the commit that rematch_after_merge
+                # reads.
+                MatchDecisionsRepo(self._db).repoint_account(
+                    from_account_id=provisional_id,
+                    to_account_id=target_account_id,
+                    actor=self._actor,
+                    in_outer_txn=True,
+                )
                 # Accept the named decision.
                 self._decisions.update_status(
                     decision_id,

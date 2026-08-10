@@ -536,6 +536,20 @@ Guard-2 free-text resolution):
   `duplicate_account_overlap` green throughout (`moneybin-doctor.md`,
   `unproposed_cross_source_duplicates`, is the invariant that now catches it).
 
+  **The merge carries existing match decisions with it.** A decision row stores
+  the `account_id` it was made under, and both the rejected-pair key
+  (`get_rejected_pairs`) and the active-edge `NodeKey`
+  (`_fetch_active_dedup_decisions`) are built from that column — while
+  `AccountLinksRepo.repoint()` moves only `app.account_links`. A decision left
+  on the merged-away provisional therefore stops describing any live pair. The
+  sharp end is a **rejection**: it stops matching itself, so the re-match below
+  sees the pair as brand new and, above `high_confidence_threshold` with
+  agreeing descriptions, auto-accepts the two rows the user explicitly said were
+  not duplicates. `MatchDecisionsRepo.repoint_account()` re-keys both
+  `account_id` and `account_id_b` onto the survivor inside the merge
+  transaction, one audit per row so undo can replay them individually. The
+  ordering is load-bearing: it precedes the commit the re-match reads.
+
   So `AccountLinksService.set()` calls `rematch_after_merge()` after its commit,
   running `refresh(steps=["match", "transform"])`. The batched review path has
   its own seam in `apply_identity()`: its inner `set()` calls run with

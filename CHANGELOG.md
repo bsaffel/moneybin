@@ -834,6 +834,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   half-failed pass says so: matching and the rebuild fail independently, and
   either alone still leaves the merge unfinished in a way the user would
   otherwise have to discover for themselves.
+- **An accepted merge no longer strands the match decisions made under the old
+  account, which could silently reverse a rejection.** Accepting a link
+  re-points `app.account_links`, but a row in `app.match_decisions` stores the
+  `account_id` it was decided under — and that column is what the matcher keys
+  its rejected-pair tuple and its active-edge node on. Left behind, the row
+  stopped describing any live pair. For a rejection that is the worst case: it
+  no longer matched itself, so the next match pass treated the pair as new and,
+  above the confidence threshold with agreeing descriptions, auto-accepted the
+  two transactions the user had explicitly said were not duplicates — with
+  nothing to show it happened. The merge now re-keys both account columns onto
+  the surviving account in the same transaction, one audit row apiece so an
+  undo can replay them individually. Reachable before through any refresh
+  following a merge; the post-merge re-match above would have made it
+  deterministic.
 - **`moneybin doctor` can now see a duplicate nobody proposed.** Neither existing
   invariant could. `dedup_reconciliation` asserts
   `raw_total - core_count == dedup_absorbed`, which balances whether or not a
