@@ -1097,6 +1097,125 @@ def test_propose_existing_does_not_emit_reissue_candidates(db: Database) -> None
     assert resolver.propose_existing("acct_a") is None
 
 
+def test_backfill_retypes_a_vetoed_name_match_as_a_reissue(db: Database) -> None:
+    """The veto must retype the pair it discards, not swallow it on this path.
+
+    Two existing copies of a reissued card share a display name and differ on
+    last four. The name rung's veto is right to refuse calling that a ``name``
+    match — a stated last-four disagreement is evidence of a *different*
+    account. But ``propose_existing`` runs with ``reissue=False``, so before
+    this retype the vetoed pair had nothing to fall through to: a duplicate the
+    backfill queue used to surface went silently invisible, and it stays split,
+    double-counting its ledger.
+
+    Distinct from ``test_propose_existing_does_not_emit_reissue_candidates``,
+    whose names are dissimilar so the name matcher never fires: that fixture
+    isolates the unconditional same-institution sweep, which stays off here.
+    Only a pair the name signal actually matched is retyped.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="reissued_old",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="reissued_new",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="5678",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("reissued_old")
+
+    assert proposal is not None
+    assert [c.account_id for c in proposal.candidates] == ["reissued_new"]
+    assert proposal.candidates[0].signal == "institution_reissue"
+
+
+def test_a_vetoed_name_match_across_institutions_stays_dropped(db: Database) -> None:
+    """The retype is same-institution only; across two banks it is just a collision.
+
+    "Checking" at two different institutions with different last fours is two
+    unrelated accounts that happen to share a common word. Retyping that as a
+    reissue would put a merge proposal in front of a human on no evidence at
+    all — the failure the veto exists to prevent, reintroduced under a
+    different label.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="bank_one_checking",
+        display_name="Checking",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="bank_two_checking",
+        display_name="Checking",
+        institution_name="ALLY",
+        last_four="5678",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    assert resolver.propose_existing("bank_one_checking") is None
+
+
+def test_a_coincidental_namesake_does_not_suppress_the_genuine_reissue(
+    db: Database,
+) -> None:
+    """The retype runs beside the name pass, not only when the name pass is empty.
+
+    Three accounts named "Sapphire Reserve": the subject, its reissued twin at
+    the same institution (last four changed — vetoed out of the name pass), and
+    an unrelated account at another bank whose last four is simply unknown.
+    Silence is not disagreement, so the unrelated one clears the veto and lands
+    in the name pass.
+
+    Gating the retype on an empty name pass let that coincidence decide: the
+    weakest of the two candidates populated the list, the genuine reissue was
+    never retyped, and the duplicated ledger stayed split — in exactly the
+    namesake case the retype exists to catch. Both are weak signals bound for
+    the same review queue, so surfacing both is the point; picking one is not
+    the resolver's call to make.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="reissued_old",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="reissued_new",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="5678",
+    )
+    _seed_dim_account(
+        db,
+        account_id="unrelated_namesake",
+        display_name="Sapphire Reserve",
+        institution_name="ALLY",
+        last_four=None,
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("reissued_old")
+
+    assert proposal is not None
+    surfaced = {(c.account_id, c.signal) for c in proposal.candidates}
+    assert ("reissued_new", "institution_reissue") in surfaced, surfaced
+    assert ("unrelated_namesake", "name") in surfaced, surfaced
+
+
 def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:
     """A minted account claims its scoped full_number so a later source adopts it.
 
@@ -1472,3 +1591,121 @@ def test_institution_matching_canonicalizes_a_hand_written_name(db: Database) ->
     assert [c.signal for c in proposal.candidates] == ["institution_last4"], (
         proposal.candidates
     )
+
+
+def test_name_signal_is_vetoed_when_both_last_fours_are_known_and_differ(
+    db: Database,
+) -> None:
+    """A name that matches across a last-four disagreement is not a name match.
+
+    Two accounts at one institution whose last fours disagree are, on the only
+    identifier either of them states, *different accounts*. The name signal
+    routinely fires across that anyway — one live queue paired a checking
+    account with a savings account on nothing but a shared institution word —
+    so a name match scoring below the last-four signal is not enough: the
+    disagreement has to veto the label outright.
+
+    Vetoing the label is not vetoing the pair. Same institution, same name, a
+    last four that changed is the reissue shape, so it re-emerges under that
+    signal — which is what keeps ``accounts links run`` able to see it, since
+    backfill never enables the unconditional same-institution sweep.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_other",
+        last_four="9940",
+        institution_name="WELLS FARGO",
+        institution_slug="wells_fargo",
+        display_name="WF Checking 4267",  # equals the source name: the veto is the only thing suppressing it
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the veto on the candidate pass
+        _src(last_four="4267", account_name="WF Checking 4267"),
+        exclude_account_id="prov_new",
+    )
+
+    assert [c.signal for c in candidates] == ["institution_reissue"], candidates
+    assert "name" not in [c.signal for c in candidates]
+
+
+def test_name_signal_survives_when_the_candidate_states_no_last_four(
+    db: Database,
+) -> None:
+    """Silence is not disagreement — an unknown last four cannot veto anything.
+
+    The reissue rung requires both sides to carry one, so nothing else would
+    surface this pair: vetoing here would drop the proposal entirely rather than
+    retype it.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_other",
+        last_four=None,
+        institution_name="WELLS FARGO",
+        institution_slug="wells_fargo",
+        display_name="WF Checking 4267",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the veto's own boundary
+        _src(last_four="4267", account_name="WF Checking 4267"),
+        exclude_account_id="prov_new",
+    )
+
+    assert [c.signal for c in candidates] == ["name"], candidates
+
+
+def test_name_signal_survives_when_the_source_states_no_last_four(
+    db: Database,
+) -> None:
+    """The other half of the same boundary — a source that states nothing."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_other",
+        last_four="9940",
+        institution_name="WELLS FARGO",
+        institution_slug="wells_fargo",
+        display_name="WF Checking 4267",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the veto's own boundary
+        _src(last_four=None, account_name="WF Checking 4267"),
+        exclude_account_id="prov_new",
+    )
+
+    assert [c.signal for c in candidates] == ["name"], candidates
+
+
+def test_a_vetoed_name_match_resurfaces_as_the_reissue_signal(db: Database) -> None:
+    """The veto retypes an arriving-source proposal; it does not discard it.
+
+    A replacement card at the same institution is exactly a name match across a
+    changed last four. The reissue rung already exists for that shape and says
+    so honestly, where ``name`` claims the two are the same account because their
+    labels agree.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_other",
+        last_four="9940",
+        institution_name="WELLS FARGO",
+        institution_slug="wells_fargo",
+        display_name="WF Checking 4267",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the retype, not just the veto
+        _src(last_four="4267", account_name="WF Checking 4267"),
+        exclude_account_id="prov_new",
+        reissue=True,
+    )
+
+    assert [(c.signal, c.account_id) for c in candidates] == [
+        ("institution_reissue", "acct_other")
+    ], candidates

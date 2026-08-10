@@ -31,6 +31,7 @@ from moneybin.services.account_links_service import (
     AccountLinksService,
 )
 from moneybin.services.identity_confirmation import identity_confirm_message
+from moneybin.services.ledger_overlap import LedgerOverlap
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -53,7 +54,7 @@ def links_pending(
     """List pending account-link decisions, grouped by provisional account.
 
     Shows provisional accounts with candidate merge proposals. Each group
-    lists the candidate decision_id, account_id, display name, confidence,
+    lists the candidate decision_id, account_id, display name, ledger overlap,
     and match signal. Use `accounts links set` to decide each group.
     """
     with handle_cli_errors():
@@ -83,22 +84,33 @@ def links_pending(
         typer.echo(
             f"\n── provisional {group.provisional_account_id} "
             f"({group.provisional_display_name or '-'}) "
+            f"— {group.transactions:,} transactions move "
             f"— {len(group.candidates)} candidate(s) ──"
         )
         typer.echo(
             f"  {'Decision ID':<14} {'Candidate ID':<14} {'Signal':<20} "
-            f"{'Conf':>5}  {'Display Name'}"
+            f"{'Ledger overlap':>16}  {'Display Name'}"
         )
         for c in group.candidates:
-            conf_str = f"{c.confidence:.2f}" if c.confidence is not None else "  -  "
             typer.echo(
                 f"  {c.decision_id[:12]:<14} "
                 f"{c.candidate_account_id[:12]:<14} "
                 f"{c.signal:<20} "
-                f"{conf_str:>5}  "
+                f"{_overlap_cell(c.overlap):>16}  "
                 f"{c.candidate_display_name or '-'}"
             )
     typer.echo()
+
+
+def _overlap_cell(overlap: LedgerOverlap) -> str:
+    """One cell of measured evidence, or an honest dash when there is none.
+
+    "0 of 0" would read as two ledgers with nothing in common — evidence against
+    the merge — where no comparable period means the probe could not look.
+    """
+    if not overlap.measurable:
+        return "no shared period"
+    return f"{overlap.matched:,} of {overlap.comparable:,}"
 
 
 @app.command("set")
@@ -209,6 +221,34 @@ class _ApprovedMerge:
     The rows are identities rather than counts because a swap keeps every count
     intact: one pending sibling resolved elsewhere while another arrives leaves
     the same number of decisions in play and still changes which one dies.
+
+    The surviving account's own ledger size and the overlap ratio are rendered
+    in the prompt but deliberately not held here. Neither is a consequence of
+    the accept — the write touches the absorbed account's rows, which
+    ``sentence`` already counts — and holding them by equality would refuse a
+    correct merge whenever a concurrent import moved either one harmlessly.
+
+    **Known accepted gap**, in both of them. Equality is the wrong test, but no
+    test at all is not the right one, because each can also move the *unsafe*
+    way between prompt and commit:
+
+    - The empty-survivor warning ("the surviving account has no transactions of
+      its own — check the direction"): a second accept can absorb the survivor's
+      own history elsewhere and leave it an empty placeholder, so a warning that
+      should have fired never does.
+    - The overlap ratio: the probe's comparison window is ``MIN``/``MAX`` over
+      the *survivor's* dates, so one survivor-side row arriving outside it
+      widens the window and admits absorbed rows that match nothing. A ratified
+      "40 of 40" commits as "40 of 400" with the sentence unchanged. Pinned by
+      ``test_a_wider_survivor_span_pulls_more_rows_into_comparable``.
+
+    Both want the same missing mechanism: re-verify asymmetrically inside the
+    write transaction — refuse when the evidence got worse, never when it got
+    better — on this path *and* on the MCP grant, whose binding is a frozen
+    symmetric digest and would need a transported-but-undigested baseline to
+    express the asymmetry. That is a change to a primitive every destructive
+    MCP tool shares, so both halves land together in their own change or the
+    two surfaces disagree about what a confirmation covers.
     """
 
     sentence: dict[str, int]
@@ -216,8 +256,10 @@ class _ApprovedMerge:
     decisions: tuple[str, ...]
 
 
-def _merge_preview(decision_id: str, target_account_id: str) -> _ApprovedMerge | None:
-    """Resolve both radii read-only, the way MCP previews the same decision.
+def _merge_preview(
+    decision_id: str, target_account_id: str
+) -> tuple[_ApprovedMerge, str] | None:
+    """Resolve both radii and the prompt text read-only, the way MCP previews it.
 
     ``None`` when the accept changes nothing — a decision already settled onto
     this same candidate. The destructive check has to come first: ``accept_impact``
@@ -228,13 +270,19 @@ def _merge_preview(decision_id: str, target_account_id: str) -> _ApprovedMerge |
         plan = _plan_merge(db, decision_id, target_account_id)
         if not plan.destructive:
             return None
-        impact = AccountLinksService(db, actor="cli").accept_impact(
-            decision_id, target_account_id=target_account_id
+        service = AccountLinksService(db, actor="cli")
+        impact = service.accept_impact(decision_id, target_account_id=target_account_id)
+        facts = service.merge_facts(
+            absorbed_account_id=impact.provisional_account_id,
+            survivor_account_id=target_account_id,
         )
-    return _ApprovedMerge(
+    approved = _ApprovedMerge(
         sentence=plan.blast_radius,
         links=impact.link_ids,
         decisions=impact.decision_ids,
+    )
+    return approved, identity_confirm_message(
+        plan.blast_radius, surface="cli", merges=[facts], kinds=["account_link"]
     )
 
 
@@ -332,10 +380,11 @@ def _confirm_merge(decision_id: str, target_account_id: str) -> _ApprovedMerge |
     itself to them. A merge that turns out to move nothing — the decision is
     already settled — returns ``None`` and asks nothing.
     """
-    approved = _merge_preview(decision_id, target_account_id)
-    if approved is None:
+    preview = _merge_preview(decision_id, target_account_id)
+    if preview is None:
         return None
-    typer.echo(identity_confirm_message(approved.sentence), err=True)
+    approved, message = preview
+    typer.echo(message, err=True)
     if not typer.confirm("Merge these accounts?", default=False, err=True):
         typer.echo("Cancelled — nothing was merged.", err=True)
         raise typer.Exit(0)
@@ -372,19 +421,17 @@ def links_history(
 
     typer.echo(
         f"\n{'Decision ID':<14} {'Provisional':<14} {'Candidate':<14} "
-        f"{'Status':<10} {'Decided By':<10} {'Signal':<20} {'Conf':>5}"
+        f"{'Status':<10} {'Decided By':<10} {'Signal':<20}"
     )
-    typer.echo("-" * 90)
+    typer.echo("-" * 84)
     for d in payload.decisions:
-        conf_str = f"{d.confidence:.2f}" if d.confidence is not None else "  -  "
         typer.echo(
             f"{d.decision_id[:12]:<14} "
             f"{d.provisional_account_id[:12]:<14} "
             f"{d.candidate_account_id[:12]:<14} "
             f"{d.status:<10} "
             f"{d.decided_by:<10} "
-            f"{d.signal:<20} "
-            f"{conf_str:>5}"
+            f"{d.signal:<20}"
         )
     typer.echo()
 

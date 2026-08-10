@@ -1,6 +1,6 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-07-09
+> Last updated: 2026-08-10
 > Status: implemented (architecture M1S.1–.6 + the capture/bind-first
 > corrections M1S.7–.9, all shipped — see [§Decision 8](#decision-8--capture-mutable-labels-and-the-exporter-axis-m1s7-live-test-reconciliation));
 > the full-scale live re-validation this spec was written to unblock (5-account
@@ -334,10 +334,31 @@ signal reliability:
    definition, so signal 1 cannot fire; and on the PDF path `account_name` is a
    per-file filename alias, so signal 2 misses too. Requiring a last-four on both
    sides, and requiring them to differ, keeps it the reissue shape rather than a
-   general "any account at this institution" list. It is on for `resolve()` and
-   its `propose()` preview, which must agree, and off for `propose_existing()`
-   backfill, where every account is already known-distinct and pairwise proposals
-   would be noise:
+   general "any account at this institution" list. The same disagreement is a
+   **veto** one rung up: the fuzzy-name pass skips any pair where both sides
+   state a last four and the two differ, because a name match across a stated
+   contradiction is evidence of two *different* accounts. Silence is not
+   disagreement — an account with no known last four still reaches the name
+   rung, since vetoing there would drop a proposal nothing else surfaces. Where
+   the pair also shares an institution, the veto **retypes** rather than
+   discards: that exact pair re-emerges under `institution_reissue`, the signal
+   a replacement card actually carries. The retype runs on every path, because
+   it is bounded by what the name matcher already matched — and it runs
+   *unconditionally*, beside the name pass rather than only when that pass came
+   up empty. The two read disjoint halves of the same rows: the veto keeps the
+   pairs whose last fours agree or are silent, the retype keeps the ones that
+   disagree. Gating the retype on an empty name pass therefore let an unrelated
+   account that shared the name and stated no last four populate the list and
+   hide the genuine reissue behind it — the coincidental-namesake case the
+   retype exists for. Both are weak signals bound for the same review queue, so
+   both surface and the human picks. That is distinct from
+   the unconditional same-institution *sweep*, which surfaces every account whose
+   last four differs whether or not any signal fired: the sweep is on for
+   `resolve()` and its `propose()` preview, which must agree, and off for
+   `propose_existing()` backfill, where it would propose every same-issuer card
+   against every other. Keeping the two separate is what lets backfill see a
+   vetoed duplicate without drowning in pairwise noise — conflating them made a
+   duplicate the backfill queue used to surface silently invisible:
    - **0 candidates** → done: a new standalone account. Its `last_four` /
      institution / name (captured per Decision 7) become candidate signals for
      *future* imports.
@@ -503,6 +524,51 @@ Guard-2 free-text resolution):
   auto-rejecting siblings; `decision="reject"` forbids `target_id`. The envelope,
   sensitivity tier (low — `ref_value` masked/omitted), and `actions[]` follow
   `mcp.md`.
+- **What a queue row carries — measured overlap, not a stored score.** Each
+  candidate reports the **ledger overlap**: how many of the provisional
+  account's transactions already appear in the candidate's, matched on equal
+  amount within a ±3-day posting-lag window (`services/ledger_overlap.py`).
+  Exact date+amount alone is not the right predicate — a statement carries the
+  transaction date and an OFX feed the posting date, which scores a true twin at
+  roughly a quarter of its rows. That window is a calibration rather than a
+  preference, so it is a module constant and not `matching.date_window_days`
+  (which `system doctor`'s `duplicate_account_overlap` does reuse): the control
+  result that makes the ratio discriminating was measured at this width, and a
+  user who widened it would get a larger number that means less. Each group states how many transactions an
+  accepted merge would move, so the magnitude and the evidence are both present
+  at browse time rather than only inside the confirm.
+  Three properties are load-bearing:
+  - **Keyed on two account ids, not a decision id.** The matcher excludes
+    same-`account_id` pairs, so the overlap cannot be computed *after* the merge
+    it justifies; and the two-id shape leaves the probe reachable for
+    `system doctor`'s `duplicate_account_overlap` pairs, which carry no proposal.
+  - **Scoped to the comparable period.** The denominator counts only the
+    provisional's transactions falling inside the candidate's own span, widened
+    by the lag. Otherwise a statement archive predating a feed's download window
+    renders as "0 of 400", which reads as evidence *against* a correct merge. A
+    probe with no comparable period says so; it never renders as `0 of 0`.
+  - **Amount-equal means same currency.** A nominal amount is not a sum of
+    money until a currency names it, and `fct_transactions.currency_code`
+    exists precisely because two accounts can differ on it. Without the
+    predicate a multi-currency institution's USD checking and EUR savings —
+    a pair the name rung will happily propose — measure as a perfect twin. The
+    comparison is NULL-safe on purpose: only a *stated* disagreement vetoes a
+    match, because a plain `=` would score every pair of unknown-currency
+    ledgers at zero and switch the evidence off silently for exactly the
+    accounts whose sources never reported one. The same asymmetry the name
+    rung's last-four veto uses — silence is not disagreement. Both sides are
+    folded to a bare upper-case code before comparing, so the veto fires on the
+    currency rather than on its spelling: the tabular extractor copies
+    `currency` out of the source cell verbatim while OFX and Plaid carry ISO
+    codes, which puts `usd` opposite `USD` in precisely the cross-source pair
+    this probe is asked to judge. A blank cell reads as unstated for the same
+    reason silence does — a statement that fills its currency column only on
+    foreign rows leaves the domestic ones empty, not NULL.
+  - **`confidence_score` is not a review surface.** Its value is fixed per
+    signal (0.5 `institution_last4`, 0.4 `name`, 0.3 `institution_reissue`), so
+    it restates `signal` in a less legible form; no input moves it. The column
+    remains as the audit record of what was written when the proposal was
+    created, and is no longer projected onto either surface.
 - **Status lifecycle.** `account_links`: `accepted` (live) / `reversed` (undone).
   `account_link_decisions`: `pending` (awaiting review) → `accepted` (merged onto
   the named candidate) / `rejected` (declined pairing — not re-proposed) /
@@ -958,7 +1024,61 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
 - `ACCOUNT_LINK_OUTCOMES_TOTAL` — Counter, labels
   `result ∈ {adopted_strong, minted_new, pending_review, merged, rejected}`.
 - `ACCOUNT_LINK_REVIEW_PENDING` — Gauge, current pending-decision count.
-- `ACCOUNT_LINK_CONFIDENCE` — Histogram of resolution confidence.
+- `ACCOUNT_LINK_CONFIDENCE` — Histogram of resolution confidence. Records the
+  score written with a proposal, which is where that number is still meaningful;
+  it is deliberately not the review surfaces' evidence (Decision 5).
+
+- `ACCOUNT_LINK_OVERLAP_PROBES_TOTAL` — Counter,
+  `result ∈ {measurable, unmeasurable}`, incremented inside
+  `probe_ledger_overlap` so no call site can forget it. A deployment where
+  schema or source drift makes every probe return "no comparable period" has an
+  evidence surface that renders prose and no number, and nothing else on any
+  surface changes when that happens. `unmeasurable` climbing while `measurable`
+  stays flat is the alarm. Note the flush boundary: the probe runs on the
+  read-only browse and confirm paths, and `flush_metrics()` skips a session that
+  opened no write connection, so a browse-only session's counts are accumulated
+  in-process and discarded at exit. The confirm path that precedes a merge does
+  open a write connection, which is the path where the signal has to survive.
+
+**Known gap — the displayed ledger evidence is not re-verified at commit.** The
+merge sentence renders two facts that neither confirm path holds the commit to.
+The CLI's `_drift_check` compares the blast radius and the link and decision row
+identities; the MCP grant digests resolved ids and blast radius.
+
+- **The empty-survivor warning.** "The surviving account has no transactions of
+  its own — check the direction before accepting" appends when
+  `facts.survivor.transactions == 0`, the cheap tell for a reversed proposal. A
+  second accept landing while the prompt is open can absorb the survivor's own
+  history elsewhere, so the warning that should have fired never does.
+- **The overlap ratio.** The probe's comparison window is `MIN`/`MAX` over the
+  *survivor's* dates, so one survivor-side row arriving outside it widens the
+  window and admits absorbed rows that match nothing: `matched` holds while
+  `comparable` grows. A ratified "40 of 40" can commit as "40 of 400" with the
+  sentence unchanged. `test_a_wider_survivor_span_pulls_more_rows_into_comparable`
+  pins the mechanism.
+
+Both want the same missing check, and it is **asymmetric** rather than another
+field in the digest: refuse when the evidence got worse, never when it got
+better — a survivor that gained its first transactions, or an import that
+strengthened the overlap, are both harmless and a digest would refuse them. Both
+surfaces have to gain it together, and on MCP it must survive the opaque-token
+round trip where the proposal is never reloaded — `ConfirmationBinding` is
+frozen and hashed over every field, so carrying the approved baseline there
+means a transported-but-undigested field on a primitive every destructive tool
+shares. That blast radius is why this lands as its own change rather than
+half-done on one surface.
+
+**The merge prompt is what makes `identity_links_decide` a medium-tier tool.**
+Its response payload carries record ids, a status, and counts — all `low`. The
+elicitation carries each ledger's first and last transaction dates and the
+account labels the user wrote, which the tier table puts at `medium`. Static
+classification walks only the payload, so the tool declares the difference with
+`discloses=Tier.MEDIUM` and the decorator folds it in as a floor. Without it the
+privacy audit event would record `low` for a call that showed the caller
+medium-tier data, and a future consent gate would admit the call on the wrong
+tier. `accounts_links_set` renders the same evidence and needs no declaration:
+it is an unregistered internal callback with no caller, so its prompt reaches
+nobody. Registering it means declaring the tier in the same change.
 
 ## Testing
 

@@ -31,7 +31,12 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 2. **Privacy by architecture.** MoneyBin uses four sensitivity tiers (`low`,
    `medium`, `high`, `critical`). Static tools derive their maximum tier from
    the typed response payload; projection-varying tools opt into dynamic
-   classification and declare a maximum. Critical-field masking is wired;
+   classification and declare a maximum. A tool that shows the caller
+   classified data *outside* that payload — in practice, the text of a
+   confirmation elicitation — declares it with `discloses=Tier.X`, which is
+   folded in as a floor (it raises the derived tier, never lowers it). Without
+   it, a prompt rendering transaction dates through a tool whose response holds
+   only record ids audits as `low`. Critical-field masking is wired;
    **global consent enforcement is deferred**. Do not claim or depend on an
    automatic consent gate or degraded response until that gate ships.
 3. **Batch-first, composable.** Each tool is called once per turn with a complete result. Collection operations accept lists, not single items.

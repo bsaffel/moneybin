@@ -232,8 +232,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   +-- history --account ID [--from DATE] [--to DATE]
 |   +-- links                      -- Review and manage account-link binding decisions
 |       +-- pending [--output json] [--quiet]
-|       |         List provisional accounts + candidate merge proposals; each candidate
-|       |         shows decision_id, candidate_account_id, display name, confidence, signal.
+|       |         List provisional accounts + candidate merge proposals; each group states
+|       |         how many transactions the merge would move, and each candidate shows
+|       |         decision_id, candidate_account_id, display name, ledger overlap, signal.
 |       +-- set <decision_id> --into <account_id> | --standalone [--yes]
 |       |         Merge the provisional into the candidate (--into) or keep as standalone
 |       |         (--standalone). The two flags are mutually exclusive; omitting both exits 2.

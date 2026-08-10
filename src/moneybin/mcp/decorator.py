@@ -49,6 +49,7 @@ from moneybin.privacy.introspection import (
 )
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
+from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 from moneybin.services.mutation_context import operation
 from moneybin.services.request_lifetime import RequestLifetime, request_lifetime_scope
@@ -394,6 +395,7 @@ def mcp_tool(
     max_items: int | None | _UnsetType = _UNSET,
     dynamic_classification: bool = False,
     maximum_sensitivity: Sensitivity | None = None,
+    discloses: Tier | None = None,
     timeout_seconds: float | _UnsetType = _UNSET,
 ) -> Callable[..., Any]:
     """Mark a function as an MCP tool. Sensitivity is derived from the return type.
@@ -432,6 +434,14 @@ def mcp_tool(
             This is a declared contract for documentation and admission review;
             it does not replace the tool's per-call classification. Static tools
             derive their maximum from their typed response and must not set it.
+        discloses: Tier this tool shows the caller *outside* its typed response —
+            in practice, the text of a confirmation elicitation. The derived tier
+            walks the payload, so a prompt rendering transaction dates or a
+            user's own account label discloses MEDIUM through a tool whose
+            response carries only record ids. Declared here, that tier is folded
+            in as a floor: it can raise the tool's sensitivity, never lower it,
+            so it cannot be used to talk a CRITICAL payload out of being masked.
+            Omit it unless the tool renders classified content in a prompt.
         timeout_seconds: Per-tool override for ``MCPConfig.tool_timeout_seconds``.
             Sentinel ``_UNSET`` inherits from settings. Use this for tools whose
             natural runtime exceeds the default cap (e.g. interactive OAuth
@@ -447,6 +457,11 @@ def mcp_tool(
     if not dynamic_classification and maximum_sensitivity is not None:
         raise ValueError(
             "maximum_sensitivity is only valid with dynamic_classification=True"
+        )
+    if dynamic_classification and discloses is not None:
+        raise ValueError(
+            "discloses is only valid for a static tool; a dynamic tool already "
+            "sets its own per-call sensitivity"
         )
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -493,6 +508,11 @@ def mcp_tool(
                 tier = derive_tier(payload_type_arg)
             except PrivacyContractError as exc:
                 raise PrivacyContractError(f"{fn.__name__}: {exc}") from exc
+            # A floor, never an answer: max() keeps a CRITICAL payload CRITICAL
+            # even when the prompt is declared MEDIUM. Tier is an IntEnum for
+            # exactly this.
+            if discloses is not None:
+                tier = max(tier, discloses)
             sensitivity = tier_to_sensitivity(tier)
             classes_for_log = [
                 c.value for c in sorted(extract_data_classes(payload_type_arg))

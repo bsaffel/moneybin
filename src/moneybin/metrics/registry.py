@@ -480,6 +480,16 @@ ACCOUNT_LINK_CONFIDENCE = Histogram(
     "Resolution confidence for account-link candidate proposals.",
 )
 
+ACCOUNT_LINK_OVERLAP_PROBES_TOTAL = Counter(
+    "moneybin_account_link_overlap_probes_total",
+    "Ledger-overlap probes behind an account-merge proposal, by whether the two "
+    "ledgers shared a period the probe could compare at all. Alarm when "
+    "'unmeasurable' climbs while 'measurable' stays flat: schema or source drift "
+    "can silently reduce every merge prompt to prose with no evidence in it, and "
+    "no surface renders differently when that happens.",
+    ["result"],
+)
+
 DUPLICATE_ACCOUNT_PAIRS = Gauge(
     "moneybin_duplicate_account_pairs",
     "Account pairs at one institution whose transactions mirror each other — "

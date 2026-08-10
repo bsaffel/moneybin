@@ -443,6 +443,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **The account-link queue now shows how much of the ledger already matches,
+  instead of a confidence score that never moved.** Every proposal in
+  `accounts links pending` carried `0.5` or `0.4` — a constant picked by which
+  signal fired, not a measurement of anything about your accounts — so the one
+  number offered for the decision could not tell a certain merge from a doubtful
+  one. Each candidate now reports how many of the provisional account's
+  transactions already appear in the candidate's ledger, matched on amount
+  within a few days to absorb the gap between a statement's transaction date and
+  a feed's posting date. Against a real duplicated card that reads `345 of 346`;
+  against an unrelated account at the same institution, `0 of 346`. The
+  comparison is scoped to the period both accounts cover, so a statement archive
+  that predates a feed's download window reports `no shared period` rather than
+  a zero that would read as evidence against a correct merge. The group header
+  also states how many transactions the merge would move, so deciding no longer
+  costs a second command (#387). Two rows count as the same transaction only
+  when they agree on currency as well as amount: at a multi-currency
+  institution a USD 10.00 row and a EUR 10.00 row are different money, and
+  without that a USD checking account and a EUR savings account proposed
+  together by their name could read as a perfect twin. Silence is not
+  disagreement — two ledgers that never stated a currency still match each
+  other, since refusing them would switch the evidence off for every account
+  whose source never reported one. The veto reads the currency and not its
+  spelling: a spreadsheet column holding `usd` names the same money as a
+  statement's `USD`, padding and letter case included, and a currency column
+  left blank on domestic rows counts as unstated rather than as a currency of
+  its own (#387).
+- **One merge now reads the same way wherever it is proposed.** The CLI prompt,
+  `accounts_links_set`, and `identity_links_decide` each described the same
+  decision differently, and the worst of the three named both accounts by their
+  display label — identical text on both sides in exactly the split-account case
+  the feature exists to fix. All three now render one sentence that names each
+  side by what *differs* between them (which source reported it, how much
+  history it holds, the period it covers, its subtype, its currency), states
+  which account is absorbed and which survives, carries the overlap evidence,
+  and names the reversal in the syntax of the surface you are reading it on —
+  `moneybin system audit undo <operation_id>` at the CLI,
+  `system_audit_undo(operation_id=...)` over MCP. It is the one clause that
+  differs between the two, because a recovery command is worth nothing unless it
+  runs where it is read. When the surviving account has
+  no transactions of its own — a malformed placeholder offered as the survivor,
+  which the live queue produced — the prompt says so and tells you to check the
+  direction before accepting. The closing paragraph now describes only the link
+  kinds the batch actually contains, so a card-to-card merge is no longer warned
+  about security tax lots and hand-set price marks it never touches. An account
+  that arrived over `moneybin sync` is described by that channel rather than by
+  the provider the sync server happens to speak to, which is an implementation
+  detail behind the server and not something a confirmation prompt should
+  name (#387).
+- **`identity_links_decide` now reports `sensitivity: "medium"`.** Its response
+  still carries only record ids and counts, but its merge prompt shows
+  transaction dates and the account labels you wrote, and the privacy audit
+  event recorded the response's tier rather than what you were shown. A tool
+  that renders classified data in a confirmation prompt now declares that tier
+  alongside the one derived from its response, and the higher of the two wins
+  (#387).
+- **A name match no longer proposes a merge across two different stated last
+  fours.** Two accounts that agree on a fuzzy name and *disagree* on a last four
+  they both state are evidence of two different accounts, not one; the name rung
+  proposed them anyway. It now skips that pair. Silence is not disagreement — an
+  account with no known last four still reaches the name rung, since vetoing
+  there would drop a proposal nothing else surfaces. At the same institution the
+  pair re-surfaces under `institution_reissue`, which is the signal a reissued
+  card actually carries, so the proposal is retyped rather than lost. That
+  retype is offered alongside any other name match rather than only when there
+  is none, so an unrelated account that happens to share the name and states no
+  last four cannot stand in for the reissue and hide it (#387).
 - **`moneybin accounts links set --into` now shows what the merge moves and asks
   before committing.** Accepting a link folds one account's whole history into
   another, and no command splits it back apart — but this was the last accept
@@ -732,6 +798,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so the tool's declared ceiling has to admit the critical tier for the
   masking middleware to apply. Hosts that gate tools on declared sensitivity
   will see `import_confirm` move band.
+
+### Removed
+- **`confidence` no longer appears in the account-link review payloads.** The
+  `Conf` column is gone from `accounts links pending` and `accounts links
+  history`, and the `confidence` field is gone from their `--output json`
+  envelopes and from `reviews(kind="account_links")`. It reported a constant
+  chosen by which signal fired, so anything reading it was reading the signal
+  name in a less legible form — `signal` still carries that, and
+  `overlap_matched` / `overlap_comparable` now carry the measurement it looked
+  like it was making. The `app.account_link_decisions.confidence_score` column
+  is unchanged: it is what was recorded when the proposal was written, and the
+  audit trail keeps it (#387).
 
 ### Fixed
 - **Undoing a decision puts it back in the review queue, and the queue count now

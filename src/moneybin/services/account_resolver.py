@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import duckdb
 
@@ -90,6 +92,22 @@ def _institution_key(institution: str | None) -> str | None:
     return slugify(slug_for_institution_name(institution) or institution) or None
 
 
+def _last_fours_disagree(
+    source_last_four: str | None, candidate_last_four: str | None
+) -> bool:
+    """Whether two accounts state last fours that positively contradict each other.
+
+    Requires BOTH sides to state one. Silence is not disagreement: an account
+    with no known last four is a different gap, and vetoing on it would drop a
+    proposal that nothing else surfaces rather than retype it.
+    """
+    return bool(
+        source_last_four
+        and candidate_last_four
+        and candidate_last_four != source_last_four
+    )
+
+
 # Cap on the fallback pick-list (existing accounts surfaced for the human to pick
 # from when no real signal cleared). Bounds an otherwise-unbounded "list all
 # accounts" so a large book doesn't dump everything; a personal-finance user
@@ -113,6 +131,63 @@ class _Candidate:
     signal: str
     value: str
     confidence: float
+
+
+def _retyped_reissue_candidates(
+    src: SourceAccount, name_rows: Sequence[Any]
+) -> list[_Candidate]:
+    """Name matches the last-four veto discarded, relabelled as what they are.
+
+    The veto is right to refuse calling a match across a stated last-four
+    disagreement a ``name`` match — that is evidence of a *different* account.
+    But refusing the label is not the same as refusing the pair, and the two got
+    conflated: ``propose_existing`` runs with ``reissue=False``, so on the
+    backfill path a vetoed pair had nothing to fall through to and a duplicate
+    the queue used to surface went silently invisible.
+
+    Runs on every path and unconditionally, unlike ``_reissue_candidates``,
+    because the two answer different questions. That one sweeps *every*
+    same-institution account whose last four differs, which in an established
+    book is the pairwise cross product — noise, which is why backfill keeps it
+    off and why it stays a last-resort fallback. This one is bounded by what the
+    name matcher actually matched, so it stays the reissue shape (same
+    institution, same name, a last four that changed) and is cheap enough to
+    always ask. It reads only rows the veto discarded, so it can never duplicate
+    a candidate the name pass already returned.
+
+    Same-institution only. "Checking" at two different banks with two different
+    last fours is a common word, not a reissued card, and retyping that would
+    reintroduce the evidence-free merge proposal the veto exists to prevent.
+    """
+    target_inst = _institution_key(src.institution) if src.institution else None
+    if not target_inst:
+        return []
+    vetoed = [
+        {"account_id": str(row[0]), "account_name": str(row[1] or "")}
+        for row in name_rows
+        if _last_fours_disagree(src.last_four, row[2])
+        and row[3]
+        and _institution_key(str(row[3])) == target_inst
+    ]
+    if not vetoed:
+        return []
+    result = match_account(src.account_name, existing_accounts=vetoed)
+    # match_account returns an exact slug hit via .account_id and fuzzy hits via
+    # .candidates — the same split the name rung above reads, for the same reason.
+    matched = (
+        [result.account_id]
+        if result.matched and result.account_id
+        else [c["account_id"] for c in result.candidates if c["account_id"]]
+    )
+    return [
+        _Candidate(
+            account_id=str(account_id),
+            signal="institution_reissue",
+            value=target_inst,
+            confidence=0.3,
+        )
+        for account_id in matched
+    ][:_FALLBACK_CANDIDATE_CAP]
 
 
 class AccountResolver:
@@ -679,6 +754,19 @@ class AccountResolver:
         Each is a review proposal, never an auto-merge. Returns no candidates if
         core.dim_accounts is not yet materialized (first import before any transform).
 
+        The name rung skips any account whose last four positively contradicts
+        the source's (``_last_fours_disagree``). A name match across a stated
+        disagreement is not weaker evidence than the last-four signal — it is
+        evidence of a *different* account, and letting it score merely lower put
+        a checking account and a savings account in one merge proposal. When the
+        two also share an institution, ``_retyped_reissue_candidates`` re-surfaces
+        that exact pair under the signal that is actually true — on every path,
+        because the ``reissue`` sweep below is off for backfill and a vetoed pair
+        would otherwise have nothing to fall through to. It runs *beside* the
+        name pass rather than only when that pass came up empty: the two read
+        disjoint halves of the same rows, so gating it let an unrelated namesake
+        carrying no last four hide a genuine reissue.
+
         ``reissue`` (arriving source accounts only): when neither signal clears,
         surface same-institution accounts whose last-four differs — see
         ``_reissue_candidates``. On for ``resolve()`` and its ``propose()``
@@ -726,13 +814,16 @@ class AccountResolver:
                 )
             if out:
                 return out
+            name_rows = self._db.execute(
+                f"SELECT account_id, display_name, last_four, institution_slug "  # noqa: S608  # TableRef + parameterized values
+                f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id != ? "
+                "ORDER BY account_id",
+                [exclude_account_id],
+            ).fetchall()
             existing = [
                 {"account_id": str(r[0]), "account_name": str(r[1] or "")}
-                for r in self._db.execute(
-                    f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
-                    "WHERE account_id != ?",
-                    [exclude_account_id],
-                ).fetchall()
+                for r in name_rows
+                if not _last_fours_disagree(src.last_four, r[2])
             ]
             result = match_account(src.account_name, existing_accounts=existing)
             if result.matched and result.account_id:
@@ -758,6 +849,13 @@ class AccountResolver:
                     for c in result.candidates
                     if c["account_id"]
                 )
+            # Beside the name pass, not after it. The two read disjoint halves of
+            # name_rows — the veto keeps agreeing/absent last fours, this keeps
+            # the disagreeing ones — so a coincidental namesake with no last four
+            # would otherwise populate `out` and suppress the reissue it has
+            # nothing to do with. Both are weak signals headed for the same
+            # review queue; picking between them is the human's call.
+            out.extend(_retyped_reissue_candidates(src, name_rows))
             if not out and reissue:
                 out = self._reissue_candidates(src, exclude_account_id)
             if not out and fallback:

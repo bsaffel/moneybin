@@ -10,6 +10,8 @@ Fixture layout:
 
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -51,6 +53,47 @@ def _insert_dim_account(db: Database, account_id: str, display_name: str) -> Non
         "INSERT INTO core.dim_accounts (account_id, display_name, source_type) "
         "VALUES (?, ?, ?)",
         [account_id, display_name, "csv"],
+    )
+
+
+def _set_account_traits(
+    db: Database,
+    account_id: str,
+    *,
+    account_subtype: str | None = None,
+    account_type: str | None = None,
+    currency_code: str | None = None,
+) -> None:
+    db.execute(
+        "UPDATE core.dim_accounts SET account_subtype = ?, account_type = ?, "
+        "currency_code = ? WHERE account_id = ?",
+        [account_subtype, account_type, currency_code, account_id],
+    )
+
+
+def _insert_transaction(
+    db: Database,
+    *,
+    transaction_id: str,
+    account_id: str,
+    on: date,
+    amount: str,
+    source_type: str = "csv",
+    currency_code: str = "USD",
+) -> None:
+    """Insert one core transaction.
+
+    ``currency_code`` defaults to a stated value rather than NULL because the
+    pipeline cannot produce a NULL one under an account that states its own:
+    ``fct_transactions.currency_code`` is ``COALESCE(t.currency_code,
+    a.currency_code)``. A fixture that left it NULL under a USD account would
+    let the overlap probe match rows production would have separated.
+    """
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, source_type, "
+        "currency_code) VALUES (?, ?, ?, ?, ?, ?)",
+        [transaction_id, account_id, on, Decimal(amount), source_type, currency_code],
     )
 
 
@@ -173,6 +216,65 @@ def seeded(svc: AccountLinksService, db: Database) -> AccountLinksService:
     return svc
 
 
+@pytest.fixture()
+def seeded_ledgers(seeded: AccountLinksService, db: Database) -> AccountLinksService:
+    """``seeded`` plus transactions, so the ledger evidence is measurable.
+
+    Hand-derived against ``probe_ledger_overlap``'s ±3-day window, which scopes
+    the denominator to the period the *candidate* covers:
+
+    - cand_a spans 2026-05-02 → 2026-05-04, so prov1's comparable window is
+      2026-04-29 → 2026-05-07.
+    - prov1 holds four transactions; the 2026-01-15 one falls outside that
+      window, leaving **3 comparable**.
+    - Of those, 10.00 (1 day apart) and 20.00 (2 days apart) have an
+      amount-equal counterpart in cand_a; 30.00 has none — **2 matched**.
+    - prov1's own ledger is **4**, deliberately different from the 3 comparable
+      and the 2 matched so the three numbers cannot be confused for each other.
+
+    Both sides share one currency on purpose. The probe only matches rows that
+    agree on ``currency_code``, so a pair that disagreed on it would measure
+    zero overlap however equal the amounts looked — which is a different
+    fixture answering a different question (see ``test_ledger_overlap.py``).
+    Here the subtype is what tells the two accounts apart.
+    """
+    _set_account_traits(db, _PROV1, account_type="depository", currency_code="USD")
+    _set_account_traits(
+        db,
+        _CAND_A,
+        account_subtype="checking",
+        account_type="depository",
+        currency_code="USD",
+    )
+    for i, (on, amount) in enumerate([
+        (date(2026, 5, 1), "10.00"),
+        (date(2026, 5, 2), "20.00"),
+        (date(2026, 5, 3), "30.00"),
+        (date(2026, 1, 15), "99.00"),
+    ]):
+        _insert_transaction(
+            db,
+            transaction_id=f"prov1_txn{i:04d}",
+            account_id=_PROV1,
+            on=on,
+            amount=amount,
+            source_type="pdf",
+        )
+    for i, (on, amount) in enumerate([
+        (date(2026, 5, 2), "10.00"),
+        (date(2026, 5, 4), "20.00"),
+    ]):
+        _insert_transaction(
+            db,
+            transaction_id=f"cand_a_txn{i:04d}",
+            account_id=_CAND_A,
+            on=on,
+            amount=amount,
+            source_type="ofx",
+        )
+    return seeded
+
+
 # ---------------------------------------------------------------------------
 # count_pending
 # ---------------------------------------------------------------------------
@@ -278,6 +380,164 @@ def test_pending_display_name_absent_dim_is_empty_string(
     g = groups[0]
     assert g.provisional_display_name == ""
     assert g.candidates[0].candidate_display_name == ""
+
+
+# ---------------------------------------------------------------------------
+# pending — browse-time ledger evidence
+# ---------------------------------------------------------------------------
+
+
+def test_pending_measures_each_candidate_against_the_provisional_ledger(
+    seeded_ledgers: AccountLinksService,
+) -> None:
+    """The queue's decisive number is measured, not carried from the proposal.
+
+    ``pending()`` is the only place these two reads are wired together, and the
+    CLI test drives a mocked group — so a probe called with its arguments
+    reversed, or against the wrong account, is invisible everywhere else.
+    """
+    by_prov = {g.provisional_account_id: g for g in seeded_ledgers.pending()}
+    candidate = next(
+        c for c in by_prov[_PROV1].candidates if c.candidate_account_id == _CAND_A
+    )
+
+    assert candidate.overlap.comparable == 3
+    assert candidate.overlap.matched == 2
+    assert candidate.overlap.window_start == date(2026, 5, 1)
+    assert candidate.overlap.window_end == date(2026, 5, 3)
+
+
+def test_pending_carries_the_provisional_ledger_size_not_the_comparable_count(
+    seeded_ledgers: AccountLinksService,
+) -> None:
+    """How much history moves is a different number from how much of it matched.
+
+    The group header states the magnitude of the merge; the candidate row states
+    the evidence for it. Seeding four transactions where only three are
+    comparable and two match keeps a wiring swap from passing.
+    """
+    by_prov = {g.provisional_account_id: g for g in seeded_ledgers.pending()}
+
+    assert by_prov[_PROV1].transactions == 4
+    assert by_prov[_PROV2].transactions == 0
+
+
+def test_pending_reports_an_unmeasurable_probe_rather_than_a_zero_ratio(
+    seeded_ledgers: AccountLinksService,
+) -> None:
+    """prov2 holds no transactions, so nothing about the pair is comparable."""
+    by_prov = {g.provisional_account_id: g for g in seeded_ledgers.pending()}
+    candidate = by_prov[_PROV2].candidates[0]
+
+    assert candidate.candidate_account_id == _CAND_A
+    assert not candidate.overlap.measurable
+    assert candidate.overlap.comparable == 0
+
+
+def test_pending_renders_before_core_is_materialized(db: Database) -> None:
+    """A profile has proposals before it has a transform.
+
+    ``core.dim_accounts`` and ``core.fct_transactions`` are SQLMesh-owned, so
+    the queue has to render in the window between a profile's first sync and
+    its first refresh. Three reads touch ``core`` on this path — the display
+    name, the overlap probe, and the ledger size — and each guards the catalog
+    error separately, so a missing guard raises where the queue should list.
+    """
+    _insert_decision(
+        db,
+        decision_id=_DEC1,
+        provisional_account_id=_PROV1,
+        candidate_account_id=_CAND_A,
+    )
+
+    groups = AccountLinksService(db, actor="cli").pending()
+
+    assert len(groups) == 1
+    assert groups[0].transactions == 0
+    assert not groups[0].candidates[0].overlap.measurable
+
+
+# ---------------------------------------------------------------------------
+# ledger_facts / merge_facts
+# ---------------------------------------------------------------------------
+
+
+def test_merge_facts_before_core_is_materialized_describes_both_sides_as_empty(
+    db: Database,
+) -> None:
+    """The confirm prompt has the same pre-transform window as the queue."""
+    facts = AccountLinksService(db, actor="cli").merge_facts(
+        absorbed_account_id=_PROV1, survivor_account_id=_CAND_A
+    )
+
+    assert facts.absorbed.account_id == _PROV1
+    assert facts.absorbed.transactions == 0
+    assert facts.absorbed.subtype is None
+    assert facts.survivor.account_id == _CAND_A
+    assert not facts.overlap.measurable
+
+
+def test_ledger_facts_describes_an_account_by_what_distinguishes_it(
+    seeded_ledgers: AccountLinksService,
+) -> None:
+    """Source origin, span, size, subtype, currency — never the shared last four."""
+    facts = seeded_ledgers.ledger_facts(_PROV1)
+
+    assert facts.account_id == _PROV1
+    assert facts.display_name == "Provisional One"
+    assert facts.source_types == ("pdf",)
+    assert facts.transactions == 4
+    assert facts.first_date == date(2026, 1, 15)
+    assert facts.last_date == date(2026, 5, 3)
+    assert facts.currency_code == "USD"
+
+
+def test_ledger_facts_prefers_the_subtype_a_human_recognizes(
+    seeded_ledgers: AccountLinksService,
+) -> None:
+    """A subtype tells the two sides apart where the canonical type cannot.
+
+    Both accounts are ``depository``; only cand_a states a subtype. Falling back
+    to the type is right when the subtype is absent and wrong when it is not —
+    prov1 covers the first half, cand_a the second.
+    """
+    assert seeded_ledgers.ledger_facts(_PROV1).subtype == "depository"
+    assert seeded_ledgers.ledger_facts(_CAND_A).subtype == "checking"
+
+
+def test_ledger_facts_on_an_account_with_no_ledger_is_empty_not_absent(
+    seeded_ledgers: AccountLinksService,
+) -> None:
+    """An account with no transactions still describes itself."""
+    facts = seeded_ledgers.ledger_facts(_PROV2)
+
+    assert facts.display_name == "Provisional Two"
+    assert facts.transactions == 0
+    assert facts.source_types == ()
+    assert facts.first_date is None
+
+
+def test_merge_facts_measures_the_overlap_in_the_direction_it_was_asked(
+    seeded_ledgers: AccountLinksService,
+) -> None:
+    """Absorbed and survivor are not interchangeable, and neither is the probe.
+
+    Reversing the pair re-scopes the comparable window to the other ledger's
+    period, so a builder that ignored the direction would return the same
+    numbers both ways.
+    """
+    forward = seeded_ledgers.merge_facts(
+        absorbed_account_id=_PROV1, survivor_account_id=_CAND_A
+    )
+    reversed_pair = seeded_ledgers.merge_facts(
+        absorbed_account_id=_CAND_A, survivor_account_id=_PROV1
+    )
+
+    assert forward.absorbed.account_id == _PROV1
+    assert forward.survivor.account_id == _CAND_A
+    assert (forward.overlap.comparable, forward.overlap.matched) == (3, 2)
+    assert reversed_pair.absorbed.account_id == _CAND_A
+    assert (reversed_pair.overlap.comparable, reversed_pair.overlap.matched) == (2, 2)
 
 
 # ---------------------------------------------------------------------------

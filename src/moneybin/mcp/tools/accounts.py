@@ -109,6 +109,10 @@ from moneybin.services.entity_reference import (
     MissingEntity,
     resolve_entity_reference,
 )
+from moneybin.services.identity_confirmation import (
+    AccountMergeFacts,
+    identity_confirm_message,
+)
 from moneybin.services.mutation_context import current_operation_id
 
 # ─── Read tools (entity) ──────────────────────────────────────────────────
@@ -472,9 +476,13 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
     imported but not yet confirmed as a canonical entity) and its candidate
     existing accounts that may represent the same real-world account.
 
-    For each candidate: decision_id, candidate_account_id, display name,
-    confidence score, and the matching signal that fired (institution_last4,
-    name, or institution_reissue — same bank, last four changed). ref_value
+    For each candidate: decision_id, candidate_account_id, display name, the
+    matching signal that fired (institution_last4, name, or
+    institution_reissue — same bank, last four changed), and measured ledger
+    evidence — overlap_matched of overlap_comparable transactions already held
+    by both accounts over the period they share. overlap_comparable of 0 means
+    the two ledgers share no comparable period, not that they disagree. Each
+    group also carries how many transactions the merge would move. ref_value
     (the raw native reference, which can be a full account number) is never
     included.
 
@@ -501,19 +509,26 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
 
 @dataclass(frozen=True, slots=True)
 class _AccountMergeProposal:
-    """One pending account-merge decision, flattened for the confirmation prompt."""
+    """One pending account-merge decision, flattened for the confirmation prompt.
+
+    No display names: the shared renderer names each side by what *differs*
+    between the two ledgers, precisely because a split account renders the same
+    label on both sides. Carrying them here as well would offer a second, worse
+    way to describe the same account.
+    """
 
     decision_id: str
     provisional_account_id: str
-    provisional_display_name: str
     candidate_account_id: str
-    candidate_display_name: str
-    confidence: float | None
     signal: str | None
     #: The whole impact, not a flattened blast radius: the grant issued here has
     #: to digest the same row identities the commit-time verify recomputes, so
     #: dropping them at this boundary would make every account grant unverifiable.
     impact: AccountLinkAcceptImpact
+    #: Both ledgers and the overlap between them — what the prompt describes.
+    #: Read on the same connection as the impact so the sentence and the grant
+    #: describe one state rather than two reads with a gap between them.
+    facts: AccountMergeFacts
 
 
 def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
@@ -531,12 +546,13 @@ def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
                     return _AccountMergeProposal(
                         decision_id=decision_id,
                         provisional_account_id=group.provisional_account_id,
-                        provisional_display_name=group.provisional_display_name,
                         candidate_account_id=candidate.candidate_account_id,
-                        candidate_display_name=candidate.candidate_display_name,
-                        confidence=candidate.confidence,
                         signal=candidate.signal,
                         impact=impact,
+                        facts=service.merge_facts(
+                            absorbed_account_id=group.provisional_account_id,
+                            survivor_account_id=candidate.candidate_account_id,
+                        ),
                     )
     raise UserError(
         f"No pending account-link decision '{decision_id}'.",
@@ -558,6 +574,22 @@ def _account_link_binding(
     elsewhere while another arrives leaves every count intact and still changes
     which decision the commit auto-rejects. Naming the rows makes that swap
     fail the digest instead of passing it.
+
+    **Known accepted gap**, shared with the CLI's ``_ApprovedMerge``: the
+    ledger facts the prompt renders are not bound here, so two things can
+    change between the grant and the commit without anything refusing the
+    write. A survivor emptied by another accept loses its check-the-direction
+    warning; and the overlap ratio can worsen on its own, because the probe's
+    window is bounded by the *survivor's* dates and one row arriving outside it
+    admits absorbed rows that match nothing.
+
+    A digest is symmetric and would also refuse the harmless directions — a
+    survivor that gained its first transactions, an import that strengthened
+    the evidence — so closing this needs an asymmetric check beside the digest
+    rather than another field inside it. This binding is frozen and hashed over
+    every field, so carrying the approved baseline across the opaque-token
+    round trip means a transported-but-undigested field on
+    ``ConfirmationBinding`` itself, which every destructive tool shares.
     """
     return ConfirmationBinding(
         arguments={
@@ -582,27 +614,28 @@ def _account_link_binding(
 def _account_confirm_message(p: _AccountMergeProposal) -> str:
     """Prompt text a human reads before two accounts' histories are fused.
 
-    Names BOTH accounts and the weak signal the resolver fired on — the human
-    cannot judge the merge without seeing what merges into what, and why the
-    resolver refused to decide on its own.
+    Delegates the merge itself to the shared renderer so this tool, the identity
+    batch, and the CLI describe one decision in one wording. The three used to
+    diverge, and this one was the worst of them: it named both accounts by
+    display label — identical on a split account — and quoted a "confidence"
+    that was a per-signal constant.
+
+    What stays local is what only this tool knows: which weak signal proposed
+    the pair, and that its own reject path is the alternative.
     """
-    confidence = "unscored" if p.confidence is None else f"{p.confidence:.2f}"
+    merge = identity_confirm_message(
+        {"accounts": 2, "transactions": p.facts.absorbed.transactions},
+        surface="mcp",
+        merges=[p.facts],
+        kinds=["account_link"],
+    )
     return (
-        "Confirm an account merge (this fuses two accounts' transaction "
-        "histories and balances).\n\n"
-        f"MERGE AWAY — provisional, account_id {p.provisional_account_id}:\n"
-        f"  name {p.provisional_display_name or '(none)'}\n\n"
-        f"INTO — survivor, account_id {p.candidate_account_id}:\n"
-        f"  name {p.candidate_display_name or '(none)'}\n\n"
-        f"Proposed on: signal {p.signal or 'unspecified'}, confidence "
-        f"{confidence}. The resolver proposes a merge ONLY when it cannot bind "
-        "on its own — this is an ambiguous match, not a certain one.\n\n"
-        "Accepting re-points every accepted source reference from the "
-        "provisional onto the survivor, so both accounts' transactions and "
-        "balances become one account, and every other pending proposal touching "
-        "the provisional is rejected. If these are not the same real-world "
-        "account, the merged history and net worth will be wrong. Reversible "
-        "via system_audit_undo(operation_id).\n\n"
+        f"{merge}\n\n"
+        f"Proposed on the {p.signal or 'unspecified'} signal. The resolver "
+        "proposes a merge ONLY when it cannot bind on its own — this is an "
+        "ambiguous match, not a certain one. If these are not the same "
+        "real-world account, the merged history and net worth will be wrong; "
+        "action='reject' keeps them separate.\n\n"
         "Accept this merge?"
     )
 
