@@ -227,6 +227,19 @@ class _ApprovedMerge:
     accept — the write touches the absorbed account's rows, which ``sentence``
     already counts — so binding them would refuse a correct merge because a
     concurrent import made the evidence for it *stronger*.
+
+    **Known accepted gap.** That argument holds for the ratio, which can only
+    move in the safe direction, but not for the empty-survivor warning
+    ("the surviving account has no transactions of its own — check the
+    direction") that the same ledger size drives. A second accept landing
+    between prompt and commit can absorb the survivor's own history elsewhere
+    and leave it an empty placeholder, so a warning that should have fired
+    never does and nothing re-checks it. Closing it means re-verifying one
+    asymmetric condition — refuse when the survivor became empty, never when it
+    stopped being empty — on this path *and* on the MCP grant, whose binding is
+    a symmetric digest and would need a second, non-digest check to express the
+    asymmetry. Both halves land together or the two surfaces disagree about
+    what a confirmation covers; tracked rather than half-done here.
     """
 
     sentence: dict[str, int]

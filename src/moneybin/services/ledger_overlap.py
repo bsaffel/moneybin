@@ -81,11 +81,22 @@ def probe_ledger_overlap(
     ``against_account_id`` is the one it is checked against. Reversing them
     answers a different question and yields a different ratio.
 
-    Matching is amount-equal within ``window_days``, by existence rather than by
-    a one-to-one assignment: a repeated amount inside the window can be answered
-    by the same counterpart twice, which can only inflate the ratio. The controls
-    measured 0 of 346 even so, and a genuine assignment costs a join this read
-    does not need to be worth showing.
+    Matching is amount-equal *in the same currency* within ``window_days``, by
+    existence rather than by a one-to-one assignment: a repeated amount inside
+    the window can be answered by the same counterpart twice, which can only
+    inflate the ratio. The controls measured 0 of 346 even so, and a genuine
+    assignment costs a join this read does not need to be worth showing.
+
+    The currency comparison is NULL-safe, which is a deliberate asymmetry: only
+    a *stated* disagreement vetoes a match. ``currency_code`` is nullable — it
+    is the transaction's own captured currency, else the one inherited from
+    ``dim_accounts`` — so a plain ``=`` would score every pair of
+    unknown-currency ledgers at zero overlap and turn a genuine twin's evidence
+    off silently. Treating NULL as a value rather than a wildcard costs a true
+    twin its evidence only where one source states a currency and the other
+    does not, and refuses the case that matters: a nominal amount is not a sum
+    of money until a currency names it, so a USD row and a EUR row are never
+    the same transaction however equal they look.
 
     Returns an unmeasurable overlap — rather than raising — when ``core`` is not
     yet materialized, which is a first import before any transform.
@@ -94,7 +105,7 @@ def probe_ledger_overlap(
         row = db.execute(
             f"""
             WITH against AS (
-                SELECT transaction_date, amount
+                SELECT transaction_date, amount, currency_code
                 FROM {FCT_TRANSACTIONS.full_name}
                 WHERE account_id = ?
             ),
@@ -103,7 +114,11 @@ def probe_ledger_overlap(
                 FROM against
             ),
             comparable AS (
-                SELECT probe.transaction_id, probe.transaction_date, probe.amount
+                SELECT
+                    probe.transaction_id,
+                    probe.transaction_date,
+                    probe.amount,
+                    probe.currency_code
                 FROM {FCT_TRANSACTIONS.full_name} AS probe, span
                 WHERE probe.account_id = ?
                   AND span.lo IS NOT NULL
@@ -118,6 +133,7 @@ def probe_ledger_overlap(
                     FROM comparable AS c
                     JOIN against AS a
                       ON a.amount = c.amount
+                     AND a.currency_code IS NOT DISTINCT FROM c.currency_code
                      AND ABS(DATE_DIFF('day', a.transaction_date, c.transaction_date))
                          <= CAST(? AS INTEGER)
                     GROUP BY c.transaction_id

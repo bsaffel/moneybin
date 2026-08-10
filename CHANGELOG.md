@@ -426,7 +426,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that predates a feed's download window reports `no shared period` rather than
   a zero that would read as evidence against a correct merge. The group header
   also states how many transactions the merge would move, so deciding no longer
-  costs a second command (#387).
+  costs a second command (#387). Two rows count as the same transaction only
+  when they agree on currency as well as amount: at a multi-currency
+  institution a USD 10.00 row and a EUR 10.00 row are different money, and
+  without that a USD checking account and a EUR savings account proposed
+  together by their name could read as a perfect twin. Silence is not
+  disagreement — two ledgers that never stated a currency still match each
+  other, since refusing them would switch the evidence off for every account
+  whose source never reported one (#387).
 - **One merge now reads the same way wherever it is proposed.** The CLI prompt,
   `accounts_links_set`, and `identity_links_decide` each described the same
   decision differently, and the worst of the three named both accounts by their

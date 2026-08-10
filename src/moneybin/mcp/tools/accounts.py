@@ -476,9 +476,13 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
     imported but not yet confirmed as a canonical entity) and its candidate
     existing accounts that may represent the same real-world account.
 
-    For each candidate: decision_id, candidate_account_id, display name,
-    confidence score, and the matching signal that fired (institution_last4,
-    name, or institution_reissue — same bank, last four changed). ref_value
+    For each candidate: decision_id, candidate_account_id, display name, the
+    matching signal that fired (institution_last4, name, or
+    institution_reissue — same bank, last four changed), and measured ledger
+    evidence — overlap_matched of overlap_comparable transactions already held
+    by both accounts over the period they share. overlap_comparable of 0 means
+    the two ledgers share no comparable period, not that they disagree. Each
+    group also carries how many transactions the merge would move. ref_value
     (the raw native reference, which can be a full account number) is never
     included.
 
@@ -568,6 +572,14 @@ def _account_link_binding(
     elsewhere while another arrives leaves every count intact and still changes
     which decision the commit auto-rejects. Naming the rows makes that swap
     fail the digest instead of passing it.
+
+    **Known accepted gap**, shared with the CLI's ``_ApprovedMerge``: the
+    ledger facts the prompt renders are not bound here, so a survivor emptied
+    by another accept between the grant and the commit loses its
+    check-the-direction warning without anything refusing the write. A digest
+    is symmetric and would also refuse the harmless direction — a survivor that
+    *gained* its first transactions — so closing this needs an explicit
+    asymmetric check beside the digest rather than another field inside it.
     """
     return ConfirmationBinding(
         arguments={

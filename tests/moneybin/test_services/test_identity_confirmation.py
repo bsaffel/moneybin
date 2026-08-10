@@ -169,6 +169,34 @@ def test_a_colliding_pair_still_renders_two_distinguishable_descriptions() -> No
     assert "ofx" in described[1].lower(), sentence
 
 
+def test_an_account_fed_by_two_sources_names_both() -> None:
+    """A side that already merged two sources is described by both, joined.
+
+    ``_source_label`` joins with ``"+"`` for exactly this case, and every other
+    fixture here gives each side a single source — so the join had no coverage
+    and would have rendered whatever one element it happened to pick. An
+    account that already absorbed a statement archive into a feed is a normal
+    survivor by the second merge, and describing it as feed-only next to a
+    statement-only candidate is the label collision this sentence exists to
+    avoid.
+    """
+    shared_label = "Example Bank credit …0000"
+    absorbed = _facts("aaaaaaaaaaaa", display_name=shared_label, source_types=("pdf",))
+    survivor = _facts(
+        "ssssssssssss", display_name=shared_label, source_types=("pdf", "ofx")
+    )
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 346},
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    sentence = message.splitlines()[0]
+    assert "the PDF-derived account" in sentence.split(" into ")[0], sentence
+    assert "the PDF+OFX-derived account" in sentence.split(" into ")[1], sentence
+
+
 def test_the_sentence_names_the_survivor_and_the_absorbed_account() -> None:
     """A "link A to B" phrasing never says which one dies; this has to."""
     absorbed, survivor = _colliding_pair()

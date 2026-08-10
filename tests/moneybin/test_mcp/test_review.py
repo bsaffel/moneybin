@@ -19,6 +19,7 @@ from moneybin.database import get_database
 from moneybin.mcp.tools import reviews as reviews_module
 from moneybin.mcp.tools.reviews import (
     _identity_binding,  # pyright: ignore[reportPrivateUsage]
+    _preview_identity_decisions,  # pyright: ignore[reportPrivateUsage]  # the untested wiring is the subject
     identity_links_decide_coarse,
     register_review_coarse_reads,
     register_review_coarse_writes,
@@ -2553,3 +2554,82 @@ def test_an_identity_merge_still_claims_the_rows_it_re_points() -> None:
     (item,) = plan.items
     assert item.affected_ids["transactions"] == ("txn-radius-merge",)
     assert item.affected_ids["lots"] == ("lot-radius-merge",)
+
+
+def _seed_account_ledger(account_id: str, label: str, rows: int) -> None:
+    """Give an account ``rows`` transactions so its ledger size identifies it."""
+    with get_database(read_only=False) as db:
+        for i in range(rows):
+            db.execute(
+                """
+                INSERT INTO core.fct_transactions
+                    (transaction_id, account_id, transaction_date, amount)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    f"txn-{label}-{i}",
+                    account_id,
+                    date(2026, 5, 1 + i),
+                    Decimal("-9.00"),
+                ],
+            )
+
+
+async def test_identity_preview_absorbs_the_source_into_the_target(
+    mcp_db: object,
+) -> None:
+    """The batch preview folds the provisional account into the candidate.
+
+    Every other test in this module patches ``_preview_identity_decisions``
+    out, so its body — which maps ``item.source_id`` and ``item.target_id``
+    onto absorbed and survivor — has never run under test. A swap there
+    produces a confirmation prompt describing the merge backwards while the
+    renderer's own tests, which build ``merges`` by hand, stay green.
+
+    The two ledgers are sized differently on purpose: asserting ids alone would
+    still pass if the pair were read into the wrong roles, since both ids
+    appear either way.
+    """
+    setup = _identity_account_setup("preview-direction")
+    _seed_account_ledger(setup["provisional"], "prov-direction", rows=2)
+    _seed_account_ledger(setup["candidate"], "cand-direction", rows=4)
+
+    preview = _preview_identity_decisions([
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["candidate"],
+        )
+    ])
+
+    (merge,) = preview.merges
+    assert preview.kinds == ("account_link",)
+    assert merge.absorbed.account_id == setup["provisional"]
+    assert merge.absorbed.transactions == 2
+    assert merge.survivor.account_id == setup["candidate"]
+    assert merge.survivor.transactions == 4
+
+
+async def test_identity_preview_describes_no_merge_for_a_reject(
+    mcp_db: object,
+) -> None:
+    """A rejected link moves no history, so the prompt must not describe one.
+
+    ``merges`` is filtered on ``decision == "accept"``. Losing that filter
+    would render the whole absorbed-into-survivor block — "its transactions
+    move onto that account's history" — above a decision that keeps the two
+    accounts apart.
+    """
+    setup = _identity_account_setup("preview-reject")
+    _seed_account_ledger(setup["provisional"], "prov-reject", rows=2)
+
+    preview = _preview_identity_decisions([
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=setup["decision_id"],
+            decision="reject",
+        )
+    ])
+
+    assert preview.merges == ()

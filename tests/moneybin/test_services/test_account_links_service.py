@@ -79,12 +79,21 @@ def _insert_transaction(
     on: date,
     amount: str,
     source_type: str = "csv",
+    currency_code: str = "USD",
 ) -> None:
+    """Insert one core transaction.
+
+    ``currency_code`` defaults to a stated value rather than NULL because the
+    pipeline cannot produce a NULL one under an account that states its own:
+    ``fct_transactions.currency_code`` is ``COALESCE(t.currency_code,
+    a.currency_code)``. A fixture that left it NULL under a USD account would
+    let the overlap probe match rows production would have separated.
+    """
     db.execute(
         "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount, source_type) "
-        "VALUES (?, ?, ?, ?, ?)",
-        [transaction_id, account_id, on, Decimal(amount), source_type],
+        "(transaction_id, account_id, transaction_date, amount, source_type, "
+        "currency_code) VALUES (?, ?, ?, ?, ?, ?)",
+        [transaction_id, account_id, on, Decimal(amount), source_type, currency_code],
     )
 
 
@@ -222,6 +231,12 @@ def seeded_ledgers(seeded: AccountLinksService, db: Database) -> AccountLinksSer
       amount-equal counterpart in cand_a; 30.00 has none — **2 matched**.
     - prov1's own ledger is **4**, deliberately different from the 3 comparable
       and the 2 matched so the three numbers cannot be confused for each other.
+
+    Both sides share one currency on purpose. The probe only matches rows that
+    agree on ``currency_code``, so a pair that disagreed on it would measure
+    zero overlap however equal the amounts looked — which is a different
+    fixture answering a different question (see ``test_ledger_overlap.py``).
+    Here the subtype is what tells the two accounts apart.
     """
     _set_account_traits(db, _PROV1, account_type="depository", currency_code="USD")
     _set_account_traits(
@@ -229,7 +244,7 @@ def seeded_ledgers(seeded: AccountLinksService, db: Database) -> AccountLinksSer
         _CAND_A,
         account_subtype="checking",
         account_type="depository",
-        currency_code="EUR",
+        currency_code="USD",
     )
     for i, (on, amount) in enumerate([
         (date(2026, 5, 1), "10.00"),

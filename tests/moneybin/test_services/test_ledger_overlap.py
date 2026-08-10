@@ -27,15 +27,18 @@ def _insert_txn(
     txn_date: date,
     amount: str,
     suffix: str = "",
+    currency: str | None = None,
 ) -> None:
     db.execute(
         "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount) VALUES (?, ?, ?, ?)",
+        "(transaction_id, account_id, transaction_date, amount, currency_code) "
+        "VALUES (?, ?, ?, ?, ?)",
         [
             f"{account_id}-{txn_date.isoformat()}-{amount}{suffix}",
             account_id,
             txn_date,
             amount,
+            currency,
         ],
     )
 
@@ -86,6 +89,95 @@ def test_a_control_over_the_same_period_matches_nothing(core_db: Database) -> No
 
     assert overlap.comparable == 3
     assert overlap.matched == 0
+
+
+def test_equal_amounts_in_different_currencies_are_not_the_same_transaction(
+    core_db: Database,
+) -> None:
+    """A nominal amount is not a sum of money until a currency names it.
+
+    ``core.fct_transactions.currency_code`` is populated precisely because two
+    accounts can differ on it — the transaction's own captured currency, else
+    inherited from ``core.dim_accounts``. A multi-currency institution's USD
+    checking and EUR savings can be proposed together by the name signal, and
+    without this predicate their nominally equal rows would read as a full-
+    overlap twin: the strongest possible evidence for a merge of two accounts
+    that provably hold different money.
+    """
+    for day, amount in ((3, "-12.00"), (7, "-40.50"), (11, "-8.25")):
+        _insert_txn(
+            core_db,
+            account_id=_TWIN,
+            txn_date=date(2026, 5, day),
+            amount=amount,
+            currency="USD",
+        )
+        _insert_txn(
+            core_db,
+            account_id=_SURVIVOR,
+            txn_date=date(2026, 5, day),
+            amount=amount,
+            currency="EUR",
+        )
+
+    overlap = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR
+    )
+
+    assert overlap.comparable == 3
+    assert overlap.matched == 0
+
+
+def test_two_ledgers_of_unknown_currency_still_match(core_db: Database) -> None:
+    """Silence on both sides is not disagreement — the predicate is NULL-safe.
+
+    ``currency_code`` is nullable, and an account whose source never stated one
+    inherits nothing to inherit. A plain ``=`` would make every such pair read
+    as zero overlap, which is the louder failure: it turns a genuine twin's
+    evidence off silently, for every ledger that predates a currency being
+    known. Only a *stated* disagreement may veto a match.
+    """
+    for day, amount in ((3, "-12.00"), (7, "-40.50")):
+        _insert_txn(
+            core_db, account_id=_TWIN, txn_date=date(2026, 5, day), amount=amount
+        )
+        _insert_txn(
+            core_db, account_id=_SURVIVOR, txn_date=date(2026, 5, day), amount=amount
+        )
+
+    overlap = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR
+    )
+
+    assert (overlap.comparable, overlap.matched) == (2, 2)
+
+
+def test_a_stated_currency_does_not_match_an_unstated_one(core_db: Database) -> None:
+    """One side knowing its currency and the other not is still not a match.
+
+    The NULL-safe predicate treats ``NULL`` as a value rather than as a
+    wildcard, so an unknown currency matches only another unknown one. Erring
+    this way costs a true twin its evidence where one source states a currency
+    and the other does not; erring the other way would let a EUR ledger match a
+    ledger of unknown denomination, which is the failure this probe exists to
+    prevent.
+    """
+    _insert_txn(
+        core_db,
+        account_id=_TWIN,
+        txn_date=date(2026, 5, 3),
+        amount="-12.00",
+        currency="USD",
+    )
+    _insert_txn(
+        core_db, account_id=_SURVIVOR, txn_date=date(2026, 5, 3), amount="-12.00"
+    )
+
+    overlap = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR
+    )
+
+    assert (overlap.comparable, overlap.matched) == (1, 0)
 
 
 def test_posting_lag_inside_the_window_still_matches(core_db: Database) -> None:

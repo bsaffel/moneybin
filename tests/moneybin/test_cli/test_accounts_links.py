@@ -917,6 +917,12 @@ class TestLinksHistory:
         assert len(decisions) == 1
         assert decisions[0]["decision_id"] == "dh001"
         assert decisions[0]["signal"] == "name"
+        # The service row above still carries confidence_score — it stays an
+        # audit column on app.account_link_decisions. The public envelope is
+        # what dropped it, so the row reaching the renderer is exactly the
+        # fixture that would catch it leaking back through.
+        assert "confidence" not in decisions[0]
+        assert "confidence_score" not in decisions[0]
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.history")

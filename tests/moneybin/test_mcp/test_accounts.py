@@ -20,7 +20,9 @@ import pytest
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.mcp.tools.accounts import (
+    _load_pending_account_proposal,  # pyright: ignore[reportPrivateUsage]  # the untested wiring is the subject
     accounts_balance_assert,
     accounts_balance_assert_coarse,
     accounts_balances_coarse,
@@ -31,6 +33,8 @@ from moneybin.mcp.tools.accounts import (
     register_accounts_coarse_writes,
     register_accounts_tools,
 )
+from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
+from moneybin.repositories.account_links_repo import AccountLinksRepo
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -1489,3 +1493,92 @@ class TestBalanceCurrency:
 
         assert [row.currency_code for row in response.data.assertions] == [None]
         assert response.summary.display_currency is None
+
+
+class TestPendingAccountProposal:
+    """Which account the merge absorbs, and which one survives.
+
+    ``_load_pending_account_proposal`` is where the MCP path decides that — it
+    reads a decision out of the live queue and hands ``merge_facts`` a
+    direction. Nothing else in this suite executes it, so a swapped pair of
+    keyword arguments here would ship a prompt describing the merge backwards
+    while every other test stayed green. That is the exact failure this
+    milestone exists to make legible, so it gets a direct test rather than an
+    inference from the rendered sentence.
+    """
+
+    @staticmethod
+    def _seed_merge_decision() -> None:
+        """One pending ACC001 → ACC002 decision over two differently-sized ledgers.
+
+        The two ledgers are deliberately unequal — three rows against five — so
+        a reversed direction cannot produce the asserted numbers. Equal ledgers
+        would satisfy the assertions in either order and prove nothing.
+        """
+        with get_database(read_only=False) as db:
+            AccountLinksRepo(db).insert(
+                link_id="lnk_acc001_00",
+                account_id="ACC001",
+                ref_kind="source_native",
+                ref_value="native-ref-1",
+                source_type="ofx",
+                source_origin="test_bank",
+                decided_by="auto",
+                actor="system",
+                status="accepted",
+            )
+            AccountLinkDecisionsRepo(db).insert(
+                decision_id="dec_merge_001",
+                provisional_account_id="ACC001",
+                candidate_account_id="ACC002",
+                confidence_score=0.9,
+                match_signals={"signal": "institution_last4", "value": "***"},
+                decided_by="auto",
+                actor="system",
+                status="pending",
+            )
+            for i, day in enumerate((3, 7, 11)):
+                db.execute(
+                    "INSERT INTO core.fct_transactions (transaction_id, "
+                    "account_id, transaction_date, amount) VALUES (?, ?, ?, ?)",
+                    [f"acc001_txn{i}", "ACC001", date(2026, 5, day), Decimal("-12.00")],
+                )
+            for i, day in enumerate((3, 7, 11, 15, 19)):
+                db.execute(
+                    "INSERT INTO core.fct_transactions (transaction_id, "
+                    "account_id, transaction_date, amount) VALUES (?, ?, ?, ?)",
+                    [f"acc002_txn{i}", "ACC002", date(2026, 5, day), Decimal("-40.50")],
+                )
+
+    @pytest.mark.unit
+    async def test_the_provisional_account_is_the_one_absorbed(
+        self, mcp_db: Path
+    ) -> None:
+        """The provisional account folds into the candidate, never the reverse.
+
+        Both halves are asserted by id *and* by ledger size: an id-only check
+        would still pass if the facts were read for the right account pair in
+        the wrong roles, because both ids appear either way.
+        """
+        self._seed_merge_decision()
+
+        proposal = _load_pending_account_proposal("dec_merge_001")
+
+        assert proposal.provisional_account_id == "ACC001"
+        assert proposal.candidate_account_id == "ACC002"
+        assert proposal.facts.absorbed.account_id == "ACC001"
+        assert proposal.facts.absorbed.transactions == 3
+        assert proposal.facts.survivor.account_id == "ACC002"
+        assert proposal.facts.survivor.transactions == 5
+
+    @pytest.mark.unit
+    async def test_a_decision_that_is_not_pending_is_refused_not_guessed(
+        self, mcp_db: Path
+    ) -> None:
+        """An unknown decision id raises rather than merging some other pair."""
+        self._seed_merge_decision()
+
+        with pytest.raises(UserError) as excinfo:
+            _load_pending_account_proposal("dec_does_not_exist")
+
+        assert excinfo.value.code == "mutation_nothing_to_do"

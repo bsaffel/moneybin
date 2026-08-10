@@ -530,6 +530,16 @@ Guard-2 free-text resolution):
     by the lag. Otherwise a statement archive predating a feed's download window
     renders as "0 of 400", which reads as evidence *against* a correct merge. A
     probe with no comparable period says so; it never renders as `0 of 0`.
+  - **Amount-equal means same currency.** A nominal amount is not a sum of
+    money until a currency names it, and `fct_transactions.currency_code`
+    exists precisely because two accounts can differ on it. Without the
+    predicate a multi-currency institution's USD checking and EUR savings —
+    a pair the name rung will happily propose — measure as a perfect twin. The
+    comparison is NULL-safe on purpose: only a *stated* disagreement vetoes a
+    match, because a plain `=` would score every pair of unknown-currency
+    ledgers at zero and switch the evidence off silently for exactly the
+    accounts whose sources never reported one. The same asymmetry the name
+    rung's last-four veto uses — silence is not disagreement.
   - **`confidence_score` is not a review surface.** Its value is fixed per
     signal (0.5 `institution_last4`, 0.4 `name`, 0.3 `institution_reissue`), so
     it restates `signal` in a less legible form; no input moves it. The column
@@ -1003,6 +1013,21 @@ accumulated in-process and discarded at exit — recorded nowhere, while looking
 instrumented in the source. Wire it from a path that already writes
 (`accounts links run`, the identity refresh step) if the ratio's distribution
 ever needs watching.
+
+**Known gap — the empty-survivor warning is not re-verified at commit.** The
+merge sentence appends "the surviving account has no transactions of its own —
+check the direction before accepting" when `facts.survivor.transactions == 0`,
+which is the cheap tell for a reversed proposal. Neither confirm path holds the
+commit to it: the CLI's `_drift_check` compares the blast radius and the link
+and decision row identities, and the MCP grant digests resolved ids and blast
+radius. A second accept landing while the prompt is open can absorb the
+survivor's own history elsewhere, so the warning that should have fired never
+does. The ledger *ratio* is deliberately unbound for the opposite reason — a
+concurrent import can only strengthen it, and binding it would refuse a correct
+merge — which makes the fix an **asymmetric** check rather than another field
+in the digest: refuse when the survivor became empty, never when it stopped
+being empty. Both surfaces have to gain it together, and on MCP it must survive
+the opaque-token round trip where the proposal is never reloaded.
 
 ## Testing
 
