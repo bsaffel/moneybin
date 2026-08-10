@@ -1008,30 +1008,45 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
   score written with a proposal, which is where that number is still meaningful;
   it is deliberately not the review surfaces' evidence (Decision 5).
 
-**Known gap — the ledger-overlap probe is unmetered.** A deployment where every
-probe returns "no comparable period" has an evidence surface that renders
-nothing useful, and no instrument would say so. The measurement runs on the
-read-only browse and confirm paths, and `flush_metrics()` deliberately skips a
-session that opened no write connection, so an observation emitted there is
-accumulated in-process and discarded at exit — recorded nowhere, while looking
-instrumented in the source. Wire it from a path that already writes
-(`accounts links run`, the identity refresh step) if the ratio's distribution
-ever needs watching.
+- `ACCOUNT_LINK_OVERLAP_PROBES_TOTAL` — Counter,
+  `result ∈ {measurable, unmeasurable}`, incremented inside
+  `probe_ledger_overlap` so no call site can forget it. A deployment where
+  schema or source drift makes every probe return "no comparable period" has an
+  evidence surface that renders prose and no number, and nothing else on any
+  surface changes when that happens. `unmeasurable` climbing while `measurable`
+  stays flat is the alarm. Note the flush boundary: the probe runs on the
+  read-only browse and confirm paths, and `flush_metrics()` skips a session that
+  opened no write connection, so a browse-only session's counts are accumulated
+  in-process and discarded at exit. The confirm path that precedes a merge does
+  open a write connection, which is the path where the signal has to survive.
 
-**Known gap — the empty-survivor warning is not re-verified at commit.** The
-merge sentence appends "the surviving account has no transactions of its own —
-check the direction before accepting" when `facts.survivor.transactions == 0`,
-which is the cheap tell for a reversed proposal. Neither confirm path holds the
-commit to it: the CLI's `_drift_check` compares the blast radius and the link
-and decision row identities, and the MCP grant digests resolved ids and blast
-radius. A second accept landing while the prompt is open can absorb the
-survivor's own history elsewhere, so the warning that should have fired never
-does. The ledger *ratio* is deliberately unbound for the opposite reason — a
-concurrent import can only strengthen it, and binding it would refuse a correct
-merge — which makes the fix an **asymmetric** check rather than another field
-in the digest: refuse when the survivor became empty, never when it stopped
-being empty. Both surfaces have to gain it together, and on MCP it must survive
-the opaque-token round trip where the proposal is never reloaded.
+**Known gap — the displayed ledger evidence is not re-verified at commit.** The
+merge sentence renders two facts that neither confirm path holds the commit to.
+The CLI's `_drift_check` compares the blast radius and the link and decision row
+identities; the MCP grant digests resolved ids and blast radius.
+
+- **The empty-survivor warning.** "The surviving account has no transactions of
+  its own — check the direction before accepting" appends when
+  `facts.survivor.transactions == 0`, the cheap tell for a reversed proposal. A
+  second accept landing while the prompt is open can absorb the survivor's own
+  history elsewhere, so the warning that should have fired never does.
+- **The overlap ratio.** The probe's comparison window is `MIN`/`MAX` over the
+  *survivor's* dates, so one survivor-side row arriving outside it widens the
+  window and admits absorbed rows that match nothing: `matched` holds while
+  `comparable` grows. A ratified "40 of 40" can commit as "40 of 400" with the
+  sentence unchanged. `test_a_wider_survivor_span_pulls_more_rows_into_comparable`
+  pins the mechanism.
+
+Both want the same missing check, and it is **asymmetric** rather than another
+field in the digest: refuse when the evidence got worse, never when it got
+better — a survivor that gained its first transactions, or an import that
+strengthened the overlap, are both harmless and a digest would refuse them. Both
+surfaces have to gain it together, and on MCP it must survive the opaque-token
+round trip where the proposal is never reloaded — `ConfirmationBinding` is
+frozen and hashed over every field, so carrying the approved baseline there
+means a transported-but-undigested field on a primitive every destructive tool
+shares. That blast radius is why this lands as its own change rather than
+half-done on one surface.
 
 ## Testing
 

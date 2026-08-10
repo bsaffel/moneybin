@@ -222,24 +222,33 @@ class _ApprovedMerge:
     intact: one pending sibling resolved elsewhere while another arrives leaves
     the same number of decisions in play and still changes which one dies.
 
-    The surviving account's own ledger size and the overlap ratio are rendered in
-    the prompt but deliberately not held here. Neither is a consequence of the
-    accept — the write touches the absorbed account's rows, which ``sentence``
-    already counts — so binding them would refuse a correct merge because a
-    concurrent import made the evidence for it *stronger*.
+    The surviving account's own ledger size and the overlap ratio are rendered
+    in the prompt but deliberately not held here. Neither is a consequence of
+    the accept — the write touches the absorbed account's rows, which
+    ``sentence`` already counts — and holding them by equality would refuse a
+    correct merge whenever a concurrent import moved either one harmlessly.
 
-    **Known accepted gap.** That argument holds for the ratio, which can only
-    move in the safe direction, but not for the empty-survivor warning
-    ("the surviving account has no transactions of its own — check the
-    direction") that the same ledger size drives. A second accept landing
-    between prompt and commit can absorb the survivor's own history elsewhere
-    and leave it an empty placeholder, so a warning that should have fired
-    never does and nothing re-checks it. Closing it means re-verifying one
-    asymmetric condition — refuse when the survivor became empty, never when it
-    stopped being empty — on this path *and* on the MCP grant, whose binding is
-    a symmetric digest and would need a second, non-digest check to express the
-    asymmetry. Both halves land together or the two surfaces disagree about
-    what a confirmation covers; tracked rather than half-done here.
+    **Known accepted gap**, in both of them. Equality is the wrong test, but no
+    test at all is not the right one, because each can also move the *unsafe*
+    way between prompt and commit:
+
+    - The empty-survivor warning ("the surviving account has no transactions of
+      its own — check the direction"): a second accept can absorb the survivor's
+      own history elsewhere and leave it an empty placeholder, so a warning that
+      should have fired never does.
+    - The overlap ratio: the probe's comparison window is ``MIN``/``MAX`` over
+      the *survivor's* dates, so one survivor-side row arriving outside it
+      widens the window and admits absorbed rows that match nothing. A ratified
+      "40 of 40" commits as "40 of 400" with the sentence unchanged. Pinned by
+      ``test_a_wider_survivor_span_pulls_more_rows_into_comparable``.
+
+    Both want the same missing mechanism: re-verify asymmetrically inside the
+    write transaction — refuse when the evidence got worse, never when it got
+    better — on this path *and* on the MCP grant, whose binding is a frozen
+    symmetric digest and would need a transported-but-undigested baseline to
+    express the asymmetry. That is a change to a primitive every destructive
+    MCP tool shares, so both halves land together in their own change or the
+    two surfaces disagree about what a confirmation covers.
     """
 
     sentence: dict[str, int]

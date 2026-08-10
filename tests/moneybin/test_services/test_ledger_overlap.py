@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from prometheus_client import REGISTRY
 
 from moneybin.database import Database
 from moneybin.services.ledger_overlap import LedgerOverlap, probe_ledger_overlap
@@ -18,6 +19,16 @@ from tests.moneybin.db_helpers import create_core_tables
 
 _TWIN = "twin_acct0001"
 _SURVIVOR = "surv_acct0001"
+
+
+def _probes(result: str) -> float:
+    """Public read of the probe counter — no private attribute access."""
+    return (
+        REGISTRY.get_sample_value(
+            "moneybin_account_link_overlap_probes_total", {"result": result}
+        )
+        or 0.0
+    )
 
 
 def _insert_txn(
@@ -268,6 +279,83 @@ def test_ledgers_that_never_overlap_report_no_comparable_period(
         comparable=0, matched=0, window_start=None, window_end=None
     )
     assert not overlap.measurable
+
+
+def test_a_wider_survivor_span_pulls_more_rows_into_comparable(
+    core_db: Database,
+) -> None:
+    """The displayed ratio can worsen after the prompt, and nothing re-checks it.
+
+    ``span`` is ``MIN``/``MAX`` over the *survivor's* dates, so one survivor-side
+    row arriving outside the current span widens the comparison window and admits
+    absorbed rows that match nothing. The evidence a human ratified as "1 of 1"
+    is "1 of 4" by the time the merge commits, while ``_drift_check`` still
+    verifies — it holds the absorbed account's blast radius, not this window.
+
+    This pins the behavior rather than the fix: closing it needs an asymmetric
+    re-verification on both surfaces, tracked with the empty-survivor gap in
+    ``account-identity-resolution.md``. Until then this test is what keeps the
+    mechanism legible in code instead of only in prose.
+    """
+    for year in (2019, 2020, 2021):
+        _insert_txn(
+            core_db, account_id=_TWIN, txn_date=date(year, 5, 3), amount="-12.00"
+        )
+    _insert_txn(core_db, account_id=_TWIN, txn_date=date(2026, 5, 3), amount="-12.00")
+    _insert_txn(
+        core_db, account_id=_SURVIVOR, txn_date=date(2026, 5, 3), amount="-12.00"
+    )
+
+    displayed = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR
+    )
+
+    # A concurrent sync lands one older row on the survivor. It matches nothing
+    # in the absorbed ledger, so only the denominator can move.
+    _insert_txn(
+        core_db, account_id=_SURVIVOR, txn_date=date(2018, 1, 1), amount="-999.99"
+    )
+
+    at_commit = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR
+    )
+
+    assert (displayed.matched, displayed.comparable) == (1, 1)
+    assert (at_commit.matched, at_commit.comparable) == (1, 4)
+
+
+def test_a_measurable_probe_is_counted_as_measurable(core_db: Database) -> None:
+    """Without this counter, evidence that died in a deployment looks like silence.
+
+    A schema or source drift that makes every probe return "no comparable period"
+    degrades the merge prompt to prose with no number in it, and every surface
+    keeps rendering normally. The two label values are what tell a dead probe
+    from a quiet one.
+    """
+    before = _probes("measurable")
+    _insert_txn(core_db, account_id=_TWIN, txn_date=date(2026, 5, 3), amount="-12.00")
+    _insert_txn(
+        core_db, account_id=_SURVIVOR, txn_date=date(2026, 5, 3), amount="-12.00"
+    )
+
+    probe_ledger_overlap(core_db, account_id=_TWIN, against_account_id=_SURVIVOR)
+
+    assert _probes("measurable") == before + 1
+
+
+def test_a_probe_with_no_comparable_period_is_counted_as_unmeasurable(
+    core_db: Database,
+) -> None:
+    """The failure mode worth alarming on is this label climbing alone."""
+    before = _probes("unmeasurable")
+    _insert_txn(core_db, account_id=_TWIN, txn_date=date(2019, 5, 3), amount="-12.00")
+    _insert_txn(
+        core_db, account_id=_SURVIVOR, txn_date=date(2026, 5, 3), amount="-12.00"
+    )
+
+    probe_ledger_overlap(core_db, account_id=_TWIN, against_account_id=_SURVIVOR)
+
+    assert _probes("unmeasurable") == before + 1
 
 
 def test_an_empty_other_ledger_reports_no_comparable_period(core_db: Database) -> None:

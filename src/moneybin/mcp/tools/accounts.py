@@ -576,12 +576,20 @@ def _account_link_binding(
     fail the digest instead of passing it.
 
     **Known accepted gap**, shared with the CLI's ``_ApprovedMerge``: the
-    ledger facts the prompt renders are not bound here, so a survivor emptied
-    by another accept between the grant and the commit loses its
-    check-the-direction warning without anything refusing the write. A digest
-    is symmetric and would also refuse the harmless direction — a survivor that
-    *gained* its first transactions — so closing this needs an explicit
-    asymmetric check beside the digest rather than another field inside it.
+    ledger facts the prompt renders are not bound here, so two things can
+    change between the grant and the commit without anything refusing the
+    write. A survivor emptied by another accept loses its check-the-direction
+    warning; and the overlap ratio can worsen on its own, because the probe's
+    window is bounded by the *survivor's* dates and one row arriving outside it
+    admits absorbed rows that match nothing.
+
+    A digest is symmetric and would also refuse the harmless directions — a
+    survivor that gained its first transactions, an import that strengthened
+    the evidence — so closing this needs an asymmetric check beside the digest
+    rather than another field inside it. This binding is frozen and hashed over
+    every field, so carrying the approved baseline across the opaque-token
+    round trip means a transported-but-undigested field on
+    ``ConfirmationBinding`` itself, which every destructive tool shares.
     """
     return ConfirmationBinding(
         arguments={

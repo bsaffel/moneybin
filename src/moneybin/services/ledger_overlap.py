@@ -25,6 +25,7 @@ from datetime import date
 import duckdb
 
 from moneybin.database import Database
+from moneybin.metrics.registry import ACCOUNT_LINK_OVERLAP_PROBES_TOTAL
 from moneybin.tables import FCT_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
@@ -166,9 +167,16 @@ def probe_ledger_overlap(
         logger.debug("core.fct_transactions unavailable; ledger overlap unmeasurable")
         row = None
     comparable, matched, start, end = row or _EMPTY_WINDOW_ROW
-    return LedgerOverlap(
+    overlap = LedgerOverlap(
         comparable=int(comparable),
         matched=int(matched),
         window_start=start,
         window_end=end,
     )
+    # Counted here rather than at the two call sites so a third one cannot forget:
+    # the failure this instruments is every probe going unmeasurable at once, and
+    # a counter that misses one caller cannot distinguish that from a quiet week.
+    ACCOUNT_LINK_OVERLAP_PROBES_TOTAL.labels(
+        result="measurable" if overlap.measurable else "unmeasurable"
+    ).inc()
+    return overlap
