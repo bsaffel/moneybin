@@ -16,6 +16,7 @@ from sqlglot import exp
 from moneybin.database import Database
 from moneybin.privacy.redaction import MaskStrength, mask_strength
 from moneybin.privacy.sql_lineage import (
+    _FLOORED_SCHEMAS,  # pyright: ignore[reportPrivateUsage]
     _MAX_SCOPE_DEPTH,  # pyright: ignore[reportPrivateUsage]
     FAIL_CLOSED_CLASS,
     ProjectionSource,
@@ -39,7 +40,10 @@ from moneybin.privacy.sql_lineage import (
     resolve_projection_sources,
     tables_outside_schemas,
 )
-from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.privacy.sql_query import (
+    _ALLOWED_QUERY_SCHEMAS,  # pyright: ignore[reportPrivateUsage]
+)
+from moneybin.privacy.taxonomy import CLASSIFICATION, INTERNAL_CRITICAL, DataClass, Tier
 
 _CORPUS = yaml.safe_load(
     (Path(__file__).parent / "fixtures" / "sql_lineage_corpus.yaml").read_text()
@@ -96,41 +100,78 @@ def test_schema_snapshot_cached_until_version_changes(populated_db: Database) ->
     assert a is b  # same migration version → cached identity
 
 
-def test_schema_snapshot_covers_raw_and_prep_but_still_omits_meta(
+# Schemas whose exclusion from the gate is a decision rather than an accident.
+# The complement is unbounded, so it cannot be derived — these two are named for
+# the same reason `test_gate_admits_internal_schemas_and_still_fences_meta_and_seeds`
+# names them, and each gets a real table so the negative half tests something.
+_FENCED_SCHEMAS = ("meta", "seeds")
+
+
+def test_the_snapshot_covers_exactly_the_schemas_the_gate_admits(
     populated_db: Database,
 ) -> None:
-    """The snapshot reaches every schema the query gate admits — and no further.
+    """Set equality against ``_ALLOWED_QUERY_SCHEMAS``, derived — never a literal.
 
-    Isolates the catalog query alone: no gate, no lineage, no execution. That
-    separation is what makes the widening testable at all, because admitting
-    ``raw``/``prep`` at the gate WITHOUT them in the snapshot is not a refusal —
-    it is a leak. ``_column_key`` resolves against ``snapshot.columns``, so an
-    absent column returns None, the projection declines, and
-    ``_conservative_floor`` finds no classified table in scope and answers
-    AGGREGATE (LOW, passthrough). A declared CRITICAL ``routing_number`` comes
-    back in the clear.
+    ``get_current_schema_snapshot``'s ``schema_name IN (…)`` list and
+    ``sql_query._ALLOWED_QUERY_SCHEMAS`` are two hand-maintained copies of one
+    list, and nothing but this test couples them. A schema admitted by the gate
+    but missing from the snapshot does NOT fail closed: ``_column_key`` resolves
+    against ``snapshot.columns``, so an absent column returns None, the
+    projection declines, ``_table_scope_max`` finds no classified table in
+    scope, and ``_conservative_floor`` answers AGGREGATE — LOW and passthrough,
+    for a column that may be declared CRITICAL. This branch's own red step
+    returned a cleartext routing number that way.
 
-    ``meta`` is asserted against a table that really exists, not against an empty
-    schema: a schema with no tables is absent from ``duckdb_columns()`` anyway,
-    so the negative half would hold no matter what this query selected.
+    Deriving the expectation from the constant is what makes the guard survive
+    the *next* widening. Spelling the schemas out here would pass on the day
+    someone adds a sixth to the gate alone, which is exactly the leak.
+
+    A schema with no tables is absent from ``duckdb_columns()`` regardless of
+    what this query selects, so every schema on both sides of the equality gets
+    a probe table — otherwise the positive half would fail for the wrong reason
+    and the negative half would hold vacuously.
     """
-    populated_db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    populated_db.execute("CREATE SCHEMA IF NOT EXISTS meta")
-    # `raw.ofx_accounts` already exists — `init_schemas` creates it from the OFX
-    # extractor's DDL. Only the SQLMesh-built prep view has to be stood up here.
+    for schema in sorted(_ALLOWED_QUERY_SCHEMAS) + list(_FENCED_SCHEMAS):
+        populated_db.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        populated_db.execute(
+            f'CREATE TABLE IF NOT EXISTS "{schema}".snapshot_probe (marker VARCHAR)'  # noqa: S608  # schema names come from a frozenset constant, not user input
+        )
+    # A prep model is a VIEW, not a table — `duckdb_columns()` covers both, and
+    # nothing downstream of the snapshot distinguishes them.
     populated_db.execute(
         "CREATE VIEW prep.stg_ofx__accounts AS "
         "SELECT routing_number FROM raw.ofx_accounts"
     )
-    populated_db.execute("CREATE TABLE meta.internal_only (marker VARCHAR)")
 
     snap = get_current_schema_snapshot(populated_db)
 
-    assert ("raw", "ofx_accounts", "routing_number") in snap.columns
-    # A prep model is a VIEW, not a table — `duckdb_columns()` covers both, and
-    # nothing downstream of the snapshot distinguishes them.
+    assert {schema for schema, _table, _col in snap.columns} == set(
+        _ALLOWED_QUERY_SCHEMAS
+    )
     assert ("prep", "stg_ofx__accounts", "routing_number") in snap.columns
-    assert ("meta", "internal_only", "marker") not in snap.columns
+
+
+def test_every_admitted_schema_has_a_declaration_source() -> None:
+    """The gate's schema list partitions into the three ways a class is resolved.
+
+    ``_class_of_key`` answers from exactly three sources — ``CLASSIFICATION``
+    (core/app), each report's declared ``@report`` map (reports), and
+    ``INTERNAL_CRITICAL`` over the ``_FLOORED_SCHEMAS`` content net (raw/prep).
+    ``_FLOORED_SCHEMAS`` is a fourth hand-maintained copy of part of the same
+    list, and this is what couples it.
+
+    Omitting a newly-admitted schema from all three is fail-closed, not a leak:
+    ``_class_of_key`` returns None, ``_coverage_gap_class`` answers
+    ``FAIL_CLOSED_CLASS``, and every value whole-masks. The failure it prevents
+    is the usability one — a schema opened at the gate that returns nothing but
+    ``*****`` — plus the reverse, a ``_FLOORED_SCHEMAS`` entry that outlives its
+    place in the gate and silently floors a schema nobody can reach.
+    """
+    declared = {schema for schema, _table in CLASSIFICATION}
+    declared |= {schema for schema, _table in reports_class_map()}
+
+    assert declared | _FLOORED_SCHEMAS == set(_ALLOWED_QUERY_SCHEMAS)
+    assert {schema for schema, _table in INTERNAL_CRITICAL} == _FLOORED_SCHEMAS
 
 
 # ---------------------------------------------------------------------------
@@ -1539,8 +1580,14 @@ def test_floored_is_sticky_regardless_of_source_order(
 @pytest.mark.parametrize(
     ("classes", "expected"),
     [
-        ([DataClass.FLOORED, DataClass.USER_NOTE], DataClass.USER_NOTE),
-        ([DataClass.FLOORED, DataClass.TXN_AMOUNT], DataClass.TXN_AMOUNT),
+        ([DataClass.FLOORED, DataClass.DESCRIPTION], DataClass.FLOORED),
+        ([DataClass.DESCRIPTION, DataClass.FLOORED], DataClass.FLOORED),
+        ([DataClass.FLOORED, DataClass.TXN_AMOUNT], DataClass.FLOORED),
+        (
+            [DataClass.FLOORED, DataClass.ACCOUNT_IDENTIFIER],
+            DataClass.ACCOUNT_IDENTIFIER,
+        ),
+        ([DataClass.FLOORED, DataClass.ROUTING_NUMBER], DataClass.ROUTING_NUMBER),
         (
             [DataClass.FLOORED, DataClass.ROUTING_NUMBER, DataClass.ROUTING_NUMBER],
             DataClass.ROUTING_NUMBER,
@@ -1554,12 +1601,77 @@ def test_floored_is_sticky_regardless_of_source_order(
             FAIL_CLOSED_CLASS,
         ),
     ],
-    ids=["medium", "high", "critical-unanimous", "critical-split"],
+    ids=[
+        "medium-passthrough",
+        "medium-passthrough-reversed",
+        "high-passthrough",
+        "critical-partial-ties-on-strength",
+        "critical-whole-outranks",
+        "critical-unanimous",
+        "critical-split",
+    ],
 )
-def test_floored_does_not_outrank_a_higher_tier(
+def test_a_merged_position_keeps_the_strongest_mask(
     classes: list[DataClass], expected: DataClass
 ) -> None:
+    """Strength decides first; tier only breaks a strength tie.
+
+    The four ``medium``/``high`` cases used to expect the higher-tier class and
+    were the defect written down: seven classes above ``Tier.LOW`` are
+    ``_passthrough`` today, so a merge that read tier as a proxy for masking
+    strength dropped ``FLOORED``'s content net whenever a position also drew
+    from ``core``. ``SELECT description FROM prep.x UNION ALL SELECT description
+    FROM core.fct_transactions`` returned the prep row's digit run verbatim
+    under a ``DESCRIPTION`` label.
+
+    The two CRITICAL cases keep the collapse unchanged. ``ACCOUNT_IDENTIFIER``
+    ties ``FLOORED`` on strength (both PARTIAL) and wins on tier;
+    ``ROUTING_NUMBER`` wins outright on strength (WHOLE).
+    """
     assert _combined_class(classes) is expected
+
+
+@pytest.mark.parametrize("other", list(DataClass), ids=lambda dc: dc.name.lower())
+def test_a_merge_never_masks_more_weakly_than_its_inputs(other: DataClass) -> None:
+    """The rule, derived over the registry — not a list of known counterexamples.
+
+    Enumerating ``DataClass`` rather than naming the seven above-LOW passthrough
+    classes is the point: the defect was a *category* error (tier read as a
+    claim about masking), so the guard has to answer for a class nobody has
+    written yet. A new above-LOW passthrough class, or a future transform that
+    weakens an existing one, fails here rather than shipping another leak.
+
+    Both orders, because a bare ``max`` returns the FIRST maximal element and
+    every leak in this function's history was order-dependent.
+    """
+    floor = mask_strength(DataClass.FLOORED)
+    for classes in ([DataClass.FLOORED, other], [other, DataClass.FLOORED]):
+        merged = _combined_class(classes)
+        assert mask_strength(merged) >= max(floor, mask_strength(other)), classes
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (a, b)
+        for a in DataClass
+        for b in DataClass
+        if a.tier is Tier.CRITICAL and b.tier is Tier.CRITICAL and a is not b
+    ],
+    ids=lambda dc: dc.name.lower(),
+)
+def test_two_disagreeing_critical_classes_still_collapse(
+    first: DataClass, second: DataClass
+) -> None:
+    """The pre-existing fail-closed collapse, pinned against the new merge key.
+
+    Ranking by strength before tier means ``best`` is no longer guaranteed to be
+    the highest-tier input: a future non-CRITICAL class that masks WHOLE would
+    outrank a PARTIAL CRITICAL one and route past the ``best.tier is
+    Tier.CRITICAL`` branch, silently retiring this collapse. Deriving the pairs
+    from the registry makes that change red instead of quiet.
+    """
+    assert _combined_class([first, second]) is FAIL_CLOSED_CLASS
 
 
 # ---------------------------------------------------------------------------

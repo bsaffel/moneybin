@@ -315,8 +315,11 @@ _UNGATEABLE_STATEMENTS = [
     "PRAGMA show_tables",
     "PRAGMA storage_info('core.dim_accounts')",
     "EXPLAIN SELECT 1",
-    "EXPLAIN SELECT ssn FROM raw.leaky",
-    "EXPLAIN ANALYZE SELECT count(*) FROM raw.leaky",
+    # Named tables the gate WOULD admit. The refusal has to come from the
+    # statement kind alone, so a fixture on a fenced schema would prove nothing:
+    # it would be refused either way and could not tell the two guards apart.
+    "EXPLAIN SELECT routing_number FROM raw.ofx_accounts",
+    "EXPLAIN ANALYZE SELECT count(*) FROM raw.ofx_accounts",
 ]
 
 
@@ -333,8 +336,9 @@ def test_ungateable_statements_are_refused(populated_db: Database, sql: str) -> 
 
     That is not theoretical for either: ``PRAGMA storage_info`` returned a
     CRITICAL routing number's cleartext prefix, and ``EXPLAIN ANALYZE``
-    *executes* its inner query — reaching ``raw``/``prep`` and returning their
-    column names and row counts, at LOW, from a path meant to run schema text.
+    *executes* its inner query, returning row counts at LOW from a path meant to
+    run schema text — over any table, including the declared-CRITICAL columns
+    the two fixtures below name.
 
     The surviving rule is one line: a statement is executable only if the gate
     can resolve every table it names. SELECT/WITH and DESCRIBE expose real
@@ -356,9 +360,14 @@ def test_show_all_tables_exposes_internal_shape_but_no_values(
     ``tables_outside_schemas`` works by resolving table REFERENCES, and ``SHOW
     ALL TABLES`` contains none — it is a catalog listing, so there is nothing
     for the gate to check. DuckDB's listing happens to carry a
-    ``column_names``/``column_types`` array per table, so the SHAPE of
-    ``raw``/``prep`` stays reachable even though ``DESCRIBE`` on those same
-    tables is now refused.
+    ``column_names``/``column_types`` array per table, so the SHAPE of every
+    schema in the database stays reachable, including the ones the gate fences.
+
+    The fixture sits in ``meta`` rather than ``raw``: since M2O.2 admitted
+    ``raw``/``prep``, ``DESCRIBE raw.x`` succeeds, so a ``raw`` fixture would
+    show shape through the ordinary metadata path and prove nothing about this
+    listing. ``meta`` is refused by every gated spelling, so what leaks here
+    leaks through ``SHOW ALL TABLES`` alone.
 
     That asymmetry is deliberate and documented (``docs/guides/sql-access.md``)
     rather than accidental, so it is pinned here: the line is structure vs.
@@ -366,15 +375,15 @@ def test_show_all_tables_exposes_internal_shape_but_no_values(
     deliberately — and the row-value assertion below must survive that change
     either way.
     """
-    populated_db.execute("CREATE SCHEMA IF NOT EXISTS raw")
-    populated_db.execute("CREATE TABLE raw.leaky (ssn VARCHAR)")
-    populated_db.execute("INSERT INTO raw.leaky VALUES ('123456789')")
+    populated_db.execute("CREATE SCHEMA IF NOT EXISTS meta")
+    populated_db.execute("CREATE TABLE meta.internal_only (ssn VARCHAR)")
+    populated_db.execute("INSERT INTO meta.internal_only VALUES ('123456789')")
     populated_db.execute("CHECKPOINT")
 
     payload = _payload(populated_db, "SHOW ALL TABLES")
 
     # Current boundary: internal shape is visible.
-    assert "leaky" in payload
+    assert "internal_only" in payload
     assert "ssn" in payload
     # The line that must never move: no row values, whole or partial.
     assert "123456789" not in payload
@@ -1036,8 +1045,9 @@ def test_gate_admits_internal_schemas_and_still_fences_meta_and_seeds() -> None:
 
 # The digit run inside the seeded `description` below: the shape
 # `_mask_floored`'s content net exists to catch, in the kind of column no
-# declaration can enumerate. Invented digits. Spelled out in the view body
-# rather than interpolated, so the DDL stays a plain literal string.
+# declaration can enumerate. Invented digits, interpolated into the view body so
+# the constant and the seeded value cannot drift apart — spelling them out twice
+# made every `_MEMO_DIGIT_RUN not in ...` assertion vacuous on a one-sided edit.
 _MEMO_DIGIT_RUN = "5555000011112222"
 
 
@@ -1062,9 +1072,9 @@ def _seed_internal_schemas(db: Database) -> None:
     )
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
-        "CREATE VIEW prep.int_transactions__merged AS SELECT "
+        "CREATE VIEW prep.int_transactions__merged AS SELECT "  # noqa: S608  # test fixture DDL over an invented literal, not user input
         "'txn_0001' AS transaction_id, "
-        "'MEMO 5555000011112222' AS description, "
+        f"'MEMO {_MEMO_DIGIT_RUN}' AS description, "
         "account_id FROM raw.ofx_accounts"
     )
 
@@ -1131,6 +1141,67 @@ def test_undeclared_prep_column_rides_the_content_net(
         "SELECT description FROM prep.int_transactions__merged",
         max_rows=5,
     )
+
+    assert result.output_classes["description"] is DataClass.FLOORED
+    assert _MEMO_DIGIT_RUN not in str(result.records)
+
+
+# Four SQL shapes that put one output position on BOTH a floored prep column and
+# a declared `core` column. Each is a distinct route into `_combined_class` — a
+# set operation merges positionally across branches, a COALESCE/CASE merges the
+# classes of one expression's arms — so each is its own parametrized case rather
+# than a loop, and each fails on its own.
+_MIXED_SCHEMA_PROJECTIONS = [
+    (
+        "union-all",
+        "SELECT description FROM prep.int_transactions__merged "
+        "UNION ALL SELECT description FROM core.fct_transactions",
+    ),
+    (
+        "union-distinct",
+        "SELECT description FROM prep.int_transactions__merged "
+        "UNION SELECT description FROM core.fct_transactions",
+    ),
+    (
+        "coalesce",
+        "SELECT COALESCE(p.description, t.description) AS description "
+        "FROM prep.int_transactions__merged p "
+        "LEFT JOIN core.fct_transactions t ON p.transaction_id = t.transaction_id",
+    ),
+    (
+        "case",
+        "SELECT CASE WHEN t.transaction_id IS NULL THEN p.description "
+        "ELSE t.description END AS description "
+        "FROM prep.int_transactions__merged p "
+        "LEFT JOIN core.fct_transactions t ON p.transaction_id = t.transaction_id",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [sql for _id, sql in _MIXED_SCHEMA_PROJECTIONS],
+    ids=[case_id for case_id, _sql in _MIXED_SCHEMA_PROJECTIONS],
+)
+def test_a_mixed_schema_position_keeps_the_content_net(
+    populated_db: Database, sql: str
+) -> None:
+    """Mixing a floored column with a `core` one must not retire the net.
+
+    ``core.fct_transactions.description`` is ``DESCRIPTION`` — MEDIUM tier, and
+    ``_passthrough`` until PR 3 wires its transform. Merging by tier alone
+    therefore answered ``DESCRIPTION`` for a position that also draws from
+    ``prep``, and the prep row's digit run came back verbatim under a class that
+    masks nothing. Seven of the classes above ``Tier.LOW`` pass through today,
+    so this was reachable from any of them.
+
+    The class assertion is the load-bearing one; the digit-run assertion is the
+    disclosure it caused, kept because a class name is not evidence a value was
+    masked.
+    """
+    _seed_internal_schemas(populated_db)
+
+    result = execute_sql_query(populated_db, sql, max_rows=5)
 
     assert result.output_classes["description"] is DataClass.FLOORED
     assert _MEMO_DIGIT_RUN not in str(result.records)

@@ -402,11 +402,14 @@ Save pipeline:
    not the connectionless CLASSIFICATION one, because it includes `reports.*` —
    which `sql_query` permits reading and the build-time snapshot deliberately
    excludes to stay non-self-referential.
-4. `expand_star`, then `tables_outside_schemas` against `{core, app, reports}`.
-   Report creation is restricted to fully-classified schemas. `raw`/`prep` are
-   not reachable through `sql_query` today; when M2O.2 opens them behind a
-   content-net floor, whether a *durable* artifact may be built over floored
-   columns is decided there, not assumed here.
+4. `expand_star`, then `tables_outside_schemas` against `SAVE_SCHEMAS`, which
+   tracks `sql_query`'s gate exactly — `{core, app, reports, raw, prep}` since
+   M2O.2. That task answered the question this step used to defer: a durable
+   report MAY read `raw`/`prep`. Redaction runs per value at execution, so a
+   stored `FLOORED` class is a standing instruction to re-scan live values, not
+   a cached verdict, and graduation to a materialized `reports.*` view stays
+   blocked by `report_materialization.DERIVABLE_UPSTREAM_SCHEMAS`
+   (`{core, app}`), surfaced through `reports explain`.
 5. `resolve_output_classes(..., strict=False)`. **Not strict.** An unresolvable
    projection must not fail the save. The same resolved columns also class each
    declared parameter, by the comparison it appears in (R9) — a parameter is an

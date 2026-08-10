@@ -310,10 +310,13 @@ def is_safe_to_publish_verbatim(data_class: DataClass) -> bool:
 
     The tier half is the original rule: a class above ``Tier.LOW`` is too
     sensitive to publish. Keeping it is what stops this from being a widening —
-    ``BALANCE``, ``TXN_AMOUNT``, ``INCOME_AMOUNT``, ``MERCHANT_NAME``,
-    ``DESCRIPTION``, ``USER_NOTE`` and ``TXN_DATE`` are all above LOW and all
-    *pass through* today (PR 3 adds their bucketing), so a mask-strength-only
-    rule would start allowing stored defaults on all seven.
+    several classes above LOW still ``_passthrough`` today (PR 3 wires their
+    bucketing), so a mask-strength-only rule would start allowing stored
+    defaults on every one of them.
+    ``test_verbatim_gate_adds_exactly_floored_to_the_old_tier_rule`` derives that
+    set from the registry and asserts the gate's exact shape; listing the names
+    here would restate its contents and go false the moment PR 3 lands one of
+    those transforms, with nothing turning red.
 
     The strength half is the addition. ``FLOORED`` is ``Tier.LOW`` because of
     what its transform does — re-scanning each value at execution — not because

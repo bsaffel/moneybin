@@ -9,8 +9,8 @@ output column to a class via the ``CLASSIFICATION`` registry (and, for
 result feeds ``redact_records`` (CRITICAL masking today; whatever
 ``_TRANSFORMS`` does tomorrow) and sets the per-call envelope sensitivity.
 
-Fail-closed: anything we cannot resolve is treated as the most sensitive
-class the query could touch (max tier over all input columns), so we
+Fail-closed: anything we cannot resolve is treated as the strongest-masking
+class the query could touch (``_combined_class`` over all input columns), so we
 over-redact rather than leak.
 
 Scope: this module classifies columns in ``core``, ``app``, ``reports``,
@@ -62,6 +62,7 @@ from sqlglot.optimizer.scope import Scope, build_scope
 
 from moneybin.database import Database
 from moneybin.log_sanitizer import sql_digest
+from moneybin.privacy.redaction import mask_strength
 from moneybin.privacy.taxonomy import (
     CLASSIFICATION,
     INTERNAL_CRITICAL,
@@ -73,7 +74,7 @@ logger = logging.getLogger(__name__)
 
 # Aggregate functions that destroy individual values → LOW tier. Every other
 # aggregate (SUM/AVG/MIN/MAX/STDDEV/VARIANCE) preserves the source class, which
-# the generic "max-tier of referenced columns" path in _classify_projection
+# the generic "merge of referenced columns" path in _classify_projection
 # already produces — so only the counting set needs an explicit check.
 _COUNTING_AGGS: tuple[type[exp.Expr], ...] = (exp.Count,)
 
@@ -486,8 +487,9 @@ def _coverage_gap_class(key: tuple[str, str, str], sql_for_log: str) -> DataClas
 def _combined_class(classes: list[DataClass]) -> DataClass:
     """The single class describing a value drawn from ALL of ``classes``.
 
-    Max-by-tier, with one exception: **two DIFFERENT CRITICAL classes have no
-    representative.** Their transforms are not interchangeable — ROUTING_NUMBER
+    Max by (mask strength, tier) — see the comment on the ``max`` below for why
+    strength leads — with one exception: **two DIFFERENT CRITICAL classes have
+    no representative.** Their transforms are not interchangeable — ROUTING_NUMBER
     masks WHOLE while INSTITUTION_ACCOUNT_NUMBER masks PARTIALLY (``"****" +
     value[-4:]``) — so standing one in for the other publishes the last four
     characters of a value it does not describe. A bare ``max`` picks the first
@@ -502,21 +504,37 @@ def _combined_class(classes: list[DataClass]) -> DataClass:
     the position, so collapsing it would discard a correct, more specific answer
     (and turn ``SELECT last_four`` into a whole mask).
 
-    Below CRITICAL, FLOORED is sticky against a LOW-tier tie — see the check
-    below for why. Otherwise the identified max is the more informative
-    answer; collapsing there would inflate a HIGH bound to CRITICAL, the
+    Below CRITICAL the identified max is the more informative answer;
+    collapsing there would inflate a HIGH bound to CRITICAL, the
     over-classification this module must not introduce.
 
     ``classes`` must be non-empty; every caller already guards that.
     """
-    best = max(classes, key=lambda c: c.tier)
-    # FLOORED is sticky among LOW classes. Every LOW transform except this one
-    # is passthrough, so a bare `max` — which returns the FIRST maximal element
-    # — would drop the content net based on the order the sources happened to
-    # appear in. Above LOW the higher tier genuinely describes the value and
-    # masks at least as strongly, so it wins.
-    if best.tier is Tier.LOW and DataClass.FLOORED in classes:
-        return DataClass.FLOORED
+    # Rank on (mask strength, tier) — strength first, tier only as the
+    # tie-break. Tier says how sensitive a class is; it says NOTHING about how
+    # hard its transform hides a value, and seven classes above Tier.LOW are
+    # `_passthrough` today (BALANCE, DESCRIPTION, INCOME_AMOUNT, MERCHANT_NAME,
+    # TXN_AMOUNT, TXN_DATE, USER_NOTE — PR 3 wires their transforms). Ranking on
+    # tier alone therefore handed a mixed position to a class that masks
+    # nothing: `SELECT description FROM prep.x UNION ALL SELECT description FROM
+    # core.fct_transactions` answered DESCRIPTION and published the prep row's
+    # digit run in the clear. Strength-first keeps whichever input masks
+    # hardest, so the merged class can never mask more weakly than any value the
+    # position actually draws from.
+    #
+    # NAMED LIMITATION, accepted: the reported TIER can now understate. The case
+    # above reports Tier.LOW (FLOORED's) for a position that also carries MEDIUM
+    # `core` data, and `sql_query.derive_query_tier` reads this same class. That
+    # is inert today because no consent gate reads a tier at any tier — the
+    # tier's only consumers are the envelope's `sensitivity` string and the
+    # privacy event. It becomes a real understatement the moment one does.
+    #
+    # `best` is therefore no longer guaranteed to be the highest-TIER input, so
+    # the CRITICAL branch below could stop firing if a future non-CRITICAL class
+    # masked WHOLE. That direction over-masks rather than leaking, and
+    # `test_two_disagreeing_critical_classes_still_collapse` derives its pairs
+    # from the registry so the change is red rather than silent.
+    best = max(classes, key=lambda c: (mask_strength(c), c.tier))
     if best.tier is not Tier.CRITICAL:
         return best
     at_top = {c for c in classes if c.tier is Tier.CRITICAL}
@@ -526,7 +544,7 @@ def _combined_class(classes: list[DataClass]) -> DataClass:
 def _scope_input_max(
     select: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """Max-tier of ``select``'s inputs, FLOORED sticky at a tie; else AGGREGATE.
+    """``_combined_class`` over ``select``'s inputs; AGGREGATE when it has none.
 
     Alias resolution is local to ``select``: ``collect_input_columns`` builds the
     alias map from this subtree alone. That locality is the point — a UNION can
@@ -544,7 +562,7 @@ def _scope_input_max(
     anywhere in ``select`` — including a JOIN condition or WHERE clause — not
     just the projection being classified, so a query joining an undeclared view
     raises this floor even when only a declared column is projected. This is
-    intentional (coherent with the max-tier-over-inputs design), not a bug.
+    intentional (coherent with the merge-over-all-inputs design), not a bug.
     """
     best: DataClass = DataClass.AGGREGATE
     for key in collect_input_columns(select, snapshot):
@@ -597,7 +615,7 @@ def _tables_in_scope(tree: exp.Expr, snapshot: SchemaSnapshot) -> set[tuple[str,
 def _table_scope_max(
     tree: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """Max tier over EVERY column of every classified table ``tree`` reads; FLOORED tie.
+    """``_combined_class`` over EVERY column of every classified table ``tree`` reads.
 
     The column-reference floor (``_scope_input_max``) can only see columns the
     query NAMES. A projection that names none — ``SELECT dim_accounts FROM
@@ -654,7 +672,7 @@ def _table_scope_max(
 def _conservative_floor(
     tree: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """The tier an unresolved projection takes: max over EVERY scope; FLOORED sticky.
+    """The class an unresolved projection takes: merged over EVERY scope.
 
     **THE INVARIANT, stated once:** a projection is classified LOW only when we
     positively established what it is. Anything unresolved, opaque, or
@@ -665,8 +683,8 @@ def _conservative_floor(
     Two independent floors are combined, because each covers a blind spot of the
     other:
 
-    * **Per-scope column max** (``_scope_input_max`` over every SELECT in the
-      tree, FLOORED sticky at a LOW tie). Precise where the query names its
+    * **Per-scope column merge** (``_scope_input_max`` over every SELECT in the
+      tree). Precise where the query names its
       columns. Walking every SELECT —
       each with its own local alias map, so per-branch alias correctness
       survives — is what keeps a CTE body (``SELECT v FROM c15``) or a
@@ -908,8 +926,8 @@ def _source_scope_of(col: exp.Column, scope: Scope | None) -> Scope | None:
 
     A CTE reference parses with ``db=''``, so ``_build_alias_map`` never
     registers it; resolving to the matching projection INSIDE the source is what
-    keeps each output column's class its own instead of collapsing to "max tier
-    over every column in the query".
+    keeps each output column's class its own instead of collapsing to one merge
+    over every column in the query.
     """
     if scope is None:
         return None
