@@ -1053,6 +1053,18 @@ means a transported-but-undigested field on a primitive every destructive tool
 shares. That blast radius is why this lands as its own change rather than
 half-done on one surface.
 
+**The merge prompt is what makes `identity_links_decide` a medium-tier tool.**
+Its response payload carries record ids, a status, and counts — all `low`. The
+elicitation carries each ledger's first and last transaction dates and the
+account labels the user wrote, which the tier table puts at `medium`. Static
+classification walks only the payload, so the tool declares the difference with
+`discloses=Tier.MEDIUM` and the decorator folds it in as a floor. Without it the
+privacy audit event would record `low` for a call that showed the caller
+medium-tier data, and a future consent gate would admit the call on the wrong
+tier. `accounts_links_set` renders the same evidence and needs no declaration:
+it is an unregistered internal callback with no caller, so its prompt reaches
+nobody. Registering it means declaring the tier in the same change.
+
 ## Testing
 
 - **Unit** (`tests/moneybin/`): `AccountResolver` ladder — strong/remembered ref

@@ -11,7 +11,11 @@ from moneybin.errors import UserError
 from moneybin.mcp.decorator import internal_envelope_adapter, mcp_tool
 from moneybin.mcp.privacy import Sensitivity, log_tool_call
 from moneybin.privacy.introspection import PrivacyContractError
-from moneybin.privacy.payloads.accounts import AccountListPayload
+from moneybin.privacy.payloads.accounts import (
+    AccountLinksSetPayload,
+    AccountListPayload,
+)
+from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 
 
@@ -71,6 +75,63 @@ class TestMCPToolDecorator:
             ...
 
         assert my_tool._mcp_sensitivity == Sensitivity.HIGH  # type: ignore[attr-defined]
+
+    @pytest.mark.unit
+    def test_discloses_raises_the_tier_above_the_payload_it_returns(self) -> None:
+        """A confirm prompt can disclose more than the response ever carries.
+
+        Deriving the tier from the typed payload is right for a tool whose only
+        output is that payload. A destructive tool that elicits first also
+        discloses whatever its prompt renders, and that text is invisible to the
+        payload walk — so ``summary.sensitivity`` and the audit event understated
+        what the caller was shown. ``discloses`` is the declaration that closes it.
+        """
+
+        @mcp_tool(read_only=False, destructive=True, discloses=Tier.MEDIUM)
+        def prompting_tool() -> ResponseEnvelope[AccountLinksSetPayload]:  # type: ignore[return]
+            ...
+
+        @mcp_tool(read_only=False, destructive=True)
+        def silent_tool() -> ResponseEnvelope[AccountLinksSetPayload]:  # type: ignore[return]
+            ...
+
+        assert silent_tool._mcp_sensitivity == Sensitivity.LOW  # type: ignore[attr-defined]
+        assert prompting_tool._mcp_sensitivity == Sensitivity.MEDIUM  # type: ignore[attr-defined]
+
+    @pytest.mark.unit
+    def test_discloses_never_lowers_a_payload_derived_tier(self) -> None:
+        """The declaration describes an addition to the payload, not a substitute.
+
+        Reading it as the answer rather than as a floor would let a tool declare
+        its prompt MEDIUM and thereby unmask a CRITICAL payload — a downgrade
+        expressed as a disclosure. The fixture's payload is CRITICAL precisely so
+        the max() is load-bearing; on a LOW payload both readings agree and the
+        test would prove nothing.
+        """
+
+        @mcp_tool(discloses=Tier.MEDIUM)
+        def declaring_tool() -> ResponseEnvelope[AccountListPayload]:  # type: ignore[return]
+            ...
+
+        @mcp_tool()
+        def baseline_tool() -> ResponseEnvelope[AccountListPayload]:  # type: ignore[return]
+            ...
+
+        assert baseline_tool._mcp_sensitivity == Sensitivity.CRITICAL  # type: ignore[attr-defined]
+        assert declaring_tool._mcp_sensitivity == Sensitivity.CRITICAL  # type: ignore[attr-defined]
+
+    @pytest.mark.unit
+    def test_discloses_is_rejected_on_a_dynamic_tool(self) -> None:
+        """A dynamic tool sets its own per-call tier, so a static floor misleads."""
+        with pytest.raises(ValueError, match="discloses"):
+
+            @mcp_tool(
+                dynamic_classification=True,
+                maximum_sensitivity=Sensitivity.HIGH,
+                discloses=Tier.MEDIUM,
+            )
+            def sample() -> ResponseEnvelope[Any]:  # type: ignore[return]
+                ...
 
     @pytest.mark.unit
     def test_decorator_preserves_function_name(self) -> None:

@@ -54,7 +54,7 @@ def links_pending(
     """List pending account-link decisions, grouped by provisional account.
 
     Shows provisional accounts with candidate merge proposals. Each group
-    lists the candidate decision_id, account_id, display name, confidence,
+    lists the candidate decision_id, account_id, display name, ledger overlap,
     and match signal. Use `accounts links set` to decide each group.
     """
     with handle_cli_errors():

@@ -74,7 +74,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state | Confirmed write / maximum low |
 | `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows | Read / dynamic / maximum high / queue-derived |
 | `reviews_decide` | `decisions` | Resolve ordinary or auto-rule review items; `kind='auto_rule'` carries proposal-scoped `allow_broad` | Confirmed write / maximum low |
-| `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / maximum low |
+| `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / maximum medium (prompt-disclosed) |
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / maximum medium / view-derived |
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / maximum low |
 | `import_files` | `account_bindings`, `force`, `paths`, `refresh` | Import files | Audited workflow / maximum critical / file-derived |

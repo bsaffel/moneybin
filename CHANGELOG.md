@@ -452,6 +452,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the provider the sync server happens to speak to, which is an implementation
   detail behind the server and not something a confirmation prompt should
   name (#387).
+- **`identity_links_decide` now reports `sensitivity: "medium"`.** Its response
+  still carries only record ids and counts, but its merge prompt shows
+  transaction dates and the account labels you wrote, and the privacy audit
+  event recorded the response's tier rather than what you were shown. A tool
+  that renders classified data in a confirmation prompt now declares that tier
+  alongside the one derived from its response, and the higher of the two wins
+  (#387).
 - **A name match no longer proposes a merge across two different stated last
   fours.** Two accounts that agree on a fuzzy name and *disagree* on a last four
   they both state are evidence of two different accounts, not one; the name rung

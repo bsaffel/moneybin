@@ -87,6 +87,7 @@ from moneybin.privacy.payloads.reviews import (
 )
 from moneybin.privacy.payloads.transactions import MatchHistoryRow, MatchPendingRow
 from moneybin.privacy.redaction import redact_typed
+from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.protocol.pagination import (
     KeysetPosition,
@@ -1160,7 +1161,17 @@ def _apply_identity_decisions(
         return service.apply_identity(decisions, verify=verify)
 
 
-@mcp_tool(read_only=False, destructive=True, idempotent=True, timeout_seconds=180.0)
+@mcp_tool(
+    read_only=False,
+    destructive=True,
+    idempotent=True,
+    timeout_seconds=180.0,
+    # The response carries record ids and counts; the elicitation carries each
+    # ledger's first and last transaction dates and the user's own account
+    # labels. Only the payload is walked, so without this the audit event would
+    # record `low` for a call that put MEDIUM data in front of the caller.
+    discloses=Tier.MEDIUM,
+)
 async def identity_links_decide_coarse(
     decisions: list[IdentityDecisionRequest],
     confirmation_token: str | None = None,

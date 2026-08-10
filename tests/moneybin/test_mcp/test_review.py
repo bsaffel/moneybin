@@ -2071,7 +2071,24 @@ async def test_identity_mixed_late_failure_rolls_back_then_shares_operation_id()
     assert audit_operation_ids == {response.data.operation_id}
 
 
-async def test_identity_standard_write_reports_low_sensitivity() -> None:
+async def test_identity_standard_write_reports_its_prompt_disclosure_tier() -> None:
+    """The privacy event records what the tool may show, not what it returns.
+
+    The payload is three low-tier classes, but the merge prompt renders ledger
+    dates and user-written account labels, so the tool declares
+    ``discloses=Tier.MEDIUM`` and the event records ``medium``.
+
+    This batch rejects a *merchant* link — it renders no ledger facts and elicits
+    nothing — and still reports ``medium``. That is the declared maximum working
+    as intended rather than a miscount: a static declaration is per-tool, so it
+    over-reports on the calls that disclose less. Over-reporting a tier is the
+    safe direction; the per-call alternative would have to be trusted to lower
+    itself correctly on every path.
+
+    ``classes_returned`` stays payload-derived, which is the other half: the
+    declaration raises the tier without inventing data classes the response
+    never carried.
+    """
     setup = _identity_merchant_setup("sensitivity")
     captured: list[dict[str, Any]] = []
     mcp = isolated_server(register_review_coarse_writes)
@@ -2094,7 +2111,7 @@ async def test_identity_standard_write_reports_low_sensitivity() -> None:
     assert response.structuredContent is not None
     assert response.structuredContent["status"] == "ok"
     assert len(captured) == 1
-    assert captured[0]["sensitivity"] == "low"
+    assert captured[0]["sensitivity"] == "medium"
     assert captured[0]["classes_returned"] == [
         "aggregate",
         "record_id",
@@ -2609,6 +2626,55 @@ async def test_identity_preview_absorbs_the_source_into_the_target(
     assert merge.absorbed.transactions == 2
     assert merge.survivor.account_id == setup["candidate"]
     assert merge.survivor.transactions == 4
+
+
+async def test_identity_preview_describes_every_account_merge_in_the_batch(
+    mcp_db: object,
+) -> None:
+    """Two account links in one batch produce two merge descriptions, not one.
+
+    The tool takes an ordered list and nothing bounds it to a single account
+    merge, but the ``merges`` comprehension has only ever run over a one-accept
+    batch. A per-accept map that dropped past the first, or paired the wrong
+    source with the wrong target across two accepts, would hand the human a
+    prompt describing one merge while committing two.
+
+    Each of the four ledgers is a different size, so a pair read into the wrong
+    roles — or a merge built from one decision's source and the other's target —
+    fails on the counts rather than passing on ids that appear either way.
+    """
+    first = _identity_account_setup("preview-batch-one")
+    second = _identity_account_setup("preview-batch-two")
+    _seed_account_ledger(first["provisional"], "prov-batch-one", rows=2)
+    _seed_account_ledger(first["candidate"], "cand-batch-one", rows=4)
+    _seed_account_ledger(second["provisional"], "prov-batch-two", rows=3)
+    _seed_account_ledger(second["candidate"], "cand-batch-two", rows=5)
+
+    preview = _preview_identity_decisions([
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=first["decision_id"],
+            decision="accept",
+            target_id=first["candidate"],
+        ),
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=second["decision_id"],
+            decision="accept",
+            target_id=second["candidate"],
+        ),
+    ])
+
+    assert [merge.absorbed.account_id for merge in preview.merges] == [
+        first["provisional"],
+        second["provisional"],
+    ]
+    assert [merge.survivor.account_id for merge in preview.merges] == [
+        first["candidate"],
+        second["candidate"],
+    ]
+    assert [merge.absorbed.transactions for merge in preview.merges] == [2, 3]
+    assert [merge.survivor.transactions for merge in preview.merges] == [4, 5]
 
 
 async def test_identity_preview_describes_no_merge_for_a_reject(

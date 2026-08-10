@@ -349,6 +349,55 @@ def test_the_account_paragraph_names_the_undo_path() -> None:
     assert "system_audit_undo" in message
 
 
+def test_a_two_merge_batch_describes_both_merges_in_the_batch_order() -> None:
+    """One batch can accept two account links, and both have to be legible.
+
+    ``identity_links_decide`` takes an ordered list of decisions; nothing bounds
+    it to one account merge per call. Every other test here passes a
+    single-element ``merges``, which exercises the one-block case and leaves the
+    per-merge mapping unpinned — a renderer that described only the first pair,
+    or reordered them, would ratify a second merge the sentence never mentions.
+
+    Order is the caller's here, unlike ``kinds``: the blocks follow the batch's
+    own decision sequence so a human can read them against the call they made.
+    The trailing "This batch touches" line stays singular and combined, because
+    the blast radius is the batch's, not each merge's.
+    """
+    first_absorbed, first_survivor = _colliding_pair()
+    second_absorbed = _facts(
+        "bbbbbbbbbbbb",
+        display_name="Example Credit Union checking …0000",
+        source_types=("csv",),
+        transactions=57,
+        first_date=date(2025, 2, 3),
+        last_date=date(2026, 7, 30),
+    )
+    second_survivor = _facts(
+        "tttttttttttt",
+        display_name="Example Credit Union checking …0000",
+        source_types=("ofx",),
+        transactions=612,
+        first_date=date(2021, 6, 9),
+        last_date=date(2026, 7, 30),
+    )
+
+    message = identity_confirm_message(
+        {"accounts": 4, "transactions": 403},
+        merges=[
+            _merge(first_absorbed, first_survivor),
+            _merge(second_absorbed, second_survivor),
+        ],
+        kinds=["account_link"],
+    )
+
+    folds = [line for line in message.splitlines() if "is folded into" in line]
+    assert len(folds) == 2, message
+    assert "aaaaaaaaaaaa" in folds[0] and "ssssssssssss" in folds[0]
+    assert "bbbbbbbbbbbb" in folds[1] and "tttttttttttt" in folds[1]
+    assert message.count("This batch touches:") == 1
+    assert "4 accounts, 403 transactions" in message
+
+
 def test_the_paragraph_names_only_the_kinds_the_batch_contains() -> None:
     """A card-to-card account link was told about security lots and price marks."""
     absorbed, survivor = _colliding_pair()

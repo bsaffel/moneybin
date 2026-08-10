@@ -433,6 +433,15 @@ maximum sensitivity from the data classes on their typed response payload.
 Tools whose projection varies by request declare `dynamic_classification=True`,
 classify the returned payload, and advertise a `maximum_sensitivity` ceiling.
 
+Both paths read the response. A tool that shows the caller classified data
+somewhere else — today, only the text of a confirmation elicitation — declares
+that tier with `discloses=Tier.X` on a static tool, and the decorator folds it
+in as a floor: it raises the derived tier and never lowers it, so it cannot
+argue a `critical` payload out of masking. `identity_links_decide` is the one
+tool that carries it: its response holds record ids and counts, while its merge
+prompt renders each ledger's first and last transaction dates and the account
+labels the user chose.
+
 Classification and critical-field masking are current behavior. The consent
 ledger is current, but **global consent enforcement is deferred**; the
 consented/not-consented columns below describe the target gate, not current
