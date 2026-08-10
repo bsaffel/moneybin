@@ -53,9 +53,12 @@ asks once, states what it covers, and gets out of the way.
   about completeness, and the code keeps it on every **declared** column. Scope
   the copy there. `sql_query` also reads `raw` and `prep`, which declare 33
   columns and nothing else, so every other value is masked by shape — an SSN
-  pattern or an unbroken run of 8 or more digits — and a 4-to-7 digit account
-  number passes through. Copy about those two schemas names the scan and its
-  gap; it never says "always masked." The binding source is the repo's
+  pattern or an unbroken run of 8 or more digits, over strings and integers
+  only. An account number of 4 to 7 digits, one written with separators
+  (`1234-5678`), or one stored as `DECIMAL` or `FLOAT` passes through. Copy
+  about those two schemas names the scan and **every** gap it leaves — naming
+  one gap reads as naming the only gap, which over-promises on the others; and
+  it never says "always masked." The binding source is the repo's
   privacy-and-AI-trust spec and the redaction module; this doc restates them and
   never widens them.
 - **The gate is one modal** — the floating layer of `patterns.md` §07, same

@@ -97,7 +97,9 @@ number in a column MoneyBin classifies is masked exactly as in a built-in one.
 A report reading `raw.*` or `prep.*` is the one place that parity does not
 hold: those columns are largely undeclared, so a routing number there comes
 back as `****...NNNN` — last four retained — where a declared one returns
-`*****`, and a 4-to-7 digit account number passes through in full. If an
+`*****`. The scan behind that covers strings and integers, so an account number
+of 4 to 7 digits, one written with separators (`1234-5678`), or one stored as
+`DECIMAL` or `FLOAT` passes through in full. If an
 upstream column is later reclassified as more sensitive, the saved report masks
 that column instead of serving the class it captured. `reports set` re-derives on any
 SQL or parameter change, `reports delete` is undoable via `system audit undo`,
