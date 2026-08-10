@@ -238,11 +238,12 @@ class TestDBReadOnlyCommands:
     def test_sql_query_rejects_nonallowed_schema(
         self, e2e_profile: dict[str, str]
     ) -> None:
-        # The schema gate refuses raw.* before execution — exit non-zero.
+        # The schema gate refuses meta.* before execution — exit non-zero.
+        # Re-aimed from raw.* when M2O.2 admitted raw/prep through this gate.
         result = run_cli(
             "sql",
             "query",
-            "SELECT account_id FROM raw.ofx_transactions",
+            "SELECT account_id FROM meta.internal_only",
             env=e2e_profile,
         )
         assert result.exit_code != 0

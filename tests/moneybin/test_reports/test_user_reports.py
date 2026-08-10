@@ -1473,10 +1473,14 @@ def test_an_accepted_save_counts_once(service: UserReportsService) -> None:
             "SELECT 1 AS a; SELECT account_id FROM core.dim_accounts",
             error_codes.REPORT_QUERY_INVALID,
         ),
-        # `raw.plaid_accounts` exists in this database, so qualification succeeds
-        # and the schema allowlist is what refuses — not the unknown-table guard.
+        # `meta` is a real MoneyBin schema the save allowlist still refuses —
+        # re-aimed from `raw.plaid_accounts` when M2O.2 admitted raw/prep, since
+        # a fixture inside the allowlist would assert nothing about the gate.
+        # `expand_star` leaves an unexpandable star in place rather than raising,
+        # so the schema allowlist is what refuses here, not the unknown-table
+        # guard — the table need not exist.
         (
-            "SELECT * FROM raw.plaid_accounts",
+            "SELECT * FROM meta.internal_only",
             error_codes.REPORT_QUERY_SCHEMA_NOT_ALLOWED,
         ),
     ],

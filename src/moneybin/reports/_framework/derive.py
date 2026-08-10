@@ -63,11 +63,14 @@ logger = logging.getLogger(__name__)
 #: report on the match branch, serving the old class indefinitely.
 DERIVATION_VERSION: Final = 1
 
-#: Report creation is restricted to fully-classified schemas. ``raw``/``prep``
-#: are not reachable through ``sql_query`` either; when M2O.2 opens them behind
-#: a content-net floor, whether a *durable* artifact may be built over floored
-#: columns is decided there.
-SAVE_SCHEMAS: Final = frozenset({"core", "app", "reports"})
+#: Report creation tracks the ``sql_query`` gate exactly. M2O.2 answered the
+#: question this constant used to defer: a durable report MAY read raw/prep.
+#: Redaction runs per value at execution, so a stored FLOORED is a standing
+#: instruction to re-scan live values, not a cached verdict — and graduation to
+#: a materialized ``reports.*`` view stays blocked by
+#: ``report_materialization.DERIVABLE_UPSTREAM_SCHEMAS``, surfaced through
+#: ``reports explain``.
+SAVE_SCHEMAS: Final = frozenset({"core", "app", "reports", "raw", "prep"})
 
 
 @dataclass(frozen=True, slots=True)

@@ -24,6 +24,7 @@ from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.contract import ParamSpec
 from moneybin.reports._framework.derive import (
     DERIVATION_VERSION,
+    SAVE_SCHEMAS,
     class_fingerprint,
     derive_classification,
 )
@@ -183,9 +184,17 @@ def test_derivation_rejects_a_write(dynamic_db: Database) -> None:
 def test_derivation_rejects_a_table_outside_the_classified_schemas(
     dynamic_db: Database,
 ) -> None:
-    with pytest.raises(UserError, match="app, core, reports"):
+    """``meta`` stands in for the complement, and the message is derived, not typed.
+
+    Re-aimed from ``raw.plaid_accounts`` when M2O.2 admitted ``raw``/``prep``: the
+    fixture has to name a schema the allowlist still refuses, or the test asserts
+    nothing about the allowlist. ``meta`` is a real MoneyBin schema that stays
+    internal. The expected text comes from ``SAVE_SCHEMAS`` itself so a future
+    widening cannot leave a stale literal passing by coincidence.
+    """
+    with pytest.raises(UserError, match=", ".join(sorted(SAVE_SCHEMAS))):
         derive_classification(
-            dynamic_db, query_sql="SELECT * FROM raw.plaid_accounts", params=()
+            dynamic_db, query_sql="SELECT * FROM meta.internal_only", params=()
         )
 
 

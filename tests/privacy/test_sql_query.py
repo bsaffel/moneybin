@@ -273,18 +273,23 @@ def test_metadata_path_cannot_reach_a_schema_the_data_path_refuses(
     """The schema allowlist binds the metadata path too, not just SELECT.
 
     Without this, the two paths disagree about the same table: ``SELECT ssn
-    FROM raw.leaky`` is refused by the allowlist while ``DESCRIBE raw.leaky``
-    describes it — and ``PRAGMA storage_info('raw.leaky')`` returned that
+    FROM meta.leaky`` is refused by the allowlist while ``DESCRIBE meta.leaky``
+    describes it — and ``PRAGMA storage_info('meta.leaky')`` returned that
     column's min/max outright. The refusal must not depend on which spelling
     the caller reaches for.
+
+    Re-aimed from ``raw`` to ``meta`` when M2O.2 admitted ``raw``/``prep``. The
+    property under test is path parity over a *refused* schema, so the fixture
+    has to sit in the complement; ``meta`` is a real MoneyBin schema that stays
+    internal. Nothing else about the shape changes.
     """
-    populated_db.execute("CREATE SCHEMA IF NOT EXISTS raw")
-    populated_db.execute("CREATE TABLE raw.leaky (ssn VARCHAR)")
-    populated_db.execute("INSERT INTO raw.leaky VALUES ('123456789')")
+    populated_db.execute("CREATE SCHEMA IF NOT EXISTS meta")
+    populated_db.execute("CREATE TABLE meta.leaky (ssn VARCHAR)")
+    populated_db.execute("INSERT INTO meta.leaky VALUES ('123456789')")
     populated_db.execute("CHECKPOINT")
 
     with pytest.raises(UserError) as ei:
-        execute_sql_query(populated_db, "SELECT ssn FROM raw.leaky", max_rows=100)
+        execute_sql_query(populated_db, "SELECT ssn FROM meta.leaky", max_rows=100)
     assert ei.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED
 
     # Every spelling that names the table, not just the bare-table one. A
@@ -292,17 +297,17 @@ def test_metadata_path_cannot_reach_a_schema_the_data_path_refuses(
     # reach the same table by a route the bare-table case would not have
     # exercised.
     for sql in (
-        "DESCRIBE raw.leaky",
-        "describe RAW.leaky",
-        "DESCRIBE SELECT * FROM raw.leaky",
-        "SHOW TABLES FROM raw",
-        "SHOW TABLES FROM RAW",
+        "DESCRIBE meta.leaky",
+        "describe META.leaky",
+        "DESCRIBE SELECT * FROM meta.leaky",
+        "SHOW TABLES FROM meta",
+        "SHOW TABLES FROM META",
     ):
         with pytest.raises(UserError) as metadata_error:
             execute_sql_query(populated_db, sql, max_rows=100)
         assert metadata_error.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED, sql
 
-    for sql in ("PRAGMA storage_info('raw.leaky')", "PRAGMA table_info('raw.leaky')"):
+    for sql in ("PRAGMA storage_info('meta.leaky')", "PRAGMA table_info('meta.leaky')"):
         assert "12345678" not in _payload(populated_db, sql)
 
 
@@ -458,13 +463,15 @@ def test_metadata_path_still_answers_schema_questions(populated_db: Database) ->
 
 
 def test_disallowed_schema_raises(populated_db: Database) -> None:
-    """Querying outside core/app raises UserError with the schema-gate code.
+    """Querying outside the allowlist raises UserError with the schema-gate code.
 
     The gate fires on schema name before execution, so the table need not exist.
+    ``meta`` replaced ``raw.ofx_transactions`` when M2O.2 admitted ``raw``/``prep``;
+    the assertion is about the complement, so the fixture must live in it.
     """
     with pytest.raises(UserError) as ei:
         execute_sql_query(
-            populated_db, "SELECT account_id FROM raw.ofx_transactions", max_rows=100
+            populated_db, "SELECT account_id FROM meta.internal_only", max_rows=100
         )
     assert ei.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED
 
@@ -970,16 +977,20 @@ def test_except_query_is_classified_and_masked(populated_db: Database) -> None:
 def test_set_operation_cannot_bypass_the_schema_allowlist(
     op: str, populated_db: Database
 ) -> None:
-    """The metadata path skipped the schema gate too — raw.* became readable.
+    """The metadata path skipped the schema gate too — fenced schemas became readable.
 
     The masking bypass was only half the damage: metadata queries never reach
-    ``tables_outside_schemas``, so ``SELECT ... FROM raw.x EXCEPT ...`` returned
-    unclassified raw-schema rows that a plain SELECT refuses outright.
+    ``tables_outside_schemas``, so ``SELECT ... FROM meta.x EXCEPT ...`` returned
+    unclassified rows from a schema a plain SELECT refuses outright.
+
+    Re-aimed from ``raw`` to ``meta`` when M2O.2 admitted ``raw``/``prep``: what
+    this pins is that a set operation cannot route *around* the allowlist, which
+    only means something for a schema the allowlist actually refuses.
     """
     with pytest.raises(UserError) as ei:
         execute_sql_query(
             populated_db,
-            f"SELECT account_id FROM raw.ofx_transactions {op} SELECT 'x'",  # noqa: S608  # test input string, not executing SQL
+            f"SELECT account_id FROM meta.internal_only {op} SELECT 'x'",  # noqa: S608  # test input string, not executing SQL
             max_rows=100,
         )
     assert ei.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED
@@ -1009,11 +1020,120 @@ def test_classes_returned_includes_routing_number(populated_db: Database) -> Non
     assert "routing_number" in result.classes_returned
 
 
-def test_reports_schema_is_queryable() -> None:
-    assert "reports" in _ALLOWED_QUERY_SCHEMAS
-    # core/app still allowed; internal schemas still fenced in Phase 1.
-    assert {"core", "app"} <= _ALLOWED_QUERY_SCHEMAS
+def test_gate_admits_internal_schemas_and_still_fences_meta_and_seeds() -> None:
+    """Set equality, never a subset: the complement is the security property.
+
+    A ``<=`` assertion passes just as happily when a later edit adds ``meta`` or
+    ``sqlmesh__core``, and what this constant governs is precisely which schemas
+    a caller may reach. The two named negatives are redundant against the
+    equality and kept anyway — they name the schemas whose exclusion is a
+    decision rather than an accident.
+    """
+    assert _ALLOWED_QUERY_SCHEMAS == {"core", "app", "reports", "raw", "prep"}
     assert "meta" not in _ALLOWED_QUERY_SCHEMAS
+    assert "seeds" not in _ALLOWED_QUERY_SCHEMAS
+
+
+# The digit run inside the seeded `description` below: the shape
+# `_mask_floored`'s content net exists to catch, in the kind of column no
+# declaration can enumerate. Invented digits. Spelled out in the view body
+# rather than interpolated, so the DDL stays a plain literal string.
+_MEMO_DIGIT_RUN = "5555000011112222"
+
+
+def _seed_internal_schemas(db: Database) -> None:
+    """Seed the real ``raw.ofx_accounts`` and add a prep view over it.
+
+    ``raw.ofx_accounts`` is created by ``init_schemas`` from the OFX extractor's
+    own DDL, so this seeds the real table rather than redefining it: the table
+    and column names are what make the ``INTERNAL_CRITICAL`` declarations apply,
+    and a stand-in name would leave every column undeclared and quietly turn the
+    CRITICAL assertion below into a FLOORED one. Every VALUE is invented.
+
+    ``prep`` models are SQLMesh-built, so nothing creates one in a unit-test
+    database; this one is a VIEW because that is how SQLMesh deploys them, and
+    the snapshot, the gate, and lineage must treat it exactly as a table.
+    """
+    db.execute(
+        "INSERT INTO raw.ofx_accounts "
+        "(account_id, routing_number, source_file, extracted_at) "
+        "VALUES (?, ?, ?, TIMESTAMP '2026-01-01 00:00:00')",
+        ["55550000111", _ROUTING_NUMBER, "statement.ofx"],
+    )
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE VIEW prep.int_transactions__merged AS SELECT "
+        "'txn_0001' AS transaction_id, "
+        "'MEMO 5555000011112222' AS description, "
+        "account_id FROM raw.ofx_accounts"
+    )
+
+
+def test_prep_select_returns_readable_rows(populated_db: Database) -> None:
+    """A prep model is readable — the whole point of opening the schema.
+
+    ``SELECT *`` needs BOTH halves of the widening, which is the useful thing it
+    pins. With the gate open and the snapshot narrow, ``qualify`` cannot expand
+    the star against a view it has never seen, so one projection faces three
+    runtime columns, ``classes_by_result_column`` fails the cardinality check,
+    and every column comes back ``'*****'``. Opening a schema without teaching
+    the snapshot about it yields a surface that is either whole-masked or
+    unclassified, never useful.
+    """
+    _seed_internal_schemas(populated_db)
+
+    result = execute_sql_query(
+        populated_db, "SELECT * FROM prep.int_transactions__merged LIMIT 5", max_rows=5
+    )
+
+    assert result.records
+    assert result.records[0]["transaction_id"] == "txn_0001"
+
+
+def test_raw_declared_critical_column_masks_through_the_widened_snapshot(
+    populated_db: Database,
+) -> None:
+    """``INTERNAL_CRITICAL`` only reaches a value the SNAPSHOT can resolve.
+
+    The dangerous half of this task, and the reason the snapshot query is widened
+    in the same commit as the gate. With the gate open and the snapshot still
+    scoped to core/app/reports, ``_column_key`` returns None for every raw
+    column, the projection declines, ``_table_scope_max`` finds no classified
+    table in scope, and ``_conservative_floor`` answers AGGREGATE — LOW,
+    passthrough. The declared ``ROUTING_NUMBER`` never runs and the value is
+    returned verbatim.
+    """
+    _seed_internal_schemas(populated_db)
+
+    result = execute_sql_query(
+        populated_db, "SELECT routing_number FROM raw.ofx_accounts", max_rows=5
+    )
+
+    assert result.records[0]["routing_number"] == "*****"
+    assert result.tier is Tier.CRITICAL
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+def test_undeclared_prep_column_rides_the_content_net(
+    populated_db: Database,
+) -> None:
+    """An undeclared raw/prep column resolves FLOORED, not AGGREGATE.
+
+    The other half of the snapshot's load: FLOORED is what a column with no
+    declaration gets, and it is reachable only once ``_class_of_key`` is handed a
+    key the snapshot resolved. Without the widened snapshot this column answers
+    AGGREGATE and the digit run is published.
+    """
+    _seed_internal_schemas(populated_db)
+
+    result = execute_sql_query(
+        populated_db,
+        "SELECT description FROM prep.int_transactions__merged",
+        max_rows=5,
+    )
+
+    assert result.output_classes["description"] is DataClass.FLOORED
+    assert _MEMO_DIGIT_RUN not in str(result.records)
 
 
 def test_reports_net_worth_balance_columns_classify_high(

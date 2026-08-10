@@ -96,6 +96,43 @@ def test_schema_snapshot_cached_until_version_changes(populated_db: Database) ->
     assert a is b  # same migration version → cached identity
 
 
+def test_schema_snapshot_covers_raw_and_prep_but_still_omits_meta(
+    populated_db: Database,
+) -> None:
+    """The snapshot reaches every schema the query gate admits — and no further.
+
+    Isolates the catalog query alone: no gate, no lineage, no execution. That
+    separation is what makes the widening testable at all, because admitting
+    ``raw``/``prep`` at the gate WITHOUT them in the snapshot is not a refusal —
+    it is a leak. ``_column_key`` resolves against ``snapshot.columns``, so an
+    absent column returns None, the projection declines, and
+    ``_conservative_floor`` finds no classified table in scope and answers
+    AGGREGATE (LOW, passthrough). A declared CRITICAL ``routing_number`` comes
+    back in the clear.
+
+    ``meta`` is asserted against a table that really exists, not against an empty
+    schema: a schema with no tables is absent from ``duckdb_columns()`` anyway,
+    so the negative half would hold no matter what this query selected.
+    """
+    populated_db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    populated_db.execute("CREATE SCHEMA IF NOT EXISTS meta")
+    # `raw.ofx_accounts` already exists — `init_schemas` creates it from the OFX
+    # extractor's DDL. Only the SQLMesh-built prep view has to be stood up here.
+    populated_db.execute(
+        "CREATE VIEW prep.stg_ofx__accounts AS "
+        "SELECT routing_number FROM raw.ofx_accounts"
+    )
+    populated_db.execute("CREATE TABLE meta.internal_only (marker VARCHAR)")
+
+    snap = get_current_schema_snapshot(populated_db)
+
+    assert ("raw", "ofx_accounts", "routing_number") in snap.columns
+    # A prep model is a VIEW, not a table — `duckdb_columns()` covers both, and
+    # nothing downstream of the snapshot distinguishes them.
+    assert ("prep", "stg_ofx__accounts", "routing_number") in snap.columns
+    assert ("meta", "internal_only", "marker") not in snap.columns
+
+
 # ---------------------------------------------------------------------------
 # Task 3: Star expansion + input-column collection
 # ---------------------------------------------------------------------------

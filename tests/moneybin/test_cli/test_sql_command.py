@@ -112,8 +112,13 @@ def test_query_write_exits_nonzero() -> None:
 
 @pytest.mark.usefixtures("_patched")
 def test_query_disallowed_schema_exits_nonzero() -> None:
-    """A query outside core/app is refused by the schema gate (exit non-zero)."""
-    result = runner.invoke(
-        app, ["query", "SELECT account_id FROM raw.ofx_transactions"]
-    )
+    """A query outside the allowlist is refused by the schema gate (exit non-zero).
+
+    Re-aimed from ``raw.ofx_transactions`` when M2O.2 admitted ``raw``/``prep``
+    through this same gate: the fixture has to name a schema the allowlist still
+    refuses, or the test asserts nothing about the allowlist. ``meta`` is a real
+    MoneyBin schema that stays internal. The gate fires on the schema name before
+    execution, so the table need not exist.
+    """
+    result = runner.invoke(app, ["query", "SELECT account_id FROM meta.internal_only"])
     assert result.exit_code != 0

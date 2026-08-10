@@ -13,18 +13,29 @@ Fail-closed: anything we cannot resolve is treated as the most sensitive
 class the query could touch (max tier over all input columns), so we
 over-redact rather than leak.
 
-Scope: this module classifies columns in the ``core``, ``app``, and
-``reports`` schemas. ``core``/``app`` resolve via the ``CLASSIFICATION``
-registry; ``reports`` resolves via each report's declared
-``@report(classes=…)`` map (ADR-013), because SQLMesh deploys report views
-as ``SELECT *`` pointers lineage cannot classify. Both sources are
-completeness-tested, so every deployed column in these schemas is declared
-and resolves. A query that references any other schema (``raw``/``prep``/
-``meta``) yields no classifiable input columns, so an unresolvable
-projection falls back to ``AGGREGATE`` (LOW) rather than CRITICAL. Callers
-(the ``sql_query`` wiring) MUST restrict the query to the allowlisted
-schemas before relying on this module's masking — see the table-allowlist
-gate in the tool layer.
+Scope: this module classifies columns in ``core``, ``app``, ``reports``,
+``raw``, and ``prep`` — the same five schemas ``_ALLOWED_QUERY_SCHEMAS``
+admits, and the same five ``get_current_schema_snapshot`` reads. ``core``/
+``app`` resolve via the ``CLASSIFICATION`` registry; ``reports`` via each
+report's declared ``@report(classes=…)`` map (ADR-013), because SQLMesh
+deploys report views as ``SELECT *`` pointers lineage cannot classify. Those
+two sources are completeness-tested, so every deployed column in those three
+schemas is declared and resolves.
+
+``raw``/``prep`` answer differently and deliberately: they carry hundreds of
+columns that grow with every import format, and ``raw.gsheet_<alias>`` /
+``raw.pdf_<alias>`` views are minted at connect time from a user's own
+headers, so no completeness test is possible. A short ``INTERNAL_CRITICAL``
+declaration covers the columns that provably hold account material; every
+other column resolves to ``DataClass.FLOORED``, a content net that passes a
+value through unless it is SHAPED like an SSN or a run of eight or more
+digits. So an undeclared column there is *floored*, never *unresolved*.
+
+A query referencing a schema outside those five yields no classifiable input
+columns, and an unresolvable projection over one falls back to ``AGGREGATE``
+(LOW) rather than CRITICAL. Callers (the ``sql_query`` wiring) MUST restrict
+the query to the allowlisted schemas before relying on this module's masking
+— see the table-allowlist gate in the tool layer.
 
 API note (sqlglot 30.8.0): after ``qualify()``, ``Column.table`` is the
 alias that appeared in the SQL (e.g. ``"t"`` for ``t.amount``) or the
@@ -144,7 +155,7 @@ def parse_cached(sql: str) -> exp.Expr:
 
 @dataclass(frozen=True)
 class SchemaSnapshot:
-    """Catalog columns for core.*/app.*/reports.* plus a sqlglot MappingSchema.
+    """Catalog columns for every queryable schema plus a sqlglot MappingSchema.
 
     ``columns`` is the (schema, table, column) set for membership checks and
     the conservative fallback. ``mapping`` drives sqlglot star expansion and
@@ -220,11 +231,18 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
     """Return a SchemaSnapshot whose expensive MappingSchema build is cached.
 
     Per call this issues two cheap catalog queries (the migration version and
-    the core/app/reports column list); both are sub-millisecond on a local
-    DuckDB and dwarfed by the per-call connection open. The costly part —
-    building the sqlglot ``MappingSchema`` — is memoised by ``_build_snapshot``
-    keyed on (version, ordered columns), so it runs only when the schema
-    actually changes.
+    the column list); both are sub-millisecond on a local DuckDB and dwarfed by
+    the per-call connection open. The costly part — building the sqlglot
+    ``MappingSchema`` — is memoised by ``_build_snapshot`` keyed on (version,
+    ordered columns), so it runs only when the schema actually changes.
+
+    The schema list must stay identical to ``sql_query._ALLOWED_QUERY_SCHEMAS``.
+    A schema admitted by the gate but missing here does not fail closed: every
+    one of its columns misses ``snapshot.columns``, ``_column_key`` returns None,
+    the projection declines, ``_table_scope_max`` sees no classified table in
+    scope, and ``_conservative_floor`` answers AGGREGATE — LOW and passthrough,
+    for a column that may be declared CRITICAL. Widening one list without the
+    other is a leak, not a refusal.
 
     Columns are ordered by ``column_index`` (DuckDB's definition order) so star
     expansion matches the runtime column order — see ``_build_snapshot``.
@@ -234,7 +252,7 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
         """
         SELECT schema_name, table_name, column_name
         FROM duckdb_columns()
-        WHERE schema_name IN ('core', 'app', 'reports')
+        WHERE schema_name IN ('core', 'app', 'reports', 'raw', 'prep')
         ORDER BY schema_name, table_name, column_index
         """
     ).fetchall()
@@ -665,8 +683,9 @@ def _conservative_floor(
     it used to: the query reads no classified table at all (e.g. a projection
     over a ``VALUES`` list, whose values are the caller's own literals rather
     than database data). It remains correct only because the caller restricts
-    the query to the classified schemas (core/app via CLASSIFICATION, reports
-    via declared @report class maps) — see the module docstring.
+    the query to the classified schemas — core/app via CLASSIFICATION, reports
+    via declared @report class maps, raw/prep via INTERNAL_CRITICAL over the
+    FLOORED content net. See the module docstring.
     """
     # Never log the raw SQL — it can carry literal PII (e.g. a description or
     # account-number filter). A short hash gives forensic correlation without

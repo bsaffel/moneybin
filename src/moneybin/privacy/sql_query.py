@@ -50,10 +50,17 @@ from moneybin.privacy.taxonomy import DataClass, Tier
 
 logger = logging.getLogger(__name__)
 
-# Data queries may reference these schemas: core/app (CLASSIFICATION registry)
-# and reports (declared @report classes, ADR-013). raw/prep land in Phase 2
-# (CRITICAL declarations + content-net floor); meta/seeds stay internal.
-_ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app", "reports"})
+# Data queries may reference these schemas: core/app (CLASSIFICATION registry),
+# reports (declared @report classes, ADR-013), and raw/prep (a short CRITICAL
+# declaration in INTERNAL_CRITICAL, everything else on the FLOORED content
+# net). meta/seeds stay internal — no consumer need has surfaced.
+#
+# Admitting a schema here is only half the gate: `get_current_schema_snapshot`
+# must ALSO cover it, or lineage resolves none of its columns, the conservative
+# floor finds no classified table in scope, and every value comes back at
+# AGGREGATE (LOW, passthrough) — including the declared CRITICAL ones. The two
+# lists move together.
+_ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app", "reports", "raw", "prep"})
 
 # --- Read-only / file-access safety gate -----------------------------------
 # DuckDB table-valued functions that read local files or make network requests.
@@ -363,22 +370,24 @@ def _refuse_disallowed_schemas(tree: exp.Expr, snapshot: SchemaSnapshot) -> None
             "Queries are limited to these schemas: "
             f"{', '.join(sorted(_ALLOWED_QUERY_SCHEMAS))}.",
             code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
-            # State the RULE, not a sample of the complement. The old hint named
-            # raw/prep/meta — three of roughly ten refused schemas — which reads
-            # as an exhaustive list and leaves an agent no reason to expect
-            # `sqlmesh__core.…`, `seeds`, or `main` to be refused. Physical
-            # table names are discoverable via SHOW ALL TABLES, so that gap was
-            # reachable in practice.
+            # State the RULE, not a sample of the complement. An earlier hint
+            # enumerated refused schemas — a few of roughly ten — which reads as
+            # exhaustive and leaves an agent no reason to expect `sqlmesh__core.…`
+            # or `main` to be refused. Physical table names are discoverable via
+            # SHOW ALL TABLES, so that gap was reachable in practice. The rule
+            # now covers raw/prep too: they carry no per-column registry, but
+            # every value they return passes the FLOORED content net, which is
+            # what makes them safe to admit — and is why naming the complement
+            # would have had to be rewritten again here.
             #
             # Name only SQL both surfaces can run. This primitive backs the MCP
             # tool and `moneybin sql query` alike, and there is no CLI
             # counterpart to `sql_schema` — pointing at it would hand a CLI
             # caller a tool it cannot invoke.
             hint=(
-                "Those three carry per-column privacy classifications, which is "
-                "what makes masking sound; every other schema (raw, prep, meta, "
-                "seeds, sqlmesh__*, main) is internal and has none. "
-                "SHOW ALL TABLES lists what exists."
+                "Those carry per-column privacy classifications or a content-net "
+                "floor, which is what makes masking sound; every other schema is "
+                "internal and has neither. SHOW ALL TABLES lists what exists."
             ),
             details={"disallowed": sorted(set(disallowed))},
         )
