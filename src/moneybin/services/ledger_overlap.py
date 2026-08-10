@@ -1,0 +1,145 @@
+"""Ledger-overlap probe: do two accounts already hold the same transactions?
+
+An account-link proposal fires on an identifier — an institution plus a masked
+last four, or a name that slugifies the same way. None of that is evidence about
+the *ledgers*, and the reviewer ratifying a whole-account merge has no other way
+to tell a genuine cross-source twin from two distinct accounts that happen to
+share a signal. The discriminating evidence is already in ``core`` and was never
+consulted.
+
+Deliberately keyed on **two account ids** rather than a decision id. The
+matcher cannot answer this question — ``matching/scoring.py`` blocks candidate
+pairs on the same ``account_id``, so it can only compute overlap after the merge
+that overlap is meant to justify. Keeping the probe's signature free of the
+review queue also leaves it reachable for a pair that has no proposal at all,
+which is the shape ``system doctor``'s ``duplicate_account_overlap`` audit
+detects and currently has no merge path for.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import date
+
+import duckdb
+
+from moneybin.database import Database
+from moneybin.tables import FCT_TRANSACTIONS
+
+logger = logging.getLogger(__name__)
+
+#: Days of posting lag tolerated before two rows stop being the same transaction.
+#:
+#: A statement carries the transaction date and a feed the posting date, so the
+#: same purchase is dated differently by each source. Measured on a live twin
+#: pair, amount within ±3 days matched 345 of 346 rows against the true twin and
+#: 0 of 346 against each of two controls; requiring an exact date collapsed that
+#: to 23%. The window is what makes the probe discriminate rather than the amount.
+DEFAULT_POSTING_LAG_DAYS = 3
+
+_EMPTY_WINDOW_ROW = (0, 0, None, None)
+
+
+@dataclass(frozen=True)
+class LedgerOverlap:
+    """How much of one account's ledger the other account already holds.
+
+    ``comparable`` counts only the rows that *could* match — those inside the
+    period the other ledger covers. Rows outside it are excluded rather than
+    counted as misses: a statement archive predating a feed's download window
+    would otherwise render as "0 of 400 match", which reads as evidence against
+    a correct merge when it is only evidence the other account was not there yet.
+
+    ``comparable == 0`` therefore means *no comparable period*, not *no overlap*.
+    The two must stay distinguishable to a reader — one is absence of evidence
+    and the other is evidence of absence — which is what ``measurable`` names.
+    """
+
+    comparable: int
+    matched: int
+    window_start: date | None
+    window_end: date | None
+
+    @property
+    def measurable(self) -> bool:
+        """Whether the two ledgers share a period this probe could compare at all."""
+        return self.comparable > 0
+
+
+def probe_ledger_overlap(
+    db: Database,
+    *,
+    account_id: str,
+    against_account_id: str,
+    window_days: int = DEFAULT_POSTING_LAG_DAYS,
+) -> LedgerOverlap:
+    """Count how many of ``account_id``'s transactions ``against_account_id`` holds.
+
+    Directional on purpose: the question a merge asks is what happens to the
+    absorbed account's history, so ``account_id`` is the ledger being probed and
+    ``against_account_id`` is the one it is checked against. Reversing them
+    answers a different question and yields a different ratio.
+
+    Matching is amount-equal within ``window_days``, by existence rather than by
+    a one-to-one assignment: a repeated amount inside the window can be answered
+    by the same counterpart twice, which can only inflate the ratio. The controls
+    measured 0 of 346 even so, and a genuine assignment costs a join this read
+    does not need to be worth showing.
+
+    Returns an unmeasurable overlap — rather than raising — when ``core`` is not
+    yet materialized, which is a first import before any transform.
+    """
+    try:
+        row = db.execute(
+            f"""
+            WITH against AS (
+                SELECT transaction_date, amount
+                FROM {FCT_TRANSACTIONS.full_name}
+                WHERE account_id = ?
+            ),
+            span AS (
+                SELECT MIN(transaction_date) AS lo, MAX(transaction_date) AS hi
+                FROM against
+            ),
+            comparable AS (
+                SELECT probe.transaction_id, probe.transaction_date, probe.amount
+                FROM {FCT_TRANSACTIONS.full_name} AS probe, span
+                WHERE probe.account_id = ?
+                  AND span.lo IS NOT NULL
+                  AND probe.transaction_date
+                      BETWEEN span.lo - CAST(? AS INTEGER)
+                          AND span.hi + CAST(? AS INTEGER)
+            )
+            SELECT
+                (SELECT COUNT(*) FROM comparable),
+                (SELECT COUNT(*) FROM (
+                    SELECT c.transaction_id
+                    FROM comparable AS c
+                    JOIN against AS a
+                      ON a.amount = c.amount
+                     AND ABS(DATE_DIFF('day', a.transaction_date, c.transaction_date))
+                         <= CAST(? AS INTEGER)
+                    GROUP BY c.transaction_id
+                )),
+                (SELECT MIN(transaction_date) FROM comparable),
+                (SELECT MAX(transaction_date) FROM comparable)
+            """,  # noqa: S608  # TableRef constants + parameterized values
+            [
+                against_account_id,
+                account_id,
+                window_days,
+                window_days,
+                window_days,
+            ],
+        ).fetchone()
+    except duckdb.CatalogException:
+        logger.debug("core.fct_transactions unavailable; ledger overlap unmeasurable")
+        row = None
+    comparable, matched, start, end = row or _EMPTY_WINDOW_ROW
+    return LedgerOverlap(
+        comparable=int(comparable),
+        matched=int(matched),
+        window_start=start,
+        window_end=end,
+    )

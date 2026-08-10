@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import cmp_to_key
 from typing import Annotated, Any, Literal, cast
@@ -99,7 +99,10 @@ from moneybin.protocol.pagination import (
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import CategorizationService
-from moneybin.services.identity_confirmation import identity_confirm_message
+from moneybin.services.identity_confirmation import (
+    AccountMergeFacts,
+    identity_confirm_message,
+)
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.mutation_context import current_operation_id
@@ -1096,12 +1099,42 @@ def _identity_binding(
     )
 
 
+@dataclass(frozen=True)
+class _IdentityPreview:
+    """A planned identity batch plus everything its prompt needs to describe it.
+
+    The facts are gathered here, on the preview's own read-only connection,
+    rather than on the plan: ``plan_identity`` also runs inside the write
+    transaction to re-verify the grant, and the prompt is long gone by then.
+    """
+
+    plan: IdentityDecisionPlan
+    merges: tuple[AccountMergeFacts, ...]
+    kinds: tuple[str, ...]
+
+
 def _preview_identity_decisions(
     decisions: list[IdentityDecisionRequest],
-) -> IdentityDecisionPlan:
+) -> _IdentityPreview:
     """Resolve one identity batch on a read-only connection."""
     with get_database(read_only=True) as db:
-        return ReviewDecisionsService(db, actor="mcp").plan_identity(decisions)
+        plan = ReviewDecisionsService(db, actor="mcp").plan_identity(decisions)
+        accepts = [
+            item
+            for item in plan.items
+            if item.changed and item.request.decision == "accept"
+        ]
+        links = AccountLinksService(db, actor="mcp")
+        merges = tuple(
+            links.merge_facts(
+                absorbed_account_id=item.source_id,
+                survivor_account_id=item.target_id,
+            )
+            for item in accepts
+            if item.request.kind == "account_link"
+        )
+        kinds = tuple(sorted({item.request.kind for item in accepts}))
+    return _IdentityPreview(plan=plan, merges=merges, kinds=kinds)
 
 
 def _apply_identity_decisions(
@@ -1133,7 +1166,8 @@ async def identity_links_decide_coarse(
     confirmation_token: str | None = None,
 ) -> ResponseEnvelope[IdentityLinksDecidePayload]:
     """Atomically accept or reject account, merchant, and security identity links."""
-    plan = await asyncio.to_thread(_preview_identity_decisions, decisions)
+    preview = await asyncio.to_thread(_preview_identity_decisions, decisions)
+    plan = preview.plan
     binding = _identity_binding(decisions, plan)
     if confirmation_token is not None and not plan.destructive:
         raise UserError(
@@ -1149,7 +1183,11 @@ async def identity_links_decide_coarse(
     if plan.destructive:
         grant = await grant_confirmation_or_raise(
             binding=binding if confirmation_token is None else None,
-            message=identity_confirm_message(binding.blast_radius),
+            message=identity_confirm_message(
+                binding.blast_radius,
+                merges=preview.merges,
+                kinds=preview.kinds,
+            ),
             confirmation_token=confirmation_token,
         )
     live = await asyncio.to_thread(

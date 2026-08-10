@@ -90,6 +90,22 @@ def _institution_key(institution: str | None) -> str | None:
     return slugify(slug_for_institution_name(institution) or institution) or None
 
 
+def _last_fours_disagree(
+    source_last_four: str | None, candidate_last_four: object
+) -> bool:
+    """Whether two accounts state last fours that positively contradict each other.
+
+    Requires BOTH sides to state one. Silence is not disagreement: an account
+    with no known last four is a different gap, and vetoing on it would drop a
+    proposal that nothing else surfaces rather than retype it.
+    """
+    return bool(
+        source_last_four
+        and candidate_last_four
+        and str(candidate_last_four) != source_last_four
+    )
+
+
 # Cap on the fallback pick-list (existing accounts surfaced for the human to pick
 # from when no real signal cleared). Bounds an otherwise-unbounded "list all
 # accounts" so a large book doesn't dump everything; a personal-finance user
@@ -679,6 +695,14 @@ class AccountResolver:
         Each is a review proposal, never an auto-merge. Returns no candidates if
         core.dim_accounts is not yet materialized (first import before any transform).
 
+        The name rung skips any account whose last four positively contradicts
+        the source's (``_last_fours_disagree``). A name match across a stated
+        disagreement is not weaker evidence than the last-four signal — it is
+        evidence of a *different* account, and letting it score merely lower put
+        a checking account and a savings account in one merge proposal. When the
+        two also share an institution, ``reissue`` re-surfaces the pair under the
+        signal that is actually true.
+
         ``reissue`` (arriving source accounts only): when neither signal clears,
         surface same-institution accounts whose last-four differs — see
         ``_reissue_candidates``. On for ``resolve()`` and its ``propose()``
@@ -729,10 +753,11 @@ class AccountResolver:
             existing = [
                 {"account_id": str(r[0]), "account_name": str(r[1] or "")}
                 for r in self._db.execute(
-                    f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
-                    "WHERE account_id != ?",
+                    f"SELECT account_id, display_name, last_four "  # noqa: S608  # TableRef + parameterized values
+                    f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id != ?",
                     [exclude_account_id],
                 ).fetchall()
+                if not _last_fours_disagree(src.last_four, r[2])
             ]
             result = match_account(src.account_name, existing_accounts=existing)
             if result.matched and result.account_id:

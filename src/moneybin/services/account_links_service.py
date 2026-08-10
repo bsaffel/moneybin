@@ -28,7 +28,17 @@ from moneybin.services.account_resolution_types import (
     PendingLinkCandidate,
     PendingLinkGroup,
 )
-from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
+from moneybin.services.identity_confirmation import (
+    AccountLedgerFacts,
+    AccountMergeFacts,
+)
+from moneybin.services.ledger_overlap import probe_ledger_overlap
+from moneybin.tables import (
+    ACCOUNT_LINK_DECISIONS,
+    ACCOUNT_LINKS,
+    DIM_ACCOUNTS,
+    FCT_TRANSACTIONS,
+)
 from moneybin.utils.parsing import signal_from_match_signals
 
 logger = logging.getLogger(__name__)
@@ -139,9 +149,13 @@ class AccountLinksService:
                     candidate_display_name=_resolve_display_name(
                         self._db, d["candidate_account_id"]
                     ),
-                    confidence=d["confidence_score"],
                     # match_signals is already decoded by list_pending(); cast for pyright.
                     signal=signal_from_match_signals(d["match_signals"]),
+                    overlap=probe_ledger_overlap(
+                        self._db,
+                        account_id=provisional_id,
+                        against_account_id=d["candidate_account_id"],
+                    ),
                 )
                 for d in decisions
             )
@@ -150,9 +164,96 @@ class AccountLinksService:
                     provisional_account_id=provisional_id,
                     provisional_display_name=prov_display,
                     candidates=candidates,
+                    transactions=self._ledger_size(provisional_id),
                 )
             )
         return result
+
+    def _ledger_size(self, account_id: str) -> int:
+        """How many transactions the account holds; 0 when core is not materialized."""
+        try:
+            row = self._db.execute(
+                f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant + parameterized value
+                "WHERE account_id = ?",
+                [account_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return 0
+        return int(row[0]) if row else 0
+
+    def ledger_facts(self, account_id: str) -> AccountLedgerFacts:
+        """Describe one account in the terms that tell it apart from its twin.
+
+        Never the masked last four: the institution+last-four signal fires
+        *because* the two sides carry the same one, so a description keyed to it
+        renders both halves of a split account identically.
+        """
+        subtype: str | None = None
+        currency: str | None = None
+        try:
+            row = self._db.execute(
+                f"""
+                SELECT account_subtype, account_type, currency_code
+                FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?
+                """,  # noqa: S608  # TableRef constant + parameterized value
+                [account_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            row = None
+        if row is not None:
+            # Subtype before type, the way dim_accounts derives its own
+            # display_name: "checking" reads to a human where the canonical
+            # "depository" does not.
+            subtype = str(row[0]) if row[0] else (str(row[1]) if row[1] else None)
+            currency = str(row[2]) if row[2] else None
+        try:
+            ledger = self._db.execute(
+                f"""
+                SELECT
+                    COUNT(*),
+                    MIN(transaction_date),
+                    MAX(transaction_date),
+                    LIST(DISTINCT source_type)
+                FROM {FCT_TRANSACTIONS.full_name} WHERE account_id = ?
+                """,  # noqa: S608  # TableRef constant + parameterized value
+                [account_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            ledger = None
+        count, first_date, last_date, sources = ledger or (0, None, None, None)
+        source_list: list[Any] = list(sources) if sources else []
+        return AccountLedgerFacts(
+            account_id=account_id,
+            display_name=_resolve_display_name(self._db, account_id),
+            # Sorted because LIST() carries no order of its own, and the label it
+            # feeds is compared against the other side's.
+            source_types=tuple(sorted(str(s) for s in source_list if s)),
+            subtype=subtype,
+            currency_code=currency,
+            transactions=int(count),
+            first_date=first_date,
+            last_date=last_date,
+        )
+
+    def merge_facts(
+        self, *, absorbed_account_id: str, survivor_account_id: str
+    ) -> AccountMergeFacts:
+        """Everything the merge prompt renders: both sides plus the ledger evidence.
+
+        Keyed on two account ids rather than a decision id so the CLI prompt, the
+        single-decision MCP tool, and the identity batch all reach the same
+        sentence through one call — three renderings of one merge was the
+        coherence failure this replaces.
+        """
+        return AccountMergeFacts(
+            absorbed=self.ledger_facts(absorbed_account_id),
+            survivor=self.ledger_facts(survivor_account_id),
+            overlap=probe_ledger_overlap(
+                self._db,
+                account_id=absorbed_account_id,
+                against_account_id=survivor_account_id,
+            ),
+        )
 
     def history(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
         """All decisions (any status) newest-first by ``decided_at``. Read-only.

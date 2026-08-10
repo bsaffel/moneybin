@@ -5,11 +5,23 @@ the domain it describes rather than inside one surface, so the MCP elicitation
 and the CLI prompt cannot drift into describing the same merge two different
 ways. The MCP tool wrapper is where it used to live, which put the CLI a copy
 away from a sentence it needs to render identically.
+
+Presentation only: everything here takes already-resolved values and returns a
+string. Gathering the facts costs a database read, which is why
+``AccountLinksService.merge_facts`` owns that half — a caller that only needs to
+*print* a confirmation should not load the repositories and sibling services that
+applying one requires. The one import below that reaches outside this module is
+``LedgerOverlap``, a value type; duplicating it here to preserve a purity claim
+would let the rendered evidence disagree with the probe that measured it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import date
+
+from moneybin.services.ledger_overlap import LedgerOverlap
 
 #: Every blast-radius category an identity confirmation reports, named once.
 #:
@@ -49,8 +61,183 @@ IDENTITY_BLAST_RADIUS_LABELS: dict[str, tuple[str, str]] = {
     "price_marks": ("price mark you set by hand", "price marks you set by hand"),
 }
 
+#: What an accepted link of each kind does, in the user's terms.
+#:
+#: Rendered only for the kinds a batch actually contains. The single paragraph
+#: this replaces enumerated all three unconditionally, so a card-to-card account
+#: link was told about security tax lots and hand-set price marks — consequences
+#: that do not apply to the decision in hand, in the one place a human is
+#: deciding whether the risk is acceptable.
+_KIND_CLAUSES: dict[str, str] = {
+    "account_link": (
+        "move one account's whole transaction history onto the surviving account"
+    ),
+    "merchant_link": "merge merchant attribution onto the surviving merchant",
+    "security_link": (
+        "merge security tax lots, manual events, and any price marks you set by "
+        "hand onto the surviving instrument, or bind a price-feed symbol without "
+        "merging anything"
+    ),
+}
 
-def identity_confirm_message(blast_radius: Mapping[str, int]) -> str:
+#: Fallback paragraph for a caller that names no kinds — every kind, as before.
+_EVERY_KIND_PARAGRAPH = (
+    "Confirm this complete identity-decision batch. Accepted links can merge "
+    "account histories, merchant attribution, or security lots — including any "
+    "price marks you set by hand, which move onto the survivor — or bind a "
+    "price-feed symbol without merging anything; every decision in the ordered "
+    "batch will commit together."
+)
+
+_BATCH_TAIL = "Every decision in this batch commits together."
+
+
+@dataclass(frozen=True)
+class AccountLedgerFacts:
+    """One account, described by the things that distinguish it from its twin.
+
+    Deliberately not built around the masked last four. Two accounts proposed
+    for a merge routinely carry the *same* one — that is what the institution
+    plus last-four signal fires on — so a description keyed to it renders both
+    sides identically in exactly the case a human most needs them apart. What
+    differs is the source that reported each one, how much history it holds,
+    the period it covers, its subtype, and its currency.
+    """
+
+    account_id: str
+    display_name: str = ""
+    source_types: tuple[str, ...] = ()
+    subtype: str | None = None
+    currency_code: str | None = None
+    transactions: int = 0
+    first_date: date | None = None
+    last_date: date | None = None
+
+
+@dataclass(frozen=True)
+class AccountMergeFacts:
+    """One proposed account merge, with the direction and the evidence for it."""
+
+    absorbed: AccountLedgerFacts
+    survivor: AccountLedgerFacts
+    overlap: LedgerOverlap = field(
+        default_factory=lambda: LedgerOverlap(
+            comparable=0, matched=0, window_start=None, window_end=None
+        )
+    )
+
+
+def _source_label(facts: AccountLedgerFacts) -> str | None:
+    """Uppercased source origins — "PDF", "OFX", "PDF+OFX" — or None when unknown."""
+    return "+".join(s.upper() for s in facts.source_types) or None
+
+
+def _side_label(side: AccountLedgerFacts, other: AccountLedgerFacts) -> str:
+    """Name one side of the merge by the first thing that tells it from the other.
+
+    Falls through to a bare "the account" rather than reaching for the last
+    four: the ids in the parenthetical already make the two descriptions
+    distinguishable, and a shared last four would make them identical again.
+    """
+    if side.display_name and side.display_name != other.display_name:
+        return side.display_name
+    source = _source_label(side)
+    if source and source != _source_label(other):
+        return f"the {source}-derived account"
+    return "the account"
+
+
+def _side_traits(side: AccountLedgerFacts, other: AccountLedgerFacts) -> list[str]:
+    """The magnitude, the period, and whatever else separates the two sides."""
+    traits = [f"{side.transactions:,} transactions"]
+    if side.first_date and side.last_date:
+        traits.append(f"{side.first_date.isoformat()} → {side.last_date.isoformat()}")
+    if side.subtype != other.subtype:
+        traits.append(side.subtype or "no subtype")
+    if side.currency_code != other.currency_code:
+        traits.append(side.currency_code or "no currency")
+    return traits
+
+
+def _side_phrase(side: AccountLedgerFacts, other: AccountLedgerFacts) -> str:
+    return (
+        f"{_side_label(side, other)} "
+        f"({side.account_id}; {', '.join(_side_traits(side, other))})"
+    )
+
+
+def _evidence_line(overlap: LedgerOverlap) -> str:
+    """State how much of the absorbed ledger the survivor already holds.
+
+    An unmeasurable probe says so in words. Rendering it as "0 of 0" would read
+    as a merge with nothing in common, which is evidence against — the opposite
+    of what no comparable period means.
+    """
+    if not overlap.measurable:
+        return (
+            "The two ledgers share no comparable period, so there is no overlap "
+            "evidence either way."
+        )
+    window = ""
+    if overlap.window_start and overlap.window_end:
+        window = (
+            f" over {overlap.window_start.isoformat()} → "
+            f"{overlap.window_end.isoformat()}"
+        )
+    return (
+        f"{overlap.matched:,} of {overlap.comparable:,} of the absorbed "
+        f"account's transactions{window} already appear in the surviving "
+        "account's ledger."
+    )
+
+
+def _account_merge_block(merge: AccountMergeFacts) -> str:
+    """The question, the evidence, and what the answer does — in that order."""
+    absorbed, survivor = merge.absorbed, merge.survivor
+    lines = [
+        f"Merge {_side_phrase(absorbed, survivor)} "
+        f"into {_side_phrase(survivor, absorbed)}?",
+        "",
+        _evidence_line(merge.overlap),
+        "",
+        f"The absorbed account {absorbed.account_id} is folded into "
+        f"{survivor.account_id}: its transactions move onto that account's "
+        "history and nothing is deleted. Reverse with "
+        "system_audit_undo(operation_id=...).",
+    ]
+    if survivor.transactions == 0:
+        # The reversed proposal is the expensive failure on this path: the live
+        # queue offered a malformed placeholder as the survivor, where accepting
+        # would have made it canonical. An empty surviving ledger is the one
+        # cheap, legible tell for it.
+        lines.append(
+            "The surviving account has no transactions of its own — check the "
+            "direction before accepting."
+        )
+    return "\n".join(lines)
+
+
+def _batch_paragraph(kinds: Collection[str], *, accounts_described: bool) -> str:
+    """Name what the batch's remaining accepted links do, and nothing else."""
+    if not kinds:
+        return _EVERY_KIND_PARAGRAPH
+    remaining = [
+        kind
+        for kind in ("account_link", "merchant_link", "security_link")
+        if kind in kinds and not (kind == "account_link" and accounts_described)
+    ]
+    if not remaining:
+        return _BATCH_TAIL
+    clauses = "; ".join(_KIND_CLAUSES[kind] for kind in remaining)
+    return f"Accepted links {clauses}. {_BATCH_TAIL}"
+
+
+def identity_confirm_message(
+    blast_radius: Mapping[str, int],
+    *,
+    merges: Sequence[AccountMergeFacts] = (),
+    kinds: Collection[str] = (),
+) -> str:
     """Prompt text naming what this batch moves, and how much of it.
 
     The elicitation shows this string and nothing else — the binding's counts are
@@ -58,17 +245,20 @@ def identity_confirm_message(blast_radius: Mapping[str, int]) -> str:
     mutation nobody was told about. Zero-count categories are omitted rather than
     listed as zeros: a bind that touches one security should not read as a batch
     reaching into accounts and merchants it never opens.
+
+    ``merges`` renders one clause-by-clause block per account merge in the batch:
+    which account is absorbed, which survives, how much history moves, and how
+    much of it the survivor already holds. ``kinds`` names the link kinds the
+    batch actually accepts, so the closing paragraph describes those and not the
+    other two. Both default to empty, which reproduces the counts-only prompt for
+    a caller that has neither.
     """
     moved = [
         f"{count} {IDENTITY_BLAST_RADIUS_LABELS[key][0 if count == 1 else 1]}"
         for key in IDENTITY_BLAST_RADIUS_CATEGORIES
         if (count := blast_radius.get(key, 0))
     ]
-    return (
-        "Confirm this complete identity-decision batch. Accepted links can merge "
-        "account histories, merchant attribution, or security lots — including "
-        "any price marks you set by hand, which move onto the survivor — or bind "
-        "a price-feed symbol without merging anything; every decision in the "
-        "ordered batch will commit together.\n\n"
-        f"This batch touches: {', '.join(moved) if moved else 'no rows'}."
-    )
+    blocks = [_account_merge_block(merge) for merge in merges]
+    blocks.append(_batch_paragraph(kinds, accounts_described=bool(merges)))
+    blocks.append(f"This batch touches: {', '.join(moved) if moved else 'no rows'}.")
+    return "\n\n".join(blocks)

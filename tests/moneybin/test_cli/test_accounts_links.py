@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,6 +27,8 @@ from moneybin.cli.commands.accounts.links import (
 from moneybin.errors import UserError
 from moneybin.mcp.write_contracts import AccountLinkDecisionRequest
 from moneybin.services.account_links_service import AccountLinkAcceptImpact
+from moneybin.services.identity_confirmation import identity_confirm_message
+from moneybin.services.ledger_overlap import LedgerOverlap
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
@@ -46,21 +49,28 @@ def _make_pending_group(
     decision_id: str = "dec001",
     candidate_id: str = "CAND001",
     candidate_name: str = "Candidate Account",
-    confidence: float = 0.85,
     signal: str = "institution_last4",
+    overlap: LedgerOverlap | None = None,
+    transactions: int = 346,
 ) -> MagicMock:
     """Build a mock PendingLinkGroup with sensible defaults."""
     candidate = MagicMock()
     candidate.decision_id = decision_id
     candidate.candidate_account_id = candidate_id
     candidate.candidate_display_name = candidate_name
-    candidate.confidence = confidence
     candidate.signal = signal
+    candidate.overlap = overlap or LedgerOverlap(
+        comparable=346,
+        matched=345,
+        window_start=date(2024, 5, 1),
+        window_end=date(2026, 8, 2),
+    )
 
     group = MagicMock()
     group.provisional_account_id = provisional_id
     group.provisional_display_name = provisional_name
     group.candidates = [candidate]
+    group.transactions = transactions
     return group
 
 
@@ -146,6 +156,23 @@ def _approved_merge(
         links=links,
         decisions=decisions,
     )
+
+
+def _previewed_merge(
+    *,
+    transactions: tuple[str, ...] = ("t1",),
+    links: tuple[str, ...] = ("L1",),
+    decisions: tuple[str, ...] = ("dec001",),
+) -> tuple[_ApprovedMerge, str]:
+    """What ``_merge_preview`` returns: the approval plus the text that earned it.
+
+    The message is rendered by the real builder rather than stubbed, so a test
+    asserting on what the operator read is asserting about the shipped sentence.
+    """
+    approved = _approved_merge(
+        transactions=transactions, links=links, decisions=decisions
+    )
+    return approved, identity_confirm_message(approved.sentence, kinds=["account_link"])
 
 
 def _commit_running_verifier(
@@ -340,7 +367,7 @@ class TestLinksSet:
         account's whole history into another on a single unprompted invocation.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_preview.return_value = _approved_merge()
+        mock_preview.return_value = _previewed_merge()
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="n\n")
 
@@ -366,7 +393,7 @@ class TestLinksSet:
         makes the answer more than a coin flip.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_preview.return_value = _approved_merge(transactions=("t1", "t2", "t3"))
+        mock_preview.return_value = _previewed_merge(transactions=("t1", "t2", "t3"))
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="y\n")
 
@@ -418,7 +445,7 @@ class TestLinksSet:
         verifier refuses a batch that no longer matches the sentence shown.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_preview.return_value = _approved_merge(transactions=("t1",))
+        mock_preview.return_value = _previewed_merge(transactions=("t1",))
         mock_plan.return_value = _merge_plan(transactions=("t1", "t2", "t3"))
         mock_set.side_effect = _commit_running_verifier()
 
@@ -447,7 +474,7 @@ class TestLinksSet:
         refused everything would look correct.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_preview.return_value = _approved_merge(transactions=("t1",))
+        mock_preview.return_value = _previewed_merge(transactions=("t1",))
         mock_plan.return_value = _merge_plan(transactions=("t1",))
         mock_set.side_effect = _commit_running_verifier()
 
@@ -479,7 +506,7 @@ class TestLinksSet:
         which is why comparing the plan alone cannot catch it.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_preview.return_value = _approved_merge(decisions=("dec001",))
+        mock_preview.return_value = _previewed_merge(decisions=("dec001",))
         mock_plan.return_value = _merge_plan(transactions=("t1",))
         mock_set.side_effect = _commit_running_verifier(decisions=("dec001", "dec002"))
 
@@ -689,7 +716,7 @@ class TestLinksSet:
         place to leave the reader guessing whether anything moved.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_preview.return_value = _approved_merge()
+        mock_preview.return_value = _previewed_merge()
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="n\n")
 

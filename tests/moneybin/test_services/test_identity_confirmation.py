@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from moneybin.services.identity_confirmation import (
     IDENTITY_BLAST_RADIUS_CATEGORIES,
     IDENTITY_BLAST_RADIUS_LABELS,
+    AccountLedgerFacts,
+    AccountMergeFacts,
     identity_confirm_message,
 )
+from moneybin.services.ledger_overlap import LedgerOverlap
 
 
 def test_every_blast_radius_category_has_a_prompt_label() -> None:
@@ -63,3 +68,231 @@ def test_the_identity_prompt_omits_categories_it_does_not_touch() -> None:
     assert "1 security" in message
     assert "account" not in message.split("This batch touches:")[-1]
     assert "tax lot" not in message.split("This batch touches:")[-1]
+
+
+# ---------------------------------------------------------------------------
+# The account-merge sentence
+# ---------------------------------------------------------------------------
+
+
+def _facts(
+    account_id: str,
+    *,
+    display_name: str = "",
+    source_types: tuple[str, ...] = (),
+    subtype: str | None = None,
+    currency_code: str | None = None,
+    transactions: int = 0,
+    first_date: date | None = None,
+    last_date: date | None = None,
+) -> AccountLedgerFacts:
+    return AccountLedgerFacts(
+        account_id=account_id,
+        display_name=display_name,
+        source_types=source_types,
+        subtype=subtype,
+        currency_code=currency_code,
+        transactions=transactions,
+        first_date=first_date,
+        last_date=last_date,
+    )
+
+
+def _colliding_pair() -> tuple[AccountLedgerFacts, AccountLedgerFacts]:
+    """Two accounts whose display labels are identical — the case that motivated this.
+
+    Built from the shape, never from real data: one statement-derived side and
+    one feed-derived side that render the same masked label, differing in source
+    origin, ledger size, period, subtype, and currency.
+    """
+    shared_label = "Example Bank credit …0000"
+    absorbed = _facts(
+        "aaaaaaaaaaaa",
+        display_name=shared_label,
+        source_types=("pdf",),
+        transactions=346,
+        first_date=date(2024, 5, 1),
+        last_date=date(2026, 8, 2),
+    )
+    survivor = _facts(
+        "ssssssssssss",
+        display_name=shared_label,
+        source_types=("ofx",),
+        subtype="credit card",
+        currency_code="USD",
+        transactions=2342,
+        first_date=date(2019, 1, 4),
+        last_date=date(2026, 8, 2),
+    )
+    return absorbed, survivor
+
+
+def _merge(
+    absorbed: AccountLedgerFacts,
+    survivor: AccountLedgerFacts,
+    overlap: LedgerOverlap | None = None,
+) -> AccountMergeFacts:
+    return AccountMergeFacts(
+        absorbed=absorbed,
+        survivor=survivor,
+        overlap=overlap
+        or LedgerOverlap(
+            comparable=346,
+            matched=345,
+            window_start=date(2024, 5, 1),
+            window_end=date(2026, 8, 2),
+        ),
+    )
+
+
+def test_a_colliding_pair_still_renders_two_distinguishable_descriptions() -> None:
+    """The split-account case is the one naming-by-last-four cannot serve.
+
+    Both sides of the live pair rendered the same label, so a sentence built on
+    it read "link your card (••NNNN) to your existing card record (••NNNN)" —
+    useless in exactly the case this work exists to fix. Disambiguation has to
+    come from what differs.
+    """
+    absorbed, survivor = _colliding_pair()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 346},
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    sentence = message.splitlines()[0]
+    described = sentence.split(" into ")
+    assert len(described) == 2, sentence
+    assert described[0] != described[1], sentence
+    assert "pdf" in described[0].lower(), sentence
+    assert "ofx" in described[1].lower(), sentence
+
+
+def test_the_sentence_names_the_survivor_and_the_absorbed_account() -> None:
+    """A "link A to B" phrasing never says which one dies; this has to."""
+    absorbed, survivor = _colliding_pair()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 346},
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "aaaaaaaaaaaa" in message
+    assert "ssssssssssss" in message
+    absorbed_clause = next(
+        line for line in message.splitlines() if "is folded into" in line
+    )
+    assert absorbed_clause.index("aaaaaaaaaaaa") < absorbed_clause.index(
+        "ssssssssssss"
+    ), absorbed_clause
+
+
+def test_a_reversed_proposal_is_legible_as_reversed_from_the_sentence_alone() -> None:
+    """A placeholder as survivor is the most expensive, least visible failure here.
+
+    The live queue produced one: accepting would have made a malformed
+    placeholder canonical and absorbed the real ledger into it. The rendered
+    string has to make that readable without consulting anything else.
+    """
+    _, survivor = _colliding_pair()
+    reversed_merge = AccountMergeFacts(
+        absorbed=survivor,
+        survivor=_facts("pppppppppppp", source_types=("pdf",)),
+        overlap=LedgerOverlap(
+            comparable=0, matched=0, window_start=None, window_end=None
+        ),
+    )
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 2342},
+        merges=[reversed_merge],
+        kinds=["account_link"],
+    )
+
+    assert "2,342 transactions" in message
+    assert "no transactions of its own" in message
+    absorbed_clause = next(
+        line for line in message.splitlines() if "is folded into" in line
+    )
+    assert absorbed_clause.index("ssssssssssss") < absorbed_clause.index(
+        "pppppppppppp"
+    ), absorbed_clause
+
+
+def test_the_sentence_carries_the_overlap_evidence() -> None:
+    """The decisive fact is how much of the ledger the survivor already holds."""
+    absorbed, survivor = _colliding_pair()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 346},
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "345 of 346" in message
+
+
+def test_no_comparable_period_reads_as_absent_evidence_not_as_zero_overlap() -> None:
+    """Absence of evidence must not render as evidence of absence."""
+    absorbed, survivor = _colliding_pair()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 346},
+        merges=[
+            _merge(
+                absorbed,
+                survivor,
+                LedgerOverlap(
+                    comparable=0, matched=0, window_start=None, window_end=None
+                ),
+            )
+        ],
+        kinds=["account_link"],
+    )
+
+    assert "0 of 0" not in message
+    assert "no comparable period" in message.lower()
+
+
+def test_the_account_paragraph_names_the_undo_path() -> None:
+    """The undo already rides in the result envelope; the prompt never said so.
+
+    The prompt is the one place a human decides whether the risk is acceptable,
+    so the reversal belongs there rather than in the receipt afterwards.
+    """
+    absorbed, survivor = _colliding_pair()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 346},
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "system_audit_undo" in message
+
+
+def test_the_paragraph_names_only_the_kinds_the_batch_contains() -> None:
+    """A card-to-card account link was told about security lots and price marks."""
+    absorbed, survivor = _colliding_pair()
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 346},
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "tax lot" not in message
+    assert "merchant" not in message
+
+
+def test_a_security_batch_still_names_what_a_security_link_moves() -> None:
+    """The other half of the kind-awareness boundary."""
+    message = identity_confirm_message(
+        {"securities": 2, "lots": 3, "price_marks": 4},
+        kinds=["security_link"],
+    )
+
+    assert "price marks you set by hand" in message
+    assert "merchant" not in message

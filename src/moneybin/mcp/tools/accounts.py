@@ -109,6 +109,10 @@ from moneybin.services.entity_reference import (
     MissingEntity,
     resolve_entity_reference,
 )
+from moneybin.services.identity_confirmation import (
+    AccountMergeFacts,
+    identity_confirm_message,
+)
 from moneybin.services.mutation_context import current_operation_id
 
 # ─── Read tools (entity) ──────────────────────────────────────────────────
@@ -508,12 +512,15 @@ class _AccountMergeProposal:
     provisional_display_name: str
     candidate_account_id: str
     candidate_display_name: str
-    confidence: float | None
     signal: str | None
     #: The whole impact, not a flattened blast radius: the grant issued here has
     #: to digest the same row identities the commit-time verify recomputes, so
     #: dropping them at this boundary would make every account grant unverifiable.
     impact: AccountLinkAcceptImpact
+    #: Both ledgers and the overlap between them — what the prompt describes.
+    #: Read on the same connection as the impact so the sentence and the grant
+    #: describe one state rather than two reads with a gap between them.
+    facts: AccountMergeFacts
 
 
 def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
@@ -534,9 +541,12 @@ def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
                         provisional_display_name=group.provisional_display_name,
                         candidate_account_id=candidate.candidate_account_id,
                         candidate_display_name=candidate.candidate_display_name,
-                        confidence=candidate.confidence,
                         signal=candidate.signal,
                         impact=impact,
+                        facts=service.merge_facts(
+                            absorbed_account_id=group.provisional_account_id,
+                            survivor_account_id=candidate.candidate_account_id,
+                        ),
                     )
     raise UserError(
         f"No pending account-link decision '{decision_id}'.",
@@ -582,27 +592,27 @@ def _account_link_binding(
 def _account_confirm_message(p: _AccountMergeProposal) -> str:
     """Prompt text a human reads before two accounts' histories are fused.
 
-    Names BOTH accounts and the weak signal the resolver fired on — the human
-    cannot judge the merge without seeing what merges into what, and why the
-    resolver refused to decide on its own.
+    Delegates the merge itself to the shared renderer so this tool, the identity
+    batch, and the CLI describe one decision in one wording. The three used to
+    diverge, and this one was the worst of them: it named both accounts by
+    display label — identical on a split account — and quoted a "confidence"
+    that was a per-signal constant.
+
+    What stays local is what only this tool knows: which weak signal proposed
+    the pair, and that its own reject path is the alternative.
     """
-    confidence = "unscored" if p.confidence is None else f"{p.confidence:.2f}"
+    merge = identity_confirm_message(
+        {"accounts": 2, "transactions": p.facts.absorbed.transactions},
+        merges=[p.facts],
+        kinds=["account_link"],
+    )
     return (
-        "Confirm an account merge (this fuses two accounts' transaction "
-        "histories and balances).\n\n"
-        f"MERGE AWAY — provisional, account_id {p.provisional_account_id}:\n"
-        f"  name {p.provisional_display_name or '(none)'}\n\n"
-        f"INTO — survivor, account_id {p.candidate_account_id}:\n"
-        f"  name {p.candidate_display_name or '(none)'}\n\n"
-        f"Proposed on: signal {p.signal or 'unspecified'}, confidence "
-        f"{confidence}. The resolver proposes a merge ONLY when it cannot bind "
-        "on its own — this is an ambiguous match, not a certain one.\n\n"
-        "Accepting re-points every accepted source reference from the "
-        "provisional onto the survivor, so both accounts' transactions and "
-        "balances become one account, and every other pending proposal touching "
-        "the provisional is rejected. If these are not the same real-world "
-        "account, the merged history and net worth will be wrong. Reversible "
-        "via system_audit_undo(operation_id).\n\n"
+        f"{merge}\n\n"
+        f"Proposed on the {p.signal or 'unspecified'} signal. The resolver "
+        "proposes a merge ONLY when it cannot bind on its own — this is an "
+        "ambiguous match, not a certain one. If these are not the same "
+        "real-world account, the merged history and net worth will be wrong; "
+        "action='reject' keeps them separate.\n\n"
         "Accept this merge?"
     )
 

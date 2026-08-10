@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypedDict
 
+from moneybin.services.ledger_overlap import LedgerOverlap
+
 
 class AccountCandidateDict(TypedDict):
     """Serialized shape of one ``AccountCandidate`` carried across the envelope."""
@@ -196,23 +198,39 @@ class ResolvedAccount:
 
 @dataclass(frozen=True)
 class PendingLinkCandidate:
-    """One candidate merge proposal within a pending-review group."""
+    """One candidate merge proposal within a pending-review group.
+
+    Carries no confidence number. ``_weak_signal_candidates`` hardcoded 0.5 for
+    the last-four signal and 0.4 for the name signal under the comment
+    "confidence is informational only"; nothing accumulated evidence and nothing
+    thresholded on it, so no input could ever move either one. Rendering a
+    constant as a score invited a reviewer to read it as one. ``overlap`` is what
+    replaces it — a measurement of the two ledgers that actually varies with the
+    accounts in front of the reviewer.
+    """
 
     decision_id: str
     candidate_account_id: str
     candidate_display_name: str
-    confidence: float | None
     # "institution_last4" | "name" | "institution_reissue" — only these three.
     # Narrower than _Candidate.signal: this reads persisted decision rows, and
     # the single insert site passes fallback=False, so the gate's last-resort
     # pick-list ("institution" / "fallback") is never written to review.
     signal: str
+    overlap: LedgerOverlap
 
 
 @dataclass(frozen=True)
 class PendingLinkGroup:
-    """One provisional account awaiting review + its candidate proposals."""
+    """One provisional account awaiting review + its candidate proposals.
+
+    ``transactions`` is the magnitude at browse time. It sat only in the confirm
+    binding before, computed inside the decide call, so a reviewer chose which
+    proposals were worth opening while nothing had yet told them how much history
+    each one moves.
+    """
 
     provisional_account_id: str
     provisional_display_name: str
     candidates: tuple[PendingLinkCandidate, ...]
+    transactions: int = 0

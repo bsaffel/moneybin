@@ -115,6 +115,26 @@ def _identity_plan(
     return IdentityDecisionPlan(items=items)
 
 
+def _identity_preview(plan: IdentityDecisionPlan) -> Any:
+    """Wrap a plan the way the read-only preview hands it to the confirm gate.
+
+    The merge facts are empty here on purpose: these tests pin the confirmation
+    protocol — binding, token, replay — and an account merge's rendered prose is
+    covered where the renderer lives.
+    """
+    return reviews_module._IdentityPreview(  # pyright: ignore[reportPrivateUsage]
+        plan=plan,
+        merges=(),
+        kinds=tuple(
+            sorted({
+                item.request.kind
+                for item in plan.items
+                if item.changed and item.request.decision == "accept"
+            })
+        ),
+    )
+
+
 def _identity_decision_status(kind: str, decision_id: str) -> str:
     table = {
         "account_link": "app.account_link_decisions",
@@ -2177,7 +2197,9 @@ async def test_identity_confirmation_rechecks_live_state_and_consumes_token(
     )
 
     with patch.object(
-        reviews_module, "_preview_identity_decisions", return_value=initial
+        reviews_module,
+        "_preview_identity_decisions",
+        return_value=_identity_preview(initial),
     ):
         required = await identity_links_decide_coarse(decisions=decisions)
 
@@ -2201,7 +2223,7 @@ async def test_identity_confirmation_rechecks_live_state_and_consumes_token(
         patch.object(
             reviews_module,
             "_preview_identity_decisions",
-            return_value=initial,
+            return_value=_identity_preview(initial),
         ),
         patch.object(
             reviews_module,
@@ -2237,7 +2259,11 @@ async def test_identity_reject_batch_uses_public_privacy_actor() -> None:
     mcp = isolated_server(register_review_coarse_writes)
 
     with (
-        patch.object(reviews_module, "_preview_identity_decisions", return_value=plan),
+        patch.object(
+            reviews_module,
+            "_preview_identity_decisions",
+            return_value=_identity_preview(plan),
+        ),
         patch.object(reviews_module, "_apply_identity_decisions", return_value=plan),
         patch("moneybin.mcp.decorator.write_privacy_event", captured.append),
     ):

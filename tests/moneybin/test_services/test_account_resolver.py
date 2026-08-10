@@ -1472,3 +1472,115 @@ def test_institution_matching_canonicalizes_a_hand_written_name(db: Database) ->
     assert [c.signal for c in proposal.candidates] == ["institution_last4"], (
         proposal.candidates
     )
+
+
+def test_name_signal_is_vetoed_when_both_last_fours_are_known_and_differ(
+    db: Database,
+) -> None:
+    """A name that matches across a last-four disagreement is not evidence at all.
+
+    Two accounts at one institution whose last fours disagree are, on the only
+    identifier either of them states, *different accounts*. The name signal
+    routinely fires across that anyway — one live queue paired a checking
+    account with a savings account on nothing but a shared institution word —
+    so a name match scoring below the last-four signal is not enough: the
+    disagreement has to veto it outright.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_other",
+        last_four="9940",
+        institution_name="WELLS FARGO",
+        institution_slug="wells_fargo",
+        display_name="WF Checking 4267",  # equals the source name: the veto is the only thing suppressing it
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the veto on the candidate pass
+        _src(last_four="4267", account_name="WF Checking 4267"),
+        exclude_account_id="prov_new",
+    )
+
+    assert candidates == [], candidates
+
+
+def test_name_signal_survives_when_the_candidate_states_no_last_four(
+    db: Database,
+) -> None:
+    """Silence is not disagreement — an unknown last four cannot veto anything.
+
+    The reissue rung requires both sides to carry one, so nothing else would
+    surface this pair: vetoing here would drop the proposal entirely rather than
+    retype it.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_other",
+        last_four=None,
+        institution_name="WELLS FARGO",
+        institution_slug="wells_fargo",
+        display_name="WF Checking 4267",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the veto's own boundary
+        _src(last_four="4267", account_name="WF Checking 4267"),
+        exclude_account_id="prov_new",
+    )
+
+    assert [c.signal for c in candidates] == ["name"], candidates
+
+
+def test_name_signal_survives_when_the_source_states_no_last_four(
+    db: Database,
+) -> None:
+    """The other half of the same boundary — a source that states nothing."""
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_other",
+        last_four="9940",
+        institution_name="WELLS FARGO",
+        institution_slug="wells_fargo",
+        display_name="WF Checking 4267",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the veto's own boundary
+        _src(last_four=None, account_name="WF Checking 4267"),
+        exclude_account_id="prov_new",
+    )
+
+    assert [c.signal for c in candidates] == ["name"], candidates
+
+
+def test_a_vetoed_name_match_resurfaces_as_the_reissue_signal(db: Database) -> None:
+    """The veto retypes an arriving-source proposal; it does not discard it.
+
+    A replacement card at the same institution is exactly a name match across a
+    changed last four. The reissue rung already exists for that shape and says
+    so honestly, where ``name`` claims the two are the same account because their
+    labels agree.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="acct_other",
+        last_four="9940",
+        institution_name="WELLS FARGO",
+        institution_slug="wells_fargo",
+        display_name="WF Checking 4267",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    candidates = resolver._find_candidates(  # type: ignore[reportPrivateUsage]  # pin the retype, not just the veto
+        _src(last_four="4267", account_name="WF Checking 4267"),
+        exclude_account_id="prov_new",
+        reissue=True,
+    )
+
+    assert [(c.signal, c.account_id) for c in candidates] == [
+        ("institution_reissue", "acct_other")
+    ], candidates

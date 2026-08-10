@@ -246,8 +246,13 @@ class AccountSettingsPayload:
 class LinkCandidateRow:
     """One candidate merge proposal in an account-links pending review group.
 
-    Carries only opaque ids + account labels + match signal/confidence.
-    ref_value (which can be a full account number) is never surfaced here.
+    Carries only opaque ids + account labels + the match signal and the measured
+    ledger overlap. ref_value (which can be a full account number) is never
+    surfaced here.
+
+    No confidence field: the resolver's number was a per-signal constant no input
+    could move, and a reviewer reading it as a score was reading a label.
+    ``overlap_matched`` / ``overlap_comparable`` replace it with a measurement.
     """
 
     decision_id: Annotated[str, DataClass.RECORD_ID]
@@ -256,9 +261,15 @@ class LinkCandidateRow:
     # else (taxonomy.py / AccountSummary / AccountDetail); a user/auto label can
     # embed identifying text, so it must not be under-classified to LOW here.
     candidate_display_name: Annotated[str, DataClass.USER_NOTE]
-    confidence: Annotated[float | None, DataClass.AGGREGATE]
     # "institution_last4", "name", or "institution_reissue"
     signal: Annotated[str, DataClass.TXN_TYPE]
+    #: Transactions of the provisional account that also appear in this
+    #: candidate's ledger, out of those in a period both ledgers cover. Both are
+    #: 0 when the two share no comparable period, which is absence of evidence
+    #: rather than evidence of absence — ``overlap_comparable == 0`` is the only
+    #: way to tell the two apart, so neither may be dropped from the surface.
+    overlap_matched: Annotated[int, DataClass.AGGREGATE]
+    overlap_comparable: Annotated[int, DataClass.AGGREGATE]
 
     @classmethod
     def from_candidate(cls, c: PendingLinkCandidate) -> LinkCandidateRow:
@@ -267,8 +278,9 @@ class LinkCandidateRow:
             decision_id=c.decision_id,
             candidate_account_id=c.candidate_account_id,
             candidate_display_name=c.candidate_display_name,
-            confidence=float(c.confidence) if c.confidence is not None else None,
             signal=c.signal,
+            overlap_matched=c.overlap.matched,
+            overlap_comparable=c.overlap.comparable,
         )
 
 
@@ -280,6 +292,9 @@ class LinkPendingGroup:
     # USER_NOTE (MEDIUM) — see LinkCandidateRow.candidate_display_name.
     provisional_display_name: Annotated[str, DataClass.USER_NOTE]
     candidates: list[LinkCandidateRow]
+    #: How much history an accept moves. Browse-time magnitude: the reviewer
+    #: chooses which proposals are worth opening before any confirm gate runs.
+    transactions: Annotated[int, DataClass.AGGREGATE] = 0
 
     @classmethod
     def from_domain(cls, g: PendingLinkGroup) -> LinkPendingGroup:
@@ -288,6 +303,7 @@ class LinkPendingGroup:
             provisional_account_id=g.provisional_account_id,
             provisional_display_name=g.provisional_display_name,
             candidates=[LinkCandidateRow.from_candidate(c) for c in g.candidates],
+            transactions=g.transactions,
         )
 
 
@@ -323,7 +339,13 @@ class AccountLinksSetPayload:
 
 @dataclass(frozen=True, slots=True)
 class LinkHistoryRow:
-    """One past account-link decision (accounts_links_history result)."""
+    """One past account-link decision (accounts_links_history result).
+
+    No confidence field, for the same reason as ``LinkCandidateRow``:
+    ``app.account_link_decisions.confidence_score`` still records the constant
+    the resolver stamped, but replaying a number nothing could move tells a
+    reader the decision was scored when it was only labelled.
+    """
 
     decision_id: Annotated[str, DataClass.RECORD_ID]
     provisional_account_id: Annotated[str, DataClass.RECORD_ID]
@@ -331,7 +353,6 @@ class LinkHistoryRow:
     status: Annotated[str, DataClass.TXN_TYPE]
     decided_by: Annotated[str, DataClass.TXN_TYPE]
     decided_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
-    confidence: Annotated[float | None, DataClass.AGGREGATE]
     signal: Annotated[str, DataClass.TXN_TYPE]
 
     @classmethod
@@ -345,11 +366,6 @@ class LinkHistoryRow:
             decided_by=r["decided_by"],
             decided_at=(
                 str(r["decided_at"]) if r.get("decided_at") is not None else None
-            ),
-            confidence=(
-                float(r["confidence_score"])
-                if r.get("confidence_score") is not None
-                else None
             ),
             signal=signal_from_match_signals(r.get("match_signals")),
         )
