@@ -556,7 +556,14 @@ Guard-2 free-text resolution):
     match, because a plain `=` would score every pair of unknown-currency
     ledgers at zero and switch the evidence off silently for exactly the
     accounts whose sources never reported one. The same asymmetry the name
-    rung's last-four veto uses — silence is not disagreement.
+    rung's last-four veto uses — silence is not disagreement. Both sides are
+    folded to a bare upper-case code before comparing, so the veto fires on the
+    currency rather than on its spelling: the tabular extractor copies
+    `currency` out of the source cell verbatim while OFX and Plaid carry ISO
+    codes, which puts `usd` opposite `USD` in precisely the cross-source pair
+    this probe is asked to judge. A blank cell reads as unstated for the same
+    reason silence does — a statement that fills its currency column only on
+    foreign rows leaves the domestic ones empty, not NULL.
   - **`confidence_score` is not a review surface.** Its value is fixed per
     signal (0.5 `institution_last4`, 0.4 `name`, 0.3 `institution_reissue`), so
     it restates `signal` in a less legible form; no input moves it. The column

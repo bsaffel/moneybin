@@ -163,6 +163,102 @@ def test_two_ledgers_of_unknown_currency_still_match(core_db: Database) -> None:
     assert (overlap.comparable, overlap.matched) == (2, 2)
 
 
+def test_the_same_currency_spelled_in_two_cases_still_matches(
+    core_db: Database,
+) -> None:
+    """``usd`` and ``USD`` name one currency, so they may not veto each other.
+
+    Only the tabular path can produce the lowercase side: ``currency`` is one of
+    the extractor's pass-through string fields, copied out of the source cell
+    verbatim, while OFX and Plaid carry ISO codes. So the mixed-case pair is
+    exactly the cross-source shape this probe is asked about — and comparing the
+    raw strings would report ``0 of N`` for a genuine twin, which is the silent
+    evidence-loss the NULL-safe half of this predicate already refuses.
+    """
+    for day, amount in ((3, "-12.00"), (7, "-40.50")):
+        _insert_txn(
+            core_db,
+            account_id=_TWIN,
+            txn_date=date(2026, 5, day),
+            amount=amount,
+            currency="usd",
+        )
+        _insert_txn(
+            core_db,
+            account_id=_SURVIVOR,
+            txn_date=date(2026, 5, day),
+            amount=amount,
+            currency="USD",
+        )
+
+    overlap = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR
+    )
+
+    assert (overlap.comparable, overlap.matched) == (2, 2)
+
+
+def test_a_padded_currency_code_still_matches_its_unpadded_twin(
+    core_db: Database,
+) -> None:
+    """Surrounding whitespace is a spelling of the code, not a different currency.
+
+    A CSV reader hands the cell over as written; nothing between the source file
+    and ``core.fct_transactions`` strips it.
+    """
+    _insert_txn(
+        core_db,
+        account_id=_TWIN,
+        txn_date=date(2026, 5, 3),
+        amount="-12.00",
+        currency=" USD ",
+    )
+    _insert_txn(
+        core_db,
+        account_id=_SURVIVOR,
+        txn_date=date(2026, 5, 3),
+        amount="-12.00",
+        currency="USD",
+    )
+
+    overlap = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR
+    )
+
+    assert (overlap.comparable, overlap.matched) == (1, 1)
+
+
+def test_a_blank_currency_cell_reads_as_unstated_not_as_a_currency(
+    core_db: Database,
+) -> None:
+    """An empty cell is silence, and silence is not disagreement.
+
+    A statement that fills its currency column only on foreign transactions
+    leaves the domestic rows blank rather than NULL, because the tabular
+    extractor writes the cell through as-is. Reading ``''`` as a stated currency
+    would make those rows disagree with every counterpart — turning the evidence
+    off for precisely the ordinary domestic ledger the probe is usually asked
+    about. It matches an unstated counterpart and, per the test below, still
+    fails to match a stated one.
+    """
+    _insert_txn(
+        core_db,
+        account_id=_TWIN,
+        txn_date=date(2026, 5, 3),
+        amount="-12.00",
+        currency="   ",
+    )
+    _insert_txn(
+        core_db, account_id=_SURVIVOR, txn_date=date(2026, 5, 3), amount="-12.00"
+    )
+
+    overlap = probe_ledger_overlap(
+        core_db, account_id=_TWIN, against_account_id=_SURVIVOR
+    )
+
+    assert (overlap.comparable, overlap.matched) == (1, 1)
+
+
 def test_a_stated_currency_does_not_match_an_unstated_one(core_db: Database) -> None:
     """One side knowing its currency and the other not is still not a match.
 

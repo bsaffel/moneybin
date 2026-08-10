@@ -112,6 +112,15 @@ def probe_ledger_overlap(
     of money until a currency names it, so a USD row and a EUR row are never
     the same transaction however equal they look.
 
+    Both sides are folded to a bare upper-case code first, because the veto has
+    to fire on the currency and not on its spelling. Tabular ``currency`` is a
+    pass-through extractor field copied out of the source cell verbatim, while
+    OFX and Plaid carry ISO codes — so the cross-source pair this probe exists
+    to judge is exactly where ``usd`` meets ``USD``. ``NULLIF(…, '')`` extends
+    the same reading to a blank cell, which a statement produces whenever it
+    fills its currency column only on foreign rows: an empty string is silence,
+    and silence already means unstated here.
+
     Returns an unmeasurable overlap — rather than raising — when ``core`` is not
     yet materialized, which is a first import before any transform.
     """
@@ -147,7 +156,9 @@ def probe_ledger_overlap(
                     FROM comparable AS c
                     JOIN against AS a
                       ON a.amount = c.amount
-                     AND a.currency_code IS NOT DISTINCT FROM c.currency_code
+                     AND NULLIF(UPPER(TRIM(a.currency_code)), '')
+                         IS NOT DISTINCT FROM
+                         NULLIF(UPPER(TRIM(c.currency_code)), '')
                      AND ABS(DATE_DIFF('day', a.transaction_date, c.transaction_date))
                          <= CAST(? AS INTEGER)
                     GROUP BY c.transaction_id

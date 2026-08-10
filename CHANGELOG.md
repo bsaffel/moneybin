@@ -433,7 +433,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   together by their name could read as a perfect twin. Silence is not
   disagreement — two ledgers that never stated a currency still match each
   other, since refusing them would switch the evidence off for every account
-  whose source never reported one (#387).
+  whose source never reported one. The veto reads the currency and not its
+  spelling: a spreadsheet column holding `usd` names the same money as a
+  statement's `USD`, padding and letter case included, and a currency column
+  left blank on domestic rows counts as unstated rather than as a currency of
+  its own (#387).
 - **One merge now reads the same way wherever it is proposed.** The CLI prompt,
   `accounts_links_set`, and `identity_links_decide` each described the same
   decision differently, and the worst of the three named both accounts by their
