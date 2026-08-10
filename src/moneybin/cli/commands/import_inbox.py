@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
+from typing import Any, Literal, cast
 
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.privacy.payloads.imports import ImportInboxPendingEntry
+from moneybin.privacy.redaction import redact_typed
 from moneybin.services.inbox_service import InboxService, InboxSyncResult
 
 app = typer.Typer(
@@ -16,22 +18,71 @@ app = typer.Typer(
 )
 
 
+def _masked_pending(entries: list[dict[str, object]]) -> list[dict[str, Any]]:
+    """Mask each pending entry by the declaration MCP's payload uses.
+
+    The one masking point for this module, shared by the text renderer and the
+    JSON envelope. Neither gets it for free: text never reaches
+    ``render_or_json`` at all, and the JSON branch hands it
+    ``dataclasses.asdict(result)`` — a bare dict, so the walk's
+    ``type(envelope.data)`` gate finds nothing to descend. On the OFX channel
+    ``account_proposals[].source_account_key`` is the ``<ACCTID>`` the
+    institution issued, and `.claude/rules/cli.md` allows no CLI exemption:
+    "never assume CLI users are 'trusted enough to skip redaction'".
+
+    Masking by ``ImportInboxPendingEntry`` rather than a field list here keeps
+    one declaration governing this surface and MCP's ``import_inbox_sync``.
+    """
+    return [
+        redact_typed(entry, consent=None, declared_type=ImportInboxPendingEntry)
+        for entry in entries
+    ]
+
+
+def _minted_any(processed: list[dict[str, object]]) -> bool:
+    """Whether the drain minted an account on any imported file.
+
+    The rows are service-shaped ``dict[str, object]``, so the list is checked
+    rather than assumed: a malformed entry must not raise on the drain's own
+    success path.
+    """
+    for entry in processed:
+        created = entry.get("accounts_created")
+        if isinstance(created, list) and created:
+            return True
+    return False
+
+
 def _print_sync_text(result: InboxSyncResult) -> None:
     """Render a sync result as human-readable text."""
     processed = result.processed
     failed = result.failed
-    pending = result.pending
+    pending = _masked_pending(result.pending)
     skipped = result.skipped
 
     if skipped and any(s.get("reason") == "inbox_busy" for s in skipped):
         typer.echo("⚠️  Another sync is in progress; nothing done.", err=True)
         return
 
+    # Deferred: import_cmd imports this module at its own module level, so a
+    # top-level import here would close the cycle. Reused rather than re-rendered
+    # because one wrong-account recovery hint is hard enough to keep correct.
+    from moneybin.cli.commands.import_cmd import (  # noqa: PLC0415
+        echo_accounts_created,
+    )
+
     for item in processed:
         typer.echo(
             f"✓ {item['filename']}  →  imported "
             f"({item.get('transactions', 0)} transactions)"
         )
+        raw_created: Any = item.get("accounts_created")
+        created: list[dict[str, str]] = (
+            cast("list[dict[str, str]]", raw_created)
+            if isinstance(raw_created, list)
+            else []
+        )
+        echo_accounts_created(created)
     for item in failed:
         typer.echo(f"✗ {item['filename']}  →  failed ({item['error_code']})", err=True)
         if "sidecar" in item:
@@ -45,18 +96,34 @@ def _print_sync_text(result: InboxSyncResult) -> None:
             err=True,
         )
         if reason == "account_confirmation":
+            # Same rule the MCP action and the sidecar follow: the folder move
+            # answers an account gate on tabular only, because `account_name`
+            # is tabular-only and the inbox drops the hint elsewhere. Naming it
+            # on OFX or PDF sends the reader back to this identical gate.
+            subfolder_hint = (
+                "; or move the file into inbox/<account-slug>/ and re-sync"
+                if item.get("channel") == "tabular"
+                else ""
+            )
             typer.echo(
+                # Leads with @N, not <source_key>: the key is masked in the
+                # listing below (it is the institution's own <ACCTID> on OFX),
+                # so the ref is the only referent a reader can copy from here.
                 f"   Account identity needed — run 'moneybin import confirm "
-                f"{moved_to} --accept --account-binding <source_key>=<account_id|new>' "
-                "(=account_id adopts an existing account, =new mints one; or move "
-                "the file into inbox/<account-slug>/ and re-sync):",
+                f"{moved_to} --accept --account-binding @N=<account_id|new>' "
+                "(@N is the ref beside each proposal below; =account_id adopts "
+                f"an existing account, =new mints one{subfolder_hint}):",
                 err=True,
             )
             raw_props: Any = item.get("account_proposals")
             proposals: list[Any] = raw_props if isinstance(raw_props, list) else []
             for p in proposals:
+                # Already masked by _masked_pending — same shape as
+                # _echo_account_proposals. The ref is the answer; the masked key
+                # only tells two proposals apart.
                 typer.echo(
-                    f"     source key: {p.get('source_account_key', '<source_key>')}",
+                    f"     {p.get('proposal_ref', '')}  account: "
+                    f"{p.get('source_account_key', '<account>')}",
                     err=True,
                 )
                 raw_cands: Any = p.get("candidates")
@@ -115,13 +182,48 @@ def inbox_default(
         # candidates include account display names (DESCRIPTION/medium). The
         # CLI has no privacy middleware, so the envelope's declared tier is the
         # only sensitivity signal a JSON consumer sees; declare medium when any
-        # pending entry exists (mirrors the MCP import_files rule). Processed,
-        # failed, skipped, and ignored entries carry only paths and counts (low).
-        sensitivity = "medium" if result.pending else "low"
+        # pending entry exists (mirrors the MCP import_files rule).
+        #
+        # A drain that minted an account is medium for the same reason, with
+        # nothing pending to raise the tier on its behalf: accounts_created[]
+        # .display_name is USER_NOTE. It is counted here rather than derived
+        # because the payload below is dataclasses.asdict output — a bare dict,
+        # so render_or_json's walk never reaches the annotation and the low
+        # fallback would stand in the privacy audit record. Every other
+        # processed, failed, skipped, and ignored key is a path or a count.
+        sensitivity = (
+            "medium" if result.pending or _minted_any(result.processed) else "low"
+        )
+        # An account gate outranks that: account_proposals[].source_account_key
+        # is ACCOUNT_IDENTIFIER — on OFX the <ACCTID> the institution issued —
+        # so reading this row for its display names alone under-declares it by
+        # two tiers. _masked_pending masks the value, but the asdict payload is
+        # a bare dict, so nothing downstream can re-derive either the tier or
+        # the audited classes; MCP's typed ImportInboxSyncPayload calls the same
+        # bytes critical, and the surfaces must agree (cli.md). Derived from the
+        # declarations rather than restated, so they move together.
+        classes_returned: list[str] | None = None
+        if any(p.get("account_proposals") for p in result.pending):
+            from moneybin.cli.output import derive_log_sensitivity
+            from moneybin.privacy.introspection import extract_data_classes
+            from moneybin.privacy.payloads.imports import ImportConfirmationPayload
+
+            # The same helper the audit path uses, rather than a second inline
+            # derive_tier call beside it.
+            sensitivity = cast(
+                'Literal["low", "medium", "high", "critical"]',
+                derive_log_sensitivity(ImportConfirmationPayload, sensitivity),
+            )
+            classes_returned = sorted(
+                c.value for c in extract_data_classes(ImportConfirmationPayload)
+            )
+        payload = dataclasses.asdict(result)
+        payload["pending"] = _masked_pending(result.pending)
         render_or_json(
-            build_envelope(data=dataclasses.asdict(result), sensitivity=sensitivity),
+            build_envelope(data=payload, sensitivity=sensitivity),
             output,
             cli_actor="inbox_default",
+            classes_returned=classes_returned,
         )
         return
     if quiet:

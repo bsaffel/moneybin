@@ -259,13 +259,32 @@ flowchart TD
   `reason="account_confirmation"`. This covers two cases: (a) a source account
   that resolves to weak merge candidate(s) (`institution+last4` / name) — the
   resolver found candidates but confidence is too low to auto-adopt; and (b) a
-  single-account tabular file with no caller-supplied identity (`account_id`,
-  `account_name`, or account-name column absent) — the resolver found no
-  candidates and returns a one-entry no-candidate proposal. Both cases ride the
-  same one-shape envelope and are ratified via `account_bindings`; there is no
-  actor gating on the no-candidate path (no silent fallback exists for case b,
-  so both human and agent callers receive `account_confirmation`). The
-  column-mapping and account-binding facets ride the same envelope; see
+  source that states no account identity at all (`account_id`, `account_name`,
+  and account-name column all absent) — `identity_unknown` on the proposal,
+  because the mint would otherwise be under the filename stem. Both cases ride
+  the same one-shape envelope and are ratified via `account_bindings`.
+
+  A first-contact mint is **not** case (b). A source that states an identity
+  and matches nothing has no second answer available, so it resolves and the
+  import reports the accounts it created (`accounts_created`) rather than
+  gating. Candidates alone cannot express case (b): on a first import the
+  fallback pick-list comes back empty, so the proposal would be
+  indistinguishable from a confident mint.
+
+  **Every account-resolving channel gates, and neither case is actor-gated.**
+  `tabular`, `ofx`, and `pdf` raise the same envelope through one shared gate,
+  and both human and agent callers receive it — for case (b) because no silent
+  fallback exists, and for case (a) because a weak signal is never eligible for
+  agent self-accept (`design-principles.md`, "magic stays visible"). OFX gates
+  before raw ingest and PDF before `begin_import`, so a gated import loads no
+  rows and opens no batch on any channel; the caller answers by re-entering
+  with `account_bindings`, keyed by each proposal's `proposal_ref` (`@0` is the
+  file's first source account) or its raw `source_account_key` — one vocabulary
+  across all three channels, and the ref is the half that survives MCP masking.
+  `gsheet` is absent from that list deliberately: it
+  runs no account resolution at all, so its `Channel` value carries only the
+  column-mapping facet. The column-mapping and account-binding facets ride
+  the same envelope; see
   [`account-identity-resolution.md`](account-identity-resolution.md) Decision 7
   for when each gates.
 

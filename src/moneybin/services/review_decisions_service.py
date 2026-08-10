@@ -31,6 +31,7 @@ from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services._text import build_match_inputs
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.categorization import CategorizationService
+from moneybin.services.identity_confirmation import IDENTITY_BLAST_RADIUS_CATEGORIES
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.security_links_service import SecurityLinksService
 from moneybin.tables import (
@@ -75,23 +76,6 @@ class OrdinaryDecisionPlanItem:
     merchant_group_key: tuple[str, str, str | None] | None = None
 
 
-#: Every blast-radius category an identity confirmation reports, named once.
-#:
-#: The confirm binding indexes ``affected_ids`` by exactly this set, so the two
-#: lists have to agree: a preparer that omits a key raises at confirmation time,
-#: and a category added to a preparer but not here is a mutation the prompt
-#: silently drops. ``price_marks`` was the second kind — the merge moved every
-#: override while the prompt counted only the first five.
-IDENTITY_BLAST_RADIUS_CATEGORIES = (
-    "accounts",
-    "merchants",
-    "securities",
-    "transactions",
-    "lots",
-    "price_marks",
-)
-
-
 @dataclass(frozen=True, slots=True)
 class IdentityDecisionPlanItem:
     """One resolved identity target with exact persisted before-state."""
@@ -123,6 +107,22 @@ class IdentityDecisionPlan:
         return any(
             item.changed and item.request.decision == "accept" for item in self.items
         )
+
+    @property
+    def blast_radius(self) -> dict[str, int]:
+        """Distinct entities this batch touches, per category.
+
+        Lives on the plan rather than in either surface because two of them read
+        it for the same decision: the MCP binding digests it, and the CLI prompt
+        renders it. A second copy of the de-duplication would let one surface
+        confirm a different size than the other commits.
+        """
+        return {
+            key: len({
+                entity_id for item in self.items for entity_id in item.affected_ids[key]
+            })
+            for key in IDENTITY_BLAST_RADIUS_CATEGORIES
+        }
 
 
 def _json_safe(value: Any) -> JsonValue:

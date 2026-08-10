@@ -270,7 +270,7 @@ Domain-specific metrics (e.g., `IMPORT_RECORDS_TOTAL`) live in `src/moneybin/met
 
 - **Env vars use `MONEYBIN_` prefix with `__` for nesting.** `MONEYBIN_DATABASE__PATH=/tmp/db.duckdb` sets `settings.database.path`. Case-insensitive.
 - **Profile-scoped.** Every `MoneyBinSettings` is constructed for one active profile. Paths under `~/.moneybin/profiles/<profile>/` are resolved at construction time. The active profile is set via `set_current_profile()`; reads via `get_current_profile()`. `get_settings()` is a singleton scoped to the active profile and invalidates on profile change.
-- **`MONEYBIN_HOME` overrides the base directory.** Otherwise the resolution order is: `MONEYBIN_ENVIRONMENT=development` → `<cwd>/.moneybin`; repo checkout detection (`.git` + `pyproject.toml` name=moneybin) → `<cwd>/.moneybin`; default → `~/.moneybin/`.
+- **`MONEYBIN_HOME` overrides the base directory.** Otherwise the resolution order is: `MONEYBIN_ENVIRONMENT=development` → `<repo-root>/.moneybin` inside a MoneyBin checkout (or `<cwd>/.moneybin` outside one); repo checkout detection (`.git` + `pyproject.toml` name=moneybin) → `<cwd>/.moneybin`; default → `~/.moneybin/`.
 - **`.env.<profile>` overrides `.env`.** Custom dotenv resolution in `settings_customise_sources` looks up `~/.moneybin/.env.<profile>` first, then `~/.moneybin/.env`.
 - **Frozen models.** All config sections use `ConfigDict(frozen=True)` — settings are read-only after construction.
 - **Validators enforce invariants.** E.g., `MatchingSettings.transfer_signal_weights` must contain the four required keys and sum to 1.0 ± 1e-6; `DatabaseConfig.path` must end in `.db` or `.duckdb`. Validation runs at construction, not at use.

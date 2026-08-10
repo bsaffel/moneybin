@@ -130,9 +130,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |                                  Approve an inferred tabular inversion, or explicitly override its convention
 |   |     [--bridge-response FILE --confirm]  Apply an agent PDF recipe after human confirmation
 |   |     [--save-format/--no-save-format]  Pin merged mapping for silent reuse (default on)
+|   |     [--institution NAME]       Carry over an override the `import files` call needed to reach this gate (refused with --bridge-response)
 |   |     [--account-name NAME]      Optional; omitting all account identifiers elicits account_confirmation (resolve via --account-binding/--account-name/--account-id)
 |   |     [--account-id ID]          Explicit account ID bypass
-|   |     [--account-binding K=ID|new]  Ratify an account_confirmation (repeatable)
+|   |     [--account-binding REF=ID|new]  Ratify an account_confirmation (repeatable); REF is the proposal_ref (@0) or its source_account_key
 |   |     [--account-meta K:field=value]  Metadata for a 'new' account (repeatable)
 |   |     [--output text|json]       JSON emits the standard ResponseEnvelope
 |   +-- history                    -- Show recent import batches
@@ -233,9 +234,11 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |       +-- pending [--output json] [--quiet]
 |       |         List provisional accounts + candidate merge proposals; each candidate
 |       |         shows decision_id, candidate_account_id, display name, confidence, signal.
-|       +-- set <decision_id> --into <account_id> | --standalone
+|       +-- set <decision_id> --into <account_id> | --standalone [--yes]
 |       |         Merge the provisional into the candidate (--into) or keep as standalone
 |       |         (--standalone). The two flags are mutually exclusive; omitting both exits 2.
+|       |         A merge prints what it moves and asks before committing; --yes answers
+|       |         in advance. Standalone is never gated.
 |       +-- history [--limit N] [--output json] [--quiet]
 |       |         Recent decisions (all statuses), newest first.
 |       +-- run [--output json]
@@ -798,7 +801,7 @@ Replaces current logic entirely. Solves the `distribution-roadmap.md` concern.
 | Priority | Source | Resolves to | Use case |
 |---|---|---|---|
 | 1 | `MONEYBIN_HOME` env var | Whatever the user sets | Explicit override (CI, custom installs) |
-| 2 | `MONEYBIN_ENVIRONMENT=development` | `<cwd>/.moneybin` | Developer working in repo checkout |
+| 2 | `MONEYBIN_ENVIRONMENT=development` | `<repo-root>/.moneybin` inside a MoneyBin checkout; otherwise `<cwd>/.moneybin` | Developer working in repo checkout |
 | 3 | Repo checkout detection (`.git` + `pyproject.toml` with `name = "moneybin"`) | `<cwd>/.moneybin` | Developer who didn't set env var |
 | 4 | Default | `~/.moneybin/` | Installed package user (the common case) |
 

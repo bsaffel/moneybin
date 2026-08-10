@@ -22,7 +22,10 @@ from pathlib import Path
 import pytest
 
 from moneybin.database import Database
+from moneybin.services.account_resolution_types import AccountProposalDict
+from moneybin.services.import_confirmation import ImportConfirmationRequiredError
 from moneybin.services.import_service import ImportService
+from tests.import_helpers import import_answering_gate
 from tests.scenarios._runner.loader import Scenario, SetupSpec
 from tests.scenarios._runner.runner import scenario_env
 from tests.scenarios._runner.steps import run_step
@@ -30,6 +33,36 @@ from tests.scenarios._runner.steps import run_step
 _FIXTURES = (
     Path(__file__).parent / "data" / "fixtures" / "account-identity-cross-source"
 )
+
+
+def _gated_proposal(
+    svc: ImportService, path: Path, /, **kwargs: object
+) -> AccountProposalDict:
+    """Import ``path`` expecting the account gate; return its lone proposal.
+
+    Every channel now stops before load on an unratified account identity, and
+    the resolver's candidates ride on the raised proposal instead of a pending
+    row in ``app.account_link_decisions``. Imports no longer write to that
+    queue at all — it is fed by the backfill link service and by sync — so a
+    scenario that wants to see what the matcher found reads it here.
+    """
+    with pytest.raises(ImportConfirmationRequiredError) as raised:
+        svc.import_file(path, **kwargs)  # pyright: ignore[reportArgumentType]
+    outcome = raised.value.outcome
+    assert outcome.reason == "account_confirmation", outcome.reason
+    assert len(outcome.account_proposals) == 1, outcome.account_proposals
+    return outcome.account_proposals[0]
+
+
+def _csv_link_count(db: Database, account_id: str) -> int:
+    """CSV source_native links pointing at ``account_id`` — 0 means no merge."""
+    row = db.execute(
+        "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native' "
+        "AND source_type = 'csv' AND account_id = ?",
+        [account_id],
+    ).fetchone()
+    assert row is not None
+    return int(row[0])
 
 
 def _ofx_canonical_id(db: Database, acctid: str) -> str:
@@ -67,9 +100,12 @@ def test_cross_source_twins_collapse_to_canonical_accounts() -> None:
 
         # Import the two .qfx statements first — each mints a canonical account
         # (ACCTID 1111 = checking, 2222 = savings). refresh=False groups the
-        # transform into the explicit step below.
-        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
-        svc.import_file(_FIXTURES / "wf_savings.qfx", refresh=False)
+        # transform into the explicit step below. Both are first contact against
+        # an empty dim, so the gate they raise carries no candidate and the
+        # helper answers it with "new"; the collapse under test is the csv
+        # binding below.
+        import_answering_gate(svc, _FIXTURES / "wf_checking.qfx", refresh=False)
+        import_answering_gate(svc, _FIXTURES / "wf_savings.qfx", refresh=False)
         checking_id = _ofx_canonical_id(db, "1111")
         savings_id = _ofx_canonical_id(db, "2222")
         assert checking_id != savings_id
@@ -121,46 +157,23 @@ def test_cross_source_twins_collapse_to_canonical_accounts() -> None:
 
 @pytest.mark.scenarios
 @pytest.mark.slow
-def test_csv_twin_human_import_gates_on_last4_bridge() -> None:
-    """A HUMAN importing the Wells-Fargo csv twin (no binding) is GATED.
+@pytest.mark.parametrize("actor_kind", ["human", "agent"])
+def test_csv_twin_gates_on_the_last4_bridge_for_every_actor(actor_kind: str) -> None:
+    """Importing the Wells-Fargo csv twin (no binding) is GATED for BOTH actors.
 
     The derived last4 ('1111') + filename-resolved institution ('wells_fargo')
-    match the ofx account, so the import raises ImportConfirmationRequiredError
-    (account_confirmation) instead of silently minting/merging — the bridge fires
-    VISIBLY at the gate (Decision 7 human first-contact, "magic stays visible").
-    """
-    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+    match the ofx account, so the import stops and surfaces that candidate
+    rather than acting on it.
 
-    scenario = Scenario(
-        scenario="account-identity-cross-source",
-        setup=SetupSpec(persona="family"),
-        pipeline=[],
-    )
-    with scenario_env(scenario) as (db, _tmp, env):
-        svc = ImportService(db)
-        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
-        _ofx_canonical_id(db, "1111")  # ensure the ofx account exists
-        run_step("transform", scenario.setup, db, env=env)
-        with pytest.raises(
-            ImportConfirmationRequiredError, match="account_confirmation"
-        ):
-            svc.import_file(
-                _FIXTURES / "wells_fargo_checking.csv",
-                account_name="WF Checking (...1111)",
-                confirm=True,
-                actor_kind="human",
-                refresh=False,
-            )
+    The actor used to decide the shape of this stop: a human was gated, while an
+    agent was allowed through to mint a provisional and queue a pending
+    ``institution_last4`` decision for later review. That split let the weakest
+    signal in the resolver take effect unseen on the surface where nobody is
+    watching, so it is gone — the gate is now actor-independent, and the agent
+    cannot self-accept it (`design-principles.md`, "magic stays visible").
 
-
-@pytest.mark.scenarios
-@pytest.mark.slow
-def test_csv_twin_agent_import_queues_last4_proposal_without_merge() -> None:
-    """An AGENT importing the same csv twin (no binding) does NOT gate.
-
-    It mints a provisional and writes a PENDING institution_last4 decision onto
-    the ofx account (review queue, Decision 7 agent path) — never a silent merge,
-    and the agent does not self-accept this weak signal.
+    Parametrizing over the actor is the assertion: if either path ever regains
+    its own behavior, exactly one of these fails.
     """
     scenario = Scenario(
         scenario="account-identity-cross-source",
@@ -169,40 +182,39 @@ def test_csv_twin_agent_import_queues_last4_proposal_without_merge() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         svc = ImportService(db)
-        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
+        import_answering_gate(svc, _FIXTURES / "wf_checking.qfx", refresh=False)
         checking_id = _ofx_canonical_id(db, "1111")
         run_step("transform", scenario.setup, db, env=env)
-        svc.import_file(
+
+        proposal = _gated_proposal(
+            svc,
             _FIXTURES / "wells_fargo_checking.csv",
             account_name="WF Checking (...1111)",
             confirm=True,
-            actor_kind="agent",
+            actor_kind=actor_kind,
             refresh=False,
         )
-        decisions = db.execute(
-            "SELECT match_reason FROM app.account_link_decisions "
-            "WHERE status = 'pending' AND candidate_account_id = ?",
-            [checking_id],
-        ).fetchall()
-        assert [r[0] for r in decisions] == ["institution_last4"], decisions
-        merged = db.execute(
-            "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native' "
-            "AND source_type = 'csv' AND account_id = ?",
-            [checking_id],
-        ).fetchone()
-        assert merged is not None and merged[0] == 0, (
+
+        # The bridge fired, and named the ofx account it wants to merge onto.
+        assert [c["signal"] for c in proposal["candidates"]] == ["institution_last4"]
+        assert [c["account_id"] for c in proposal["candidates"]] == [checking_id]
+        # Nothing was written on the way to asking. Gating before the resolver's
+        # candidate pass is what makes this stronger than the queue it replaced:
+        # there is no provisional account and no pending row to clean up, only
+        # an unanswered question.
+        assert _csv_link_count(db, checking_id) == 0, (
             "weak last4 signal must NOT auto-merge onto the ofx account"
         )
 
 
 @pytest.mark.scenarios
 @pytest.mark.slow
-def test_shared_last4_collision_agent_queues_both_never_merges() -> None:
-    """Two distinct Wells-Fargo accounts sharing last4 '4267' both get proposals.
+def test_shared_last4_collision_surfaces_both_candidates_never_merges() -> None:
+    """Two distinct Wells-Fargo accounts sharing last4 '4267' are BOTH surfaced.
 
-    An agent csv import carrying that last4 queues TWO pending institution_last4
-    proposals (one per ambiguous account), never an auto-merge — the user
-    disambiguates (collision safety; a weak signal is ambiguous by construction).
+    A csv import carrying that last4 raises one proposal holding TWO
+    institution_last4 candidates, never an auto-merge — the user disambiguates
+    (collision safety; a weak signal is ambiguous by construction).
     """
     scenario = Scenario(
         scenario="account-identity-cross-source",
@@ -211,37 +223,29 @@ def test_shared_last4_collision_agent_queues_both_never_merges() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         svc = ImportService(db)
-        svc.import_file(_FIXTURES / "wf_acct_a_4267.qfx", refresh=False)
-        svc.import_file(_FIXTURES / "wf_acct_b_4267.qfx", refresh=False)
+        import_answering_gate(svc, _FIXTURES / "wf_acct_a_4267.qfx", refresh=False)
+        import_answering_gate(svc, _FIXTURES / "wf_acct_b_4267.qfx", refresh=False)
         acct_a = _ofx_canonical_id(db, "5114267")
         acct_b = _ofx_canonical_id(db, "6224267")
         assert acct_a != acct_b
         run_step("transform", scenario.setup, db, env=env)
-        svc.import_file(
+
+        proposal = _gated_proposal(
+            svc,
             _FIXTURES / "wells_fargo_checking.csv",
             account_name="WF (...4267)",
             confirm=True,
             actor_kind="agent",
             refresh=False,
         )
-        cand_ids = {
-            r[0]
-            for r in db.execute(
-                "SELECT candidate_account_id FROM app.account_link_decisions "
-                "WHERE status = 'pending' AND match_reason = 'institution_last4'"
-            ).fetchall()
-        }
+
+        cand_ids = {c["account_id"] for c in proposal["candidates"]}
         assert cand_ids == {acct_a, acct_b}, (
             f"both same-last4 accounts must be surfaced for review, got {cand_ids}"
         )
-        merged = db.execute(
-            "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native' "
-            "AND source_type = 'csv' AND account_id IN (?, ?)",
-            [acct_a, acct_b],
-        ).fetchone()
-        assert merged is not None and merged[0] == 0, (
-            "shared last4 must NOT auto-merge onto either ofx account"
-        )
+        assert {c["signal"] for c in proposal["candidates"]} == {"institution_last4"}
+        assert _csv_link_count(db, acct_a) == 0
+        assert _csv_link_count(db, acct_b) == 0
 
 
 @pytest.mark.scenarios
@@ -249,17 +253,20 @@ def test_shared_last4_collision_agent_queues_both_never_merges() -> None:
 def test_csv_twin_matches_accepts_and_collapses_end_to_end() -> None:
     """End-to-end match->accept->collapse with NO forced binding.
 
-    The FULL automatic chain (no account_bindings): import the .qfx, then its .csv
-    twin (agent path) — the matcher fires a pending institution_last4 PROPOSAL, the
-    user ACCEPTS it through the real review-queue accept, and the twins then dedup
-    to one gold set. This is the path a user who relies on automatic matching
-    actually takes; the sibling test_cross_source_twins_collapse_* covers the
-    EXPLICIT-binding path. Without this, every cross-source scenario forced the
-    account link and the matcher was never exercised end-to-end ("No Shortcuts",
-    testing.md).
-    """
-    from moneybin.services.account_links_service import AccountLinksService
+    The FULL automatic chain: import the .qfx, then its .csv twin with no
+    binding — the resolver's bridge finds the ofx account and the import stops
+    to ask, the user ACCEPTS by binding onto the candidate the gate named, and
+    the twins then dedup to one gold set. This is the path a user who relies on
+    automatic matching actually takes; the sibling
+    test_cross_source_twins_collapse_* covers the EXPLICIT-binding path, where
+    the user names the target without the matcher having proposed anything.
 
+    The distinction is what keeps this honest ("No Shortcuts", testing.md): the
+    binding below is not a shortcut past the matcher, it is the *answer to the
+    matcher's own question*, and the assertion above it proves the matcher
+    asked. Without this test every cross-source scenario forced the link and
+    automatic matching was never exercised end-to-end.
+    """
     scenario = Scenario(
         scenario="account-identity-cross-source",
         setup=SetupSpec(persona="family"),
@@ -268,28 +275,31 @@ def test_csv_twin_matches_accepts_and_collapses_end_to_end() -> None:
     with scenario_env(scenario) as (db, _tmp, env):
         svc = ImportService(db)
         # 1) OFX statement mints the canonical checking account (ACCTID 1111).
-        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
+        import_answering_gate(svc, _FIXTURES / "wf_checking.qfx", refresh=False)
         checking_id = _ofx_canonical_id(db, "1111")
         run_step("transform", scenario.setup, db, env=env)  # dim gets derived last4
-        # 2) CSV twin via the agent path, NO account_bindings -> the bridge fires a
-        #    pending institution_last4 proposal (provisional account + decision).
+        # 2) CSV twin, NO account_bindings -> the bridge fires and the import
+        #    stops, naming the ofx account as its institution_last4 candidate.
+        csv_kwargs = {
+            "account_name": "WF Checking (...1111)",
+            "confirm": True,
+            "actor_kind": "agent",
+            "refresh": False,
+        }
+        proposal = _gated_proposal(
+            svc, _FIXTURES / "wells_fargo_checking.csv", **csv_kwargs
+        )
+        assert [c["signal"] for c in proposal["candidates"]] == ["institution_last4"], (
+            "matcher produced no institution_last4 candidate"
+        )
+        assert proposal["candidates"][0]["account_id"] == checking_id
+        # 3) Accept it the way a user answering the gate would: bind this source
+        #    key onto the candidate. The re-import then lands the csv's
+        #    source_native link on the ofx account instead of minting its own.
         svc.import_file(
             _FIXTURES / "wells_fargo_checking.csv",
-            account_name="WF Checking (...1111)",
-            confirm=True,
-            actor_kind="agent",
-            refresh=False,
-        )
-        decision = db.execute(
-            "SELECT decision_id, candidate_account_id FROM app.account_link_decisions "
-            "WHERE status = 'pending' AND match_reason = 'institution_last4'"
-        ).fetchone()
-        assert decision is not None, "matcher produced no institution_last4 proposal"
-        assert decision[1] == checking_id, decision
-        # 3) Accept the proposal the way a user reviewing the queue would — this
-        #    re-points the csv's source_native link onto the ofx account.
-        AccountLinksService(db).set(
-            decision[0], target_account_id=checking_id, decided_by="user"
+            account_bindings={proposal["source_account_key"]: checking_id},
+            **csv_kwargs,  # pyright: ignore[reportArgumentType]
         )
         # 4) Re-materialize -> dedup -> re-materialize: the csv re-keys onto the ofx
         #    account and the twin transactions collapse.
@@ -324,8 +334,6 @@ def test_csv_first_then_ofx_matches_accepts_and_collapses_end_to_end() -> None:
     direction while the OFX-first direction kept working — exactly the one-directional
     coverage gap the "No Shortcuts" rule warns about (caught in PR #258 review).
     """
-    from moneybin.services.account_links_service import AccountLinksService
-
     scenario = Scenario(
         scenario="account-identity-cross-source",
         setup=SetupSpec(persona="family"),
@@ -333,11 +341,13 @@ def test_csv_first_then_ofx_matches_accepts_and_collapses_end_to_end() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         svc = ImportService(db)
-        # 1) CSV twin FIRST via the agent path, NO account_bindings -> mints the
-        #    canonical account. dim is empty, so there is no candidate yet (no
-        #    proposal); the only thing under test here is that its dim row keeps the
-        #    filename institution for the second source to match against.
-        svc.import_file(
+        # 1) CSV twin FIRST, NO account_bindings -> mints the canonical account.
+        #    dim is empty, so its gate carries no candidate and the helper
+        #    answers "new"; the only thing under test here is that its dim row
+        #    keeps the filename institution for the second source to match
+        #    against.
+        import_answering_gate(
+            svc,
             _FIXTURES / "wells_fargo_checking.csv",
             account_name="WF Checking (...1111)",
             confirm=True,
@@ -346,19 +356,19 @@ def test_csv_first_then_ofx_matches_accepts_and_collapses_end_to_end() -> None:
         )
         csv_account_id = _csv_source_native_id(db)
         run_step("transform", scenario.setup, db, env=env)  # dim gets institution+last4
-        # 2) OFX statement second -> the bridge fires a pending institution_last4
-        #    proposal whose candidate is the CSV-minted account.
-        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
-        decision = db.execute(
-            "SELECT decision_id, candidate_account_id FROM app.account_link_decisions "
-            "WHERE status = 'pending' AND match_reason = 'institution_last4'"
-        ).fetchone()
-        assert decision is not None, "matcher produced no institution_last4 proposal"
-        assert decision[1] == csv_account_id, decision
-        # 3) Accept the proposal the way a user reviewing the queue would — this
-        #    re-points the ofx's source_native link onto the csv-minted account.
-        AccountLinksService(db).set(
-            decision[0], target_account_id=csv_account_id, decided_by="user"
+        # 2) OFX statement second -> the bridge fires and the import stops,
+        #    naming the CSV-minted account as its institution_last4 candidate.
+        proposal = _gated_proposal(svc, _FIXTURES / "wf_checking.qfx", refresh=False)
+        assert [c["signal"] for c in proposal["candidates"]] == ["institution_last4"], (
+            "matcher produced no institution_last4 candidate"
+        )
+        assert proposal["candidates"][0]["account_id"] == csv_account_id
+        # 3) Accept it by binding this source key onto the candidate — the ofx's
+        #    source_native link lands on the csv-minted account.
+        svc.import_file(
+            _FIXTURES / "wf_checking.qfx",
+            refresh=False,
+            account_bindings={proposal["source_account_key"]: csv_account_id},
         )
         # 4) Re-materialize -> dedup -> re-materialize: the ofx re-keys onto the csv
         #    account and the twin transactions collapse.
@@ -382,8 +392,8 @@ def test_csv_first_then_ofx_matches_accepts_and_collapses_end_to_end() -> None:
 
 @pytest.mark.scenarios
 @pytest.mark.slow
-def test_reissued_card_queues_reissue_proposal_through_real_import() -> None:
-    """A replacement card reaches the review queue through the real pipeline.
+def test_reissued_card_surfaces_a_reissue_candidate_through_real_import() -> None:
+    """A replacement card is surfaced for review through the real pipeline.
 
     Brandon's bank reissues a card: same institution, new last four. The old
     signals both miss by construction — ``institution_last4`` cannot fire
@@ -400,7 +410,7 @@ def test_reissued_card_queues_reissue_proposal_through_real_import() -> None:
       ``name`` signal stays silent.
 
     Nothing is pre-wired: the ofx account is minted by a real import, and the
-    proposal is whatever ``AccountResolver`` produces when the csv is imported
+    candidate is whatever ``AccountResolver`` produces when the csv is imported
     the way an agent would import it. Asserting the exact singleton list (not
     ``in``) is what makes the isolation real — if either sibling signal also
     fired, this fails.
@@ -412,11 +422,12 @@ def test_reissued_card_queues_reissue_proposal_through_real_import() -> None:
     )
     with scenario_env(scenario) as (db, _tmp, env):
         svc = ImportService(db)
-        svc.import_file(_FIXTURES / "wf_checking.qfx", refresh=False)
+        import_answering_gate(svc, _FIXTURES / "wf_checking.qfx", refresh=False)
         checking_id = _ofx_canonical_id(db, "1111")
         run_step("transform", scenario.setup, db, env=env)
 
-        svc.import_file(
+        proposal = _gated_proposal(
+            svc,
             _FIXTURES / "wells_fargo_checking.csv",
             account_name="Replacement Card (...9876)",
             confirm=True,
@@ -424,21 +435,12 @@ def test_reissued_card_queues_reissue_proposal_through_real_import() -> None:
             refresh=False,
         )
 
-        decisions = db.execute(
-            "SELECT match_reason FROM app.account_link_decisions "
-            "WHERE status = 'pending' AND candidate_account_id = ?",
-            [checking_id],
-        ).fetchall()
-        assert [r[0] for r in decisions] == ["institution_reissue"], decisions
+        assert [c["signal"] for c in proposal["candidates"]] == ["institution_reissue"]
+        assert [c["account_id"] for c in proposal["candidates"]] == [checking_id]
 
         # The whole point: a reissue is a PROPOSAL, never a silent merge. The
-        # replacement keeps its own provisional account until a human accepts.
-        merged = db.execute(
-            "SELECT COUNT(*) FROM app.account_links WHERE ref_kind = 'source_native' "
-            "AND source_type = 'csv' AND account_id = ?",
-            [checking_id],
-        ).fetchone()
-        assert merged is not None and merged[0] == 0, (
+        # import stops with the replacement unbound until someone answers.
+        assert _csv_link_count(db, checking_id) == 0, (
             "a reissue proposal must not auto-merge onto the original card"
         )
 

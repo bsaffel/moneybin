@@ -64,12 +64,21 @@ def find_repo_root() -> Path | None:
     return None
 
 
+def _find_moneybin_repo_ancestor(path: Path) -> Path | None:
+    """Return the nearest MoneyBin checkout containing ``path``."""
+    for candidate in (path, *path.parents):
+        if _is_moneybin_repo(candidate):
+            return candidate
+    return None
+
+
 def get_base_dir() -> Path:
     """Determine the base directory for MoneyBin data and configuration.
 
     Resolution order:
         1. MONEYBIN_HOME env var (explicit override, always wins)
-        2. MONEYBIN_ENVIRONMENT=development: <cwd>/.moneybin
+        2. MONEYBIN_ENVIRONMENT=development: <repo-root>/.moneybin when in a
+           checkout, otherwise <cwd>/.moneybin
         3. Repo checkout detection (.git + pyproject.toml name=moneybin): <cwd>/.moneybin
         4. Default: ~/.moneybin/
 
@@ -84,7 +93,8 @@ def get_base_dir() -> Path:
 
     environment = os.getenv("MONEYBIN_ENVIRONMENT")
     if environment == "development":
-        return (Path.cwd() / ".moneybin").resolve()
+        repo_root = _find_moneybin_repo_ancestor(Path.cwd())
+        return ((repo_root or Path.cwd()) / ".moneybin").resolve()
 
     if _is_moneybin_repo(Path.cwd()):
         return (Path.cwd() / ".moneybin").resolve()
@@ -237,6 +247,7 @@ DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS: float = 10.0
 MIN_CONFIRMATION_TTL_SECONDS: int = 30
 DEFAULT_CONFIRMATION_TTL_SECONDS: int = 300
 MAX_CONFIRMATION_TTL_SECONDS: int = 900
+DEFAULT_ELICITATION_WAIT_SECONDS: float = 120.0
 
 
 class MCPConfig(BaseModel):
@@ -266,6 +277,16 @@ class MCPConfig(BaseModel):
             "list[X] / Sequence[X] / tuple[X, ...]. Exceeding returns a "
             "ResponseEnvelope.error with code='too_many_items'. Parallels max_rows "
             "for read responses. See docs/specs/moneybin-mcp.md §Collection size cap."
+        ),
+    )
+    elicitation_wait_seconds: float = Field(
+        default=DEFAULT_ELICITATION_WAIT_SECONDS,
+        gt=0.0,
+        description=(
+            "How long a destructive-operation confirmation prompt waits for a "
+            "human before degrading to the opaque-token path. Excluded from "
+            "tool_timeout_seconds, which bounds machine work only — no DuckDB "
+            "connection is held across the prompt."
         ),
     )
     confirmation_ttl_seconds: int = Field(

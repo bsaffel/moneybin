@@ -351,6 +351,99 @@ class TestSyncHappyPath:
 
         assert result.processed[0]["sign_override_replayed"] is True
 
+    def test_processed_entry_names_the_account_the_drain_minted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Gating the merge but not the mint makes naming the mint the drain's job.
+
+        A first-contact account is created without a confirm, so the per-file
+        entry is the only place an unattended drain can say what it made. The
+        CLI and MCP tests that reference this key mock ``InboxService.sync``
+        wholesale and fabricate its return value, so ``_sync_one``'s own
+        population logic only ever runs here.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import CreatedAccount, ImportResult
+        from moneybin.services.refresh import RefreshResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **_kwargs: object) -> ImportResult:
+                return ImportResult(
+                    file_path=path,
+                    file_type="ofx",
+                    transactions=3,
+                    accounts_created=(
+                        CreatedAccount(
+                            account_id="acct_new01", display_name="Chase Checking"
+                        ),
+                    ),
+                )
+
+        def fake_refresh(db: object) -> RefreshResult:
+            return RefreshResult(applied=True, duration_seconds=0.01)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "statement.ofx").write_text("OFXHEADER:100")
+
+        result = svc.sync(year_month="2026-05")
+
+        # Projected to plain dicts, not CreatedAccount objects: the entry is
+        # serialized straight into the CLI/MCP envelope.
+        assert result.processed[0]["accounts_created"] == [
+            {"account_id": "acct_new01", "display_name": "Chase Checking"}
+        ]
+
+    def test_processed_entry_omits_accounts_created_when_nothing_was_minted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The common row — a file joining an account already known — keeps its shape.
+
+        The key is conditional, so absence needs proving too: an unconditional
+        ``"accounts_created": []`` would read as "this drain created nothing"
+        rather than "this drain had nothing to say", and would change the shape
+        of every row that has ever drained.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+        from moneybin.services.refresh import RefreshResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **_kwargs: object) -> ImportResult:
+                # Adopted an account that already existed: nothing minted.
+                return ImportResult(file_path=path, file_type="ofx", transactions=3)
+
+        def fake_refresh(db: object) -> RefreshResult:
+            return RefreshResult(applied=True, duration_seconds=0.01)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "statement.ofx").write_text("OFXHEADER:100")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert "accounts_created" not in result.processed[0]
+        # Still a normal processed row, so the absence is not a failed import.
+        assert result.processed[0]["transactions"] == 3
+
     def test_subfolder_passes_account_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -384,6 +477,122 @@ class TestSyncHappyPath:
         svc.sync(year_month="2026-05")
 
         assert captured_kwargs["account_name"] == "chase-checking"
+
+    def test_an_unreadable_subfolder_file_fails_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One unreadable file must not take the rest of the drain with it.
+
+        Deciding whether to forward the folder hint means asking
+        ``honors_account_name``, which routes through ``_detect_file_type`` —
+        and its OFX sniff deliberately re-raises ``PermissionError`` rather than
+        guessing from a suffix it could not verify. Asked *before* the per-file
+        guard, that read error escapes ``_sync_one`` and aborts the whole drain,
+        so a single locked file in one account folder strands every other file
+        behind it. The batch is the thing the inbox exists to drain unattended.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **_kwargs: object) -> ImportResult:
+                return ImportResult(file_path=path, file_type="ofx", transactions=1)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", _fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        sub = svc.inbox_dir / "chase-checking"
+        sub.mkdir()
+        (sub / "a-unreadable.ofx").write_text("OFXHEADER:100")
+        (sub / "b-fine.ofx").write_text("OFXHEADER:100")
+
+        real_detect = mod.honors_account_name
+
+        def _detect(path: Path) -> bool:
+            if path.name == "a-unreadable.ofx":
+                raise PermissionError(13, "Permission denied")
+            return real_detect(path)
+
+        monkeypatch.setattr(mod, "honors_account_name", _detect)
+
+        result = svc.sync(year_month="2026-05")
+
+        assert [f["filename"] for f in result.failed] == [
+            "chase-checking/a-unreadable.ofx"
+        ]
+        assert [p["filename"] for p in result.processed] == [
+            "chase-checking/b-fine.ofx"
+        ]
+
+    @pytest.mark.parametrize("channel_file", ["statement.ofx", "statement.pdf"])
+    def test_subfolder_hint_does_not_fail_a_channel_that_cannot_use_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, channel_file: str
+    ) -> None:
+        """The hint is an inbox convention, not a caller signal, on every channel.
+
+        ``_sync_one`` forwards the ``inbox/<account-slug>/`` folder name as
+        ``account_name`` for whatever it finds there, but ``account_name`` is
+        honored only by tabular — ``_HONORED_ACCOUNT_SIGNALS`` gives ``ofx`` an
+        empty set and ``pdf`` only ``account_id``. So the refusal that exists to
+        stop a caller from *believing they chose* an account fires on a folder
+        name the user never passed as a signal, and the drain files a valid
+        statement under ``failed/``.
+
+        The sidecar makes it worse by recommending exactly this: "move the file
+        into inbox/<account-slug>/ and re-run sync". That recovery has to work.
+
+        Driven against the real refusal rather than a restated copy, so the two
+        cannot drift: the fake importer calls the same function ``import_file``
+        calls, in the same position — right after the file type is known.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import (
+            ImportResult,
+            reject_unhonored_account_signals,
+        )
+
+        class GuardedImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> ImportResult:
+                file_type = "pdf" if path.endswith(".pdf") else "ofx"
+                reject_unhonored_account_signals(
+                    file_type,
+                    account_id=kwargs.get("account_id"),  # type: ignore[arg-type]
+                    account_name=kwargs.get("account_name"),  # type: ignore[arg-type]
+                )
+                return ImportResult(file_path=path, file_type=file_type)
+
+        monkeypatch.setattr(mod, "ImportService", GuardedImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", _fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        sub = svc.inbox_dir / "chase-checking"
+        sub.mkdir()
+        # Per-channel content, because _detect_file_type sniffs magic bytes
+        # before trusting an ambiguous suffix: OFX text in a .pdf would be
+        # routed to the ofx channel and the pdf case would never run.
+        sub.joinpath(channel_file).write_text(
+            "%PDF-1.4\n" if channel_file.endswith(".pdf") else "OFXHEADER:100"
+        )
+
+        result = svc.sync(year_month="2026-05")
+
+        assert result.failed == [], result.failed
+        assert len(result.processed) == 1
 
 
 class TestSyncRefreshOnce:
@@ -551,6 +760,7 @@ class TestSyncFailure:
                         account_proposals=[
                             {
                                 "source_account_key": "unknown",
+                                "proposal_ref": "@0",
                                 "proposed_account_id": None,
                                 "is_new": True,
                                 "adopted_via": None,
@@ -605,6 +815,7 @@ class TestSyncFailure:
 
         proposal: AccountProposalDict = {
             "source_account_key": "unknown",
+            "proposal_ref": "@0",
             "proposed_account_id": "prov123",
             "is_new": True,
             "adopted_via": None,
@@ -1343,6 +1554,7 @@ class TestPendingSidecarAccountHint:
             account_proposals=[
                 {
                     "source_account_key": "statement",
+                    "proposal_ref": "@0",
                     "proposed_account_id": None,
                     "is_new": True,
                     "adopted_via": None,
@@ -1356,7 +1568,7 @@ class TestPendingSidecarAccountHint:
 
         payload = yaml.safe_load(sidecar.read_text())
         actions = payload["actions"]
-        assert any("--account-binding statement=" in a for a in actions), actions
+        assert any("--account-binding @0=" in a for a in actions), actions
         assert any("inbox/<account-slug>" in a for a in actions), actions
         # --accept ratifies the settled mapping and pairs with the binding; no
         # standalone --mapping override for an account_confirmation.
@@ -1364,7 +1576,136 @@ class TestPendingSidecarAccountHint:
         assert all("--accept" in a for a in actions if "--account-binding" in a), (
             actions
         )
-        assert payload["account_proposals"][0]["source_account_key"] == "statement"
+        # Persisted masked, by the same declaration every other surface applies
+        # — the field is ACCOUNT_IDENTIFIER whatever the channel, and this file
+        # outlives the session. The ref above is what makes it answerable.
+        assert payload["account_proposals"][0]["source_account_key"] == "****ment"
+
+    @pytest.mark.parametrize("channel", ["ofx", "pdf"])
+    def test_account_confirmation_sidecar_omits_subfolder_recovery_off_tabular(
+        self, tmp_path: Path, channel: str
+    ) -> None:
+        """Only tabular can be answered by a folder name, so only it is offered one.
+
+        The inbox forwards ``inbox/<account-slug>/`` as ``account_name``, which
+        is tabular-only, so on OFX and PDF ``_sync_one`` drops the hint before
+        importing. Advertising that move as a recovery for an account gate on
+        those channels sends the file back to the identical gate — worse than
+        offering nothing, because it reads as a fix and costs a full drain cycle
+        to disprove.
+
+        The binding recovery, which does work on every channel, stays.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / f"statement.{channel}"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("x\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel=channel,
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            proposed_mapping={},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+            account_proposals=[
+                {
+                    "source_account_key": "000123456789",
+                    "proposal_ref": "@0",
+                    "proposed_account_id": None,
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                }
+            ],
+        )
+
+        import yaml
+
+        payload = yaml.safe_load(sidecar.read_text())
+        actions = payload["actions"]
+        assert all("<account-slug>" not in a for a in actions), actions
+        # Same reason, same table: `account_name` is tabular-only, so neither
+        # the folder move nor the flag that names an account directly can be
+        # offered here. A PDF statement is single-account by construction, so
+        # the `--account-name` suggestion would otherwise fire on essentially
+        # every PDF account gate and fail with IMPORT_ACCOUNT_SIGNAL_UNSUPPORTED
+        # when pasted.
+        assert all("--account-name" not in a for a in actions), actions
+        assert any("--account-binding" in a for a in actions), actions
+
+    def test_account_confirmation_sidecar_never_writes_the_account_number(
+        self, tmp_path: Path
+    ) -> None:
+        """The sidecar outlives the session, so it masks like every other surface.
+
+        ``.claude/rules/security.md`` names two boundaries that matter, and the
+        second is "any artifact that outlives the session" — a ``.pending.yml``
+        on disk is exactly that. Every other surface carrying these proposals
+        masks ``source_account_key`` (the ``<ACCTID>`` on OFX): the terminal via
+        ``_echo_account_proposals``, the CLI/MCP envelopes via
+        ``ImportInboxPendingEntry``. This file was the one that did not, and it
+        is the one that persists.
+
+        The generated ``--account-binding`` hint is the second half: keying it
+        by the raw source key put the same number back through the other door,
+        and every other surface now keys that command by ``proposal_ref``.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "statement.ofx"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("x\n")
+        acctid = "000123456789"
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="ofx",
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            proposed_mapping={},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+            account_proposals=[
+                {
+                    "source_account_key": acctid,
+                    "proposal_ref": "@0",
+                    "proposed_account_id": "prov12345678",
+                    "is_new": True,
+                    "adopted_via": None,
+                    "requires_confirm": True,
+                    "candidates": [],
+                }
+            ],
+        )
+
+        import yaml
+
+        raw = sidecar.read_text()
+        assert acctid not in raw, raw
+        payload = yaml.safe_load(raw)
+        assert payload["account_proposals"][0]["source_account_key"] == "****6789"
+        # The ref stays readable — it is what the printed command binds by, so
+        # masking it would leave the file unanswerable.
+        assert payload["account_proposals"][0]["proposal_ref"] == "@0"
+        assert any("--account-binding @0=" in a for a in payload["actions"]), payload[
+            "actions"
+        ]
 
     def test_account_confirmation_multi_proposal_one_command_all_bindings(
         self, tmp_path: Path
@@ -1398,6 +1739,7 @@ class TestPendingSidecarAccountHint:
             account_proposals=[
                 {
                     "source_account_key": "acct-a",
+                    "proposal_ref": "@0",
                     "proposed_account_id": None,
                     "is_new": True,
                     "adopted_via": None,
@@ -1406,6 +1748,7 @@ class TestPendingSidecarAccountHint:
                 },
                 {
                     "source_account_key": "acct-b",
+                    "proposal_ref": "@1",
                     "proposed_account_id": None,
                     "is_new": True,
                     "adopted_via": None,
@@ -1422,8 +1765,12 @@ class TestPendingSidecarAccountHint:
             a for a in actions if "import confirm" in a and "--account-binding" in a
         ]
         assert len(confirm_cmds) == 1, actions  # exactly one command...
-        assert "--account-binding acct-a=" in confirm_cmds[0]  # ...with both keys
-        assert "--account-binding acct-b=" in confirm_cmds[0]
+        assert "--account-binding @0=" in confirm_cmds[0]  # ...with both refs
+        assert "--account-binding @1=" in confirm_cmds[0]
+        # Keyed by ref, never by the source key: this command is persisted to a
+        # sidecar, and on OFX that key is the institution's account number.
+        assert "acct-a" not in confirm_cmds[0]
+        assert "acct-b" not in confirm_cmds[0]
         assert "--accept" in confirm_cmds[0]
         # No single-account --account-name shortcut when there are >1 accounts.
         assert all("--account-name" not in a for a in actions), actions
@@ -1480,7 +1827,7 @@ class TestPendingSidecarAccountHint:
                         is_new=True,
                         candidates=(),
                         adopted_via=None,
-                    ).to_dict()
+                    ).to_dict(proposal_ref="@0")
                 ],
             )
         )
@@ -1498,13 +1845,21 @@ class TestPendingSidecarAccountHint:
 
         sidecar = moved.with_name(moved.name + ".pending.yml")
         payload = yaml.safe_load(sidecar.read_text())
-        actions = payload["actions"]
-        # The binding command + the persisted proposal use the MOVED-path key —
-        # the original-name key (which `import confirm <moved>` would NOT match)
-        # is gone.
-        assert any(f"--account-binding {moved_key}=" in a for a in actions), actions
-        assert not any(f"--account-binding {orig_key}=" in a for a in actions), actions
-        assert payload["account_proposals"][0]["source_account_key"] == moved_key
+        # Asserted on the service result, not the sidecar: the sidecar now
+        # persists this key masked (it outlives the session), so it can no
+        # longer witness *which* key was stored. The in-process entry still
+        # carries the raw value, which is where the rekey is observable — and
+        # the rekey is what this test is about. The original-name key would not
+        # match a re-import of the moved path.
+        stored = result.pending[0]["account_proposals"]
+        assert isinstance(stored, list)
+        assert stored[0]["source_account_key"] == moved_key
+        assert stored[0]["source_account_key"] != orig_key
+        # The command binds by ref, so a moved path cannot desynchronize it.
+        assert any("--account-binding @0=" in a for a in payload["actions"]), payload[
+            "actions"
+        ]
+        assert orig_key not in yaml.safe_dump(payload)
 
 
 class TestSyncVanishedSource:

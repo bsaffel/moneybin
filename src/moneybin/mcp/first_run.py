@@ -24,7 +24,7 @@ from fastmcp.tools import ToolResult
 from moneybin import error_codes
 from moneybin.config import set_current_profile
 from moneybin.errors import UserError
-from moneybin.mcp.elicitation import supports_elicitation
+from moneybin.mcp.elicitation import elicit_bounded, supports_elicitation
 from moneybin.observability import setup_observability
 from moneybin.protocol.envelope import build_error_envelope
 from moneybin.services.profile_service import ProfileExistsError, ProfileService
@@ -100,7 +100,7 @@ async def _elicit_profile_name(ctx: Context) -> str | None:
     """Elicit a valid profile name, retrying once on an invalid answer.
 
     Returns the raw accepted name (un-normalized) or None if the user
-    declined/cancelled or gave two invalid answers.
+    declined/cancelled, never answered, or gave two invalid answers.
     """
     for attempt in range(2):
         message = (
@@ -111,7 +111,11 @@ async def _elicit_profile_name(ctx: Context) -> str | None:
                 "Please enter a name like 'brandon'."
             )
         )
-        result = await ctx.elicit(message, response_type=str)
+        # None covers both a declined answer and one that never arrived; the
+        # caller returns the setup-required envelope either way.
+        result = await elicit_bounded(
+            ctx.elicit(message, response_type=str), site="first_run_profile"
+        )
         if not isinstance(result, AcceptedElicitation):
             return None
         try:

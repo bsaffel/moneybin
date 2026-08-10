@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.mcp.tools.import_inbox import import_inbox_pending, import_inbox_sync
+from moneybin.privacy.redaction import redact_typed
 from moneybin.services.inbox_service import (
     InboxListResult,
     InboxSyncResult,
@@ -53,7 +55,9 @@ class TestImportInboxSync:
         )
         envelope = import_inbox_sync()
         assert envelope.summary.sensitivity == "low"
-        assert envelope.data.processed[0]["filename"] == "a.csv"
+        # .get, not []: every key on the entry is optional by design — omission
+        # is the row's contract, not an oversight.
+        assert envelope.data.processed[0].get("filename") == "a.csv"
 
     async def test_account_confirmation_pending_includes_binding_hint(
         self, patch_service: MagicMock
@@ -78,6 +82,93 @@ class TestImportInboxSync:
             "--accept" in a and "--account-binding" in a for a in envelope.actions
         )
         assert not any("--mapping" in a for a in envelope.actions)
+
+    async def test_minted_accounts_are_announced_with_their_recoveries(
+        self, patch_service: MagicMock
+    ) -> None:
+        """An account the drain minted must reach the agent, with its correction.
+
+        The drain gates the merge, not the mint, so nothing stopped to ask — the
+        announcement is the whole of "magic stays visible" here. Same helper
+        ``import_files`` uses, so the agent reads one wording for one event.
+        """
+        patch_service.sync.return_value = InboxSyncResult(
+            processed=[
+                {
+                    "filename": "march.ofx",
+                    "transactions": 47,
+                    "accounts_created": [
+                        {"account_id": "9f8e7d6c5b4a", "display_name": "Chase Checking"}
+                    ],
+                }
+            ],
+        )
+        envelope = import_inbox_sync()
+        assert any(
+            "account" in a.lower() and "created" in a.lower() for a in envelope.actions
+        ), envelope.actions
+        created = envelope.data.processed[0].get("accounts_created") or []
+        assert created[0].get("account_id") == "9f8e7d6c5b4a"
+
+    async def test_no_mint_no_account_creation_hint(
+        self, patch_service: MagicMock
+    ) -> None:
+        """The hint is conditional, not constant.
+
+        Re-import adopts every account and is the common case; an action emitted
+        on every drain is one the agent learns to skip on the drain that means it.
+        """
+        patch_service.sync.return_value = InboxSyncResult(
+            processed=[{"filename": "march.ofx", "transactions": 47}],
+        )
+        envelope = import_inbox_sync()
+        assert not any(
+            "account" in a.lower() and "created" in a.lower() for a in envelope.actions
+        ), envelope.actions
+
+    async def test_pending_masks_the_institutions_account_number(
+        self, patch_service: MagicMock
+    ) -> None:
+        """The redaction walk must reach proposals nested inside a pending entry.
+
+        ``pending`` was declared ``list[dict[str, object]]`` — one DESCRIPTION
+        class covering the whole list — so the walk stopped at the entry and
+        never saw that ``account_proposals[].source_account_key`` is
+        ACCOUNT_IDENTIFIER. On the OFX channel that key is the ``<ACCTID>`` the
+        institution issued, and this envelope goes to the model provider.
+        """
+        acctid = "000123456789"
+        patch_service.sync.return_value = InboxSyncResult(
+            pending=[
+                {
+                    "filename": "statement.ofx",
+                    "reason": "account_confirmation",
+                    "account_proposals": [
+                        {
+                            "source_account_key": acctid,
+                            "proposal_ref": "@0",
+                            "proposed_account_id": "prov12345678",
+                            "candidates": [],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        envelope = import_inbox_sync()
+        masked = redact_typed(envelope.data, consent=None)
+
+        blob = json.dumps(masked, default=str)
+        assert acctid not in blob, blob
+        proposal = masked.pending[0]["account_proposals"][0]
+        assert proposal["source_account_key"] == "****6789"
+        # Ours, not the institution's — RECORD_ID, and the only half an agent
+        # can act on once the institution's key is masked.
+        assert proposal["proposal_ref"] == "@0"
+        assert proposal["proposed_account_id"] == "prov12345678"
+        # Keys absent from the entry stay absent: the omission is the contract,
+        # and a dataclass here would start emitting `moved_to: null` on every row.
+        assert "moved_to" not in masked.pending[0]
 
     async def test_no_failure_no_resolution_hint(
         self, patch_service: MagicMock

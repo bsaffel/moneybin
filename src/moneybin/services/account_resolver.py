@@ -167,6 +167,7 @@ class AccountResolver:
             self._write_native_mapping(
                 src, account_id=src.explicit_account_id, decided_by="user"
             )
+            self._teach_unpinned_key(src, account_id=src.explicit_account_id)
             self._write_strong_ref(
                 src, account_id=src.explicit_account_id, decided_by="user"
             )
@@ -346,6 +347,21 @@ class AccountResolver:
             is_new=True,
             candidates=candidates,
             adopted_via=None,
+            # Asking for a fallback pick-list IS the caller declaring this source
+            # carried no identity signal. Carry that through: on a first import
+            # the pick-list comes back empty, and without this the proposal would
+            # be indistinguishable from a confident mint and pass unasked.
+            #
+            # Deliberately the caller's `fallback`, NOT the widened
+            # `fallback or src.last_four is None` used for the search above. The
+            # two answer different questions: the search widens because a null
+            # last_four cannot support a strong match, while this field says
+            # whether the source named an account at all. Widening it here would
+            # make `requires_confirm` true for every named account that has no
+            # last_four and matches nothing — a first-contact "Checking" column
+            # would start gating instead of minting, which is the behavior
+            # `test_a_named_first_contact_mint_loads_without_asking` pins.
+            identity_unknown=fallback,
         )
 
     def propose_existing(self, account_id: str) -> AccountProposal | None:
@@ -406,6 +422,77 @@ class AccountResolver:
         """Return display_name from core.dim_accounts for a candidate account_id."""
         return fetch_display_name(self._db, account_id)
 
+    def accepted_native_account_id(self, src: SourceAccount) -> str | None:
+        """The canonical account this source's native key is already accepted onto.
+
+        Read-only, and shared with the import gate so both layers ask the same
+        question of the same row: the gate refuses a contradicting binding
+        before anything loads, and ``_write_native_mapping`` below stays the
+        backstop for every path that does not run the gate.
+        """
+        row = self._db.execute(
+            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+            "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
+            [src.source_type, src.source_origin, src.source_account_key],
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    def knows_account_id(self, account_id: str) -> bool:
+        """Whether this database already has an account under this canonical id.
+
+        Two sources, because neither alone is complete. ``core.dim_accounts``
+        is SQLMesh-materialized, so an account minted by an earlier import is
+        absent from it until a refresh runs — and imports default to not
+        refreshing. ``app.account_links`` carries every id the resolver has
+        bound from the instant it mints one, but only those: an account that
+        predates the links table, or that arrives by another path, is in
+        dim_accounts alone. Reading both is what lets a caller answer "new" for
+        one file and bind its sibling to the id that answer just produced.
+
+        The catalog guard mirrors :func:`fetch_display_name` — ``core`` does
+        not exist before its first materialization, and its absence means no
+        account is known *there*, not that the question cannot be answered.
+
+        Only ``accepted`` links count, matching
+        :meth:`accepted_native_account_id`. ``AccountLinksRepo.repoint`` — the
+        merge primitive — reverses the old row *in place*, leaving its
+        ``account_id`` intact, so an unpredicated match would keep answering
+        "yes" for an account the user already merged away. The caller
+        (``_refuse_unknown_binding_targets``) would then let that stale id
+        through as a binding target and step 0 would write a fresh accepted
+        link onto it, resurrecting the merged-away account as a second,
+        disconnected transaction stream.
+
+        **Links outrank the dim for any id they know.** Filtering the links arm
+        alone left the same resurrection open through the other one: the merge
+        path (``AccountLinksService.set``) repoints and refreshes nothing but a
+        metrics gauge, so ``dim_accounts`` still carries the merged-away row
+        until the next transform — and a "yes" from that stale materialization
+        is exactly the answer the filter was added to prevent. Rows present but
+        none accepted therefore means *merged away*, full stop; the dim does not
+        get to overrule it. The dim arm still answers for an id links have never
+        seen, which is the case it exists for — an account created by sync or
+        backfill rather than by an import.
+        """
+        row = self._db.execute(
+            f"SELECT COUNT(*) AS total, "  # noqa: S608  # TableRef + parameterized value
+            "COUNT(*) FILTER (WHERE status = 'accepted') AS accepted "
+            f"FROM {ACCOUNT_LINKS.full_name} WHERE account_id = ?",
+            [account_id],
+        ).fetchone()
+        if row is not None and row[0]:
+            return bool(row[1])
+        try:
+            row = self._db.execute(
+                f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                "WHERE account_id = ? LIMIT 1",
+                [account_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return False
+        return row is not None
+
     def _write_native_mapping(
         self, src: SourceAccount, *, account_id: str, decided_by: str
     ) -> None:
@@ -417,17 +504,12 @@ class AccountResolver:
         explicit, surfaced operation (M1S.5), never an implicit import-time side
         effect (spec "Magic stays visible").
         """
-        existing = self._db.execute(
-            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
-            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
-            "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
-            [src.source_type, src.source_origin, src.source_account_key],
-        ).fetchone()
+        existing = self.accepted_native_account_id(src)
         if existing is not None:
-            if existing[0] != account_id:
+            if existing != account_id:
                 raise ValueError(
                     "account_links: source_native already accepted for a different "
-                    f"account_id; existing={existing[0]!r}, requested={account_id!r}"
+                    f"account_id; existing={existing!r}, requested={account_id!r}"
                 )
             return
         self._links.insert(
@@ -442,22 +524,50 @@ class AccountResolver:
             in_outer_txn=True,  # joins resolve()'s per-account transaction
         )
 
-    def source_native_exists(
-        self, source_type: str, source_origin: str, source_account_key: str
-    ) -> bool:
-        """True if an accepted ``source_native`` link already maps this exact key.
+    def _teach_unpinned_key(self, src: SourceAccount, *, account_id: str) -> None:
+        """Also link the key this source derives without the pin, if it has one.
 
-        Used by the bare-file import path to detect an exact-same-file re-import
-        (content-derived key already seen) and adopt via the Step-1 ladder
-        without re-prompting. Read-only.
+        A pin replaces ``source_account_key`` with the canonical id, so Step 0's
+        mapping is a self-map (``<id> -> <id>``) that the staging JOIN needs but
+        that teaches the resolver nothing about the document. Without this, the
+        next import of the same source WITHOUT the pin derives its own key, finds
+        no link, and mints a second account for the same thing.
+
+        Skips — never raises, never re-points — when the derived key is already
+        accepted onto a different account. Re-pointing is an explicit, surfaced
+        operation (M1S.5); doing it as a side effect of an unrelated pin is
+        exactly the invisible action "magic stays visible" forbids. The pin the
+        caller asked for still applies; only the extra teaching link is dropped.
         """
-        row = self._db.execute(
-            f"SELECT 1 FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+        key = src.unpinned_account_key
+        if not key or key == src.source_account_key:
+            return
+        existing = self._db.execute(
+            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
             "WHERE status = 'accepted' AND ref_kind = 'source_native' "
             "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
-            [source_type, source_origin, source_account_key],
+            [src.source_type, src.source_origin, key],
         ).fetchone()
-        return row is not None
+        if existing is not None:
+            if existing[0] != account_id:
+                logger.warning(
+                    f"account_links: not teaching source_native key for "
+                    f"{src.source_type}/{src.source_origin} — already accepted "
+                    f"onto account {existing[0]}, pin targeted {account_id}. "
+                    "Re-point explicitly if that is intended."
+                )
+            return
+        self._links.insert(
+            link_id=uuid.uuid4().hex[:12],
+            account_id=account_id,
+            ref_kind="source_native",
+            ref_value=key,
+            source_type=src.source_type,
+            source_origin=src.source_origin,
+            decided_by="user",
+            actor=self._actor,
+            in_outer_txn=True,  # joins resolve()'s per-account transaction
+        )
 
     def _lookup_strong_ref(self, src: SourceAccount) -> tuple[str, str] | None:
         """Return (account_id, ref_kind) if any accepted strong ref matches, else None.

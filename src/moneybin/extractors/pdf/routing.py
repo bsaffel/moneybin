@@ -19,6 +19,11 @@ State machine:
                  fail (matched recipe): RouteDecision(seed, reason="replay_reconciliation_failed",
                                                       replay_guard_failed=True)
                  fail (auto-derived):   RouteDecision(seed, reason="reconciliation_failed")
+    → self-heal (saved recipes only, see _self_heal_trigger):
+        reconciliation failed, or the replay reconciled but read an account
+        id carrying no digits → re-derive from the document and accept the
+        fresh recipe only if it clears the same gate; else keep the replayed
+        decision.
 
 Confidence model is intentionally permissive in Phase 2a — reconciliation is
 the primary gate.  Phase 2b will introduce per-row partial-fill signals when

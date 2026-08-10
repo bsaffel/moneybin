@@ -442,6 +442,108 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **`moneybin accounts links set --into` now shows what the merge moves and asks
+  before committing.** Accepting a link folds one account's whole history into
+  another, and no command splits it back apart — but this was the last accept
+  path that ran on a single unprompted invocation, while the same decision driven
+  through `identity_links_decide` had prompted since M1. The command now prints
+  the same sentence the MCP prompt shows, counting the accounts, transactions,
+  tax lots, and hand-set price marks that move, and waits for an answer. Pass
+  `--yes` to answer in advance. `--standalone` is unchanged and never asks:
+  keeping an account separate destroys nothing. Answering the prompt binds the
+  merge to what you read: inside the write transaction the command re-derives
+  both the counts it printed and the exact link and decision rows the write
+  will repoint and settle, and refuses rather than committing a merge that
+  changed while the question was on screen. That covers changes the printed
+  sentence has no words for — a sibling proposal a concurrent
+  `accounts links run` added — and changes no count can express, such as one
+  pending sibling being resolved elsewhere while another arrives. Declining
+  prints `Cancelled — nothing was merged.` and exits 0, matching every other
+  confirm in the CLI (#385).
+- **`identity_links_decide`'s merge confirmation now binds to the same exact
+  rows.** The approval token digested the two account ids and a set of counts,
+  so a same-count change between the prompt and the commit verified cleanly.
+  It now carries the link and decision ids as well, through the `resolved_ids`
+  field the grant already covers. Tokens issued before this change no longer
+  verify — re-run the decision to get a current one (#385).
+- **A confirmation prompt no longer expires against the tool's timeout.** That
+  cap exists to release a wedged database connection, and charging a person's
+  reading time to it produced a dead end rather than a safeguard: at 30 seconds —
+  the default for 10 of the 16 operations that ask — the prompt was cancelled and
+  the answer came back `timed_out` with no token to retry with, so there was no
+  way to finish the operation at all. The cap now pauses while a prompt is on
+  screen and resumes with its remaining budget. Prompts get their own 120-second
+  window (`MONEYBIN_MCP__ELICITATION_WAIT_SECONDS`), after which the operation
+  degrades to the token path it already had for clients that cannot prompt —
+  still gated, still finishable. An unanswered export-redaction prompt refuses
+  instead, rather than falling back to a policy nobody chose.
+- **Breaking:** **Every import now stops before it merges a file into an
+  account you already have (#378).** Previously only CSV/Excel stopped to ask;
+  OFX and PDF resolved and bound the account on their own, so the one moment
+  MoneyBin could be wrong about *whose* transactions these are went by unseen.
+  All three channels now stop when a file could plausibly be an existing
+  account — showing which ones — and load nothing until you answer. Answer
+  with `--account-binding REF=ACCOUNT_ID` (or `=new` to keep it separate) on
+  `moneybin import files`, or the `account_bindings` parameter on the
+  `import_files` and `import_confirm` tools. Pinning up front with
+  `--account-id` / `--account-name` still skips the question entirely, and a
+  statement for an account you have already confirmed is still silent — you
+  answer once per account, not once per file.
+
+  **A file that matches nothing is not a question, so it is not asked.** Its
+  account is created and named back to you instead: `👀 Created account:
+  sample_bank CHECKING (e3a84714695d)`, with the rename and merge commands on
+  the next line. The same pair of fields arrives as `accounts_created` on
+  `--output json`, on the `import_files` per-file rows, and on
+  `import_confirm`. Asking here charged one confirmation per file on a first
+  import, each with exactly one answer available. The exception is a file that
+  states no account at all — a bare Date/Description/Amount CSV, or a PDF
+  statement with no readable account number. There the only name available is
+  the filename, and MoneyBin asks rather than guessing.
+
+  Each account the gate shows is labeled `@0`, `@1`, … for the file in front
+  of you, and that label is what `REF` takes — the account's own key works
+  too. The labels are why an assistant can answer this at all: the key is an
+  account identifier, so it reaches an assistant masked as `****1234`, and a
+  question you can only answer by typing something you cannot read is not a
+  question. The labels number the file's accounts, so `@0` means the same
+  account whether you answer the first time or the fourth. They are not names
+  to keep: they mean nothing on the next import.
+
+  Two behavior changes fall out of this. **An agent no longer gets a
+  different answer than you do:** it used to be allowed past this question,
+  quietly creating a provisional account and filing a suggestion for you to
+  review later, which put MoneyBin's weakest guess into effect on the surface
+  where nobody is watching. It now stops exactly where you would.
+  **Imports no longer add to the account-review queue** — the suggestions
+  arrive while you are importing instead of accumulating for later. That
+  queue still exists and is still filled by account sync.
+
+  *Upgrading:* nothing to migrate, and no re-import is needed. Scripted
+  imports of OFX or PDF files that resemble an account you already have will
+  now stop and ask; add `--account-binding` (or an `--account-id` pin) to
+  those calls. A known account, and a genuinely new one, keep importing
+  unattended. `--account-binding` answers one file, so `moneybin import files`
+  refuses it alongside several paths rather than dropping it: run those calls
+  one file at a time. It also cannot contradict an `--account-id` pin on the
+  same account — send whichever one you mean.
+- **Breaking:** **An account you named on a file type that cannot use it is now
+  an error instead of silence (#378).** `--account-name` and `--account-meta`
+  reached only spreadsheet imports, and `--account-id` only spreadsheets and
+  PDFs; passing one with any other file type was accepted and discarded, so the
+  import bound whatever it worked out for itself while you believed you had
+  chosen. Each of those combinations now refuses before anything loads and
+  points at `--account-binding`, which every file type honors. The MCP tools
+  refuse the same combinations, from the same table. (Error code
+  `import_pdf_account_signal_unsupported` is replaced by
+  `import_account_signal_unsupported`, since the refusal is no longer PDF-only.)
+- **`moneybin import confirm` takes `--institution` (#378).** An OFX whose
+  issuer is underivable from `<FI><ORG>`, the FID lookup, and the filename
+  fails before the account question is ever reached, so the only way to reach
+  that question is `moneybin import files <file> --institution <name>`. The
+  recovery command printed there dropped the override, so pasting it hit the
+  institution error again. It now carries it, and `import confirm` accepts it.
+  Refused alongside `--bridge-response`, which has no institution to apply.
 - **Cross-source duplicates now auto-merge on description agreement rather than
   on the calendar date, and the candidate window widens from 3 days to 5
   (#377).** Previously any pair landing on the same day merged silently no
@@ -631,6 +733,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   will see `import_confirm` move band.
 
 ### Fixed
+- **Undoing a decision puts it back in the review queue, and the queue count now
+  says so.** `system audit undo` restores a link decision to pending, but the
+  counter that reports how many decisions await review was refreshed only by the
+  accept and reject paths — so a reversed accept left the queue re-filled and the
+  count reading zero. The count is the prompt to go look at the queue, so
+  under-reporting it is the one direction nothing else signals.
 - **A saved PDF recipe that misreads a masked account number now repairs
   itself (#380).** Recipes saved before the anchor fix in #371 read
   `Account Number: XXXX XXXX XXXX 1234` as the bare mask, producing an account

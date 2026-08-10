@@ -66,6 +66,14 @@ class MerchantLinkDecisionsRepo(BaseRepo):
     table_ref: ClassVar[TableRef] = MERCHANT_LINK_DECISIONS
     pk_columns: ClassVar[tuple[str, ...]] = ("decision_id",)
 
+    def refresh_pending_gauge(self) -> None:
+        """Re-read the merchant-link queue depth after an undo restored rows to it."""
+        from moneybin.services.merchant_resolver import (  # noqa: PLC0415 — repo→service import must stay lazy
+            refresh_merchant_link_pending_gauge,
+        )
+
+        refresh_merchant_link_pending_gauge(self._db)
+
     def _fetch_row(self, decision_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
             MERCHANT_LINK_DECISIONS,

@@ -18,9 +18,7 @@ from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.mcp.tools import reviews as reviews_module
 from moneybin.mcp.tools.reviews import (
-    IDENTITY_BLAST_RADIUS_LABELS,
     _identity_binding,  # pyright: ignore[reportPrivateUsage]
-    _identity_confirm_message,  # pyright: ignore[reportPrivateUsage]  # prompt under test
     identity_links_decide_coarse,
     register_review_coarse_reads,
     register_review_coarse_writes,
@@ -53,9 +51,9 @@ from moneybin.services.auto_rule_service import (
     AutoRuleService,
 )
 from moneybin.services.categorization import CategorizationService
+from moneybin.services.identity_confirmation import IDENTITY_BLAST_RADIUS_CATEGORIES
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.review_decisions_service import (
-    IDENTITY_BLAST_RADIUS_CATEGORIES,
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
     ReviewDecisionsService,
@@ -2529,59 +2527,3 @@ def test_an_identity_merge_still_claims_the_rows_it_re_points() -> None:
     (item,) = plan.items
     assert item.affected_ids["transactions"] == ("txn-radius-merge",)
     assert item.affected_ids["lots"] == ("lot-radius-merge",)
-
-
-def test_every_blast_radius_category_has_a_prompt_label() -> None:
-    """Set equality, because a missing label is silent in the direction that matters.
-
-    ``_identity_confirm_message`` reports only the categories it can name. A
-    category added to ``IDENTITY_BLAST_RADIUS_CATEGORIES`` without a label here
-    would be counted in the digest the approval binds to and then omitted from
-    the sentence the human reads — which is the same failure as counting five
-    categories while moving six, one layer further out.
-    """
-    assert set(IDENTITY_BLAST_RADIUS_LABELS) == set(IDENTITY_BLAST_RADIUS_CATEGORIES)
-
-
-def test_the_identity_prompt_counts_every_category_it_moves() -> None:
-    """The registered description promises the prompt counts what it moves.
-
-    Until now it did not: the counts lived only in the confirmation digest, which
-    the human never sees, while the elicited text was fixed prose naming
-    "security lots" and nothing else. A merge could move a user's hand-set
-    valuations onto another instrument with no sentence anywhere saying so.
-    """
-    message = _identity_confirm_message({
-        "accounts": 0,
-        "merchants": 0,
-        "securities": 2,
-        "transactions": 7,
-        "lots": 3,
-        "price_marks": 4,
-    })
-
-    assert "4 price marks you set by hand" in message
-    assert "7 transactions" in message
-    assert "3 tax lots" in message
-    assert "2 securities" in message
-
-
-def test_the_identity_prompt_omits_categories_it_does_not_touch() -> None:
-    """A radius padded with zeros reads as a bigger blast than it is.
-
-    Paired with the test above: listing every category unconditionally satisfies
-    that one, and would tell a user binding a price feed that the batch touches
-    accounts and merchants it never opens.
-    """
-    message = _identity_confirm_message({
-        "accounts": 0,
-        "merchants": 0,
-        "securities": 1,
-        "transactions": 0,
-        "lots": 0,
-        "price_marks": 0,
-    })
-
-    assert "1 security" in message
-    assert "account" not in message.split("This batch touches:")[-1]
-    assert "tax lot" not in message.split("This batch touches:")[-1]

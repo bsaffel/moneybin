@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -124,6 +125,38 @@ async def test_setup_envelope_on_decline() -> None:
     ctx = _fake_ctx(
         supports_elicit=True,
         elicit_result=DeclinedElicitation(),
+    )
+
+    with patch("moneybin.mcp.first_run._bootstrap_profile") as boot:
+        result = await mw.on_call_tool(_fake_mw_context(ctx), call_next)
+
+    boot.assert_not_called()
+    call_next.assert_not_called()
+    assert isinstance(result, ToolResult)
+    assert result.structured_content is not None
+    assert (
+        result.structured_content["error"]["code"] == error_codes.INFRA_SETUP_REQUIRED
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_envelope_when_nobody_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unanswered setup prompt returns the envelope instead of hanging."""
+    mw = FirstRunSetupMiddleware()
+    call_next = AsyncMock()
+
+    async def answers_too_late(
+        *_args: object, **_kwargs: object
+    ) -> AcceptedElicitation[str]:
+        await asyncio.sleep(1.0)
+        return AcceptedElicitation(data="brandon")
+
+    ctx = _fake_ctx(supports_elicit=True)
+    ctx.elicit = AsyncMock(side_effect=answers_too_late)
+    monkeypatch.setattr(
+        "moneybin.mcp.elicitation.elicitation_wait_seconds", lambda: 0.05
     )
 
     with patch("moneybin.mcp.first_run._bootstrap_profile") as boot:

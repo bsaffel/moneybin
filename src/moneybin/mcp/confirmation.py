@@ -22,7 +22,7 @@ from moneybin.config import (
     get_settings,
 )
 from moneybin.errors import UserError
-from moneybin.mcp.elicitation import supports_elicitation
+from moneybin.mcp.elicitation import elicit_bounded, supports_elicitation
 
 if TYPE_CHECKING:
     from fastmcp.server.context import Context
@@ -230,17 +230,23 @@ async def grant_confirmation_or_raise(
     ctx = _active_context()
     if ctx is not None and supports_elicitation(ctx):
         expected_digest = _binding_digest(binding)
-        result = await ctx.elicit(
-            message,
-            response_type=bool,
-            response_title="Confirm high-impact operation",
-            response_description=(
-                "Select true only after reviewing the exact operation."
+        result = await elicit_bounded(
+            ctx.elicit(
+                message,
+                response_type=bool,
+                response_title="Confirm high-impact operation",
+                response_description=(
+                    "Select true only after reviewing the exact operation."
+                ),
             ),
+            site="confirmation_grant",
         )
-        if isinstance(result, AcceptedElicitation) and result.data is True:
-            return ConfirmationGrant(expected_digest)
-        raise _confirmation_declined()
+        # result is None only when nobody answered in time; fall through to the
+        # opaque-token path so the caller keeps a way to finish, not a dead end.
+        if result is not None:
+            if isinstance(result, AcceptedElicitation) and result.data is True:
+                return ConfirmationGrant(expected_digest)
+            raise _confirmation_declined()
 
     token = broker.issue(binding, now=_utcnow())
     raise _confirmation_required(

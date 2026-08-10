@@ -1,5 +1,5 @@
 {
-  "sha256": "97f252972058d08f8270bba331e82121142b237c2d484e17b0e9b512f2a156f3",
+  "sha256": "f505db92350083427cbfd9fc49d39964df995853668d992bb51b5192646a95f9",
   "tool_count": 49,
   "tools": [
     {
@@ -1469,7 +1469,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically consume an unchanged preview and import its file, eliciting human approval before any sign inversion. When the file's accounts are unresolved it imports nothing and returns account proposals whose source_account_key is masked; bind a single account with account_name, or several with moneybin import confirm <file> --account-binding.",
+        "description": "Atomically consume an unchanged preview and import its file, eliciting human approval before any sign inversion. When the file's accounts are unresolved it imports nothing and returns account proposals whose source_account_key is masked; bind a single account with account_name, or any number with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account). account_metadata takes the same refs to name an account it mints.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1569,12 +1569,12 @@
         },
         "name": "import_confirm"
       },
-      "description_bytes": 344,
+      "description_bytes": 488,
       "input_schema_bytes": 788,
       "name": "import_confirm",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 1326
+      "total_bytes": 1472
     },
     {
       "annotation_bytes": 91,
@@ -1585,10 +1585,24 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Import one or more files.",
+        "description": "Import one or more files. When a file's account identity is unresolved it imports nothing and returns account proposals whose source_account_key is masked; answer with account_bindings={ref: account_id or \"new\"}, where ref is a proposal's proposal_ref (@0 is the file's first source account).",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "account_bindings": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "force": {
               "default": false,
               "type": "boolean"
@@ -1616,12 +1630,12 @@
         },
         "name": "import_files"
       },
-      "description_bytes": 25,
-      "input_schema_bytes": 220,
+      "description_bytes": 292,
+      "input_schema_bytes": 341,
       "name": "import_files",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 437
+      "total_bytes": 827
     },
     {
       "annotation_bytes": 91,
@@ -5013,5 +5027,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 54615
+  "total_bytes": 55151
 }

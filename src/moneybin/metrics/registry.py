@@ -169,6 +169,20 @@ TABULAR_SIGN_GATE_TOTAL = Counter(
     ["outcome"],  # values: "proposed", "confirmed", "overridden"
 )
 
+# ── MCP elicitation ──────────────────────────────────────────────────────────
+
+# Every confirm prompt gives the human a bounded window and degrades when it
+# closes unanswered — to an opaque token, a structured refusal, or a setup
+# envelope depending on the site. Both outcomes are counted because a timeout
+# count alone has no denominator: one miss means something different against
+# three prompts than against three thousand, and the configured window is a
+# guess until that ratio is observable.
+MCP_ELICITATIONS_TOTAL = Counter(
+    "moneybin_mcp_elicitations_total",
+    "Bounded MCP elicitation waits by call site and outcome.",
+    ("site", "outcome"),  # outcome: "answered" | "timeout"
+)
+
 # ── Smart import confirmation ────────────────────────────────────────────────
 
 IMPORT_CONFIRMATIONS_TOTAL = Counter(

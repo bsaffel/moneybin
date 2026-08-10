@@ -29,7 +29,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
-from moneybin.services.import_service import ImportService
+from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+from moneybin.services.import_service import ImportResult, ImportService
 from moneybin.services.transform_service import TransformService
 from moneybin.tables import FCT_SECURITY_PRICES
 
@@ -54,6 +55,35 @@ def _build_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Database:
     settings.database.path = db_path
     monkeypatch.setattr("moneybin.database.get_settings", lambda: settings)
     return db
+
+
+def _import_as_distinct_accounts(
+    db: Database, path: Path, *, refresh: bool
+) -> ImportResult:
+    """Import ``path``, declaring its accounts separate from the first file's.
+
+    ``multi_account_sample.ofx`` carries account names close enough to
+    ``sample_minimal.ofx``'s that the resolver proposes a name-signal merge, so
+    the import stops for confirmation. They are genuinely different accounts,
+    and these scenarios are about transform freshness rather than identity — so
+    the answer is stated here explicitly. ``tests/import_helpers.py`` is
+    deliberately not used: it re-raises on a proposal carrying merge candidates,
+    precisely so a helper never picks a side in an identity question.
+
+    Single-file ``import_file`` because the batch entry point takes no bindings
+    — answering is per file by design.
+    """
+    svc = ImportService(db)
+    try:
+        return svc.import_file(path, refresh=refresh)
+    except ImportConfirmationRequiredError as exc:
+        return svc.import_file(
+            path,
+            refresh=refresh,
+            account_bindings={
+                p["source_account_key"]: "new" for p in exc.outcome.account_proposals
+            },
+        )
 
 
 @pytest.mark.integration
@@ -87,9 +117,9 @@ def test_restating_one_model_does_not_report_the_warehouse_fresh(
     )
 
     # Land new raw rows and deliberately skip the refresh.
-    landed = ImportService(db).import_files([second], refresh=False)
-    assert landed.imported_count == 1
-    assert landed.transforms_applied is False
+    landed = _import_as_distinct_accounts(db, second, refresh=False)
+    assert landed.transactions > 0
+    assert landed.core_tables_rebuilt is False
     assert TransformService(db).freshness().pending is True, (
         "sanity check failed: newly landed raw rows must read as pending"
     )
@@ -139,8 +169,8 @@ def test_a_full_refresh_after_the_first_build_clears_pending(
         "baseline is wrong: the warehouse should be fresh right after a refresh"
     )
 
-    again = ImportService(db).import_files([second], refresh=True)
-    assert again.transforms_applied is True
+    again = _import_as_distinct_accounts(db, second, refresh=True)
+    assert again.core_tables_rebuilt is True
     assert TransformService(db).freshness().pending is False, (
         "fail-closed: a completed refresh left `pending` true, so no user or "
         "agent action can ever clear the flag"
