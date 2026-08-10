@@ -361,7 +361,7 @@ The `sql_query` MCP tool accepts arbitrary read-only SQL, so its output columns 
 `src/moneybin/privacy/sql_lineage.py` implements the resolution pipeline:
 
 1. **Parse** — `parse_cached(sql)` normalizes whitespace and parses the query under the DuckDB dialect via sqlglot. The LRU-cached parsed expression is reused for repeated identical queries.
-2. **Schema snapshot** — `get_current_schema_snapshot(db)` queries `information_schema.columns` for all `core.*` and `app.*` columns and wraps them in a sqlglot `MappingSchema`. The snapshot is cached keyed on `MAX(version)` from `app.schema_migrations` — it rebuilds only after a migration.
+2. **Schema snapshot** — `get_current_schema_snapshot(db)` queries `duckdb_columns()` for every column in the five schemas `sql_query` admits — `core`, `app`, `reports`, `raw`, `prep` — and wraps them in a sqlglot `MappingSchema`. The list must stay identical to `_ALLOWED_QUERY_SCHEMAS`: a schema admitted at the gate but missing here resolves no columns and floors at `AGGREGATE` (LOW, passthrough) instead of failing closed. The snapshot is cached keyed on both `MAX(version)` from `app.schema_migrations` and the ordered column list, so it also rebuilds when a `raw.gsheet_<alias>` or `raw.pdf_<alias>` view is minted at connect time — those bump no migration version.
 3. **Star expansion and qualification** — `expand_star(tree, snapshot)` calls sqlglot's `qualify()` optimizer to resolve `SELECT *` / `t.*` into explicit column lists and annotate every `Column` node with its source table and schema.
 4. **Output-class resolution** — `resolve_output_classes(tree, snapshot)` iterates the `SELECT` projection and maps each output column to a `DataClass`:
 
@@ -422,13 +422,13 @@ Because both functions share the same `_TRANSFORMS` table, a change to how CRITI
 - There is **no consent gate** on `sql_query`. The consent enforcement gate is deferred project-wide. When the gate un-defers, `sql_query` will inherit it automatically because it routes column → class → `_TRANSFORMS`, the same path the typed surface uses.
 - There are **no degraded/refusal responses**. Those were explicitly dropped from the PR 4 scope.
 
-Coverage boundary: lineage resolution covers columns from `core.*` and `app.*` schemas (the classified schemas per `CLASSIFICATION`). Queries that read only from `raw.*` or `prep.*` are not lineage-classified — those columns are absent from the snapshot — so the conservative fallback applies. If the unresolved input columns also fall outside `core.*`/`app.*`, the fallback is `AGGREGATE` (LOW), not a masking error.
+Coverage boundary: lineage resolution covers all five schemas `sql_query` admits. `core.*` and `app.*` resolve through `CLASSIFICATION`, `reports.*` through each report's declared `@report` map, and `raw.*`/`prep.*` through `INTERNAL_CRITICAL` over a `FLOORED` fallback (M2O.2) — the schema snapshot reads the same five, because a schema admitted at the gate but missing from the snapshot resolves no columns and floors at `AGGREGATE` (LOW, passthrough) rather than failing closed. A query reading no classified table at all — a projection over a `VALUES` list — still falls back to `AGGREGATE`.
 
 ### `reports.*` classification via the report framework
 
 `reports.*` views were previously out of scope here — neither registered in `CLASSIFICATION` nor reachable through `sql_query`. The report auto-generation framework now classifies the **report surface** without changing either: `src/moneybin/reports/_framework/classify.py` derives each view's `{column: DataClass}` map by running the *same* `resolve_output_classes` lineage on the view's defining SQL body (which reads `core.*`/`app.*`), caches it per `(view, schema version)`, then masks via the shared `redact_records` path. This is the "Option C" design — classify at the report-framework boundary by derivation, not by registering `reports.*` columns into `CLASSIFICATION`.
 
-Two boundaries hold unchanged: the hand-authored `CLASSIFICATION` registry, the schema snapshot, and `sql_query`'s allowed schemas are untouched — `sql_query` still resolves only `core.*`/`app.*` and **cannot** query `reports.*`. The report framework is the only consumer of `reports.*` view classification.
+One boundary holds unchanged: the hand-authored `CLASSIFICATION` registry still declares `core.*`/`app.*` base truth and gains no `reports.*` rows. `sql_query`'s allowed schemas have since moved twice — PR #330 admitted `reports.*`, and M2O.2 admitted `raw.*`/`prep.*` — and `_class_of_key` reads the declared `@report` map for `reports.*` columns when it does.
 
 ### `sql_query` per-call classification mode
 

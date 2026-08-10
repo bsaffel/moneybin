@@ -11,6 +11,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Read the ingestion pipeline through `sql_query` (M2O.2).** `sql_query` and
+  `moneybin sql query` reach `raw` and `prep` alongside `core`, `app`, and
+  `reports` — five schemas, up from three. The seed sheets the gsheet and PDF
+  importers were built to expose (`raw.gsheet_<alias>`, `raw.pdf_<alias>`) are
+  readable from the agent surface for the first time, and an import is
+  debuggable without dropping to the unmasked operator CLI. `meta` and `seeds`
+  stay refused, by `DESCRIBE` just as by `SELECT`.
+
+  Masking holds. 34 `raw`/`prep` columns are declared CRITICAL and masked by
+  class: every institution account number, routing number, and account label
+  derived from one; the account-prefixed `match_group_id` composite; plus two
+  opaque loader payloads (`import_log.account_names` and
+  `import_preview_snapshots.source_bytes`) that are masked whole because their
+  contents cannot be enumerated. Every other value there is scanned per run
+  and masked when it is shaped like an SSN (`***-**-****`) or holds an unbroken
+  run of eight or more digits (`****...<last four>`). The scan reads text and
+  integers only, so three shapes pass through: an account number of four to
+  seven digits, one written with separators such as `1234-5678`, and any value
+  the column types `DECIMAL` or `FLOAT`. Declare such a column in
+  `INTERNAL_CRITICAL` to mask it by class instead.
+
+  `SHOW ALL TABLES` is the discovery statement the schema catalog hands an
+  agent. `duckdb_tables()` excludes views, and `prep` is entirely views — as are
+  the seed views — so the older catalog query listed none of what this change
+  opened.
+
+  A saved report reads the same five schemas. `reports create` names the columns
+  riding the scan rather than a declaration, beside the columns it masks whole.
+  A `raw`/`prep` report runs and exports; `reports explain` reports that it
+  cannot graduate to a materialized `reports.*` view, which still requires
+  `core`/`app` upstreams.
 - **Save your own reports (M2P.2).** `moneybin reports create <name> --sql "..."`
   turns a query into a durable report that behaves like a shipped one: it appears
   in `reports list`, runs through `reports run` or `moneybin export report`, and
@@ -1993,12 +2024,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `COUNT(DISTINCT col)` → LOW aggregate; `SUM`/`AVG` preserve the source class;
   `MIN`/`MAX` preserve the source class; multi-column expressions take the
   max-tier class; unresolvable projections fall back conservatively to the
-  max-tier input class. Data queries are limited to the `core`/`app` schemas
-  (use the `reports_*` tools for curated views); `DESCRIBE`/`SHOW`/`PRAGMA`/
-  `EXPLAIN` run as low-sensitivity metadata.
+  max-tier input class. Data queries reached the `core`/`app` schemas only when
+  this shipped; `DESCRIBE`/`SHOW` run as low-sensitivity metadata. Two entries
+  in this same release supersede both statements: "Read the ingestion pipeline
+  through `sql_query`" for the schemas, and the `PRAGMA storage_info` redaction
+  fix for the statements.
 - **`moneybin sql query` CLI command — the privacy-safe ad-hoc SQL path.** Full
   CLI↔MCP parity with `sql_query`: both surfaces route through one shared
-  `execute_sql_query` primitive (read-only gate, core/app schema restriction,
+  `execute_sql_query` primitive (read-only gate, schema restriction,
   sqlglot lineage, CRITICAL masking), so the CLI masks account/routing numbers
   identically and raw SQL is not a privacy bypass on either surface. `--output
   text|json` returns the same envelope shape as MCP. `moneybin db query`/`db

@@ -770,3 +770,36 @@ def test_the_catalog_and_the_explanation_agree_on_the_class_map(
     assert {column.column: column.data_class for column in explanation.columns} == dict(
         spec.classes
     )
+
+
+def test_a_floored_binding_keeps_its_placeholder(saved_db: Database) -> None:
+    """Rendering is not execution, so the content net never runs here.
+
+    ``render_sql_forms`` splices a bound value into ``explanation.sql`` as a SQL
+    literal. It withheld anything above LOW; FLOORED is LOW, so a raw/prep filter
+    value was rendered verbatim while the same column is content-netted in every
+    row of the result it explains — the exact asymmetry this function's docstring
+    says it exists to prevent, reached by a class that did not exist when it was
+    written.
+
+    The fixture value carries **no digits**, so the content net would not have
+    masked it even if it ran. That is the point: withholding is a decision about
+    the binding's class, not about the value's shape.
+
+    Blast radius, for the record: this reaches ``reports explain`` only. The
+    export receipt is NOT affected — ``exports/service.py`` stores
+    ``execution.sql``, which is the template, with bindings passed separately to
+    ``db.execute``.
+    """
+    forms = render_sql_forms(
+        ReportQuery(
+            "SELECT transaction_id FROM prep.int_transactions__merged "
+            "WHERE memo = $memo",
+            {"memo": Binding("north branch", DataClass.FLOORED)},
+        )
+    )
+
+    assert forms.sql is not None
+    assert "north branch" not in forms.sql
+    assert "$memo" in forms.sql
+    assert forms.withheld_parameters == ("memo",)

@@ -9,22 +9,33 @@ output column to a class via the ``CLASSIFICATION`` registry (and, for
 result feeds ``redact_records`` (CRITICAL masking today; whatever
 ``_TRANSFORMS`` does tomorrow) and sets the per-call envelope sensitivity.
 
-Fail-closed: anything we cannot resolve is treated as the most sensitive
-class the query could touch (max tier over all input columns), so we
+Fail-closed: anything we cannot resolve is treated as the strongest-masking
+class the query could touch (``_combined_class`` over all input columns), so we
 over-redact rather than leak.
 
-Scope: this module classifies columns in the ``core``, ``app``, and
-``reports`` schemas. ``core``/``app`` resolve via the ``CLASSIFICATION``
-registry; ``reports`` resolves via each report's declared
-``@report(classes=…)`` map (ADR-013), because SQLMesh deploys report views
-as ``SELECT *`` pointers lineage cannot classify. Both sources are
-completeness-tested, so every deployed column in these schemas is declared
-and resolves. A query that references any other schema (``raw``/``prep``/
-``meta``) yields no classifiable input columns, so an unresolvable
-projection falls back to ``AGGREGATE`` (LOW) rather than CRITICAL. Callers
-(the ``sql_query`` wiring) MUST restrict the query to the allowlisted
-schemas before relying on this module's masking — see the table-allowlist
-gate in the tool layer.
+Scope: this module classifies columns in ``core``, ``app``, ``reports``,
+``raw``, and ``prep`` — the same five schemas ``_ALLOWED_QUERY_SCHEMAS``
+admits, and the same five ``get_current_schema_snapshot`` reads. ``core``/
+``app`` resolve via the ``CLASSIFICATION`` registry; ``reports`` via each
+report's declared ``@report(classes=…)`` map (ADR-013), because SQLMesh
+deploys report views as ``SELECT *`` pointers lineage cannot classify. Those
+two sources are completeness-tested, so every deployed column in those three
+schemas is declared and resolves.
+
+``raw``/``prep`` answer differently and deliberately: they carry hundreds of
+columns that grow with every import format, and ``raw.gsheet_<alias>`` /
+``raw.pdf_<alias>`` views are minted at connect time from a user's own
+headers, so no completeness test is possible. A short ``INTERNAL_CRITICAL``
+declaration covers the columns that provably hold account material; every
+other column resolves to ``DataClass.FLOORED``, a content net that passes a
+value through unless it is SHAPED like an SSN or a run of eight or more
+digits. So an undeclared column there is *floored*, never *unresolved*.
+
+A query referencing a schema outside those five yields no classifiable input
+columns, and an unresolvable projection over one falls back to ``AGGREGATE``
+(LOW) rather than CRITICAL. Callers (the ``sql_query`` wiring) MUST restrict
+the query to the allowlisted schemas before relying on this module's masking
+— see the table-allowlist gate in the tool layer.
 
 API note (sqlglot 30.8.0): after ``qualify()``, ``Column.table`` is the
 alias that appeared in the SQL (e.g. ``"t"`` for ``t.amount``) or the
@@ -51,13 +62,19 @@ from sqlglot.optimizer.scope import Scope, build_scope
 
 from moneybin.database import Database
 from moneybin.log_sanitizer import sql_digest
-from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
+from moneybin.privacy.redaction import mask_strength
+from moneybin.privacy.taxonomy import (
+    CLASSIFICATION,
+    INTERNAL_CRITICAL,
+    DataClass,
+    Tier,
+)
 
 logger = logging.getLogger(__name__)
 
 # Aggregate functions that destroy individual values → LOW tier. Every other
 # aggregate (SUM/AVG/MIN/MAX/STDDEV/VARIANCE) preserves the source class, which
-# the generic "max-tier of referenced columns" path in _classify_projection
+# the generic "merge of referenced columns" path in _classify_projection
 # already produces — so only the counting set needs an explicit check.
 _COUNTING_AGGS: tuple[type[exp.Expr], ...] = (exp.Count,)
 
@@ -139,7 +156,7 @@ def parse_cached(sql: str) -> exp.Expr:
 
 @dataclass(frozen=True)
 class SchemaSnapshot:
-    """Catalog columns for core.*/app.*/reports.* plus a sqlglot MappingSchema.
+    """Catalog columns for every queryable schema plus a sqlglot MappingSchema.
 
     ``columns`` is the (schema, table, column) set for membership checks and
     the conservative fallback. ``mapping`` drives sqlglot star expansion and
@@ -215,11 +232,18 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
     """Return a SchemaSnapshot whose expensive MappingSchema build is cached.
 
     Per call this issues two cheap catalog queries (the migration version and
-    the core/app/reports column list); both are sub-millisecond on a local
-    DuckDB and dwarfed by the per-call connection open. The costly part —
-    building the sqlglot ``MappingSchema`` — is memoised by ``_build_snapshot``
-    keyed on (version, ordered columns), so it runs only when the schema
-    actually changes.
+    the column list); both are sub-millisecond on a local DuckDB and dwarfed by
+    the per-call connection open. The costly part — building the sqlglot
+    ``MappingSchema`` — is memoised by ``_build_snapshot`` keyed on (version,
+    ordered columns), so it runs only when the schema actually changes.
+
+    The schema list must stay identical to ``sql_query._ALLOWED_QUERY_SCHEMAS``.
+    A schema admitted by the gate but missing here does not fail closed: every
+    one of its columns misses ``snapshot.columns``, ``_column_key`` returns None,
+    the projection declines, ``_table_scope_max`` sees no classified table in
+    scope, and ``_conservative_floor`` answers AGGREGATE — LOW and passthrough,
+    for a column that may be declared CRITICAL. Widening one list without the
+    other is a leak, not a refusal.
 
     Columns are ordered by ``column_index`` (DuckDB's definition order) so star
     expansion matches the runtime column order — see ``_build_snapshot``.
@@ -229,7 +253,7 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
         """
         SELECT schema_name, table_name, column_name
         FROM duckdb_columns()
-        WHERE schema_name IN ('core', 'app', 'reports')
+        WHERE schema_name IN ('core', 'app', 'reports', 'raw', 'prep')
         ORDER BY schema_name, table_name, column_index
         """
     ).fetchall()
@@ -408,6 +432,10 @@ def collect_input_columns(
 # ---------------------------------------------------------------------------
 
 
+# The schemas that answer with a content floor instead of a declaration gap.
+_FLOORED_SCHEMAS = frozenset({"raw", "prep"})
+
+
 def _class_of_key(key: tuple[str, str, str]) -> DataClass | None:
     schema, table, column = key
     dc = CLASSIFICATION.get((schema, table), {}).get(column)
@@ -418,6 +446,19 @@ def _class_of_key(key: tuple[str, str, str]) -> DataClass | None:
     # lineage can't classify (ADR-013).
     if schema == "reports":
         return reports_class_map().get((schema, table), {}).get(column)
+    # raw/prep: a short CRITICAL declaration, everything else floored. Resolved
+    # HERE rather than at the redaction layer so `class_fingerprint` — which
+    # keys on the classes of every column a query reads — moves when a
+    # declaration is added, forcing saved reports to re-derive.
+    #
+    # Answering FLOORED instead of None also retires the `or FAIL_CLOSED_CLASS`
+    # short-circuits in `resolve_placeholder_classes` and `read_column_classes`
+    # for these two schemas. That is the intent: a raw/prep parameter or
+    # fingerprint entry is now shape-masked rather than whole-masked, which is
+    # the whole point of making these schemas readable.
+    if schema in _FLOORED_SCHEMAS:
+        declared = INTERNAL_CRITICAL.get((schema, table), {}).get(column)
+        return declared if declared is not None else DataClass.FLOORED
     return None
 
 
@@ -446,8 +487,9 @@ def _coverage_gap_class(key: tuple[str, str, str], sql_for_log: str) -> DataClas
 def _combined_class(classes: list[DataClass]) -> DataClass:
     """The single class describing a value drawn from ALL of ``classes``.
 
-    Max-by-tier, with one exception: **two DIFFERENT CRITICAL classes have no
-    representative.** Their transforms are not interchangeable — ROUTING_NUMBER
+    Max by (mask strength, tier) — see the comment on the ``max`` below for why
+    strength leads — with one exception: **two DIFFERENT CRITICAL classes have
+    no representative.** Their transforms are not interchangeable — ROUTING_NUMBER
     masks WHOLE while INSTITUTION_ACCOUNT_NUMBER masks PARTIALLY (``"****" +
     value[-4:]``) — so standing one in for the other publishes the last four
     characters of a value it does not describe. A bare ``max`` picks the first
@@ -462,14 +504,37 @@ def _combined_class(classes: list[DataClass]) -> DataClass:
     the position, so collapsing it would discard a correct, more specific answer
     (and turn ``SELECT last_four`` into a whole mask).
 
-    Below CRITICAL every transform is passthrough, so the class is pure
-    reporting and the identified max is the more informative answer. Collapsing
-    there would also inflate a HIGH bound to CRITICAL — the over-classification
-    this module must not introduce.
+    Below CRITICAL the identified max is the more informative answer;
+    collapsing there would inflate a HIGH bound to CRITICAL, the
+    over-classification this module must not introduce.
 
     ``classes`` must be non-empty; every caller already guards that.
     """
-    best = max(classes, key=lambda c: c.tier)
+    # Rank on (mask strength, tier) — strength first, tier only as the
+    # tie-break. Tier says how sensitive a class is; it says NOTHING about how
+    # hard its transform hides a value, and seven classes above Tier.LOW are
+    # `_passthrough` today (BALANCE, DESCRIPTION, INCOME_AMOUNT, MERCHANT_NAME,
+    # TXN_AMOUNT, TXN_DATE, USER_NOTE — PR 3 wires their transforms). Ranking on
+    # tier alone therefore handed a mixed position to a class that masks
+    # nothing: `SELECT description FROM prep.x UNION ALL SELECT description FROM
+    # core.fct_transactions` answered DESCRIPTION and published the prep row's
+    # digit run in the clear. Strength-first keeps whichever input masks
+    # hardest, so the merged class can never mask more weakly than any value the
+    # position actually draws from.
+    #
+    # NAMED LIMITATION, accepted: the reported TIER can now understate. The case
+    # above reports Tier.LOW (FLOORED's) for a position that also carries MEDIUM
+    # `core` data, and `sql_query.derive_query_tier` reads this same class. That
+    # is inert today because no consent gate reads a tier at any tier — the
+    # tier's only consumers are the envelope's `sensitivity` string and the
+    # privacy event. It becomes a real understatement the moment one does.
+    #
+    # `best` is therefore no longer guaranteed to be the highest-TIER input, so
+    # the CRITICAL branch below could stop firing if a future non-CRITICAL class
+    # masked WHOLE. That direction over-masks rather than leaking, and
+    # `test_two_disagreeing_critical_classes_still_collapse` derives its pairs
+    # from the registry so the change is red rather than silent.
+    best = max(classes, key=lambda c: (mask_strength(c), c.tier))
     if best.tier is not Tier.CRITICAL:
         return best
     at_top = {c for c in classes if c.tier is Tier.CRITICAL}
@@ -479,7 +544,7 @@ def _combined_class(classes: list[DataClass]) -> DataClass:
 def _scope_input_max(
     select: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """Max-tier class among ``select``'s input columns; AGGREGATE if none resolve.
+    """``_combined_class`` over ``select``'s inputs; AGGREGATE when it has none.
 
     Alias resolution is local to ``select``: ``collect_input_columns`` builds the
     alias map from this subtree alone. That locality is the point — a UNION can
@@ -497,13 +562,12 @@ def _scope_input_max(
     anywhere in ``select`` — including a JOIN condition or WHERE clause — not
     just the projection being classified, so a query joining an undeclared view
     raises this floor even when only a declared column is projected. This is
-    intentional (coherent with the max-tier-over-inputs design), not a bug.
+    intentional (coherent with the merge-over-all-inputs design), not a bug.
     """
     best: DataClass = DataClass.AGGREGATE
     for key in collect_input_columns(select, snapshot):
         dc = _class_of_key(key) or _coverage_gap_class(key, sql_for_log)
-        if dc.tier > best.tier:
-            best = dc
+        best = _combined_class([best, dc])
     return best
 
 
@@ -551,7 +615,7 @@ def _tables_in_scope(tree: exp.Expr, snapshot: SchemaSnapshot) -> set[tuple[str,
 def _table_scope_max(
     tree: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """Max-tier class over EVERY column of every classified table ``tree`` reads.
+    """``_combined_class`` over EVERY column of every classified table ``tree`` reads.
 
     The column-reference floor (``_scope_input_max``) can only see columns the
     query NAMES. A projection that names none — ``SELECT dim_accounts FROM
@@ -583,8 +647,7 @@ def _table_scope_max(
             dc = _class_of_key(key)
             if dc is None:
                 return _coverage_gap_class(key, sql_for_log)
-            if dc.tier > best.tier:
-                best = dc
+            best = _combined_class([best, dc])
     # A table-level bound names a TIER, never a column. At CRITICAL that
     # distinction is load-bearing, so the bound is reported as UNRESOLVED rather
     # than as whichever CRITICAL column sorted first:
@@ -597,17 +660,19 @@ def _table_scope_max(
     #   * Reporting `institution_account_number` for a whole-row struct claims a
     #     precision this path does not have.
     #
-    # Below CRITICAL every transform is passthrough today, so the class is pure
-    # reporting and the identified max is the more informative answer. Reporting
-    # UNRESOLVED there would also inflate a HIGH bound to CRITICAL, which is the
-    # over-classification this floor must not introduce.
+    # Below CRITICAL, the loop above merges each column via `_combined_class`,
+    # so a FLOORED column keeps this bound sticky the same way it keeps a
+    # projection sticky — never silently outvoted by an AGGREGATE/CATEGORY/etc.
+    # sibling column in the same table. Reporting UNRESOLVED there would
+    # inflate a HIGH bound to CRITICAL, which is the over-classification this
+    # floor must not introduce.
     return FAIL_CLOSED_CLASS if best.tier is Tier.CRITICAL else best
 
 
 def _conservative_floor(
     tree: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """The tier an unresolved projection takes: max over EVERY scope in ``tree``.
+    """The class an unresolved projection takes: merged over EVERY scope.
 
     **THE INVARIANT, stated once:** a projection is classified LOW only when we
     positively established what it is. Anything unresolved, opaque, or
@@ -618,8 +683,9 @@ def _conservative_floor(
     Two independent floors are combined, because each covers a blind spot of the
     other:
 
-    * **Per-scope column max** (``_scope_input_max`` over every SELECT in the
-      tree). Precise where the query names its columns. Walking every SELECT —
+    * **Per-scope column merge** (``_scope_input_max`` over every SELECT in the
+      tree). Precise where the query names its
+      columns. Walking every SELECT —
       each with its own local alias map, so per-branch alias correctness
       survives — is what keeps a CTE body (``SELECT v FROM c15``) or a
       CTE-only UNION branch from flooring at AGGREGATE and propagating that LOW
@@ -635,8 +701,9 @@ def _conservative_floor(
     it used to: the query reads no classified table at all (e.g. a projection
     over a ``VALUES`` list, whose values are the caller's own literals rather
     than database data). It remains correct only because the caller restricts
-    the query to the classified schemas (core/app via CLASSIFICATION, reports
-    via declared @report class maps) — see the module docstring.
+    the query to the classified schemas — core/app via CLASSIFICATION, reports
+    via declared @report class maps, raw/prep via INTERNAL_CRITICAL over the
+    FLOORED content net. See the module docstring.
     """
     # Never log the raw SQL — it can carry literal PII (e.g. a description or
     # account-number filter). A short hash gives forensic correlation without
@@ -648,10 +715,9 @@ def _conservative_floor(
     best: DataClass = DataClass.AGGREGATE
     for select in tree.find_all(exp.Select):
         dc = _scope_input_max(select, snapshot, sql_for_log)
-        if dc.tier > best.tier:
-            best = dc
+        best = _combined_class([best, dc])
     table_dc = _table_scope_max(tree, snapshot, sql_for_log)
-    floor = table_dc if table_dc.tier > best.tier else best
+    floor = _combined_class([best, table_dc])
     # A floor is a BOUND over what the query could touch — never a statement
     # about the projection, which is by definition unresolved on this path. At
     # CRITICAL that distinction leaks, so ANY critical floor collapses to the
@@ -669,9 +735,11 @@ def _conservative_floor(
     #   * Naming any specific CRITICAL class here claims a precision this path
     #     does not have, and CRITICAL transforms are not interchangeable.
     #
-    # Below CRITICAL every transform is passthrough, so the class is pure
-    # reporting: the more specific of the two floors is kept, and reporting
-    # UNRESOLVED there would inflate a HIGH bound to CRITICAL.
+    # Below CRITICAL, both merges above (the per-select loop and this one) go
+    # through `_combined_class`, so a FLOORED column stays sticky through
+    # either floor rather than losing to a same-tier sibling; otherwise the
+    # more specific of the two floors is kept. Reporting UNRESOLVED there would
+    # inflate a HIGH bound to CRITICAL.
     return FAIL_CLOSED_CLASS if floor.tier is Tier.CRITICAL else floor
 
 
@@ -858,8 +926,8 @@ def _source_scope_of(col: exp.Column, scope: Scope | None) -> Scope | None:
 
     A CTE reference parses with ``db=''``, so ``_build_alias_map`` never
     registers it; resolving to the matching projection INSIDE the source is what
-    keeps each output column's class its own instead of collapsing to "max tier
-    over every column in the query".
+    keeps each output column's class its own instead of collapsing to one merge
+    over every column in the query.
     """
     if scope is None:
         return None

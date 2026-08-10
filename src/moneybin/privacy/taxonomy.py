@@ -74,6 +74,13 @@ class DataClass(StrEnum):
     # ``CLASSIFICATION`` or a ``@report(classes=…)`` map — declaring a column
     # "unresolved" defeats the completeness tests that exist to catch gaps.
     UNRESOLVED = "unresolved"
+    # Not a classification either — the absence of a DECLARED one, in a schema
+    # where declaring every column was never the plan. Assigned by
+    # ``_class_of_key`` to an undeclared raw/prep column. Unlike UNRESOLVED it
+    # is LOW and passes values through, masking only account/routing/SSN
+    # SHAPES: raw/prep exist to be read while debugging an import. Never write
+    # it into ``CLASSIFICATION`` or a ``@report(classes=…)`` map.
+    FLOORED = "floored"
 
     @property
     def tier(self) -> Tier:
@@ -100,6 +107,7 @@ _TIER_BY_CLASS: dict[DataClass, Tier] = {
     DataClass.RECORD_ID: Tier.LOW,
     DataClass.TIMESTAMP_OBSERVABILITY: Tier.LOW,
     DataClass.UNRESOLVED: Tier.CRITICAL,
+    DataClass.FLOORED: Tier.LOW,
 }
 
 # Keyed by (schema, table) -> {column: DataClass}. Every column in
@@ -946,5 +954,157 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "priority_score": DataClass.TXN_AMOUNT,
         "source_type": DataClass.TXN_TYPE,
         "source_id": DataClass.RECORD_ID,
+    },
+}
+
+# CRITICAL columns of the fixed raw/prep tables. A SIBLING of CLASSIFICATION,
+# not a part of it: CLASSIFICATION's completeness test asserts total coverage,
+# and raw/prep have hundreds of columns that grow with every new import format
+# (raw.gsheet_<alias> views are minted from a user's own spreadsheet headers and
+# cannot be enumerated at all). Everything not listed here rides the FLOORED
+# content net instead, which passes a value through unless it is SHAPED like an
+# SSN or a run of eight or more digits.
+#
+# `account_id` is NOT one class across these tables — it holds each source's
+# NATIVE key, and what that is differs per source. `core`/`app` declare
+# `account_id` RECORD_ID because there it is an opaque minted surrogate
+# (account-identity-resolution.md Decisions 1 and 6); that precedent stops at
+# the `core` boundary and must not be carried down here.
+#
+# Two classes appear for account keys, following the live core/app precedent:
+# INSTITUTION_ACCOUNT_NUMBER where the value provably IS the institution's
+# number (as `dim_accounts.last_four` is), and ACCOUNT_IDENTIFIER where the
+# column may hold a number or an opaque token and cannot be told apart (as
+# `app.account_links.ref_value` is). Both are CRITICAL and share the same
+# partial-masking transform, so the choice sets the label's accuracy, not the
+# masking. ROUTING_NUMBER masks WHOLE and is not interchangeable with either.
+INTERNAL_CRITICAL: dict[tuple[str, str], dict[str, DataClass]] = {
+    # --- OFX: `account_id` is the `<ACCTID>` element, i.e. the institution's
+    # own account number (raw_ofx_accounts.sql). `source_account_key` is that
+    # same column re-aliased by every stg_ofx__* model.
+    ("raw", "ofx_accounts"): {
+        "account_id": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        "routing_number": DataClass.ROUTING_NUMBER,
+    },
+    ("raw", "ofx_balances"): {
+        "account_id": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+    },
+    ("raw", "ofx_transactions"): {
+        "account_id": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+    },
+    ("prep", "stg_ofx__accounts"): {
+        "account_id": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        "source_account_key": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        "routing_number": DataClass.ROUTING_NUMBER,
+    },
+    ("prep", "stg_ofx__balances"): {
+        "account_id": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        "source_account_key": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+    },
+    ("prep", "stg_ofx__transactions"): {
+        "account_id": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        "source_account_key": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+    },
+    # --- Plaid: `account_id` is the provider's own surrogate, globally unique
+    # per Plaid and therefore not an institution account number; the
+    # account-number material rides `mask` (last four digits) instead. The
+    # surrogate stays readable so an agent can correlate a Plaid import across
+    # tables while debugging it.
+    ("raw", "plaid_accounts"): {
+        "mask": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+    },
+    ("prep", "stg_plaid__accounts"): {
+        "mask": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        # `NULL::TEXT AS routing_number` — a schema-uniformity placeholder that
+        # is always NULL today (stg_plaid__accounts.sql). Declared anyway: it
+        # costs nothing now and is already right the day Plaid populates it.
+        "routing_number": DataClass.ROUTING_NUMBER,
+    },
+    # --- Tabular (CSV/Excel/Parquet): the native key is a slug of whatever the
+    # file presents as the account, and the mapped account column can be the
+    # account number itself, so the column cannot be told apart from one.
+    #
+    # `account_name` is that same file value UNSLUGIFIED, and it must carry the
+    # same class as the `account_id` slug derived from it — one value, one
+    # class. A multi-account import keeps both halves: `account_ids =
+    # [slugify(name) for name in raw_names]` while `acct_id_to_name` retains the
+    # original, which is written straight to this column (import_service.py).
+    # Declaring only the slug masks the derivative and publishes the source.
+    # The content net cannot cover the gap: a 7-digit number is under the 8-digit
+    # run it looks for, and a separator-formatted one contains no run at all.
+    # `core` is no precedent for passing it through — `dim_accounts.display_name`
+    # is CONSTRUCTED from institution + subtype + last4, never the raw file value.
+    ("raw", "tabular_accounts"): {
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_name": DataClass.ACCOUNT_IDENTIFIER,
+        "account_number": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        "account_number_masked": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+    },
+    ("raw", "tabular_transactions"): {
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("prep", "stg_tabular__accounts"): {
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+        "account_name": DataClass.ACCOUNT_IDENTIFIER,
+        "account_number": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        "account_number_masked": DataClass.INSTITUTION_ACCOUNT_NUMBER,
+        # `NULL::TEXT AS routing_number` placeholder, as for Plaid above.
+        "routing_number": DataClass.ROUTING_NUMBER,
+    },
+    # --- Import log: `account_names` is the same tabular file value again, and
+    # the OFX importer writes raw <ACCTID> values into it verbatim — its call
+    # site says so ("institution-assigned account numbers, not display names").
+    #
+    # WHOLE, not the partial mask the two columns above take. A DuckDB JSON
+    # column reaches the transform as `str`, so ACCOUNT_IDENTIFIER's
+    # `"****" + value[-4:]` would publish the TAIL of the serialized array,
+    # which for a one-element array of a bare number is the tail of an account
+    # number. Same reasoning as `source_bytes` below, and the same scoping
+    # argument for using UNRESOLVED in this map.
+    ("raw", "import_log"): {
+        "account_names": DataClass.UNRESOLVED,
+    },
+    ("prep", "stg_tabular__transactions"): {
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    # --- Cross-source int models: these UNION every source's native key into
+    # one column, so the OFX branch alone makes the whole column an account
+    # number for some rows. Which source a row came from is not knowable from
+    # the column, hence the may-be-a-number class.
+    ("prep", "int_transactions__unioned"): {
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "source_account_key": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    ("prep", "int_transactions__matched"): {
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        # `match_group_id` is `account_id || '|' || MIN(packed member)`
+        # (int_transactions__matched.sql), so it carries the account key of
+        # every row it groups — a real <ACCTID> whenever the account has no
+        # resolver link. The content net cannot reach it: the account sits at
+        # the HEAD of a longer string, and the two documented gaps (a 4-to-7
+        # digit key, a separator-formatted one) leave no 8-digit run to find.
+        # UNRESOLVED rather than the partial mask `account_id` takes, for the
+        # same reason as the two payloads below: this is a composite, so
+        # ACCOUNT_IDENTIFIER would misname the shape AND `"****" + value[-4:]`
+        # would publish the tail of a member id. Whole-masking costs only the
+        # rendered label — masking runs on result rows, so `GROUP BY
+        # match_group_id` still aggregates correctly.
+        "match_group_id": DataClass.UNRESOLVED,
+    },
+    ("prep", "int_transactions__merged"): {
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+    },
+    # --- Staged import bytes: a bank file held verbatim (an OFX export carries
+    # <ACCTID> and <BANKID> in the clear). `_mask_floored` deliberately passes
+    # `bytes` through untouched, so the content net offers this column nothing.
+    # UNRESOLVED is the honest class — we cannot name what the bytes hold — and
+    # is the only one that masks WHOLE without claiming a shape. The prohibition
+    # in UNRESOLVED's own comment is scoped to CLASSIFICATION and
+    # `@report(classes=...)`, where declaring it would defeat a completeness
+    # test; this map has no completeness test to defeat.
+    ("raw", "import_preview_snapshots"): {
+        "source_bytes": DataClass.UNRESOLVED,
     },
 }

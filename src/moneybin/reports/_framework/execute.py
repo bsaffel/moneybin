@@ -299,8 +299,8 @@ def masked_columns(output_classes: Mapping[str, DataClass]) -> tuple[str, ...]:
 
     Measured from the class's own transform rather than from a tier comparison:
     all four CRITICAL classes share a tier but two of them mask only partially,
-    and below CRITICAL every transform is passthrough. The transform is what the
-    reader actually sees.
+    and below CRITICAL every transform is passthrough except FLOORED. The
+    transform is what the reader actually sees.
     """
     return tuple(
         name

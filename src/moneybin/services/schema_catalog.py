@@ -674,15 +674,27 @@ EXAMPLES: dict[str, list[Example]] = {
 }
 
 _BEYOND_NOTE = (
-    "The tables above are the curated query surface. Other schemas exist "
-    "for raw ingest (raw), staging (prep), provenance (meta), and seed "
-    "data (seeds). Use them only when the curated tables cannot answer "
-    "the question."
+    "The tables above are the curated query surface. sql_query also reads raw "
+    "ingest (raw) and staging (prep) — use them only when the curated tables "
+    "cannot answer the question, and note they carry 34 column declarations "
+    "with every other value masked only when it is a text or integer value "
+    "shaped like an SSN or a run of 8 or more digits; a DECIMAL or FLOAT is "
+    "not scanned at all. Provenance (meta) and seed data (seeds) are not "
+    "readable through this surface."
 )
-_BEYOND_QUERY = (
-    "SELECT schema_name, table_name, comment FROM duckdb_tables() "
-    "WHERE schema_name NOT IN ('main', 'pg_catalog') ORDER BY 1, 2"
-)
+# `SHOW ALL TABLES`, not a `duckdb_tables()` / `duckdb_views()` query. This
+# string is served only on the agent path, so it has to run through
+# `sql_query` — and a table-valued function parses to a table node whose
+# schema and name are both empty, which the schema gate can never resolve to
+# an allowed schema. Every catalog-function spelling of this query is refused
+# (`details.disallowed: [""]` is that empty name). `SHOW` names no table, so
+# `_shown_schema` returns None, the gate finds nothing to resolve, and it
+# passes — while still listing views, which is the whole point: every `prep`
+# model and every runtime-minted `raw.gsheet_<alias>` / `raw.pdf_<alias>` seed
+# view is a view, not a table. It also carries column names and types, which
+# `duckdb_tables().comment` did not. This is the same statement `sql_query`'s
+# own refusal hint recommends; the two discovery paths must not disagree.
+_BEYOND_QUERY = "SHOW ALL TABLES"
 
 
 def build_schema_doc() -> dict[str, Any]:

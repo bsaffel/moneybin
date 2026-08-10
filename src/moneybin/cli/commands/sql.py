@@ -1,8 +1,8 @@
 """moneybin sql — privacy-safe ad-hoc SQL (lineage + CRITICAL masking).
 
 The agent/operator path for ad-hoc SQL that runs through the SAME privacy
-enforcement as the ``sql_query`` MCP tool: read-only gate, core/app/reports
-schema restriction, sqlglot column lineage, and CRITICAL masking. Contrast
+enforcement as the ``sql_query`` MCP tool: read-only gate, allowlisted-schema
+restriction, sqlglot column lineage, and CRITICAL masking. Contrast
 with ``moneybin db query`` / ``db shell`` / ``db ui``, which are raw,
 unmasked direct-DB access (they emit an operator-bypass banner pointing
 here).
@@ -55,12 +55,17 @@ def sql_query_command(
 
     The privacy-safe counterpart to ``moneybin db query``: only SELECT, WITH,
     DESCRIBE, and SHOW are allowed (PRAGMA and EXPLAIN are not), limited to the
-    ``core``, ``app``, and ``reports`` schemas — DESCRIBE is held to that same
-    schema limit, so a catalog statement cannot inspect a table the data path
-    won't read. Each output column is classified via SQL lineage;
-    CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>),
-    exactly like the typed tools and the ``sql_query`` MCP tool. Other tiers
-    (amounts, descriptions, dates) pass through in the clear.
+    ``core``, ``app``, ``reports``, ``raw``, and ``prep`` schemas — DESCRIBE is
+    held to that same schema limit, so a catalog statement cannot inspect a table
+    the data path won't read. Each output column is classified via SQL lineage;
+    A column declared CRITICAL (account/routing numbers) is ALWAYS masked
+    (****<last4>), exactly like the typed tools and the ``sql_query`` MCP tool.
+    ``raw`` and ``prep`` carry 34 such declarations and no registry behind them,
+    so every other column there passes through unless the value is a text or
+    integer one shaped like an SSN or a run of eight or more digits — weaker
+    than a declaration. A 4-to-7 digit account number survives it, and a
+    ``DECIMAL`` or ``FLOAT`` one is never scanned at all. Other tiers (amounts,
+    descriptions, dates) pass through in the clear.
 
     Amounts use the accounting convention: negative = expense, positive = income.
 

@@ -72,6 +72,8 @@ class SaveOutcome:
 
     ``unresolved_columns`` is a note and never a gate: an unresolvable
     projection masks at run time but must not block the save.
+    ``floored_columns`` is its raw/prep counterpart — columns with no declared
+    class, protected only by the value-shape scan and its stated gaps.
     ``cleared_downgrades`` names approvals the mutation dropped, because a
     downgrade is a human judgment about one column of one query and carrying it
     onto rewritten SQL would be the same stale-authority failure one level down.
@@ -80,6 +82,7 @@ class SaveOutcome:
     report_id: str
     name: str
     unresolved_columns: tuple[str, ...] = ()
+    floored_columns: tuple[str, ...] = ()
     cleared_downgrades: tuple[str, ...] = ()
 
 
@@ -231,6 +234,7 @@ class UserReportsService:
             report_id=report_id,
             name=name,
             unresolved_columns=derived.unresolved_columns,
+            floored_columns=derived.floored_columns,
         )
 
     def update(
@@ -337,6 +341,7 @@ class UserReportsService:
             report_id=report_id,
             name=str(name) if not isinstance(name, Unset) else str(row["name"]),
             unresolved_columns=derived.unresolved_columns,
+            floored_columns=derived.floored_columns,
             cleared_downgrades=cleared,
         )
 

@@ -29,22 +29,26 @@ from moneybin.services.schema_catalog import build_schema_doc
 
 @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.CRITICAL)
 def sql_query(query: str) -> ResponseEnvelope[Any]:
-    """Execute a read-only SQL query against the core, app, and reports schemas.
+    """Execute a read-only SQL query against the five agent-readable schemas.
 
     Only SELECT, WITH, DESCRIBE, and SHOW queries are allowed. Writes,
     file-access functions, PRAGMA, and EXPLAIN are blocked. The ``core``,
-    ``app``, and ``reports`` schemas may be referenced; other schemas are
-    refused — by DESCRIBE just as by SELECT, so a catalog statement cannot
-    inspect a table the data path won't read.
+    ``app``, ``reports``, ``raw``, and ``prep`` schemas may be referenced;
+    ``meta`` and ``seeds`` are refused — by DESCRIBE just as by SELECT, so a
+    catalog statement cannot inspect a table the data path won't read.
 
     Amounts use the accounting convention: negative = expense, positive = income.
     Currency is named in summary.display_currency.
 
     Privacy: each output column is resolved to its data class via SQL lineage
     (sqlglot). CRITICAL columns (account/routing numbers) are ALWAYS masked
-    (****<last4>) — exactly as the typed account tools mask them — so raw SQL
-    is not a bypass around privacy enforcement. Other tiers (amounts, descriptions,
-    dates) are returned in the clear, matching the typed tools' current behavior.
+    (****<last4>). ``core``/``app``/``reports`` declare a class for every
+    deployed column; ``raw``/``prep`` carry 34 declarations and floor the rest
+    on a value-shape scan that reaches text and integer values only, masking
+    SSN and 8-or-more-digit shapes. So a 4-to-7 digit account number in an
+    undeclared column passes through, and a ``DECIMAL`` or ``FLOAT`` one is
+    never scanned at all. Other tiers (amounts, descriptions, dates) are
+    returned in the clear, matching the typed tools' current behavior.
 
     Results are capped; when truncated, summary.has_more is true and total_count
     exceeds returned_count. For schema, columns, and example queries, read
@@ -158,9 +162,14 @@ def register_sql_tools(mcp: FastMCP) -> None:
         "sql_query",
         "Execute a read-only SQL query against the database. "
         "Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). "
+        "Reaches core, app, reports, raw, and prep; meta and seeds are refused. "
         "Each output column is classified via SQL lineage; CRITICAL columns "
-        "(account/routing numbers) are ALWAYS masked (****<last4>), exactly like "
-        "the typed tools — raw SQL is not a privacy bypass. "
+        "(account/routing numbers) are ALWAYS masked (****<last4>). "
+        "core/app/reports declare a class for every column. raw and prep declare 34 "
+        "and scan every other text or integer value, masking only SSN and "
+        "8-or-more-digit shapes — a 4-to-7 digit account number passes through, and "
+        "a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as "
+        "less protected, not equally protected. "
         "Amounts use the accounting convention (negative=expense, positive=income); "
         "currency is in summary.display_currency. "
         "Call sql_schema (or read resource moneybin://schema) for tables, "

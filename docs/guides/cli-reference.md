@@ -449,7 +449,10 @@ uv run moneybin reports explain coffee --param category=Dining
 
 Parameter types are `str` (default), `int`, `float`, `bool`, `date`, and
 `decimal`; a parameter is required unless it declares a default. Queries may read
-`core.*`, `app.*`, and `reports.*`, and must be row-returning and read-only.
+`core.*`, `app.*`, `reports.*`, `raw.*`, and `prep.*`, and must be row-returning
+and read-only. A report reading `raw.*` or `prep.*` runs and serves rows, and
+`reports explain` reports its graduation to a materialized view as `blocked` —
+materialization derives only from `core.*` and `app.*`.
 
 Two behaviours worth knowing before they surprise you:
 

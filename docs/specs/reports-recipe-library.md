@@ -557,7 +557,7 @@ understand the prompt.
 
 The current setup is a layer-rule violation that predates this spec: `app.categories` is a Python-built view (created in `src/moneybin/seeds.py:refresh_views()` as `CREATE OR REPLACE VIEW app.categories AS ...`) that consumers (the `categories list` CLI, `schema_catalog.py`, `CategorizationService`) read directly. Per [`architecture-shared-primitives.md`](architecture-shared-primitives.md):
 
-- §Layer Rules item 2: "Consumers read from `core` and `reports`, never from `prep`, `app`, `meta`, `seeds`, `raw` directly."
+- §Layer Rules item 2: "Consumers read from `core` and `reports`, never from `prep`, `app`, `meta`, `seeds`, `raw` directly." (The rule's fourth exception — the agent-safe SQL surface reading `raw`/`prep` for inspection — does not cover this case: `app.categories` is read by ordinary service and CLI code, not through `sql_query`.)
 - §Layer Rules item 3: "Core dimensions are the single source of truth. When `app.*` metadata refines or overrides a `core.dim_*` entity, the join lives in the dim model itself."
 - §Architecture Invariants item 8: "Derivations live in SQLMesh, not in services."
 

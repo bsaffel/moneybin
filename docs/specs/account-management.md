@@ -225,7 +225,7 @@ This spec ships a new doc explaining the project-wide identifier conventions, si
 - `account_number` — full bank account number. **Never stored in MoneyBin.** Loaders extract only `last_four` from raw inputs; the full number is dropped at the parser boundary.
 - `last_four` — last 4 digits, validated `^[0-9]{4}$`. Stored in `app.account_settings.last_four`. Logged only as `<account_id>.last_four` reference, never as a value.
 - `routing_number` — ABA routing number on `dim_accounts`. PII-adjacent but not secret (publicly listed). Logged only when essential for diagnostics.
-- Masking story: `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`) detects and masks 9+ digit sequences and patterns matching account/SSN shapes as a runtime safety net. See [`privacy-data-protection.md`](../specs/privacy-data-protection.md).
+- Masking story: `SanitizedLogFormatter` (`src/moneybin/log_sanitizer.py`) detects and masks unbroken runs of 8 or more digits and patterns matching account/SSN shapes as a runtime safety net. See [`privacy-data-protection.md`](../specs/privacy-data-protection.md).
 
 ## Testing Strategy
 

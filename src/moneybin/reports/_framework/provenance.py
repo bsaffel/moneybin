@@ -28,7 +28,7 @@ from sqlglot import exp
 from sqlglot.errors import TokenError
 from sqlglot.tokenizer_core import TokenType
 
-from moneybin.privacy.taxonomy import Tier
+from moneybin.privacy.redaction import is_safe_to_publish_verbatim
 from moneybin.reports._framework.contract import (
     Binding,
     ReportQuery,
@@ -78,11 +78,15 @@ def render_sql_forms(query: ReportQuery, *, unbound: Collection[str] = ()) -> Sq
     handing a reader SQL that cannot run under the label of the SQL that ran is
     the failure this whole surface exists to prevent.
 
-    A parameter classed above LOW keeps its placeholder too, and that is the
-    load-bearing rule. Rendering is not execution, so it never passes through
-    ``run_report``'s ``classify_columns`` / ``redact_records`` — a report
-    filtered by routing number would otherwise return that value verbatim here
-    while the same value is masked in every row of the result it explains.
+    A parameter whose class is not safe to publish verbatim keeps its
+    placeholder too, and that is the load-bearing rule. Rendering is not
+    execution, so it never passes through ``run_report``'s ``classify_columns``
+    / ``redact_records`` — a report filtered by routing number would otherwise
+    return that value verbatim here while the same value is masked in every row
+    of the result it explains. The test is
+    :func:`~moneybin.privacy.redaction.is_safe_to_publish_verbatim` rather than a
+    tier comparison, because a FLOORED binding is ``Tier.LOW`` and still masks
+    per value — a tier-only test rendered it in the clear.
     Masking the value instead (``'****1234'``) would be worse on both counts: it
     is not valid SQL for the column it filters, and it invites the reader to
     believe the string is the query that ran.
@@ -107,7 +111,7 @@ def render_sql_forms(query: ReportQuery, *, unbound: Collection[str] = ()) -> Sq
         binding = _binding_for(query, slot=slot, named=named)
         if slot.name and slot.name in unbound:
             suppressed.append(slot.name)
-        elif binding is None or bound_class(binding).tier > Tier.LOW:
+        elif binding is None or not is_safe_to_publish_verbatim(bound_class(binding)):
             withheld.append(slot.label)
         else:
             literals.append((slot, exp.convert(bound_value(binding)).sql(_DIALECT)))

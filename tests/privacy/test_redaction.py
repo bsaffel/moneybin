@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Annotated
 
+import pytest
+
 from moneybin.privacy.redaction import redact_records, redact_typed
 from moneybin.privacy.taxonomy import DataClass
 
@@ -48,3 +50,54 @@ def test_redact_records_passes_unmapped_columns_through() -> None:
 def test_redact_records_empty_is_noop() -> None:
     """An empty result set returns unchanged (no per-column work)."""
     assert redact_records([], {"a": DataClass.TXN_AMOUNT}) == []
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("groceries", "groceries"),  # ordinary text passes through
+        ("123-45-6789", "***-**-****"),  # SSN shape masked
+        ("acct 987654321", "acct ****...4321"),  # account shape masked
+        (None, None),
+        (42, 42),  # short int untouched
+        (987654321, "****...4321"),  # 8+ digit int masked
+        (True, True),  # bool is not a digit string
+    ],
+)
+def test_floored_masks_only_pii_shapes(value: object, expected: object) -> None:
+    assert redact_records([{"c": value}], {"c": DataClass.FLOORED}, consent=None) == [
+        {"c": expected}
+    ]
+
+
+def test_floored_recurses_into_containers() -> None:
+    records = [{"c": {"inner": "123-45-6789"}}]
+    assert redact_records(records, {"c": DataClass.FLOORED}, consent=None) == [
+        {"c": {"inner": "***-**-****"}}
+    ]
+
+
+def test_floored_masks_mapping_keys() -> None:
+    """A DuckDB MAP keys itself from row data, so the floor has to reach keys.
+
+    ``SELECT map([account_number], [1])`` puts an account number exactly where a
+    STRUCT puts a query-authored field name. Flooring values alone published the
+    one number the same scalar in a bare column would have been masked for.
+    """
+    records = [{"c": {"987654321": "x"}}]
+    assert redact_records(records, {"c": DataClass.FLOORED}, consent=None) == [
+        {"c": {"****...4321": "x"}}
+    ]
+
+
+def test_floored_collapses_keys_that_mask_alike() -> None:
+    """Two keys masking to one string collapse to one entry — the accepted cost.
+
+    Pinned so the dropped entry is a known cost rather than a surprise: the
+    account mask keeps only the last four digits, so any two keys sharing them
+    land on the same masked string and the later one wins.
+    """
+    records = [{"c": {"111114321": "first", "222224321": "second"}}]
+    assert redact_records(records, {"c": DataClass.FLOORED}, consent=None) == [
+        {"c": {"****...4321": "second"}}
+    ]

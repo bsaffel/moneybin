@@ -171,9 +171,11 @@ but `ROUTING_NUMBER`/`UNRESOLVED` mask wholly while
 (`"****" + value[-4:]`), and runtime masking keys off the **declared** class —
 so declaring `ACCOUNT_IDENTIFIER` where derivation says `ROUTING_NUMBER` sits
 at the same tier yet publishes the real routing number's last four digits.
-Below CRITICAL every transform is passthrough, so strength is constant there
-and the ordering reduces to the tier comparison; over-declaring across tiers
-stays safe and stays silent. Strength is measured from `redaction.py`'s
+Below CRITICAL every transform is passthrough except `FLOORED`, so strength is
+otherwise constant there and the ordering reduces to the tier comparison;
+over-declaring across tiers stays safe and stays silent. A passthrough
+declaration over a `FLOORED` derivation is the one below-CRITICAL exception —
+unsafe, same reasoning as at CRITICAL. Strength is measured from `redaction.py`'s
 `_TRANSFORMS` (`redaction.mask_strength`) rather than from a second
 hand-maintained list, so adding a `DataClass` cannot weaken the guard without
 failing a test.
@@ -205,9 +207,12 @@ Per D3, membership in `reports.*` *is* the definition of "is a report."
 `services/categorization/queries.py`, backing `reviews(kind="categorization", status="pending")`
 — so it moved out of `reports.*` into `core.uncategorized_queue`.
 
-`core` rather than `prep`, because `prep` is not in `_ALLOWED_QUERY_SCHEMAS`;
-moving there would silently remove a view users can query today. `core` keeps
-it queryable and shifts its coverage to the `CLASSIFICATION` registry.
+`core` rather than `prep`, because at the time `prep` was not in
+`_ALLOWED_QUERY_SCHEMAS` and moving there would have silently removed a view
+users can query today. M2O.2 has since admitted `prep`, but the decision stands
+on its second reason: `core` keeps the view's coverage in the `CLASSIFICATION`
+registry, where every column is declared and CI verifies it, rather than on the
+`FLOORED` value-shape net `prep` columns ride.
 `account_id` is declared `RECORD_ID` there, matching all 15 other `account_id`
 columns in `CLASSIFICATION` (spec D6): it is a deliberately opaque minted
 surrogate, not PII, so it is correct for it to pass through unmasked — the

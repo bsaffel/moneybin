@@ -14,12 +14,18 @@ import yaml
 from sqlglot import exp
 
 from moneybin.database import Database
+from moneybin.privacy.redaction import MaskStrength, mask_strength
 from moneybin.privacy.sql_lineage import (
+    _FLOORED_SCHEMAS,  # pyright: ignore[reportPrivateUsage]
     _MAX_SCOPE_DEPTH,  # pyright: ignore[reportPrivateUsage]
     FAIL_CLOSED_CLASS,
     ProjectionSource,
     SqlParseError,
     _class_of_key,  # pyright: ignore[reportPrivateUsage]
+    _combined_class,  # pyright: ignore[reportPrivateUsage]
+    _conservative_floor,  # pyright: ignore[reportPrivateUsage]
+    _scope_input_max,  # pyright: ignore[reportPrivateUsage]
+    _table_scope_max,  # pyright: ignore[reportPrivateUsage]
     derive_query_tier,
     expand_star,
     get_current_schema_snapshot,
@@ -34,7 +40,10 @@ from moneybin.privacy.sql_lineage import (
     resolve_projection_sources,
     tables_outside_schemas,
 )
-from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.privacy.sql_query import (
+    _ALLOWED_QUERY_SCHEMAS,  # pyright: ignore[reportPrivateUsage]
+)
+from moneybin.privacy.taxonomy import CLASSIFICATION, INTERNAL_CRITICAL, DataClass, Tier
 
 _CORPUS = yaml.safe_load(
     (Path(__file__).parent / "fixtures" / "sql_lineage_corpus.yaml").read_text()
@@ -89,6 +98,80 @@ def test_schema_snapshot_cached_until_version_changes(populated_db: Database) ->
     a = get_current_schema_snapshot(populated_db)
     b = get_current_schema_snapshot(populated_db)
     assert a is b  # same migration version → cached identity
+
+
+# Schemas whose exclusion from the gate is a decision rather than an accident.
+# The complement is unbounded, so it cannot be derived — these two are named for
+# the same reason `test_gate_admits_internal_schemas_and_still_fences_meta_and_seeds`
+# names them, and each gets a real table so the negative half tests something.
+_FENCED_SCHEMAS = ("meta", "seeds")
+
+
+def test_the_snapshot_covers_exactly_the_schemas_the_gate_admits(
+    populated_db: Database,
+) -> None:
+    """Set equality against ``_ALLOWED_QUERY_SCHEMAS``, derived — never a literal.
+
+    ``get_current_schema_snapshot``'s ``schema_name IN (…)`` list and
+    ``sql_query._ALLOWED_QUERY_SCHEMAS`` are two hand-maintained copies of one
+    list, and nothing but this test couples them. A schema admitted by the gate
+    but missing from the snapshot does NOT fail closed: ``_column_key`` resolves
+    against ``snapshot.columns``, so an absent column returns None, the
+    projection declines, ``_table_scope_max`` finds no classified table in
+    scope, and ``_conservative_floor`` answers AGGREGATE — LOW and passthrough,
+    for a column that may be declared CRITICAL. This branch's own red step
+    returned a cleartext routing number that way.
+
+    Deriving the expectation from the constant is what makes the guard survive
+    the *next* widening. Spelling the schemas out here would pass on the day
+    someone adds a sixth to the gate alone, which is exactly the leak.
+
+    A schema with no tables is absent from ``duckdb_columns()`` regardless of
+    what this query selects, so every schema on both sides of the equality gets
+    a probe table — otherwise the positive half would fail for the wrong reason
+    and the negative half would hold vacuously.
+    """
+    for schema in sorted(_ALLOWED_QUERY_SCHEMAS) + list(_FENCED_SCHEMAS):
+        populated_db.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        populated_db.execute(
+            f'CREATE TABLE IF NOT EXISTS "{schema}".snapshot_probe (marker VARCHAR)'  # noqa: S608  # schema names come from a frozenset constant, not user input
+        )
+    # A prep model is a VIEW, not a table — `duckdb_columns()` covers both, and
+    # nothing downstream of the snapshot distinguishes them.
+    populated_db.execute(
+        "CREATE VIEW prep.stg_ofx__accounts AS "
+        "SELECT routing_number FROM raw.ofx_accounts"
+    )
+
+    snap = get_current_schema_snapshot(populated_db)
+
+    assert {schema for schema, _table, _col in snap.columns} == set(
+        _ALLOWED_QUERY_SCHEMAS
+    )
+    assert ("prep", "stg_ofx__accounts", "routing_number") in snap.columns
+
+
+def test_every_admitted_schema_has_a_declaration_source() -> None:
+    """The gate's schema list partitions into the three ways a class is resolved.
+
+    ``_class_of_key`` answers from exactly three sources — ``CLASSIFICATION``
+    (core/app), each report's declared ``@report`` map (reports), and
+    ``INTERNAL_CRITICAL`` over the ``_FLOORED_SCHEMAS`` content net (raw/prep).
+    ``_FLOORED_SCHEMAS`` is a fourth hand-maintained copy of part of the same
+    list, and this is what couples it.
+
+    Omitting a newly-admitted schema from all three is fail-closed, not a leak:
+    ``_class_of_key`` returns None, ``_coverage_gap_class`` answers
+    ``FAIL_CLOSED_CLASS``, and every value whole-masks. The failure it prevents
+    is the usability one — a schema opened at the gate that returns nothing but
+    ``*****`` — plus the reverse, a ``_FLOORED_SCHEMAS`` entry that outlives its
+    place in the gate and silently floors a schema nobody can reach.
+    """
+    declared = {schema for schema, _table in CLASSIFICATION}
+    declared |= {schema for schema, _table in reports_class_map()}
+
+    assert declared | _FLOORED_SCHEMAS == set(_ALLOWED_QUERY_SCHEMAS)
+    assert {schema for schema, _table in INTERNAL_CRITICAL} == _FLOORED_SCHEMAS
 
 
 # ---------------------------------------------------------------------------
@@ -1181,6 +1264,103 @@ def test_class_of_key_unknown_reports_column_is_none() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Task 5: raw/prep — a short CRITICAL declaration, everything else FLOORED
+# ---------------------------------------------------------------------------
+
+
+def test_declared_raw_critical_column_resolves_critical() -> None:
+    assert _class_of_key(("raw", "ofx_accounts", "routing_number")) is (
+        DataClass.ROUTING_NUMBER
+    )
+
+
+def test_undeclared_raw_column_floors() -> None:
+    assert _class_of_key(("raw", "ofx_transactions", "memo")) is DataClass.FLOORED
+
+
+def test_undeclared_core_column_does_not_floor() -> None:
+    """core/app keep their fail-closed default — the floor is raw/prep only."""
+    assert _class_of_key(("core", "fct_transactions", "no_such_column")) is None
+
+
+def test_account_id_is_classified_per_source_not_uniformly() -> None:
+    """``raw.*.account_id`` is a different value per source; one class is wrong.
+
+    OFX's is the institution's account number (the ``<ACCTID>`` element), so it
+    is CRITICAL. Plaid's is the provider's own surrogate — the account-number
+    material rides the separate ``mask`` column — and manual entry stores the
+    canonical minted ``dim_accounts.account_id``, so both pass through the
+    content net. Collapsing these to one declaration either masks two readable
+    debugging keys or publishes an account number.
+    """
+    assert _class_of_key(("raw", "ofx_accounts", "account_id")) is (
+        DataClass.INSTITUTION_ACCOUNT_NUMBER
+    )
+    assert _class_of_key(("raw", "plaid_accounts", "account_id")) is DataClass.FLOORED
+    assert _class_of_key(("raw", "plaid_accounts", "mask")) is (
+        DataClass.INSTITUTION_ACCOUNT_NUMBER
+    )
+    assert _class_of_key(("raw", "manual_transactions", "account_id")) is (
+        DataClass.FLOORED
+    )
+
+
+def test_staging_source_account_key_carries_the_native_account_number() -> None:
+    """``source_account_key`` is ``AS``-aliased from the source's ``account_id``.
+
+    Every ``stg_*`` model re-projects the source-native key under this second
+    name, so an enumeration that greps for account-shaped column NAMES misses
+    it entirely while it holds exactly the same value.
+    """
+    assert _class_of_key(("prep", "stg_ofx__accounts", "source_account_key")) is (
+        DataClass.INSTITUTION_ACCOUNT_NUMBER
+    )
+
+
+def test_staged_source_bytes_are_declared_not_floored() -> None:
+    """The content net does not reach ``bytes`` — see ``_mask_floored``.
+
+    ``raw.import_preview_snapshots.source_bytes`` holds a bank file verbatim
+    (OFX carries ``<ACCTID>`` and ``<BANKID>`` in the clear), and FLOORED would
+    return every byte of it untouched.
+    """
+    assert _class_of_key(("raw", "import_preview_snapshots", "source_bytes")) is (
+        FAIL_CLOSED_CLASS
+    )
+
+
+def test_tabular_account_name_is_declared_like_its_slug() -> None:
+    """``account_id`` is ``slugify()`` of ``account_name`` — one value, one class.
+
+    A multi-account file's account column becomes ``raw_names``, and the import
+    keeps BOTH: the slug lands in ``account_id`` and the unslugified original in
+    ``account_name``. Declaring only the slug masks the derivative and publishes
+    the source. The content net does not save it — a 7-digit number is under the
+    8-digit run the net looks for, and a separator-formatted one contains no run
+    at all, so either leaks whole.
+    """
+    for schema, table in (
+        ("raw", "tabular_accounts"),
+        ("prep", "stg_tabular__accounts"),
+    ):
+        assert _class_of_key((schema, table, "account_name")) is (
+            DataClass.ACCOUNT_IDENTIFIER
+        ), f"{schema}.{table}.account_name must match its account_id twin"
+
+
+def test_import_log_account_names_masks_whole_not_partial() -> None:
+    """The OFX importer writes ``<ACCTID>`` values into this column verbatim.
+
+    Whole, not partial: a DuckDB ``JSON`` column arrives as ``str``, so
+    ACCOUNT_IDENTIFIER's ``"****" + value[-4:]`` would publish the TAIL of the
+    serialized array — which for a one-element array of a bare number is the
+    tail of an account number.
+    """
+    assert _class_of_key(("raw", "import_log", "account_names")) is FAIL_CLOSED_CLASS
+    assert mask_strength(FAIL_CLOSED_CLASS) is MaskStrength.WHOLE
+
+
+# ---------------------------------------------------------------------------
 # Parameter classing — both `$name` parse shapes
 # ---------------------------------------------------------------------------
 
@@ -1382,3 +1562,254 @@ def test_union_projection_sources_keep_an_agreed_upstream(
     sources = resolve_projection_sources(tree, snapshot)
 
     assert sources["a"].upstream == "core.dim_accounts.account_id"
+
+
+@pytest.mark.parametrize(
+    "classes",
+    [
+        [DataClass.FLOORED, DataClass.CATEGORY],
+        [DataClass.CATEGORY, DataClass.FLOORED],
+    ],
+)
+def test_floored_is_sticky_regardless_of_source_order(
+    classes: list[DataClass],
+) -> None:
+    assert _combined_class(classes) is DataClass.FLOORED
+
+
+@pytest.mark.parametrize(
+    ("classes", "expected"),
+    [
+        ([DataClass.FLOORED, DataClass.DESCRIPTION], DataClass.FLOORED),
+        ([DataClass.DESCRIPTION, DataClass.FLOORED], DataClass.FLOORED),
+        ([DataClass.FLOORED, DataClass.TXN_AMOUNT], DataClass.FLOORED),
+        (
+            [DataClass.FLOORED, DataClass.ACCOUNT_IDENTIFIER],
+            DataClass.ACCOUNT_IDENTIFIER,
+        ),
+        ([DataClass.FLOORED, DataClass.ROUTING_NUMBER], DataClass.ROUTING_NUMBER),
+        (
+            [DataClass.FLOORED, DataClass.ROUTING_NUMBER, DataClass.ROUTING_NUMBER],
+            DataClass.ROUTING_NUMBER,
+        ),
+        (
+            [
+                DataClass.FLOORED,
+                DataClass.ROUTING_NUMBER,
+                DataClass.ACCOUNT_IDENTIFIER,
+            ],
+            FAIL_CLOSED_CLASS,
+        ),
+    ],
+    ids=[
+        "medium-passthrough",
+        "medium-passthrough-reversed",
+        "high-passthrough",
+        "critical-partial-ties-on-strength",
+        "critical-whole-outranks",
+        "critical-unanimous",
+        "critical-split",
+    ],
+)
+def test_a_merged_position_keeps_the_strongest_mask(
+    classes: list[DataClass], expected: DataClass
+) -> None:
+    """Strength decides first; tier only breaks a strength tie.
+
+    The four ``medium``/``high`` cases used to expect the higher-tier class and
+    were the defect written down: seven classes above ``Tier.LOW`` are
+    ``_passthrough`` today, so a merge that read tier as a proxy for masking
+    strength dropped ``FLOORED``'s content net whenever a position also drew
+    from ``core``. ``SELECT description FROM prep.x UNION ALL SELECT description
+    FROM core.fct_transactions`` returned the prep row's digit run verbatim
+    under a ``DESCRIPTION`` label.
+
+    The two CRITICAL cases keep the collapse unchanged. ``ACCOUNT_IDENTIFIER``
+    ties ``FLOORED`` on strength (both PARTIAL) and wins on tier;
+    ``ROUTING_NUMBER`` wins outright on strength (WHOLE).
+    """
+    assert _combined_class(classes) is expected
+
+
+@pytest.mark.parametrize("other", list(DataClass), ids=lambda dc: dc.name.lower())
+def test_a_merge_never_masks_more_weakly_than_its_inputs(other: DataClass) -> None:
+    """The rule, derived over the registry — not a list of known counterexamples.
+
+    Enumerating ``DataClass`` rather than naming the seven above-LOW passthrough
+    classes is the point: the defect was a *category* error (tier read as a
+    claim about masking), so the guard has to answer for a class nobody has
+    written yet. A new above-LOW passthrough class, or a future transform that
+    weakens an existing one, fails here rather than shipping another leak.
+
+    Both orders, because a bare ``max`` returns the FIRST maximal element and
+    every leak in this function's history was order-dependent.
+    """
+    floor = mask_strength(DataClass.FLOORED)
+    for classes in ([DataClass.FLOORED, other], [other, DataClass.FLOORED]):
+        merged = _combined_class(classes)
+        assert mask_strength(merged) >= max(floor, mask_strength(other)), classes
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (a, b)
+        for a in DataClass
+        for b in DataClass
+        if a.tier is Tier.CRITICAL and b.tier is Tier.CRITICAL and a is not b
+    ],
+    ids=lambda dc: dc.name.lower(),
+)
+def test_two_disagreeing_critical_classes_still_collapse(
+    first: DataClass, second: DataClass
+) -> None:
+    """The pre-existing fail-closed collapse, pinned against the new merge key.
+
+    Ranking by strength before tier means ``best`` is no longer guaranteed to be
+    the highest-tier input: a future non-CRITICAL class that masks WHOLE would
+    outrank a PARTIAL CRITICAL one and route past the ``best.tier is
+    Tier.CRITICAL`` branch, silently retiring this collapse. Deriving the pairs
+    from the registry makes that change red instead of quiet.
+    """
+    assert _combined_class([first, second]) is FAIL_CLOSED_CLASS
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: FLOORED must also survive the conservative-fallback
+# accumulators (_scope_input_max, _table_scope_max, _conservative_floor).
+# Each seeds `best = DataClass.AGGREGATE` (LOW) and previously advanced only
+# on strict `dc.tier > best.tier` — since FLOORED is also LOW, that strict
+# comparison can never select it, deterministically, regardless of source
+# order. This is a from-scratch bug (not an ordering tie), distinct from
+# `_combined_class`'s own stickiness fix above.
+# ---------------------------------------------------------------------------
+
+
+def test_scope_input_max_carries_floored(
+    populated_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FLOORED must survive _scope_input_max's own LOW-tier accumulation."""
+    import moneybin.privacy.sql_lineage as lin
+
+    snapshot = get_current_schema_snapshot(populated_db)
+    select = parse_cached("SELECT dim_categories.class FROM core.dim_categories").find(
+        exp.Select
+    )
+    assert select is not None
+
+    def always_floored(key: tuple[str, str, str]) -> DataClass:  # noqa: ARG001
+        return DataClass.FLOORED
+
+    monkeypatch.setattr(lin, "_class_of_key", always_floored)
+
+    assert _scope_input_max(select, snapshot, "") is DataClass.FLOORED
+
+
+def test_table_scope_max_carries_floored(
+    populated_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FLOORED must survive _table_scope_max's own LOW-tier accumulation."""
+    import moneybin.privacy.sql_lineage as lin
+
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT class FROM core.dim_categories")
+
+    def always_floored(key: tuple[str, str, str]) -> DataClass:  # noqa: ARG001
+        return DataClass.FLOORED
+
+    monkeypatch.setattr(lin, "_class_of_key", always_floored)
+
+    assert _table_scope_max(tree, snapshot, "") is DataClass.FLOORED
+
+
+def test_conservative_floor_merge_carries_floored(
+    populated_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_conservative_floor's own per-select loop must not drop a FLOORED scope max.
+
+    Mocks its two callees directly (rather than ``_class_of_key``) so this
+    isolates ``_conservative_floor``'s own accumulation from whether
+    ``_scope_input_max`` / ``_table_scope_max`` are themselves correct — a
+    ``_class_of_key`` patch would let ``_table_scope_max``'s own (separately
+    tested) fix silently rescue a still-broken loop here, since it walks
+    every column of the same table and would also see FLOORED.
+
+    This pins the per-select loop (:658) specifically: ``_scope_input_max``
+    returns FLOORED here, so ``best`` is already FLOORED by the time the
+    ``table_dc`` merge (:660) runs, and that merge cannot discriminate a
+    fixed implementation from a strict-`>` one on this fixture — either way
+    it returns the ``best`` it was handed. See
+    ``test_conservative_floor_table_dc_merge_carries_floored`` for the
+    sibling fixture that isolates :660 instead.
+    """
+    import moneybin.privacy.sql_lineage as lin
+
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT class FROM core.dim_categories")
+
+    def fake_scope_input_max(
+        select: object, snapshot: object, sql_for_log: object
+    ) -> DataClass:
+        return DataClass.FLOORED
+
+    def fake_table_scope_max(
+        tree: object, snapshot: object, sql_for_log: object
+    ) -> DataClass:
+        return DataClass.AGGREGATE
+
+    monkeypatch.setattr(lin, "_scope_input_max", fake_scope_input_max)
+    monkeypatch.setattr(lin, "_table_scope_max", fake_table_scope_max)
+
+    assert _conservative_floor(tree, snapshot, "") is DataClass.FLOORED
+
+
+def test_table_scope_max_high_control_is_unaffected(populated_db: Database) -> None:
+    """Above-LOW behaviour must stay identical: a lone HIGH class still wins."""
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT account_id FROM core.fct_balances")
+
+    assert _table_scope_max(tree, snapshot, "") is DataClass.BALANCE
+
+
+def test_table_scope_max_critical_control_is_unaffected(populated_db: Database) -> None:
+    """Above-LOW behaviour must stay identical: disagreeing CRITICAL still fails closed."""
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT account_id FROM core.dim_accounts")
+
+    assert _table_scope_max(tree, snapshot, "") is FAIL_CLOSED_CLASS
+
+
+def test_conservative_floor_table_dc_merge_carries_floored(
+    populated_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_conservative_floor's table_dc merge (:660) must not drop a FLOORED table max.
+
+    Mirror of ``test_conservative_floor_merge_carries_floored`` with the two
+    callees' roles swapped: ``_scope_input_max`` returns AGGREGATE, so the
+    per-select loop's ``best`` going into the merge is AGGREGATE, not
+    FLOORED. Only the ``floor = _combined_class([best, table_dc])`` merge
+    itself can then carry FLOORED into the result — the sibling test above
+    can't pin that merge, because there ``best`` is already FLOORED before
+    the merge runs (a strict-`>` pre-fix merge returns `best` unchanged on a
+    LOW-tier tie, so it stays green either way). This fixture fails on a
+    strict-`>` merge and only passes when the merge itself is FLOORED-sticky.
+    """
+    import moneybin.privacy.sql_lineage as lin
+
+    snapshot = get_current_schema_snapshot(populated_db)
+    tree = parse_cached("SELECT class FROM core.dim_categories")
+
+    def fake_scope_input_max(
+        select: object, snapshot: object, sql_for_log: object
+    ) -> DataClass:
+        return DataClass.AGGREGATE
+
+    def fake_table_scope_max(
+        tree: object, snapshot: object, sql_for_log: object
+    ) -> DataClass:
+        return DataClass.FLOORED
+
+    monkeypatch.setattr(lin, "_scope_input_max", fake_scope_input_max)
+    monkeypatch.setattr(lin, "_table_scope_max", fake_table_scope_max)
+
+    assert _conservative_floor(tree, snapshot, "") is DataClass.FLOORED

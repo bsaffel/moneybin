@@ -247,13 +247,14 @@ widens the ad-hoc `sql_query` surface to internal schemas for
 debugging/inspection; its Phase 2 (M2O.2) is what finally makes gsheet/PDF
 **seed views** queryable. This umbrella is about the report *primitive*.
 
-They met in one place, and B decided it: **report creation is restricted to the
-fully-classified schemas** (`core`, `app`, `reports`). A report is a durable,
-re-runnable, shareable artifact, so its bar is higher than a one-off query's.
-`raw`/`prep` are not reachable through `sql_query` today, so the harder question
-— whether a durable artifact may be built over **floored** (undeclared) columns
-once Phase 2 opens them behind a content-net floor — is not yet live, and belongs
-to M2O.2 when it is. See [`reports-dynamic.md`](reports-dynamic.md) R2.
+They met in one place, and B decided it, then M2O.2 revisited it: **report
+creation tracks `sql_query`'s gate exactly** — `{core, app, reports, raw, prep}`.
+A report is a durable, re-runnable, shareable artifact, so its bar is higher than
+a one-off query's; what carries the higher bar is graduation, not creation. A
+report over **floored** (undeclared) columns runs and serves rows — redaction
+re-scans live values at every execution, so a stored `FLOORED` class is an
+instruction, not a cached verdict — while `report_materialization.DERIVABLE_UPSTREAM_SCHEMAS`
+still refuses to materialize it. See [`reports-dynamic.md`](reports-dynamic.md) R2.
 
 ## Origin
 
@@ -316,11 +317,12 @@ enumerate the *exposed* set.
   load-bearing**: while enforcement is deferred this is an audit-label accuracy
   gap, not a live access-control bypass.
 - ~~**Dynamic reports over floored columns**~~ — **scoped out in B, decided in
-  M2O.2.** Report creation is restricted to fully-classified schemas (`core`,
-  `app`, `reports`). `raw`/`prep` are not reachable through `sql_query` today,
-  so the question is not yet live; when M2O.2 opens them behind a content-net
-  floor, whether a *durable* artifact may be built over floored columns is
-  decided there. See [`reports-dynamic.md`](reports-dynamic.md) R2.
+  M2O.2: yes, with graduation withheld.** `SAVE_SCHEMAS` tracks `sql_query`'s
+  gate at `{core, app, reports, raw, prep}`, so a durable report may read
+  floored columns and re-scans their values at every execution;
+  `report_materialization.DERIVABLE_UPSTREAM_SCHEMAS` (`{core, app}`) still
+  refuses to materialize it, and `reports explain` names the blocker. See
+  [`reports-dynamic.md`](reports-dynamic.md) R2.
 - ~~**Milestone reconciliation.**~~ — **no conflict; the two addresses cover
   different work.** M2P.3 owns the report primitive's graduation path —
   dynamic → materialized, with D6's mechanical class capture, plus

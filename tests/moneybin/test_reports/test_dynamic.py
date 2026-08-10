@@ -24,6 +24,7 @@ from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.contract import ParamSpec
 from moneybin.reports._framework.derive import (
     DERIVATION_VERSION,
+    SAVE_SCHEMAS,
     class_fingerprint,
     derive_classification,
 )
@@ -31,6 +32,7 @@ from moneybin.reports._framework.dynamic import (
     DEGRADED_STALE_CLASSIFICATION,
     DEGRADED_UNREADABLE_ROW,
     DEGRADED_UNRESOLVABLE_QUERY,
+    _classed_params,  # pyright: ignore[reportPrivateUsage]
     declared_params,
     spec_from_row,
     stored_params,
@@ -183,9 +185,17 @@ def test_derivation_rejects_a_write(dynamic_db: Database) -> None:
 def test_derivation_rejects_a_table_outside_the_classified_schemas(
     dynamic_db: Database,
 ) -> None:
-    with pytest.raises(UserError, match="app, core, reports"):
+    """``meta`` stands in for the complement, and the message is derived, not typed.
+
+    Re-aimed from ``raw.plaid_accounts`` when M2O.2 admitted ``raw``/``prep``: the
+    fixture has to name a schema the allowlist still refuses, or the test asserts
+    nothing about the allowlist. ``meta`` is a real MoneyBin schema that stays
+    internal. The expected text comes from ``SAVE_SCHEMAS`` itself so a future
+    widening cannot leave a stale literal passing by coincidence.
+    """
+    with pytest.raises(UserError, match=", ".join(sorted(SAVE_SCHEMAS))):
         derive_classification(
-            dynamic_db, query_sql="SELECT * FROM raw.plaid_accounts", params=()
+            dynamic_db, query_sql="SELECT * FROM meta.internal_only", params=()
         )
 
 
@@ -1757,3 +1767,43 @@ def test_a_stored_json_default_is_read_back_as_its_declared_type() -> None:
         Decimal("10.50"),
     ]
     assert [parameter.required for parameter in declared] == [False, False]
+
+
+def test_a_floored_stored_default_is_dropped_on_read() -> None:
+    """The read-path twin of the save gate — defense in depth, tested directly.
+
+    ``_refuse_sensitive_defaults`` stops a FLOORED default being *written*, but
+    reclassification can raise a stored parameter's class after the fact, so this
+    is the half that holds when the write gate was correct at the time and the
+    class moved afterwards. Both must know FLOORED is unsafe to publish; a fix
+    that changed only the write gate would leave already-stored defaults being
+    republished unmasked by every catalog listing.
+
+    Called directly rather than through a saved report, because the state it
+    guards — a stored FLOORED default — is exactly the state the write gate now
+    refuses to create. Driving it end-to-end would require corrupting the store.
+    """
+    (classed,) = _classed_params(
+        (_param("memo", str, default="north branch", required=False),),
+        {"memo": DataClass.FLOORED},
+    )
+
+    assert classed.default is None
+    assert classed.required is True
+    assert classed.data_class is DataClass.FLOORED
+
+
+def test_a_genuinely_low_stored_default_survives_the_read_path() -> None:
+    """The control: dropping FLOORED must not drop every default.
+
+    ``AGGREGATE`` is LOW *and* passthrough, so it stays exactly as stored.
+    Without this, a read path that dropped every default would satisfy the test
+    above while quietly breaking every built-in report's optional parameters.
+    """
+    (classed,) = _classed_params(
+        (_param("months", int, default=6, required=False),),
+        {"months": DataClass.AGGREGATE},
+    )
+
+    assert classed.default == 6
+    assert classed.required is False

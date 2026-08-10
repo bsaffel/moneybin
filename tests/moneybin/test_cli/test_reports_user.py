@@ -514,10 +514,37 @@ def test_create_reports_unresolved_columns_as_a_warning_not_a_failure() -> None:
     assert "mystery" in result.output
 
 
+def test_create_names_the_floored_columns_and_the_scan_that_covers_them() -> None:
+    """A floored column returns values in the clear, so the note is the only tell.
+
+    The line has to say more than the column name: the author's question is
+    whether the column is protected, and "scanned per value, with these gaps" is
+    a different answer from ``unresolved_columns``' "masked whole".
+    """
+    service = _service(create=_save_outcome(floored_columns=("raw_note",)))
+
+    with _patch_database(), _patch_service(service):
+        result = runner.invoke(
+            app,
+            [
+                "reports",
+                "create",
+                "peek",
+                "--sql",
+                "SELECT note AS raw_note FROM prep.stg_tabular__transactions",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "raw_note" in result.output
+    assert "DECIMAL" in result.output
+
+
 @pytest.mark.parametrize(
     ("field", "alias"),
     [
         ("unresolved_columns", "amazon_spend"),
+        ("floored_columns", "costco_run"),
         ("cleared_downgrades", "wholefoods_total"),
     ],
 )

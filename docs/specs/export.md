@@ -124,16 +124,29 @@ remain in the artifact. It is protection against critical-identifier exposure,
 not a claim that the artifact is fully anonymized.
 
 A masked column is declared `VARCHAR` in the redacted artifact, whatever type the
-query returned. Every mask answers with text, so a column whose unredacted type is
+query returned. Most masks answer with text, so a column whose unredacted type is
 numeric holds `*****` once masked — Parquet declares its schema before writing, so
 a stale numeric declaration fails the whole file, and CSV would write the string
 under a manifest promising a number. The manifest, the data dictionary, and the
 Parquet schema therefore describe the artifact beside them rather than the
 unredacted export of the same query, and the two modes differ in declared type
-exactly where they differ in value. Reachable through a saved report, whose
-lineage carries a class through an expression (`SELECT length(last_four)`) without
-carrying the expression's type; no built-in report declares a masking class on an
-output column.
+exactly where they differ in value.
+
+`FLOORED` is the one class that breaks the answers-with-text rule, and the export
+path restores it rather than relying on it. It masks per value, not per column: an
+`int` under the 8-digit threshold comes back an `int`, and a `DECIMAL` or `float`
+comes back unchanged, so a single column can hold mixed types after redaction.
+`exports/redaction.py` carves `FLOORED` out of `_MASKED_DUCKDB_TYPE`'s invariant
+and `_stringify_floored_columns` coerces every non-`NULL` value in such a column
+to `str` before the writer sees it, which is what keeps the `VARCHAR` declaration
+honest. `NULL` is passed through as itself — a `VARCHAR` column accepts it, and
+stringifying it would write the literal `"None"` into the artifact.
+
+Two paths reach this. A saved report whose lineage carries a class through an
+expression (`SELECT length(last_four)`) without carrying the expression's type;
+no built-in report declares a masking class on an output column. And a user
+report reading `raw`/`prep`, where every undeclared column resolves to `FLOORED`
+— the common case since M2O.2, not the exotic one.
 
 A redacted export of a **user-created** report also withholds the executed
 query: the receipt's `sql` is `null`, and the unredacted artifact carries it

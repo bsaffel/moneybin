@@ -21,9 +21,11 @@ flowchart LR
   app -- joined into --> core
   consumers -- managed writes --> app
   consumers -. read-only SQL .-> core
+  consumers -. "read-only SQL<br/>masked by value shape" .-> raw
+  consumers -. "read-only SQL<br/>masked by value shape" .-> prep
 ```
 
-The arrow direction is the rule. Data flows left to right through `raw → prep → core → reports`. Consumers read from `core` and `reports` only. Managed writes from the CLI and MCP target `app.*` (notes, tags, splits, categorizations, match decisions, balance assertions) and `raw.*` (imports and manual entry). DDL, writes to `core.*`, and any write outside the allowlist are rejected by the privacy middleware on the MCP side and are not exposed by the CLI.
+The arrow direction is the rule. Data flows left to right through `raw → prep → core → reports`. Consumers read from `core` and `reports` for analysis; the agent-safe SQL paths (`sql_query` and `moneybin sql query`) also read `raw` and `prep` for inspection, masked by value shape rather than by column declaration. Managed writes from the CLI and MCP target `app.*` (notes, tags, splits, categorizations, match decisions, balance assertions) and `raw.*` (imports and manual entry). DDL, writes to `core.*`, and any write outside the allowlist are rejected by the privacy middleware on the MCP side and are not exposed by the CLI.
 
 ## Layer reference
 
@@ -31,8 +33,8 @@ The schemas correspond exactly to the directories under `src/moneybin/sqlmesh/mo
 
 | Schema | Materialized | Owner (writes) | Consumers (reads) | Purpose |
 |---|---|---|---|---|
-| `raw` | Tables | Python loaders, manual-entry service, Plaid sync | SQLMesh staging only | Untouched source data; re-importable from the original file or API response |
-| `prep` | Views | SQLMesh | SQLMesh core | Light cleaning, type casting, source unioning; internal to the pipeline |
+| `raw` | Tables | Python loaders, manual-entry service, Plaid sync | SQLMesh staging; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Untouched source data; re-importable from the original file or API response |
+| `prep` | Views | SQLMesh | SQLMesh core; agent-safe SQL (`sql_query`, `moneybin sql query`) for inspection | Light cleaning, type casting, source unioning; internal to the pipeline — shapes change without notice |
 | `core` | Views and tables | SQLMesh | All consumers (CLI, MCP, SQL shell, reports) | Canonical, deduplicated, multi-source; one table per real-world entity |
 | `app` | Tables | Services, managed-write MCP, migrations | Services and `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
 | `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports(report_id=...)`, future HTTP | Curated presentation models, one per report surface; read-only by design |
@@ -353,7 +355,7 @@ All read commands accept `--output json` and emit the standard response envelope
 
 ### From MCP
 
-The `sql_query` tool runs read-only DuckDB against `core.*` and `reports.*` (DDL and writes are rejected). For discovery, the `moneybin://schema` resource enumerates the *interface set* — the consumer-facing tables and views in `core.*` and `reports.*` declared as `TableRef` constants in code — with column-level descriptions auto-derived from SQLMesh model comments. Domain-specific tools (`transactions`, `reports(report_id=...)`, and `accounts`) are the higher-affordance path; `sql_query` is the escape hatch.
+The `sql_query` tool runs read-only DuckDB against five schemas — `core.*`, `app.*`, `reports.*`, `raw.*`, and `prep.*`; `meta` and `seeds` are refused (DDL and writes are rejected too). `raw` and `prep` rows are masked by value shape rather than by column declaration — see [`sql-access.md`](sql-access.md#sql_query-rules-mcp-tool-and-moneybin-sql-query-cli). For discovery, the `moneybin://schema` resource enumerates the *interface set* — the consumer-facing tables and views in `core.*` and `reports.*` declared as `TableRef` constants in code — with column-level descriptions auto-derived from SQLMesh model comments. Domain-specific tools (`transactions`, `reports(report_id=...)`, and `accounts`) are the higher-affordance path; `sql_query` is the escape hatch.
 
 Sensitivity classification and critical-field masking are wired today. The consent ledger exists, but global consent gating is not yet enforced.
 

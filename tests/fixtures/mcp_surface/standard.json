@@ -1,5 +1,5 @@
 {
-  "sha256": "4b03cab1c5bed8ace1c1b5514b833bc2bdaf5e54ce3b3369649270ebf5523b41",
+  "sha256": "a0bb19b0226cad556677cc14e10e6f741a72206e514fbdc34504c8ccc4898937",
   "tool_count": 49,
   "tools": [
     {
@@ -3049,7 +3049,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>), exactly like the typed tools \u2014 raw SQL is not a privacy bypass. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
+        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>). core/app/reports declare a class for every column. raw and prep declare 34 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes \u2014 a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3070,12 +3070,12 @@
         },
         "name": "sql_query"
       },
-      "description_bytes": 517,
+      "description_bytes": 852,
       "input_schema_bytes": 150,
       "name": "sql_query",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 857
+      "total_bytes": 1192
     },
     {
       "annotation_bytes": 89,
@@ -5027,5 +5027,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 54816
+  "total_bytes": 55151
 }

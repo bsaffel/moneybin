@@ -1,7 +1,7 @@
 <!-- Last reviewed: 2026-07-24 -->
 # Data Model
 
-The user-facing data model. Tables in `core.*`, `reports.*`, `app.*`, `meta.*`, and `seeds.*` are the surfaces consumers (CLI, MCP, your own SQL) read from. This page covers each table's grain, key columns, and what they mean. For the pipeline that fills them, see [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md).
+The user-facing data model. Tables in `core.*`, `reports.*`, and `app.*` are the surfaces consumers (CLI, MCP, your own SQL) read from for analysis; `raw.*` and `prep.*` are readable for inspection through the agent-safe SQL paths. This page covers each table's grain, key columns, and what they mean. For the pipeline that fills them, see [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md).
 
 Schema is stable but not yet frozen — see [`docs/architecture.md`](../architecture.md) for the pre-v1 evolution posture. Tables here are verified against their SQLMesh model in [`src/moneybin/sqlmesh/models/`](../../src/moneybin/sqlmesh/models/) (`core.*`, `reports.*`, `meta.*`, `seeds.*`) or DDL in [`src/moneybin/sql/schema/`](../../src/moneybin/sql/schema/) (`app.*`, `raw.*`); per-table file links are omitted since file names match table names.
 
@@ -9,13 +9,15 @@ Schema is stable but not yet frozen — see [`docs/architecture.md`](../architec
 
 | Schema | Purpose | Materialization | Read? | Write? |
 |---|---|---|---|---|
-| `raw` | Source-specific tables, preserved as imported. Loaders write here. | Tables | Internal | Loaders only |
-| `prep` | Light staging — type casts, renames, the matched/merged intermediate. | Views | **No** | SQLMesh only |
+| `raw` | Source-specific tables, preserved as imported. Loaders write here. | Tables | Inspection only | Loaders only |
+| `prep` | Light staging — type casts, renames, the matched/merged intermediate. | Views | Inspection only | SQLMesh only |
 | `core` | Canonical analytical tables — `fct_*`, `dim_*`, `bridge_*`. | Views and tables | Yes | **Blocked** |
 | `app` | User state — categorizations, notes, tags, splits, budgets, settings. | Tables | Yes | Via services / MCP write tools |
-| `meta` | Cross-source provenance + lineage. | Views | Yes | SQLMesh / system |
-| `seeds` | Reference data shipped with MoneyBin (categories). | CSV-backed tables | Yes | SQLMesh |
+| `meta` | Cross-source provenance + lineage. | Views | **Refused** | SQLMesh / system |
+| `seeds` | Reference data shipped with MoneyBin (categories). | CSV-backed tables | **Refused** | SQLMesh |
 | `reports` | Curated presentation views, one per CLI/MCP report. | Views | Yes | **Blocked** |
+
+"Read?" answers for the agent-safe SQL surface — the `sql_query` MCP tool and `moneybin sql query`. Those admit `core`, `app`, `reports`, `raw`, and `prep`, and refuse `meta` and `seeds` by `DESCRIBE` as by `SELECT`. `raw` and `prep` are an inspection exception, not a widening of the analysis contract: their shapes change without notice, and they carry 34 column declarations with every other value masked by a value-shape scan rather than by a declared class. `moneybin db shell` and `moneybin db query` are raw operator access with no privacy middleware; they read every schema and mask nothing.
 
 Writes to `core.*`, `reports.*`, and `meta.*` are blocked by managed-write middleware. Mutations are scoped to `app.*` (through services or MCP write tools) and loader-only `raw.*`. The general SQL surface is read-only.
 
@@ -683,7 +685,7 @@ What not to do, and why.
 
 - **Don't `SUM(amount) FROM core.fct_transactions` without filtering `is_transfer = FALSE`.** Transfers appear as a debit on one account and credit on another. They cancel in aggregate over the whole table, but they double-count within any account-level slice.
 - **Don't aggregate both `core.fct_transactions.amount` and `core.fct_transaction_lines.line_amount` in the same query.** Pick one grain. The lines view sums to the same totals as the fact (whole = parent.amount, split lines sum to parent.amount); joining both yields 2×.
-- **Don't read from `prep.*`.** It's internal staging — column shapes can change without notice and no catalog comments are emitted. Use `core.*`.
+- **Don't analyze from `prep.*` or `raw.*`.** The agent-safe SQL paths read both, but for inspection only — column shapes change without notice, no catalog comments are emitted, and masking there is a value-shape scan rather than a declared class. Answer questions from `core.*`; reach for `prep.*` / `raw.*` only when `core.*` cannot say what an importer actually produced.
 - **Don't `SUM(amount)` across mixed currencies.** The `reports.*` views already group by `currency_code`, but a query of your own over `core.fct_transactions`, `core.fct_transaction_lines`, or `core.fct_balances` does not — nothing converts, so adding dollars to euros yields a number in no currency. Group by `currency_code`, or filter to one.
 - **Don't drop `currency_code` when you re-aggregate a `reports.*` view.** Every money-summing view is one row per grain **per currency**; a `GROUP BY` that omits it silently re-blends the currencies the view separated.
 - **Don't filter on `core.uncategorized_queue.source_id`.** It's a NULL placeholder today.

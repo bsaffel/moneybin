@@ -78,7 +78,7 @@ Every path where data might leave the user's machine falls into one of four tier
 **Consent prompt example:**
 > MoneyBin MCP tools can share transaction details (descriptions, amounts, dates) with **Anthropic (Claude)** to answer your questions.
 >
-> **Privacy:** Anthropic does not train on API data. Account numbers and SSNs are always masked.
+> **Privacy:** Anthropic does not train on API data. Columns classed as account or routing numbers are always masked. Spreadsheet and importer columns in `raw`/`prep` are scanned by value instead — that scan misses a short account number, one written with dashes, and any number stored as a decimal.
 >
 > Allow? This can be revoked anytime with `moneybin privacy revoke mcp-data-sharing`. [y/N]
 

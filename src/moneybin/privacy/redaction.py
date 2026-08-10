@@ -40,7 +40,8 @@ from typing import Annotated, Any, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
-from moneybin.privacy.taxonomy import DataClass
+from moneybin.log_sanitizer import mask_pii_shaped
+from moneybin.privacy.taxonomy import DataClass, Tier
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,54 @@ def _passthrough(value: Any, _consent: ConsentSet | None) -> Any:
     return value
 
 
+def _mask_floored(value: Any, _consent: ConsentSet | None) -> Any:
+    """FLOORED → pass through, masking only account/routing/SSN shapes.
+
+    Typed ``Any`` for the same reason as ``_mask_unresolved``: an undeclared
+    raw/prep column's TYPE is unknown too, and this transform must not raise on
+    a STRUCT or a BIGINT and fail the query OPEN through the caller's handler.
+
+    The net covers ``str`` and ``int`` only — ``float``, ``Decimal``, and
+    ``bytes`` pass through untouched, deliberately. prep amounts are DECIMAL
+    written without thousands separators, so netting them would mask most
+    large amounts, the same un-comma'd-amount hole
+    ``test_mask_pii_shaped_mangles_an_uncommad_large_amount`` already pins.
+    The resulting asymmetry is real and accepted: a BIGINT amount-in-cents IS
+    masked here while a DECIMAL account number is not.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        masked, _ = mask_pii_shaped(value)
+        return masked
+    # bool subclasses int, so this branch is inert today: str(bool) is never a
+    # digit run, so the int branch below already returns a bool unchanged.
+    # Kept explicit so a future change to the int branch can't start masking a
+    # bool without a test noticing.
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        masked, did_mask = mask_pii_shaped(str(value))
+        return masked if did_mask else value
+    if isinstance(value, dict):
+        # Keys are floored too. A DuckDB MAP takes its keys from row data
+        # (`map([account_number], [1])`), so a key is as much a value as the
+        # thing it points at; only a STRUCT's field names are query-authored,
+        # and flooring those costs nothing. Two keys that mask alike collapse
+        # into one entry — accepted, and pinned by
+        # `test_floored_collapses_keys_that_mask_alike`: losing a row from an
+        # already-masked result beats publishing the number that keyed it.
+        return {
+            _mask_floored(key, _consent): _mask_floored(item, _consent)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_mask_floored(item, _consent) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mask_floored(item, _consent) for item in value)
+    return value
+
+
 def _literal_values(declared_type: Any) -> tuple[Any, ...] | None:
     """Return a field's literal values after unwrapping ``Annotated``."""
     if get_origin(declared_type) is Annotated:
@@ -190,6 +239,9 @@ _TRANSFORMS: dict[DataClass, Any] = {
     DataClass.AGGREGATE: _passthrough,
     DataClass.RECORD_ID: _passthrough,
     DataClass.TIMESTAMP_OBSERVABILITY: _passthrough,
+    # LOW-tier, but not passthrough: an undeclared raw/prep column's content
+    # net, masking only account/routing/SSN shapes (see FLOORED's docstring).
+    DataClass.FLOORED: _mask_floored,
 }
 
 
@@ -254,6 +306,40 @@ def mask_strength(data_class: DataClass) -> MaskStrength:
     if outputs[0] == outputs[1]:
         return MaskStrength.WHOLE
     return MaskStrength.PARTIAL
+
+
+def is_safe_to_publish_verbatim(data_class: DataClass) -> bool:
+    """True when a value of ``data_class`` may appear unmasked and unexecuted.
+
+    The shared gate for surfaces that publish a *stored or bound* value outside
+    the redaction path — a parameter default copied into the catalog entry, a
+    binding spliced into rendered SQL. None of them run ``redact_records``, so
+    the class is all they have to go on.
+
+    **Both halves are load-bearing, and neither alone is correct.**
+
+    The tier half is the original rule: a class above ``Tier.LOW`` is too
+    sensitive to publish. Keeping it is what stops this from being a widening —
+    several classes above LOW still ``_passthrough`` today (PR 3 wires their
+    bucketing), so a mask-strength-only rule would start allowing stored
+    defaults on every one of them.
+    ``test_verbatim_gate_adds_exactly_floored_to_the_old_tier_rule`` derives that
+    set from the registry and asserts the gate's exact shape; listing the names
+    here would restate its contents and go false the moment PR 3 lands one of
+    those transforms, with nothing turning red.
+
+    The strength half is the addition. ``FLOORED`` is ``Tier.LOW`` because of
+    what its transform does — re-scanning each value at execution — not because
+    its values are insensitive, and the tier test read a tier as a claim about
+    content. Any predicate that asks "is this tier high?" before publishing a
+    value verbatim has the same bug; ask this instead.
+
+    Measured from ``mask_strength``, never from a list of "classes that mask",
+    for the reason that function's own docstring gives.
+    """
+    return data_class.tier <= Tier.LOW and mask_strength(data_class) is (
+        MaskStrength.PASSTHROUGH
+    )
 
 
 def has_active_transform(payload_type: Any) -> bool:

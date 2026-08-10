@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
+from moneybin.privacy.sql_query import execute_sql_query
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.registry import spec_of
 from moneybin.reports.definitions import ALL_REPORTS
@@ -229,18 +230,75 @@ def test_build_schema_doc_includes_interface_views(
     assert "core.dim_categories" in names
 
 
-def test_beyond_the_interface_query_executes(
+def test_beyond_the_interface_query_passes_the_sql_query_gate(
     schema_catalog_db: Database,
 ) -> None:
-    """The catalog query in the footer must run via the same connection.
+    """The catalog query must run through `execute_sql_query`, not just DuckDB.
 
-    Regression test: previously used `table_schema` (an information_schema
-    column), which fails on `duckdb_tables()`. The query must use
-    `schema_name` so power users / LLMs copying it can run it directly.
+    Regression test for the defect this footer shipped with for the life of the
+    feature: the query was a `duckdb_tables()` SELECT, which is valid DuckDB but
+    is REFUSED by `sql_query`'s schema gate — a table-valued function parses to a
+    table node with an empty schema and an empty name, and `tables_outside_schemas`
+    can never resolve that to an allowed schema. The footer is served only on the
+    agent path (`moneybin://schema`, `sql_schema`), so the surface it is advertised
+    on is the one it did not run on.
+
+    The predecessor of this test called `schema_catalog_db.execute(query)` — the
+    raw `Database` connection — which reaches DuckDB without ever reaching the
+    gate, so it stayed green through two rewrites of the string it covers
+    (`.claude/rules/testing.md`, "A Fixture That Never Reaches the Predicate
+    Proves Nothing"). Drive the real primitive instead.
     """
     doc = build_schema_doc()
     query = doc["beyond_the_interface"]["catalog_query"]
-    schema_catalog_db.execute(query).fetchall()
+
+    result = execute_sql_query(schema_catalog_db, query, max_rows=1000)
+
+    assert result.records, "the catalog query must return the objects that exist"
+
+
+def test_beyond_the_interface_query_lists_raw_and_prep_views(
+    schema_catalog_db: Database,
+) -> None:
+    """The catalog query must surface the objects the footer exists to open.
+
+    `raw` and `prep` are deliberately absent from the curated `tables` list, so
+    this query is an agent's only route to them — and nearly all of them are
+    VIEWS: every `prep` staging model, plus the `raw.gsheet_<alias>` /
+    `raw.pdf_<alias>` seed views minted at runtime. A discovery query that lists
+    tables but not views would name none of them.
+    """
+    schema_catalog_db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    schema_catalog_db.execute(
+        "CREATE OR REPLACE VIEW raw.gsheet_probe AS SELECT 1 AS id"
+    )
+    schema_catalog_db.execute("CREATE OR REPLACE VIEW prep.stg_probe AS SELECT 1 AS id")
+
+    doc = build_schema_doc()
+    result = execute_sql_query(
+        schema_catalog_db, doc["beyond_the_interface"]["catalog_query"], max_rows=1000
+    )
+
+    listed = {f"{r['schema']}.{r['name']}" for r in result.records}
+    assert "raw.gsheet_probe" in listed
+    assert "prep.stg_probe" in listed
+
+
+def test_beyond_the_interface_note_does_not_route_agents_to_the_bypass(
+    schema_catalog_db: Database,
+) -> None:
+    """The footer must not hand an agent an unmasked operator command.
+
+    This note is served only to an MCP agent. `moneybin db query`, `db shell`,
+    and `db ui` are direct database access with no privacy middleware
+    (`.claude/rules/mcp.md`, "When CLI-only is justified"), so naming one here as
+    the way to read what `sql_query` refuses turns a refusal into a signpost.
+    """
+    note = build_schema_doc()["beyond_the_interface"]["note"]
+
+    assert "db query" not in note
+    assert "db shell" not in note
+    assert "db ui" not in note
 
 
 def test_build_schema_doc_columns_carry_type_and_comment(

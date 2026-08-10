@@ -65,7 +65,7 @@ envelope contains once it reaches the model.
 |---|---|---|---|
 | Transaction reads (`transactions`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
 | Report views (`reports(report_id="core:networth")`, `reports(report_id="core:spending")`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
-| Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app`/`reports` (amounts, descriptions, merchants, dates, locations) | Account/routing numbers (by column classification) | Per-call event |
+| Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app`/`reports`/`raw`/`prep` (amounts, descriptions, merchants, dates, locations, untouched importer output) | Account/routing numbers — by column class in `core`/`app`/`reports`, by value shape in `raw`/`prep` | Per-call event |
 | Categorization assist (`transactions_categorize_assist`) | Scrubbed description (**merchant kept**, amount as a sign) + structural fields incl. `check_number` | Amount value, date, account ID, locations, embedded PII | Per-call event |
 | Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |
 | Exports (`export_run`, `exports_set`) | Export configuration and the receipt (destination, format, row counts, checksums, and export ID) — no row data | Nothing to mask in the receipt; the artifact itself masks account/routing numbers when `redacted` | Per-call event; destination changes also create an audit row |
@@ -100,13 +100,17 @@ column through the SQL and masks by the resolved class (a column it can't resolv
 **fails closed** to the most-sensitive treatment), while the report views mask by a **declared
 per-report column→class map** — lineage tracing is deliberately *not* used there
 (a `reports.*` view is `SELECT * FROM <internal table>`, so tracing would classify
-the pointer and leak; per ADR-013). Either way raw SQL is not a bypass: `SELECT
-last_four FROM core.dim_accounts` comes back masked, and an undeclared report
-column fails closed.
+the pointer and leak; per ADR-013). Where a column carries a declared class,
+raw SQL is not a bypass: `SELECT last_four FROM core.dim_accounts` comes back
+masked, and an undeclared report column fails closed. `raw`/`prep` columns
+mostly carry no declaration, and there the floor is a value scan — weaker, and
+named [below](#what-the-agent-gets-is-scoped-to-what-it-asked-for).
 
-**The masking follows a field's declared class, not a content scan — so a raw
-account number that rides *inside* a field classified as something else is not
-caught.** Three real cases, disclosed rather than hidden:
+**On every typed surface the masking follows a field's declared class, not a
+content scan — so a raw account number that rides *inside* a field classified as
+something else is not caught.** (`sql_query` reads of `raw`/`prep` are the one
+exception, and they scan values; see [below](#what-the-agent-gets-is-scoped-to-what-it-asked-for).)
+Three real cases, disclosed rather than hidden:
 
 - **Free-text notes and descriptions** — an account number you typed into a note,
   or one a bank embedded in a description, reaches the model verbatim (see [Not
@@ -129,7 +133,10 @@ class governs, and it isn't `critical`.
 
 > The operator commands `moneybin db query`, `db shell`, and `db ui` are the
 > deliberate exception — they are raw, unmasked, local operator access and print
-> a banner saying so. They involve no AI. Everything on the agent path is masked.
+> a banner saying so. They involve no AI. On the agent path every CRITICAL-classed
+> column is masked, and `raw`/`prep` values are scanned for account and SSN shapes
+> — which is weaker, and the gap is named
+> [below](#what-the-agent-gets-is-scoped-to-what-it-asked-for).
 
 ---
 
@@ -184,17 +191,27 @@ other field in the clear.
 
 The provider sees the *results of the queries the agent ran*, not your database:
 
-- `sql_query` is walled to the `core`, `app`, and `reports` schemas, is
-  read-only (writes, DDL, and file/URL functions are rejected), and caps
-  results at 1,000 rows with a 30-second limit. It cannot **read row values**
-  from `raw`/`prep`, read local files, or exfiltrate to a URL. The wall binds
-  every statement that names a table, `DESCRIBE raw.plaid_transactions` as
-  much as the `SELECT`.
+- `sql_query` is walled to five schemas — `core`, `app`, `reports`, `raw`, and
+  `prep` — is read-only (writes, DDL, and file/URL functions are rejected), and
+  caps results at 1,000 rows with a 30-second limit. It cannot read `meta` or
+  `seeds`, read local files, or exfiltrate to a URL. The wall binds every
+  statement that names a table, `DESCRIBE meta.model_freshness` as much as the
+  `SELECT`.
   One statement names no table and so is not gated: `SHOW ALL TABLES` lists
   the catalog, and DuckDB's listing carries a `column_names` and
   `column_types` array per table. An agent can therefore still learn the
-  *shape* of `raw`/`prep` — table names, column names, and types — but no
+  *shape* of `meta` and `seeds` — table names, column names, and types — but no
   statement returns their values.
+- **`raw` and `prep` are readable, and masked differently.** An agent can read
+  what an importer produced — the point is answering "did my import land
+  correctly?" without an operator shell. 34 columns across 17 tables carry an
+  explicit CRITICAL declaration; every other value is scanned at read time and
+  masked when it looks like an SSN or an unbroken run of 8 or more digits. A
+  4-to-7 digit account number, one written `1234-5678`, or one stored as a
+  decimal passes through. For a `raw.gsheet_<alias>` or `raw.pdf_<alias>` view —
+  minted from your own spreadsheet headers or document fields — that scan is the
+  only masking there is. Disconnect the sheet with `moneybin gsheet disconnect
+  <connection-id> --purge` if its cells should not reach a model.
 - Typed reads return the rows matching the filter the agent chose, capped and
   paginated.
 

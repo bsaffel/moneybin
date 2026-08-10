@@ -28,7 +28,7 @@ Capabilities below are shipped and exercised end-to-end. Work that has not shipp
 
 ## Transformations and refresh
 
-- **Layered SQLMesh pipeline** — `raw` → `prep` (staging) → `core` (canonical facts / dimensions / bridges). Plus `app.*` for user-managed state and `reports.*` for curated views. Consumers (CLI, MCP, SQL clients) read from `core.*` and `reports.*`; `prep` is internal. -> [Data pipeline guide](guides/data-pipeline.md)
+- **Layered SQLMesh pipeline** — `raw` → `prep` (staging) → `core` (canonical facts / dimensions / bridges). Plus `app.*` for user-managed state and `reports.*` for curated views. Consumers (CLI, MCP, SQL clients) read from `core.*` and `reports.*` for analysis; the agent-safe SQL paths also read `raw.*` and `prep.*` for inspection, masked by value shape rather than by column declaration. -> [Data pipeline guide](guides/data-pipeline.md)
 - **Cross-source dedup** — SHA-256 content hashes with golden-record merge across CSV, OFX, and Plaid. Config-driven source priority. Three or more copies of the same transaction collapse to one record even when duplicates span sources *and* overlapping files (N-way collapse via a union-find spanning forest). -> [Data pipeline guide](guides/data-pipeline.md)
 - **Transfer detection** — Cross-account matching with a two-signal scoring engine (date distance, keyword); produces `core.bridge_transfers` and `is_transfer` / `transfer_pair_id` on `fct_transactions`. -> [Data pipeline guide](guides/data-pipeline.md)
 - **Refresh umbrella** — `moneybin refresh` (CLI) and `refresh_run` (MCP) are the single entry point for the default `gsheet → match → transform → categorize → identity` cascade. Pass `--step` (CLI) or `steps=[...]` (MCP) to scope sub-operations. `sync pull` and `import files` invoke refresh automatically unless the caller explicitly opts out. -> [Data pipeline guide](guides/data-pipeline.md)
@@ -93,16 +93,28 @@ report alongside the eight above. It appears in `reports list`, runs through
 `reports run`, and exports through `moneybin export report` — the same catalog,
 the same response envelope, the same masking. You never declare privacy classes:
 MoneyBin derives them from the SQL at save time and stores them, so a routing
-number in your own report is masked exactly as in a built-in one. If an upstream
-column is later reclassified as more sensitive, the saved report masks that
-column instead of serving the class it captured. `reports set` re-derives on any
-SQL or parameter change, `reports delete` is undoable via `system audit undo`,
+number in a column MoneyBin classifies is masked exactly as in a built-in one.
+A report reading `raw.*` or `prep.*` is the one place that parity does not
+hold: those columns are largely undeclared, so a routing number there comes
+back as `****...NNNN` — last four retained — where a declared one returns
+`*****`. The scan behind that covers strings and integers, so an account number
+of 4 to 7 digits, one written with separators (`1234-5678`), or one stored as
+`DECIMAL` or `FLOAT` passes through in full. `reports create` names those
+columns when it saves, so which columns ride the scan is on the receipt rather
+than something to work out later. If an upstream column is later reclassified
+as more sensitive, the saved report masks that column instead of serving the
+class it captured. `reports set` re-derives on any SQL or parameter change,
+`reports delete` is undoable via `system audit undo`,
 and `reports reclassify` lowers one column's masking floor on an explicit human
 confirmation — audited, and the only path that does so.
 
 Parameters are declared and bound by name: `--param month:str` at create,
-`--param month=2026-01` at run. Reads are limited to `core.*`, `app.*`, and
-`reports.*`, and only row-returning read-only SELECTs are accepted.
+`--param month=2026-01` at run. Reads are limited to `core.*`, `app.*`,
+`reports.*`, `raw.*`, and `prep.*`, and only row-returning read-only SELECTs
+are accepted. A report reading `raw.*` or `prep.*` saves and runs, but can
+never be promoted to a materialized `reports.*` view — materialization derives
+only from `core.*` and `app.*`, and `moneybin reports explain` names the
+blocker.
 
 - **`moneybin reports explain <handle>`** — Any report, any tier, states its
   work: the query in both an executed and a stored-template form, each output
@@ -138,7 +150,7 @@ Parameters are declared and bound by name: `--param month:str` at create,
 - **Sensitivity tiers** — MoneyBin uses `low` / `medium` / `high` / `critical`. Static tools derive classification from typed response payloads; variable projections classify dynamically under a declared maximum. Critical fields are masked today; global consent-based response gating remains deferred. See [architecture](architecture.md).
 - **Action hints** — Successful responses include an `actions[]` array suggesting next-step tool calls (e.g., after a successful import, an action hint points at `refresh_run`), so agents can chain without prompt-side instructions for common flows. -> [MCP server guide](guides/mcp-server.md)
 - **Curated schema resource** — `moneybin://schema` MCP resource (and `sql_schema` tool mirror) exposes core + select app interface tables with column comments and example queries. -> [Data model reference](reference/data-model.md)
-- **Read-only SQL — privacy-safe on both surfaces** — `sql_query` (MCP) and `moneybin sql query` (CLI) run read-only `SELECT`/`WITH`/`DESCRIBE`/`SHOW` against the `core` and `app` schemas, sharing one enforcement primitive: writes, file-access functions, `PRAGMA`, and `EXPLAIN` are blocked, the schema limit binds catalog statements as well as `SELECT`, and each output column is classified via sqlglot lineage so CRITICAL fields (account/routing numbers) are masked (`****<last4>`) — raw SQL is not a privacy bypass on either surface. App-state mutations (notes, tags, splits, rules) flow through dedicated tools, not raw SQL. (`moneybin db query`/`shell`/`ui` are raw, unmasked operator access.)
+- **Read-only SQL — privacy-safe on both surfaces** — `sql_query` (MCP) and `moneybin sql query` (CLI) run read-only `SELECT`/`WITH`/`DESCRIBE`/`SHOW` against five schemas — `core`, `app`, `reports`, `raw`, and `prep`; `meta` and `seeds` are refused — sharing one enforcement primitive: writes, file-access functions, `PRAGMA`, and `EXPLAIN` are blocked, the schema limit binds catalog statements as well as `SELECT`, and each output column is classified via sqlglot lineage so CRITICAL fields (account/routing numbers) are masked (`****<last4>`). `raw` and `prep` carry no per-column declarations, so 34 columns across 17 tables are declared CRITICAL by hand and every other value is scanned for account and SSN shapes at execution. Neither surface is a way around the masking the typed tools apply — but both reach importer output no typed tool exposes, under the weaker of the two mechanisms. App-state mutations (notes, tags, splits, rules) flow through dedicated tools, not raw SQL. (`moneybin db query`/`shell`/`ui` are raw, unmasked operator access.)
 - **MCP install across eight clients** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex (CLI / Desktop / IDE), and the ChatGPT desktop app (which hosts Codex and shares its config). `moneybin mcp install --client <name>` writes the client config. ChatGPT on the **web/mobile** cannot reach a local stdio server; remote MCP transport is planned on the [roadmap](roadmap.md). -> [MCP clients guide](guides/mcp-clients.md)
 - **First-run setup, in session** — Connect before creating a profile and MoneyBin sets itself up on the first tool call instead of failing. Elicitation-capable clients (e.g. Claude Desktop) are prompted for a profile name and the encrypted profile is created in place — no terminal step, no restart; tools-only clients get one clear message pointing at `moneybin profile create`. -> [MCP server guide](guides/mcp-server.md)
 - **Pre-v1 contract record** — Tool and envelope changes are recorded in the CHANGELOG. The current docs and checked-in surface snapshot define the 49-tool registry; no deprecated MCP aliases are advertised.
@@ -156,7 +168,7 @@ Parameters are declared and bound by name: `--param month:str` at create,
 ## SQL access
 
 - **Read-only SQL** — Connect any DuckDB client to the encrypted profile file. `moneybin db shell` opens an interactive shell; DuckDB UI works on the same file. -> [SQL access guide](guides/sql-access.md)
-- **Layered schemas** — Consumers read from `core.*` and `reports.*`. Full schema reference: [Data model reference](reference/data-model.md) · [Architecture](architecture.md).
+- **Layered schemas** — Consumers read from `core.*` and `reports.*` for analysis, plus `raw.*` and `prep.*` for inspection through the agent-safe SQL paths. Full schema reference: [Data model reference](reference/data-model.md) · [Architecture](architecture.md).
 
 ## Observability
 

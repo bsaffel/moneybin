@@ -31,7 +31,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.log_sanitizer import sql_digest
-from moneybin.privacy.redaction import mask_strength
+from moneybin.privacy.redaction import is_safe_to_publish_verbatim, mask_strength
 from moneybin.privacy.sql_lineage import (
     FAIL_CLOSED_CLASS,
     SchemaSnapshot,
@@ -50,7 +50,7 @@ from moneybin.privacy.sql_query import (
     classes_by_result_column,
     validate_read_only_query,
 )
-from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ParamSpec
 
 logger = logging.getLogger(__name__)
@@ -63,11 +63,14 @@ logger = logging.getLogger(__name__)
 #: report on the match branch, serving the old class indefinitely.
 DERIVATION_VERSION: Final = 1
 
-#: Report creation is restricted to fully-classified schemas. ``raw``/``prep``
-#: are not reachable through ``sql_query`` either; when M2O.2 opens them behind
-#: a content-net floor, whether a *durable* artifact may be built over floored
-#: columns is decided there.
-SAVE_SCHEMAS: Final = frozenset({"core", "app", "reports"})
+#: Report creation tracks the ``sql_query`` gate exactly. M2O.2 answered the
+#: question this constant used to defer: a durable report MAY read raw/prep.
+#: Redaction runs per value at execution, so a stored FLOORED is a standing
+#: instruction to re-scan live values, not a cached verdict — and graduation to
+#: a materialized ``reports.*`` view stays blocked by
+#: ``report_materialization.DERIVABLE_UPSTREAM_SCHEMAS``, surfaced through
+#: ``reports explain``.
+SAVE_SCHEMAS: Final = frozenset({"core", "app", "reports", "raw", "prep"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,12 +107,20 @@ class DerivedClassification:
     ``classes`` is keyed by **DuckDB result column name**, which is what
     ``classify_columns`` looks up at run time. ``unresolved_columns`` feeds R3's
     non-blocking save note — an unresolvable projection never fails the save.
+
+    ``floored_columns`` is the second, quieter half of that note. A FLOORED
+    column returns values in the clear, so nothing else in the response tells
+    the author its protection is a value-shape scan rather than a declaration —
+    and the scan has stated gaps (4-to-7 digit runs, separator-formatted
+    values, and every ``DECIMAL`` or ``FLOAT``). Disjoint from
+    ``unresolved_columns`` by construction: FLOORED is not ``FAIL_CLOSED_CLASS``.
     """
 
     classes: Mapping[str, DataClass]
     parameter_classes: Mapping[str, DataClass]
     fingerprint: str
     unresolved_columns: tuple[str, ...]
+    floored_columns: tuple[str, ...]
 
 
 def annotation_of(token: str) -> type:
@@ -249,6 +260,11 @@ def derive_classification(
             name
             for name, data_class in classes.items()
             if data_class is FAIL_CLOSED_CLASS
+        ),
+        floored_columns=tuple(
+            name
+            for name, data_class in classes.items()
+            if data_class is DataClass.FLOORED
         ),
     )
 
@@ -550,7 +566,7 @@ def _qualified_or_refuse(
 def _refuse_sensitive_defaults(
     params: Sequence[ParamSpec], parameter_classes: Mapping[str, DataClass]
 ) -> None:
-    """Refuse a stored default on a parameter classed above LOW tier.
+    """Refuse a stored default the catalog could not publish safely.
 
     ``_parameter_schema`` copies a non-required parameter's default verbatim
     into the published parameter schema, and the catalog entry classes that
@@ -558,6 +574,11 @@ def _refuse_sensitive_defaults(
     filter's default would be returned in the clear by a bare catalog listing,
     no execution required. A default masked to ``'*****'`` is not a useful
     default anyway, so the parameter becomes required instead.
+
+    The test is :func:`is_safe_to_publish_verbatim`, not ``tier > Tier.LOW``.
+    A FLOORED parameter — an undeclared ``raw``/``prep`` column — is ``Tier.LOW``
+    yet masks per value at execution, and this path never executes anything, so
+    a tier-only test published it in the clear.
 
     This lives in the same function that derives the class so no path can reach
     a stored default without passing it. The run path re-derives with defaults
@@ -567,7 +588,7 @@ def _refuse_sensitive_defaults(
         if parameter.required:
             continue
         data_class = parameter_classes.get(parameter.name, FAIL_CLOSED_CLASS)
-        if data_class.tier > Tier.LOW:
+        if not is_safe_to_publish_verbatim(data_class):
             # The name is withheld from the message and carried in `details`
             # instead. A parameter name is the author's own text — `amazon_spend`
             # is as plausible a merchant name as a filter one — and in text mode

@@ -163,12 +163,13 @@ def test_an_expression_over_a_masked_column_answers_instead_of_erroring(
 
 @pytest.mark.integration
 def test_disallowed_schema_refused(mcp_db: object) -> None:  # type: ignore[type-arg]
-    """Queries against schemas outside core/app are refused (closes the leak).
+    """Queries against schemas outside the allowlist are refused (closes the leak).
 
     The gate fires on the schema name before execution, so the table need not
-    exist — raw.* is rejected regardless.
+    exist — meta.* is rejected regardless. Re-aimed from ``raw`` when M2O.2
+    admitted ``raw``/``prep`` through the same gate.
     """
-    env = _run("SELECT account_id FROM raw.ofx_transactions")
+    env = _run("SELECT account_id FROM meta.internal_only")
     assert env.error is not None
     assert env.error.code == "sql_schema_not_allowed"
 

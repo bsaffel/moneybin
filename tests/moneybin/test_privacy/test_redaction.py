@@ -14,11 +14,12 @@ from moneybin.privacy.redaction import (
     ConsentSet,
     MaskStrength,
     _scrub_embedded_pii,  # pyright: ignore[reportPrivateUsage]
+    is_safe_to_publish_verbatim,
     mask_strength,
     redact_records,
     redact_typed,
 )
-from moneybin.privacy.taxonomy import DataClass
+from moneybin.privacy.taxonomy import DataClass, Tier
 
 
 @dataclass(frozen=True)
@@ -437,13 +438,23 @@ def test_transforms_covers_every_data_class() -> None:
 def test_every_masking_transform_returns_text_whatever_it_is_given() -> None:
     """The one fact ``apply_export_redaction`` retypes a masked column on.
 
+    True of every masking transform except FLOORED, which masks per-value.
     A redacted export declares ``VARCHAR`` for every masked column, because every
-    masking transform today answers with a string. That is a property of
+    masking transform except FLOORED answers with a string. That is a property of
     ``_TRANSFORMS``, not a second list beside it — the same reason
     ``mask_strength`` measures rather than restates. PR 3's amount bucketing is
     the live case: a bucket returned as a ``Decimal`` or a range tuple would keep
     masking correctly while making ``VARCHAR`` a lie, and the export would fail on
     the typed channel only. This turns that into a red test at the transform.
+
+    FLOORED is exempt HERE by SET EQUALITY, not `<=` or a count — a second
+    value-dependent transform must still trip this test, because nothing else
+    guards it. It is exempt because ``apply_export_redaction`` closes the gap
+    at the export boundary instead, by stringifying every FLOORED value after
+    masking (``exports/redaction.py::_stringify_floored_columns``); see
+    ``test_floored_column_values_are_stringified_before_export`` in
+    ``tests/moneybin/test_exports/test_redaction.py`` for the other half of
+    this contract.
     """
     from moneybin.privacy.redaction import (  # noqa: PLC0415
         _TRANSFORMS,  # pyright: ignore[reportPrivateUsage]
@@ -466,9 +477,11 @@ def test_every_masking_transform_returns_text_whatever_it_is_given() -> None:
         if not isinstance(masked := _TRANSFORMS[data_class](probe, None), str)
     }
 
-    assert not offenders, (
-        "a masked column is exported as VARCHAR, so every masking transform must "
-        f"return text; these returned something else: {offenders}"
+    assert set(offenders) == {DataClass.FLOORED.name}, (
+        "only FLOORED may return non-text — its column is stringified at the "
+        "export boundary instead, not in the transform. A masked column is "
+        "exported as VARCHAR, so every OTHER masking transform must return "
+        f"text; these returned something else: {offenders}"
     )
     # None survives as None — a masked column stays nullable, and VARCHAR is.
     assert all(
@@ -492,6 +505,76 @@ def test_unclassified_type_passes_through_with_warning(
     with caplog.at_level("WARNING", logger="moneybin.privacy.redaction"):
         out = redact_typed(_Untyped(x="raw"), consent=None)
     assert out.x == "raw"
+
+
+# ---------------------------------------------------------------------------
+# The verbatim-publication gate (M2O.2 fix round 1)
+# ---------------------------------------------------------------------------
+
+
+def test_verbatim_gate_adds_exactly_floored_to_the_old_tier_rule() -> None:
+    """Exhaustive over ``DataClass``, because sampling is what hid the bug.
+
+    Three surfaces used to ask ``data_class.tier > Tier.LOW`` before publishing a
+    value verbatim. That reads a tier as a claim about *content*, which is true
+    for every class except FLOORED: FLOORED is LOW because of what its transform
+    does per value at execution, not because its values are insensitive.
+
+    The union — above-LOW **or** masks — is the fix, and this asserts its exact
+    shape rather than spot-checking it: everything the tier rule refused is still
+    refused, and FLOORED is the only addition. A subset assertion would pass just
+    as happily if the gate started refusing half the registry, and an equality
+    against a hand-typed literal would rot the next time a class is added.
+    """
+    refused_by_tier_alone = {dc for dc in DataClass if dc.tier > Tier.LOW}
+    refused_by_the_gate = {
+        dc for dc in DataClass if not is_safe_to_publish_verbatim(dc)
+    }
+
+    assert refused_by_the_gate == refused_by_tier_alone | {DataClass.FLOORED}
+
+
+@pytest.mark.parametrize(
+    "data_class",
+    [
+        DataClass.BALANCE,
+        DataClass.TXN_AMOUNT,
+        DataClass.INCOME_AMOUNT,
+        DataClass.MERCHANT_NAME,
+        DataClass.DESCRIPTION,
+        DataClass.USER_NOTE,
+        DataClass.TXN_DATE,
+    ],
+)
+def test_an_above_low_passthrough_class_is_still_refused(
+    data_class: DataClass,
+) -> None:
+    """The non-regression half — and the reason the gate is a union, not a swap.
+
+    Replacing the tier test with a bare mask-strength test looks equivalent and
+    is not. Every class below is above LOW and *passes through* today (PR 3 adds
+    their bucketing and hash placeholders), so a mask-only rule would start
+    ALLOWING a stored default on all seven — a silent widening of ``core``/``app``
+    by a change that was only supposed to add ``raw``/``prep``.
+
+    Parametrized rather than looped so each class is its own case: a loop would
+    report one failure and hide the other six.
+    """
+    assert data_class.tier > Tier.LOW
+    # The trap, asserted rather than described: a mask-only gate would allow it.
+    assert mask_strength(data_class) is MaskStrength.PASSTHROUGH
+    assert not is_safe_to_publish_verbatim(data_class)
+
+
+def test_the_gate_still_admits_the_genuinely_low_classes() -> None:
+    """The gate must not become "refuse everything" — defaults still work.
+
+    Without this, a gate that returned False unconditionally would satisfy every
+    other assertion in this file while breaking every LOW-tier stored default.
+    """
+    assert is_safe_to_publish_verbatim(DataClass.AGGREGATE)
+    assert is_safe_to_publish_verbatim(DataClass.RECORD_ID)
+    assert is_safe_to_publish_verbatim(DataClass.CATEGORY)
 
 
 def test_declared_type_redacts_a_typeddict_no_parent_declares() -> None:

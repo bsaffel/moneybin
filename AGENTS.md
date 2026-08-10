@@ -104,7 +104,7 @@ the design system".
 
 Full schema reference (including `meta`, `seeds`, `synthetic`, prefix conventions, layer rules, and consumer access patterns): [`architecture-shared-primitives.md`](docs/specs/architecture-shared-primitives.md).
 
-1. **One canonical table per entity** — `dim_accounts`, `fct_transactions`, etc. Consumers read from `core` and `reports` only.
+1. **One canonical table per entity** — `dim_accounts`, `fct_transactions`, etc. Consumers read from `core` and `reports` for analysis; the agent-safe SQL surface (`sql_query`, `moneybin sql query`) also reads `raw` and `prep` for inspection, masked by value shape rather than by column declaration.
 2. **Multi-source union** — Core models `UNION ALL` from every staging source with `source_type` column.
 3. **Dedup in core** — `ROW_NUMBER()` windows for duplicates; mapping tables for cross-source dedup.
 4. **Accounting sign convention** — negative = expense, positive = income. `DECIMAL(18,2)` for amounts, `DATE` for dates.
