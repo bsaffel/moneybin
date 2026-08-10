@@ -36,6 +36,19 @@ logger = logging.getLogger(__name__)
 #: pair, amount within ±3 days matched 345 of 346 rows against the true twin and
 #: 0 of 346 against each of two controls; requiring an exact date collapsed that
 #: to 23%. The window is what makes the probe discriminate rather than the amount.
+#:
+#: Deliberately **not** ``settings.matching.date_window_days`` (default 5), which
+#: `system doctor`'s ``duplicate_account_overlap`` does reuse for a similar-looking
+#: job. Two reasons, and they are about what the number is for rather than what it
+#: measures. It is a calibration, not a preference: the 0-of-346 control result is
+#: the whole claim that this ratio discriminates, and it was measured at this
+#: width — a user who widens the window gets a higher number that means less,
+#: with nothing on the surface saying so. And the two call sites carry different
+#: consequences: doctor's window tunes what an audit *flags*, while this one
+#: supplies the evidence a human ratifies an irreversible whole-ledger merge on.
+#: Callers that genuinely need another width pass ``window_days``; consolidating
+#: the two would require re-running the twin-and-controls measurement at the
+#: shared width first, which is the part that cannot be assumed.
 DEFAULT_POSTING_LAG_DAYS = 3
 
 _EMPTY_WINDOW_ROW = (0, 0, None, None)

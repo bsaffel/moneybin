@@ -447,7 +447,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which the live queue produced — the prompt says so and tells you to check the
   direction before accepting. The closing paragraph now describes only the link
   kinds the batch actually contains, so a card-to-card merge is no longer warned
-  about security tax lots and hand-set price marks it never touches (#387).
+  about security tax lots and hand-set price marks it never touches. An account
+  that arrived over `moneybin sync` is described by that channel rather than by
+  the provider the sync server happens to speak to, which is an implementation
+  detail behind the server and not something a confirmation prompt should
+  name (#387).
 - **A name match no longer proposes a merge across two different stated last
   fours.** Two accounts that agree on a fuzzy name and *disagree* on a last four
   they both state are evidence of two different accounts, not one; the name rung

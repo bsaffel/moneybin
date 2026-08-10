@@ -197,6 +197,54 @@ def test_an_account_fed_by_two_sources_names_both() -> None:
     assert "the PDF+OFX-derived account" in sentence.split(" into ")[1], sentence
 
 
+def test_a_synced_account_is_named_by_its_channel_not_its_provider() -> None:
+    """The sync server is opaque, and this prompt is a user-facing surface.
+
+    ``source_type`` carries the provider slug the sync server happens to use,
+    and `AGENTS.md` holds that external providers are implementation details
+    hidden behind that server. Rendering it raw put the vendor's name into a
+    sentence a human reads in the CLI and an agent reads over MCP — a leak with
+    no user value, since the channel is what distinguishes the two sides.
+    """
+    shared_label = "Example Bank credit …0000"
+    absorbed = _facts("aaaaaaaaaaaa", display_name=shared_label, source_types=("pdf",))
+    survivor = _facts(
+        "ssssssssssss", display_name=shared_label, source_types=("plaid",)
+    )
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 346},
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "the SYNC-derived account" in message
+    assert "PLAID" not in message.upper()
+
+
+def test_two_synced_sources_collapse_to_one_channel_label() -> None:
+    """Neutralising two providers must not render the channel twice.
+
+    ``_source_label`` joins the distinct source types, so mapping two mediated
+    providers onto one label without de-duplicating would produce
+    "SYNC+SYNC" — a string that leaks the provider *count* and reads as a bug.
+    """
+    shared_label = "Example Bank credit …0000"
+    absorbed = _facts("aaaaaaaaaaaa", display_name=shared_label, source_types=("ofx",))
+    survivor = _facts(
+        "ssssssssssss", display_name=shared_label, source_types=("plaid", "plaid")
+    )
+
+    message = identity_confirm_message(
+        {"accounts": 2, "transactions": 346},
+        merges=[_merge(absorbed, survivor)],
+        kinds=["account_link"],
+    )
+
+    assert "the SYNC-derived account" in message
+    assert "SYNC+SYNC" not in message
+
+
 def test_the_sentence_names_the_survivor_and_the_absorbed_account() -> None:
     """A "link A to B" phrasing never says which one dies; this has to."""
     absorbed, survivor = _colliding_pair()

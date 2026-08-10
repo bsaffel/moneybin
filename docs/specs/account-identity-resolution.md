@@ -517,7 +517,11 @@ Guard-2 free-text resolution):
   amount within a ±3-day posting-lag window (`services/ledger_overlap.py`).
   Exact date+amount alone is not the right predicate — a statement carries the
   transaction date and an OFX feed the posting date, which scores a true twin at
-  roughly a quarter of its rows. Each group states how many transactions an
+  roughly a quarter of its rows. That window is a calibration rather than a
+  preference, so it is a module constant and not `matching.date_window_days`
+  (which `system doctor`'s `duplicate_account_overlap` does reuse): the control
+  result that makes the ratio discriminating was measured at this width, and a
+  user who widened it would get a larger number that means less. Each group states how many transactions an
   accepted merge would move, so the magnitude and the evidence are both present
   at browse time rather than only inside the confirm.
   Three properties are load-bearing:

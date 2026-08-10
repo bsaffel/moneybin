@@ -509,13 +509,17 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
 
 @dataclass(frozen=True, slots=True)
 class _AccountMergeProposal:
-    """One pending account-merge decision, flattened for the confirmation prompt."""
+    """One pending account-merge decision, flattened for the confirmation prompt.
+
+    No display names: the shared renderer names each side by what *differs*
+    between the two ledgers, precisely because a split account renders the same
+    label on both sides. Carrying them here as well would offer a second, worse
+    way to describe the same account.
+    """
 
     decision_id: str
     provisional_account_id: str
-    provisional_display_name: str
     candidate_account_id: str
-    candidate_display_name: str
     signal: str | None
     #: The whole impact, not a flattened blast radius: the grant issued here has
     #: to digest the same row identities the commit-time verify recomputes, so
@@ -542,9 +546,7 @@ def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
                     return _AccountMergeProposal(
                         decision_id=decision_id,
                         provisional_account_id=group.provisional_account_id,
-                        provisional_display_name=group.provisional_display_name,
                         candidate_account_id=candidate.candidate_account_id,
-                        candidate_display_name=candidate.candidate_display_name,
                         signal=candidate.signal,
                         impact=impact,
                         facts=service.merge_facts(

@@ -127,9 +127,25 @@ class AccountMergeFacts:
     )
 
 
+#: Source types that arrive through the mediated sync server.
+#:
+#: ``source_type`` records the provider slug the server happens to speak, and
+#: the client's contract is that those providers are implementation details
+#: hidden behind it (AGENTS.md, "Sync server is opaque"). This sentence is read
+#: by a human in the CLI and by an agent over MCP, so the label names the
+#: channel the user knows — ``moneybin sync pull`` — never the vendor. A format
+#: like OFX or a store like GSheet is the user's own and stays named.
+_MEDIATED_SYNC_SOURCES = frozenset({"plaid"})
+_SYNC_SOURCE_LABEL = "SYNC"
+
+
 def _source_label(facts: AccountLedgerFacts) -> str | None:
     """Uppercased source origins — "PDF", "OFX", "PDF+OFX" — or None when unknown."""
-    return "+".join(s.upper() for s in facts.source_types) or None
+    labels = dict.fromkeys(
+        _SYNC_SOURCE_LABEL if source in _MEDIATED_SYNC_SOURCES else source.upper()
+        for source in facts.source_types
+    )
+    return "+".join(labels) or None
 
 
 def _side_label(side: AccountLedgerFacts, other: AccountLedgerFacts) -> str:
