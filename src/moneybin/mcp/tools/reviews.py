@@ -1218,6 +1218,12 @@ async def identity_links_decide_coarse(
     # the proposals it did raise.
     rematch = live.rematch
     if rematch is not None:
+        if rematch.matches_pending_transfers:
+            actions.insert(
+                0,
+                f"The merge's pass raised {rematch.matches_pending_transfers} "
+                "possible transfer(s) — review with reviews(kind='matches')",
+            )
         if rematch.matches_pending_review:
             actions.insert(
                 0,
@@ -1256,6 +1262,9 @@ async def identity_links_decide_coarse(
             else rematch.matches_auto_merged,
             rematch_pending_review=(
                 None if rematch is None else rematch.matches_pending_review
+            ),
+            rematch_pending_transfers=(
+                None if rematch is None else rematch.matches_pending_transfers
             ),
         ),
         actions=actions,

@@ -2414,18 +2414,26 @@ class DoctorService:
                 -- mark this row "already decided" and suppress the warning,
                 -- most likely on two accounts at one institution: precisely the
                 -- pair an account-link merge just joined.
+                -- match_type = 'dedup' on both branches: Tier 4 transfers are
+                -- cross-account and never run through the Tier 3 blocking join
+                -- this mirrors, so a transfer decision is no evidence the row
+                -- was ever considered for dedup. Counting one would suppress a
+                -- real warning, and on a transfer row account_id names only
+                -- side A anyway (account_id_b holds the other).
                 decided AS (
                     SELECT account_id AS acct,
                            source_transaction_id_a AS stid,
                            source_type_a AS stype,
                            source_origin_a AS sorigin
                     FROM {MATCH_DECISIONS.full_name}
+                    WHERE match_type = 'dedup'
                     UNION
                     SELECT account_id,
                            source_transaction_id_b,
                            source_type_b,
                            source_origin_b
                     FROM {MATCH_DECISIONS.full_name}
+                    WHERE match_type = 'dedup'
                 )
                 SELECT c.account_id, COUNT(*) AS pairs
                 FROM candidates AS c

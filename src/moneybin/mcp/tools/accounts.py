@@ -714,7 +714,9 @@ async def accounts_links_set(
     the rest for review; `rematch_auto_merged` and `rematch_pending_review`
     report both, and are null on a reject (no pass ran).
 
-    Mutation surface: writes app.account_link_decisions + app.account_links.
+    Mutation surface: writes app.account_link_decisions + app.account_links, and
+    on an accept also app.match_decisions (the re-match pass) plus a rebuild of
+    core.* via SQLMesh.
     Reverse with system_audit_undo(operation_id) — find the operation_id via
     system_audit. Find pending decisions with accounts_links_pending.
 
@@ -795,6 +797,12 @@ async def accounts_links_set(
         "the operation_id with system_audit",
     ]
     if rematch is not None:
+        if rematch.matches_pending_transfers:
+            actions.insert(
+                0,
+                f"The merge's pass raised {rematch.matches_pending_transfers} "
+                "possible transfer(s) — review with reviews(kind='matches')",
+            )
         if rematch.matches_pending_review:
             actions.insert(
                 0,
@@ -825,6 +833,9 @@ async def accounts_links_set(
             else rematch.matches_auto_merged,
             rematch_pending_review=(
                 None if rematch is None else rematch.matches_pending_review
+            ),
+            rematch_pending_transfers=(
+                None if rematch is None else rematch.matches_pending_transfers
             ),
         ),
         actions=actions,

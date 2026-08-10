@@ -459,3 +459,4 @@ class IdentityLinksDecidePayload(BaseModel):
     # pass that ran and found nothing (0).
     rematch_auto_merged: Annotated[int | None, DataClass.AGGREGATE] = None
     rematch_pending_review: Annotated[int | None, DataClass.AGGREGATE] = None
+    rematch_pending_transfers: Annotated[int | None, DataClass.AGGREGATE] = None

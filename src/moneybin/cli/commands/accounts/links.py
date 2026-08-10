@@ -209,15 +209,25 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     else:
         merged = rematch.matches_auto_merged
         pending = rematch.matches_pending_review
-        if not merged and not pending:
+        # The pass is a full match run, so it raises Tier 4 transfer candidates
+        # too. Judging it clean on the dedup counters alone would report "no new
+        # duplicates" over a merge that just queued transfers for review.
+        transfers = rematch.matches_pending_transfers
+        if not merged and not pending and not transfers:
             logger.info("Re-matched after the merge: no new duplicates found")
         else:
             logger.info(
                 f"👀 Re-matched after the merge: {merged} auto-merged, "
-                f"{pending} new proposal(s) to review"
+                f"{pending} new proposal(s) to review, "
+                f"{transfers} possible transfer(s)"
             )
             if pending:
                 logger.info(f"  💡 {PENDING_MATCHES_HINT}")
+            if transfers:
+                logger.info(
+                    "  💡 Review possible transfers with 'moneybin reviews' "
+                    "(kind: matches)"
+                )
     if rematch.error is not None:
         # The counts above are true — match decisions were written — but the
         # SQLMesh apply that follows them is what rebuilds core.dim_accounts,

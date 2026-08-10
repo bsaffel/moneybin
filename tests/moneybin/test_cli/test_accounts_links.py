@@ -424,6 +424,37 @@ class TestLinksSet:
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_reports_transfers_the_pass_raised(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A full match pass raises Tier 4 candidates, and those are news too.
+
+        Judging the run clean on the two dedup counters alone would print "no
+        new duplicates found" over a merge that just queued transfers for
+        review — the counters are the only place the user learns of them.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matches_pending_transfers=3,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        assert "no new duplicates found" not in caplog.text
+        assert "3" in caplog.text
+        assert "transfer" in caplog.text.lower()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
     def test_set_standalone_reports_no_rematch(
         self,
         mock_set: MagicMock,

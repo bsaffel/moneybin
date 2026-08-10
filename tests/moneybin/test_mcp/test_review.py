@@ -35,6 +35,8 @@ from moneybin.mcp.write_contracts import (
     OrdinaryReviewDecisionRequest,
     SecurityLinkDecisionRequest,
 )
+from moneybin.privacy.payloads.reviews import IdentityLinksDecidePayload
+from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.repositories.categorization_decisions_repo import (
     categorization_decision_id,
 )
@@ -55,6 +57,7 @@ from moneybin.services.auto_rule_service import (
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.identity_confirmation import IDENTITY_BLAST_RADIUS_CATEGORIES
 from moneybin.services.merchant_links_service import MerchantLinksService
+from moneybin.services.refresh import RefreshResult
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
@@ -2421,8 +2424,6 @@ def test_identity_batch_carries_the_rematch_outcome_out() -> None:
     merge while silently collapsing duplicates — the exact failure the direct
     ``accounts_links_set`` path reports and this one would not.
     """
-    from moneybin.services.refresh import RefreshResult
-
     decisions: list[IdentityDecisionRequest] = [
         AccountLinkDecisionRequest(
             kind="account_link",
@@ -2474,6 +2475,97 @@ def test_identity_batch_of_rejects_carries_no_rematch_outcome() -> None:
         result = service.apply_identity(decisions, verify=lambda _: None)
 
     assert result.rematch is None
+
+
+async def _decide_with_rematch(
+    monkeypatch: pytest.MonkeyPatch, rematch: RefreshResult | None
+) -> ResponseEnvelope[IdentityLinksDecidePayload]:
+    """Drive identity_links_decide with a stubbed apply carrying ``rematch``.
+
+    Reaches the tool wrapper itself rather than ``apply_identity`` below it,
+    because the field population and actions[] ordering are the wiring under
+    test — the service-level tests above cannot see either.
+    """
+    from types import SimpleNamespace
+
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-candidate",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    applied = replace(plan, rematch=rematch)
+
+    def _verify(_binding: object) -> None:
+        return None
+
+    def _preview(_decisions: object) -> object:
+        return SimpleNamespace(plan=plan, merges=(), kinds=("account_link",))
+
+    async def _granted(**_kw: object) -> object:
+        return SimpleNamespace(verify=_verify)
+
+    def _apply(_decisions: object, **_kw: object) -> IdentityDecisionPlan:
+        return applied
+
+    monkeypatch.setattr(reviews_module, "_preview_identity_decisions", _preview)
+    monkeypatch.setattr(reviews_module, "grant_confirmation_or_raise", _granted)
+    monkeypatch.setattr(reviews_module, "_apply_identity_decisions", _apply)
+    return await reviews_module.identity_links_decide_coarse(decisions=decisions)
+
+
+async def test_identity_links_decide_reports_the_rematch_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The batch tool's payload carries the same three counts as the direct one."""
+    envelope = await _decide_with_rematch(
+        monkeypatch,
+        RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matches_auto_merged=2,
+            matches_pending_review=5,
+            matches_pending_transfers=3,
+        ),
+    )
+
+    assert envelope.data.rematch_auto_merged == 2
+    assert envelope.data.rematch_pending_review == 5
+    assert envelope.data.rematch_pending_transfers == 3
+    assert any("5 new duplicate" in action for action in envelope.actions)
+    assert any("3 possible transfer" in action for action in envelope.actions)
+
+
+async def test_identity_links_decide_flags_a_failed_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A half-failed pass reaches the batch tool's actions, not just the direct one."""
+    envelope = await _decide_with_rematch(
+        monkeypatch,
+        RefreshResult(
+            applied=False,
+            duration_seconds=1.0,
+            error="sqlmesh apply failed",
+            matching_error="matcher blew up",
+        ),
+    )
+
+    assert any("rebuild" in action.lower() for action in envelope.actions)
+    assert any("re-match failed" in action for action in envelope.actions)
+
+
+async def test_identity_links_decide_reports_no_rematch_when_none_ran(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No pass ran, so all three counts are absent rather than zero-as-fact."""
+    envelope = await _decide_with_rematch(monkeypatch, None)
+
+    assert envelope.data.rematch_auto_merged is None
+    assert envelope.data.rematch_pending_review is None
+    assert envelope.data.rematch_pending_transfers is None
 
 
 def test_identity_batch_emits_each_domain_metric_only_after_commit() -> None:

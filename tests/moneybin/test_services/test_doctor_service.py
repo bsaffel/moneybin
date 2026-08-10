@@ -3389,6 +3389,40 @@ def test_same_source_type_from_two_origins_warns(
 
 
 @pytest.mark.unit
+def test_a_transfer_decision_does_not_count_as_dedup_consideration(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tier 4 runs after Tier 3 and never consults it, so a transfer proves nothing.
+
+    A transfer decision says the row was paired *across* accounts, not that the
+    dedup blocking join this invariant mirrors ever looked at it. Counting one
+    as "already decided" would suppress a genuine warning — and on a transfer
+    row ``account_id`` names only side A, so even the account correlation would
+    not save it.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'elsewhere', 'ofx', 'bank',
+                  'ACC1', 0.9, '{}', 'transfer', NULL, 'ACC9', 'accepted',
+                  NULL, 'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+
+
+@pytest.mark.unit
 def test_another_accounts_decision_on_the_same_native_id_does_not_suppress(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

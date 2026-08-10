@@ -340,6 +340,10 @@ class AccountLinksSetPayload:
     # the caller may report as "checked, clean".
     rematch_auto_merged: Annotated[int | None, DataClass.AGGREGATE] = None
     rematch_pending_review: Annotated[int | None, DataClass.AGGREGATE] = None
+    # The pass is a full match run, so it also raises Tier 4 transfer
+    # candidates. Omitting them would let an accept queue transfer proposals
+    # the response never mentions.
+    rematch_pending_transfers: Annotated[int | None, DataClass.AGGREGATE] = None
 
 
 @dataclass(frozen=True, slots=True)
