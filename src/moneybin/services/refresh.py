@@ -91,6 +91,15 @@ class RefreshResult:
     matching_error: str | None = None
     categorization_error: str | None = None
     identity_errors: tuple[str, ...] = field(default_factory=tuple)
+    # What the match step found, for callers that must report it rather than
+    # leave it in the log. A pass can auto-merge without asking (see
+    # engine._classify_pair), so a caller who *triggered* the pass — the
+    # post-merge re-match — owes the user that number. Zero when the step
+    # did not run: "found nothing" and "was skipped" are distinguished by
+    # whether the caller asked for the step, not by a null count.
+    matches_auto_merged: int = 0
+    matches_pending_review: int = 0
+    matches_pending_transfers: int = 0
     # tuple, not list: frozen=True blocks reassignment but not in-place
     # mutation of a list field — a tuple keeps the result carrier truly immutable.
     self_heal_actions: tuple[SelfHealRecord, ...] = field(default_factory=tuple)
@@ -201,9 +210,15 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     matching_error: str | None = None
     categorization_error: str | None = None
     identity_errors: tuple[str, ...] = ()
+    auto_merged = 0
+    pending_review = 0
+    pending_transfers = 0
     if "match" in requested:
         try:
             match_result = MatchingService(db).run()
+            auto_merged = match_result.auto_merged
+            pending_review = match_result.pending_review
+            pending_transfers = match_result.pending_transfers
             if match_result.has_matches:
                 logger.info(f"Matching: {match_result.summary()}")
                 if match_result.has_pending:
@@ -232,6 +247,9 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             matching_error=matching_error,
             categorization_error=categorization_error,
             identity_errors=identity_errors,
+            matches_auto_merged=auto_merged,
+            matches_pending_review=pending_review,
+            matches_pending_transfers=pending_transfers,
         )
 
     apply_result = TransformService(db).apply()
@@ -244,6 +262,9 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             duration_seconds=apply_result.duration_seconds,
             error=apply_result.error,
             matching_error=matching_error,
+            matches_auto_merged=auto_merged,
+            matches_pending_review=pending_review,
+            matches_pending_transfers=pending_transfers,
         )
 
     if "categorize" in requested:
@@ -257,6 +278,9 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         matching_error=matching_error,
         categorization_error=categorization_error,
         identity_errors=identity_errors,
+        matches_auto_merged=auto_merged,
+        matches_pending_review=pending_review,
+        matches_pending_transfers=pending_transfers,
     )
 
 

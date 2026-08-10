@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from moneybin.database import Database
+    from moneybin.services.refresh import RefreshResult
     from moneybin.services.review_decisions_service import IdentityDecisionPlan
 
 app = typer.Typer(
@@ -159,12 +160,13 @@ def links_set(
 
     target_account_id: str | None = into if not standalone else None
 
+    rematch: RefreshResult | None = None
     with handle_cli_errors():
         approved: _ApprovedMerge | None = None
         if target_account_id is not None and not yes:
             approved = _confirm_merge(decision_id, target_account_id)
         with get_database(read_only=False) as db:
-            AccountLinksService(db, actor="cli").set(
+            rematch = AccountLinksService(db, actor="cli").set(
                 decision_id,
                 target_account_id=target_account_id,
                 decided_by="user",
@@ -177,6 +179,40 @@ def links_set(
         else "standalone (rejected)"
     )
     logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
+    _report_rematch(rematch)
+
+
+def _report_rematch(rematch: RefreshResult | None) -> None:
+    """Say what the post-merge match pass did — it may have merged rows unasked.
+
+    ``None`` means no pass ran (a standalone reject repoints nothing), and
+    printing nothing is then the honest output.
+    """
+    # Deferred: matching_service pulls duckdb and the match engine, and this
+    # module is on the CLI cold-start path (see .claude/rules/cli.md).
+    from moneybin.services.matching_service import (  # noqa: PLC0415
+        PENDING_MATCHES_HINT,
+    )
+
+    if rematch is None:
+        return
+    if rematch.matching_error is not None:
+        logger.warning(
+            "⚠️  Re-match after the merge failed, so any duplicates the merge "
+            "made visible are still unproposed; re-run 'moneybin refresh'"
+        )
+        return
+    merged = rematch.matches_auto_merged
+    pending = rematch.matches_pending_review
+    if not merged and not pending:
+        logger.info("Re-matched after the merge: no new duplicates found")
+        return
+    logger.info(
+        f"👀 Re-matched after the merge: {merged} auto-merged, "
+        f"{pending} new proposal(s) to review"
+    )
+    if pending:
+        logger.info(f"  💡 {PENDING_MATCHES_HINT}")
 
 
 def _plan_merge(

@@ -14,6 +14,7 @@ import json
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 
 import pytest
@@ -1582,3 +1583,63 @@ class TestPendingAccountProposal:
             _load_pending_account_proposal("dec_does_not_exist")
 
         assert excinfo.value.code == "mutation_nothing_to_do"
+
+
+async def test_links_set_accept_reports_what_the_rematch_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The accept envelope names the counts of the match pass it triggered.
+
+    Accepting a merge re-runs matching, and that pass can auto-merge rows
+    without asking (``engine._classify_pair``). An envelope that omits the
+    number leaves the agent unable to tell the user what just happened.
+    """
+    from moneybin.mcp.tools import accounts as accounts_module
+    from moneybin.services.refresh import RefreshResult
+
+    def _accepted(*_args: object, **_kw: object) -> RefreshResult:
+        return RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matches_auto_merged=2,
+            matches_pending_review=5,
+        )
+
+    def _verify(_binding: object) -> None:
+        return None
+
+    async def _granted(**_kw: object) -> object:
+        return SimpleNamespace(verify=_verify)
+
+    monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
+    monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+
+    envelope = await accounts_module.accounts_links_set(
+        decision_id="dec001",
+        action="accept",
+        target_account_id="CAND001",
+        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
+    )
+
+    assert envelope.data.rematch_auto_merged == 2
+    assert envelope.data.rematch_pending_review == 5
+
+
+async def test_links_set_reject_reports_no_rematch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reject runs no match pass, so its counts are absent, not zero-as-fact."""
+    from moneybin.mcp.tools import accounts as accounts_module
+
+    def _rejected(*_args: object, **_kw: object) -> None:
+        return None
+
+    monkeypatch.setattr(accounts_module, "_apply_account_reject", _rejected)
+
+    envelope = await accounts_module.accounts_links_set(
+        decision_id="dec001",
+        action="reject",
+    )
+
+    assert envelope.data.rematch_auto_merged is None
+    assert envelope.data.rematch_pending_review is None

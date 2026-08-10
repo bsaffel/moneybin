@@ -15,7 +15,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import duckdb
 
@@ -40,6 +40,9 @@ from moneybin.tables import (
     FCT_TRANSACTIONS,
 )
 from moneybin.utils.parsing import signal_from_match_signals
+
+if TYPE_CHECKING:
+    from moneybin.services.refresh import RefreshResult
 
 logger = logging.getLogger(__name__)
 
@@ -467,8 +470,13 @@ class AccountLinksService:
         decided_by: str = "user",
         verify_accept: Callable[[AccountLinkAcceptImpact], None] | None = None,
         in_outer_txn: bool = False,
-    ) -> None:
+    ) -> RefreshResult | None:
         """Accept (merge) or standalone-reject a pending link decision atomically.
+
+        Returns the post-merge re-match outcome (see :meth:`rematch_after_merge`)
+        so the caller can report what that pass found — it may have auto-merged
+        without asking. ``None`` when no pass ran: a standalone reject repoints
+        nothing, and under ``in_outer_txn`` the batched caller owns the trigger.
 
         ``target_account_id`` is not None (accept → merge):
           1. Validates the arg matches the decision's own ``candidate_account_id``.
@@ -618,7 +626,7 @@ class AccountLinksService:
                 self._db.rollback()
             raise
         if in_outer_txn:
-            return
+            return None
         # Accept/reject changed the pending count — refresh the gauge (only
         # reached on a successful commit; the except above re-raises).
         from moneybin.services.account_resolver import (  # noqa: PLC0415
@@ -626,3 +634,30 @@ class AccountLinksService:
         )
 
         refresh_account_link_pending_gauge(self._db)
+        if target_account_id is None:
+            return None
+        return self.rematch_after_merge()
+
+    def rematch_after_merge(self) -> RefreshResult:
+        """Re-run matching now that the merge made two sources' rows co-resident.
+
+        The matcher blocks dedup candidates on ``a.account_id = b.account_id``
+        (``matching/scoring.py``), so a reissued card's two sides are not even
+        considered while their ids differ. The repoint above is what makes them
+        candidates, and the staging views resolve it at read time — so the rows
+        are matchable the instant this commits, and nothing else in the pipeline
+        looks again. Skipping this is what left 377 duplicates unproposed.
+
+        ``transform`` follows ``match`` so an auto-accepted edge collapses in
+        ``core`` in the same step; ``identity`` is deliberately absent, since
+        that stage calls back into this service and would recurse.
+
+        Callers on the batched path (``ReviewDecisionsService.apply_identity``)
+        invoke this themselves after their own commit — ``set`` returns early
+        under ``in_outer_txn`` and never reaches it.
+        """
+        from moneybin.services.refresh import (
+            refresh,  # noqa: PLC0415 — cycle: refresh's identity step imports this module
+        )
+
+        return refresh(self._db, steps=["match", "transform"])

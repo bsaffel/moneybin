@@ -1082,6 +1082,12 @@ class ReviewDecisionsService:
             item.changed and isinstance(item.request, AccountLinkDecisionRequest)
             for item in plan.items
         )
+        account_merged = any(
+            item.changed
+            and isinstance(item.request, AccountLinkDecisionRequest)
+            and item.request.decision == "accept"
+            for item in plan.items
+        )
         merchant_outcomes = tuple(
             item.status
             for item in plan.items
@@ -1094,6 +1100,12 @@ class ReviewDecisionsService:
         )
         if account_changed:
             account_service.record_committed_outer_decisions()
+        if account_merged:
+            # Only a merge repoints links, and only a repoint makes two sources'
+            # rows co-resident for the matcher's same-account blocking join. The
+            # inner set() calls ran with in_outer_txn=True and returned before
+            # their own post-commit tail, so this is the batch path's only seam.
+            account_service.rematch_after_merge()
         if merchant_outcomes:
             merchant_service.record_committed_outer_outcomes(merchant_outcomes)
         if security_outcomes:

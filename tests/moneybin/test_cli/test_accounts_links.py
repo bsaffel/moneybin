@@ -7,6 +7,7 @@ service layer and test argument parsing, exit codes, and output shape.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -388,6 +389,56 @@ class TestLinksSet:
             decided_by="user",
             verify_accept=None,
         )
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_reports_what_the_rematch_found(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The merge re-matches, and a pass that auto-merged must say so.
+
+        Silently collapsing rows the operator never reviewed is the failure the
+        confirm gate exists to prevent — so the counts belong on the terminal,
+        not only in the log file.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matches_auto_merged=2,
+            matches_pending_review=5,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        assert "2" in caplog.text
+        assert "5" in caplog.text
+        assert "re-match" in caplog.text.lower()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_standalone_reports_no_rematch(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A reject ran no match pass, so the output must not claim one."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = None
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--standalone"])
+
+        assert result.exit_code == 0
+        assert "re-match" not in caplog.text.lower()
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")

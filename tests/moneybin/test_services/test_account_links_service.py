@@ -13,8 +13,10 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin.database import Database
 from moneybin.errors import UserError
@@ -24,6 +26,7 @@ from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
     AccountLinksService,
 )
+from moneybin.services.refresh import RefreshResult
 from tests.moneybin.db_helpers import create_core_tables
 
 # ---------------------------------------------------------------------------
@@ -165,6 +168,23 @@ def _link_rows(db: Database, **kw: Any) -> list[tuple[Any, ...]]:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def rematch(mocker: MockerFixture) -> MagicMock:
+    """Stand in for the post-merge re-match on every test in this module.
+
+    ``set``'s accept path re-runs match+transform once the repoint commits.
+    Every test here asserts merge *mechanics*, so letting that reach a real
+    SQLMesh apply costs seconds per accept and proves nothing about the
+    mechanics. The two tests that assert the trigger itself take this mock as
+    a parameter; the real pipeline is covered by the integration regression
+    test instead.
+    """
+    return mocker.patch(
+        "moneybin.services.refresh.refresh",
+        return_value=RefreshResult(applied=True, duration_seconds=0.0),
+    )
 
 
 @pytest.fixture()
@@ -682,6 +702,64 @@ def test_set_accept_does_not_affect_other_provisional(
     """Decision on a different provisional is unaffected."""
     seeded.set(_DEC1, target_account_id=_CAND_A)
     assert _decision_status(db, _DEC3) == "pending"
+
+
+# ---------------------------------------------------------------------------
+# set — accept re-runs the matcher
+# ---------------------------------------------------------------------------
+
+
+def test_set_accept_reruns_the_matcher(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """Accepting a merge re-matches — the repoint is what makes the rows candidates.
+
+    The matcher blocks candidate pairs on ``a.account_id = b.account_id``
+    (``matching/scoring.py``), so a reissued card's two sides cannot match while
+    their ids differ. The accept is the moment they become co-resident, and
+    nothing else in the pipeline looks again.
+    """
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    rematch.assert_called_once_with(db, steps=["match", "transform"])
+
+
+def test_set_standalone_does_not_rerun_the_matcher(
+    seeded: AccountLinksService, rematch: MagicMock
+) -> None:
+    """A standalone reject repoints nothing, so no account gains new candidates."""
+    seeded.set(_DEC1, target_account_id=None)
+
+    rematch.assert_not_called()
+
+
+def test_set_accept_returns_what_the_rematch_found(
+    seeded: AccountLinksService, rematch: MagicMock
+) -> None:
+    """Callers get the re-match outcome so they can report it to the user.
+
+    The re-match can auto-merge without asking, so an accept that hides the
+    number is the silent action the confirm gate exists to prevent.
+    """
+    rematch.return_value = RefreshResult(
+        applied=True,
+        duration_seconds=0.0,
+        matches_auto_merged=2,
+        matches_pending_review=5,
+    )
+
+    result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert result is not None
+    assert result.matches_auto_merged == 2
+    assert result.matches_pending_review == 5
+
+
+def test_set_standalone_returns_no_rematch_result(
+    seeded: AccountLinksService,
+) -> None:
+    """A reject ran no match pass, so there is no outcome to report."""
+    assert seeded.set(_DEC1, target_account_id=None) is None
 
 
 # ---------------------------------------------------------------------------

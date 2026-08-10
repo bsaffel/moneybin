@@ -114,6 +114,7 @@ from moneybin.services.identity_confirmation import (
     identity_confirm_message,
 )
 from moneybin.services.mutation_context import current_operation_id
+from moneybin.services.refresh import RefreshResult
 
 # ─── Read tools (entity) ──────────────────────────────────────────────────
 
@@ -644,7 +645,7 @@ def _apply_account_accept(
     decision_id: str,
     target_account_id: str,
     grant: ConfirmationGrant,
-) -> None:
+) -> RefreshResult | None:
     # decided_by="user" is truthful only on this path: a human just ratified the
     # merge through the elicitation gate above.
     def verify(impact: AccountLinkAcceptImpact) -> None:
@@ -657,7 +658,7 @@ def _apply_account_accept(
         )
 
     with get_database(read_only=False) as db:
-        AccountLinksService(db, actor="mcp").set(
+        return AccountLinksService(db, actor="mcp").set(
             decision_id,
             target_account_id=target_account_id,
             decided_by="user",
@@ -707,6 +708,12 @@ async def accounts_links_set(
     become one account. If they are not the same real-world account, the merged
     history and net worth are wrong.
 
+    Accepting also re-runs matching, because the merge is what makes the two
+    sources' rows comparable at all — the matcher only pairs rows within one
+    account. That pass auto-merges duplicates it is confident about and queues
+    the rest for review; `rematch_auto_merged` and `rematch_pending_review`
+    report both, and are null on a reject (no pass ran).
+
     Mutation surface: writes app.account_link_decisions + app.account_links.
     Reverse with system_audit_undo(operation_id) — find the operation_id via
     system_audit. Find pending decisions with accounts_links_pending.
@@ -738,6 +745,7 @@ async def accounts_links_set(
         # elicitation), so a blocking DuckDB write here would stall the server.
         await asyncio.to_thread(_apply_account_reject, decision_id)
         status = "rejected"
+        rematch = None
     else:
         if not target_account_id:
             raise UserError(
@@ -774,20 +782,42 @@ async def accounts_links_set(
             message=message,
             confirmation_token=confirmation_token,
         )
-        await asyncio.to_thread(
+        rematch = await asyncio.to_thread(
             _apply_account_accept,
             decision_id,
             target_account_id,
             grant,
         )
         status = "accepted"
+    actions = [
+        "Use reviews(kind='account_links') for remaining pending decisions",
+        "Reverse this decision with system_audit_undo(operation_id) — find "
+        "the operation_id with system_audit",
+    ]
+    if rematch is not None and rematch.matching_error is not None:
+        actions.insert(
+            0,
+            "The merge's re-match failed, so duplicates it exposed are still "
+            "unproposed — retry with refresh_run(steps=['match','transform'])",
+        )
+    elif rematch is not None and rematch.matches_pending_review:
+        actions.insert(
+            0,
+            f"The merge exposed {rematch.matches_pending_review} new duplicate "
+            "proposal(s) — review with reviews(kind='matches')",
+        )
     return build_envelope(
-        data=AccountLinksSetPayload(decision_id=decision_id, status=status),
-        actions=[
-            "Use reviews(kind='account_links') for remaining pending decisions",
-            "Reverse this decision with system_audit_undo(operation_id) — find "
-            "the operation_id with system_audit",
-        ],
+        data=AccountLinksSetPayload(
+            decision_id=decision_id,
+            status=status,
+            rematch_auto_merged=None
+            if rematch is None
+            else rematch.matches_auto_merged,
+            rematch_pending_review=(
+                None if rematch is None else rematch.matches_pending_review
+            ),
+        ),
+        actions=actions,
     )
 
 

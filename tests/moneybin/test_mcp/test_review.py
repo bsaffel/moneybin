@@ -29,6 +29,7 @@ from moneybin.mcp.tools.reviews import (
 from moneybin.mcp.write_contracts import (
     AccountLinkDecisionRequest,
     CategorizationDecisionRequest,
+    IdentityDecisionRequest,
     MatchDecisionRequest,
     MerchantLinkDecisionRequest,
     OrdinaryReviewDecisionRequest,
@@ -2351,6 +2352,64 @@ def test_identity_batch_rolls_back_before_outcome_metrics_on_late_failure() -> N
     account_service.record_committed_outer_decisions.assert_not_called()
     merchant_service.record_committed_outer_outcomes.assert_not_called()
     security_service.record_committed_outer_outcomes.assert_not_called()
+
+
+def test_identity_batch_reruns_the_matcher_after_an_accepted_merge() -> None:
+    """A batched merge is still a merge — it must re-match once the batch commits.
+
+    ``set`` returns early under ``in_outer_txn`` and never reaches its own
+    post-commit tail, so the batch path owns this trigger. Without it, driving
+    the same accept through ``identity_links_decide`` instead of
+    ``accounts_links_set`` silently keeps the duplicate.
+    """
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-candidate",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        account_service = account_class.return_value
+        service.apply_identity(decisions, verify=lambda _: None)
+
+    db.commit.assert_called_once_with()
+    account_service.rematch_after_merge.assert_called_once_with()
+
+
+def test_identity_batch_of_rejects_does_not_rerun_the_matcher() -> None:
+    """A reject repoints nothing, so no account gains new dedup candidates."""
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="reject",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        account_service = account_class.return_value
+        service.apply_identity(decisions, verify=lambda _: None)
+
+    account_service.rematch_after_merge.assert_not_called()
 
 
 def test_identity_batch_emits_each_domain_metric_only_after_commit() -> None:

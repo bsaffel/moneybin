@@ -335,6 +335,11 @@ class AccountLinksSetPayload:
 
     decision_id: Annotated[str, DataClass.RECORD_ID]
     status: Annotated[str, DataClass.TXN_TYPE]  # "accepted" or "rejected"
+    # What the merge's re-match found. None on a reject, which runs no match
+    # pass at all — distinct from a pass that ran and found nothing (0), which
+    # the caller may report as "checked, clean".
+    rematch_auto_merged: Annotated[int | None, DataClass.AGGREGATE] = None
+    rematch_pending_review: Annotated[int | None, DataClass.AGGREGATE] = None
 
 
 @dataclass(frozen=True, slots=True)

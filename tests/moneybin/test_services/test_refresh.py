@@ -173,6 +173,41 @@ def test_refresh_result_has_error_surfacing_fields() -> None:
 
 
 @pytest.mark.unit
+def test_refresh_reports_what_the_matcher_found(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """The matcher's counts reach the caller instead of only the log.
+
+    A match pass can auto-merge silently (``engine._classify_pair`` writes
+    ``accepted`` for an agreeing pair over the confidence threshold), so a
+    caller that triggers one — the post-merge re-match especially — has to be
+    able to tell the user what it did.
+    """
+    patched_services["matcher_run"].return_value = MagicMock(
+        auto_merged=2, pending_review=5, pending_transfers=1
+    )
+
+    result = refresh(MagicMock())
+
+    assert result.matches_auto_merged == 2
+    assert result.matches_pending_review == 5
+    assert result.matches_pending_transfers == 1
+
+
+@pytest.mark.unit
+def test_refresh_match_counts_are_zero_when_the_step_is_skipped(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """Skipping the match step reports zero found, not a stale or absent count."""
+    result = refresh(MagicMock(), steps=["transform"])
+
+    assert result.matches_auto_merged == 0
+    assert result.matches_pending_review == 0
+    assert result.matches_pending_transfers == 0
+    patched_services["matcher_run"].assert_not_called()
+
+
+@pytest.mark.unit
 def test_refresh_matcher_crash_populates_matching_error(
     patched_services: dict[str, MagicMock],
 ) -> None:
