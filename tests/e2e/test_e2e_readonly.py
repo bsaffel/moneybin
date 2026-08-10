@@ -15,7 +15,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from moneybin import error_codes
 from moneybin.cli.main import app
+from moneybin.tables import FCT_TRANSACTION_PROVENANCE
 from tests.e2e.conftest import FIXTURES_DIR, run_cli
 
 pytestmark = pytest.mark.e2e
@@ -238,15 +240,28 @@ class TestDBReadOnlyCommands:
     def test_sql_query_rejects_nonallowed_schema(
         self, e2e_profile: dict[str, str]
     ) -> None:
-        # The schema gate refuses meta.* before execution — exit non-zero.
-        # Re-aimed from raw.* when M2O.2 admitted raw/prep through this gate.
+        """The subprocess twin of the CliRunner refusal test, asserted the same way.
+
+        Names a real table (`meta.fct_transaction_provenance`, via the
+        `moneybin.tables` constant) and asserts the refusal's error CODE, not
+        just a non-zero exit. The previous fixture named a table that exists
+        nowhere and asserted only the exit code, so deleting the schema gate
+        left it failing on an unknown table and still passing.
+
+        Re-aimed from raw.* when M2O.2 admitted raw/prep through this gate.
+        """
         result = run_cli(
             "sql",
             "query",
-            "SELECT account_id FROM meta.internal_only",
+            f"SELECT transaction_id FROM {FCT_TRANSACTION_PROVENANCE.full_name}",  # noqa: S608  # TableRef constant; the query is the test input, and the gate refuses it
+            "--output",
+            "json",
             env=e2e_profile,
         )
-        assert result.exit_code != 0
+
+        assert result.exit_code != 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["error"]["code"] == error_codes.SQL_SCHEMA_NOT_ALLOWED
 
     def test_db_key(self, e2e_profile: dict[str, str]) -> None:
         result = run_cli("db", "key", "show", env=e2e_profile)

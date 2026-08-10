@@ -104,7 +104,7 @@ the pointer and leak; per ADR-013). Where a column carries a declared class,
 raw SQL is not a bypass: `SELECT last_four FROM core.dim_accounts` comes back
 masked, and an undeclared report column fails closed. `raw`/`prep` columns
 mostly carry no declaration, and there the floor is a value scan — weaker, and
-named [below](#not-masked-stated-plainly).
+named [below](#what-the-agent-gets-is-scoped-to-what-it-asked-for).
 
 **On every typed surface the masking follows a field's declared class, not a
 content scan — so a raw account number that rides *inside* a field classified as
@@ -135,7 +135,8 @@ class governs, and it isn't `critical`.
 > deliberate exception — they are raw, unmasked, local operator access and print
 > a banner saying so. They involve no AI. On the agent path every CRITICAL-classed
 > column is masked, and `raw`/`prep` values are scanned for account and SSN shapes
-> — which is weaker, and the gap is named [below](#not-masked-stated-plainly).
+> — which is weaker, and the gap is named
+> [below](#what-the-agent-gets-is-scoped-to-what-it-asked-for).
 
 ---
 

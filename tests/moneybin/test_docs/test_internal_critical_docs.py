@@ -106,6 +106,10 @@ def _tracked_corpus() -> list[Path]:
     `git ls-files` rather than a glob over roots: it needs no exclusion list for
     `.venv`, build output, or untracked scratch, and "tracked" is exactly the
     surface that ships.
+
+    This makes the guard depend on running inside a git checkout — `check=True`
+    raises anywhere else. That is not a gap: the wheel ships no tests, so every
+    context that can run this file is a checkout.
     """
     listed = subprocess.run(  # noqa: S603  # fixed argv, no user input
         ["git", "ls-files"],  # noqa: S607  # git resolved from PATH, as everywhere in CI
