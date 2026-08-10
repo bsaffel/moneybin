@@ -101,10 +101,10 @@ back as `****...NNNN` — last four retained — where a declared one returns
 of 4 to 7 digits, one written with separators (`1234-5678`), or one stored as
 `DECIMAL` or `FLOAT` passes through in full. `reports create` names those
 columns when it saves, so which columns ride the scan is on the receipt rather
-than something to work out later. If an
-upstream column is later reclassified as more sensitive, the saved report masks
-that column instead of serving the class it captured. `reports set` re-derives on any
-SQL or parameter change, `reports delete` is undoable via `system audit undo`,
+than something to work out later. If an upstream column is later reclassified
+as more sensitive, the saved report masks that column instead of serving the
+class it captured. `reports set` re-derives on any SQL or parameter change,
+`reports delete` is undoable via `system audit undo`,
 and `reports reclassify` lowers one column's masking floor on an explicit human
 confirmation — audited, and the only path that does so.
 

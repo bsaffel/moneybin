@@ -19,9 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   debuggable without dropping to the unmasked operator CLI. `meta` and `seeds`
   stay refused, by `DESCRIBE` just as by `SELECT`.
 
-  Masking holds. 33 `raw`/`prep` columns carrying an institution account number,
-  a routing number, or the account label derived from one are declared CRITICAL
-  and masked by class. Every other value in those two schemas is scanned per run
+  Masking holds. 33 `raw`/`prep` columns are declared CRITICAL and masked by
+  class: every institution account number, routing number, and account label
+  derived from one, plus two opaque loader payloads (`import_log.account_names`
+  and `import_preview_snapshots.source_bytes`) that are masked whole because
+  their contents cannot be enumerated. Every other value there is scanned per run
   and masked when it is shaped like an SSN (`***-**-****`) or holds an unbroken
   run of eight or more digits (`****...<last four>`). The scan reads text and
   integers only, so three shapes pass through: an account number of four to
@@ -1914,10 +1916,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `MIN`/`MAX` preserve the source class; multi-column expressions take the
   max-tier class; unresolvable projections fall back conservatively to the
   max-tier input class. Data queries reached the `core`/`app` schemas only when
-  this shipped; `DESCRIBE`/`SHOW` run as low-sensitivity metadata. Both
-  statements were superseded later in this same release — see "Read the
-  ingestion pipeline through `sql_query`" below for the schemas, and the
-  `PRAGMA storage_info` fix for the statements.
+  this shipped; `DESCRIBE`/`SHOW` run as low-sensitivity metadata. Two entries
+  in this same release supersede both statements: "Read the ingestion pipeline
+  through `sql_query`" for the schemas, and the `PRAGMA storage_info` redaction
+  fix for the statements.
 - **`moneybin sql query` CLI command — the privacy-safe ad-hoc SQL path.** Full
   CLI↔MCP parity with `sql_query`: both surfaces route through one shared
   `execute_sql_query` primitive (read-only gate, schema restriction,

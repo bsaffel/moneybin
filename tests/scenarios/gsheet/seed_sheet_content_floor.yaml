@@ -30,9 +30,9 @@
 
 description: >
   One Google Sheet connected with the seed adapter, minting raw.gsheet_budget.
-  Six data columns, each isolating one behaviour of the content floor: two that
-  mask, three that pass through for three different documented reasons, and one
-  ordinary label.
+  Seven data columns, each isolating one behaviour of the content floor: two
+  that mask, three that pass through for three different documented reasons, a
+  plain label with no digits, and a date the scan likewise never forwards.
 
 gsheet:
   spreadsheet_id: ss_seed_floor

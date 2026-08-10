@@ -263,8 +263,8 @@ wiring `consent` through, rather than inheriting this behavior by default.
   `tests/scenarios/test_sql_query_internal_schemas.py` connects a seed sheet
   through `GSheetConnectionService`, so the `raw.gsheet_<alias>` view it
   queries is minted by the code path a real pull uses, and asserts one row
-  of six columns — two masked shapes and the three passthrough gaps named
-  under "What the floor does not catch", plus an ordinary label.
+  of seven columns — two masked shapes, the three passthrough gaps named
+  under "What the floor does not catch", a plain label, and a date.
 
 ## Resolved questions
 - ~~**Floor representation**~~ — a sentinel `DataClass`. `DataClass.FLOORED`

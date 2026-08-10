@@ -130,11 +130,11 @@ def _connect_seed_sheet(db: Database, fixture: dict[str, Any]) -> None:
 
 
 def test_seed_view_reads_through_sql_query_under_the_content_floor() -> None:
-    """One row of a minted ``raw`` seed view, six columns, six hand-derived cells.
+    """One row of a minted ``raw`` seed view, seven columns, seven derived cells.
 
-    Two columns must come back masked and four must come back intact, each for a
-    different reason the fixture names. Both directions are load-bearing: a floor
-    that masked everything would satisfy the masked half while making the schema
+    Two columns must come back masked and five must come back intact, each for a
+    reason the fixture names. Both directions are load-bearing: a floor that
+    masked everything would satisfy the masked half while making the schema
     useless, and a floor that masked nothing would satisfy the passthrough half
     while publishing an account number.
     """
