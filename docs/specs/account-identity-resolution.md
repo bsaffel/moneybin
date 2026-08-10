@@ -524,6 +524,43 @@ Guard-2 free-text resolution):
   auto-rejecting siblings; `decision="reject"` forbids `target_id`. The envelope,
   sensitivity tier (low — `ref_value` masked/omitted), and `actions[]` follow
   `mcp.md`.
+- **An accepted merge re-runs matching, and says what it found.** The merge is
+  what makes the two sources' rows comparable at all: the transaction matcher
+  blocks candidate pairs on `account_id` (`matching/scoring.py`), so while the
+  provisional and the candidate are separate accounts it is structurally unable
+  to pair their duplicates — it does not decline them, it never sees them. But
+  `CANONICAL_STEPS` runs `match` three stages before `identity`, so no refresh
+  ever observes its own accepts. Before this behavior shipped, an accept
+  repointed the links and stopped; on 2026-08-08 that left 377 duplicated rows
+  with zero proposals raised, and both `dedup_reconciliation` and
+  `duplicate_account_overlap` green throughout (`moneybin-doctor.md`,
+  `unproposed_cross_source_duplicates`, is the invariant that now catches it).
+
+  So `AccountLinksService.set()` calls `rematch_after_merge()` after its commit,
+  running `refresh(steps=["match", "transform"])`. The batched review path has
+  its own seam in `apply_identity()`: its inner `set()` calls run with
+  `in_outer_txn=True` and return before their own post-commit tail, so the
+  single-accept trigger does not cover it. `identity` is deliberately excluded —
+  that stage re-enters this service.
+
+  `transform` is included even though `prep.int_transactions__{unioned,matched,
+  merged}` and `core.fct_transactions` are all `kind VIEW` and collapse on the
+  next read. `core.dim_accounts` is `kind FULL`, and the staging models it is
+  built from `LEFT JOIN app.account_links` — so without the transform the
+  transactions merge while the accounts dimension still lists both accounts,
+  which reads to the user as a merge that did not happen. The cost is a SQLMesh
+  apply on the accept path.
+
+  Because the pass can auto-accept without asking (`engine._classify_pair`
+  returns `("accepted", "auto")` above `high_confidence_threshold` with agreeing
+  descriptions), it reports what it did rather than merging rows silently —
+  "magic stays visible" (`design-principles.md`). `RefreshResult` carries
+  `matches_auto_merged` / `matches_pending_review` / `matches_pending_transfers`;
+  the CLI prints them and MCP returns `rematch_auto_merged` /
+  `rematch_pending_review` on the payload. Both are **null on a reject**, which
+  runs no pass at all — distinct from a pass that ran and found nothing (`0`).
+  On the CLI the report is outside the confirmation branch, so `--yes` waives
+  the prompt but never the disclosure.
 - **What a queue row carries — measured overlap, not a stored score.** Each
   candidate reports the **ledger overlap**: how many of the provisional
   account's transactions already appear in the candidate's, matched on equal

@@ -774,8 +774,10 @@ def test_run_all_returns_expected_invariants(
     # currency) + profile_settings audit coverage (M1K.1 Req 4) + user_reports
     # audit coverage (M2P.2) + duplicate_account_overlap (one account imported
     # under two identities — invisible to the matcher, which blocks candidate
-    # pairs on account_id).
-    assert len(report.invariants) == 56
+    # pairs on account_id) + unproposed_cross_source_duplicates (the same two
+    # sources *after* the link is accepted, which is where the overlap check
+    # stops applying and dedup_reconciliation never applied).
+    assert len(report.invariants) == 57
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -783,6 +785,7 @@ def test_run_all_returns_expected_invariants(
     assert "sqlmesh_model_presence" in names
     assert "dedup_reconciliation" in names
     assert "duplicate_account_overlap" in names
+    assert "unproposed_cross_source_duplicates" in names
     assert "categorization_coverage" in names
     assert "currency_integrity" in names
     assert "app_audit_coverage_user_categories" in names
@@ -3228,5 +3231,131 @@ def test_partial_overlap_below_the_ratio_passes(
         )
 
     result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+def _insert_unioned_row(
+    db: Database,
+    *,
+    stid: str,
+    source_type: str,
+    source_origin: str = "bank",
+    account_id: str = "ACC1",
+    amount: str = "-50.00",
+    transaction_date: str = "2026-01-01",
+) -> None:
+    """Insert one matcher-input row into prep.int_transactions__unioned.
+
+    Defaults put every row in one account on one date at one amount, so a test
+    only has to vary the field whose narrowing clause it is exercising.
+    """
+    db.execute(
+        """
+        INSERT INTO prep.int_transactions__unioned (
+            source_transaction_id, account_id, source_account_key,
+            transaction_date, amount, description, currency_code,
+            source_type, source_origin, is_pending
+        ) VALUES (?, ?, ?, ?, ?, 'Coffee', 'USD', ?, ?, false)
+        """,  # noqa: S608 — test input, not user data
+        [
+            stid,
+            account_id,
+            account_id,
+            transaction_date,
+            amount,
+            source_type,
+            source_origin,
+        ],
+    )
+
+
+def _unproposed_result(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> InvariantResult:
+    """Run the full doctor report (SQLMesh mocked) and return the unproposed check."""
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    report = DoctorService(db).run_all()
+    return next(
+        r for r in report.invariants if r.name == "unproposed_cross_source_duplicates"
+    )
+
+
+@pytest.mark.unit
+def test_cross_source_pair_with_no_decision_either_side_warns(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 2026-08-08 shape: two sources co-resident, matcher never looked.
+
+    Every narrowing clause is satisfied deliberately, and each by exactly one
+    fixture property: one account (ACC1 both sides), differing source_type
+    (ofx/csv), equal amount, zero date distance, and no app.match_decisions row
+    naming either id. Exactly one pair qualifies, so a warn here cannot come
+    from anywhere but the predicate under test.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_cross_source_pair_the_matcher_already_ruled_on_passes(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decision on either side means the matcher saw the pair — nothing to flag.
+
+    The decision is `rejected`, the least favourable status for this check: the
+    user looked and said no. If the invariant keyed on accepted-only it would
+    re-flag a pair its owner has already dismissed, nagging forever.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv1', 'csv', 'bank', 'ACC1',
+                  0.9, '{}', 'dedup', '3', NULL, 'rejected', NULL, 'user',
+                  CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_same_source_pair_with_no_decision_passes(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Within-source pairs are legitimately dropped, so their silence is not evidence.
+
+    Tier 2b writes no row when it declines a pair (`engine._classify_pair`
+    returns None), so "no decision" is the normal resting state for two rows of
+    one source and must not warn. Identical to the warning fixture in every
+    field but source_type — if this failed, the check would be flagging
+    ordinary within-source duplicates rather than the cross-source blind spot.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="ofx2", source_type="ofx")
+
+    result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "pass"

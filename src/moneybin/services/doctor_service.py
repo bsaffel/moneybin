@@ -230,6 +230,7 @@ class DoctorService:
         sqlmesh_results = self._run_sqlmesh_audits(verbose)
         dedup_reconciliation = self._run_dedup_reconciliation()
         duplicate_accounts = self._run_duplicate_account_overlap()
+        unproposed_duplicates = self._run_unproposed_cross_source_duplicates()
         categorization = self._run_categorization_coverage()
         currency_integrity = self._run_currency_integrity()
         app_integrity = self._run_app_integrity(full=full)
@@ -254,6 +255,7 @@ class DoctorService:
             self._run_sqlmesh_model_presence(),
             dedup_reconciliation,
             duplicate_accounts,
+            unproposed_duplicates,
             categorization,
             currency_integrity,
             *app_integrity,
@@ -2308,6 +2310,140 @@ class DoctorService:
                 affected_ids=[
                     f"{a}:{b} ({round(float(ratio) * 100)}% overlap)"
                     for a, b, ratio in rows
+                ],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_unproposed_cross_source_duplicates(self) -> InvariantResult:
+        """Two sources co-resident in one account that the matcher never considered.
+
+        The blind spot ``dedup_reconciliation`` cannot see. That check asserts
+        ``raw_total - core_count == dedup_absorbed``, which balances whether or
+        not a duplicate was ever *proposed* — a pair nobody looked at moves both
+        sides of the equation together, so it stayed green through all 377 rows
+        of the 2026-08-08 incident. ``duplicate_account_overlap`` saw that split
+        while it was two accounts and stopped applying the instant the link was
+        accepted, which is precisely when this one starts.
+
+        The evidence is a pair the matcher's own blocking join would have
+        produced — same account, equal amount (sign included), inside
+        ``matching.date_window_days``, neither side manual — where **neither
+        side carries any ``app.match_decisions`` row, in any status, in either
+        direction**.
+
+        That last clause is what makes silence mean something, because the
+        matcher drops candidate pairs for two legitimate reasons and both leave
+        the *other* side holding a decision:
+
+        - ``assign_components`` skips a redundant edge when the two rows are
+          already connected, and skips an edge that would co-locate two rows
+          from one physical source. In both cases the row is spoken for by the
+          pairing that won.
+        - Tier 2b declines a within-source pair by writing nothing at all
+          (``engine._classify_pair`` returns ``None``), which is why this check
+          requires differing ``source_type`` — for same-source pairs, no row is
+          the normal resting state and would flag every ordinary near-duplicate.
+
+        Cross-source is the case where silence is diagnostic: every Tier 3 pair
+        that survives assignment is persisted, ``pending`` if nothing else. So a
+        cross-source pair with no decision on either side was never a candidate
+        — the two rows were not in the same account when matching last ran.
+
+        ``warn``, not ``fail``: equal amounts days apart can be two real
+        charges, and only a match pass can tell. A user-rejected pair keeps its
+        row, so dismissing a proposal silences this permanently rather than
+        nagging.
+        """
+        name = "unproposed_cross_source_duplicates"
+        settings = get_settings()
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH candidates AS (
+                    SELECT a.account_id,
+                           a.source_type AS type_a,
+                           a.source_transaction_id AS id_a,
+                           b.source_type AS type_b,
+                           b.source_transaction_id AS id_b
+                    FROM {INT_TRANSACTIONS_UNIONED.full_name} AS a
+                    JOIN {INT_TRANSACTIONS_UNIONED.full_name} AS b
+                      ON a.account_id = b.account_id
+                     AND a.amount = b.amount
+                     -- Mirrors the matcher's blocking join exactly, including
+                     -- its NULL tolerance: currency_code is nullable at this
+                     -- layer, and reading NULL as "differs" would hide the
+                     -- duplicate wherever one source is quiet.
+                     AND (
+                         a.currency_code IS NULL
+                         OR b.currency_code IS NULL
+                         OR a.currency_code = b.currency_code
+                     )
+                     AND ABS(
+                         DATEDIFF('day', a.transaction_date, b.transaction_date)
+                     ) <= ?
+                     AND a.source_type <> 'manual'
+                     AND b.source_type <> 'manual'
+                     AND a.source_type <> b.source_type
+                     AND (
+                         a.source_type, a.source_origin, a.source_transaction_id
+                     ) < (
+                         b.source_type, b.source_origin, b.source_transaction_id
+                     )
+                ),
+                -- Both directions flattened: the matcher writes a pair once, in
+                -- whichever order the blocking join produced, so a row can be
+                -- spoken for from either column.
+                decided AS (
+                    SELECT source_transaction_id_a AS stid, source_type_a AS stype
+                    FROM {MATCH_DECISIONS.full_name}
+                    UNION
+                    SELECT source_transaction_id_b, source_type_b
+                    FROM {MATCH_DECISIONS.full_name}
+                )
+                SELECT c.account_id, COUNT(*) AS pairs
+                FROM candidates AS c
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM decided AS d
+                    WHERE d.stid = c.id_a AND d.stype = c.type_a
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM decided AS d
+                    WHERE d.stid = c.id_b AND d.stype = c.type_b
+                )
+                GROUP BY c.account_id
+                ORDER BY c.account_id
+                """,  # noqa: S608 — TableRef constants, parameterized values
+                [settings.matching.date_window_days],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — prep views absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"matcher input unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            total = sum(int(pairs) for _, pairs in rows)
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{total} cross-source transaction pair(s) across "
+                    f"{len(rows)} account(s) match on amount and date but have "
+                    "never been considered by the matcher — neither side "
+                    "carries a match decision. This is what an accepted "
+                    "account link leaves behind when nothing re-runs matching "
+                    "afterwards: the rows became comparable, but no pass ever "
+                    "looked. Run `moneybin refresh --step match --step "
+                    "transform` to propose them, then `moneybin reviews` to "
+                    "decide. Note that "
+                    "`doctor`'s dedup reconciliation cannot see this — its "
+                    "staging counts balance whether or not a duplicate was "
+                    "ever proposed"
+                ),
+                affected_ids=[
+                    f"{account_id} ({pairs} unreviewed pair{'' if pairs == 1 else 's'})"
+                    for account_id, pairs in rows
                 ],
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])

@@ -812,6 +812,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   audit trail keeps it (#387).
 
 ### Fixed
+- **Accepting an account-link merge now re-runs the matcher, so the duplicates it
+  makes visible actually get found.** The transaction matcher blocks candidate
+  pairs on `account_id`, so while a reissued card's two sources sit under
+  separate accounts it cannot pair their duplicates — it does not decline them,
+  it never sees them. Accepting the link is what makes them comparable, but
+  `CANONICAL_STEPS` runs `match` three stages before `identity`, so no refresh
+  ever observed its own accepts: the accept repointed the links and stopped. One
+  card carrying OFX and CSV history for the same period held 377 duplicated rows
+  with zero proposals raised, and needed hand-remediation to recover.
+
+  Both accept paths now trigger the pass — the direct
+  `accounts links set` / `identity_links_decide` route, and the batched review
+  route, whose inner calls join the outer transaction and return before their own
+  post-commit tail. Because that pass can auto-merge rows without asking, it
+  reports what it did: the CLI prints how many were auto-merged and how many are
+  newly queued, and MCP returns `rematch_auto_merged` / `rematch_pending_review`.
+  Both are null after a reject, which runs no pass at all — distinct from a pass
+  that ran and found nothing. `--yes` waives the confirmation prompt, never the
+  report.
+- **`moneybin doctor` can now see a duplicate nobody proposed.** Neither existing
+  invariant could. `dedup_reconciliation` asserts
+  `raw_total - core_count == dedup_absorbed`, which balances whether or not a
+  duplicate was ever *proposed* — a pair nobody looked at moves both sides of the
+  equation together, so it stayed green across all 377 rows. `duplicate_account_overlap`
+  saw the split while it was still two accounts and stopped applying the instant
+  the link was accepted, which is precisely when the rows became matchable. The
+  new `unproposed_cross_source_duplicates` warns when a cross-source pair matches
+  on amount and date within the matcher's own window and *neither* side carries a
+  match decision in any status. Requiring neither side is what makes silence
+  mean something: the matcher legitimately drops redundant and conflicting
+  candidate pairs, but in both cases the dropped row is still spoken for by the
+  pairing that won.
 - **Undoing a decision puts it back in the review queue, and the queue count now
   says so.** `system audit undo` restores a link decision to pending, but the
   counter that reports how many decisions await review was refreshed only by the

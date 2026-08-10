@@ -76,6 +76,23 @@ Remedy: `moneybin accounts links run` raises a proposal for existing accounts, `
 
 **The remedy is not guaranteed to reach this check's pairs.** `AccountLinksService.run()` delegates to `AccountResolver.propose_existing()`, which searches institution+last-four and fuzzy name only — never the transaction-overlap signal this invariant measures. A pair flagged here was flagged *because* identity resolution failed to bind it, so `run()` can legitimately write zero decisions and leave `pending` empty. Closing that gap — materializing a detected overlap pair as a review decision, or accepting two account ids directly — is tracked as follow-up work, not shipped here.
 
+**`unproposed_cross_source_duplicates`** — Two sources co-resident in one account that the matcher has never considered. `warn` when a cross-source pair matches on amount and date and *neither* side carries an `app.match_decisions` row; `pass` otherwise; `skipped` before the first transform. Reported once per account, with the pair count.
+
+This is the state `duplicate_account_overlap` leaves behind. That check sees the split while it is still two accounts and stops applying the instant the link is accepted — which is exactly when the rows become co-resident and matchable. `dedup_reconciliation` never applied: its `raw_total - core_count == dedup_absorbed` identity balances whether or not a duplicate was ever *proposed*, so a pair nobody looked at moves both sides together. On 2026-08-08 both checks were green across 377 silently duplicated rows.
+
+A pair qualifies when it is one the matcher's own blocking join would have produced — same `account_id`, exact amount (sign included), within `matching.date_window_days`, neither side `manual`, compatible `currency_code` — with two further conditions:
+
+| Condition | Rejects |
+|---|---|
+| `source_type` differs on the two sides | Within-source pairs, where Tier 2b declines by writing no row at all (`engine._classify_pair` returns `None`) — silence is the normal resting state |
+| Neither side appears in `app.match_decisions`, any status, either direction | Pairs the matcher already ruled on, and pairs whose partner won a competing assignment |
+
+The second condition is what makes silence diagnostic. `assign_components` legitimately drops candidate pairs — a redundant edge between rows already connected, and an edge that would co-locate two rows from one physical source — but in both cases the dropped row is spoken for by the pairing that won, so it still holds a decision. Every Tier 3 pair that survives assignment is persisted, `pending` if nothing else. A cross-source pair with *no* decision on either side was therefore never a candidate: the two rows were not in the same account the last time matching ran.
+
+`warn`, never `fail` — equal amounts days apart can be two real charges, and only a match pass can tell. A user-rejected pair keeps its row, so dismissing a proposal silences this permanently rather than nagging.
+
+Remedy: `moneybin refresh --step match --step transform` proposes the pairs and reflects any auto-merges into the ledger; `moneybin reviews` decides the rest. An accepted account-link merge now re-runs matching automatically (`AccountLinksService.rematch_after_merge()`), so this check should only fire on ledgers whose merges predate that behavior, or where a match pass failed.
+
 **`categorization_coverage`** — What percentage of non-transfer transactions have a category. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
 
 ### Investment reconciliation (M1G.4)
