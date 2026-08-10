@@ -10,6 +10,7 @@ deferred to the M1L audit-undo consumer.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import typer
@@ -147,7 +148,7 @@ def links_set(
     target_account_id: str | None = into if not standalone else None
 
     with handle_cli_errors():
-        approved: dict[str, int] | None = None
+        approved: _ApprovedMerge | None = None
         if target_account_id is not None and not yes:
             approved = _confirm_merge(decision_id, target_account_id)
         with get_database(read_only=False) as db:
@@ -192,14 +193,44 @@ def _plan_merge(
         raise _preflight_reason(exc) from exc
 
 
-def _merge_preview(decision_id: str, target_account_id: str) -> IdentityDecisionPlan:
-    """Resolve the merge read-only, the way MCP previews the same decision."""
+@dataclass(frozen=True)
+class _ApprovedMerge:
+    """The two radii the operator's yes was bound to.
+
+    Neither one covers the other, which is why both travel together.
+    ``sentence`` is what the prompt printed — accounts, transactions, merchants
+    — and moves when a concurrent import brings new history into either side.
+    ``rows`` is what the write physically touches: the ``account_links`` it
+    repoints and the ``account_link_decisions`` it accepts and auto-rejects.
+    A concurrent ``accounts links run`` proposes one more candidate for the same
+    provisional and moves only the second, so a comparison holding just the
+    sentence would commit a merge that silently rejects a decision nobody read.
+    """
+
+    sentence: dict[str, int]
+    rows: dict[str, int]
+
+
+def _merge_preview(decision_id: str, target_account_id: str) -> _ApprovedMerge | None:
+    """Resolve both radii read-only, the way MCP previews the same decision.
+
+    ``None`` when the accept changes nothing — a decision already settled onto
+    this same candidate. The destructive check has to come first: ``accept_impact``
+    refuses a non-pending decision, so asking it about that legitimate re-run
+    would raise where the command should simply pass through.
+    """
     with get_database(read_only=True) as db:
-        return _plan_merge(db, decision_id, target_account_id)
+        plan = _plan_merge(db, decision_id, target_account_id)
+        if not plan.destructive:
+            return None
+        impact = AccountLinksService(db, actor="cli").accept_impact(
+            decision_id, target_account_id=target_account_id
+        )
+    return _ApprovedMerge(sentence=plan.blast_radius, rows=impact.blast_radius)
 
 
 def _drift_check(
-    db: Database, decision_id: str, approved: dict[str, int] | None
+    db: Database, decision_id: str, approved: _ApprovedMerge | None
 ) -> Callable[[AccountLinkAcceptImpact], None] | None:
     """Refuse the write if the merge stopped matching the sentence the operator read.
 
@@ -218,11 +249,13 @@ def _drift_check(
         return None
 
     def verify(impact: AccountLinkAcceptImpact) -> None:
-        # Re-plans rather than reading impact.blast_radius: that one counts link
-        # rows, while the sentence the operator answered counts transactions and
-        # accounts. Only the plan's own arithmetic can contradict what was shown.
+        # Both radii, because a merge can grow in either one alone. Re-planning
+        # catches history that arrived on either account; ``impact`` — which the
+        # service already recomputed on this transaction's own read — catches the
+        # links this write repoints and the sibling decisions it auto-rejects,
+        # none of which the plan's arithmetic counts.
         current = _plan_merge(db, decision_id, impact.candidate_account_id).blast_radius
-        if current != approved:
+        if current != approved.sentence or impact.blast_radius != approved.rows:
             raise UserError(
                 "This merge changed while the confirmation was open, so nothing "
                 "was written. Re-run the command to see what it moves now.",
@@ -269,7 +302,7 @@ def _preflight_reason(exc: UserError) -> UserError:
     )
 
 
-def _confirm_merge(decision_id: str, target_account_id: str) -> dict[str, int] | None:
+def _confirm_merge(decision_id: str, target_account_id: str) -> _ApprovedMerge | None:
     """Show what the merge moves, require a yes, and return what was approved.
 
     Renders the same sentence the MCP elicitation shows, from the same preflight,
@@ -277,15 +310,14 @@ def _confirm_merge(decision_id: str, target_account_id: str) -> dict[str, int] |
     link folds one account's whole history into another and no command splits it
     back apart. This was the last accept path that committed unasked.
 
-    Returns the blast radius the operator actually read, so the write can hold
-    itself to it. A plan that turns out not to be destructive — the decision is
-    already accepted, so nothing moves — returns ``None`` and asks nothing.
+    Returns both radii the operator's yes was bound to, so the write can hold
+    itself to them. A merge that turns out to move nothing — the decision is
+    already settled — returns ``None`` and asks nothing.
     """
-    plan = _merge_preview(decision_id, target_account_id)
-    if not plan.destructive:
+    approved = _merge_preview(decision_id, target_account_id)
+    if approved is None:
         return None
-    approved = plan.blast_radius
-    typer.echo(identity_confirm_message(approved), err=True)
+    typer.echo(identity_confirm_message(approved.sentence), err=True)
     if not typer.confirm("Merge these accounts?", default=False, err=True):
         typer.echo("Cancelled — nothing was merged.", err=True)
         raise typer.Exit(0)
