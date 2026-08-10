@@ -99,7 +99,9 @@ hold: those columns are largely undeclared, so a routing number there comes
 back as `****...NNNN` — last four retained — where a declared one returns
 `*****`. The scan behind that covers strings and integers, so an account number
 of 4 to 7 digits, one written with separators (`1234-5678`), or one stored as
-`DECIMAL` or `FLOAT` passes through in full. If an
+`DECIMAL` or `FLOAT` passes through in full. `reports create` names those
+columns when it saves, so which columns ride the scan is on the receipt rather
+than something to work out later. If an
 upstream column is later reclassified as more sensitive, the saved report masks
 that column instead of serving the class it captured. `reports set` re-derives on any
 SQL or parameter change, `reports delete` is undoable via `system audit undo`,

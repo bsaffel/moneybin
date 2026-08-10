@@ -545,6 +545,17 @@ everywhere else.
   names a table column directly.
 - **Unresolvable columns produce one non-blocking note** on the save response,
   naming the columns and the fix. Not a gate. The report saves.
+- **Floored columns produce a second, separate note.** A `raw`/`prep` column
+  with no declared class returns values in the clear, so nothing else in the
+  response tells the author its protection is a value-shape scan rather than a
+  declaration. `SaveOutcome.floored_columns` names them and the note states the
+  scan's gaps (`queryable-internal-schemas.md` → "What the floor does not
+  catch"). Kept distinct from `unresolved_columns` because the two ask for
+  different actions: an unresolvable column is fixed by projecting the
+  underlying column directly, a floored one by declaring it in
+  `INTERNAL_CRITICAL`. No counter — a floored column is the expected state of
+  every `raw`/`prep` report, so counting it would measure schema usage, not a
+  classification problem.
 - **Masked output self-explains.** Any run that masks at least one column
   carries an `actions[]` hint describing the report-inspection outcome; the
   implementing PR binds that hint only to an admitted surface. A `'*****'` with

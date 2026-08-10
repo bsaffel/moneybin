@@ -1,11 +1,11 @@
 # Feature: Queryable Internal Schemas
 
 ## Status
-in-progress
+implemented
 
 ## Milestone
-M2O. Phase 1 (`reports.*`) implemented; Phase 2 (`raw`/`prep` + content-net
-floor) designed.
+M2O. Phase 1 (`reports.*`) and Phase 2 (`raw`/`prep` + content-net floor)
+both implemented.
 
 ## Type
 Feature — extends the `sql_query` surface. Builds on the declared-class
@@ -44,16 +44,16 @@ declaration covers.
 
 ## Background & Motivation
 
-### The current fence
-`sql_query` refuses any schema outside `core`/`app`
-(`_ALLOWED_QUERY_SCHEMAS` in `privacy/sql_query.py`). The reason is
+### The fence this spec removed
+Before M2O, `sql_query` refused any schema outside `core`/`app`
+(`_ALLOWED_QUERY_SCHEMAS` in `privacy/sql_query.py`). The reason was
 sound: CRITICAL columns (account/routing numbers) are masked by
-resolving each output column's `DataClass`, and only `core`/`app` are in
-the `CLASSIFICATION` registry. An unclassified-schema query hits
-`_conservative_floor`'s `AGGREGATE` default (unmasked) and would return
-account numbers in the clear — the module docstring flags this.
+resolving each output column's `DataClass`, and only `core`/`app` were in
+the `CLASSIFICATION` registry. An unclassified-schema query hit
+`_conservative_floor`'s `AGGREGATE` default (unmasked) and would have
+returned account numbers in the clear.
 
-### Two problems the fence creates
+### Two problems the fence created
 
 1. **A broken contract on seed data.** The gsheet and PDF importers ship
    a `seed` adapter whose purpose is a "catch-all escape hatch → JSON
@@ -61,11 +61,11 @@ account numbers in the clear — the module docstring flags this.
    (`connect-gsheet.md`; the PDF seed path in `smart-import-pdf.md` reuses
    it). Seed data is **terminal at `raw` by design** — reference data (a
    manual budget, a lookup table), not transactions, so it correctly
-   never flows to `core`. The schema catalog already advertises these
+   never flows to `core`. The schema catalog already advertised these
    views (`_gsheet_seed_views` / `_pdf_seed_views` in
-   `schema_catalog.py`) plus the `beyond_the_interface` pointer — but
-   `sql_query` then refuses to serve them. Today the only way to query a
-   seed view is the unmasked operator CLI (`moneybin db query`), not the
+   `schema_catalog.py`) plus the `beyond_the_interface` pointer — and
+   `sql_query` then refused to serve them. The only way to query a seed
+   view was the unmasked operator CLI (`moneybin db query`), not the
    agent surface the adapter was built for.
 
    > Seed data staying in `raw` is **correct**, not a pipeline bug. Only
@@ -74,14 +74,14 @@ account numbers in the clear — the module docstring flags this.
    > `core` would be a separate defect — out of scope here.
 
 2. **Recurring debugging friction.** Diagnosing an import or transform
-   issue means inspecting `raw`/`prep`, which the agent surface can't do
-   (only `DESCRIBE`), forcing a drop to the operator CLI.
+   issue means inspecting `raw`/`prep`, which the agent surface could not
+   do (only `DESCRIBE`), forcing a drop to the operator CLI.
 
-### Curated reports aren't queryable either
-`reports.*` views already carry declared privacy classes (ADR-013) and
-back entries in the `reports` catalog, but `sql_query` still refuses the `reports`
-schema — so an agent can't join a report against `core` or filter it
-ad hoc.
+### Curated reports weren't queryable either
+`reports.*` views already carried declared privacy classes (ADR-013) and
+backed entries in the `reports` catalog, but `sql_query` refused the
+`reports` schema — so an agent could not join a report against `core` or
+filter it ad hoc. Phase 1 closed that; Phase 2 closed the other two.
 
 ## Design
 
@@ -188,7 +188,7 @@ surface stays queryable.
    falls out for free — seed views are `raw.*`, so opening `raw` with the
    floor makes them queryable and safe without per-column declaration.
 
-Each phase is independently shippable and testable.
+Each phase is independently shippable and testable. Both have shipped.
 
 ## Privacy posture (one-way-door analysis)
 
@@ -197,14 +197,45 @@ by **preserving** the account-number property, not trading it:
 
 - `reports` columns are fully declared (ADR-013) — masking is as sound as
   the typed report tools today.
-- `raw`/`prep` CRITICAL columns are declared (D4); everything else is
-  held by the content-net floor (D5). The floor is a *weaker* guarantee
-  than a declaration for those columns (a non-standard-format account
-  number could slip) — an accepted trade for keeping data readable,
-  recorded here so a future contributor can argue with it, and tightened
-  in the deferred privacy pass.
+- `raw`/`prep` CRITICAL columns are declared (D4) — 33 columns across 17
+  tables; everything else is held by the content-net floor (D5). The floor
+  is a *weaker* guarantee than a declaration for those columns — an accepted
+  trade for keeping data readable, recorded here so a future contributor can
+  argue with it, and tightened in the deferred privacy pass.
 - Pre-launch posture: iterate freely on the exact declarations and floor
   patterns; lock at the launch trigger.
+
+### What the floor does not catch
+
+The scan reaches `str` and `int` values and masks two shapes: `NNN-NN-NNNN`
+and an unbroken run of eight or more digits. Three classes of value in an
+undeclared `raw`/`prep` column therefore reach the caller intact:
+
+- an account number of four to seven digits;
+- one written with separators, such as `1234-5678`, which holds eight
+  digits but no unbroken run of eight;
+- any value the column types `DECIMAL` or `FLOAT`, whatever its digits —
+  `prep` amounts are `DECIMAL` written without thousands separators, and
+  netting them would mask most large amounts.
+
+Next action: the deferred privacy pass (D4's "Out of scope" row) either
+declares the columns that hold these shapes or replaces the shape scan
+with a per-seed detect-time declaration. Until then, a column carrying an
+account number in one of those three forms must be added to
+`INTERNAL_CRITICAL`. `tests/scenarios/test_sql_query_internal_schemas.py`
+pins all three gaps against a minted seed view, so a change that closes one
+fails a named assertion rather than passing silently.
+
+### Tier reporting, and the consent gate that will read it
+
+`sql_lineage._combined_class` reports `Tier.LOW` for a position mixing a
+floored `raw`/`prep` column with a `MEDIUM` `core` column, because
+`DataClass.FLOORED` is `Tier.LOW`. Nothing reads that tier as an
+authorization input today: `consent` is `None` at every call site and every
+transform ignores it (`privacy/redaction.py`). It becomes load-bearing the
+day a consent gate ships. Next action: whoever implements that gate must
+decide whether a floored column's tier is an acceptable input to it before
+wiring `consent` through, rather than inheriting this behavior by default.
 
 ## Amendments to existing specs
 - **`privacy-data-classification.md`** — its scope note ("the registry
@@ -228,18 +259,49 @@ by **preserving** the account-number property, not trading it:
 - Steering: tool description / `beyond_the_interface` / `actions[]` assert
   the prefer-`core`/`app` guidance.
 - Scenario coverage (`make test-scenarios`) for the widened surface, since
-  it's a data-shape/privacy change.
+  it's a data-shape/privacy change:
+  `tests/scenarios/test_sql_query_internal_schemas.py` connects a seed sheet
+  through `GSheetConnectionService`, so the `raw.gsheet_<alias>` view it
+  queries is minted by the code path a real pull uses, and asserts one row
+  of six columns — two masked shapes and the three passthrough gaps named
+  under "What the floor does not catch", plus an ordinary label.
 
-## Open questions
-- **Floor representation** — a new sentinel `DataClass` (e.g. `FLOORED`)
-  vs. a per-column "apply content-net" flag threaded to `redact_records`.
-  Leaning a sentinel that `redact_records` maps to the content-net
-  transform.
-- **`raw`/`prep` CRITICAL list source** — extend the `CLASSIFICATION`
-  dict with `raw`/`prep` CRITICAL rows, vs. a sibling map. Extending
-  `CLASSIFICATION` is more coherent but pulls those tables into its
-  completeness test; a sibling map avoids that. Resolve at `draft →
-  ready`.
+## Resolved questions
+- ~~**Floor representation**~~ — a sentinel `DataClass`. `DataClass.FLOORED`
+  is `Tier.LOW`, and `redaction._TRANSFORMS` maps it to `_mask_floored`.
+  A sentinel rather than a flag threaded to `redact_records` because the
+  class is what `class_fingerprint` hashes: a saved report's stored map
+  moves when a column gains a declaration, forcing a re-derivation. A flag
+  outside the class map would not have moved it.
+- ~~**`raw`/`prep` CRITICAL list source**~~ — a sibling map,
+  `privacy/taxonomy.py::INTERNAL_CRITICAL`, keyed the same
+  `(schema, table) → {column: DataClass}` way as `CLASSIFICATION`.
+  Extending `CLASSIFICATION` would have pulled every `raw`/`prep` table
+  into its completeness test, which requires a class for *every* column —
+  the full per-column registry this spec explicitly defers.
+  `sql_lineage._class_of_key` consults `CLASSIFICATION` first, then the
+  sibling map, then answers `FLOORED`.
 - ~~**Exact address (M2O)** — reconcile with the roadmap taxonomy.~~
-  Resolved: `docs/roadmap.md` carries an **M2O** row (🚧 in flight — Phase 1
-  shipped, Phase 2 designed).
+  Resolved: `docs/roadmap.md` carries an **M2O** row (both phases shipped).
+
+### Saved reports may read `raw`/`prep`
+
+A durable report saved through `reports create` reads the same five schemas
+`sql_query` does: `reports/_framework/derive.py::SAVE_SCHEMAS` equals
+`_ALLOWED_QUERY_SCHEMAS`, asserted as equality against the live constant so
+the two cannot drift. `reports-dynamic.md` deferred this question under
+`SAVE_SCHEMAS`; M2O.2 answers it yes, on three grounds:
+
+1. **Redaction runs per value at execution.** A stored `FLOORED` class is a
+   standing instruction to re-scan live values, not a cached verdict, so a
+   saved report cannot serve a value the ad-hoc surface would have masked.
+2. **A second, independent allowlist governs graduation.**
+   `report_materialization.DERIVABLE_UPSTREAM_SCHEMAS` stays `{core, app}`,
+   so a saved `raw`/`prep` report runs but can never become a materialized
+   `reports.*` view. `reports explain` reports the blocker by name.
+3. **Refusing the save would not have protected anything** an agent could
+   not already read through `sql_query` in one call.
+
+The save surface names what rode the floor: `SaveOutcome.floored_columns`
+lists the columns with no declared class, beside `unresolved_columns` for
+those masked whole. Both are notes, never gates.
