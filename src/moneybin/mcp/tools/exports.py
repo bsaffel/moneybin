@@ -252,7 +252,8 @@ async def _select_redaction_mode(explicit: RedactionMode | None) -> RedactionMod
             response_description=(
                 "Choose redacted (the safe default) or explicitly choose unredacted."
             ),
-        )
+        ),
+        site="export_redaction",
     )
     if result is None:
         # Refuse rather than assume "redacted": the choice is the user's, and a

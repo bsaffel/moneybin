@@ -41,7 +41,10 @@ Related code: `src/moneybin/mcp/` (tool registration and dispatch), `src/moneybi
    DuckDB connection across its prompt; verify that still holds before adding a
    confirm to a tool that opens one first. The human wait has its own separate
    bound (below), after which the call degrades to the opaque-token path rather
-   than failing.
+   than failing. Every bounded wait increments
+   `moneybin_mcp_elicitations_total{site,outcome}` — both `answered` and
+   `timeout`, because a miss count without the answers it is a fraction of
+   cannot say whether the configured window is long enough.
 
 ## Data Model
 

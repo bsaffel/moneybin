@@ -118,7 +118,15 @@ def excluded_from_tool_deadline() -> Generator[None]:
         return
     loop = asyncio.get_running_loop()
     started = loop.time()
-    cm.reschedule(None)
+    try:
+        cm.reschedule(None)
+    except RuntimeError:
+        # The cap fired in the instant between reading its deadline and pausing
+        # it; asyncio refuses to reschedule an expiring Timeout. The task is
+        # already being cancelled, so let the timed_out envelope stand rather
+        # than replacing it with an unclassified RuntimeError.
+        yield
+        return
     try:
         yield
     finally:

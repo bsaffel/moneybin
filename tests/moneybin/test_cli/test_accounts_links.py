@@ -9,10 +9,14 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
+from moneybin import error_codes
 from moneybin.cli.commands.accounts.links import app
+from moneybin.errors import UserError
 from moneybin.mcp.write_contracts import AccountLinkDecisionRequest
+from moneybin.services.account_links_service import AccountLinkAcceptImpact
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
@@ -88,6 +92,30 @@ def _merge_plan(
         },
     )
     return IdentityDecisionPlan(items=(item,))
+
+
+def _commit_running_verifier(*_args: object, **kwargs: object) -> None:
+    """Stand in for ``AccountLinksService.set``, running the verifier it is given.
+
+    The real service calls ``verify_accept`` inside its write transaction just
+    before the first mutation. Asserting the callback is present is half the
+    point: a CLI that stopped passing one would otherwise still pass every
+    drift assertion below by never checking anything.
+    """
+    verify = kwargs.get("verify_accept")
+    assert verify is not None, "the merge write must carry a verifier"
+    assert callable(verify)
+    verify(
+        AccountLinkAcceptImpact(
+            provisional_account_id="PROV1",
+            candidate_account_id="CAND001",
+            blast_radius={
+                "accounts": 2,
+                "account_links": 1,
+                "account_link_decisions": 1,
+            },
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -214,8 +242,13 @@ class TestLinksSet:
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
         assert result.exit_code == 0
+        # verify_accept=None: --yes displayed no radius, so there is nothing for
+        # the write to hold itself to.
         mock_set.assert_called_once_with(
-            "dec001", target_account_id="CAND001", decided_by="user"
+            "dec001",
+            target_account_id="CAND001",
+            decided_by="user",
+            verify_accept=None,
         )
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
@@ -231,7 +264,10 @@ class TestLinksSet:
         result = runner.invoke(app, ["set", "dec001", "--standalone"])
         assert result.exit_code == 0
         mock_set.assert_called_once_with(
-            "dec001", target_account_id=None, decided_by="user"
+            "dec001",
+            target_account_id=None,
+            decided_by="user",
+            verify_accept=None,
         )
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
@@ -254,7 +290,10 @@ class TestLinksSet:
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="n\n")
 
-        assert result.exit_code != 0
+        # Exit 0: the project's code table reserves non-zero for runtime and
+        # usage errors, and a declined prompt is the operator's choice carried
+        # out, not a failure. Matches every sibling decline site.
+        assert result.exit_code == 0
         mock_set.assert_not_called()
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
@@ -304,6 +343,176 @@ class TestLinksSet:
         assert result.exit_code == 0
         mock_preview.assert_not_called()
         mock_set.assert_called_once()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.cli.commands.accounts.links._plan_merge")
+    @patch("moneybin.cli.commands.accounts.links._merge_preview")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_aborts_when_the_merge_grew_between_prompt_and_commit(
+        self,
+        mock_set: MagicMock,
+        mock_preview: MagicMock,
+        mock_plan: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """What the operator approved must still be what commits.
+
+        The prompt reads on one connection and the write opens another, so a
+        concurrent import can grow the merge while the operator is reading. The
+        service re-derives the plan inside the write transaction and this
+        verifier refuses a batch that no longer matches the sentence shown.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_preview.return_value = _merge_plan(transactions=("t1",))
+        mock_plan.return_value = _merge_plan(transactions=("t1", "t2", "t3"))
+        mock_set.side_effect = _commit_running_verifier
+
+        result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="y\n")
+
+        # The refusal reaches the operator through the error logger, not the
+        # Click result stream, so assert on the record that actually carries it.
+        assert result.exit_code != 0
+        assert "changed while the confirmation was open" in caplog.text
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.cli.commands.accounts.links._plan_merge")
+    @patch("moneybin.cli.commands.accounts.links._merge_preview")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_commits_when_the_merge_is_unchanged(
+        self,
+        mock_set: MagicMock,
+        mock_preview: MagicMock,
+        mock_plan: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """The guard must not refuse the ordinary case it wraps.
+
+        Paired with the drift test above so neither passes for the other's
+        reason: identical counts have to reach the service, or a verifier that
+        refused everything would look correct.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_preview.return_value = _merge_plan(transactions=("t1",))
+        mock_plan.return_value = _merge_plan(transactions=("t1",))
+        mock_set.side_effect = _commit_running_verifier
+
+        result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="y\n")
+
+        assert result.exit_code == 0
+        mock_set.assert_called_once()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch(
+        "moneybin.services.review_decisions_service.ReviewDecisionsService.plan_identity"
+    )
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_names_why_the_preflight_refused(
+        self,
+        mock_set: MagicMock,
+        mock_plan_identity: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A mistyped id keeps naming itself once the gate reads it first.
+
+        ``plan_identity`` batches per-decision reasons into ``details["errors"]``,
+        which the MCP envelope carries and the CLI's text mode never prints. One
+        request can only fail for one reason, so surfacing it beats the generic
+        batch message the operator would otherwise get — worse than the ungated
+        command gave, and only on the path that asks.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_plan_identity.side_effect = UserError(
+            "Identity decision preflight failed.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+            details={
+                "errors": [
+                    {
+                        "reason": "No account-link decision found for id 'typo'.",
+                        "code": error_codes.MUTATION_NOT_FOUND,
+                    }
+                ]
+            },
+        )
+
+        result = runner.invoke(app, ["set", "typo", "--into", "CAND001"], input="y\n")
+
+        assert result.exit_code != 0
+        assert "No account-link decision found for id 'typo'." in caplog.text
+        mock_set.assert_not_called()
+
+    def test_preflight_reason_keeps_the_specific_code(self) -> None:
+        """The unwrapped code is the decision's own, not the batch's.
+
+        ``--output json`` puts it in the envelope an agent branches on, so
+        collapsing a missing id to the batch's ``invalid_input`` would cost the
+        one distinction worth having on a typo.
+        """
+        from moneybin.cli.commands.accounts.links import (
+            _preflight_reason,  # pyright: ignore[reportPrivateUsage]  # the unwrapping is the unit under test
+        )
+
+        unwrapped = _preflight_reason(
+            UserError(
+                "Identity decision preflight failed.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                details={
+                    "errors": [
+                        {"reason": "gone", "code": error_codes.MUTATION_NOT_FOUND}
+                    ]
+                },
+            )
+        )
+
+        assert unwrapped.code == error_codes.MUTATION_NOT_FOUND
+
+    def test_preflight_reason_refuses_an_undeclared_code(self) -> None:
+        """An unrecognized upstream code degrades instead of reaching the wire.
+
+        Every wire code is proven declared by a scan of source literals, which
+        cannot see through a dict. The lookup is what keeps that proof true if
+        the preflight ever grows a code this command has not been taught.
+        """
+        from moneybin.cli.commands.accounts.links import (
+            _preflight_reason,  # pyright: ignore[reportPrivateUsage]  # the unwrapping is the unit under test
+        )
+
+        unwrapped = _preflight_reason(
+            UserError(
+                "Identity decision preflight failed.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                details={
+                    "errors": [{"reason": "novel", "code": "invented_at_runtime"}]
+                },
+            )
+        )
+
+        assert unwrapped.message == "novel"
+        assert unwrapped.code == error_codes.MUTATION_INVALID_INPUT
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.cli.commands.accounts.links._merge_preview")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_declined_says_nothing_was_merged(
+        self,
+        mock_set: MagicMock,
+        mock_preview: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """A decline states the outcome instead of Click's bare ``Aborted!``.
+
+        Every other confirm-then-decline site in the CLI prints its own line
+        (`transactions notes`, `sync`, `db kill`); a merge decision is the last
+        place to leave the reader guessing whether anything moved.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_preview.return_value = _merge_plan()
+
+        result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="n\n")
+
+        assert "nothing was merged" in result.output.lower()
+        mock_set.assert_not_called()
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.cli.commands.accounts.links._merge_preview")

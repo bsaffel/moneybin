@@ -246,9 +246,18 @@ class UndoService:
                 code=error_codes.RECOVERY_NO_PATH,
             )
         # After the commit, never inside it: a gauge set from uncommitted rows
-        # would survive a rollback that discarded them.
+        # would survive a rollback that discarded them. And never fatal: the
+        # undo is already durable, so a failed telemetry read must not report a
+        # committed reversal as an error the caller would retry.
         for repo in touched.values():
-            repo.refresh_pending_gauge()
+            try:
+                repo.refresh_pending_gauge()
+            except Exception:  # noqa: BLE001 — telemetry never fails a committed undo
+                logger.warning(
+                    f"⚠️ Could not refresh the review-queue gauge for "
+                    f"{type(repo).__name__} after undo {operation_id}; the count "
+                    "will correct itself on the next decision."
+                )
         tables = sorted({e.target_table for e in undone if e.target_table})
         audit_undo_total.labels(outcome="success").inc()
         audit_undo_rows_reversed_total.inc(len(undone))

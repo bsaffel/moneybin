@@ -14,9 +14,11 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.privacy.payloads.accounts import (
     AccountLinksHistoryPayload,
     AccountLinksPendingPayload,
@@ -24,11 +26,15 @@ from moneybin.privacy.payloads.accounts import (
 )
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_links_service import (
+    AccountLinkAcceptImpact,
     AccountLinksService,
 )
 from moneybin.services.identity_confirmation import identity_confirm_message
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from moneybin.database import Database
     from moneybin.services.review_decisions_service import IdentityDecisionPlan
 
 app = typer.Typer(
@@ -141,11 +147,15 @@ def links_set(
     target_account_id: str | None = into if not standalone else None
 
     with handle_cli_errors():
+        approved: dict[str, int] | None = None
         if target_account_id is not None and not yes:
-            _confirm_merge(decision_id, target_account_id)
+            approved = _confirm_merge(decision_id, target_account_id)
         with get_database(read_only=False) as db:
             AccountLinksService(db, actor="cli").set(
-                decision_id, target_account_id=target_account_id, decided_by="user"
+                decision_id,
+                target_account_id=target_account_id,
+                decided_by="user",
+                verify_accept=_drift_check(db, decision_id, approved),
             )
 
     action = (
@@ -156,8 +166,10 @@ def links_set(
     logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
 
 
-def _merge_preview(decision_id: str, target_account_id: str) -> IdentityDecisionPlan:
-    """Resolve the merge read-only, the way MCP previews the same decision."""
+def _plan_merge(
+    db: Database, decision_id: str, target_account_id: str
+) -> IdentityDecisionPlan:
+    """Resolve the merge against ``db``, the way MCP plans the same decision."""
     # Deferred: the identity contracts and decision service are not worth loading
     # on every CLI invocation to gate one subcommand.
     from moneybin.mcp.write_contracts import (  # noqa: PLC0415 — keep off the cold-start path
@@ -167,7 +179,7 @@ def _merge_preview(decision_id: str, target_account_id: str) -> IdentityDecision
         ReviewDecisionsService,
     )
 
-    with get_database(read_only=True) as db:
+    try:
         return ReviewDecisionsService(db, actor="cli").plan_identity([
             AccountLinkDecisionRequest(
                 kind="account_link",
@@ -176,26 +188,108 @@ def _merge_preview(decision_id: str, target_account_id: str) -> IdentityDecision
                 target_id=target_account_id,
             )
         ])
+    except UserError as exc:
+        raise _preflight_reason(exc) from exc
 
 
-def _confirm_merge(decision_id: str, target_account_id: str) -> None:
-    """Show what the merge moves and require a yes before anything commits.
+def _merge_preview(decision_id: str, target_account_id: str) -> IdentityDecisionPlan:
+    """Resolve the merge read-only, the way MCP previews the same decision."""
+    with get_database(read_only=True) as db:
+        return _plan_merge(db, decision_id, target_account_id)
+
+
+def _drift_check(
+    db: Database, decision_id: str, approved: dict[str, int] | None
+) -> Callable[[AccountLinkAcceptImpact], None] | None:
+    """Refuse the write if the merge stopped matching the sentence the operator read.
+
+    The prompt reads on its own read-only connection and closes it, so the plan
+    shown and the plan committed are two separate reads with a human in between
+    — long enough for a concurrent import or sync to widen the merge. The
+    service calls this back inside its write transaction immediately before the
+    first mutation, which is the only place the comparison is worth anything;
+    ``mcp/tools/accounts.py`` verifies its own grant through the same hook.
+
+    ``None`` when nothing was approved: ``--yes`` and ``--standalone`` have no
+    displayed radius to hold the commit to, and inventing one would refuse a
+    write on a comparison the operator never saw.
+    """
+    if approved is None:
+        return None
+
+    def verify(impact: AccountLinkAcceptImpact) -> None:
+        # Re-plans rather than reading impact.blast_radius: that one counts link
+        # rows, while the sentence the operator answered counts transactions and
+        # accounts. Only the plan's own arithmetic can contradict what was shown.
+        current = _plan_merge(db, decision_id, impact.candidate_account_id).blast_radius
+        if current != approved:
+            raise UserError(
+                "This merge changed while the confirmation was open, so nothing "
+                "was written. Re-run the command to see what it moves now.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+
+    return verify
+
+
+#: The per-decision codes ``plan_identity`` can attach, mapped to themselves.
+#: The lookup is what keeps the unwrapped code declared: ``--output json`` puts
+#: it in the envelope an agent reads, and a code assembled from a dict is
+#: invisible to the literal scan that proves every wire code was declared. An
+#: unrecognized value degrades to the batch code rather than reaching the wire
+#: unannounced.
+_PREFLIGHT_CODES = {
+    code: code
+    for code in (
+        error_codes.MUTATION_INVALID_INPUT,
+        error_codes.MUTATION_NOT_FOUND,
+        error_codes.MUTATION_CONSTRAINT_VIOLATION,
+        error_codes.MUTATION_NOTHING_TO_DO,
+    )
+}
+
+
+def _preflight_reason(exc: UserError) -> UserError:
+    """Unwrap a one-decision preflight failure back into its own message.
+
+    ``plan_identity`` batches per-decision reasons into ``details["errors"]``,
+    which the MCP envelope carries but the CLI's text mode never prints — it
+    shows ``message`` and ``hint`` only. A mistyped decision id would otherwise
+    read "Identity decision preflight failed." and nothing else, where the
+    ungated command used to name the id it could not find. One request can
+    produce at most one reason, so surface it directly.
+    """
+    errors: list[dict[str, object]] = (exc.details or {}).get("errors") or []
+    if len(errors) != 1:
+        return exc
+    (error,) = errors
+    return UserError(
+        str(error["reason"]),
+        code=_PREFLIGHT_CODES.get(str(error["code"]), exc.code),
+    )
+
+
+def _confirm_merge(decision_id: str, target_account_id: str) -> dict[str, int] | None:
+    """Show what the merge moves, require a yes, and return what was approved.
 
     Renders the same sentence the MCP elicitation shows, from the same preflight,
     because the decision does not change with the surface driving it: an accepted
     link folds one account's whole history into another and no command splits it
     back apart. This was the last accept path that committed unasked.
 
-    A plan that turns out not to be destructive — the decision is already
-    accepted, so nothing moves — passes through silently rather than asking about
-    a merge that will not happen.
+    Returns the blast radius the operator actually read, so the write can hold
+    itself to it. A plan that turns out not to be destructive — the decision is
+    already accepted, so nothing moves — returns ``None`` and asks nothing.
     """
     plan = _merge_preview(decision_id, target_account_id)
     if not plan.destructive:
-        return
-    typer.echo(identity_confirm_message(plan.blast_radius), err=True)
+        return None
+    approved = plan.blast_radius
+    typer.echo(identity_confirm_message(approved), err=True)
     if not typer.confirm("Merge these accounts?", default=False, err=True):
-        raise typer.Abort()
+        typer.echo("Cancelled — nothing was merged.", err=True)
+        raise typer.Exit(0)
+    return approved
 
 
 @app.command("history")

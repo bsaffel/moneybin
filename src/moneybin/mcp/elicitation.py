@@ -14,6 +14,7 @@ from moneybin import error_codes
 from moneybin.config import DEFAULT_ELICITATION_WAIT_SECONDS, get_settings
 from moneybin.errors import UserError
 from moneybin.mcp.decorator import excluded_from_tool_deadline
+from moneybin.metrics.registry import MCP_ELICITATIONS_TOTAL
 
 if TYPE_CHECKING:
     from fastmcp.server.context import Context
@@ -34,7 +35,7 @@ def elicitation_wait_seconds() -> float:
         return DEFAULT_ELICITATION_WAIT_SECONDS
 
 
-async def elicit_bounded[T](elicitation: Awaitable[T]) -> T | None:
+async def elicit_bounded[T](elicitation: Awaitable[T], *, site: str) -> T | None:
     """Await one elicitation, bounded by the human-answer budget.
 
     Takes the ``ctx.elicit(...)`` coroutine itself so the caller keeps its
@@ -43,12 +44,22 @@ async def elicit_bounded[T](elicitation: Awaitable[T]) -> T | None:
     path instead of inheriting a default. The tool's wall-clock cap is paused
     for the wait; see ``excluded_from_tool_deadline`` for why a human's
     deliberation is not machine work.
+
+    ``site`` labels the counter. It is required rather than defaulted because
+    every call site degrades differently — token, refusal, setup envelope — and
+    one unlabelled bucket would hide which of them the misses came from.
     """
     try:
         with excluded_from_tool_deadline():
-            return await asyncio.wait_for(elicitation, elicitation_wait_seconds())
+            result = await asyncio.wait_for(elicitation, elicitation_wait_seconds())
     except TimeoutError:
+        MCP_ELICITATIONS_TOTAL.labels(site=site, outcome="timeout").inc()
         return None
+    # Deliberately not a `finally`: a transport failure or a cancelled call is
+    # neither an answer nor an expired window, and folding it into either label
+    # would corrupt the ratio the counter exists to report.
+    MCP_ELICITATIONS_TOTAL.labels(site=site, outcome="answered").inc()
+    return result
 
 
 def _confirmation_unavailable(
@@ -107,7 +118,8 @@ async def confirm_or_raise(
             response_description=(
                 "Select true only after reviewing the inference and affected data."
             ),
-        )
+        ),
+        site="confirm_or_raise",
     )
     if result is None:
         raise _confirmation_unavailable(

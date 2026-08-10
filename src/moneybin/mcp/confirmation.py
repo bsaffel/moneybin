@@ -238,7 +238,8 @@ async def grant_confirmation_or_raise(
                 response_description=(
                     "Select true only after reviewing the exact operation."
                 ),
-            )
+            ),
+            site="confirmation_grant",
         )
         # result is None only when nobody answered in time; fall through to the
         # opaque-token path so the caller keeps a way to finish, not a dead end.

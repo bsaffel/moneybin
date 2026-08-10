@@ -420,7 +420,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the same sentence the MCP prompt shows, counting the accounts, transactions,
   tax lots, and hand-set price marks that move, and waits for an answer. Pass
   `--yes` to answer in advance. `--standalone` is unchanged and never asks:
-  keeping an account separate destroys nothing.
+  keeping an account separate destroys nothing. Answering the prompt binds the
+  merge to the counts you read: the command re-derives them inside the write
+  transaction and refuses rather than committing a merge that grew while the
+  question was on screen. Declining prints `Cancelled — nothing was merged.` and
+  exits 0, matching every other confirm in the CLI (#385).
 - **A confirmation prompt no longer expires against the tool's timeout.** That
   cap exists to release a wedged database connection, and charging a person's
   reading time to it produced a dead end rather than a safeguard: at 30 seconds —
