@@ -1,0 +1,115 @@
+# Seed sheet exercising the raw/prep content floor through sql_query.
+#
+# Consumed by `tests/scenarios/test_sql_query_internal_schemas.py`. Lives here
+# because it is a gsheet workbook fixture and `synthetic_workbook.yaml` is its
+# sibling — but it is deliberately a SECOND file: that one's hand-derived counts
+# (rows_in_raw_tabular, gold_record_count, two named unmatched rows) back the
+# cross-source matching scenario, and adding a row or repurposing a column there
+# would break all three.
+#
+# Every expected value below is derived by hand from the cell values in this
+# file, against two published rules, BEFORE the pipeline runs. See
+# `.claude/rules/testing.md` "Scenario Expectations Must Be Independently
+# Derived".
+#
+# Rule 1 — column type (`connectors/gsheet/adapters/raw_seed.py::_infer_type`),
+# evaluated over every non-empty cell in the column, in this order:
+#   all plain-numeric AND any has a decimal point -> DECIMAL(18,2)
+#   all plain-numeric AND none has one            -> BIGINT
+#   all match ^\d{4}-\d{2}-\d{2}$                 -> DATE
+#   anything else                                 -> VARCHAR
+#
+# Rule 2 — masking (`privacy/redaction.py::_mask_floored`, which forwards `str`
+# and `int` to `log_sanitizer.mask_pii_shaped` and passes everything else
+# through untouched). `mask_pii_shaped` runs SSN first, then account:
+#   \b(\d{3})-(\d{2})-(\d{4})\b -> ***-**-****
+#   (?<!\d)(\d{8,})(?!\d)       -> ****...<last four of the run>
+#
+# The column set is chosen so each column fails exactly one of those clauses —
+# a fixture that trips two proves neither.
+
+description: >
+  One Google Sheet connected with the seed adapter, minting raw.gsheet_budget.
+  Six data columns, each isolating one behaviour of the content floor: two that
+  mask, three that pass through for three different documented reasons, and one
+  ordinary label.
+
+gsheet:
+  spreadsheet_id: ss_seed_floor
+  workbook_title: "Household Budget"
+  tab_name: "Ledger"
+  gid: 0
+  alias: budget # -> raw.gsheet_budget
+  headers:
+    ["Date", "Category", "Account Ref", "Member Id", "Ledger Code", "Card Ref", "Balance"]
+  rows:
+    - date: "2026-03-01"
+      category: "Groceries"
+      account_ref: "ACH 87654321"
+      member_id: "123-45-6789"
+      ledger_code: "4821"
+      card_ref: "1234-5678"
+      balance: "12345678.90"
+    - date: "2026-03-02"
+      category: "Utilities"
+      account_ref: "ACH 87654322"
+      member_id: "987-65-4321"
+      ledger_code: "5190"
+      card_ref: "2345-6789"
+      balance: "2.50"
+    - date: "2026-03-03"
+      category: "Transit"
+      account_ref: "ACH 87654323"
+      member_id: "246-80-1357"
+      ledger_code: "6033"
+      card_ref: "3456-7890"
+      balance: "3.75"
+
+# Hand-derived expectations for the FIRST data row (_row_number = 1).
+expectations:
+  # Three data rows listed above; the view carries no others.
+  rows_in_view: 3
+
+  # Inferred column types, by Rule 1 over all three rows.
+  #   date        every cell is ^\d{4}-\d{2}-\d{2}$          -> DATE
+  #   category    letters                                    -> VARCHAR
+  #   account_ref letters and a space                        -> VARCHAR
+  #   member_id   dashes, and 3-2-4 is not 4-2-2             -> VARCHAR
+  #   ledger_code 4821/5190/6033, all digits, no point       -> BIGINT
+  #   card_ref    a dash                                     -> VARCHAR
+  #   balance     12345678.90/2.50/3.75, numeric with points -> DECIMAL(18,2)
+  column_types:
+    date: DATE
+    category: VARCHAR
+    account_ref: VARCHAR
+    member_id: VARCHAR
+    ledger_code: BIGINT
+    card_ref: VARCHAR
+    balance: "DECIMAL(18,2)"
+
+  # What sql_query must return for row 1, by Rule 2 over the row-1 cells.
+  masked:
+    # "ACH 87654321": no SSN shape; one 8-digit run, bounded by a space and by
+    # end-of-string, so the account clause fires and keeps its last four.
+    account_ref: "ACH ****...4321"
+    # "123-45-6789" is 3-2-4, so the SSN clause fires and replaces the whole
+    # value. The account clause then finds no digits left to match.
+    member_id: "***-**-****"
+
+  passthrough:
+    # A label with no digits at all — the sheet stays readable.
+    category: "Groceries"
+    # 4821 is four digits; the account clause needs eight. This is the
+    # 4-to-7-digit gap, and it is also the "ordinary numeric column must not be
+    # masked" case: a BIGINT reaches the net and is returned unchanged.
+    ledger_code: 4821
+    # "1234-5678" holds eight digits but no unbroken run of eight, and 4-4 is
+    # not the 3-2-4 SSN shape. The separator-formatted gap.
+    card_ref: "1234-5678"
+    # "12345678.90" WOULD mask as "****...5678.90" if it reached the net as
+    # text — the run 12345678 is bounded by start-of-string and a '.'. It does
+    # not: Rule 1 types the column DECIMAL(18,2), and _mask_floored forwards
+    # only str and int. The DECIMAL gap.
+    balance: "12345678.90"
+    # DATE cells are datetime.date objects, likewise never forwarded.
+    date: "2026-03-01"

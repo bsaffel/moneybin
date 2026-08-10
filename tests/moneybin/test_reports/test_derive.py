@@ -143,6 +143,66 @@ def test_a_floored_parameter_may_still_be_declared_required(
     assert outcome.report_id
 
 
+def test_a_save_names_the_columns_riding_the_content_floor(prep_db: Database) -> None:
+    """The save note that tells an author which columns have no declaration.
+
+    ``unresolved_columns`` already names the columns masked *whole*. A FLOORED
+    column is the other uncertain case and reads as the certain one: it returns
+    values in the clear, so nothing in the response says its protection is a
+    value-shape scan with known gaps (4-to-7 digit runs, separator-formatted
+    values, and every DECIMAL or FLOAT pass through untouched) rather than a
+    declared class.
+    """
+    outcome = UserReportsService(prep_db).create(
+        name="floored-note",
+        query_sql="SELECT transaction_id FROM prep.int_transactions__merged",
+        actor="test",
+    )
+
+    assert outcome.floored_columns == ("transaction_id",)
+
+
+def test_a_declared_raw_prep_column_is_not_named_as_floored(
+    prep_db: Database,
+) -> None:
+    """Isolation: the note names the *undeclared* columns, not the schema.
+
+    Both columns here come from one ``prep`` view, so a note that simply
+    reported every raw/prep column would pass the test above and fail this one.
+    ``account_id`` carries an ``INTERNAL_CRITICAL`` declaration and is masked by
+    class; ``amount`` carries none and rides the scan.
+    """
+    prep_db.execute(
+        "CREATE OR REPLACE VIEW prep.stg_ofx__transactions AS "
+        "SELECT account_id, amount FROM core.fct_transactions"
+    )
+
+    outcome = UserReportsService(prep_db).create(
+        name="ofx-peek",
+        query_sql="SELECT account_id, amount FROM prep.stg_ofx__transactions",
+        actor="test",
+    )
+
+    assert outcome.floored_columns == ("amount",)
+
+
+def test_a_fully_declared_query_is_named_as_floored_nowhere(
+    saved_db: Database,
+) -> None:
+    """The benign twin: no note where every column carries a declared class.
+
+    Required by the fail-closed lesson — no privacy test in this repo fails on
+    *over*-reporting, so the quiet path needs its own assertion.
+    """
+    outcome = UserReportsService(saved_db).create(
+        name="declared",
+        query_sql="SELECT account_id, routing_number FROM core.dim_accounts",
+        actor="test",
+    )
+
+    assert outcome.floored_columns == ()
+
+
 def test_an_above_low_passthrough_default_is_still_refused(saved_db: Database) -> None:
     """The non-regression, proven at the call site rather than at the predicate.
 

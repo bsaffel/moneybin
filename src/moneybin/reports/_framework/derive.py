@@ -107,12 +107,20 @@ class DerivedClassification:
     ``classes`` is keyed by **DuckDB result column name**, which is what
     ``classify_columns`` looks up at run time. ``unresolved_columns`` feeds R3's
     non-blocking save note — an unresolvable projection never fails the save.
+
+    ``floored_columns`` is the second, quieter half of that note. A FLOORED
+    column returns values in the clear, so nothing else in the response tells
+    the author its protection is a value-shape scan rather than a declaration —
+    and the scan has stated gaps (4-to-7 digit runs, separator-formatted
+    values, and every ``DECIMAL`` or ``FLOAT``). Disjoint from
+    ``unresolved_columns`` by construction: FLOORED is not ``FAIL_CLOSED_CLASS``.
     """
 
     classes: Mapping[str, DataClass]
     parameter_classes: Mapping[str, DataClass]
     fingerprint: str
     unresolved_columns: tuple[str, ...]
+    floored_columns: tuple[str, ...]
 
 
 def annotation_of(token: str) -> type:
@@ -252,6 +260,11 @@ def derive_classification(
             name
             for name, data_class in classes.items()
             if data_class is FAIL_CLOSED_CLASS
+        ),
+        floored_columns=tuple(
+            name
+            for name, data_class in classes.items()
+            if data_class is DataClass.FLOORED
         ),
     )
 

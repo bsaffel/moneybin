@@ -675,6 +675,16 @@ def _render_save(
                 f"{', '.join(outcome.unresolved_columns)}. "
                 "Project the underlying column directly to resolve it."
             )
+        if outcome.floored_columns:
+            typer.echo(
+                f"⚠️  No declared class for "
+                f"{', '.join(outcome.floored_columns)}. "
+                "Each value is scanned at run time and masked only when it is "
+                "shaped like an SSN or holds a run of 8 or more digits; a "
+                "shorter run, a separator-formatted number, and any DECIMAL or "
+                "FLOAT pass through. `moneybin reports explain` names every "
+                "column's class."
+            )
         if outcome.cleared_downgrades:
             typer.echo(
                 f"⚠️  Cleared the approved downgrade for "
@@ -687,10 +697,15 @@ def _render_save(
     # `SanitizedLogFormatter` recognizes neither — so the terminal gets the names
     # and the durable record gets the identity and the shape. Logged outside
     # `_render_text` so `--output json` records the event too.
-    if outcome.unresolved_columns or outcome.cleared_downgrades:
+    if (
+        outcome.unresolved_columns
+        or outcome.floored_columns
+        or outcome.cleared_downgrades
+    ):
         logger.warning(
             f"user_report.{cli_actor} notes report_id={outcome.report_id} "
             f"unresolved_columns={len(outcome.unresolved_columns)} "
+            f"floored_columns={len(outcome.floored_columns)} "
             f"cleared_downgrades={len(outcome.cleared_downgrades)}"
         )
 
@@ -700,6 +715,7 @@ def _render_save(
                 "report_id": outcome.report_id,
                 "name": outcome.name,
                 "unresolved_columns": list(outcome.unresolved_columns),
+                "floored_columns": list(outcome.floored_columns),
                 "cleared_downgrades": list(outcome.cleared_downgrades),
             },
             # `name` is user-authored text, classed USER_NOTE — the same tier the
