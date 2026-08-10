@@ -188,14 +188,15 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     ``None`` means no pass ran (a standalone reject repoints nothing), and
     printing nothing is then the honest output.
     """
-    # Deferred: matching_service pulls duckdb and the match engine, and this
-    # module is on the CLI cold-start path (see .claude/rules/cli.md).
+    if rematch is None:
+        return
+    # Deferred, and below the guard: matching_service pulls duckdb and the match
+    # engine, this module is on the CLI cold-start path (.claude/rules/cli.md),
+    # and the reject path reaches here needing none of it.
     from moneybin.services.matching_service import (  # noqa: PLC0415
         PENDING_MATCHES_HINT,
     )
 
-    if rematch is None:
-        return
     if rematch.matching_error is not None:
         logger.warning(
             "⚠️  Re-match after the merge failed, so any duplicates the merge "
@@ -206,13 +207,25 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     pending = rematch.matches_pending_review
     if not merged and not pending:
         logger.info("Re-matched after the merge: no new duplicates found")
-        return
-    logger.info(
-        f"👀 Re-matched after the merge: {merged} auto-merged, "
-        f"{pending} new proposal(s) to review"
-    )
-    if pending:
-        logger.info(f"  💡 {PENDING_MATCHES_HINT}")
+    else:
+        logger.info(
+            f"👀 Re-matched after the merge: {merged} auto-merged, "
+            f"{pending} new proposal(s) to review"
+        )
+        if pending:
+            logger.info(f"  💡 {PENDING_MATCHES_HINT}")
+    if rematch.error is not None:
+        # The counts above are true — match decisions were written — but the
+        # SQLMesh apply that follows them is what rebuilds core.dim_accounts,
+        # a kind FULL model. Without it the merge is invisible: the accounts
+        # dimension still lists both, which reads as a merge that never
+        # happened. Reporting the counts and stopping would describe a
+        # collapse the user cannot find anywhere.
+        logger.warning(
+            "⚠️  The rebuild after the merge failed, so the merge is not "
+            "reflected in your accounts or totals yet; re-run "
+            "'moneybin refresh'"
+        )
 
 
 def _plan_merge(

@@ -442,6 +442,43 @@ class TestLinksSet:
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_warns_when_the_rebuild_after_the_merge_failed(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Matching succeeded, SQLMesh did not — the counts alone would mislead.
+
+        ``core.dim_accounts`` is ``kind FULL``, which is the whole reason
+        ``transform`` follows ``match`` here. Without the apply it still lists
+        both accounts, so reporting "2 auto-merged" and stopping describes a
+        collapse the user cannot see anywhere in their ledger.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=False,
+            duration_seconds=1.0,
+            error="sqlmesh apply failed",
+            matches_auto_merged=2,
+            matches_pending_review=5,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        # The match counts are real — decisions were written — so they stay.
+        assert "2" in caplog.text
+        assert [r for r in caplog.records if r.levelno == logging.WARNING], (
+            "a failed rebuild must warn, not ride along under the match counts"
+        )
+        assert "refresh" in caplog.text.lower()
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
     def test_set_standalone_calls_service_with_none(
         self,
         mock_set: MagicMock,

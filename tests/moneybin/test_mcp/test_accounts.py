@@ -1643,3 +1643,45 @@ async def test_links_set_reject_reports_no_rematch(
 
     assert envelope.data.rematch_auto_merged is None
     assert envelope.data.rematch_pending_review is None
+
+
+async def test_links_set_accept_flags_a_failed_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merge whose rebuild failed has not reached ``core``, and must say so.
+
+    ``core.dim_accounts`` is ``kind FULL`` — the reason ``transform`` follows
+    ``match`` on this path at all. Returning the match counts with no caveat
+    tells the agent the merge landed while the user can still see two accounts.
+    """
+    from moneybin.mcp.tools import accounts as accounts_module
+    from moneybin.services.refresh import RefreshResult
+
+    def _accepted(*_args: object, **_kw: object) -> RefreshResult:
+        return RefreshResult(
+            applied=False,
+            duration_seconds=1.0,
+            error="sqlmesh apply failed",
+            matches_auto_merged=2,
+            matches_pending_review=5,
+        )
+
+    def _verify(_binding: object) -> None:
+        return None
+
+    async def _granted(**_kw: object) -> object:
+        return SimpleNamespace(verify=_verify)
+
+    monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
+    monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+
+    envelope = await accounts_module.accounts_links_set(
+        decision_id="dec001",
+        action="accept",
+        target_account_id="CAND001",
+        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
+    )
+
+    assert any("rebuild" in action.lower() for action in envelope.actions), (
+        f"no action names the failed rebuild: {envelope.actions}"
+    )

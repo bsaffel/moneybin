@@ -561,6 +561,17 @@ Guard-2 free-text resolution):
   runs no pass at all — distinct from a pass that ran and found nothing (`0`).
   On the CLI the report is outside the confirmation branch, so `--yes` waives
   the prompt but never the disclosure.
+
+  A **partially failed pass reports as partial**, and the two halves fail
+  independently. `RefreshResult.matching_error` means no duplicates were
+  proposed at all. `RefreshResult.error` means matching succeeded — the
+  decisions are written and the counts are true — but the SQLMesh apply did
+  not, so `core.dim_accounts` was never rebuilt and still lists both accounts.
+  Reporting the counts alone there would describe a collapse the user cannot
+  find anywhere in their ledger, which is the same invisibility this whole
+  behavior exists to remove. The CLI warns and names `moneybin refresh`; MCP
+  prepends an `actions[]` entry naming the narrower retry
+  (`refresh_run(steps=['transform'])`).
 - **What a queue row carries — measured overlap, not a stored score.** Each
   candidate reports the **ledger overlap**: how many of the provisional
   account's transactions already appear in the candidate's, matched on equal

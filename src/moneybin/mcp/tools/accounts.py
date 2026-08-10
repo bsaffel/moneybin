@@ -794,18 +794,28 @@ async def accounts_links_set(
         "Reverse this decision with system_audit_undo(operation_id) — find "
         "the operation_id with system_audit",
     ]
-    if rematch is not None and rematch.matching_error is not None:
-        actions.insert(
-            0,
-            "The merge's re-match failed, so duplicates it exposed are still "
-            "unproposed — retry with refresh_run(steps=['match','transform'])",
-        )
-    elif rematch is not None and rematch.matches_pending_review:
-        actions.insert(
-            0,
-            f"The merge exposed {rematch.matches_pending_review} new duplicate "
-            "proposal(s) — review with reviews(kind='matches')",
-        )
+    if rematch is not None:
+        if rematch.matches_pending_review:
+            actions.insert(
+                0,
+                f"The merge exposed {rematch.matches_pending_review} new duplicate "
+                "proposal(s) — review with reviews(kind='matches')",
+            )
+        # Prepended after the proposal hint, so a partial pass sorts above it:
+        # core.dim_accounts is kind FULL, so a failed apply leaves both accounts
+        # standing and the counts above describe a collapse the user cannot see.
+        if rematch.error is not None:
+            actions.insert(
+                0,
+                "The merge's rebuild failed, so the collapse is not reflected in "
+                "core yet — retry with refresh_run(steps=['transform'])",
+            )
+        if rematch.matching_error is not None:
+            actions.insert(
+                0,
+                "The merge's re-match failed, so duplicates it exposed are still "
+                "unproposed — retry with refresh_run(steps=['match','transform'])",
+            )
     return build_envelope(
         data=AccountLinksSetPayload(
             decision_id=decision_id,
