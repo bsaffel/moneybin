@@ -363,6 +363,29 @@ def test_the_paragraph_names_only_the_kinds_the_batch_contains() -> None:
     assert "merchant" not in message
 
 
+def test_a_mixed_batch_names_every_kind_it_contains_in_one_sentence() -> None:
+    """The multi-kind join is a real path: one batch can accept two link kinds.
+
+    ``identity_links_decide`` takes an ordered batch, so an account link and a
+    merchant link commit together routinely. Every other test here passes one
+    kind, which exercises the single-clause branch and never the join — so the
+    clause order and the separator between them were unpinned. Order follows the
+    declared kind sequence rather than the caller's, because a human reading two
+    consequences in one sentence should get them the same way every time.
+    """
+    message = identity_confirm_message(
+        {"accounts": 2, "merchants": 3, "transactions": 346},
+        kinds=["merchant_link", "account_link"],
+    )
+
+    assert (
+        "Accepted links move one account's whole transaction history onto the "
+        "surviving account; merge merchant attribution onto the surviving "
+        "merchant." in message
+    )
+    assert "tax lot" not in message
+
+
 def test_a_security_batch_still_names_what_a_security_link_moves() -> None:
     """The other half of the kind-awareness boundary."""
     message = identity_confirm_message(

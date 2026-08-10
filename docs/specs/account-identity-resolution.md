@@ -340,12 +340,17 @@ signal reliability:
    contradiction is evidence of two *different* accounts. Silence is not
    disagreement — an account with no known last four still reaches the name
    rung, since vetoing there would drop a proposal nothing else surfaces. Where
-   the pair also shares an institution the reissue signal re-surfaces it under
-   the signal a replacement card actually carries, so the veto retypes the
-   proposal rather than discarding it. It is on for `resolve()` and
-   its `propose()` preview, which must agree, and off for `propose_existing()`
-   backfill, where every account is already known-distinct and pairwise proposals
-   would be noise:
+   the pair also shares an institution, the veto **retypes** rather than
+   discards: that exact pair re-emerges under `institution_reissue`, the signal
+   a replacement card actually carries. The retype runs on every path, because
+   it is bounded by what the name matcher already matched. That is distinct from
+   the unconditional same-institution *sweep*, which surfaces every account whose
+   last four differs whether or not any signal fired: the sweep is on for
+   `resolve()` and its `propose()` preview, which must agree, and off for
+   `propose_existing()` backfill, where it would propose every same-issuer card
+   against every other. Keeping the two separate is what lets backfill see a
+   vetoed duplicate without drowning in pairwise noise — conflating them made a
+   duplicate the backfill queue used to surface silently invisible:
    - **0 candidates** → done: a new standalone account. Its `last_four` /
      institution / name (captured per Decision 7) become candidate signals for
      *future* imports.

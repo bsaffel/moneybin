@@ -1097,6 +1097,75 @@ def test_propose_existing_does_not_emit_reissue_candidates(db: Database) -> None
     assert resolver.propose_existing("acct_a") is None
 
 
+def test_backfill_retypes_a_vetoed_name_match_as_a_reissue(db: Database) -> None:
+    """The veto must retype the pair it discards, not swallow it on this path.
+
+    Two existing copies of a reissued card share a display name and differ on
+    last four. The name rung's veto is right to refuse calling that a ``name``
+    match — a stated last-four disagreement is evidence of a *different*
+    account. But ``propose_existing`` runs with ``reissue=False``, so before
+    this retype the vetoed pair had nothing to fall through to: a duplicate the
+    backfill queue used to surface went silently invisible, and it stays split,
+    double-counting its ledger.
+
+    Distinct from ``test_propose_existing_does_not_emit_reissue_candidates``,
+    whose names are dissimilar so the name matcher never fires: that fixture
+    isolates the unconditional same-institution sweep, which stays off here.
+    Only a pair the name signal actually matched is retyped.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="reissued_old",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="reissued_new",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="5678",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("reissued_old")
+
+    assert proposal is not None
+    assert [c.account_id for c in proposal.candidates] == ["reissued_new"]
+    assert proposal.candidates[0].signal == "institution_reissue"
+
+
+def test_a_vetoed_name_match_across_institutions_stays_dropped(db: Database) -> None:
+    """The retype is same-institution only; across two banks it is just a collision.
+
+    "Checking" at two different institutions with different last fours is two
+    unrelated accounts that happen to share a common word. Retyping that as a
+    reissue would put a merge proposal in front of a human on no evidence at
+    all — the failure the veto exists to prevent, reintroduced under a
+    different label.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="bank_one_checking",
+        display_name="Checking",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="bank_two_checking",
+        display_name="Checking",
+        institution_name="ALLY",
+        last_four="5678",
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    assert resolver.propose_existing("bank_one_checking") is None
+
+
 def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:
     """A minted account claims its scoped full_number so a later source adopts it.
 
@@ -1477,14 +1546,19 @@ def test_institution_matching_canonicalizes_a_hand_written_name(db: Database) ->
 def test_name_signal_is_vetoed_when_both_last_fours_are_known_and_differ(
     db: Database,
 ) -> None:
-    """A name that matches across a last-four disagreement is not evidence at all.
+    """A name that matches across a last-four disagreement is not a name match.
 
     Two accounts at one institution whose last fours disagree are, on the only
     identifier either of them states, *different accounts*. The name signal
     routinely fires across that anyway — one live queue paired a checking
     account with a savings account on nothing but a shared institution word —
     so a name match scoring below the last-four signal is not enough: the
-    disagreement has to veto it outright.
+    disagreement has to veto the label outright.
+
+    Vetoing the label is not vetoing the pair. Same institution, same name, a
+    last four that changed is the reissue shape, so it re-emerges under that
+    signal — which is what keeps ``accounts links run`` able to see it, since
+    backfill never enables the unconditional same-institution sweep.
     """
     create_core_tables(db)
     _seed_dim_account(
@@ -1502,7 +1576,8 @@ def test_name_signal_is_vetoed_when_both_last_fours_are_known_and_differ(
         exclude_account_id="prov_new",
     )
 
-    assert candidates == [], candidates
+    assert [c.signal for c in candidates] == ["institution_reissue"], candidates
+    assert "name" not in [c.signal for c in candidates]
 
 
 def test_name_signal_survives_when_the_candidate_states_no_last_four(
