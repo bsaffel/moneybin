@@ -412,6 +412,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **The account-link queue now shows how much of the ledger already matches,
+  instead of a confidence score that never moved.** Every proposal in
+  `accounts links pending` carried `0.5` or `0.4` — a constant picked by which
+  signal fired, not a measurement of anything about your accounts — so the one
+  number offered for the decision could not tell a certain merge from a doubtful
+  one. Each candidate now reports how many of the provisional account's
+  transactions already appear in the candidate's ledger, matched on amount
+  within a few days to absorb the gap between a statement's transaction date and
+  a feed's posting date. Against a real duplicated card that reads `345 of 346`;
+  against an unrelated account at the same institution, `0 of 346`. The
+  comparison is scoped to the period both accounts cover, so a statement archive
+  that predates a feed's download window reports `no shared period` rather than
+  a zero that would read as evidence against a correct merge. The group header
+  also states how many transactions the merge would move, so deciding no longer
+  costs a second command.
+- **One merge now reads the same way wherever it is proposed.** The CLI prompt,
+  `accounts_links_set`, and `identity_links_decide` each described the same
+  decision differently, and the worst of the three named both accounts by their
+  display label — identical text on both sides in exactly the split-account case
+  the feature exists to fix. All three now render one sentence that names each
+  side by what *differs* between them (which source reported it, how much
+  history it holds, the period it covers, its subtype, its currency), states
+  which account is absorbed and which survives, carries the overlap evidence,
+  and names `system_audit_undo` as the reversal. When the surviving account has
+  no transactions of its own — a malformed placeholder offered as the survivor,
+  which the live queue produced — the prompt says so and tells you to check the
+  direction before accepting. The closing paragraph now describes only the link
+  kinds the batch actually contains, so a card-to-card merge is no longer warned
+  about security tax lots and hand-set price marks it never touches.
+- **A name match no longer proposes a merge across two different stated last
+  fours.** Two accounts that agree on a fuzzy name and *disagree* on a last four
+  they both state are evidence of two different accounts, not one; the name rung
+  proposed them anyway. It now skips that pair. Silence is not disagreement — an
+  account with no known last four still reaches the name rung, since vetoing
+  there would drop a proposal nothing else surfaces. At the same institution the
+  pair re-surfaces under `institution_reissue`, which is the signal a reissued
+  card actually carries, so the proposal is retyped rather than lost.
 - **`moneybin accounts links set --into` now shows what the merge moves and asks
   before committing.** Accepting a link folds one account's whole history into
   another, and no command splits it back apart — but this was the last accept
@@ -701,6 +738,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so the tool's declared ceiling has to admit the critical tier for the
   masking middleware to apply. Hosts that gate tools on declared sensitivity
   will see `import_confirm` move band.
+
+### Removed
+- **`confidence` no longer appears in the account-link review payloads.** The
+  `Conf` column is gone from `accounts links pending` and `accounts links
+  history`, and the `confidence` field is gone from their `--output json`
+  envelopes and from `reviews(kind="account_links")`. It reported a constant
+  chosen by which signal fired, so anything reading it was reading the signal
+  name in a less legible form — `signal` still carries that, and
+  `overlap_matched` / `overlap_comparable` now carry the measurement it looked
+  like it was making. The `app.account_link_decisions.confidence_score` column
+  is unchanged: it is what was recorded when the proposal was written, and the
+  audit trail keeps it.
 
 ### Fixed
 - **Undoing a decision puts it back in the review queue, and the queue count now

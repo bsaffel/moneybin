@@ -251,6 +251,55 @@ class TestLinksPending:
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.pending")
     @patch("moneybin.services.account_links_service.AccountLinksService.count_pending")
+    def test_pending_states_the_evidence_and_the_magnitude(
+        self,
+        mock_count: MagicMock,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """Browsing has to answer "is this the same account" and "how much moves".
+
+        The queue previously showed a confidence constant no input could move,
+        so both questions cost a separate command. The candidate row now carries
+        the measured overlap and the group header the size of the merge.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_pending.return_value = [_make_pending_group(transactions=346)]
+        mock_count.return_value = 1
+
+        result = runner.invoke(app, ["pending"])
+        assert result.exit_code == 0
+        assert "345 of 346" in result.output
+        assert "346 transactions move" in result.output
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.pending")
+    @patch("moneybin.services.account_links_service.AccountLinksService.count_pending")
+    def test_pending_says_no_shared_period_rather_than_zero_of_zero(
+        self,
+        mock_count: MagicMock,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """An unmeasurable probe must not render as evidence against the merge."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_pending.return_value = [
+            _make_pending_group(
+                overlap=LedgerOverlap(
+                    comparable=0, matched=0, window_start=None, window_end=None
+                )
+            )
+        ]
+        mock_count.return_value = 1
+
+        result = runner.invoke(app, ["pending"])
+        assert result.exit_code == 0
+        assert "0 of 0" not in result.output
+        assert "no shared period" in result.output
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.pending")
+    @patch("moneybin.services.account_links_service.AccountLinksService.count_pending")
     def test_pending_json_output_shape(
         self,
         mock_count: MagicMock,
@@ -279,6 +328,12 @@ class TestLinksPending:
         assert len(groups[0]["candidates"]) == 1
         assert groups[0]["candidates"][0]["decision_id"] == "dec_j"
         assert "n_pending" in parsed["data"]
+        # The JSON consumer gets the same two answers the table does: an agent
+        # that had to re-derive them would be reading the ledger itself.
+        assert groups[0]["transactions"] == 346
+        assert groups[0]["candidates"][0]["overlap_matched"] == 345
+        assert groups[0]["candidates"][0]["overlap_comparable"] == 346
+        assert "confidence" not in groups[0]["candidates"][0]
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.pending")

@@ -1,6 +1,6 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-07-09
+> Last updated: 2026-08-10
 > Status: implemented (architecture M1S.1–.6 + the capture/bind-first
 > corrections M1S.7–.9, all shipped — see [§Decision 8](#decision-8--capture-mutable-labels-and-the-exporter-axis-m1s7-live-test-reconciliation));
 > the full-scale live re-validation this spec was written to unblock (5-account
@@ -334,7 +334,15 @@ signal reliability:
    definition, so signal 1 cannot fire; and on the PDF path `account_name` is a
    per-file filename alias, so signal 2 misses too. Requiring a last-four on both
    sides, and requiring them to differ, keeps it the reissue shape rather than a
-   general "any account at this institution" list. It is on for `resolve()` and
+   general "any account at this institution" list. The same disagreement is a
+   **veto** one rung up: the fuzzy-name pass skips any pair where both sides
+   state a last four and the two differ, because a name match across a stated
+   contradiction is evidence of two *different* accounts. Silence is not
+   disagreement — an account with no known last four still reaches the name
+   rung, since vetoing there would drop a proposal nothing else surfaces. Where
+   the pair also shares an institution the reissue signal re-surfaces it under
+   the signal a replacement card actually carries, so the veto retypes the
+   proposal rather than discarding it. It is on for `resolve()` and
    its `propose()` preview, which must agree, and off for `propose_existing()`
    backfill, where every account is already known-distinct and pairwise proposals
    would be noise:
@@ -503,6 +511,30 @@ Guard-2 free-text resolution):
   auto-rejecting siblings; `decision="reject"` forbids `target_id`. The envelope,
   sensitivity tier (low — `ref_value` masked/omitted), and `actions[]` follow
   `mcp.md`.
+- **What a queue row carries — measured overlap, not a stored score.** Each
+  candidate reports the **ledger overlap**: how many of the provisional
+  account's transactions already appear in the candidate's, matched on equal
+  amount within a ±3-day posting-lag window (`services/ledger_overlap.py`).
+  Exact date+amount alone is not the right predicate — a statement carries the
+  transaction date and an OFX feed the posting date, which scores a true twin at
+  roughly a quarter of its rows. Each group states how many transactions an
+  accepted merge would move, so the magnitude and the evidence are both present
+  at browse time rather than only inside the confirm.
+  Three properties are load-bearing:
+  - **Keyed on two account ids, not a decision id.** The matcher excludes
+    same-`account_id` pairs, so the overlap cannot be computed *after* the merge
+    it justifies; and the two-id shape leaves the probe reachable for
+    `system doctor`'s `duplicate_account_overlap` pairs, which carry no proposal.
+  - **Scoped to the comparable period.** The denominator counts only the
+    provisional's transactions falling inside the candidate's own span, widened
+    by the lag. Otherwise a statement archive predating a feed's download window
+    renders as "0 of 400", which reads as evidence *against* a correct merge. A
+    probe with no comparable period says so; it never renders as `0 of 0`.
+  - **`confidence_score` is not a review surface.** Its value is fixed per
+    signal (0.5 `institution_last4`, 0.4 `name`, 0.3 `institution_reissue`), so
+    it restates `signal` in a less legible form; no input moves it. The column
+    remains as the audit record of what was written when the proposal was
+    created, and is no longer projected onto either surface.
 - **Status lifecycle.** `account_links`: `accepted` (live) / `reversed` (undone).
   `account_link_decisions`: `pending` (awaiting review) → `accepted` (merged onto
   the named candidate) / `rejected` (declined pairing — not re-proposed) /
@@ -958,7 +990,19 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
 - `ACCOUNT_LINK_OUTCOMES_TOTAL` — Counter, labels
   `result ∈ {adopted_strong, minted_new, pending_review, merged, rejected}`.
 - `ACCOUNT_LINK_REVIEW_PENDING` — Gauge, current pending-decision count.
-- `ACCOUNT_LINK_CONFIDENCE` — Histogram of resolution confidence.
+- `ACCOUNT_LINK_CONFIDENCE` — Histogram of resolution confidence. Records the
+  score written with a proposal, which is where that number is still meaningful;
+  it is deliberately not the review surfaces' evidence (Decision 5).
+
+**Known gap — the ledger-overlap probe is unmetered.** A deployment where every
+probe returns "no comparable period" has an evidence surface that renders
+nothing useful, and no instrument would say so. The measurement runs on the
+read-only browse and confirm paths, and `flush_metrics()` deliberately skips a
+session that opened no write connection, so an observation emitted there is
+accumulated in-process and discarded at exit — recorded nowhere, while looking
+instrumented in the source. Wire it from a path that already writes
+(`accounts links run`, the identity refresh step) if the ratio's distribution
+ever needs watching.
 
 ## Testing
 
