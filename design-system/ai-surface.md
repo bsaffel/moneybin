@@ -51,7 +51,7 @@ asks once, states what it covers, and gets out of the way.
   that promises critical data "never leaves your machine" is **wrong** — the
   guarantee is *never unmasked*, which is a claim about mechanism rather than
   about completeness, and the code keeps it on every **declared** column. Scope
-  the copy there. `sql_query` also reads `raw` and `prep`, which declare 33
+  the copy there. `sql_query` also reads `raw` and `prep`, which declare 34
   columns and nothing else, so every other value is masked by shape — an SSN
   pattern or an unbroken run of 8 or more digits, over strings and integers
   only. An account number of 4 to 7 digits, one written with separators

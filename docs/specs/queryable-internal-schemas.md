@@ -197,7 +197,7 @@ by **preserving** the account-number property, not trading it:
 
 - `reports` columns are fully declared (ADR-013) — masking is as sound as
   the typed report tools today.
-- `raw`/`prep` CRITICAL columns are declared (D4) — 33 columns across 17
+- `raw`/`prep` CRITICAL columns are declared (D4) — 34 columns across 17
   tables; everything else is held by the content-net floor (D5). The floor
   is a *weaker* guarantee than a declaration for those columns — an accepted
   trade for keeping data readable, recorded here so a future contributor can

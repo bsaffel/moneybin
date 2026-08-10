@@ -43,7 +43,7 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
     Privacy: each output column is resolved to its data class via SQL lineage
     (sqlglot). CRITICAL columns (account/routing numbers) are ALWAYS masked
     (****<last4>). ``core``/``app``/``reports`` declare a class for every
-    deployed column; ``raw``/``prep`` carry 33 declarations and floor the rest
+    deployed column; ``raw``/``prep`` carry 34 declarations and floor the rest
     on a value-shape scan that reaches text and integer values only, masking
     SSN and 8-or-more-digit shapes. So a 4-to-7 digit account number in an
     undeclared column passes through, and a ``DECIMAL`` or ``FLOAT`` one is
@@ -165,7 +165,7 @@ def register_sql_tools(mcp: FastMCP) -> None:
         "Reaches core, app, reports, raw, and prep; meta and seeds are refused. "
         "Each output column is classified via SQL lineage; CRITICAL columns "
         "(account/routing numbers) are ALWAYS masked (****<last4>). "
-        "core/app/reports declare a class for every column. raw and prep declare 33 "
+        "core/app/reports declare a class for every column. raw and prep declare 34 "
         "and scan every other text or integer value, masking only SSN and "
         "8-or-more-digit shapes — a 4-to-7 digit account number passes through, and "
         "a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as "

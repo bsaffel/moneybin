@@ -75,3 +75,29 @@ def test_floored_recurses_into_containers() -> None:
     assert redact_records(records, {"c": DataClass.FLOORED}, consent=None) == [
         {"c": {"inner": "***-**-****"}}
     ]
+
+
+def test_floored_masks_mapping_keys() -> None:
+    """A DuckDB MAP keys itself from row data, so the floor has to reach keys.
+
+    ``SELECT map([account_number], [1])`` puts an account number exactly where a
+    STRUCT puts a query-authored field name. Flooring values alone published the
+    one number the same scalar in a bare column would have been masked for.
+    """
+    records = [{"c": {"987654321": "x"}}]
+    assert redact_records(records, {"c": DataClass.FLOORED}, consent=None) == [
+        {"c": {"****...4321": "x"}}
+    ]
+
+
+def test_floored_collapses_keys_that_mask_alike() -> None:
+    """Two keys masking to one string collapse to one entry — the accepted cost.
+
+    Pinned so the dropped entry is a known cost rather than a surprise: the
+    account mask keeps only the last four digits, so any two keys sharing them
+    land on the same masked string and the later one wins.
+    """
+    records = [{"c": {"111114321": "first", "222224321": "second"}}]
+    assert redact_records(records, {"c": DataClass.FLOORED}, consent=None) == [
+        {"c": {"****...4321": "second"}}
+    ]

@@ -676,7 +676,7 @@ EXAMPLES: dict[str, list[Example]] = {
 _BEYOND_NOTE = (
     "The tables above are the curated query surface. sql_query also reads raw "
     "ingest (raw) and staging (prep) — use them only when the curated tables "
-    "cannot answer the question, and note they carry 33 column declarations "
+    "cannot answer the question, and note they carry 34 column declarations "
     "with every other value masked only when it is a text or integer value "
     "shaped like an SSN or a run of 8 or more digits; a DECIMAL or FLOAT is "
     "not scanned at all. Provenance (meta) and seed data (seeds) are not "

@@ -1079,6 +1079,19 @@ INTERNAL_CRITICAL: dict[tuple[str, str], dict[str, DataClass]] = {
     },
     ("prep", "int_transactions__matched"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        # `match_group_id` is `account_id || '|' || MIN(packed member)`
+        # (int_transactions__matched.sql), so it carries the account key of
+        # every row it groups — a real <ACCTID> whenever the account has no
+        # resolver link. The content net cannot reach it: the account sits at
+        # the HEAD of a longer string, and the two documented gaps (a 4-to-7
+        # digit key, a separator-formatted one) leave no 8-digit run to find.
+        # UNRESOLVED rather than the partial mask `account_id` takes, for the
+        # same reason as the two payloads below: this is a composite, so
+        # ACCOUNT_IDENTIFIER would misname the shape AND `"****" + value[-4:]`
+        # would publish the tail of a member id. Whole-masking costs only the
+        # rendered label — masking runs on result rows, so `GROUP BY
+        # match_group_id` still aggregates correctly.
+        "match_group_id": DataClass.UNRESOLVED,
     },
     ("prep", "int_transactions__merged"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,

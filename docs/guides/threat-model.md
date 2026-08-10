@@ -35,7 +35,7 @@ Concurrent writers across machines via a sync folder will corrupt the database (
 
 Interactive CLI output and MCP tool results don't print SSNs, raw account numbers, or full balances in the clear:
 
-- Reports and queries that surface account references render masked identifiers (`****1234`) rather than the full account number. A `sql_query` read of `raw` or `prep` masks 33 declared columns the same way and scans every other value by shape — strings and integers only, so in an undeclared column an account number of 4 to 7 digits, one written with separators (`1234-5678`), or one stored as `DECIMAL` or `FLOAT` prints in full.
+- Reports and queries that surface account references render masked identifiers (`****1234`) rather than the full account number. A `sql_query` read of `raw` or `prep` masks 34 declared columns the same way and scans every other value by shape — strings and integers only, so in an undeclared column an account number of 4 to 7 digits, one written with separators (`1234-5678`), or one stored as `DECIMAL` or `FLOAT` prints in full.
 - The `SanitizedLogFormatter` (see below) masks the same patterns in any log output that incidentally captures them.
 
 This is a partial protection. Descriptions, merchant names, dates, and amounts ARE in plain output by design — you asked the tool for them. If "the screen behind you" is in your threat model, prefer non-shoulder-surfable environments over relying on this layer.

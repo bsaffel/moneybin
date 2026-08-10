@@ -17,7 +17,7 @@ Schema is stable but not yet frozen — see [`docs/architecture.md`](../architec
 | `seeds` | Reference data shipped with MoneyBin (categories). | CSV-backed tables | **Refused** | SQLMesh |
 | `reports` | Curated presentation views, one per CLI/MCP report. | Views | Yes | **Blocked** |
 
-"Read?" answers for the agent-safe SQL surface — the `sql_query` MCP tool and `moneybin sql query`. Those admit `core`, `app`, `reports`, `raw`, and `prep`, and refuse `meta` and `seeds` by `DESCRIBE` as by `SELECT`. `raw` and `prep` are an inspection exception, not a widening of the analysis contract: their shapes change without notice, and they carry 33 column declarations with every other value masked by a value-shape scan rather than by a declared class. `moneybin db shell` and `moneybin db query` are raw operator access with no privacy middleware; they read every schema and mask nothing.
+"Read?" answers for the agent-safe SQL surface — the `sql_query` MCP tool and `moneybin sql query`. Those admit `core`, `app`, `reports`, `raw`, and `prep`, and refuse `meta` and `seeds` by `DESCRIBE` as by `SELECT`. `raw` and `prep` are an inspection exception, not a widening of the analysis contract: their shapes change without notice, and they carry 34 column declarations with every other value masked by a value-shape scan rather than by a declared class. `moneybin db shell` and `moneybin db query` are raw operator access with no privacy middleware; they read every schema and mask nothing.
 
 Writes to `core.*`, `reports.*`, and `meta.*` are blocked by managed-write middleware. Mutations are scoped to `app.*` (through services or MCP write tools) and loader-only `raw.*`. The general SQL surface is read-only.
 

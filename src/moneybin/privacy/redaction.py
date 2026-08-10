@@ -157,7 +157,17 @@ def _mask_floored(value: Any, _consent: ConsentSet | None) -> Any:
         masked, did_mask = mask_pii_shaped(str(value))
         return masked if did_mask else value
     if isinstance(value, dict):
-        return {key: _mask_floored(item, _consent) for key, item in value.items()}
+        # Keys are floored too. A DuckDB MAP takes its keys from row data
+        # (`map([account_number], [1])`), so a key is as much a value as the
+        # thing it points at; only a STRUCT's field names are query-authored,
+        # and flooring those costs nothing. Two keys that mask alike collapse
+        # into one entry — accepted, and pinned by
+        # `test_floored_collapses_keys_that_mask_alike`: losing a row from an
+        # already-masked result beats publishing the number that keyed it.
+        return {
+            _mask_floored(key, _consent): _mask_floored(item, _consent)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         return [_mask_floored(item, _consent) for item in value]
     if isinstance(value, tuple):

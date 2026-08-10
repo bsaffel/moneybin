@@ -19,11 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   debuggable without dropping to the unmasked operator CLI. `meta` and `seeds`
   stay refused, by `DESCRIBE` just as by `SELECT`.
 
-  Masking holds. 33 `raw`/`prep` columns are declared CRITICAL and masked by
+  Masking holds. 34 `raw`/`prep` columns are declared CRITICAL and masked by
   class: every institution account number, routing number, and account label
-  derived from one, plus two opaque loader payloads (`import_log.account_names`
-  and `import_preview_snapshots.source_bytes`) that are masked whole because
-  their contents cannot be enumerated. Every other value there is scanned per run
+  derived from one; the account-prefixed `match_group_id` composite; plus two
+  opaque loader payloads (`import_log.account_names` and
+  `import_preview_snapshots.source_bytes`) that are masked whole because their
+  contents cannot be enumerated. Every other value there is scanned per run
   and masked when it is shaped like an SSN (`***-**-****`) or holds an unbroken
   run of eight or more digits (`****...<last four>`). The scan reads text and
   integers only, so three shapes pass through: an account number of four to
