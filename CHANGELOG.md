@@ -422,12 +422,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--yes` to answer in advance. `--standalone` is unchanged and never asks:
   keeping an account separate destroys nothing. Answering the prompt binds the
   merge to what you read: inside the write transaction the command re-derives
-  both the counts it printed and the link rows the write actually repoints and
-  auto-rejects, and refuses rather than committing a merge that grew while the
-  question was on screen — including one that grew only in rows the printed
-  sentence has no words for, such as a sibling proposal a concurrent
-  `accounts links run` added. Declining prints `Cancelled — nothing was merged.`
-  and exits 0, matching every other confirm in the CLI (#385).
+  both the counts it printed and the exact link and decision rows the write
+  will repoint and settle, and refuses rather than committing a merge that
+  changed while the question was on screen. That covers changes the printed
+  sentence has no words for — a sibling proposal a concurrent
+  `accounts links run` added — and changes no count can express, such as one
+  pending sibling being resolved elsewhere while another arrives. Declining
+  prints `Cancelled — nothing was merged.` and exits 0, matching every other
+  confirm in the CLI (#385).
+- **`identity_links_decide`'s merge confirmation now binds to the same exact
+  rows.** The approval token digested the two account ids and a set of counts,
+  so a same-count change between the prompt and the commit verified cleanly.
+  It now carries the link and decision ids as well, through the `resolved_ids`
+  field the grant already covers. Tokens issued before this change no longer
+  verify — re-run the decision to get a current one (#385).
 - **A confirmation prompt no longer expires against the tool's timeout.** That
   cap exists to release a wedged database connection, and charging a person's
   reading time to it produced a dead end rather than a safeguard: at 30 seconds —

@@ -510,7 +510,10 @@ class _AccountMergeProposal:
     candidate_display_name: str
     confidence: float | None
     signal: str | None
-    blast_radius: dict[str, int]
+    #: The whole impact, not a flattened blast radius: the grant issued here has
+    #: to digest the same row identities the commit-time verify recomputes, so
+    #: dropping them at this boundary would make every account grant unverifiable.
+    impact: AccountLinkAcceptImpact
 
 
 def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
@@ -533,7 +536,7 @@ def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
                         candidate_display_name=candidate.candidate_display_name,
                         confidence=candidate.confidence,
                         signal=candidate.signal,
-                        blast_radius=impact.blast_radius,
+                        impact=impact,
                     )
     raise UserError(
         f"No pending account-link decision '{decision_id}'.",
@@ -546,10 +549,16 @@ def _account_link_binding(
     *,
     decision_id: str,
     target_account_id: str,
-    provisional_account_id: str,
-    blast_radius: dict[str, int],
+    impact: AccountLinkAcceptImpact,
 ) -> ConfirmationBinding:
-    """Bind approval to one exact live account merge."""
+    """Bind approval to one exact live account merge.
+
+    ``resolved_ids`` carries the link and decision rows, not only the two
+    accounts, because ``blast_radius`` is counts: a pending sibling resolved
+    elsewhere while another arrives leaves every count intact and still changes
+    which decision the commit auto-rejects. Naming the rows makes that swap
+    fail the digest instead of passing it.
+    """
     return ConfirmationBinding(
         arguments={
             "decision_id": decision_id,
@@ -557,14 +566,16 @@ def _account_link_binding(
             "target_account_id": target_account_id,
         },
         resolved_ids=(
-            provisional_account_id,
+            impact.provisional_account_id,
             target_account_id,
+            *impact.link_ids,
+            *impact.decision_ids,
         ),
         actor="mcp",
         profile=get_settings().profile,
         authorization_context="local-profile",
         operation_kind="account_identity_merge",
-        blast_radius=blast_radius,
+        blast_radius=impact.blast_radius,
     )
 
 
@@ -608,8 +619,7 @@ def _apply_account_accept(
             _account_link_binding(
                 decision_id=decision_id,
                 target_account_id=target_account_id,
-                provisional_account_id=impact.provisional_account_id,
-                blast_radius=impact.blast_radius,
+                impact=impact,
             )
         )
 
@@ -720,8 +730,7 @@ async def accounts_links_set(
             binding = _account_link_binding(
                 decision_id=decision_id,
                 target_account_id=target_account_id,
-                provisional_account_id=proposal.provisional_account_id,
-                blast_radius=proposal.blast_radius,
+                impact=proposal.impact,
             )
             message = _account_confirm_message(proposal)
         else:

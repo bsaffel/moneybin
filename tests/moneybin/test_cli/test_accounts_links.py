@@ -19,6 +19,7 @@ from moneybin.cli.commands.accounts.links import (
     # build an approval or resolve a preview — so the tests that cover them
     # reach in rather than widening the surface to make them reachable.
     _ApprovedMerge,  # pyright: ignore[reportPrivateUsage]
+    _drift_check,  # pyright: ignore[reportPrivateUsage]
     _merge_preview,  # pyright: ignore[reportPrivateUsage]
     app,
 )
@@ -103,31 +104,54 @@ def _merge_plan(
     return IdentityDecisionPlan(items=(item,))
 
 
+def _accept_impact(
+    *,
+    links: tuple[str, ...] = ("L1",),
+    decisions: tuple[str, ...] = ("dec001",),
+) -> AccountLinkAcceptImpact:
+    """The impact the service recomputes inside its own write transaction.
+
+    Counts are derived from the identity tuples rather than passed separately,
+    so a fixture cannot describe a row set whose size disagrees with itself —
+    which is precisely the same-count swap these tests exist to catch.
+    """
+    return AccountLinkAcceptImpact(
+        provisional_account_id="PROV1",
+        candidate_account_id="CAND001",
+        blast_radius={
+            "accounts": 2,
+            "account_links": len(links),
+            "account_link_decisions": len(decisions),
+        },
+        link_ids=links,
+        decision_ids=decisions,
+    )
+
+
 def _approved_merge(
     *,
     transactions: tuple[str, ...] = ("t1",),
-    account_links: int = 1,
-    account_link_decisions: int = 1,
+    links: tuple[str, ...] = ("L1",),
+    decisions: tuple[str, ...] = ("dec001",),
 ) -> _ApprovedMerge:
-    """What ``_merge_preview`` hands the prompt: both radii the yes is bound to.
+    """What ``_merge_preview`` hands the prompt: everything the yes is bound to.
 
     Built from the real plan arithmetic on the sentence side so the rendered
     prompt and the drift comparison read the same numbers a live preview would
-    produce, and from literal row counts on the other because those come from
-    ``accept_impact``'s own ``COUNT(*)``, not from the plan.
+    produce, and from row identities on the other because that is what
+    ``accept_impact`` returns.
     """
     return _ApprovedMerge(
         sentence=_merge_plan(transactions=transactions).blast_radius,
-        rows={
-            "accounts": 2,
-            "account_links": account_links,
-            "account_link_decisions": account_link_decisions,
-        },
+        links=links,
+        decisions=decisions,
     )
 
 
 def _commit_running_verifier(
-    *, account_links: int = 1, account_link_decisions: int = 1
+    *,
+    links: tuple[str, ...] = ("L1",),
+    decisions: tuple[str, ...] = ("dec001",),
 ) -> Callable[..., None]:
     """Stand in for ``AccountLinksService.set``, running the verifier it is given.
 
@@ -135,25 +159,15 @@ def _commit_running_verifier(
     before the first mutation, handing it the impact it recomputed there.
     Asserting the callback is present is half the point: a CLI that stopped
     passing one would otherwise still pass every drift assertion below by never
-    checking anything. The row counts are parameters so a test can hand the
-    verifier an impact that grew since the prompt without touching the plan.
+    checking anything. The row identities are parameters so a test can hand the
+    verifier rows that moved since the prompt without touching the plan.
     """
 
     def _set(*_args: object, **kwargs: object) -> None:
         verify = kwargs.get("verify_accept")
         assert verify is not None, "the merge write must carry a verifier"
         assert callable(verify)
-        verify(
-            AccountLinkAcceptImpact(
-                provisional_account_id="PROV1",
-                candidate_account_id="CAND001",
-                blast_radius={
-                    "accounts": 2,
-                    "account_links": account_links,
-                    "account_link_decisions": account_link_decisions,
-                },
-            )
-        )
+        verify(_accept_impact(links=links, decisions=decisions))
 
     return _set
 
@@ -465,14 +479,60 @@ class TestLinksSet:
         which is why comparing the plan alone cannot catch it.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_preview.return_value = _approved_merge(account_link_decisions=1)
+        mock_preview.return_value = _approved_merge(decisions=("dec001",))
         mock_plan.return_value = _merge_plan(transactions=("t1",))
-        mock_set.side_effect = _commit_running_verifier(account_link_decisions=2)
+        mock_set.side_effect = _commit_running_verifier(decisions=("dec001", "dec002"))
 
         result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="y\n")
 
         assert result.exit_code != 0
         assert "changed while the confirmation was open" in caplog.text
+
+    @patch("moneybin.cli.commands.accounts.links._plan_merge")
+    def test_drift_refusal_carries_the_retriable_confirmation_code(
+        self, mock_plan: MagicMock
+    ) -> None:
+        """A stale approval and an invalid decision are different failures.
+
+        Both reach an agent through the same `--output json` envelope, where the
+        code is the only machine-readable half — one is safely retriable and the
+        other is not. Asserting the message text alone is exactly how the generic
+        constraint-violation code sat here unnoticed, so this asserts the code.
+        The plan is pinned unchanged so only the row comparison can refuse.
+        """
+        mock_plan.return_value = _merge_plan(transactions=("t1",))
+        verify = _drift_check(MagicMock(), "dec001", _approved_merge(links=("L1",)))
+        assert verify is not None
+
+        with pytest.raises(UserError) as excinfo:
+            verify(_accept_impact(links=("L1", "L2")))
+
+        assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+
+    @patch("moneybin.cli.commands.accounts.links._plan_merge")
+    def test_drift_refusal_catches_a_swap_that_leaves_every_count_intact(
+        self, mock_plan: MagicMock
+    ) -> None:
+        """One sibling resolved elsewhere while another arrives must still refuse.
+
+        Every count is identical across the swap — same accounts, same
+        transactions, one accepted link, two pending decisions — so a comparison
+        made of counts cannot see it, and the write would auto-reject a decision
+        that did not exist when the operator answered. Only comparing the row
+        identities themselves catches it.
+        """
+        mock_plan.return_value = _merge_plan(transactions=("t1",))
+        approved = _approved_merge(decisions=("dec001", "dec002"))
+        verify = _drift_check(MagicMock(), "dec001", approved)
+        assert verify is not None
+
+        swapped = _accept_impact(decisions=("dec001", "dec003"))
+        assert swapped.blast_radius["account_link_decisions"] == len(approved.decisions)
+
+        with pytest.raises(UserError) as excinfo:
+            verify(swapped)
+
+        assert excinfo.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.cli.commands.accounts.links._plan_merge")

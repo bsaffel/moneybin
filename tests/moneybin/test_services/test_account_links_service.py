@@ -317,6 +317,34 @@ def test_accept_impact_counts_every_row_the_merge_will_mutate(
     }
 
 
+def test_accept_impact_names_every_row_the_merge_will_mutate(
+    seeded: AccountLinksService, db: Database
+) -> None:
+    """Counts cannot describe a swap, so the impact carries the ids themselves.
+
+    One pending sibling resolved elsewhere while another arrives for the same
+    provisional leaves ``account_link_decisions`` unchanged and still changes
+    which decision the commit auto-rejects. Both confirmation surfaces bind to
+    these tuples, so the counts must be a projection of them rather than a
+    separate read that could disagree.
+    """
+    _insert_decision(
+        db,
+        decision_id="qp_dec000001",
+        provisional_account_id=_PROV2,
+        candidate_account_id=_PROV1,
+    )
+
+    impact = seeded.accept_impact(_DEC1, target_account_id=_CAND_A)
+
+    assert _DEC1 in impact.decision_ids
+    assert "qp_dec000001" in impact.decision_ids
+    assert impact.decision_ids == tuple(sorted(impact.decision_ids))
+    assert impact.link_ids == tuple(sorted(impact.link_ids))
+    assert impact.blast_radius["account_link_decisions"] == len(impact.decision_ids)
+    assert impact.blast_radius["account_links"] == len(impact.link_ids)
+
+
 def test_accept_verifier_receives_live_impact_and_failure_rolls_back(
     seeded: AccountLinksService, db: Database
 ) -> None:

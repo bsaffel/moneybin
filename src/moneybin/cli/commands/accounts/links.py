@@ -195,20 +195,25 @@ def _plan_merge(
 
 @dataclass(frozen=True)
 class _ApprovedMerge:
-    """The two radii the operator's yes was bound to.
+    """Everything the operator's yes was bound to.
 
-    Neither one covers the other, which is why both travel together.
     ``sentence`` is what the prompt printed — accounts, transactions, merchants
     — and moves when a concurrent import brings new history into either side.
-    ``rows`` is what the write physically touches: the ``account_links`` it
-    repoints and the ``account_link_decisions`` it accepts and auto-rejects.
-    A concurrent ``accounts links run`` proposes one more candidate for the same
-    provisional and moves only the second, so a comparison holding just the
-    sentence would commit a merge that silently rejects a decision nobody read.
+    ``links`` and ``decisions`` are the rows the write physically touches: the
+    ``account_links`` it repoints and the ``account_link_decisions`` it accepts
+    and auto-rejects. Neither half covers the other. A concurrent
+    ``accounts links run`` proposes one more candidate for the same provisional
+    and moves only the rows, so holding just the sentence would commit a merge
+    that silently rejects a decision nobody read.
+
+    The rows are identities rather than counts because a swap keeps every count
+    intact: one pending sibling resolved elsewhere while another arrives leaves
+    the same number of decisions in play and still changes which one dies.
     """
 
     sentence: dict[str, int]
-    rows: dict[str, int]
+    links: tuple[str, ...]
+    decisions: tuple[str, ...]
 
 
 def _merge_preview(decision_id: str, target_account_id: str) -> _ApprovedMerge | None:
@@ -226,7 +231,11 @@ def _merge_preview(decision_id: str, target_account_id: str) -> _ApprovedMerge |
         impact = AccountLinksService(db, actor="cli").accept_impact(
             decision_id, target_account_id=target_account_id
         )
-    return _ApprovedMerge(sentence=plan.blast_radius, rows=impact.blast_radius)
+    return _ApprovedMerge(
+        sentence=plan.blast_radius,
+        links=impact.link_ids,
+        decisions=impact.decision_ids,
+    )
 
 
 def _drift_check(
@@ -249,17 +258,26 @@ def _drift_check(
         return None
 
     def verify(impact: AccountLinkAcceptImpact) -> None:
-        # Both radii, because a merge can grow in either one alone. Re-planning
+        # Both halves, because a merge can move in either one alone. Re-planning
         # catches history that arrived on either account; ``impact`` — which the
-        # service already recomputed on this transaction's own read — catches the
-        # links this write repoints and the sibling decisions it auto-rejects,
+        # service already recomputed on this transaction's own read — names the
+        # exact links this write repoints and the exact decisions it settles,
         # none of which the plan's arithmetic counts.
         current = _plan_merge(db, decision_id, impact.candidate_account_id).blast_radius
-        if current != approved.sentence or impact.blast_radius != approved.rows:
+        if (
+            current != approved.sentence
+            or impact.link_ids != approved.links
+            or impact.decision_ids != approved.decisions
+        ):
             raise UserError(
                 "This merge changed while the confirmation was open, so nothing "
                 "was written. Re-run the command to see what it moves now.",
-                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                # Not MUTATION_CONSTRAINT_VIOLATION, which this file already uses
+                # for a structurally invalid decision. A stale approval is the
+                # retriable failure, and an agent reading --output json has to
+                # tell the two apart; import_cmd.py's delete_saved_format raises
+                # this same code from the same preview → confirm → verify shape.
+                code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
             )
 
     return verify

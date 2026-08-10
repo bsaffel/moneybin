@@ -75,6 +75,27 @@ def test_mcp_max_items_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
+def test_mcp_elicitation_wait_default() -> None:
+    """The default is read from the constant, not restated as a literal."""
+    from moneybin.config import DEFAULT_ELICITATION_WAIT_SECONDS
+
+    assert MCPConfig().elicitation_wait_seconds == DEFAULT_ELICITATION_WAIT_SECONDS
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("wait_seconds", [0.0, -1.0])
+def test_mcp_elicitation_wait_must_be_positive(wait_seconds: float) -> None:
+    """A non-positive window makes every confirmation prompt un-answerable.
+
+    The bound is business logic, not decoration: at zero the wait expires before
+    a human can read the prompt, so every destructive gate silently degrades to
+    the opaque-token path and the human never sees the question.
+    """
+    with pytest.raises(ValueError):
+        MCPConfig(elicitation_wait_seconds=wait_seconds)
+
+
+@pytest.mark.unit
 def test_mcp_confirmation_ttl_default() -> None:
     assert MCPConfig().confirmation_ttl_seconds == 300
 
