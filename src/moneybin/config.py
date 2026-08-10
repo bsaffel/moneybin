@@ -247,6 +247,7 @@ DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS: float = 10.0
 MIN_CONFIRMATION_TTL_SECONDS: int = 30
 DEFAULT_CONFIRMATION_TTL_SECONDS: int = 300
 MAX_CONFIRMATION_TTL_SECONDS: int = 900
+DEFAULT_ELICITATION_WAIT_SECONDS: float = 120.0
 
 
 class MCPConfig(BaseModel):
@@ -276,6 +277,16 @@ class MCPConfig(BaseModel):
             "list[X] / Sequence[X] / tuple[X, ...]. Exceeding returns a "
             "ResponseEnvelope.error with code='too_many_items'. Parallels max_rows "
             "for read responses. See docs/specs/moneybin-mcp.md §Collection size cap."
+        ),
+    )
+    elicitation_wait_seconds: float = Field(
+        default=DEFAULT_ELICITATION_WAIT_SECONDS,
+        gt=0.0,
+        description=(
+            "How long a destructive-operation confirmation prompt waits for a "
+            "human before degrading to the opaque-token path. Excluded from "
+            "tool_timeout_seconds, which bounds machine work only — no DuckDB "
+            "connection is held across the prompt."
         ),
     )
     confirmation_ttl_seconds: int = Field(

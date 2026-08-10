@@ -30,12 +30,28 @@ Related code: `src/moneybin/mcp/` (tool registration and dispatch), `src/moneybi
    `gsheet_connect`, `gsheet_disconnect`, `sync_disconnect`,
    `identity_links_decide`, `import_confirm`, and `import_revert`.
 7. Tools that already complete in well under the cap are unchanged in behavior; the timeout is invisible on the happy path.
+8. **The cap bounds machine work, not human deliberation.** Time a call spends
+   waiting on a confirmation prompt is excluded from it: the deadline pauses for
+   the wait and resumes with its remaining budget intact
+   (`decorator.excluded_from_tool_deadline`). Charging a human's reading time to
+   a cap whose purpose is releasing a wedged DuckDB connection produced only a
+   dead end — the elicitation was cancelled at the cap and the caller received
+   `INFRA_TIMED_OUT` with no confirmation token, so there was no way to finish
+   the operation. The exclusion is safe because no confirm-gated tool holds a
+   DuckDB connection across its prompt; verify that still holds before adding a
+   confirm to a tool that opens one first. The human wait has its own separate
+   bound (below), after which the call degrades to the opaque-token path rather
+   than failing. Every bounded wait increments
+   `moneybin_mcp_elicitations_total{site,outcome}` — both `answered` and
+   `timeout`, because a miss count without the answers it is a fraction of
+   cannot say whether the configured window is long enough.
 
 ## Data Model
 
-No schema changes. One new configuration field:
+No schema changes. Two configuration fields:
 
 - `MoneyBinSettings.mcp.tool_timeout_seconds: float = 30.0` (env: `MONEYBIN_MCP__TOOL_TIMEOUT_SECONDS`). Validated to be `>=` the write-lock wait (`config.DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS`, the `get_database` `max_wait` default). A shorter cap would let a timed-out write tool's uncancellable thread-pool worker acquire the lock and commit after the caller already received the timeout envelope; requiring `timeout >= wait` guarantees the worker has stopped queuing by the time the caller gives up. See [`database-writer-coordination.md`](database-writer-coordination.md).
+- `MoneyBinSettings.mcp.elicitation_wait_seconds: float = 120.0` (env: `MONEYBIN_MCP__ELICITATION_WAIT_SECONDS`). How long a confirmation prompt waits for a human before the call gives up on the prompt. Deliberately not derived from `tool_timeout_seconds`: 10 of the 16 confirm sites run at the 30-second default, which is not a human-scale answer window, and raising those caps to suit a human would also hand a genuinely hung statement the same longer leash.
 
 ## Implementation Plan
 

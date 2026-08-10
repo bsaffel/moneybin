@@ -240,6 +240,18 @@ class BaseRepo:
                 out[key] = value
         return out
 
+    def refresh_pending_gauge(self) -> None:
+        """Re-read any review-queue gauge this table feeds. No-op by default.
+
+        Undo reverses through repos rather than the services that own a queue, so
+        the refreshers those services run on every accept and reject do not fire
+        on the way back. A repo whose table backs a pending gauge overrides this;
+        ``UndoService`` calls it once per touched repo after the undo commits.
+        Declaring it here rather than mapping tables to refreshers in the undo
+        consumer keeps the knowledge in the repo that owns the table, the way
+        ``undo_dispatch`` already resolves repos by their own metadata.
+        """
+
     def undo_event(
         self,
         event: AuditEvent,

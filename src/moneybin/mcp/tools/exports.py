@@ -31,7 +31,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.elicitation import supports_elicitation
+from moneybin.mcp.elicitation import elicit_bounded, supports_elicitation
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.repositories.export_destinations_repo import ExportDestinationsRepo
@@ -244,14 +244,21 @@ async def _select_redaction_mode(explicit: RedactionMode | None) -> RedactionMod
         raise _redaction_refusal("no_session") from exc
     if not supports_elicitation(ctx):
         raise _redaction_refusal("client_unsupported")
-    result = await ctx.elicit(
-        "Choose the redaction policy for this export run.",
-        response_type=["redacted", "unredacted"],
-        response_title="Export redaction mode",
-        response_description=(
-            "Choose redacted (the safe default) or explicitly choose unredacted."
+    result = await elicit_bounded(
+        ctx.elicit(
+            "Choose the redaction policy for this export run.",
+            response_type=["redacted", "unredacted"],
+            response_title="Export redaction mode",
+            response_description=(
+                "Choose redacted (the safe default) or explicitly choose unredacted."
+            ),
         ),
+        site="export_redaction",
     )
+    if result is None:
+        # Refuse rather than assume "redacted": the choice is the user's, and a
+        # silent default here is the inference this prompt exists to prevent.
+        raise _redaction_refusal("timeout")
     if not isinstance(result, AcceptedElicitation):
         raise _redaction_refusal("declined")
     if result.data not in {"redacted", "unredacted"}:

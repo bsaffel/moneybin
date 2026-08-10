@@ -95,6 +95,44 @@ def _get_timeout_seconds() -> float:
     return get_settings().mcp.tool_timeout_seconds
 
 
+_active_tool_timeout: ContextVar[asyncio.Timeout | None] = ContextVar(
+    "_active_tool_timeout", default=None
+)
+
+
+@contextmanager
+def excluded_from_tool_deadline() -> Generator[None]:
+    """Stop the tool's wall-clock cap while the call waits on a human.
+
+    The cap bounds machine work — a DuckDB statement that will not finish, an
+    HTTP call that hangs — so that a timed-out tool's connection can be reset.
+    A human reading a confirmation prompt is not machine work, and no
+    confirm-gated tool holds a connection across its prompt, so charging their
+    deliberation to that budget only produces a dead end at the cap. The
+    deadline resumes with its remaining machine budget intact.
+    """
+    cm = _active_tool_timeout.get()
+    deadline = cm.when() if cm is not None else None
+    if cm is None or deadline is None:
+        yield
+        return
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        cm.reschedule(None)
+    except RuntimeError:
+        # The cap fired in the instant between reading its deadline and pausing
+        # it; asyncio refuses to reschedule an expiring Timeout. The task is
+        # already being cancelled, so let the timed_out envelope stand rather
+        # than replacing it with an unclassified RuntimeError.
+        yield
+        return
+    try:
+        yield
+    finally:
+        cm.reschedule(deadline + (loop.time() - started))
+
+
 def _get_max_items() -> int | None:
     """Read the configured collection cap. Indirected for test monkeypatching."""
     from moneybin.config import get_settings
@@ -598,10 +636,20 @@ def mcp_tool(
                 try:
                     with operation(), request_lifetime_scope(request_lifetime):
                         async with cm:
-                            if is_coro:
-                                result = await fn(*args, **kwargs)
-                            else:
-                                result = await asyncio.to_thread(fn, *args, **kwargs)
+                            # Published so a confirmation prompt can stop the
+                            # cap while it waits on a human; set inside the
+                            # `async with` because reschedule() requires an
+                            # entered Timeout.
+                            timeout_token = _active_tool_timeout.set(cm)
+                            try:
+                                if is_coro:
+                                    result = await fn(*args, **kwargs)
+                                else:
+                                    result = await asyncio.to_thread(
+                                        fn, *args, **kwargs
+                                    )
+                            finally:
+                                _active_tool_timeout.reset(timeout_token)
                 finally:
                     _call_conn_holder.reset(holder_token)
             except TimeoutError as exc:

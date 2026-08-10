@@ -412,6 +412,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding failure is what split the account in the first place.
 
 ### Changed
+- **`moneybin accounts links set --into` now shows what the merge moves and asks
+  before committing.** Accepting a link folds one account's whole history into
+  another, and no command splits it back apart — but this was the last accept
+  path that ran on a single unprompted invocation, while the same decision driven
+  through `identity_links_decide` had prompted since M1. The command now prints
+  the same sentence the MCP prompt shows, counting the accounts, transactions,
+  tax lots, and hand-set price marks that move, and waits for an answer. Pass
+  `--yes` to answer in advance. `--standalone` is unchanged and never asks:
+  keeping an account separate destroys nothing. Answering the prompt binds the
+  merge to what you read: inside the write transaction the command re-derives
+  both the counts it printed and the exact link and decision rows the write
+  will repoint and settle, and refuses rather than committing a merge that
+  changed while the question was on screen. That covers changes the printed
+  sentence has no words for — a sibling proposal a concurrent
+  `accounts links run` added — and changes no count can express, such as one
+  pending sibling being resolved elsewhere while another arrives. Declining
+  prints `Cancelled — nothing was merged.` and exits 0, matching every other
+  confirm in the CLI (#385).
+- **`identity_links_decide`'s merge confirmation now binds to the same exact
+  rows.** The approval token digested the two account ids and a set of counts,
+  so a same-count change between the prompt and the commit verified cleanly.
+  It now carries the link and decision ids as well, through the `resolved_ids`
+  field the grant already covers. Tokens issued before this change no longer
+  verify — re-run the decision to get a current one (#385).
+- **A confirmation prompt no longer expires against the tool's timeout.** That
+  cap exists to release a wedged database connection, and charging a person's
+  reading time to it produced a dead end rather than a safeguard: at 30 seconds —
+  the default for 10 of the 16 operations that ask — the prompt was cancelled and
+  the answer came back `timed_out` with no token to retry with, so there was no
+  way to finish the operation at all. The cap now pauses while a prompt is on
+  screen and resumes with its remaining budget. Prompts get their own 120-second
+  window (`MONEYBIN_MCP__ELICITATION_WAIT_SECONDS`), after which the operation
+  degrades to the token path it already had for clients that cannot prompt —
+  still gated, still finishable. An unanswered export-redaction prompt refuses
+  instead, rather than falling back to a policy nobody chose.
 - **Breaking:** **Every import now stops before it merges a file into an
   account you already have (#378).** Previously only CSV/Excel stopped to ask;
   OFX and PDF resolved and bound the account on their own, so the one moment
@@ -668,6 +703,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   will see `import_confirm` move band.
 
 ### Fixed
+- **Undoing a decision puts it back in the review queue, and the queue count now
+  says so.** `system audit undo` restores a link decision to pending, but the
+  counter that reports how many decisions await review was refreshed only by the
+  accept and reject paths — so a reversed accept left the queue re-filled and the
+  count reading zero. The count is the prompt to go look at the queue, so
+  under-reporting it is the one direction nothing else signals.
 - **A saved PDF recipe that misreads a masked account number now repairs
   itself (#380).** Recipes saved before the anchor fix in #371 read
   `Account Number: XXXX XXXX XXXX 1234` as the bare mask, producing an account

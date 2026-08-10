@@ -191,7 +191,8 @@ When the same account arrives from a second source and only matches *weakly*
 
 ```bash
 moneybin accounts links pending                    # see proposals: provisional account, candidate, signal, last4
-moneybin accounts links set <decision_id> --into <account_id>   # accept the merge
+moneybin accounts links set <decision_id> --into <account_id>   # accept the merge (asks first)
+moneybin accounts links set <decision_id> --into <account_id> --yes  # answer the prompt in advance
 moneybin accounts links set <decision_id> --standalone           # keep it as its own account
 moneybin accounts links run                        # re-scan existing accounts for twins
 ```

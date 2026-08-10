@@ -67,6 +67,14 @@ class SecurityLinkDecisionsRepo(BaseRepo):
     table_ref: ClassVar[TableRef] = SECURITY_LINK_DECISIONS
     pk_columns: ClassVar[tuple[str, ...]] = ("decision_id",)
 
+    def refresh_pending_gauge(self) -> None:
+        """Re-read the security-link queue depth after an undo restored rows to it."""
+        from moneybin.services.security_resolver import (  # noqa: PLC0415 — repo→service import must stay lazy
+            refresh_security_link_pending_gauge,
+        )
+
+        refresh_security_link_pending_gauge(self._db)
+
     def _fetch_row(self, decision_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
             SECURITY_LINK_DECISIONS,

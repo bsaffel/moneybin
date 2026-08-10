@@ -36,11 +36,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class AccountLinkAcceptImpact:
-    """Stable identities and physical rows touched by an account merge."""
+    """Stable identities and physical rows touched by an account merge.
+
+    ``link_ids`` and ``decision_ids`` carry the rows themselves, not just how
+    many there are, because a confirmation bound to counts cannot see a swap:
+    one pending sibling resolved elsewhere while another arrives for the same
+    provisional leaves every count intact and still changes which decision the
+    write auto-rejects. Both are sorted so the comparison and the MCP grant
+    digest are stable — the queries below carry no ORDER BY of their own.
+    """
 
     provisional_account_id: str
     candidate_account_id: str
     blast_radius: dict[str, int]
+    link_ids: tuple[str, ...]
+    decision_ids: tuple[str, ...]
 
 
 def _resolve_display_name(db: Database, account_id: str) -> str:
@@ -179,37 +189,45 @@ class AccountLinksService:
         provisional_id = str(decision["provisional_account_id"])
         links = self._db.execute(
             f"""
-            SELECT ref_kind FROM {ACCOUNT_LINKS.full_name}
+            SELECT link_id, ref_kind FROM {ACCOUNT_LINKS.full_name}
             WHERE account_id = ? AND status = 'accepted'
             """,  # noqa: S608  # TableRef constant + parameterized value
             [provisional_id],
         ).fetchall()
-        if not any(ref_kind == "source_native" for (ref_kind,) in links):
+        if not any(ref_kind == "source_native" for _, ref_kind in links):
             raise UserError(
                 f"Cannot apply merge for decision {decision_id!r}: the "
                 "provisional account has no source_native mapping to re-point "
                 "onto the candidate.",
                 code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
             )
-        sibling_count_row = self._db.execute(
+        sibling_rows = self._db.execute(
             f"""
-            SELECT COUNT(*) FROM {ACCOUNT_LINK_DECISIONS.full_name}
+            SELECT decision_id FROM {ACCOUNT_LINK_DECISIONS.full_name}
             WHERE (provisional_account_id = ? OR candidate_account_id = ?)
               AND decision_id != ?
               AND status = 'pending'
               AND reversed_at IS NULL
             """,  # noqa: S608  # TableRef constant + parameterized values
             [provisional_id, provisional_id, decision_id],
-        ).fetchone()
-        sibling_count = int(sibling_count_row[0]) if sibling_count_row else 0
+        ).fetchall()
+        # Mirrors set()'s own two queries exactly: every accepted link is
+        # repointed, and the named decision plus every pending sibling changes
+        # status. Sorted because neither query orders its rows.
+        link_ids = tuple(sorted(str(link_id) for link_id, _ in links))
+        decision_ids = tuple(
+            sorted([decision_id, *(str(sid) for (sid,) in sibling_rows)])
+        )
         return AccountLinkAcceptImpact(
             provisional_account_id=provisional_id,
             candidate_account_id=str(decision["candidate_account_id"]),
             blast_radius={
                 "accounts": 2,
-                "account_links": len(links),
-                "account_link_decisions": 1 + sibling_count,
+                "account_links": len(link_ids),
+                "account_link_decisions": len(decision_ids),
             },
+            link_ids=link_ids,
+            decision_ids=decision_ids,
         )
 
     # ------------------------------------------------------------------
