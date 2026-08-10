@@ -1166,6 +1166,56 @@ def test_a_vetoed_name_match_across_institutions_stays_dropped(db: Database) -> 
     assert resolver.propose_existing("bank_one_checking") is None
 
 
+def test_a_coincidental_namesake_does_not_suppress_the_genuine_reissue(
+    db: Database,
+) -> None:
+    """The retype runs beside the name pass, not only when the name pass is empty.
+
+    Three accounts named "Sapphire Reserve": the subject, its reissued twin at
+    the same institution (last four changed — vetoed out of the name pass), and
+    an unrelated account at another bank whose last four is simply unknown.
+    Silence is not disagreement, so the unrelated one clears the veto and lands
+    in the name pass.
+
+    Gating the retype on an empty name pass let that coincidence decide: the
+    weakest of the two candidates populated the list, the genuine reissue was
+    never retyped, and the duplicated ledger stayed split — in exactly the
+    namesake case the retype exists to catch. Both are weak signals bound for
+    the same review queue, so surfacing both is the point; picking one is not
+    the resolver's call to make.
+    """
+    create_core_tables(db)
+    _seed_dim_account(
+        db,
+        account_id="reissued_old",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="1234",
+    )
+    _seed_dim_account(
+        db,
+        account_id="reissued_new",
+        display_name="Sapphire Reserve",
+        institution_name="CHASE",
+        last_four="5678",
+    )
+    _seed_dim_account(
+        db,
+        account_id="unrelated_namesake",
+        display_name="Sapphire Reserve",
+        institution_name="ALLY",
+        last_four=None,
+    )
+    resolver = AccountResolver(db, actor="system")
+
+    proposal = resolver.propose_existing("reissued_old")
+
+    assert proposal is not None
+    surfaced = {(c.account_id, c.signal) for c in proposal.candidates}
+    assert ("reissued_new", "institution_reissue") in surfaced, surfaced
+    assert ("unrelated_namesake", "name") in surfaced, surfaced
+
+
 def test_mint_claims_full_number_strong_ref_for_later_adopt(db: Database) -> None:
     """A minted account claims its scoped full_number so a later source adopts it.
 

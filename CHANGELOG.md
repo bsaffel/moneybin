@@ -466,7 +466,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   account with no known last four still reaches the name rung, since vetoing
   there would drop a proposal nothing else surfaces. At the same institution the
   pair re-surfaces under `institution_reissue`, which is the signal a reissued
-  card actually carries, so the proposal is retyped rather than lost (#387).
+  card actually carries, so the proposal is retyped rather than lost. That
+  retype is offered alongside any other name match rather than only when there
+  is none, so an unrelated account that happens to share the name and states no
+  last four cannot stand in for the reissue and hide it (#387).
 - **`moneybin accounts links set --into` now shows what the merge moves and asks
   before committing.** Accepting a link folds one account's whole history into
   another, and no command splits it back apart — but this was the last accept

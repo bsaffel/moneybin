@@ -343,7 +343,15 @@ signal reliability:
    the pair also shares an institution, the veto **retypes** rather than
    discards: that exact pair re-emerges under `institution_reissue`, the signal
    a replacement card actually carries. The retype runs on every path, because
-   it is bounded by what the name matcher already matched. That is distinct from
+   it is bounded by what the name matcher already matched — and it runs
+   *unconditionally*, beside the name pass rather than only when that pass came
+   up empty. The two read disjoint halves of the same rows: the veto keeps the
+   pairs whose last fours agree or are silent, the retype keeps the ones that
+   disagree. Gating the retype on an empty name pass therefore let an unrelated
+   account that shared the name and stated no last four populate the list and
+   hide the genuine reissue behind it — the coincidental-namesake case the
+   retype exists for. Both are weak signals bound for the same review queue, so
+   both surface and the human picks. That is distinct from
    the unconditional same-institution *sweep*, which surfaces every account whose
    last four differs whether or not any signal fired: the sweep is on for
    `resolve()` and its `propose()` preview, which must agree, and off for

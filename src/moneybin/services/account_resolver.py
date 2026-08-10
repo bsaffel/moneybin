@@ -93,7 +93,7 @@ def _institution_key(institution: str | None) -> str | None:
 
 
 def _last_fours_disagree(
-    source_last_four: str | None, candidate_last_four: object
+    source_last_four: str | None, candidate_last_four: str | None
 ) -> bool:
     """Whether two accounts state last fours that positively contradict each other.
 
@@ -104,7 +104,7 @@ def _last_fours_disagree(
     return bool(
         source_last_four
         and candidate_last_four
-        and str(candidate_last_four) != source_last_four
+        and candidate_last_four != source_last_four
     )
 
 
@@ -145,12 +145,15 @@ def _retyped_reissue_candidates(
     backfill path a vetoed pair had nothing to fall through to and a duplicate
     the queue used to surface went silently invisible.
 
-    Runs on every path, unlike ``_reissue_candidates``, because the two answer
-    different questions. That one sweeps *every* same-institution account whose
-    last four differs, which in an established book is the pairwise cross
-    product — noise, which is why backfill keeps it off. This one is bounded by
-    what the name matcher actually matched, so it stays the reissue shape: same
-    institution, same name, a last four that changed.
+    Runs on every path and unconditionally, unlike ``_reissue_candidates``,
+    because the two answer different questions. That one sweeps *every*
+    same-institution account whose last four differs, which in an established
+    book is the pairwise cross product — noise, which is why backfill keeps it
+    off and why it stays a last-resort fallback. This one is bounded by what the
+    name matcher actually matched, so it stays the reissue shape (same
+    institution, same name, a last four that changed) and is cheap enough to
+    always ask. It reads only rows the veto discarded, so it can never duplicate
+    a candidate the name pass already returned.
 
     Same-institution only. "Checking" at two different banks with two different
     last fours is a common word, not a reissued card, and retyping that would
@@ -759,7 +762,10 @@ class AccountResolver:
         two also share an institution, ``_retyped_reissue_candidates`` re-surfaces
         that exact pair under the signal that is actually true — on every path,
         because the ``reissue`` sweep below is off for backfill and a vetoed pair
-        would otherwise have nothing to fall through to.
+        would otherwise have nothing to fall through to. It runs *beside* the
+        name pass rather than only when that pass came up empty: the two read
+        disjoint halves of the same rows, so gating it let an unrelated namesake
+        carrying no last four hide a genuine reissue.
 
         ``reissue`` (arriving source accounts only): when neither signal clears,
         surface same-institution accounts whose last-four differs — see
@@ -843,8 +849,13 @@ class AccountResolver:
                     for c in result.candidates
                     if c["account_id"]
                 )
-            if not out:
-                out = _retyped_reissue_candidates(src, name_rows)
+            # Beside the name pass, not after it. The two read disjoint halves of
+            # name_rows — the veto keeps agreeing/absent last fours, this keeps
+            # the disagreeing ones — so a coincidental namesake with no last four
+            # would otherwise populate `out` and suppress the reissue it has
+            # nothing to do with. Both are weak signals headed for the same
+            # review queue; picking between them is the human's call.
+            out.extend(_retyped_reissue_candidates(src, name_rows))
             if not out and reissue:
                 out = self._reissue_candidates(src, exclude_account_id)
             if not out and fallback:
