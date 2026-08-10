@@ -11,7 +11,7 @@ The neighboring docs cover the mechanisms: the [Database & Security guide](datab
 
 ## Hazard: no egress gate today
 
-> **The single most important thing on this page.** Every row of every MCP tool result your agent uses to answer goes to whichever LLM provider the MCP client is configured against. Account and routing numbers are masked before they leave (CRITICAL-tier fields — enforced today); nothing else is. There is no consent prompt and no aggregate-only fallback intercepting `medium` or `high` sensitivity tool results before they leave the MoneyBin process. Sensitivity tiers are an audit-log signal today, not an enforced gate. If "Anthropic / OpenAI / Google sees my transactions for the duration of this conversation" is unacceptable, do not use the agent — use the CLI, where there is no LLM in the loop, or point your client at a local model. The enforcing consent / degraded-response framework is on the roadmap. The full per-tool breakdown — what leaves, what's masked, what's recorded — lives in [What the AI Provider Sees](what-the-ai-sees.md).
+> **The single most important thing on this page.** Every row of every MCP tool result your agent uses to answer goes to whichever LLM provider the MCP client is configured against. Account and routing numbers are masked before they leave (CRITICAL-tier fields — enforced today); nothing else is, with one exception. `sql_query` also reaches `raw` and `prep`, which carry no per-column declaration, so it scans each value there and masks SSN shapes and unbroken runs of 8 or more digits — weaker than a declaration, and a 4-to-7 digit account number passes through. There is no consent prompt and no aggregate-only fallback intercepting `medium` or `high` sensitivity tool results before they leave the MoneyBin process. Sensitivity tiers are an audit-log signal today, not an enforced gate. If "Anthropic / OpenAI / Google sees my transactions for the duration of this conversation" is unacceptable, do not use the agent — use the CLI, where there is no LLM in the loop, or point your client at a local model. The enforcing consent / degraded-response framework is on the roadmap. The full per-tool breakdown — what leaves, what's masked, what's recorded — lives in [What the AI Provider Sees](what-the-ai-sees.md).
 
 ---
 
@@ -35,7 +35,7 @@ Concurrent writers across machines via a sync folder will corrupt the database (
 
 Interactive CLI output and MCP tool results don't print SSNs, raw account numbers, or full balances in the clear:
 
-- Reports and queries that surface account references render masked identifiers (`****1234`) rather than the full account number.
+- Reports and queries that surface account references render masked identifiers (`****1234`) rather than the full account number. A `sql_query` read of `raw` or `prep` masks by value shape instead, so an account number of 4 to 7 digits prints in full.
 - The `SanitizedLogFormatter` (see below) masks the same patterns in any log output that incidentally captures them.
 
 This is a partial protection. Descriptions, merchant names, dates, and amounts ARE in plain output by design — you asked the tool for them. If "the screen behind you" is in your threat model, prefer non-shoulder-surfable environments over relying on this layer.

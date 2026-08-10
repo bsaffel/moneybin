@@ -23,7 +23,7 @@ Existing assets this design builds on:
 ## Requirements
 
 1. The LLM connected via MCP can discover, in one resource read, every table it should query, including: schema-qualified name, table purpose, every column with type and prose comment, and 2-3 representative example queries per table.
-2. Only the curated **interface tables** appear in the resource. Other schemas (`raw`, `prep`, `meta`, `seeds`) are reachable only via explicit catalog queries through `sql_query`.
+2. Only the curated **interface tables** appear in the resource. `raw` and `prep` stay out of it — `sql_query` reads them, but an agent finds them by catalog query rather than from the resource. `sql_query` refuses `meta` and `seeds` outright, `DESCRIBE` included; `SHOW ALL TABLES` still lists their shape, because it names no table for the gate to resolve.
 3. The interface-table set is declared **once**, at the `TableRef` definition site in `tables.py`. There is no parallel list to keep in sync.
 4. The resource includes a "beyond the interface" footer that names the other schemas with one-line purposes and provides a sample catalog query so a power user (or the LLM, when explicitly asked) can spelunk further without consulting external docs.
 5. The `sql_query` tool description includes a one-line pointer to the resource, as a fallback for clients that do not auto-load resources.

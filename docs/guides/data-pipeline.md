@@ -353,7 +353,7 @@ All read commands accept `--output json` and emit the standard response envelope
 
 ### From MCP
 
-The `sql_query` tool runs read-only DuckDB against `core.*` and `reports.*` (DDL and writes are rejected). For discovery, the `moneybin://schema` resource enumerates the *interface set* — the consumer-facing tables and views in `core.*` and `reports.*` declared as `TableRef` constants in code — with column-level descriptions auto-derived from SQLMesh model comments. Domain-specific tools (`transactions`, `reports(report_id=...)`, and `accounts`) are the higher-affordance path; `sql_query` is the escape hatch.
+The `sql_query` tool runs read-only DuckDB against five schemas — `core.*`, `app.*`, `reports.*`, `raw.*`, and `prep.*`; `meta` and `seeds` are refused (DDL and writes are rejected too). `raw` and `prep` rows are masked by value shape rather than by column declaration — see [`sql-access.md`](sql-access.md#sql_query-rules-mcp-tool-and-moneybin-sql-query-cli). For discovery, the `moneybin://schema` resource enumerates the *interface set* — the consumer-facing tables and views in `core.*` and `reports.*` declared as `TableRef` constants in code — with column-level descriptions auto-derived from SQLMesh model comments. Domain-specific tools (`transactions`, `reports(report_id=...)`, and `accounts`) are the higher-affordance path; `sql_query` is the escape hatch.
 
 Sensitivity classification and critical-field masking are wired today. The consent ledger exists, but global consent gating is not yet enforced.
 

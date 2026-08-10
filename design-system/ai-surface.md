@@ -50,9 +50,14 @@ asks once, states what it covers, and gets out of the way.
   (`****1234`), so an answer can still name an account without exposing it. Copy
   that promises critical data "never leaves your machine" is **wrong** — the
   guarantee is *never unmasked*, which is a claim about mechanism rather than
-  about completeness, and it is the one the code actually keeps. The binding
-  source is the repo's privacy-and-AI-trust spec and the redaction module; this
-  doc restates them and never widens them.
+  about completeness, and the code keeps it on every **declared** column. Scope
+  the copy there. `sql_query` also reads `raw` and `prep`, which declare 33
+  columns and nothing else, so every other value is masked by shape — an SSN
+  pattern or an unbroken run of 8 or more digits — and a 4-to-7 digit account
+  number passes through. Copy about those two schemas names the scan and its
+  gap; it never says "always masked." The binding source is the repo's
+  privacy-and-AI-trust spec and the redaction module; this doc restates them and
+  never widens them.
 - **The gate is one modal** — the floating layer of `patterns.md` §07, same
   anatomy as every other. It is not a banner, an interstitial, or a nag.
 - **The grant is revocable in one stated command.** The revocation is named at
