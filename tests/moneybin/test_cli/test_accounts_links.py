@@ -424,6 +424,37 @@ class TestLinksSet:
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_does_not_call_a_skipped_pass_clean(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Nothing examined is not the same as nothing found.
+
+        ``refresh()`` treats a missing or stale matching view as a precondition
+        rather than a crash, so it returns zero counts with no error. Reading
+        those zeros as a clean pass would tell the user their merge exposed no
+        duplicates when the rows were never looked at.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matching_skipped=True,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        assert "no new duplicates found" not in caplog.text
+        assert "could not run" in caplog.text
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
     def test_set_into_reports_transfers_the_pass_raised(
         self,
         mock_set: MagicMock,

@@ -29,6 +29,14 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
     if rematch is None:
         return []
     actions: list[str] = []
+    if rematch.matching_skipped:
+        # Zero counts here mean nothing was examined, not that nothing was
+        # found. Reporting "no duplicates" off them would invent a result.
+        actions.append(
+            "The merge's re-match could not run — its matching views were "
+            "missing or stale, so the newly co-resident rows were never "
+            "examined. Rerun refresh_run() and check reviews(kind='matches')"
+        )
     if rematch.matching_error is not None:
         # Not "still unproposed": the matcher commits each edge as it goes and
         # opens no transaction around the run, so a crash mid-pass leaves

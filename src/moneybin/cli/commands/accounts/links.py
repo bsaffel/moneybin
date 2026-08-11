@@ -201,7 +201,15 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     # whether or not the match step raised, so one call can carry both — and
     # they say different things: nothing was proposed, *and* the merge itself
     # is not visible yet. Neither may short-circuit the other.
-    if rematch.matching_error is not None:
+    if rematch.matching_skipped:
+        # Zero counts here mean nothing was examined, not that nothing was
+        # found — so the clean-run line below would be inventing a result.
+        logger.warning(
+            "⚠️  Re-match after the merge could not run — its matching views "
+            "were missing or stale, so the newly co-resident rows were never "
+            "examined; re-run 'moneybin refresh'"
+        )
+    elif rematch.matching_error is not None:
         # Not "still unproposed": the matcher commits each edge as it goes and
         # wraps no transaction around the run, so a crash mid-pass leaves
         # earlier tiers' decisions durable while the counts stay at zero.

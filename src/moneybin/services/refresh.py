@@ -100,6 +100,12 @@ class RefreshResult:
     matches_auto_merged: int = 0
     matches_pending_review: int = 0
     matches_pending_transfers: int = 0
+    # The match step was asked for but could not run — its views were missing
+    # or stale. Distinct from both a clean pass and a crash: the counts above
+    # are zero because nothing was examined, not because nothing was found. A
+    # caller reporting "no duplicates" off those zeros would be inventing a
+    # result. Expected on a first load, where the views postdate SQLMesh apply.
+    matching_skipped: bool = False
     # tuple, not list: frozen=True blocks reassignment but not in-place
     # mutation of a list field — a tuple keeps the result carrier truly immutable.
     self_heal_actions: tuple[SelfHealRecord, ...] = field(default_factory=tuple)
@@ -213,6 +219,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     auto_merged = 0
     pending_review = 0
     pending_transfers = 0
+    matching_skipped = False
     if "match" in requested:
         try:
             match_result = MatchingService(db).run()
@@ -227,6 +234,11 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             # Views not built yet (first load precedes SQLMesh apply) — an
             # expected precondition, not a crash. Stay quiet; no error surfaced
             # so a fresh DB's first refresh doesn't report a false failure.
+            # It is still recorded, because "skipped" and "ran and found
+            # nothing" are the same zero counts to a caller: a mature DB with a
+            # stale view would otherwise be told no duplicates exist when
+            # nothing was examined.
+            matching_skipped = True
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
         except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
             matching_error = str(exc)
@@ -250,6 +262,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             matches_auto_merged=auto_merged,
             matches_pending_review=pending_review,
             matches_pending_transfers=pending_transfers,
+            matching_skipped=matching_skipped,
         )
 
     apply_result = TransformService(db).apply()
@@ -265,6 +278,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             matches_auto_merged=auto_merged,
             matches_pending_review=pending_review,
             matches_pending_transfers=pending_transfers,
+            matching_skipped=matching_skipped,
         )
 
     if "categorize" in requested:
@@ -281,6 +295,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         matches_auto_merged=auto_merged,
         matches_pending_review=pending_review,
         matches_pending_transfers=pending_transfers,
+        matching_skipped=matching_skipped,
     )
 
 
