@@ -2414,19 +2414,39 @@ class DoctorService:
                 -- mark this row "already decided" and suppress the warning,
                 -- most likely on two accounts at one institution: precisely the
                 -- pair an account-link merge just joined.
-                -- match_type = 'dedup' on both branches: Tier 4 transfers are
+                -- Two kinds of decision suppress, at two different grains,
+                -- because the matcher treats them differently.
+                --
+                -- accepted/pending: the row is spoken for by a live assignment,
+                -- so ANY such decision naming it is evidence the matcher looked
+                -- -- that is what makes silence diagnostic for the pairs
+                -- assign_components legitimately drops (a redundant edge, or one
+                -- that would co-locate two rows from one physical source: in
+                -- both cases the dropped row is held by the pairing that won).
+                -- Node grain is deliberate here.
+                --
+                -- rejected: NOT a union-find seed. The matcher excludes only the
+                -- exact rejected pair, so a row rejected against one partner is
+                -- still a live candidate against every other. Suppressing at
+                -- node grain would hide a genuinely unproposed pair behind an
+                -- unrelated rejection -- the blind spot this check exists to
+                -- close. Pair grain, both orders.
+                --
+                -- reversed rows suppress nothing: the decision was undone, so
+                -- the pair is undecided again.
+                --
+                -- match_type = 'dedup' throughout: Tier 4 transfers are
                 -- cross-account and never run through the Tier 3 blocking join
-                -- this mirrors, so a transfer decision is no evidence the row
-                -- was ever considered for dedup. Counting one would suppress a
-                -- real warning, and on a transfer row account_id names only
-                -- side A anyway (account_id_b holds the other).
-                decided AS (
+                -- this mirrors, and on a transfer row account_id names only
+                -- side A anyway.
+                active_nodes AS (
                     SELECT account_id AS acct,
                            source_transaction_id_a AS stid,
                            source_type_a AS stype,
                            source_origin_a AS sorigin
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup'
+                      AND match_status IN ('accepted', 'pending')
                     UNION
                     SELECT account_id,
                            source_transaction_id_b,
@@ -2434,22 +2454,54 @@ class DoctorService:
                            source_origin_b
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup'
+                      AND match_status IN ('accepted', 'pending')
+                ),
+                rejected_pairs AS (
+                    SELECT account_id AS acct,
+                           source_transaction_id_a AS stid_a,
+                           source_type_a AS stype_a,
+                           source_origin_a AS sorigin_a,
+                           source_transaction_id_b AS stid_b,
+                           source_type_b AS stype_b,
+                           source_origin_b AS sorigin_b
+                    FROM {MATCH_DECISIONS.full_name}
+                    WHERE match_type = 'dedup' AND match_status = 'rejected'
+                    UNION
+                    SELECT account_id,
+                           source_transaction_id_b,
+                           source_type_b,
+                           source_origin_b,
+                           source_transaction_id_a,
+                           source_type_a,
+                           source_origin_a
+                    FROM {MATCH_DECISIONS.full_name}
+                    WHERE match_type = 'dedup' AND match_status = 'rejected'
                 )
                 SELECT c.account_id, COUNT(*) AS pairs
                 FROM candidates AS c
                 WHERE NOT EXISTS (
-                    SELECT 1 FROM decided AS d
+                    SELECT 1 FROM active_nodes AS d
                     WHERE d.acct = c.account_id
                       AND d.stid = c.id_a
                       AND d.stype = c.type_a
                       AND d.sorigin = c.origin_a
                 )
                   AND NOT EXISTS (
-                    SELECT 1 FROM decided AS d
+                    SELECT 1 FROM active_nodes AS d
                     WHERE d.acct = c.account_id
                       AND d.stid = c.id_b
                       AND d.stype = c.type_b
                       AND d.sorigin = c.origin_b
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM rejected_pairs AS r
+                    WHERE r.acct = c.account_id
+                      AND r.stid_a = c.id_a
+                      AND r.stype_a = c.type_a
+                      AND r.sorigin_a = c.origin_a
+                      AND r.stid_b = c.id_b
+                      AND r.stype_b = c.type_b
+                      AND r.sorigin_b = c.origin_b
                 )
                 GROUP BY c.account_id
                 ORDER BY c.account_id

@@ -540,7 +540,7 @@ class TestLinksSet:
         warnings = [
             r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
         ]
-        assert any("unproposed" in m for m in warnings), (
+        assert any("stopped partway" in m for m in warnings), (
             f"no warning covers the failed match: {warnings}"
         )
         assert any("not\nreflected" in m or "not reflected" in m for m in warnings), (

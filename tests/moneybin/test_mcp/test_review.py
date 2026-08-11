@@ -2554,7 +2554,7 @@ async def test_identity_links_decide_flags_a_failed_rebuild(
     )
 
     assert any("rebuild" in action.lower() for action in envelope.actions)
-    assert any("re-match failed" in action for action in envelope.actions)
+    assert any("stopped partway" in action for action in envelope.actions)
 
 
 async def test_identity_links_decide_reports_no_rematch_when_none_ran(

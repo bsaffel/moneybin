@@ -28,6 +28,7 @@ from moneybin.mcp.confirmation import (
 )
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.rematch_report import rematch_actions
 from moneybin.mcp.write_contracts import (
     AutoRuleDecisionRequest,
     IdentityDecisionRequest,
@@ -1176,7 +1177,20 @@ async def identity_links_decide_coarse(
     decisions: list[IdentityDecisionRequest],
     confirmation_token: str | None = None,
 ) -> ResponseEnvelope[IdentityLinksDecidePayload]:
-    """Atomically accept or reject account, merchant, and security identity links."""
+    """Atomically accept or reject account, merchant, and security identity links.
+
+    An accepted account link also re-runs matching, because the merge is what
+    makes the two sources' rows comparable at all. That pass auto-merges
+    duplicates it is confident about and queues the rest; `rematch_auto_merged`,
+    `rematch_pending_review`, and `rematch_pending_transfers` report it, and are
+    null when the batch held no accept (no pass ran).
+
+    Mutation surface: writes app.account_link_decisions + app.account_links,
+    app.merchant_links, app.security_links, and on an account accept also
+    app.match_decisions (both the re-key onto the surviving account and the
+    re-match pass) plus a rebuild of core.* via SQLMesh. Reverse with
+    system_audit_undo(operation_id).
+    """
     preview = await asyncio.to_thread(_preview_identity_decisions, decisions)
     plan = preview.plan
     binding = _identity_binding(decisions, plan)
@@ -1209,39 +1223,14 @@ async def identity_links_decide_coarse(
         expected_binding=binding,
     )
     operation_id = current_operation_id()
+    # An accepted merge re-runs matching, and that pass can auto-merge rows
+    # without asking. Same disclosure as accounts_links_set, from one source.
+    rematch = live.rematch
     actions = [
+        *rematch_actions(rematch),
         "Use reviews(status='pending') to continue identity review",
         "Use system_audit_undo(operation_id=...) to reverse this batch",
     ]
-    # An accepted merge re-runs matching, and that pass can auto-merge rows
-    # without asking. Prepended most-urgent-first, so a partial pass outranks
-    # the proposals it did raise.
-    rematch = live.rematch
-    if rematch is not None:
-        if rematch.matches_pending_transfers:
-            actions.insert(
-                0,
-                f"The merge's pass raised {rematch.matches_pending_transfers} "
-                "possible transfer(s) — review with reviews(kind='matches')",
-            )
-        if rematch.matches_pending_review:
-            actions.insert(
-                0,
-                f"The merge exposed {rematch.matches_pending_review} new duplicate "
-                "proposal(s) — review with reviews(kind='matches')",
-            )
-        if rematch.error is not None:
-            actions.insert(
-                0,
-                "The merge's rebuild failed, so the collapse is not reflected in "
-                "core yet — retry with refresh_run(steps=['transform'])",
-            )
-        if rematch.matching_error is not None:
-            actions.insert(
-                0,
-                "The merge's re-match failed, so duplicates it exposed are still "
-                "unproposed — retry with refresh_run(steps=['match','transform'])",
-            )
     return build_envelope(
         data=IdentityLinksDecidePayload(
             results=[

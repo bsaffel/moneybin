@@ -765,6 +765,95 @@ def test_set_accept_carries_a_rejected_pair_onto_the_survivor(
     )
 
 
+def test_set_accept_carries_the_transfer_side_of_a_decision_too(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """``account_id_b`` names the merged-away account on a transfer, and goes stale too.
+
+    Isolated from the dedup test by exactly one property: here the provisional
+    is the transfer's *second* leg, so only the ``account_id_b`` half of the
+    re-key can move it. A version that migrated ``account_id`` alone would pass
+    the dedup test and leave this row pointing at an account holding nothing.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00002",
+        source_transaction_id_a="ofx9",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx8",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_PROV2,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    row = db.execute(
+        "SELECT account_id, account_id_b FROM app.match_decisions "
+        "WHERE match_id = 'match_id00002'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == _PROV2, "the untouched leg must stay where it was"
+    assert row[1] == _CAND_A, (
+        "the merged-away leg must follow the merge, or the transfer names an "
+        "account that no longer holds any transactions"
+    )
+
+
+def test_set_accept_retires_a_transfer_whose_two_legs_collapse(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """A transfer between an account and itself is not a thing that can be true.
+
+    When the merged-away account is one leg and the survivor is already the
+    other, re-keying would write ``account_id == account_id_b``. Accepted, that
+    materializes in ``core.bridge_transfers`` as a transfer from an account to
+    itself; pending, it sits in the review queue as a proposal nobody can act
+    on. Neither is recoverable by a later pass, so the merge retires it.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00003",
+        source_transaction_id_a="ofx7",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx6",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    row = db.execute(
+        "SELECT match_status, account_id, account_id_b FROM app.match_decisions "
+        "WHERE match_id = 'match_id00003'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "reversed", (
+        "a transfer whose endpoints collapsed must be retired, not left "
+        "pointing an account at itself"
+    )
+    assert row[1] != row[2] or row[0] == "reversed"
+
+
 def test_set_standalone_does_not_rerun_the_matcher(
     seeded: AccountLinksService, rematch: MagicMock
 ) -> None:

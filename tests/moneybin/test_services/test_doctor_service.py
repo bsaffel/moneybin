@@ -3389,6 +3389,73 @@ def test_same_source_type_from_two_origins_warns(
 
 
 @pytest.mark.unit
+def test_a_rejection_against_a_different_partner_does_not_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejection excludes one pair, not a transaction from all future pairs.
+
+    The matcher's rejected-pair check is an exact tuple, and rejected edges seed
+    no union-find component — so a row rejected against one partner is still a
+    live candidate against every other. Suppressing at node grain would hide a
+    genuinely unproposed pair behind an unrelated rejection, which is the blind
+    spot this check exists to close.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    # ofx1 was rejected against some *other* CSV row, not against csv1.
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_other', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'rejected', NULL,
+                  'user', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_an_accepted_decision_on_one_side_still_suppresses(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An accepted edge is a live assignment, so node grain is right for it.
+
+    ``assign_components`` drops a redundant edge and one that would co-locate
+    two rows from a single physical source; in both cases the dropped row is
+    spoken for by the pairing that won, which still holds a decision. Narrowing
+    accepted decisions to pair grain would make every such legitimate drop warn.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_other', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
 def test_a_transfer_decision_does_not_count_as_dedup_consideration(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

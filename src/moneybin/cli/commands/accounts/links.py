@@ -202,9 +202,15 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     # they say different things: nothing was proposed, *and* the merge itself
     # is not visible yet. Neither may short-circuit the other.
     if rematch.matching_error is not None:
+        # Not "still unproposed": the matcher commits each edge as it goes and
+        # wraps no transaction around the run, so a crash mid-pass leaves
+        # earlier tiers' decisions durable while the counts stay at zero.
+        # Claiming nothing was proposed would hide an auto-merge that landed.
         logger.warning(
-            "⚠️  Re-match after the merge failed, so any duplicates the merge "
-            "made visible are still unproposed; re-run 'moneybin refresh'"
+            "⚠️  Re-match after the merge stopped partway, so its counts are "
+            "incomplete and some duplicates may already have been merged; "
+            "re-run 'moneybin refresh', then check 'moneybin reviews' and "
+            "'moneybin audit'"
         )
     else:
         merged = rematch.matches_auto_merged

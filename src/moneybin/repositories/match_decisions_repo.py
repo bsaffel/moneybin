@@ -209,6 +209,12 @@ class MatchDecisionsRepo(BaseRepo):
         account and is NULL for dedup. Either can name the account that just
         went away.
 
+        A transfer whose *other* leg is already the survivor is retired rather
+        than re-keyed: both endpoints collapse onto one account, and a transfer
+        between an account and itself is not a thing that can be true. Accepted
+        and rejected rows are reversed; pending ones are rejected, since a
+        pending row has no decision to undo.
+
         One audit per row, like every other method here — the undo engine
         replays rows individually, and a single event covering N updates could
         not restore them one at a time. Returns the events in mutation order.
@@ -231,6 +237,42 @@ class MatchDecisionsRepo(BaseRepo):
             events: list[AuditEvent] = []
             for (match_id,) in rows:
                 before = self._require(self._fetch_row(match_id), "match_id", match_id)
+                # A transfer whose other leg is already the survivor has both
+                # endpoints collapsing onto one account. Re-keying it would
+                # write account_id == account_id_b: an accepted row then
+                # materializes in core.bridge_transfers as a transfer from an
+                # account to itself, and a pending one sits in the queue as a
+                # proposal nobody can action. A transfer cannot survive its two
+                # sides becoming one account, so retire it instead.
+                other = (
+                    before["account_id_b"]
+                    if before["account_id"] == from_account_id
+                    else before["account_id"]
+                )
+                if before["match_type"] == "transfer" and other == to_account_id:
+                    status = before["match_status"]
+                    if status in ("accepted", "rejected"):
+                        events.append(
+                            self.reverse(
+                                match_id,
+                                reversed_by="system",
+                                actor=actor,
+                                parent_audit_id=parent_audit_id,
+                                in_outer_txn=True,
+                            )
+                        )
+                    elif status == "pending":
+                        events.append(
+                            self.update_status(
+                                match_id,
+                                status="rejected",
+                                decided_by="system",
+                                actor=actor,
+                                parent_audit_id=parent_audit_id,
+                                in_outer_txn=True,
+                            )
+                        )
+                    continue
                 self._db.execute(
                     f"""
                     UPDATE {MATCH_DECISIONS.full_name}
