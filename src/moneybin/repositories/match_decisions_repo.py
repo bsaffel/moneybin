@@ -249,30 +249,9 @@ class MatchDecisionsRepo(BaseRepo):
                     if before["account_id"] == from_account_id
                     else before["account_id"]
                 )
-                if before["match_type"] == "transfer" and other == to_account_id:
-                    status = before["match_status"]
-                    if status in ("accepted", "rejected"):
-                        events.append(
-                            self.reverse(
-                                match_id,
-                                reversed_by="system",
-                                actor=actor,
-                                parent_audit_id=parent_audit_id,
-                                in_outer_txn=True,
-                            )
-                        )
-                    elif status == "pending":
-                        events.append(
-                            self.update_status(
-                                match_id,
-                                status="rejected",
-                                decided_by="system",
-                                actor=actor,
-                                parent_audit_id=parent_audit_id,
-                                in_outer_txn=True,
-                            )
-                        )
-                    continue
+                collapsed = (
+                    before["match_type"] == "transfer" and other == to_account_id
+                )
                 self._db.execute(
                     f"""
                     UPDATE {MATCH_DECISIONS.full_name}
@@ -301,6 +280,36 @@ class MatchDecisionsRepo(BaseRepo):
                         parent_audit_id=parent_audit_id,
                     )
                 )
+                # Retirement follows the re-key rather than replacing it. The
+                # row must still name a live account: transform drops the
+                # provisional from core.dim_accounts moments later, and the
+                # app_match_decisions_account_fk invariant checks every row
+                # regardless of status, so a retired row left pointing at the
+                # dead account fails it.
+                if not collapsed:
+                    continue
+                status = before["match_status"]
+                if status in ("accepted", "rejected"):
+                    events.append(
+                        self.reverse(
+                            match_id,
+                            reversed_by="system",
+                            actor=actor,
+                            parent_audit_id=parent_audit_id,
+                            in_outer_txn=True,
+                        )
+                    )
+                elif status == "pending":
+                    events.append(
+                        self.update_status(
+                            match_id,
+                            status="rejected",
+                            decided_by="system",
+                            actor=actor,
+                            parent_audit_id=parent_audit_id,
+                            in_outer_txn=True,
+                        )
+                    )
             return tuple(events)
 
     def reverse(

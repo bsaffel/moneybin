@@ -851,7 +851,11 @@ def test_set_accept_retires_a_transfer_whose_two_legs_collapse(
         "a transfer whose endpoints collapsed must be retired, not left "
         "pointing an account at itself"
     )
-    assert row[1] != row[2] or row[0] == "reversed"
+    # Retired *and* re-keyed. transform drops the provisional from
+    # dim_accounts moments later and app_match_decisions_account_fk checks
+    # every row regardless of status, so retiring alone strands this one.
+    assert row[1] == _CAND_A
+    assert row[2] == _CAND_A
 
 
 def test_set_standalone_does_not_rerun_the_matcher(

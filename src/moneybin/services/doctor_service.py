@@ -2477,21 +2477,32 @@ class DoctorService:
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup' AND match_status = 'rejected'
                 )
+                -- BOTH endpoints must be spoken for, not either. A node sitting
+                -- in an existing component is not globally claimed: when A-B is
+                -- already matched and a merge makes a third copy C co-resident,
+                -- assign_components attaches C with a new edge where source
+                -- cardinality allows. Suppressing A-C because A appears here
+                -- would hide exactly the newly co-resident row this check
+                -- exists to find. Requiring both still covers the legitimate
+                -- drops -- a redundant edge connects two rows already in one
+                -- component, so both carry decisions.
                 SELECT c.account_id, COUNT(*) AS pairs
                 FROM candidates AS c
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM active_nodes AS d
-                    WHERE d.acct = c.account_id
-                      AND d.stid = c.id_a
-                      AND d.stype = c.type_a
-                      AND d.sorigin = c.origin_a
-                )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM active_nodes AS d
-                    WHERE d.acct = c.account_id
-                      AND d.stid = c.id_b
-                      AND d.stype = c.type_b
-                      AND d.sorigin = c.origin_b
+                WHERE NOT (
+                    EXISTS (
+                        SELECT 1 FROM active_nodes AS d
+                        WHERE d.acct = c.account_id
+                          AND d.stid = c.id_a
+                          AND d.stype = c.type_a
+                          AND d.sorigin = c.origin_a
+                    )
+                    AND EXISTS (
+                        SELECT 1 FROM active_nodes AS d
+                        WHERE d.acct = c.account_id
+                          AND d.stid = c.id_b
+                          AND d.stype = c.type_b
+                          AND d.sorigin = c.origin_b
+                    )
                 )
                   AND NOT EXISTS (
                     SELECT 1 FROM rejected_pairs AS r

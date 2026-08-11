@@ -3424,15 +3424,16 @@ def test_a_rejection_against_a_different_partner_does_not_suppress(
 
 
 @pytest.mark.unit
-def test_an_accepted_decision_on_one_side_still_suppresses(
+def test_an_accepted_decision_on_only_one_side_does_not_suppress(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An accepted edge is a live assignment, so node grain is right for it.
+    """A node in an existing component is not globally claimed.
 
-    ``assign_components`` drops a redundant edge and one that would co-locate
-    two rows from a single physical source; in both cases the dropped row is
-    spoken for by the pairing that won, which still holds a decision. Narrowing
-    accepted decisions to pair grain would make every such legitimate drop warn.
+    When A–B is already matched and a merge makes a third copy C co-resident,
+    ``assign_components`` attaches C with a new edge wherever source cardinality
+    allows. Suppressing the A–C candidate because A already appears in some
+    component would hide the newly co-resident row this check exists to find —
+    the same class of silence as the original incident.
     """
     _seed_prep_unioned(doctor_db, 0)
     _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
@@ -3445,6 +3446,42 @@ def test_an_accepted_decision_on_one_side_still_suppresses(
             account_id, confidence_score, match_signals, match_type, match_tier,
             account_id_b, match_status, match_reason, decided_by, decided_at
         ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_other', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+
+
+@pytest.mark.unit
+def test_an_accepted_decision_on_both_sides_suppresses(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both endpoints in a live component is what a legitimate drop looks like.
+
+    ``assign_components`` skips a redundant edge precisely when its two rows are
+    already connected — so both carry decisions from the pairings that won.
+    Requiring both is what keeps those drops from nagging, while still letting a
+    genuinely new third copy through (the sibling test above).
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_other', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP),
+                 ('m2', 'csv1', 'csv', 'bank', 'ofx_other', 'ofx', 'bank',
                   'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
                   'auto', CURRENT_TIMESTAMP)
         """  # noqa: S608 — test input, not user data
