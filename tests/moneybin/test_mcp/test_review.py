@@ -2415,6 +2415,52 @@ def test_identity_batch_of_rejects_does_not_rerun_the_matcher() -> None:
     account_service.rematch_after_merge.assert_not_called()
 
 
+def test_identity_batch_of_an_unchanged_accept_does_not_rerun_the_matcher() -> None:
+    """An accept that changed nothing repointed nothing, so there is nothing to re-match.
+
+    ``account_merged`` requires ``changed`` as well as ``decision == "accept"``,
+    because a decision resubmitted at its current status takes
+    ``_prepare_account``'s ``current == status`` branch and writes no repoint.
+    The reject case cannot prove this: it would pass with the ``changed``
+    conjunct deleted. This fixture keeps the accept and removes only the change,
+    so dropping that conjunct turns it red.
+    """
+    decisions: list[IdentityDecisionRequest] = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-candidate",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
+            decision="reject",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    # Only the account accept is unchanged; the merchant reject keeps
+    # changed_count above zero so apply_identity does not short-circuit.
+    plan = replace(
+        plan,
+        items=(replace(plan.items[0], changed=False), plan.items[1]),
+    )
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch("moneybin.services.review_decisions_service.MerchantLinksService"),
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        account_service = account_class.return_value
+        service.apply_identity(decisions, verify=lambda _: None)
+
+    account_service.rematch_after_merge.assert_not_called()
+
+
 def test_identity_batch_carries_the_rematch_outcome_out() -> None:
     """Firing the pass is not enough — the batch must report what it did.
 

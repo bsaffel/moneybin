@@ -555,7 +555,9 @@ Guard-2 free-text resolution):
   its own seam in `apply_identity()`: its inner `set()` calls run with
   `in_outer_txn=True` and return before their own post-commit tail, so the
   single-accept trigger does not cover it. `identity` is deliberately excluded —
-  that stage re-enters this service.
+  not for recursion, since `_run_identity_step` calls `run()` (propose) and
+  never `set()`, but because proposing new links is not this trigger's job and
+  would re-examine the accounts the merge just collapsed.
 
   `transform` is included even though `prep.int_transactions__{unioned,matched,
   merged}` and `core.fct_transactions` are all `kind VIEW` and collapse on the

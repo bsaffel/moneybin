@@ -2363,7 +2363,7 @@ class DoctorService:
         try:
             rows = self._db.execute(
                 f"""
-                WITH candidates AS (
+                WITH RECURSIVE candidates AS (
                     SELECT a.account_id,
                            a.source_type AS type_a,
                            a.source_origin AS origin_a,
@@ -2439,22 +2439,44 @@ class DoctorService:
                 -- cross-account and never run through the Tier 3 blocking join
                 -- this mirrors, and on a transfer row account_id names only
                 -- side A anyway.
-                active_nodes AS (
+                -- Live dedup edges, both directions, as opaque node keys.
+                -- chr(31) is the ASCII unit separator, which no source_type,
+                -- source_origin or source-native id contains -- so the
+                -- concatenation cannot alias two different triples onto one key.
+                dedup_edges AS (
                     SELECT account_id AS acct,
-                           source_transaction_id_a AS stid,
-                           source_type_a AS stype,
-                           source_origin_a AS sorigin
+                           source_type_a || chr(31) || source_origin_a
+                               || chr(31) || source_transaction_id_a AS n1,
+                           source_type_b || chr(31) || source_origin_b
+                               || chr(31) || source_transaction_id_b AS n2
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup'
                       AND match_status IN ('accepted', 'pending')
                     UNION
                     SELECT account_id,
-                           source_transaction_id_b,
-                           source_type_b,
-                           source_origin_b
+                           source_type_b || chr(31) || source_origin_b
+                               || chr(31) || source_transaction_id_b,
+                           source_type_a || chr(31) || source_origin_a
+                               || chr(31) || source_transaction_id_a
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup'
                       AND match_status IN ('accepted', 'pending')
+                ),
+                -- Transitive closure, then each node labelled by the smallest
+                -- node it can reach. Two nodes share a label exactly when
+                -- union-find would put them in one component.
+                reach AS (
+                    SELECT acct, n1 AS src, n1 AS dst FROM dedup_edges
+                    UNION
+                    SELECT e.acct, r.src, e.n2
+                    FROM reach AS r
+                    JOIN dedup_edges AS e
+                      ON e.acct = r.acct AND e.n1 = r.dst
+                ),
+                component AS (
+                    SELECT acct, src AS node, MIN(dst) AS comp
+                    FROM reach
+                    GROUP BY acct, src
                 ),
                 rejected_pairs AS (
                     SELECT account_id AS acct,
@@ -2477,32 +2499,25 @@ class DoctorService:
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup' AND match_status = 'rejected'
                 )
-                -- BOTH endpoints must be spoken for, not either. A node sitting
-                -- in an existing component is not globally claimed: when A-B is
-                -- already matched and a merge makes a third copy C co-resident,
-                -- assign_components attaches C with a new edge where source
-                -- cardinality allows. Suppressing A-C because A appears here
-                -- would hide exactly the newly co-resident row this check
-                -- exists to find. Requiring both still covers the legitimate
-                -- drops -- a redundant edge connects two rows already in one
-                -- component, so both carry decisions.
+                -- Same component, not merely both-decided. assign_components
+                -- skips an edge only on find(a) == find(b) (assignment.py), so
+                -- two endpoints carrying unrelated decisions in *disjoint*
+                -- components are still a live candidate it would evaluate.
+                -- Suppressing those would hide exactly the unproposed pair this
+                -- check exists to find; suppressing within one component is the
+                -- redundant edge the matcher genuinely drops.
                 SELECT c.account_id, COUNT(*) AS pairs
                 FROM candidates AS c
-                WHERE NOT (
-                    EXISTS (
-                        SELECT 1 FROM active_nodes AS d
-                        WHERE d.acct = c.account_id
-                          AND d.stid = c.id_a
-                          AND d.stype = c.type_a
-                          AND d.sorigin = c.origin_a
-                    )
-                    AND EXISTS (
-                        SELECT 1 FROM active_nodes AS d
-                        WHERE d.acct = c.account_id
-                          AND d.stid = c.id_b
-                          AND d.stype = c.type_b
-                          AND d.sorigin = c.origin_b
-                    )
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM component AS ca
+                    JOIN component AS cb
+                      ON cb.acct = ca.acct AND cb.comp = ca.comp
+                    WHERE ca.acct = c.account_id
+                      AND ca.node = c.type_a || chr(31) || c.origin_a
+                                    || chr(31) || c.id_a
+                      AND cb.node = c.type_b || chr(31) || c.origin_b
+                                    || chr(31) || c.id_b
                 )
                   AND NOT EXISTS (
                     SELECT 1 FROM rejected_pairs AS r
