@@ -858,13 +858,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   new `unproposed_cross_source_duplicates` warns when a pair the matcher's own
   Tier 3 blocking test would admit — differing `source_type` **or** differing
   `source_origin`, so two CSV integrations and two Plaid connections count —
-  matches on amount and date within the matcher's window and *neither* side
-  carries a match decision in any status, matched on the full node identity the
-  matcher uses. Correlating `account_id` is what keeps a source-native id reused
-  by an unrelated account from marking a row "already decided." Requiring neither side is what makes silence
-  mean something: the matcher legitimately drops redundant and conflicting
-  candidate pairs, but in both cases the dropped row is still spoken for by the
-  pairing that won.
+  matches on amount and date within the matcher's window and no live match
+  decision explains the silence. "Explains" mirrors each of the matcher's own
+  reasons for dropping a candidate: the two rows are already in one component
+  (the transitive closure of accepted and pending dedup edges), their components
+  already share a `(source_type, source_origin, source_file)` — the cardinality
+  guard that keeps two rows of one import file apart — or the exact pair was
+  rejected. Accepted and pending decisions read at component grain, rejections at
+  pair grain, matched on the full node identity the matcher uses. Correlating
+  `account_id` is what keeps a source-native id reused by an unrelated account
+  from marking a row "already decided."
 - **Undoing a decision puts it back in the review queue, and the queue count now
   says so.** `system audit undo` restores a link decision to pending, but the
   counter that reports how many decisions await review was refreshed only by the
