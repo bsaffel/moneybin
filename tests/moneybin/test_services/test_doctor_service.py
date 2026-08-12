@@ -3244,19 +3244,22 @@ def _insert_unioned_row(
     account_id: str = "ACC1",
     amount: str = "-50.00",
     transaction_date: str = "2026-01-01",
+    source_file: str | None = None,
 ) -> None:
     """Insert one matcher-input row into prep.int_transactions__unioned.
 
     Defaults put every row in one account on one date at one amount, so a test
     only has to vary the field whose narrowing clause it is exercising.
+    ``source_file`` defaults to NULL, which imposes no cardinality constraint —
+    matching ``assign_components``' treatment of a row with an unknown file.
     """
     db.execute(
         """
         INSERT INTO prep.int_transactions__unioned (
             source_transaction_id, account_id, source_account_key,
             transaction_date, amount, description, currency_code,
-            source_type, source_origin, is_pending
-        ) VALUES (?, ?, ?, ?, ?, 'Coffee', 'USD', ?, ?, false)
+            source_type, source_origin, source_file, is_pending
+        ) VALUES (?, ?, ?, ?, ?, 'Coffee', 'USD', ?, ?, ?, false)
         """,  # noqa: S608 — test input, not user data
         [
             stid,
@@ -3266,6 +3269,7 @@ def _insert_unioned_row(
             amount,
             source_type,
             source_origin,
+            source_file,
         ],
     )
 
@@ -3529,6 +3533,87 @@ def test_two_rows_already_in_one_component_suppress(
     result = _unproposed_result(doctor_db, monkeypatch)
 
     assert result.status == "pass"
+
+
+_TWO_PAIRED_COMPONENTS = """
+    INSERT INTO app.match_decisions (
+        match_id, source_transaction_id_a, source_type_a, source_origin_a,
+        source_transaction_id_b, source_type_b, source_origin_b,
+        account_id, confidence_score, match_signals, match_type, match_tier,
+        account_id_b, match_status, match_reason, decided_by, decided_at
+    ) VALUES ('m1', 'csv1', 'csv', 'bank', 'ofx1', 'ofx', 'bank',
+              'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+              'auto', CURRENT_TIMESTAMP),
+             ('m2', 'csv2', 'csv', 'bank', 'ofx2', 'ofx', 'bank',
+              'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+              'auto', CURRENT_TIMESTAMP)
+"""  # noqa: S608 — test input, not user data
+
+
+@pytest.mark.unit
+def test_two_components_sharing_a_physical_source_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cardinality guard's pairs, which no refresh could ever clear.
+
+    ``assign_components`` rejects an edge whose two components already hold a
+    row from one ``(source_type, source_origin, source_file)`` — two rows of a
+    single import file are distinct transactions by construction, so they must
+    never land in one component. Here one CSV and one OFX file each contribute
+    both of their rows, and the matcher has already paired them 1:1, so the two
+    *cross* edges are precisely what the guard drops. Warning about them would
+    nag forever: the remedy this check recommends is a refresh, and a refresh
+    re-drops them.
+
+    Differs from ``test_decisions_in_disjoint_components_do_not_suppress`` by
+    exactly one property — whether the two components share a physical source.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    for stid, source_type, source_file in (
+        ("ofx1", "ofx", "jan.ofx"),
+        ("ofx2", "ofx", "jan.ofx"),
+        ("csv1", "csv", "march.csv"),
+        ("csv2", "csv", "march.csv"),
+    ):
+        _insert_unioned_row(
+            doctor_db, stid=stid, source_type=source_type, source_file=source_file
+        )
+    doctor_db.execute(_TWO_PAIRED_COMPONENTS)
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_two_components_from_four_files_still_warn(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same shape with no shared file — the guard must not swallow this.
+
+    Identical to the fixture above in every respect except the file names: each
+    row now comes from its own import file, so ``sources_a & sources_b`` is
+    empty and ``assign_components`` would genuinely evaluate both cross edges.
+    Without this partner, a suppression that keyed on "both endpoints are in
+    *some* component" would pass the test above and silently reinstate the
+    blind spot this invariant exists to close.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    for stid, source_type, source_file in (
+        ("ofx1", "ofx", "jan.ofx"),
+        ("ofx2", "ofx", "feb.ofx"),
+        ("csv1", "csv", "march.csv"),
+        ("csv2", "csv", "april.csv"),
+    ):
+        _insert_unioned_row(
+            doctor_db, stid=stid, source_type=source_type, source_file=source_file
+        )
+    doctor_db.execute(_TWO_PAIRED_COMPONENTS)
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (2 unreviewed pairs)"]
 
 
 @pytest.mark.unit

@@ -2417,13 +2417,10 @@ class DoctorService:
                 -- Two kinds of decision suppress, at two different grains,
                 -- because the matcher treats them differently.
                 --
-                -- accepted/pending: the row is spoken for by a live assignment,
-                -- so ANY such decision naming it is evidence the matcher looked
-                -- -- that is what makes silence diagnostic for the pairs
-                -- assign_components legitimately drops (a redundant edge, or one
-                -- that would co-locate two rows from one physical source: in
-                -- both cases the dropped row is held by the pairing that won).
-                -- Node grain is deliberate here.
+                -- accepted/pending: a live union-find edge. These are read at
+                -- *component* grain, not node grain -- see the two suppression
+                -- clauses on the final SELECT, which together mirror the two
+                -- reasons assign_components drops an edge.
                 --
                 -- rejected: NOT a union-find seed. The matcher excludes only the
                 -- exact rejected pair, so a row rejected against one partner is
@@ -2478,6 +2475,34 @@ class DoctorService:
                     FROM reach
                     GROUP BY acct, src
                 ),
+                -- Physical sources reachable from each component, for the
+                -- cardinality guard below. A row in no component is its own
+                -- singleton: assign_components registers every candidate
+                -- endpoint, so an undecided row still carries its own file into
+                -- the guard. NULL source_file imposes no constraint, matching
+                -- the Python. Python registers only the nodes appearing in that
+                -- run's candidate list, so this is marginally broader -- it can
+                -- suppress where a seed-only node supplies the shared file. The
+                -- extra suppression is silence in a warn-only check, which is
+                -- the safe direction to be approximate in.
+                component_sources AS (
+                    SELECT DISTINCT
+                        t.account_id AS acct,
+                        COALESCE(
+                            cn.comp,
+                            t.source_type || chr(31) || t.source_origin
+                                || chr(31) || t.source_transaction_id
+                        ) AS comp,
+                        t.source_type AS s_type,
+                        t.source_origin AS s_origin,
+                        t.source_file AS s_file
+                    FROM {INT_TRANSACTIONS_UNIONED.full_name} AS t
+                    LEFT JOIN component AS cn
+                      ON cn.acct = t.account_id
+                     AND cn.node = t.source_type || chr(31) || t.source_origin
+                                   || chr(31) || t.source_transaction_id
+                    WHERE t.source_file IS NOT NULL
+                ),
                 rejected_pairs AS (
                     SELECT account_id AS acct,
                            source_transaction_id_a AS stid_a,
@@ -2498,39 +2523,72 @@ class DoctorService:
                            source_origin_a
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup' AND match_status = 'rejected'
+                ),
+                -- Each endpoint's component, or the endpoint itself when it is
+                -- in none -- a lone row is a component of one.
+                resolved AS (
+                    SELECT c.*,
+                           COALESCE(
+                               ca.comp,
+                               c.type_a || chr(31) || c.origin_a
+                                   || chr(31) || c.id_a
+                           ) AS comp_a,
+                           COALESCE(
+                               cb.comp,
+                               c.type_b || chr(31) || c.origin_b
+                                   || chr(31) || c.id_b
+                           ) AS comp_b
+                    FROM candidates AS c
+                    LEFT JOIN component AS ca
+                      ON ca.acct = c.account_id
+                     AND ca.node = c.type_a || chr(31) || c.origin_a
+                                   || chr(31) || c.id_a
+                    LEFT JOIN component AS cb
+                      ON cb.acct = c.account_id
+                     AND cb.node = c.type_b || chr(31) || c.origin_b
+                                   || chr(31) || c.id_b
                 )
-                -- Same component, not merely both-decided. assign_components
-                -- skips an edge only on find(a) == find(b) (assignment.py), so
-                -- two endpoints carrying unrelated decisions in *disjoint*
-                -- components are still a live candidate it would evaluate.
-                -- Suppressing those would hide exactly the unproposed pair this
-                -- check exists to find; suppressing within one component is the
-                -- redundant edge the matcher genuinely drops.
-                SELECT c.account_id, COUNT(*) AS pairs
-                FROM candidates AS c
-                WHERE NOT EXISTS (
+                -- The two clauses below are assign_components' two skips, in
+                -- its own order (assignment.py). Both are component-grain, not
+                -- node-grain: two endpoints carrying *unrelated* decisions in
+                -- disjoint components are still a live candidate the matcher
+                -- would evaluate, and suppressing those hides exactly the
+                -- unproposed pair this check exists to find.
+                --
+                -- 1. find(a) == find(b) -- the redundant edge inside one
+                --    component, already spoken for by the pairing that won.
+                -- 2. sources_a & sources_b -- the cardinality guard. Two rows
+                --    of one import file are distinct transactions, so an edge
+                --    joining their components is refused. Omitting this warns
+                --    about a pair no refresh can ever clear, since the remedy
+                --    this check recommends is the very pass that re-drops it.
+                SELECT r.account_id, COUNT(*) AS pairs
+                FROM resolved AS r
+                WHERE r.comp_a <> r.comp_b
+                  AND NOT EXISTS (
                     SELECT 1
-                    FROM component AS ca
-                    JOIN component AS cb
-                      ON cb.acct = ca.acct AND cb.comp = ca.comp
-                    WHERE ca.acct = c.account_id
-                      AND ca.node = c.type_a || chr(31) || c.origin_a
-                                    || chr(31) || c.id_a
-                      AND cb.node = c.type_b || chr(31) || c.origin_b
-                                    || chr(31) || c.id_b
+                    FROM component_sources AS sa
+                    JOIN component_sources AS sb
+                      ON sb.acct = sa.acct
+                     AND sb.s_type = sa.s_type
+                     AND sb.s_origin = sa.s_origin
+                     AND sb.s_file = sa.s_file
+                    WHERE sa.acct = r.account_id
+                      AND sa.comp = r.comp_a
+                      AND sb.comp = r.comp_b
                 )
                   AND NOT EXISTS (
-                    SELECT 1 FROM rejected_pairs AS r
-                    WHERE r.acct = c.account_id
-                      AND r.stid_a = c.id_a
-                      AND r.stype_a = c.type_a
-                      AND r.sorigin_a = c.origin_a
-                      AND r.stid_b = c.id_b
-                      AND r.stype_b = c.type_b
-                      AND r.sorigin_b = c.origin_b
+                    SELECT 1 FROM rejected_pairs AS rp
+                    WHERE rp.acct = r.account_id
+                      AND rp.stid_a = r.id_a
+                      AND rp.stype_a = r.type_a
+                      AND rp.sorigin_a = r.origin_a
+                      AND rp.stid_b = r.id_b
+                      AND rp.stype_b = r.type_b
+                      AND rp.sorigin_b = r.origin_b
                 )
-                GROUP BY c.account_id
-                ORDER BY c.account_id
+                GROUP BY r.account_id
+                ORDER BY r.account_id
                 """,  # noqa: S608 — TableRef constants, parameterized values
                 [settings.matching.date_window_days],
             ).fetchall()

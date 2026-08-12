@@ -858,6 +858,52 @@ def test_set_accept_retires_a_transfer_whose_two_legs_collapse(
     assert row[2] == _CAND_A
 
 
+def test_set_accept_rejects_a_pending_transfer_whose_two_legs_collapse(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The same collapse, retired the other way because the row was never decided.
+
+    Isolated from the accepted-collapse test by exactly one property: the
+    status. ``reverse()`` refuses a pending row — there is no accept/reject to
+    undo — so the retirement has to go through ``update_status``, and the
+    resting status is ``rejected`` rather than ``reversed``. A version that
+    called ``reverse()`` on both would raise here and pass there.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00004",
+        source_transaction_id_a="ofx5",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx4",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="pending",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="system",
+        actor="test",
+    )
+
+    seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    row = db.execute(
+        "SELECT match_status, account_id, account_id_b FROM app.match_decisions "
+        "WHERE match_id = 'match_id00004'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "rejected", (
+        "a pending transfer whose endpoints collapsed must leave the review "
+        "queue, or it sits there as a proposal nobody can action"
+    )
+    assert row[1] == _CAND_A
+    assert row[2] == _CAND_A
+
+
 def test_set_standalone_does_not_rerun_the_matcher(
     seeded: AccountLinksService, rematch: MagicMock
 ) -> None:
