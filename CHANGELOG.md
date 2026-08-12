@@ -865,9 +865,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already share a `(source_type, source_origin, source_file)` — the cardinality
   guard that keeps two rows of one import file apart — or the exact pair was
   rejected. Accepted and pending decisions read at component grain, rejections at
-  pair grain, matched on the full node identity the matcher uses. Correlating
-  `account_id` is what keeps a source-native id reused by an unrelated account
-  from marking a row "already decided."
+  pair grain, and each keyed exactly as the matcher keys it — components on
+  `NodeKey`, which carries no `source_origin`, rejections on the origin-bearing
+  pair key `get_rejected_pairs` selects. Scoping both by `account_id` is what
+  keeps a source-native id reused by an unrelated account from marking a row
+  "already decided."
 - **Undoing a decision puts it back in the review queue, and the queue count now
   says so.** `system audit undo` restores a link decision to pending, but the
   counter that reports how many decisions await review was refreshed only by the

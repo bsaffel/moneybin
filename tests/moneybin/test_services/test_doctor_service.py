@@ -3586,6 +3586,38 @@ def test_two_components_sharing_a_physical_source_suppress(
 
 
 @pytest.mark.unit
+def test_one_matcher_node_split_across_origins_is_not_a_pair(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two origins, one matcher node — `_node_a(pair) == _node_b(pair)`.
+
+    `NodeKey` is `(source_type, source_transaction_id, account_id)`
+    (`assignment.py:86-100`) and carries no `source_origin`, so these two rows
+    are a single node to the matcher: `find(a) == find(b)` holds before any
+    edge is considered and `assign_components` drops the candidate without ever
+    writing a decision. A node key that added `source_origin` would see two
+    distinct undecided nodes and warn about a pair no refresh can clear.
+
+    Staging keeps this out of production — `stg_tabular__transactions` and
+    `stg_ofx__transactions` both dedup on `(transaction_id, account_id)` with no
+    origin — so the fixture inserts into `prep.int_transactions__unioned`
+    directly. The check must still agree with the matcher on it: this pins the
+    two node keys together rather than relying on that staging behaviour.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(
+        doctor_db, stid="shared1", source_type="csv", source_origin="bank_a"
+    )
+    _insert_unioned_row(
+        doctor_db, stid="shared1", source_type="csv", source_origin="bank_b"
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
 def test_two_components_from_four_files_still_warn(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

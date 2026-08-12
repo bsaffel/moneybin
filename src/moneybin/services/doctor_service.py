@@ -2406,14 +2406,24 @@ class DoctorService:
                 ),
                 -- Both directions flattened: the matcher writes a pair once, in
                 -- whichever order the blocking join produced, so a row can be
-                -- spoken for from either column. Carries the full node identity
-                -- the matcher itself uses -- (account_id, source_type,
-                -- source_origin, source_transaction_id) -- because a
-                -- source-native id is unique only within its account. An
-                -- un-namespaced FITID reused by another account would otherwise
-                -- mark this row "already decided" and suppress the warning,
-                -- most likely on two accounts at one institution: precisely the
-                -- pair an account-link merge just joined.
+                -- spoken for from either column. Node identity is the matcher's
+                -- NodeKey exactly -- (source_type, source_transaction_id) keyed
+                -- per account, per assignment.py's _node_a/_node_b. The account
+                -- scoping is load-bearing: a source-native id is unique only
+                -- within its account, so an un-namespaced FITID reused by
+                -- another account would otherwise mark this row "already
+                -- decided" and suppress the warning, most likely on two
+                -- accounts at one institution -- precisely the pair an
+                -- account-link merge just joined.
+                --
+                -- source_origin is deliberately absent, because NodeKey omits
+                -- it: two rows alike on (source_type, source_transaction_id)
+                -- under one account ARE one node to the matcher, so
+                -- find(a) == find(b) and assign_components drops the candidate
+                -- without writing anything. Adding origin here would split that
+                -- single node in two and warn about a pair no refresh can
+                -- clear. Rejected pairs are the opposite case and keep origin
+                -- below -- get_rejected_pairs selects it on both sides.
                 -- Two kinds of decision suppress, at two different grains,
                 -- because the matcher treats them differently.
                 --
@@ -2437,24 +2447,24 @@ class DoctorService:
                 -- this mirrors, and on a transfer row account_id names only
                 -- side A anyway.
                 -- Live dedup edges, both directions, as opaque node keys.
-                -- chr(31) is the ASCII unit separator, which no source_type,
-                -- source_origin or source-native id contains -- so the
-                -- concatenation cannot alias two different triples onto one key.
+                -- chr(31) is the ASCII unit separator, which no source_type or
+                -- source-native id contains -- so the concatenation cannot
+                -- alias two different pairs onto one key.
                 dedup_edges AS (
                     SELECT account_id AS acct,
-                           source_type_a || chr(31) || source_origin_a
-                               || chr(31) || source_transaction_id_a AS n1,
-                           source_type_b || chr(31) || source_origin_b
-                               || chr(31) || source_transaction_id_b AS n2
+                           source_type_a || chr(31)
+                               || source_transaction_id_a AS n1,
+                           source_type_b || chr(31)
+                               || source_transaction_id_b AS n2
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup'
                       AND match_status IN ('accepted', 'pending')
                     UNION
                     SELECT account_id,
-                           source_type_b || chr(31) || source_origin_b
-                               || chr(31) || source_transaction_id_b,
-                           source_type_a || chr(31) || source_origin_a
-                               || chr(31) || source_transaction_id_a
+                           source_type_b || chr(31)
+                               || source_transaction_id_b,
+                           source_type_a || chr(31)
+                               || source_transaction_id_a
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup'
                       AND match_status IN ('accepted', 'pending')
@@ -2490,8 +2500,7 @@ class DoctorService:
                         t.account_id AS acct,
                         COALESCE(
                             cn.comp,
-                            t.source_type || chr(31) || t.source_origin
-                                || chr(31) || t.source_transaction_id
+                            t.source_type || chr(31) || t.source_transaction_id
                         ) AS comp,
                         t.source_type AS s_type,
                         t.source_origin AS s_origin,
@@ -2499,8 +2508,8 @@ class DoctorService:
                     FROM {INT_TRANSACTIONS_UNIONED.full_name} AS t
                     LEFT JOIN component AS cn
                       ON cn.acct = t.account_id
-                     AND cn.node = t.source_type || chr(31) || t.source_origin
-                                   || chr(31) || t.source_transaction_id
+                     AND cn.node = t.source_type || chr(31)
+                                   || t.source_transaction_id
                     WHERE t.source_file IS NOT NULL
                 ),
                 rejected_pairs AS (
@@ -2529,24 +2538,18 @@ class DoctorService:
                 resolved AS (
                     SELECT c.*,
                            COALESCE(
-                               ca.comp,
-                               c.type_a || chr(31) || c.origin_a
-                                   || chr(31) || c.id_a
+                               ca.comp, c.type_a || chr(31) || c.id_a
                            ) AS comp_a,
                            COALESCE(
-                               cb.comp,
-                               c.type_b || chr(31) || c.origin_b
-                                   || chr(31) || c.id_b
+                               cb.comp, c.type_b || chr(31) || c.id_b
                            ) AS comp_b
                     FROM candidates AS c
                     LEFT JOIN component AS ca
                       ON ca.acct = c.account_id
-                     AND ca.node = c.type_a || chr(31) || c.origin_a
-                                   || chr(31) || c.id_a
+                     AND ca.node = c.type_a || chr(31) || c.id_a
                     LEFT JOIN component AS cb
                       ON cb.acct = c.account_id
-                     AND cb.node = c.type_b || chr(31) || c.origin_b
-                                   || chr(31) || c.id_b
+                     AND cb.node = c.type_b || chr(31) || c.id_b
                 )
                 -- The two clauses below are assign_components' two skips, in
                 -- its own order (assignment.py). Both are component-grain, not
