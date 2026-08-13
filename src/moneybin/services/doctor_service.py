@@ -2450,6 +2450,15 @@ class DoctorService:
                 -- chr(31) is the ASCII unit separator, which no source_type or
                 -- source-native id contains -- so the concatenation cannot
                 -- alias two different pairs onto one key.
+                --
+                -- Pending counts here, unlike in the transfer retirement
+                -- (AccountLinksService), which asks accepted-only. This
+                -- invariant asks whether a pair has been *proposed*, and a
+                -- pending row is a proposal sitting in the review queue -- the
+                -- user has been told. The retirement asks what actually
+                -- collapsed in core, which the prep fold answers with accepted
+                -- alone. Both readings are correct for their question; do not
+                -- align them.
                 dedup_edges AS (
                     SELECT account_id AS acct,
                            source_type_a || chr(31)

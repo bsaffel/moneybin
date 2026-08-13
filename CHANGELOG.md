@@ -845,9 +845,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `fct_transactions` to `bridge_transfers`. Tier 4 already refuses to *propose*
   that shape; the merge now enforces the same rule against decisions that
   predate it — a dedup component is a leg of at most one accepted transfer,
-  earliest decision keeps it. Reversed, not deleted, and reported as
-  `rematch_transfers_retired` on both tools plus a CLI warning naming
-  `moneybin audit undo`, because the user accepted those transfers.
+  earliest decision keeps it. Only accepted dedup decisions count toward a
+  component: a pending one is an unreviewed proposal that leaves both rows
+  distinct in `core`, so it never retires a transfer. Reversed, not deleted,
+  and reported as `rematch_transfers_retired` on both tools plus a CLI warning
+  naming `moneybin audit undo`, because the user accepted those transfers.
 - **An accepted merge no longer strands the match decisions made under the old
   account, which could silently reverse a rejection.** Accepting a link
   re-points `app.account_links`, but a row in `app.match_decisions` stores the

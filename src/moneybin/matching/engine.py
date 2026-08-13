@@ -347,7 +347,7 @@ class TransactionMatcher:
                 (e["source_type_a"], e["source_transaction_id_a"], e["account_id"]),
                 (e["source_type_b"], e["source_transaction_id_b"], e["account_id"]),
             )
-            for e in get_active_dedup_edges(self._db)
+            for e in get_active_dedup_edges(self._db, statuses=("accepted", "pending"))
         ]
 
         # Exclude every non-primary member of each component from transfer

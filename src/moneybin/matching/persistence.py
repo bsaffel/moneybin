@@ -117,28 +117,40 @@ def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
 
 def get_active_dedup_edges(
     db: Database,
+    *,
+    statuses: tuple[MatchStatus, ...],
 ) -> list[dict[str, str]]:
-    """Return all active (accepted + pending, non-reversed) dedup edges.
+    """Return non-reversed dedup edges in the requested statuses.
 
     Each row carries the four fields needed to build UnionFind components:
     ``source_type_a``, ``source_transaction_id_a``, ``source_type_b``,
     ``source_transaction_id_b``, and ``account_id``.
 
-    Used by MatchingService.get_pending to compute component_key for pending
-    rows — the same component identity the prep fold uses for match_group_id.
+    ``statuses`` is required and has no default because the two answers mean
+    different things and picking the wrong one is not visible at the call site.
+    ``('accepted', 'pending')`` is the *prospective* graph — what the matcher
+    has proposed — and is what the engine seeds union-find with and what
+    ``MatchingService.get_pending`` clusters the review queue by. Only
+    ``('accepted',)`` describes what has actually collapsed: the prep fold
+    (``int_transactions__matched``) folds accepted rows alone, so a pending edge
+    leaves both source rows distinct in ``core``. Anything acting on rows that
+    really did merge — and especially anything destructive — asks for accepted
+    only.
     """
+    placeholders = ", ".join("?" for _ in statuses)
     rows = db.execute(
-        """
+        f"""
         SELECT source_type_a, source_transaction_id_a,
                source_type_b, source_transaction_id_b,
                account_id
         FROM app.match_decisions
         WHERE match_type = 'dedup'
-          AND match_status IN ('accepted', 'pending')
+          AND match_status IN ({placeholders})
           AND reversed_at IS NULL
         ORDER BY account_id, source_type_a, source_transaction_id_a,
                  source_type_b, source_transaction_id_b
-        """,  # noqa: S608 — no user-supplied values; all literals
+        """,  # noqa: S608 — placeholders only; every status is bound
+        list(statuses),
     ).fetchall()
     cols = (
         "source_type_a",

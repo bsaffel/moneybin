@@ -603,6 +603,18 @@ Guard-2 free-text resolution):
   own two legs share a component always goes; it is the transaction-level form
   of the collapse `repoint_account` already retires at account level.
 
+  Components here are built from **accepted dedup edges only**, which is
+  narrower than the accepted+pending graph the matcher seeds union-find with
+  and the review queue clusters by. Those two want the *prospective* shape —
+  what has been proposed. This one is the only caller acting on what actually
+  collapsed: `prep.int_transactions__matched` folds accepted rows alone, so a
+  pending edge leaves both source rows distinct in `core` and neither transfer
+  invalid yet. Reading the wider graph here would reverse a decision the user
+  made on the strength of a merge that has not happened, and may never — the
+  same unreviewed action this trigger exists to prevent. `get_active_dedup_edges`
+  therefore takes `statuses` with no default, so each caller states which graph
+  it means.
+
   The retirement is a **reversal, not a delete**, so the audit row survives and
   `system audit undo` restores it — and it is reported as
   `rematch_transfers_retired` in `data` on both tools, plus a CLI warning

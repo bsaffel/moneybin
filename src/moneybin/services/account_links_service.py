@@ -732,7 +732,13 @@ class AccountLinksService:
                 (e["source_type_a"], e["source_transaction_id_a"], e["account_id"]),
                 (e["source_type_b"], e["source_transaction_id_b"], e["account_id"]),
             )
-            for e in get_active_dedup_edges(self._db)
+            # Accepted only. A pending dedup row is an unreviewed proposal and
+            # the prep fold ignores it, so both source rows are still distinct
+            # transactions in core and neither transfer is invalid yet.
+            # Reversing one on that signal would undo a decision the user made
+            # on the strength of a merge that has not happened — and may never,
+            # if they reject the proposal.
+            for e in get_active_dedup_edges(self._db, statuses=("accepted",))
         ]
         component: dict[tuple[str, str, str], tuple[str, str, str]] = {}
         for members in connected_components(edges):

@@ -949,9 +949,20 @@ def _insert_transfer(
 
 
 def _insert_dedup(
-    db: Database, *, match_id: str, stid_a: str, stid_b: str, account_id: str
+    db: Database,
+    *,
+    match_id: str,
+    stid_a: str,
+    stid_b: str,
+    account_id: str,
+    status: str = "accepted",
 ) -> None:
-    """Seed one accepted dedup edge, which is what forms a component."""
+    """Seed one dedup edge; only an accepted one actually forms a component.
+
+    ``status`` is explicit because ``prep.int_transactions__matched`` folds
+    ``match_status = 'accepted'`` rows only — a pending dedup row is an
+    unreviewed proposal and both source rows stay distinct in ``core``.
+    """
     db.execute(
         """
         INSERT INTO app.match_decisions (
@@ -960,10 +971,10 @@ def _insert_dedup(
             account_id, confidence_score, match_signals, match_type, match_tier,
             account_id_b, match_status, match_reason, decided_by, decided_at
         ) VALUES (?, ?, 'ofx', 'bank', ?, 'csv', 'bank', ?, 0.95, '{}',
-                  'dedup', '3', NULL, 'accepted', NULL, 'auto',
+                  'dedup', '3', NULL, ?, NULL, 'auto',
                   CURRENT_TIMESTAMP)
         """,  # noqa: S608 — test input, not user data
-        [match_id, stid_a, stid_b, account_id],
+        [match_id, stid_a, stid_b, account_id, status],
     )
 
 
@@ -1026,6 +1037,61 @@ def test_dedup_collapsing_two_transfer_legs_retires_the_later_transfer(
     assert statuses["tx_drop00001"] == "reversed", (
         "the later transfer now names the same physical transaction as its "
         "debit leg, so it must not reach bridge_transfers"
+    )
+
+
+def test_a_pending_dedup_edge_retires_no_transfer(
+    svc: AccountLinksService, db: Database
+) -> None:
+    """The same fixture with the dedup edge left pending — nothing retires.
+
+    Differs from the test above by exactly one property: ``match_status`` on
+    the dedup row. A pending dedup decision is an unreviewed *proposal*;
+    ``prep.int_transactions__matched`` folds accepted rows only, so `ofx_p` and
+    `csv_c` are still two distinct transactions in ``core`` and neither
+    transfer is invalid yet. Retiring one here would reverse a decision the
+    user made on the strength of a proposal nobody confirmed — and the human
+    may go on to reject it.
+    """
+    _insert_transfer(
+        db,
+        match_id="tx_keep00001",
+        stid_a="ofx_p",
+        stid_b="ofx_x",
+        account_id=_CAND_A,
+        account_id_b=_PROV2,
+        decided_at="2026-01-01 00:00:00",
+    )
+    _insert_transfer(
+        db,
+        match_id="tx_keep00002",
+        stid_a="csv_c",
+        stid_b="ofx_y",
+        type_a="csv",
+        account_id=_CAND_A,
+        account_id_b=_PROV1,
+        decided_at="2026-02-01 00:00:00",
+    )
+    _insert_dedup(
+        db,
+        match_id="dd_1000000001",
+        stid_a="ofx_p",
+        stid_b="csv_c",
+        account_id=_CAND_A,
+        status="pending",
+    )
+
+    retired = svc.retire_transfers_invalidated_by_dedup()
+
+    assert retired == 0
+    statuses = dict(
+        db.execute(
+            "SELECT match_id, match_status FROM app.match_decisions "
+            "WHERE match_type = 'transfer'"
+        ).fetchall()
+    )
+    assert statuses == {"tx_keep00001": "accepted", "tx_keep00002": "accepted"}, (
+        "an unreviewed dedup proposal must not reverse an accepted transfer"
     )
 
 
