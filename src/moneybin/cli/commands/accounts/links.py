@@ -242,6 +242,16 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
                     "  💡 Review possible transfers with 'moneybin reviews' "
                     "(kind: matches)"
                 )
+    if rematch.transfers_retired:
+        # Independent of every branch above: this is a decision the *user* made
+        # being undone, so it must be stated whether or not the pass was
+        # otherwise clean, and it must name the way back.
+        logger.warning(
+            f"⚠️  Retired {rematch.transfers_retired} previously accepted "
+            "transfer(s) whose two sides turned out to be the same "
+            "transaction; inspect with 'moneybin audit' and restore with "
+            "'moneybin audit undo' if that was wrong"
+        )
     if rematch.error is not None:
         # The counts above are true — match decisions were written — but the
         # SQLMesh apply that follows them is what rebuilds core.dim_accounts,

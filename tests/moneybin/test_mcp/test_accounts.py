@@ -1625,6 +1625,45 @@ async def test_links_set_accept_reports_what_the_rematch_found(
     assert envelope.data.rematch_pending_review == 5
 
 
+async def test_links_set_accept_reports_a_retired_transfer_in_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reversal reaches ``data``, not only the ``actions[]`` prose.
+
+    Per ``mcp.md`` an agent reads ``data`` for structured facts and
+    ``actions[]`` for hints. A caller that checks the three count fields, finds
+    them clean, and never parses the prose would report the merge as clean over
+    a transfer of the user's that the pass just reversed — so the count has to
+    be a field, and the action string has to name the way back.
+    """
+    from moneybin.mcp.tools import accounts as accounts_module
+    from moneybin.services.refresh import RefreshResult
+
+    def _accepted(*_args: object, **_kw: object) -> RefreshResult:
+        return RefreshResult(applied=True, duration_seconds=0.0, transfers_retired=3)
+
+    def _verify(_binding: object) -> None:
+        return None
+
+    async def _granted(**_kw: object) -> object:
+        return SimpleNamespace(verify=_verify)
+
+    monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
+    monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+
+    envelope = await accounts_module.accounts_links_set(
+        decision_id="dec001",
+        action="accept",
+        target_account_id="CAND001",
+        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
+    )
+
+    assert envelope.data.rematch_transfers_retired == 3
+    assert any("undo" in a.lower() for a in envelope.actions), (
+        "an undone decision must carry its restore path"
+    )
+
+
 async def test_links_set_reject_reports_no_rematch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

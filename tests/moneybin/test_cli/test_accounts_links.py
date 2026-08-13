@@ -541,6 +541,43 @@ class TestLinksSet:
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_warns_when_the_pass_retired_an_accepted_transfer(
+        self,
+        mock_set: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An otherwise-clean pass that undid a decision the user made.
+
+        Every other counter reports what the pass *found*. This one reports
+        what it took away: a transfer the user had accepted, reversed because
+        deduplication made both of its sides the same physical transaction.
+        Riding along inside the ordinary "re-matched" line would bury it, so it
+        warns and names the route back.
+        """
+        from moneybin.services.refresh import RefreshResult
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set.return_value = RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            matches_auto_merged=1,
+            transfers_retired=2,
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dec001", "--into", "CAND001", "--yes"])
+
+        assert result.exit_code == 0
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("2" in m and "transfer" in m for m in warnings), (
+            "reversing a transfer the user accepted must warn, not ride along "
+            "under the match counts"
+        )
+        assert "undo" in caplog.text.lower(), "the user must be told how to restore it"
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
     def test_set_into_warns_about_both_failures_when_both_happened(
         self,
         mock_set: MagicMock,

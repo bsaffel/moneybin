@@ -834,6 +834,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   half-failed pass says so: matching and the rebuild fail independently, and
   either alone still leaves the merge unfinished in a way the user would
   otherwise have to discover for themselves.
+
+  The pass also retires transfers it invalidates. Deduplication is blocked on
+  `a.account_id = b.account_id`, so two rows each claimed as a transfer leg by a
+  *different* account can never be dedup candidates — until the merge makes
+  those accounts one, and neither dedup tier declines a row on the grounds that
+  a transfer already claims it. `core.bridge_transfers` resolves every leg
+  through the dedup mapping, so two surviving decisions would name the same
+  physical transaction and double-count it in anything joining
+  `fct_transactions` to `bridge_transfers`. Tier 4 already refuses to *propose*
+  that shape; the merge now enforces the same rule against decisions that
+  predate it — a dedup component is a leg of at most one accepted transfer,
+  earliest decision keeps it. Reversed, not deleted, and reported as
+  `rematch_transfers_retired` on both tools plus a CLI warning naming
+  `moneybin audit undo`, because the user accepted those transfers.
 - **An accepted merge no longer strands the match decisions made under the old
   account, which could silently reverse a rejection.** Accepting a link
   re-points `app.account_links`, but a row in `app.match_decisions` stores the

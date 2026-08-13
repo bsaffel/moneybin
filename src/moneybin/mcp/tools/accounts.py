@@ -712,12 +712,16 @@ async def accounts_links_set(
     Accepting also re-runs matching, because the merge is what makes the two
     sources' rows comparable at all — the matcher only pairs rows within one
     account. That pass auto-merges duplicates it is confident about and queues
-    the rest for review; `rematch_auto_merged` and `rematch_pending_review`
-    report both, and are null on a reject (no pass ran).
+    the rest for review; `rematch_auto_merged`, `rematch_pending_review` and
+    `rematch_pending_transfers` report all three, and are null on a reject (no
+    pass ran). `rematch_transfers_retired` counts transfers you had already
+    accepted that the pass reversed, because deduplication made both of their
+    sides the same physical transaction — check it before reporting the merge
+    as clean.
 
     Mutation surface: writes app.account_link_decisions + app.account_links, and
-    on an accept also app.match_decisions (the re-match pass) plus a rebuild of
-    core.* via SQLMesh.
+    on an accept also app.match_decisions (the re-match pass, including
+    reversing any transfer it invalidates) plus a rebuild of core.* via SQLMesh.
     Reverse with system_audit_undo(operation_id) — find the operation_id via
     system_audit. Find pending decisions with accounts_links_pending.
 
@@ -810,6 +814,9 @@ async def accounts_links_set(
             ),
             rematch_pending_transfers=(
                 None if rematch is None else rematch.matches_pending_transfers
+            ),
+            rematch_transfers_retired=(
+                None if rematch is None else rematch.transfers_retired
             ),
         ),
         actions=actions,

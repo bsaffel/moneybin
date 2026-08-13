@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import duckdb
@@ -39,6 +39,7 @@ from moneybin.tables import (
     ACCOUNT_LINKS,
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
+    MATCH_DECISIONS,
 )
 from moneybin.utils.parsing import signal_from_match_signals
 
@@ -679,4 +680,93 @@ class AccountLinksService:
             refresh,  # noqa: PLC0415 — cycle: refresh's identity step imports this module
         )
 
-        return refresh(self._db, steps=["match", "transform"])
+        result = refresh(self._db, steps=["match", "transform"])
+        return replace(
+            result, transfers_retired=self.retire_transfers_invalidated_by_dedup()
+        )
+
+    def retire_transfers_invalidated_by_dedup(self) -> int:
+        """Retire accepted transfers whose legs the dedup pass just collapsed.
+
+        Dedup blocking requires ``a.account_id = b.account_id``, so two rows
+        already claimed as transfer legs by *different* accounts can never be
+        dedup candidates of each other — until a merge makes those accounts
+        one. The pass above then runs immediately and can auto-merge them, and
+        both dedup tiers pass ``excluded_ids=None`` (``engine.run``), so dedup
+        never declines a row on the grounds that a transfer already claims it.
+
+        What that corrupts is ``core.bridge_transfers``, which resolves each
+        leg through the dedup mapping (``MAX(transaction_id)`` per group). Two
+        transfer decisions whose legs collapsed then name the same physical
+        transaction, and it is double-counted by everything joining
+        ``fct_transactions`` to ``bridge_transfers``. Tier 4 already refuses to
+        *propose* that shape — it excludes rows in active transfers and every
+        non-primary dedup member — but nothing revisited decisions made before
+        the merge. This is that missing direction, and it is why the check runs
+        after ``refresh`` rather than before.
+
+        The invariant enforced is Tier 4's own: **a dedup component is a leg of
+        at most one accepted transfer.** Decisions are walked earliest-decided
+        first, so the first claimant of a component keeps it and any later
+        decision reusing it is reversed; a transfer whose *own* two legs share a
+        component is impossible at any ordering and always goes. Reversal (not
+        deletion) leaves the row and its audit trail intact, so
+        ``system audit undo`` can restore it.
+
+        Deliberately global rather than scoped to the merged account: the
+        invariant is global, the batched path merges several accounts at once,
+        and a pre-existing violation is corrupt whichever merge exposed it. The
+        count is returned so the caller can report it — a silent retirement of a
+        decision the user accepted is exactly the unreviewed action this trigger
+        exists to prevent.
+        """
+        from moneybin.matching.assignment import (  # noqa: PLC0415 — cycle: matching imports services
+            connected_components,
+        )
+        from moneybin.matching.persistence import (  # noqa: PLC0415 — same cycle
+            get_active_dedup_edges,
+        )
+
+        edges = [
+            (
+                (e["source_type_a"], e["source_transaction_id_a"], e["account_id"]),
+                (e["source_type_b"], e["source_transaction_id_b"], e["account_id"]),
+            )
+            for e in get_active_dedup_edges(self._db)
+        ]
+        component: dict[tuple[str, str, str], tuple[str, str, str]] = {}
+        for members in connected_components(edges):
+            root = min(members)
+            for node in members:
+                component[node] = root
+
+        rows = self._db.execute(
+            f"""
+            SELECT match_id, source_type_a, source_transaction_id_a, account_id,
+                   source_type_b, source_transaction_id_b, account_id_b
+            FROM {MATCH_DECISIONS.full_name}
+            WHERE match_type = 'transfer' AND match_status = 'accepted'
+            ORDER BY decided_at, match_id
+            """  # noqa: S608 — TableRef constant, no interpolated values
+        ).fetchall()
+
+        repo = MatchDecisionsRepo(self._db)
+        claimed: set[tuple[str, str, str]] = set()
+        retired = 0
+        for match_id, type_a, stid_a, acct_a, type_b, stid_b, acct_b in rows:
+            node_a = (type_a, stid_a, acct_a)
+            # account_id_b is NULL on a same-account transfer; the leg still
+            # belongs to account_id, and reading NULL as a distinct account
+            # would put the two legs in different components and hide a
+            # genuine self-collapse.
+            node_b = (type_b, stid_b, acct_b if acct_b is not None else acct_a)
+            comp_a = component.get(node_a, node_a)
+            comp_b = component.get(node_b, node_b)
+            if comp_a != comp_b and comp_a not in claimed and comp_b not in claimed:
+                claimed.update((comp_a, comp_b))
+                continue
+            repo.reverse(match_id, reversed_by="system", actor=self._actor)
+            retired += 1
+        if retired:
+            logger.info(f"Retired {retired} transfer decision(s) invalidated by dedup")
+        return retired

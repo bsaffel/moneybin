@@ -106,6 +106,13 @@ class RefreshResult:
     # caller reporting "no duplicates" off those zeros would be inventing a
     # result. Expected on a first load, where the views postdate SQLMesh apply.
     matching_skipped: bool = False
+    # Accepted transfers reversed because the match step's dedup pass collapsed
+    # their legs. Never set by `refresh` itself — only the post-merge re-match
+    # revisits existing transfer decisions (see
+    # AccountLinksService.retire_transfers_invalidated_by_dedup), and it fills
+    # this in on the way out. Reported rather than left in the log: the user
+    # accepted those transfers.
+    transfers_retired: int = 0
     # tuple, not list: frozen=True blocks reassignment but not in-place
     # mutation of a list field — a tuple keeps the result carrier truly immutable.
     self_heal_actions: tuple[SelfHealRecord, ...] = field(default_factory=tuple)

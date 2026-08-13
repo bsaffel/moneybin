@@ -586,6 +586,33 @@ Guard-2 free-text resolution):
   `identity_links_decide` returns an apparently clean result over a silent
   auto-merge: the same invisibility, on the other seam.
 
+  **The pass retires transfers it invalidates.** Dedup blocking requires
+  `a.account_id = b.account_id`, so two rows each already claimed as a transfer
+  leg by a *different* account can never be dedup candidates of each other —
+  until this merge makes those accounts one. Neither dedup tier declines a row
+  because a transfer claims it (`engine.run` passes `excluded_ids=None` to
+  both), and `core.bridge_transfers` resolves every leg through the dedup
+  mapping (`MAX(transaction_id)` per group). Two decisions whose legs collapsed
+  would therefore name the same physical transaction, double-counting it in
+  anything joining `fct_transactions` to `bridge_transfers`. Tier 4 already
+  refuses to *propose* that shape — it excludes rows in active transfers and
+  every non-primary dedup member — but nothing revisited decisions made before
+  the merge, so `rematch_after_merge()` enforces the same rule in the missing
+  direction: **a dedup component is a leg of at most one accepted transfer**,
+  walked earliest-decided first so the first claimant keeps it. A transfer whose
+  own two legs share a component always goes; it is the transaction-level form
+  of the collapse `repoint_account` already retires at account level.
+
+  The retirement is a **reversal, not a delete**, so the audit row survives and
+  `system audit undo` restores it — and it is reported as
+  `rematch_transfers_retired` in `data` on both tools, plus a CLI warning
+  naming the undo path. That disclosure is not optional: every other counter
+  reports what the pass *found*, while this one reports a decision of the
+  user's that it *undid*. It is deliberately global rather than scoped to the
+  merged account, because the invariant is global, the batched path merges
+  several accounts at once, and a pre-existing violation is corrupt whichever
+  merge exposed it.
+
   A **partially failed pass reports as partial**, and the two halves fail
   independently. `RefreshResult.matching_error` means no duplicates were
   proposed at all. `RefreshResult.error` means matching succeeded — the

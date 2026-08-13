@@ -66,4 +66,15 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
             f"The merge's pass raised {rematch.matches_pending_transfers} "
             "possible transfer(s) — review with reviews(kind='matches')"
         )
+    if rematch.transfers_retired:
+        # The user accepted these. Deduplication made each one name a physical
+        # transaction another accepted transfer already claims, which
+        # bridge_transfers would double-count — but the caller has to be told a
+        # decision of theirs was undone, and how to put it back.
+        actions.append(
+            f"The merge's pass retired {rematch.transfers_retired} previously "
+            "accepted transfer(s) whose two sides turned out to be the same "
+            "transaction — inspect with system_audit(), restore with "
+            "system_audit_undo() if that was wrong"
+        )
     return actions

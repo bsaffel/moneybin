@@ -344,6 +344,11 @@ class AccountLinksSetPayload:
     # candidates. Omitting them would let an accept queue transfer proposals
     # the response never mentions.
     rematch_pending_transfers: Annotated[int | None, DataClass.AGGREGATE] = None
+    # Transfers the user had already accepted that the pass reversed, because
+    # dedup made both sides the same physical transaction. In `data`, not only
+    # in `actions[]`: a caller reading the counts alone would otherwise never
+    # learn a decision of theirs was undone.
+    rematch_transfers_retired: Annotated[int | None, DataClass.AGGREGATE] = None
 
 
 @dataclass(frozen=True, slots=True)

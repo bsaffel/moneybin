@@ -1184,12 +1184,15 @@ async def identity_links_decide_coarse(
     duplicates it is confident about and queues the rest; `rematch_auto_merged`,
     `rematch_pending_review`, and `rematch_pending_transfers` report it, and are
     null when the batch held no accept (no pass ran).
+    `rematch_transfers_retired` counts transfers the user had already accepted
+    that the pass reversed, because deduplication made both of their sides the
+    same physical transaction — check it before reporting the batch as clean.
 
     Mutation surface: writes app.account_link_decisions + app.account_links,
     app.merchant_links, app.security_links, and on an account accept also
-    app.match_decisions (both the re-key onto the surviving account and the
-    re-match pass) plus a rebuild of core.* via SQLMesh. Reverse with
-    system_audit_undo(operation_id).
+    app.match_decisions (the re-key onto the surviving account, the re-match
+    pass, and reversing any transfer it invalidates) plus a rebuild of core.*
+    via SQLMesh. Reverse with system_audit_undo(operation_id).
     """
     preview = await asyncio.to_thread(_preview_identity_decisions, decisions)
     plan = preview.plan
@@ -1254,6 +1257,9 @@ async def identity_links_decide_coarse(
             ),
             rematch_pending_transfers=(
                 None if rematch is None else rematch.matches_pending_transfers
+            ),
+            rematch_transfers_retired=(
+                None if rematch is None else rematch.transfers_retired
             ),
         ),
         actions=actions,
