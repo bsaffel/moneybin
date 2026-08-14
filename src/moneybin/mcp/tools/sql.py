@@ -18,7 +18,7 @@ from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, get_max_rows, tier_to_sensitivity
-from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS, execute_sql_query
+from moneybin.privacy.sql_query import execute_sql_query
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -183,22 +183,32 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
 
 
 def _exists_but_uncurated(table: str) -> bool:
-    """Report whether ``table`` is a live queryable relation with no curated entry."""
-    schema, _, _name = table.partition(".")
-    if schema not in ALLOWED_QUERY_SCHEMAS:
+    """Report whether ``table`` is a live queryable relation with no curated entry.
+
+    Raises ``sql_schema_not_allowed`` for a name under a schema `sql_query`
+    refuses, because `build_live_catalog` is the one gate that decides which
+    schemas are readable. Spelling that test a second time here is what let
+    `'meta.model_freshness'` answer "unknown table" while `'meta.*'` refused
+    it — one question, two answers, and the first sends the agent off to
+    correct a name that was never wrong.
+
+    An unqualified name carries no schema to refuse, so it stays unknown.
+    """
+    schema, dot, _name = table.partition(".")
+    if not dot:
         return False
     return any(r["name"] == table for r in build_live_catalog(schema=schema))
 
 
 def _live_schema_listing(schema: str) -> ResponseEnvelope[Any]:
-    """Return every queryable relation in one schema as names and kinds."""
-    try:
-        relations = build_live_catalog(schema=schema)
-    except UserError as exc:
-        return build_error_envelope(error=exc, sensitivity="low")
+    """Return every queryable relation in one schema as names and kinds.
 
+    A disallowed schema propagates `build_live_catalog`'s ``UserError`` to the
+    `@mcp_tool` decorator, which builds the identical low-sensitivity envelope
+    — the same path `sql_query` uses for the same refusal.
+    """
     return build_envelope(
-        data={"schema": schema, "tables": relations},
+        data={"schema": schema, "tables": build_live_catalog(schema=schema)},
         sensitivity="low",
         classes_returned=["aggregate"],
         actions=[

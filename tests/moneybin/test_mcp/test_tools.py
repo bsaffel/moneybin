@@ -200,6 +200,42 @@ class TestToolRegistration:
         assert parsed["error"]["code"] == "sql_schema_not_allowed"
 
     @pytest.mark.unit
+    async def test_sql_schema_answers_one_schema_question_one_way(
+        self, mcp_db: object
+    ) -> None:
+        """Both spellings of "is this schema queryable" must answer alike.
+
+        `meta.*` refuses with `sql_schema_not_allowed`; an exact name under
+        the same schema used to fall through to `sql_unknown_table` plus a
+        list of curated names, which reads as a typo the agent should fix.
+        The table is not unknown — the schema is fenced, and no spelling of
+        the name gets in.
+        """
+        wildcard = await sql_schema(table="meta.*")
+        exact = await sql_schema(table="meta.model_freshness")
+        assert exact.to_dict()["status"] == "error"
+        assert (
+            exact.to_dict()["error"]["code"]
+            == wildcard.to_dict()["error"]["code"]
+            == "sql_schema_not_allowed"
+        )
+
+    @pytest.mark.unit
+    async def test_sql_schema_unqualified_name_is_unknown_not_refused(
+        self, mcp_db: object
+    ) -> None:
+        """A bare name names no schema, so it is a typo — not a fenced schema.
+
+        The refusal above keys on the schema qualifier, so a name without one
+        must not borrow it: `fct_transactions` is a caller who forgot `core.`,
+        and the recovery is the available-table list, not "that schema is
+        internal."
+        """
+        parsed = (await sql_schema(table="fct_transactions")).to_dict()
+        assert parsed["error"]["code"] == "sql_unknown_table"
+        assert "core.fct_transactions" in parsed["error"]["details"]["available_tables"]
+
+    @pytest.mark.unit
     async def test_sql_schema_does_not_call_a_queryable_table_unknown(
         self, mcp_db: object
     ) -> None:
