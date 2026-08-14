@@ -6,9 +6,10 @@ query history (``get_import_history``), and check for prior imports of a
 source file (``find_existing_import``).
 
 The module is also the single source of truth for which raw tables a given
-source_type populates — see ``REVERT_TABLES`` below. ``ImportService.revert``
-(see ``moneybin/services/import_service.py``) consults this allowlist; the
-revert operation itself lives on the service, not here.
+source_type populates — see ``REVERT_TABLES`` below.
+``ImportService.revert_confirmed`` (see
+``moneybin/services/import_service.py``) consults this allowlist; the revert
+operation itself lives on the service, not here.
 """
 
 import json
@@ -55,7 +56,8 @@ _IMPORT_HISTORY_COLUMNS = [
 
 
 # Allowlist mapping source_type → raw tables that carry rows for that type.
-# ImportService.revert() consults this to know what to delete. Adding a new
+# ImportService.plan_revert()/revert_confirmed() consult this to know what to
+# count and delete. Adding a new
 # format means adding an entry here AND ensuring those tables have an
 # import_id column.
 _TABULAR_RAW_TABLES = [TABULAR_TRANSACTIONS, TABULAR_ACCOUNTS]

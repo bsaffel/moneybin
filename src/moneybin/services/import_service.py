@@ -319,6 +319,54 @@ class SavedFormatDeletePlan:
         return {"saved_formats": 1}
 
 
+ImportRevertOutcome = Literal[
+    "revertable",
+    "not_found",
+    "already_reverted",
+    "unsupported",
+    "superseded",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ImportRevertPlan:
+    """Exact live state bound to one import reversion approval.
+
+    Non-revertable outcomes are plans too, so a batch that flips state between
+    approval and commit changes the binding rather than slipping past it.
+    """
+
+    import_id: str
+    outcome: ImportRevertOutcome
+    reason: str | None = None
+    source_type: str | None = None
+    source_origin: str | None = None
+    table_counts: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def revertable(self) -> bool:
+        """Return whether this plan would actually delete or flip anything."""
+        return self.outcome == "revertable"
+
+    @property
+    def rows_to_delete(self) -> int:
+        """Return the total raw rows this reversion would destroy."""
+        return sum(count for _, count in self.table_counts)
+
+    @property
+    def blast_radius(self) -> dict[str, int]:
+        """Return the per-table destructive impact for confirmation metadata."""
+        radius = dict(self.table_counts)
+        radius["total_rows"] = self.rows_to_delete
+        return radius
+
+    def as_result(self) -> dict[str, str | int]:
+        """Return the legacy non-revertable response for this outcome."""
+        if self.reason is None:
+            return {"status": self.outcome}
+        return {"status": self.outcome, "reason": self.reason}
+
+
 @dataclass(frozen=True)
 class PerFileResult:
     """One file's outcome inside a batch import.
@@ -5486,24 +5534,15 @@ class ImportService:
             raise
         return event.operation_id
 
-    def revert(self, import_id: str) -> dict[str, str | int]:
-        """Revert an import batch by deleting its raw rows and flipping status.
+    def plan_revert(self, import_id: str) -> ImportRevertPlan:
+        """Return the exact live state bound to one import reversion.
 
-        Looks up source_type from raw.import_log to determine which tables to
-        delete from (via the ``REVERT_TABLES`` allowlist). Updates status to
-        'reverted'.
+        Read-only. The four non-revertable outcomes are plans too, so a batch
+        whose state flips between approval and commit changes the confirmation
+        binding instead of slipping past it.
 
         Args:
             import_id: UUID of the import batch in ``raw.import_log``.
-
-        Returns:
-            ``{'status': 'reverted', 'rows_deleted': N}`` on success.
-            ``{'status': 'not_found', 'reason': ...}`` if import_id doesn't exist.
-            ``{'status': 'already_reverted'}`` if already reverted.
-            ``{'status': 'unsupported', 'reason': ...}`` if the source_type is
-            not in the revert allowlist.
-            ``{'status': 'superseded', 'reason': ...}`` if a later import for
-            the same source_file already overwrote the rows.
         """
         # REVERT_TABLES is owned by import_log because begin_import also consults it.
         from moneybin.loaders.import_log import REVERT_TABLES  # noqa: PLC0415
@@ -5516,34 +5555,37 @@ class ImportService:
         ).fetchone()
 
         if row is None:
-            return {"status": "not_found", "reason": f"No import with ID {import_id}"}
+            return ImportRevertPlan(
+                import_id=import_id,
+                outcome="not_found",
+                reason=f"No import with ID {import_id}",
+            )
 
         src_type, status, source_file, started_at, source_origin = row
 
         if status == "reverted":
-            return {"status": "already_reverted"}
+            return ImportRevertPlan(import_id=import_id, outcome="already_reverted")
 
         if src_type not in REVERT_TABLES:
-            return {
-                "status": "unsupported",
-                "reason": f"Cannot revert source_type {src_type!r}",
-            }
+            return ImportRevertPlan(
+                import_id=import_id,
+                outcome="unsupported",
+                reason=f"Cannot revert source_type {src_type!r}",
+                source_type=src_type,
+            )
 
-        tables = REVERT_TABLES[src_type]
-
-        # Sum across every table the source_type populates. OFX statements with
-        # zero transactions but populated accounts/balances must still be
-        # detectable as live (not superseded) and reportable in rows_deleted.
-        rows_to_delete = 0
-        for table in tables:
+        # Count every table the source_type populates. OFX statements with zero
+        # transactions but populated accounts/balances must still be detectable
+        # as live (not superseded) and reportable in rows_deleted.
+        table_counts: list[tuple[str, int]] = []
+        for table in REVERT_TABLES[src_type]:
             result = self._db.execute(
                 f"SELECT COUNT(*) FROM {table.full_name} WHERE import_id = ?",
                 [import_id],
             ).fetchone()
-            if result:
-                rows_to_delete += result[0]
+            table_counts.append((table.full_name, int(result[0]) if result else 0))
 
-        if rows_to_delete == 0:
+        if sum(count for _, count in table_counts) == 0:
             # If a later import upserted over this one's rows, surface that
             # instead of a silent no-op revert.
             reimport_row = self._db.execute(
@@ -5561,34 +5603,69 @@ class ImportService:
             ).fetchone()
             if reimport_row:
                 newer_id = reimport_row[0]
-                return {
-                    "status": "superseded",
-                    "reason": (
+                return ImportRevertPlan(
+                    import_id=import_id,
+                    outcome="superseded",
+                    reason=(
                         f"File was re-imported as {newer_id[:8]}...; "
                         f"revert that batch to remove the data."
                     ),
-                }
+                    source_type=src_type,
+                )
+
+        return ImportRevertPlan(
+            import_id=import_id,
+            outcome="revertable",
+            source_type=src_type,
+            source_origin=source_origin,
+            table_counts=tuple(table_counts),
+        )
+
+    def revert_confirmed(
+        self,
+        import_id: str,
+        *,
+        verify: Callable[[ImportRevertPlan], None],
+    ) -> dict[str, str | int]:
+        """Revalidate and revert one import batch in the same transaction.
+
+        ``verify`` re-checks the caller's approval against the live plan read
+        *inside* the write transaction, immediately before the first delete, so
+        approval can never be applied to state it did not describe.
+
+        Returns:
+            ``{'status': 'reverted', 'rows_deleted': N}`` on success, else the
+            live non-revertable outcome.
+        """
+        from moneybin.loaders.import_log import REVERT_TABLES  # noqa: PLC0415
+        from moneybin.tables import IMPORT_LOG  # noqa: PLC0415
 
         self._db.begin()
         try:
-            for table in tables:
+            live = self.plan_revert(import_id)
+            verify(live)
+            if live.revertable:
+                for table in REVERT_TABLES[cast(str, live.source_type)]:
+                    self._db.execute(
+                        f"DELETE FROM {table.full_name} WHERE import_id = ?",
+                        [import_id],
+                    )
                 self._db.execute(
-                    f"DELETE FROM {table.full_name} WHERE import_id = ?",
+                    f"""
+                    UPDATE {IMPORT_LOG.full_name} SET
+                        status = 'reverted',
+                        reverted_at = CURRENT_TIMESTAMP
+                    WHERE import_id = ?
+                    """,
                     [import_id],
                 )
-            self._db.execute(
-                f"""
-                UPDATE {IMPORT_LOG.full_name} SET
-                    status = 'reverted',
-                    reverted_at = CURRENT_TIMESTAMP
-                WHERE import_id = ?
-                """,
-                [import_id],
-            )
             self._db.commit()
-        except Exception:
+        except BaseException:
             self._db.rollback()
             raise
+
+        if not live.revertable:
+            return live.as_result()
 
         # Drop the auto-generated raw.pdf_<alias> view after row deletion
         # succeeds. DDL is autocommit in DuckDB (cannot be inside the transaction),
@@ -5600,19 +5677,19 @@ class ImportService:
         # every row of identical content; a sibling import's log entry can be
         # 'complete' while holding zero rows, so the preserved view may be
         # legitimately empty after this revert.
-        if src_type == "pdf" and source_origin:
+        if live.source_type == "pdf" and live.source_origin:
             other_row = self._db.execute(
                 f"SELECT COUNT(*) FROM {IMPORT_LOG.full_name} "
                 f"WHERE source_type = 'pdf' AND source_origin = ? "
                 f"AND status = 'complete' AND import_id != ?",
-                [source_origin, import_id],
+                [live.source_origin, import_id],
             ).fetchone()
             if other_row is not None and other_row[0] == 0:
                 from sqlglot import exp  # noqa: PLC0415
 
-                safe_view = exp.to_identifier(f"pdf_{source_origin}", quoted=True).sql(
-                    "duckdb"
-                )
+                safe_view = exp.to_identifier(
+                    f"pdf_{live.source_origin}", quoted=True
+                ).sql("duckdb")
                 # DDL runs post-commit (DuckDB autocommits DDL outside the
                 # transaction). The rows are already gone and import_log is
                 # already 'reverted', so a catalog error here would orphan
@@ -5629,9 +5706,9 @@ class ImportService:
                     )
 
         logger.info(
-            f"Reverted import {import_id[:8]}...: {rows_to_delete} rows deleted"
+            f"Reverted import {import_id[:8]}...: {live.rows_to_delete} rows deleted"
         )
-        return {"status": "reverted", "rows_deleted": rows_to_delete}
+        return {"status": "reverted", "rows_deleted": live.rows_to_delete}
 
     # ------------------------------------------------------------------
     # Import labels (spec Req 22–24).

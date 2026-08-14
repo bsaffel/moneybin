@@ -71,6 +71,10 @@ async def test_import_workflow_registrar_preserves_seven_trust_boundaries() -> N
     assert "saved format" in (revert.description or "").lower()
     assert "confirmation" in (revert.description or "").lower()
     assert "system_audit_undo" in (revert.description or "")
+    # Reversion has no undo counterpart, so the description must say so against
+    # its own branch — a recoverability clause that reads as covering the whole
+    # tool is what led an agent to revert 14 batches expecting them recoverable.
+    assert "permanent — no revert" in (revert.description or "")
     assert "confirmation_token" in revert.parameters["properties"]
     confirm = next(tool for tool in tools if tool.name == "import_confirm")
     assert "confirmation_token" in confirm.parameters["properties"]
@@ -149,7 +153,7 @@ async def test_import_revert_coarse_preserves_error_recovery(
     monkeypatch.setattr(
         import_tools_module,
         "import_revert",
-        MagicMock(return_value=response),
+        AsyncMock(return_value=response),
     )
 
     result = await import_revert_coarse(import_id="imp_accepted")
@@ -351,6 +355,224 @@ async def test_import_revert_refuses_builtin_format_deletion(mcp_db: Path) -> No
     ).to_dict()
 
     assert result["error"]["code"] == "import_saved_format_builtin_immutable"
+
+
+def _seed_revertable_import(*, rows: int = 2) -> str:
+    """Create one complete tabular import holding ``rows`` revertable raw rows."""
+    from moneybin.database import get_database
+    from moneybin.loaders import import_log
+
+    source_file = "/tmp/revert_gate.csv"  # noqa: S108  # test fixture path
+    with get_database(read_only=False) as db:
+        import_id = import_log.begin_import(
+            db,
+            source_file=source_file,
+            source_type="csv",
+            source_origin="tiller",
+            account_names=["checking"],
+        )
+        for index in range(rows):
+            db.execute(
+                """
+                INSERT INTO raw.tabular_transactions (
+                    transaction_id, account_id, transaction_date, amount,
+                    description, source_file, source_type, source_origin,
+                    import_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    f"csv_gate_{index}",
+                    "checking",
+                    "2026-01-01",
+                    "-10.00",
+                    "Coffee",
+                    source_file,
+                    "csv",
+                    "tiller",
+                    import_id,
+                ],
+            )
+        import_log.finalize_import(
+            db, import_id, status="complete", rows_total=rows, rows_imported=rows
+        )
+    return import_id
+
+
+def _supports_elicitation(_context: object) -> bool:
+    return True
+
+
+def _append_raw_row(import_id: str, *, index: int) -> None:
+    """Add one more raw row to an existing import, widening its blast radius."""
+    from moneybin.database import get_database
+
+    source_file = "/tmp/revert_gate.csv"  # noqa: S108  # test fixture path
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO raw.tabular_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                description, source_file, source_type, source_origin, import_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                f"csv_gate_{index}",
+                "checking",
+                "2026-01-02",
+                "-25.00",
+                "Late arrival",
+                source_file,
+                "csv",
+                "tiller",
+                import_id,
+            ],
+        )
+
+
+def _surviving_raw_rows(import_id: str) -> int:
+    from moneybin.database import get_database
+
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT COUNT(*) FROM raw.tabular_transactions WHERE import_id = ?",
+            [import_id],
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+async def test_import_revert_requires_confirmation_before_deleting_raw_rows(
+    mcp_db: Path,
+) -> None:
+    """The first no-token revert call must propose, never destroy raw rows."""
+    import_id = _seed_revertable_import(rows=2)
+
+    required = await import_revert_coarse(
+        operation="revert_import",
+        import_id=import_id,
+    )
+
+    assert required.error is not None
+    assert required.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    assert _surviving_raw_rows(import_id) == 2
+
+
+async def test_import_revert_deletes_raw_rows_once_confirmed(mcp_db: Path) -> None:
+    """The opaque-token round trip a degraded client uses does revert."""
+    import_id = _seed_revertable_import(rows=3)
+
+    required = await import_revert_coarse(
+        operation="revert_import",
+        import_id=import_id,
+    )
+
+    assert required.error is not None
+    assert required.error.details is not None
+    assert required.error.details["operation_kind"] == "import_revert"
+    blast_radius = cast(dict[str, int], required.error.details["blast_radius"])
+    assert blast_radius["total_rows"] == 3
+    assert blast_radius["raw.tabular_transactions"] == 3
+
+    result = await import_revert_coarse(
+        operation="revert_import",
+        import_id=import_id,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert result.error is None
+    assert result.data.status == "reverted"
+    assert result.data.rows_deleted == 3
+    assert _surviving_raw_rows(import_id) == 0
+
+
+async def test_import_revert_refuses_a_token_bound_to_stale_row_counts(
+    mcp_db: Path,
+) -> None:
+    """A row arriving after approval widens the blast radius, so the token dies."""
+    import_id = _seed_revertable_import(rows=2)
+    required = await import_revert_coarse(
+        operation="revert_import",
+        import_id=import_id,
+    )
+    assert required.error is not None
+    assert required.error.details is not None
+
+    _append_raw_row(import_id, index=99)
+
+    result = await import_revert_coarse(
+        operation="revert_import",
+        import_id=import_id,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert result.error is not None
+    assert result.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert _surviving_raw_rows(import_id) == 3
+
+
+async def test_import_revert_confirms_inline_when_the_client_can_elicit(
+    mcp_db: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """An elicitation-capable client confirms in one round trip, minting no token."""
+    from fastmcp.server.elicitation import AcceptedElicitation
+
+    import_id = _seed_revertable_import(rows=1)
+    ctx = SimpleNamespace(
+        elicit=AsyncMock(return_value=AcceptedElicitation(data=True)),
+    )
+    monkeypatch.setattr("moneybin.mcp.confirmation._active_context", lambda: ctx)
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation",
+        _supports_elicitation,
+    )
+
+    result = await import_revert_coarse(
+        operation="revert_import",
+        import_id=import_id,
+    )
+
+    assert result.error is None
+    assert result.data.rows_deleted == 1
+    assert _surviving_raw_rows(import_id) == 0
+    assert "cannot be undone" in ctx.elicit.await_args.args[0]
+
+
+async def test_import_revert_declined_elicitation_keeps_every_row(
+    mcp_db: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Answering the prompt with false must leave the batch untouched."""
+    from fastmcp.server.elicitation import AcceptedElicitation
+
+    import_id = _seed_revertable_import(rows=2)
+    ctx = SimpleNamespace(
+        elicit=AsyncMock(return_value=AcceptedElicitation(data=False)),
+    )
+    monkeypatch.setattr("moneybin.mcp.confirmation._active_context", lambda: ctx)
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation",
+        _supports_elicitation,
+    )
+
+    result = await import_revert_coarse(
+        operation="revert_import",
+        import_id=import_id,
+    )
+
+    assert result.error is not None
+    assert result.error.code == error_codes.MUTATION_CONFIRMATION_DECLINED
+    assert _surviving_raw_rows(import_id) == 2
+
+
+async def test_import_revert_does_not_confirm_a_no_op(mcp_db: Path) -> None:
+    """An unknown batch deletes nothing, so it must not raise a prompt."""
+    result = await import_revert_coarse(
+        operation="revert_import",
+        import_id="00000000-0000-0000-0000-000000000000",
+    )
+
+    assert result.error is not None
+    assert result.error.code == error_codes.IMPORT_REVERT_NOT_FOUND
 
 
 def _issue_coarse_preview(

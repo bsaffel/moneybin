@@ -2268,20 +2268,33 @@ def import_revert(
     """
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
-    from moneybin.services.import_service import ImportService
+    from moneybin.services.import_service import ImportRevertPlan, ImportService
 
-    if not yes:
+    with handle_cli_errors():
+        with get_database(read_only=True) as db:
+            plan = ImportService(db).plan_revert(import_id)
+
+    if plan.revertable and not yes:
         confirmed = typer.confirm(
-            f"Revert import {import_id[:8]}...? This will delete all rows from "
-            f"this batch and cannot be undone."
+            f"Revert import {import_id[:8]}...? This permanently deletes "
+            f"{plan.rows_to_delete} row(s) from this batch and cannot be undone."
         )
         if not confirmed:
             logger.info("Revert cancelled")
             raise typer.Exit(0)
 
+    def _verify(live: ImportRevertPlan) -> None:
+        """Refuse if the batch changed between the prompt and the delete."""
+        if live != plan:
+            raise UserError(
+                "Import state changed while the confirmation was pending; "
+                "nothing was deleted. Re-run to see the current plan.",
+                code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+            )
+
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            result = ImportService(db).revert(import_id)
+            result = ImportService(db).revert_confirmed(import_id, verify=_verify)
 
     status = result.get("status")
     if status == "not_found":

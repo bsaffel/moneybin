@@ -1,5 +1,5 @@
 {
-  "sha256": "d4cc3967a261055db1ab5b830e733dc852751ec11f056fe77c6c4ca64f8fa773",
+  "sha256": "db2b14b59135a3f3e5dcaeb64617dd93a26d44b3ff3f21e58a9b65c96a034ec4",
   "tool_count": 49,
   "tools": [
     {
@@ -1773,7 +1773,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Revert one completed import or delete one user-saved format. Import reversion permanently removes its raw rows; saved-format deletion writes app.tabular_formats, requires exact payload-bound confirmation, and is recoverable with system_audit_undo.",
+        "description": "Revert one completed import or delete one user-saved format. Both branches require exact payload-bound confirmation. Import reversion deletes that batch's rows from raw.tabular_*/raw.ofx_* and flips raw.import_log to 'reverted': permanent \u2014 no revert, and no system_audit_undo counterpart. Saved-format deletion writes app.tabular_formats and is recoverable with system_audit_undo.",
         "inputSchema": {
           "additionalProperties": false,
           "allOf": [
@@ -1901,12 +1901,12 @@
         },
         "name": "import_revert"
       },
-      "description_bytes": 247,
+      "description_bytes": 383,
       "input_schema_bytes": 916,
       "name": "import_revert",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 1355
+      "total_bytes": 1494
     },
     {
       "annotation_bytes": 89,
@@ -5027,5 +5027,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 55341
+  "total_bytes": 55480
 }
