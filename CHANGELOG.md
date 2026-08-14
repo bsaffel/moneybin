@@ -1235,7 +1235,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   update.
 
 ### Security
-- **An unanswered confirmation prompt no longer mints a redeemable token.**
+- **An unanswered confirmation prompt no longer mints a redeemable token
+  (#389).**
   `grant_confirmation_or_raise` waited `elicitation_wait_seconds` (120 by
   default) for a human and then issued an opaque confirmation token, which is
   returned to the caller — so ignoring a destructive prompt for two minutes
