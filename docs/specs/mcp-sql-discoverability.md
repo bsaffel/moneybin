@@ -24,6 +24,7 @@ Existing assets this design builds on:
 
 1. The LLM connected via MCP can discover, in one resource read, every table it should query, including: schema-qualified name, table purpose, every column with type and prose comment, and 2-3 representative example queries per table.
 2. Only the curated **interface tables** appear in the resource. `raw` and `prep` stay out of it — `sql_query` reads them, but an agent finds them by catalog query rather than from the resource. `sql_query` refuses `meta` and `seeds` outright, `DESCRIBE` included; `SHOW ALL TABLES` still lists their shape, because it names no table for the gate to resolve.
+   1. The **tool** path additionally answers "what else can I query?" directly: `sql_schema(table='<schema>.*')` lists one schema's live relations as names, `kind`, and a `curated` flag. It is bounded by `ALLOWED_QUERY_SCHEMAS`, so listing can never exceed querying and never reaches `meta` or `seeds` — a strict narrowing of the `SHOW ALL TABLES` route the footer still names. The resource stays curated-only; this is a tool projection, not a resource one.
 3. The interface-table set is declared **once**, at the `TableRef` definition site in `tables.py`. There is no parallel list to keep in sync.
 4. The resource includes a "beyond the interface" footer that names the other schemas with one-line purposes and provides a catalog query so a power user (or the LLM, when explicitly asked) can spelunk further without consulting external docs. **That query must pass `sql_query`'s own schema gate**, since the footer is served only on the agent path: a `duckdb_tables()` / `duckdb_views()` SELECT is refused, because a table-valued function parses to a table node with an empty schema and an empty name that the gate can never resolve to an allowed schema. `SHOW ALL TABLES` names no table, passes, and lists views — which is what matters, since every `prep` model and every runtime-minted `raw.gsheet_<alias>` / `raw.pdf_<alias>` seed view is a view.
 5. The `sql_query` tool description includes a one-line pointer to the resource, as a fallback for clients that do not auto-load resources.
@@ -141,7 +142,7 @@ Key choices:
 - **Single bundled resource, not per-table resources.** Total payload is ~2-4K tokens for ~9 tables / ~95 columns. One fetch covers every subsequent query in the session; per-table would force the LLM to repeatedly fetch `fct_transactions` (used in most queries) plus a second table per join.
 - **JSON, not Markdown.** Structured output remains sliceable by clients. The current `sql_schema(table="core.fct_transactions")` call returns one table, while `sql_schema(table="*")` returns the full document.
 - **Drift coverage.** Two tests address two drift modes: a presence assertion catches stale `INTERFACE_TABLES` entries; an example-execution test catches column renames that examples missed. The "forgot to add a new interface table" case is not mechanically catchable — it relies on convention (a comment near the top of `tables.py`).
-- **Power-user path is `sql_query(query="...")` against the catalog**, not another resource.
+- **Power-user path is `sql_schema(table='<schema>.*')` or `sql_query(query="...")` against the catalog**, not another resource. The listing projection was added because the two sets — what `sql_query` may read (`ALLOWED_QUERY_SCHEMAS`) and what the curated doc describes (the `audience="interface"` `TableRef`s, 35 of 93) — are different, and nothing on the surface said so. An agent that asked `sql_schema` for a queryable-but-uncurated table got `sql_unknown_table`, which is a false negative: it steers toward fixing the name rather than toward `DESCRIBE`. The listing plus the `sql_table_not_curated` code close that.
 - **Sensitivity is `low`.** Schema metadata — table names, column names, structural comments — is not PII. No consent gate; audit log entry on each read like other resources.
 
 ## CLI Interface
@@ -161,6 +162,7 @@ None. The schema doc is consumed by the MCP layer. If a CLI surface is desired l
 | Tool | Change |
 |---|---|
 | `sql_query` | Description gains one line: *"For schema, columns, and example queries, read resource `moneybin://schema`."* No behavior change. |
+| `sql_schema` | `table` accepts `'<schema>.*'`, returning that schema's live relations (`name`, `schema`, `kind`, `curated`) bounded by `ALLOWED_QUERY_SCHEMAS`. A disallowed schema returns `sql_schema_not_allowed`. A queryable-but-uncurated table name returns `sql_table_not_curated` (hint: `DESCRIBE`) instead of `sql_unknown_table`. Compact-catalog entries gain `kind`. No new tool, no new parameter. |
 
 ## Testing Strategy
 
@@ -182,6 +184,6 @@ None. All required machinery (DuckDB catalog tables, FastMCP resources, `Databas
 
 - **Sibling `.examples.sql` files per model.** Considered and deferred. If example drift becomes a real maintenance problem (examples that reference dropped columns, examples that contradict model logic), revisit by parsing per-table sibling files at startup.
 - **A future per-table resource projection.** It remains unnamed and requires bounded-surface admission if client demand justifies it.
-- **A future uncurated resource projection.** Power users currently use `sql_query` against the DuckDB catalog; any resource form remains unnamed until admitted.
+- **A future uncurated *resource* projection.** Both parks are scoped to resource form and both still stand. The uncurated gap is now covered on the tool path by `sql_schema(table='<schema>.*')` — an existing tool's existing parameter, so no admission record was owed — but no resource URI was minted and none is named here.
 - **Caching the schema doc.** Catalog reads are sub-millisecond; not worth the invalidation cost in v1.
 - **Auto-extracting examples from existing test cases** (e.g., test_services queries). Would couple the LLM-facing surface to test internals; explicit hand-authored examples are clearer.

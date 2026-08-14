@@ -15,7 +15,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.sql_query import (
-    _ALLOWED_QUERY_SCHEMAS,  # pyright: ignore[reportPrivateUsage]
+    ALLOWED_QUERY_SCHEMAS,
 )
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ParamSpec
@@ -45,7 +45,7 @@ def test_save_schemas_tracks_the_query_gate() -> None:
     allowlist is exactly how a schema ends up readable through ``sql_query`` and
     refused at save — or, far worse, the reverse.
     """
-    assert SAVE_SCHEMAS == _ALLOWED_QUERY_SCHEMAS
+    assert SAVE_SCHEMAS == ALLOWED_QUERY_SCHEMAS
 
 
 @pytest.fixture

@@ -18,13 +18,13 @@ from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, get_max_rows, tier_to_sensitivity
-from moneybin.privacy.sql_query import execute_sql_query
+from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS, execute_sql_query
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
     build_error_envelope,
 )
-from moneybin.services.schema_catalog import build_schema_doc
+from moneybin.services.schema_catalog import build_live_catalog, build_schema_doc
 
 
 @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.CRITICAL)
@@ -82,11 +82,14 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
     so agents don't pay for the full ~50KB schema document on every call.
     Pass ``table='<schema.name>'`` to get columns, comments, and example
     queries for one table. Pass ``table='*'`` to get the full document.
+    Pass ``table='<schema>.*'`` to list every relation in one schema.
 
     Args:
         table: ``None`` (default) returns the compact catalog; a full table
             name like ``'core.fct_transactions'`` returns details for that
-            table; ``'*'`` returns the full schema document.
+            table; ``'<schema>.*'`` like ``'raw.*'`` lists that schema's live
+            relations as names and kinds; ``'*'`` returns the full schema
+            document.
     """
     doc = build_schema_doc()
     tables: list[dict[str, Any]] = doc["tables"]
@@ -96,6 +99,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             {
                 "name": t["name"],
                 "purpose": t["purpose"],
+                "kind": t["kind"],
                 "column_count": len(t["columns"]),
                 "example_count": len(t["examples"]),
             }
@@ -128,10 +132,34 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             classes_returned=["aggregate"],
         )
 
+    if table.endswith(".*"):
+        return _live_schema_listing(table.removesuffix(".*"))
+
     matches = [t for t in tables if t["name"] == table]
     if not matches:
         available = [t["name"] for t in tables]
         known = ", ".join(available)
+        # "Unknown table" is a false negative for a relation that exists and
+        # that `sql_query` reads — the curated doc covers only the 35 tagged
+        # interface tables. An agent told "unknown" fixes the name; an agent
+        # told "not curated" reaches for DESCRIBE. Different recovery, so a
+        # different code.
+        if _exists_but_uncurated(table):
+            return build_error_envelope(
+                error=UserError(
+                    f"Not in the curated catalog: {table}",
+                    code=error_codes.SQL_TABLE_NOT_CURATED,
+                    hint=(
+                        "The relation exists and sql_query reads it; only its "
+                        "curated entry (purpose and example queries) is "
+                        f"missing. Run sql_query with DESCRIBE {table} for its "
+                        "columns."
+                    ),
+                    details={"table": table},
+                ),
+                sensitivity="low",
+                actions=[f"Call sql_query(query='DESCRIBE {table}')"],
+            )
         return build_error_envelope(
             error=UserError(
                 f"Unknown table: {table}",
@@ -151,6 +179,34 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         },
         sensitivity="low",
         classes_returned=["aggregate"],
+    )
+
+
+def _exists_but_uncurated(table: str) -> bool:
+    """Report whether ``table`` is a live queryable relation with no curated entry."""
+    schema, _, _name = table.partition(".")
+    if schema not in ALLOWED_QUERY_SCHEMAS:
+        return False
+    return any(r["name"] == table for r in build_live_catalog(schema=schema))
+
+
+def _live_schema_listing(schema: str) -> ResponseEnvelope[Any]:
+    """Return every queryable relation in one schema as names and kinds."""
+    try:
+        relations = build_live_catalog(schema=schema)
+    except UserError as exc:
+        return build_error_envelope(error=exc, sensitivity="low")
+
+    return build_envelope(
+        data={"schema": schema, "tables": relations},
+        sensitivity="low",
+        classes_returned=["aggregate"],
+        actions=[
+            "Pass table='<schema.name>' for a curated table's columns and "
+            "example queries.",
+            "For a relation with curated=false, call "
+            "sql_query(query='DESCRIBE <schema.name>') for its columns.",
+        ],
     )
 
 
@@ -181,7 +237,11 @@ def register_sql_tools(mcp: FastMCP) -> None:
         "sql_schema",
         "Return the curated database schema. Default call returns a compact "
         "catalog (table names + purposes + column counts). Pass "
-        "table='<schema.name>' for one table's columns/examples, or "
-        "table='*' for the full ~50KB document. Mirrors the moneybin://schema "
+        "table='<schema.name>' for one table's columns/examples, "
+        "table='<schema>.*' (e.g. 'raw.*') to list one schema's live relations "
+        "with table-vs-view kind and whether each is curated, or "
+        "table='*' for the full ~50KB document. Only the curated tables carry "
+        "purposes and examples; an uncurated relation is still readable via "
+        "sql_query DESCRIBE. Mirrors the moneybin://schema "
         "resource for hosts that don't expose MCP resources.",
     )

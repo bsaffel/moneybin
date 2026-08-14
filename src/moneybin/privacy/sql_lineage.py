@@ -14,7 +14,7 @@ class the query could touch (``_combined_class`` over all input columns), so we
 over-redact rather than leak.
 
 Scope: this module classifies columns in ``core``, ``app``, ``reports``,
-``raw``, and ``prep`` — the same five schemas ``_ALLOWED_QUERY_SCHEMAS``
+``raw``, and ``prep`` — the same five schemas ``ALLOWED_QUERY_SCHEMAS``
 admits, and the same five ``get_current_schema_snapshot`` reads. ``core``/
 ``app`` resolve via the ``CLASSIFICATION`` registry; ``reports`` via each
 report's declared ``@report(classes=…)`` map (ADR-013), because SQLMesh
@@ -237,7 +237,7 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
     ``MappingSchema`` — is memoised by ``_build_snapshot`` keyed on (version,
     ordered columns), so it runs only when the schema actually changes.
 
-    The schema list must stay identical to ``sql_query._ALLOWED_QUERY_SCHEMAS``.
+    The schema list must stay identical to ``sql_query.ALLOWED_QUERY_SCHEMAS``.
     A schema admitted by the gate but missing here does not fail closed: every
     one of its columns misses ``snapshot.columns``, ``_column_key`` returns None,
     the projection declines, ``_table_scope_max`` sees no classified table in

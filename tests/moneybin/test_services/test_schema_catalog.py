@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
-from moneybin.privacy.sql_query import execute_sql_query
+from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS, execute_sql_query
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.registry import spec_of
 from moneybin.reports.definitions import ALL_REPORTS
@@ -13,6 +13,7 @@ from moneybin.services.schema_catalog import (
     CONVENTIONS,
     EXAMPLES,
     Example,
+    build_live_catalog,
     build_schema_doc,
 )
 from moneybin.tables import INTERFACE_TABLES
@@ -228,6 +229,65 @@ def test_build_schema_doc_includes_interface_views(
     doc = build_schema_doc()
     names = {t["name"] for t in doc["tables"]}
     assert "core.dim_categories" in names
+
+
+def test_live_catalog_lists_a_queryable_table_the_curated_doc_omits(
+    schema_catalog_db: Database,
+) -> None:
+    """A queryable-but-uncurated relation must be discoverable.
+
+    `app.match_decisions` is created by `init_schemas` and readable through
+    `sql_query`, but its `TableRef` carries no `audience="interface"`, so it is
+    absent from `INTERFACE_TABLES` and therefore from `build_schema_doc`. That
+    gap is the defect: an agent is told `app` is queryable, asks the schema
+    surface about an `app` table, and is told it is unknown.
+    """
+    curated = {t["name"] for t in build_schema_doc()["tables"]}
+    assert "app.match_decisions" not in curated
+
+    live = {r["name"]: r for r in build_live_catalog()}
+    assert "app.match_decisions" in live
+    assert live["app.match_decisions"]["curated"] is False
+    assert live["core.fct_transactions"]["curated"] is True
+
+
+def test_live_catalog_distinguishes_a_view_from_a_table(
+    schema_catalog_db: Database,
+) -> None:
+    """Every entry carries the relation kind the catalog UNION currently drops.
+
+    `build_schema_doc` unions `duckdb_tables()` with `duckdb_views()` and keeps
+    no column saying which side a row came from, so nothing on the surface
+    answers "is this relation ALTER-able?".
+    """
+    live = {r["name"]: r for r in build_live_catalog()}
+    assert live["core.dim_categories"]["kind"] == "view"
+    assert live["core.fct_transactions"]["kind"] == "table"
+
+
+def test_live_catalog_is_bounded_by_the_queryable_schemas(
+    schema_catalog_db: Database,
+) -> None:
+    """Listing what exists must not exceed what `sql_query` will read.
+
+    `SHOW ALL TABLES` — the path the catalog footer currently recommends —
+    discloses the shape of `meta` and `seeds`, which `sql_query` refuses
+    outright. This listing is bounded by the same set the gate enforces, so it
+    is a strictly narrower disclosure than the query it replaces.
+    """
+    schemas = {r["schema"] for r in build_live_catalog()}
+    assert schemas <= ALLOWED_QUERY_SCHEMAS
+    assert "meta" not in schemas
+    assert "seeds" not in schemas
+
+
+def test_live_catalog_can_be_scoped_to_one_schema(
+    schema_catalog_db: Database,
+) -> None:
+    """A schema filter is what keeps the enumeration inside a context window."""
+    only_core = build_live_catalog(schema="core")
+    assert only_core
+    assert {r["schema"] for r in only_core} == {"core"}
 
 
 def test_beyond_the_interface_query_passes_the_sql_query_gate(

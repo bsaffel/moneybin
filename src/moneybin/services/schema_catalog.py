@@ -14,7 +14,10 @@ from typing import Any
 
 import duckdb
 
+from moneybin import error_codes
 from moneybin.database import Database, get_database
+from moneybin.errors import UserError
+from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS
 from moneybin.tables import IMPORT_LOG, INTERFACE_TABLES
 
 logger = logging.getLogger(__name__)
@@ -712,16 +715,17 @@ def build_schema_doc() -> dict[str, Any]:
         rows = db.execute(
             f"""
             WITH interface_objects AS (
-                SELECT schema_name, table_name, comment
+                SELECT schema_name, table_name, comment, 'table' AS kind
                 FROM duckdb_tables()
                 UNION ALL
-                SELECT schema_name, view_name AS table_name, comment
+                SELECT schema_name, view_name AS table_name, comment, 'view' AS kind
                 FROM duckdb_views()
                 WHERE NOT internal
             )
             SELECT
                 t.schema_name || '.' || t.table_name AS full_name,
                 COALESCE(t.comment, '') AS table_comment,
+                t.kind,
                 c.column_name,
                 c.data_type,
                 c.is_nullable,
@@ -740,12 +744,13 @@ def build_schema_doc() -> dict[str, Any]:
         pdf_view_entries = _pdf_seed_views(db)
 
     tables_by_name: dict[str, dict[str, Any]] = {}
-    for full_name, table_comment, col_name, dtype, nullable, col_comment in rows:
+    for full_name, table_comment, kind, col_name, dtype, nullable, col_comment in rows:
         entry = tables_by_name.setdefault(
             full_name,
             {
                 "name": full_name,
                 "purpose": table_comment,
+                "kind": kind,
                 "columns": [],
                 "examples": [
                     {"question": ex.question, "sql": ex.sql}
@@ -775,6 +780,63 @@ def build_schema_doc() -> dict[str, Any]:
             "catalog_query": _BEYOND_QUERY,
         },
     }
+
+
+def build_live_catalog(schema: str | None = None) -> list[dict[str, Any]]:
+    """Return every queryable relation as ``{name, schema, kind, curated}``.
+
+    The curated document (`build_schema_doc`) covers only the 35 `TableRef`s
+    tagged ``audience="interface"``, so a relation that `sql_query` reads
+    happily — every `raw` and `prep` model, and the internal `app` tables — has
+    no entry anywhere. This listing closes that gap without widening the
+    curated surface: it carries names and kinds, never columns or data.
+
+    Bounded by ``ALLOWED_QUERY_SCHEMAS`` so listing can never exceed querying.
+    That makes it a strictly narrower disclosure than the `SHOW ALL TABLES`
+    the catalog footer recommends, which reaches `meta` and `seeds` because it
+    names no table for the query gate to resolve.
+    """
+    curated = {t.full_name for t in INTERFACE_TABLES}
+    schemas = sorted(ALLOWED_QUERY_SCHEMAS)
+    if schema is not None:
+        if schema not in ALLOWED_QUERY_SCHEMAS:
+            raise UserError(
+                f"Queries are limited to these schemas: {', '.join(schemas)}.",
+                code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
+                hint=(
+                    "Those carry per-column privacy classifications or a "
+                    "content-net floor, which is what makes masking sound; "
+                    "every other schema is internal and has neither."
+                ),
+                details={"disallowed": [schema]},
+            )
+        schemas = [schema]
+
+    placeholders = ",".join(["?"] * len(schemas))
+    with get_database(read_only=True) as db:
+        rows = db.execute(
+            f"""
+            SELECT schema_name, table_name, 'table' AS kind
+            FROM duckdb_tables()
+            WHERE schema_name IN ({placeholders})
+            UNION ALL
+            SELECT schema_name, view_name AS table_name, 'view' AS kind
+            FROM duckdb_views()
+            WHERE NOT internal AND schema_name IN ({placeholders})
+            ORDER BY schema_name, table_name
+            """,  # noqa: S608  # placeholders only; schema values are parameterized
+            schemas + schemas,
+        ).fetchall()
+
+    return [
+        {
+            "name": f"{schema_name}.{table_name}",
+            "schema": schema_name,
+            "kind": kind,
+            "curated": f"{schema_name}.{table_name}" in curated,
+        }
+        for schema_name, table_name, kind in rows
+    ]
 
 
 def _gsheet_seed_views(db: Database) -> list[dict[str, Any]]:
@@ -832,6 +894,7 @@ def _gsheet_seed_views(db: Database) -> list[dict[str, Any]]:
         ).fetchall()
         entries.append({
             "name": f"raw.{view_name}",
+            "kind": "view",
             "purpose": (
                 f"Live mirror of Google Sheets seed connection (alias={alias})."
             ),
@@ -902,6 +965,7 @@ def _pdf_seed_views(db: Database) -> list[dict[str, Any]]:
         ).fetchall()
         entries.append({
             "name": f"raw.{view_name}",
+            "kind": "view",
             "purpose": f"PDF seed data imported from file (alias={alias}).",
             "columns": [
                 {

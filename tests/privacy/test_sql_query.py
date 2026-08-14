@@ -19,7 +19,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.sql_query import (
-    _ALLOWED_QUERY_SCHEMAS,  # pyright: ignore[reportPrivateUsage]
+    ALLOWED_QUERY_SCHEMAS,
     execute_sql_query,
     validate_read_only_query,
 )
@@ -1038,9 +1038,9 @@ def test_gate_admits_internal_schemas_and_still_fences_meta_and_seeds() -> None:
     equality and kept anyway — they name the schemas whose exclusion is a
     decision rather than an accident.
     """
-    assert _ALLOWED_QUERY_SCHEMAS == {"core", "app", "reports", "raw", "prep"}
-    assert "meta" not in _ALLOWED_QUERY_SCHEMAS
-    assert "seeds" not in _ALLOWED_QUERY_SCHEMAS
+    assert ALLOWED_QUERY_SCHEMAS == {"core", "app", "reports", "raw", "prep"}
+    assert "meta" not in ALLOWED_QUERY_SCHEMAS
+    assert "seeds" not in ALLOWED_QUERY_SCHEMAS
 
 
 # The digit run inside the seeded `description` below: the shape

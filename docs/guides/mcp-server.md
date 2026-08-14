@@ -32,7 +32,9 @@ After the client starts `moneybin mcp serve`, ask it to call `system_status`
 first. Use `reports` without a `report_id` to inspect the analytical catalog,
 then call `reports(report_id=..., parameters=...)` for a selected report.
 `sql_schema` and the `moneybin://schema` resource explain the curated
-read-only SQL surface; `sql_query` is the operator escape hatch.
+read-only SQL surface; `sql_schema(table='raw.*')` lists the queryable
+relations one schema at a time, curated or not; `sql_query` is the operator
+escape hatch.
 
 ## Export data
 

@@ -171,3 +171,58 @@ class TestToolRegistration:
         assert parsed["status"] == "error"
         assert parsed["error"]["code"] == "sql_unknown_table"
         assert "core.fct_transactions" in parsed["error"]["details"]["available_tables"]
+
+    @pytest.mark.unit
+    async def test_sql_schema_wildcard_lists_one_schema(self, mcp_db: object) -> None:
+        """table='<schema>.*' enumerates that schema's live relations.
+
+        `raw` holds 21 `TableRef`s and zero `audience="interface"` tags, so the
+        curated catalog cannot see it at all. Before this, the only enumeration
+        was `SHOW ALL TABLES` through `sql_query`, which returned 117 KB on a
+        real profile because DuckDB attaches every column name and type.
+        """
+        result = await sql_schema(table="raw.*")
+        parsed = result.to_dict()
+        assert parsed["status"] != "error"
+        listed = {t["name"] for t in parsed["data"]["tables"]}
+        assert "raw.ofx_institutions" in listed
+        # Name and kind only — the point is that this fits in a context window.
+        assert "columns" not in next(iter(parsed["data"]["tables"]))
+
+    @pytest.mark.unit
+    async def test_sql_schema_wildcard_refuses_a_schema_sql_query_refuses(
+        self, mcp_db: object
+    ) -> None:
+        """Listing must not reach a schema the query gate would refuse."""
+        result = await sql_schema(table="meta.*")
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "sql_schema_not_allowed"
+
+    @pytest.mark.unit
+    async def test_sql_schema_does_not_call_a_queryable_table_unknown(
+        self, mcp_db: object
+    ) -> None:
+        """An uncurated relation exists; saying "Unknown table" is a false negative.
+
+        Server instructions point agents at `sql_schema` as *the* schema
+        surface, so "Unknown table: raw.ofx_institutions" reads as "does not
+        exist" when `sql_query` reads that table fine. The refusal has to
+        separate "not in the curated catalog" from "not in the database", and
+        name the path that does work.
+        """
+        result = await sql_schema(table="raw.ofx_institutions")
+        parsed = result.to_dict()
+        assert parsed["error"]["code"] == "sql_table_not_curated"
+        assert parsed["error"]["code"] != "sql_unknown_table"
+        hint = parsed["error"]["hint"] or ""
+        assert "DESCRIBE" in hint
+
+    @pytest.mark.unit
+    async def test_compact_catalog_entries_carry_relation_kind(
+        self, mcp_db: object
+    ) -> None:
+        """The curated view must also say table vs view, not just the live one."""
+        result = await sql_schema()
+        for entry in result.to_dict()["data"]["tables"]:
+            assert entry["kind"] in {"table", "view"}

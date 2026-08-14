@@ -208,7 +208,7 @@ Per D3, membership in `reports.*` *is* the definition of "is a report."
 — so it moved out of `reports.*` into `core.uncategorized_queue`.
 
 `core` rather than `prep`, because at the time `prep` was not in
-`_ALLOWED_QUERY_SCHEMAS` and moving there would have silently removed a view
+`ALLOWED_QUERY_SCHEMAS` and moving there would have silently removed a view
 users can query today. M2O.2 has since admitted `prep`, but the decision stands
 on its second reason: `core` keeps the view's coverage in the `CLASSIFICATION`
 registry, where every column is declared and CI verifies it, rather than on the
