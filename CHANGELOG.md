@@ -1285,6 +1285,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   update.
 
 ### Security
+- **`import_revert` no longer deletes raw rows on the first call (#391).**
+  `import_revert(operation="revert_import")` explicitly *rejected* a
+  `confirmation_token` and went straight to the delete, so one call permanently
+  destroyed a batch's raw rows with no prompt, no token, and no undo — 368 rows
+  across 14 batches went in a single session before anyone noticed. The branch
+  now plans read-only, binds approval to the exact live row counts, and verifies
+  that binding against live state inside the write transaction, matching the
+  `delete_saved_format` branch beside it. Outcomes that would delete nothing
+  (`not_found`, `already_reverted`, `unsupported`, `superseded`) return their
+  error without prompting. The CLI already confirmed and still does; its prompt
+  now names the row count. The registered description carried the same defect —
+  its confirmation and `system_audit_undo` clauses sat next to the format branch
+  but read as covering the whole tool, so an agent could infer reversions were
+  recoverable. Each clause now sits with its own branch, and reversion is
+  labelled `permanent — no revert`.
 - **An unanswered confirmation prompt no longer mints a redeemable token
   (#389).**
   `grant_confirmation_or_raise` waited `elicitation_wait_seconds` (120 by

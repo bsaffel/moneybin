@@ -608,7 +608,7 @@ def test_pdf_revert_clears_tabular_transactions(db: Database, tmp_path: Path) ->
     assert before[0] > 0
 
     # Revert
-    out = svc.revert(result.import_id)
+    out = svc.revert_confirmed(result.import_id, verify=lambda _live: None)
     assert out["status"] == "reverted"
 
     # Rows gone after revert

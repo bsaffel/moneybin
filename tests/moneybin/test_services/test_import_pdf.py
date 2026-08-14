@@ -30,7 +30,7 @@ def test_import_pdf_is_revertible(db: Database, simple_statement_pdf: Path) -> N
     svc = ImportService(db)
     result = svc.import_file(simple_statement_pdf, refresh=False)
     assert result.import_id is not None
-    out = svc.revert(result.import_id)
+    out = svc.revert_confirmed(result.import_id, verify=lambda _live: None)
     assert out["status"] == "reverted"
     row = db.execute("SELECT COUNT(*) FROM raw.pdf_seeds").fetchone()
     assert row is not None
@@ -144,7 +144,7 @@ def test_revert_preserves_view_when_other_imports_remain(
     assert result_a.import_id is not None
     assert result_b.import_id is not None
 
-    svc.revert(result_a.import_id)
+    svc.revert_confirmed(result_a.import_id, verify=lambda _live: None)
 
     # View must still exist because result_b's import remains complete.
     view_count = db.execute(
@@ -193,7 +193,7 @@ def test_reimport_preserves_first_import_id_ownership(
         assert import_id == result_a.import_id
 
     # Reverting B leaves A's rows intact
-    svc.revert(result_b.import_id)
+    svc.revert_confirmed(result_b.import_id, verify=lambda _live: None)
     rows_after_revert_b = db.execute(
         "SELECT COUNT(*) FROM raw.pdf_seeds WHERE alias = 'simple_statement'"
     ).fetchone()
