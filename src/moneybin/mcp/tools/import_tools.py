@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from moneybin.services.import_confirmation import ConfirmationRequired
     from moneybin.services.import_service import (
         CreatedAccount,
+        ImportRevertPlan,
         SavedFormatDeletePlan,
     )
 
@@ -128,12 +129,10 @@ _IMPORT_REVERT_INPUT_SCHEMA_EXTRA: dict[str, Any] = {
             "then": {
                 "properties": {"import_id": {"type": "string", "minLength": 1}},
                 "required": ["import_id"],
-                "not": {
-                    "anyOf": [
-                        {"required": ["format_name"]},
-                        {"required": ["confirmation_token"]},
-                    ]
-                },
+                # ``confirmation_token`` stays admissible here: the reversion
+                # gate hands non-eliciting clients a token to send back, and a
+                # schema-validating client could not make that second call.
+                "not": {"anyOf": [{"required": ["format_name"]}]},
             },
         },
     ]
@@ -1263,36 +1262,11 @@ _REVERT_FAILURE_CODES = {
 }
 
 
-def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
-    """Undo an import batch by deleting all rows it produced.
-
-    Looks up source_type from raw.import_log and deletes rows tagged with
-    import_id from the matching raw tables (raw.tabular_* or raw.ofx_*).
-    Updates the import_log row's status to 'reverted'.
-
-    Args:
-        import_id: UUID of the import batch to revert. Get it from
-            import_files's response or from import_status.
-    """
-    from moneybin.services.import_service import ImportService  # noqa: PLC0415
-
-    with get_database(read_only=False) as db:
-        result = ImportService(db).revert(import_id)
+def _revert_failure_envelope(
+    result: dict[str, str | int],
+) -> ResponseEnvelope[ImportRevertPayload]:
+    """Return the error envelope for one non-revertable outcome."""
     status = result.get("status")
-
-    if status == "reverted":
-        return build_envelope(
-            data=ImportRevertPayload(
-                import_id=import_id,
-                status="reverted",
-                rows_deleted=int(result["rows_deleted"])
-                if "rows_deleted" in result
-                else None,
-            ),
-            actions=[
-                "Use import_status to confirm the batch shows status='reverted'",
-            ],
-        )
     return build_error_envelope(
         error=UserError(
             str(result.get("reason") or f"Cannot revert (status={status})"),
@@ -1300,6 +1274,86 @@ def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
                 str(status), error_codes.IMPORT_REVERT_UNSUPPORTED
             ),
         )
+    )
+
+
+def _import_revert_binding(plan: ImportRevertPlan) -> ConfirmationBinding:
+    """Bind reversion approval to one import batch's exact live row counts."""
+    return ConfirmationBinding(
+        arguments={
+            "operation": "revert_import",
+            "import_id": plan.import_id,
+            "outcome": plan.outcome,
+            "source_type": plan.source_type,
+            "rows_to_delete": plan.rows_to_delete,
+        },
+        resolved_ids=(plan.import_id,),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="import_revert",
+        blast_radius=plan.blast_radius,
+    )
+
+
+async def import_revert(
+    import_id: str,
+    *,
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[ImportRevertPayload]:
+    """Undo an import batch by deleting all rows it produced.
+
+    Looks up source_type from raw.import_log and deletes rows tagged with
+    import_id from the matching raw tables (raw.tabular_* or raw.ofx_*).
+    Updates the import_log row's status to 'reverted'.
+
+    The deletion destroys the only copy of those rows and has no audited undo,
+    so it is gated on a payload-bound confirmation. Outcomes that would delete
+    nothing return their error without prompting — no confirmation is asked for
+    a no-op.
+
+    Args:
+        import_id: UUID of the import batch to revert. Get it from
+            import_files's response or from import_status.
+        confirmation_token: Opaque token from a prior
+            ``mutation_confirmation_required`` refusal, for clients that cannot
+            elicit.
+    """
+    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+
+    with get_database(read_only=True) as db:
+        plan = ImportService(db).plan_revert(import_id)
+    if not plan.revertable:
+        return _revert_failure_envelope(plan.as_result())
+
+    grant: ConfirmationGrant = await grant_confirmation_or_raise(
+        binding=_import_revert_binding(plan) if confirmation_token is None else None,
+        message=(
+            f"Permanently delete {plan.rows_to_delete} raw row(s) from import "
+            f"{import_id[:8]}...? This destroys the only copy of that data and "
+            "cannot be undone — there is no system_audit_undo for a reversion."
+        ),
+        confirmation_token=confirmation_token,
+    )
+
+    with get_database(read_only=False) as db:
+        result = ImportService(db).revert_confirmed(
+            import_id,
+            verify=lambda live: grant.verify(_import_revert_binding(live)),
+        )
+    if result.get("status") != "reverted":
+        return _revert_failure_envelope(result)
+    return build_envelope(
+        data=ImportRevertPayload(
+            import_id=import_id,
+            status="reverted",
+            rows_deleted=int(result["rows_deleted"])
+            if "rows_deleted" in result
+            else None,
+        ),
+        actions=[
+            "Use import_status to confirm the batch shows status='reverted'",
+        ],
     )
 
 
@@ -2467,10 +2521,10 @@ async def import_revert_coarse(
 ) -> ResponseEnvelope[ImportRevertPayload | ImportSavedFormatDeletePayload]:
     """Revert one import or audit-delete one user-saved format."""
     if operation == "revert_import":
-        if not import_id or format_name is not None or confirmation_token is not None:
+        if not import_id or format_name is not None:
             raise UserError(
-                "operation='revert_import' requires exactly import_id and does "
-                "not accept confirmation_token.",
+                "operation='revert_import' requires exactly import_id, "
+                "optionally with confirmation_token.",
                 code=error_codes.IMPORT_REVERT_INVALID_TARGET,
             )
     elif import_id is not None or not format_name:
@@ -2488,7 +2542,10 @@ async def import_revert_coarse(
             ),
         )
 
-    response = import_revert(import_id=cast(str, import_id))
+    response = await import_revert(
+        import_id=cast(str, import_id),
+        confirmation_token=confirmation_token,
+    )
     if response.error is not None:
         return cast(
             ResponseEnvelope[ImportRevertPayload | ImportSavedFormatDeletePayload],
@@ -2599,10 +2656,12 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
         (
             import_revert_coarse,
             "import_revert",
-            "Revert one completed import or delete one user-saved format. Import "
-            "reversion permanently removes its raw rows; saved-format deletion "
-            "writes app.tabular_formats, requires exact payload-bound confirmation, "
-            "and is recoverable with system_audit_undo.",
+            "Revert one completed import or delete one user-saved format. Both "
+            "branches require exact payload-bound confirmation. Import reversion "
+            "deletes that batch's rows from raw.tabular_*/raw.ofx_* and flips "
+            "raw.import_log to 'reverted': permanent — no revert, and no "
+            "system_audit_undo counterpart. Saved-format deletion writes "
+            "app.tabular_formats and is recoverable with system_audit_undo.",
         ),
         (
             import_inbox_sync_coarse,

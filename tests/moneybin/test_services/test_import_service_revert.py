@@ -1,4 +1,4 @@
-"""Tests for ImportService.revert.
+"""Tests for ImportService.plan_revert and ImportService.revert_confirmed.
 
 Covers the full response envelope (``reverted``, ``not_found``,
 ``already_reverted``, ``unsupported``, ``superseded``) across OFX and
@@ -19,7 +19,9 @@ from tests.moneybin.db_helpers import create_core_tables
 
 def test_revert_unknown_import_id_returns_not_found(db: Database) -> None:
     """Reverting an unknown import_id returns status='not_found'."""
-    result = ImportService(db).revert("00000000-0000-0000-0000-000000000000")
+    result = ImportService(db).revert_confirmed(
+        "00000000-0000-0000-0000-000000000000", verify=lambda _live: None
+    )
     assert result["status"] == "not_found"
 
 
@@ -36,8 +38,8 @@ def test_revert_already_reverted_returns_already_reverted(db: Database) -> None:
         db, import_id, status="complete", rows_total=0, rows_imported=0
     )
     # First revert flips status; the second is the one we're asserting on.
-    ImportService(db).revert(import_id)
-    result = ImportService(db).revert(import_id)
+    ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
+    result = ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
     assert result == {"status": "already_reverted"}
 
 
@@ -86,7 +88,7 @@ def test_revert_tabular_deletes_matching_rows_and_marks_reverted(
         db, import_id, status="complete", rows_total=2, rows_imported=2
     )
 
-    result = ImportService(db).revert(import_id)
+    result = ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
 
     assert result["status"] == "reverted"
     assert result["rows_deleted"] == 2
@@ -159,7 +161,7 @@ def test_revert_manual_investment_deletes_rows_not_orphaned(db: Database) -> Non
     assert pre is not None
     assert pre[0] == 1
 
-    result = ImportService(db).revert(import_id)
+    result = ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
 
     assert result["status"] == "reverted"
     assert result["rows_deleted"] == 1
@@ -211,7 +213,68 @@ def test_revert_stuck_investment_import_not_superseded_by_cash_batch(
         db, cash_import_id, status="complete", rows_total=1, rows_imported=1
     )
 
-    result = ImportService(db).revert(stuck_investment_import_id)
+    result = ImportService(db).revert_confirmed(
+        stuck_investment_import_id, verify=lambda _live: None
+    )
 
     assert result["status"] == "reverted"
     assert result["rows_deleted"] == 0
+
+
+def test_plan_revert_reports_counts_without_deleting_anything(db: Database) -> None:
+    """Planning is read-only — the rows it counts must still be there after."""
+    import_id = import_log.begin_import(
+        db,
+        source_file="/tmp/plan.csv",  # noqa: S108  # test fixture path
+        source_type="csv",
+        source_origin="tiller",
+        account_names=["checking"],
+    )
+    db.execute(
+        """
+        INSERT INTO raw.tabular_transactions (
+            transaction_id, account_id, transaction_date, amount, description,
+            source_file, source_type, source_origin, import_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            "csv_plan_1",
+            "checking",
+            "2026-01-01",
+            "-10.00",
+            "X",
+            "/tmp/plan.csv",  # noqa: S108  # test fixture path
+            "csv",
+            "tiller",
+            import_id,
+        ],
+    )
+    import_log.finalize_import(
+        db, import_id, status="complete", rows_total=1, rows_imported=1
+    )
+
+    plan = ImportService(db).plan_revert(import_id)
+
+    assert plan.revertable
+    assert plan.rows_to_delete == 1
+    assert plan.blast_radius["total_rows"] == 1
+    remaining = db.execute(
+        "SELECT COUNT(*) FROM raw.tabular_transactions WHERE import_id = ?",
+        [import_id],
+    ).fetchone()
+    assert remaining is not None
+    assert remaining[0] == 1
+    status = db.execute(
+        "SELECT status FROM raw.import_log WHERE import_id = ?", [import_id]
+    ).fetchone()
+    assert status is not None
+    assert status[0] == "complete"
+
+
+def test_plan_revert_of_unknown_batch_is_not_revertable(db: Database) -> None:
+    """A no-op outcome is still a plan, so callers can refuse without prompting."""
+    plan = ImportService(db).plan_revert("00000000-0000-0000-0000-000000000000")
+
+    assert not plan.revertable
+    assert plan.outcome == "not_found"
+    assert plan.as_result()["status"] == "not_found"

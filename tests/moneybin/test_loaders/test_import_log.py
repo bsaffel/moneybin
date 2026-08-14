@@ -136,7 +136,7 @@ class TestFindExistingImport:
         # Revert lives on the service, not the loader; use it as setup so the
         # real assertion (find_existing_import skips reverted batches) stays
         # focused on this module's behavior.
-        ImportService(db).revert(import_id)
+        ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
         result = import_log.find_existing_import(db, "/tmp/reverted.ofx")  # noqa: S108  # test fixture path
         assert result is None
 

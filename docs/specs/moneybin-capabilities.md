@@ -100,7 +100,11 @@ the implementation:
    merchant or provider-native categorizations.
 5. The existing destructive `import_revert` boundary now uses a strict
    discriminated operation for either import rollback or audited user-saved
-   format deletion. Built-in formats remain immutable, and no read tool
+   format deletion. Both branches require exact payload-bound confirmation,
+   verified against live state inside the write transaction. They differ in
+   recovery: format deletion is audited and restorable with
+   `system_audit_undo`; import rollback permanently deletes the batch's raw
+   rows and has no undo. Built-in formats remain immutable, and no read tool
    mutates format state.
 
 The audit also found that category and merchant CLI names were placeholders.
