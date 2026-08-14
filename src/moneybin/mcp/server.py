@@ -30,7 +30,7 @@ mcp = FastMCP(
 
         Standard tools cover system, profile, reports, accounts, investments, transactions, reviews, taxonomy, import, sync, gsheet, exports, privacy, refresh, and sql. Names use domain_<sub>_verb with the verb last.
 
-        Call system_status first to inspect available data, freshness, review queues, and whether derived core.* tables need refresh_run. Call reports() without a report_id to discover registered analytics, then pass a stable report_id and parameters to run one. sql_query is the privacy-safe read-only SQL escape hatch; use sql_schema for its curated schema.
+        Call system_status first to inspect available data, freshness, review queues, and whether derived core.* tables need refresh_run; its overview.build names the version and commit this server is running, so cite it before concluding that live behavior contradicts the code, because a long-lived process can predate the checkout. Call reports() without a report_id to discover registered analytics, then pass a stable report_id and parameters to run one. sql_query is the privacy-safe read-only SQL escape hatch; use sql_schema for its curated schema.
 
         Every tool returns {summary, data, actions}. Prefer batch tools; list parameters are capped per call, and summary.has_more plus actions explain continuation.
 
