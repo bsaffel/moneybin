@@ -22,6 +22,10 @@ class RateObservation:
     published day. Storing the resolved day rather than the requested one keeps
     the table an honest record of what the provider published.
 
+    `source_type` carries the canonical provenance name every layer uses for
+    the same concept (database.md), so an observation lands in
+    raw.exchange_rates without a column rename on the way.
+
     `rate` is Decimal rather than float because raw.exchange_rates is
     append-only and DECIMAL(18,8): a float that reaches it loses precision on a
     row nothing later rewrites. An adapter parsing a provider's JSON is the one
@@ -33,13 +37,13 @@ class RateObservation:
     to_currency: str
     rate_date: date
     rate: Decimal
-    source: str
+    source_type: str
 
 
 class RateAdapter(Protocol):
     """A reference-rate provider that can price one currency pair on one date."""
 
-    source: str
+    source_type: str
 
     def fetch(
         self, from_currency: str, to_currency: str, on: date

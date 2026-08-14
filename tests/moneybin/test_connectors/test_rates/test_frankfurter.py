@@ -41,7 +41,7 @@ def test_the_adapter_satisfies_the_rate_adapter_protocol() -> None:
     """
     adapter: RateAdapter = FrankfurterRateAdapter()
 
-    assert adapter.source == FRANKFURTER_SOURCE
+    assert adapter.source_type == FRANKFURTER_SOURCE
 
 
 def _url(on: date) -> str:
@@ -70,7 +70,7 @@ def test_a_weekday_rate_parses_as_decimal() -> None:
     assert obs.rate_date == _FRIDAY
     assert obs.from_currency == "USD"
     assert obs.to_currency == "EUR"
-    assert obs.source == FRANKFURTER_SOURCE
+    assert obs.source_type == FRANKFURTER_SOURCE
 
 
 @respx.mock

@@ -39,7 +39,7 @@ FRANKFURTER_SOURCE = "frankfurter"
 class FrankfurterRateAdapter:
     """Daily ECB reference rates, one pair and one date per call."""
 
-    source = FRANKFURTER_SOURCE
+    source_type = FRANKFURTER_SOURCE
 
     _sleep = staticmethod(time.sleep)
 
@@ -92,7 +92,7 @@ class FrankfurterRateAdapter:
                 to_currency=quote,
                 rate_date=on,
                 rate=Decimal(1),
-                source=FRANKFURTER_SOURCE,
+                source_type=FRANKFURTER_SOURCE,
             )
 
         try:
@@ -133,7 +133,7 @@ class FrankfurterRateAdapter:
             to_currency=quote,
             rate_date=rate_date,
             rate=rate,
-            source=FRANKFURTER_SOURCE,
+            source_type=FRANKFURTER_SOURCE,
         )
 
 
