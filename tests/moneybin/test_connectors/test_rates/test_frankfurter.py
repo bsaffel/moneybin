@@ -19,6 +19,8 @@ import pytest
 import respx
 
 from moneybin.connectors.feed_errors import FeedUnreachableError
+from moneybin.connectors.rates import RateAdapter
+from moneybin.connectors.rates.errors import RateFeedAPIError
 from moneybin.connectors.rates.frankfurter import (
     FRANKFURTER_BASE_URL,
     FRANKFURTER_SOURCE,
@@ -28,6 +30,18 @@ from moneybin.error_codes import RATE_FEED_ERROR
 
 _FRIDAY = date(2026, 3, 13)
 _SUNDAY = date(2026, 3, 15)
+
+
+def test_the_adapter_satisfies_the_rate_adapter_protocol() -> None:
+    """Keeps the Protocol load-bearing rather than decorative.
+
+    The annotation is the assertion: pyright rejects the assignment if the
+    adapter and the Protocol drift apart. Verified by removing a method and
+    confirming pyright reports the mismatch.
+    """
+    adapter: RateAdapter = FrankfurterRateAdapter()
+
+    assert adapter.source == FRANKFURTER_SOURCE
 
 
 def _url(on: date) -> str:
@@ -226,6 +240,86 @@ def test_an_identity_pair_never_reaches_the_provider() -> None:
     assert obs.rate == Decimal(1)
     assert obs.rate_date == _SUNDAY, "identity holds on the day asked for"
     assert not route.called
+
+
+_CURRENCIES_BODY = {
+    "EUR": "Euro",
+    "GBP": "British Pound",
+    "JPY": "Japanese Yen",
+    "USD": "United States Dollar",
+}
+
+
+@respx.mock
+def test_supported_currencies_reads_the_published_set() -> None:
+    """Recorded live: /v1/currencies answers a code → name object, 30 entries."""
+    respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
+        return_value=httpx.Response(200, json=_CURRENCIES_BODY)
+    )
+
+    supported = FrankfurterRateAdapter().supported_currencies()
+
+    assert supported == frozenset({"EUR", "GBP", "JPY", "USD"})
+
+
+@respx.mock
+def test_supported_currencies_is_fetched_once_per_adapter() -> None:
+    """The ECB set changes about once a decade; a conversion run must not refetch."""
+    route = respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
+        return_value=httpx.Response(200, json=_CURRENCIES_BODY)
+    )
+    adapter = FrankfurterRateAdapter()
+
+    first = adapter.supported_currencies()
+    second = adapter.supported_currencies()
+
+    assert first == second
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_supported_currencies_raises_offline_rather_than_answering_empty() -> None:
+    """An empty set would read as 'no currency is supported'.
+
+    That is the inversion this method exists to prevent: it would relabel every
+    pair permanently unsupported — sending the user to write manual overrides —
+    on the strength of a dropped connection.
+    """
+    respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
+        side_effect=httpx.ConnectError("no route to host")
+    )
+
+    with pytest.raises(FeedUnreachableError):
+        FrankfurterRateAdapter().supported_currencies()
+
+
+@respx.mock
+def test_supported_currencies_raises_on_a_body_it_cannot_read() -> None:
+    """Same inversion, reached by a broken provider instead of a dead link."""
+    respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
+        return_value=httpx.Response(200, json=["EUR", "USD"])
+    )
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().supported_currencies()
+
+
+@respx.mock
+def test_a_failed_currency_lookup_is_not_memoized() -> None:
+    """A transient outage must not pin the adapter to a permanent failure."""
+    route = respx.get(f"{FRANKFURTER_BASE_URL}/currencies").mock(
+        side_effect=[
+            httpx.ConnectError("no route to host"),
+            httpx.Response(200, json=_CURRENCIES_BODY),
+        ]
+    )
+    adapter = FrankfurterRateAdapter()
+
+    with pytest.raises(FeedUnreachableError):
+        adapter.supported_currencies()
+
+    assert adapter.supported_currencies() == frozenset({"EUR", "GBP", "JPY", "USD"})
+    assert route.call_count == 2
 
 
 @respx.mock

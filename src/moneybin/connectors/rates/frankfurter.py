@@ -23,7 +23,11 @@ from decimal import Decimal
 import httpx
 
 from moneybin.connectors._http import DEFAULT_TIMEOUT, fetch_json
-from moneybin.connectors.rates.errors import RATE_FEED_ERRORS, RateFeedNotFoundError
+from moneybin.connectors.rates.errors import (
+    RATE_FEED_ERRORS,
+    RateFeedAPIError,
+    RateFeedNotFoundError,
+)
 from moneybin.connectors.rates.protocol import RateObservation
 
 logger = logging.getLogger(__name__)
@@ -42,6 +46,39 @@ class FrankfurterRateAdapter:
     def __init__(self, client: httpx.Client | None = None) -> None:
         """Initialize with an optional injected HTTP client. No credential."""
         self._client = client or httpx.Client(timeout=DEFAULT_TIMEOUT)
+        self._supported: frozenset[str] | None = None
+
+    def supported_currencies(self) -> frozenset[str]:
+        """The codes this provider publishes at all, on any date.
+
+        Lets a caller tell a permanent condition from a daily one. `fetch`
+        answers None for both an unsupported currency and a date the provider
+        has no row for, and the remedies differ: the first needs a manual
+        override, the second needs a different date. Consulting this is how a
+        caller says which one happened.
+
+        Raises rather than answering an empty set when it cannot read the list —
+        an empty set would mean "no currency is supported anywhere", which sends
+        every pair to the override table over one dropped connection.
+        """
+        if self._supported is None:
+            self._supported = self._read_supported()
+        return self._supported
+
+    def _read_supported(self) -> frozenset[str]:
+        payload = fetch_json(
+            self._client,
+            f"{FRANKFURTER_BASE_URL}/currencies",
+            params={},
+            sleep=self._sleep,
+            errors=RATE_FEED_ERRORS,
+        )
+        if not isinstance(payload, dict):
+            raise RateFeedAPIError(
+                "Exchange rate feed did not answer with a currency list"
+            )
+        codes: dict[str, object] = payload
+        return frozenset(code.upper() for code in codes)
 
     def fetch(
         self, from_currency: str, to_currency: str, on: date

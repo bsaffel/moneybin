@@ -50,5 +50,17 @@ class RateAdapter(Protocol):
         currency, or a date before the provider's series begins. Raises for
         every condition that is the provider's fault or the network's, so an
         offline run can never be mistaken for an unsupported pair.
+
+        To tell those two absences apart, ask `supported_currencies()`.
+        """
+        ...
+
+    def supported_currencies(self) -> frozenset[str]:
+        """The codes this provider publishes at all, on any date.
+
+        A pair outside this set is permanently absent and belongs in the
+        override table; a pair inside it that `fetch` answers None for is
+        missing on that date alone. Raises rather than answering an empty set
+        when the list cannot be read.
         """
         ...
