@@ -26,7 +26,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flag. A name that exists but carries no curated entry returns the new
   `sql_table_not_curated` code, whose hint names `DESCRIBE <table>`; a schema
   outside the queryable five returns `sql_schema_not_allowed`. Compact-catalog
-  entries gained `kind` for the same reason.
+  entries gained `kind` for the same reason, and the compact response's
+  `actions` name the `'<schema>.*'` path so the default call reaches it. `table`
+  is matched the way DuckDB resolves an unquoted identifier — case-insensitively
+  — so `'RAW.*'` and `'raw.*'` are one request, and any spelling `sql_query`
+  accepts, `sql_schema` accepts.
 
   This narrows disclosure rather than widening it. The listing is bounded by the
   same `ALLOWED_QUERY_SCHEMAS` that gates querying, so it can never name a

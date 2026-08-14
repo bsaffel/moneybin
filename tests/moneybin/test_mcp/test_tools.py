@@ -236,6 +236,60 @@ class TestToolRegistration:
         assert "core.fct_transactions" in parsed["error"]["details"]["available_tables"]
 
     @pytest.mark.unit
+    async def test_sql_schema_listing_accepts_the_casing_sql_query_accepts(
+        self, mcp_db: object
+    ) -> None:
+        """DuckDB folds unquoted identifiers, so the two surfaces must agree.
+
+        `tables_outside_schemas` already normalizes for `sql_query` — its
+        docstring records refusing `DESCRIBE CORE.dim_accounts` while allowing
+        `SELECT ... FROM CORE.dim_accounts`. Comparing raw casing here brings
+        that same split back on a path whose whole job is answering "is this
+        schema queryable".
+        """
+        upper = await sql_schema(table="RAW.*")
+        lower = await sql_schema(table="raw.*")
+        assert upper.to_dict()["status"] != "error"
+        assert {t["name"] for t in upper.to_dict()["data"]["tables"]} == {
+            t["name"] for t in lower.to_dict()["data"]["tables"]
+        }
+
+    @pytest.mark.unit
+    async def test_sql_schema_exact_name_is_case_insensitive(
+        self, mcp_db: object
+    ) -> None:
+        """A spelling DuckDB resolves must not change which answer comes back.
+
+        Both halves matter: an uncurated relation keeps `sql_table_not_curated`
+        rather than falling through to "unknown", and a curated one still
+        resolves to its entry instead of being refused as a fenced schema —
+        which is what an uppercase qualifier produced, since the raw string
+        reached the allowlist before anything lowercased it.
+        """
+        uncurated = (await sql_schema(table="RAW.OFX_INSTITUTIONS")).to_dict()
+        assert uncurated["error"]["code"] == "sql_table_not_curated"
+
+        curated = (await sql_schema(table="CORE.FCT_TRANSACTIONS")).to_dict()
+        assert curated["status"] != "error"
+        assert [t["name"] for t in curated["data"]["tables"]] == [
+            "core.fct_transactions"
+        ]
+
+    @pytest.mark.unit
+    async def test_compact_actions_name_the_schema_listing(
+        self, mcp_db: object
+    ) -> None:
+        """The orienting response must name every path it can hand out.
+
+        The compact catalog is the documented default, so a path missing from
+        its `actions` is a path an agent does not know exists — and the
+        fallback it does name (`SHOW ALL TABLES`) is the wider one this
+        listing was added to replace.
+        """
+        actions = (await sql_schema()).to_dict()["actions"]
+        assert any(".*'" in a for a in actions)
+
+    @pytest.mark.unit
     async def test_sql_schema_does_not_call_a_queryable_table_unknown(
         self, mcp_db: object
     ) -> None:

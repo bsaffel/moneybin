@@ -121,6 +121,8 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             actions=[
                 "Pass table='<schema.name>' (e.g. 'core.fct_transactions') to "
                 "fetch columns, comments, and example queries for one table.",
+                "Pass table='<schema>.*' (e.g. 'raw.*') to list one schema's "
+                "live relations, including those with no entry above.",
                 "Pass table='*' for the full schema document (~50KB).",
             ],
         )
@@ -135,7 +137,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
     if table.endswith(".*"):
         return _live_schema_listing(table.removesuffix(".*"))
 
-    matches = [t for t in tables if t["name"] == table]
+    matches = [t for t in tables if t["name"].lower() == table.lower()]
     if not matches:
         available = [t["name"] for t in tables]
         known = ", ".join(available)
@@ -193,11 +195,16 @@ def _exists_but_uncurated(table: str) -> bool:
     correct a name that was never wrong.
 
     An unqualified name carries no schema to refuse, so it stays unknown.
+
+    Both sides are lowered rather than the input alone: a runtime seed view is
+    named from a user-chosen alias (`raw.gsheet_<alias>`), so the catalog can
+    hold casing the caller did not write.
     """
     schema, dot, _name = table.partition(".")
     if not dot:
         return False
-    return any(r["name"] == table for r in build_live_catalog(schema=schema))
+    wanted = table.lower()
+    return any(r["name"].lower() == wanted for r in build_live_catalog(schema=schema))
 
 
 def _live_schema_listing(schema: str) -> ResponseEnvelope[Any]:

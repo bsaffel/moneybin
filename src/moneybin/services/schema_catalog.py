@@ -806,6 +806,11 @@ def build_live_catalog(schema: str | None = None) -> list[dict[str, Any]]:
     curated = {t["name"] for t in build_schema_doc()["tables"]}
     schemas = sorted(ALLOWED_QUERY_SCHEMAS)
     if schema is not None:
+        # DuckDB folds unquoted identifiers, so `sql_query` reads `RAW.x` and
+        # `tables_outside_schemas` normalizes to match. Comparing the caller's
+        # raw casing against a lowercase allowlist is what once refused
+        # `DESCRIBE CORE.dim_accounts` while allowing the equivalent SELECT.
+        schema = schema.lower()
         if schema not in ALLOWED_QUERY_SCHEMAS:
             raise UserError(
                 f"Queries are limited to these schemas: {', '.join(schemas)}.",

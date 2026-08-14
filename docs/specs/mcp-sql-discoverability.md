@@ -162,7 +162,7 @@ None. The schema doc is consumed by the MCP layer. If a CLI surface is desired l
 | Tool | Change |
 |---|---|
 | `sql_query` | Description gains one line: *"For schema, columns, and example queries, read resource `moneybin://schema`."* No behavior change. |
-| `sql_schema` | `table` accepts `'<schema>.*'`, returning that schema's live relations (`name`, `schema`, `kind`, `curated`) bounded by `ALLOWED_QUERY_SCHEMAS`. A disallowed schema returns `sql_schema_not_allowed` whether it is named as `'<schema>.*'` or as an exact table name — one gate, so a fenced schema is never reported as a misspelled table. A queryable-but-uncurated table name returns `sql_table_not_curated` (hint: `DESCRIBE`) instead of `sql_unknown_table`. Compact-catalog entries gain `kind`. No new tool, no new parameter. |
+| `sql_schema` | `table` accepts `'<schema>.*'`, returning that schema's live relations (`name`, `schema`, `kind`, `curated`) bounded by `ALLOWED_QUERY_SCHEMAS`. A disallowed schema returns `sql_schema_not_allowed` whether it is named as `'<schema>.*'` or as an exact table name — one gate, so a fenced schema is never reported as a misspelled table. A queryable-but-uncurated table name returns `sql_table_not_curated` (hint: `DESCRIBE`) instead of `sql_unknown_table`. `table` is matched the way DuckDB resolves an unquoted identifier — case-insensitively — so any spelling `sql_query` accepts, `sql_schema` accepts. Compact-catalog entries gain `kind`, and the compact response's `actions` name the `'<schema>.*'` path so it is reachable from the orienting call. No new tool, no new parameter. |
 
 ## Testing Strategy
 
