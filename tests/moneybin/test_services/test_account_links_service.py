@@ -1024,6 +1024,60 @@ def test_the_collapse_count_reaches_the_batched_path_s_separate_rematch(
     assert seeded.rematch_after_merge().transfers_retired == 1
 
 
+def test_a_rolled_back_accept_leaves_no_collapse_count_behind(
+    seeded: AccountLinksService,
+    db: Database,
+    rematch: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merge that failed retired nothing, so it owes no disclosure.
+
+    The collapse count is produced inside ``set``'s transaction, ahead of
+    writes that can still raise. DuckDB rolls those back; a counter held on the
+    service does not roll back with them, so the next merge on the same
+    instance would report a transfer retired that is in fact still accepted —
+    and send the user to ``audit undo`` over a reversal that never happened.
+
+    Fault-injected because nothing in the fixture can fail at that exact point:
+    the failure is the condition under test, and the assertion is on real
+    behaviour afterwards. Every caller today builds a fresh service per
+    top-level call, so this holds a latent bug closed rather than a live one.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00008",
+        source_transaction_id_a="ofx15",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx14",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("a later write in the same transaction failed")
+
+    monkeypatch.setattr(AccountLinkDecisionsRepo, "update_status", _fail)
+
+    with pytest.raises(RuntimeError):
+        seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert seeded.rematch_after_merge().transfers_retired == 0, (
+        "the accept rolled back, so the transfer it would have retired is "
+        "still accepted — reporting it undone points the user at an audit "
+        "entry that does not exist"
+    )
+
+
 def _insert_transfer(
     db: Database,
     *,

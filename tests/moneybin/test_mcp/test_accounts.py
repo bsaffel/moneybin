@@ -1724,3 +1724,47 @@ async def test_links_set_accept_flags_a_failed_rebuild(
     assert any("rebuild" in action.lower() for action in envelope.actions), (
         f"no action names the failed rebuild: {envelope.actions}"
     )
+
+
+async def test_links_set_accept_flags_a_match_pass_that_never_ran(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A skipped pass reports zeros that mean "not examined", not "nothing found".
+
+    ``refresh`` skips ``match`` outright when its views are missing or stale,
+    and every count on the result stays at its default. Nothing in ``data``
+    separates that from a pass that ran and found no duplicates, so the caveat
+    is the only thing standing between the agent and reporting a merge clean
+    over rows the matcher never looked at. The CLI's own ``matching_skipped``
+    branch is a separate implementation with a separate test; this one covers
+    the MCP surface.
+    """
+    from moneybin.mcp.tools import accounts as accounts_module
+    from moneybin.services.refresh import RefreshResult
+
+    def _accepted(*_args: object, **_kw: object) -> RefreshResult:
+        return RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            matching_skipped=True,
+        )
+
+    def _verify(_binding: object) -> None:
+        return None
+
+    async def _granted(**_kw: object) -> object:
+        return SimpleNamespace(verify=_verify)
+
+    monkeypatch.setattr(accounts_module, "_apply_account_accept", _accepted)
+    monkeypatch.setattr(accounts_module, "grant_confirmation_or_raise", _granted)
+
+    envelope = await accounts_module.accounts_links_set(
+        decision_id="dec001",
+        action="accept",
+        target_account_id="CAND001",
+        confirmation_token="tok",  # noqa: S106  # opaque grant id, not a credential; skips the elicitation branch
+    )
+
+    assert any("could not run" in action for action in envelope.actions), (
+        f"no action says the pass never examined the rows: {envelope.actions}"
+    )

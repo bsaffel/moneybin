@@ -105,7 +105,9 @@ class AccountLinksService:
         # retirement has to happen before the commit (the FK invariant), the
         # disclosure is assembled after it, and on the batched path those are
         # two separate calls on this instance — so the count travels here.
-        # Read-and-reset in rematch_after_merge keeps it to one merge.
+        # set() folds in only what survived its writes and rematch_after_merge
+        # reads-and-resets, so neither a failed accept nor a second merge can
+        # disclose a retirement twice.
         self._transfers_retired_by_collapse = 0
 
     # ------------------------------------------------------------------
@@ -510,6 +512,7 @@ class AccountLinksService:
         - ``target_account_id`` does not match the decision's ``candidate_account_id``
           (MUTATION_INVALID_INPUT).
         """
+        collapsed = 0
         if not in_outer_txn:
             self._db.begin()
         try:
@@ -595,10 +598,9 @@ class AccountLinksService:
                 # there. That is a decision of the user's being undone, so it
                 # is owed the same disclosure as the dedup retirement below —
                 # dropping the count would report "0 transfers retired" over
-                # an accepted transfer this call had just reversed.
-                self._transfers_retired_by_collapse += (
-                    repointed.accepted_transfers_retired
-                )
+                # an accepted transfer this call had just reversed. Held local
+                # until the writes below have all survived; see the fold-in.
+                collapsed = repointed.accepted_transfers_retired
                 # Accept the named decision.
                 self._decisions.update_status(
                     decision_id,
@@ -657,6 +659,11 @@ class AccountLinksService:
             if not in_outer_txn:
                 self._db.rollback()
             raise
+        # Only a merge that survived every write owes the disclosure. DuckDB
+        # rolls a failed one back; a counter already folded into the instance
+        # would not roll back with it, and the next merge here would report a
+        # transfer retired that is still accepted.
+        self._transfers_retired_by_collapse += collapsed
         if in_outer_txn:
             return None
         # Accept/reject changed the pending count — refresh the gauge (only

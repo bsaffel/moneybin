@@ -3586,6 +3586,64 @@ def test_two_components_sharing_a_physical_source_suppress(
 
 
 @pytest.mark.unit
+def test_a_shared_file_on_two_seed_only_rows_does_not_suppress(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard reads the sources the matcher would register, not every row.
+
+    ``assign_components`` seeds ``comp_sources`` from the endpoints of the
+    current run's candidate pairs only — a node in a component that no
+    candidate names contributes nothing and never blocks (``assignment.py``).
+    Here ``ofx1``–``csv_seed`` and ``plaid1``–``csv_seed2`` are existing
+    components, and the one live candidate is ``ofx1``–``plaid1``: the two
+    ``csv`` rows sit at a different amount, so they pair with nothing. They
+    share ``march.csv``, and a guard reading whole components would intersect
+    on it and stay silent about a pair the next match pass would propose and
+    persist — a false negative in the check whose entire job is to break that
+    silence.
+
+    Differs from ``test_two_components_sharing_a_physical_source_suppress`` by
+    exactly one property: whether the rows supplying the shared file are
+    themselves candidates.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(
+        doctor_db, stid="ofx1", source_type="ofx", source_file="jan.ofx"
+    )
+    _insert_unioned_row(
+        doctor_db, stid="plaid1", source_type="plaid", source_file="feb.json"
+    )
+    for stid in ("csv_seed", "csv_seed2"):
+        _insert_unioned_row(
+            doctor_db,
+            stid=stid,
+            source_type="csv",
+            source_file="march.csv",
+            amount="-11.00",
+        )
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_seed', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP),
+                 ('m2', 'plaid1', 'plaid', 'bank', 'csv_seed2', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
+                  'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1 (1 unreviewed pair)"]
+
+
+@pytest.mark.unit
 def test_one_matcher_node_split_across_origins_is_not_a_pair(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

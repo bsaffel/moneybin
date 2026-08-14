@@ -2368,9 +2368,11 @@ class DoctorService:
                            a.source_type AS type_a,
                            a.source_origin AS origin_a,
                            a.source_transaction_id AS id_a,
+                           a.source_file AS file_a,
                            b.source_type AS type_b,
                            b.source_origin AS origin_b,
-                           b.source_transaction_id AS id_b
+                           b.source_transaction_id AS id_b,
+                           b.source_file AS file_b
                     FROM {INT_TRANSACTIONS_UNIONED.full_name} AS a
                     JOIN {INT_TRANSACTIONS_UNIONED.full_name} AS b
                       ON a.account_id = b.account_id
@@ -2494,33 +2496,6 @@ class DoctorService:
                     FROM reach
                     GROUP BY acct, src
                 ),
-                -- Physical sources reachable from each component, for the
-                -- cardinality guard below. A row in no component is its own
-                -- singleton: assign_components registers every candidate
-                -- endpoint, so an undecided row still carries its own file into
-                -- the guard. NULL source_file imposes no constraint, matching
-                -- the Python. Python registers only the nodes appearing in that
-                -- run's candidate list, so this is marginally broader -- it can
-                -- suppress where a seed-only node supplies the shared file. The
-                -- extra suppression is silence in a warn-only check, which is
-                -- the safe direction to be approximate in.
-                component_sources AS (
-                    SELECT DISTINCT
-                        t.account_id AS acct,
-                        COALESCE(
-                            cn.comp,
-                            t.source_type || chr(31) || t.source_transaction_id
-                        ) AS comp,
-                        t.source_type AS s_type,
-                        t.source_origin AS s_origin,
-                        t.source_file AS s_file
-                    FROM {INT_TRANSACTIONS_UNIONED.full_name} AS t
-                    LEFT JOIN component AS cn
-                      ON cn.acct = t.account_id
-                     AND cn.node = t.source_type || chr(31)
-                                   || t.source_transaction_id
-                    WHERE t.source_file IS NOT NULL
-                ),
                 rejected_pairs AS (
                     SELECT account_id AS acct,
                            source_transaction_id_a AS stid_a,
@@ -2559,6 +2534,33 @@ class DoctorService:
                     LEFT JOIN component AS cb
                       ON cb.acct = c.account_id
                      AND cb.node = c.type_b || chr(31) || c.id_b
+                ),
+                -- Physical sources per component, for the cardinality guard
+                -- below -- registered from candidate *endpoints* only, which is
+                -- what assign_components does: it walks this run's candidate
+                -- list, so a node no candidate names contributes nothing and
+                -- never blocks (assignment.py, "seed-only nodes"). Reading a
+                -- component's other members instead would let a row the matcher
+                -- never looks at supply the shared file that suppresses a live
+                -- pair -- silence in the check whose whole job is to break it.
+                -- A component of one carries its own file in via resolved's
+                -- COALESCE. NULL source_file imposes no constraint, matching
+                -- the Python. Still an approximation in one direction: these
+                -- are the blocking join's pairs, and the matcher registers the
+                -- scored subset of them, so the guard can see a file the run
+                -- would not have.
+                component_sources AS (
+                    SELECT account_id AS acct,
+                           comp_a AS comp,
+                           type_a AS s_type,
+                           origin_a AS s_origin,
+                           file_a AS s_file
+                    FROM resolved
+                    WHERE file_a IS NOT NULL
+                    UNION
+                    SELECT account_id, comp_b, type_b, origin_b, file_b
+                    FROM resolved
+                    WHERE file_b IS NOT NULL
                 )
                 -- The two clauses below are assign_components' two skips, in
                 -- its own order (assignment.py). Both are component-grain, not
