@@ -2535,6 +2535,27 @@ class DoctorService:
                       ON cb.acct = c.account_id
                      AND cb.node = c.type_b || chr(31) || c.id_b
                 ),
+                -- The matcher's candidate list, which a rejected pair never
+                -- reaches: scoring.py skips it before appending to `results`,
+                -- and everything downstream reads that list. So the filter
+                -- belongs here, ahead of both consumers, not only in the final
+                -- SELECT -- a rejected row left in would lend its file to
+                -- component_sources below and let the cardinality guard drop a
+                -- live pair the matcher would propose.
+                live_candidates AS (
+                    SELECT r.*
+                    FROM resolved AS r
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM rejected_pairs AS rp
+                        WHERE rp.acct = r.account_id
+                          AND rp.stid_a = r.id_a
+                          AND rp.stype_a = r.type_a
+                          AND rp.sorigin_a = r.origin_a
+                          AND rp.stid_b = r.id_b
+                          AND rp.stype_b = r.type_b
+                          AND rp.sorigin_b = r.origin_b
+                    )
+                ),
                 -- Physical sources per component, for the cardinality guard
                 -- below -- registered from candidate *endpoints* only, which is
                 -- what assign_components does: it walks this run's candidate
@@ -2545,21 +2566,21 @@ class DoctorService:
                 -- pair -- silence in the check whose whole job is to break it.
                 -- A component of one carries its own file in via resolved's
                 -- COALESCE. NULL source_file imposes no constraint, matching
-                -- the Python. Still an approximation in one direction: these
-                -- are the blocking join's pairs, and the matcher registers the
-                -- scored subset of them, so the guard can see a file the run
-                -- would not have.
+                -- the Python. The registration set now matches the matcher's:
+                -- both dedup tiers pass excluded_ids=None (engine.py) and
+                -- neither the blocking SQL nor the scoring loop applies a
+                -- score cutoff, so every surviving blocking pair registers.
                 component_sources AS (
                     SELECT account_id AS acct,
                            comp_a AS comp,
                            type_a AS s_type,
                            origin_a AS s_origin,
                            file_a AS s_file
-                    FROM resolved
+                    FROM live_candidates
                     WHERE file_a IS NOT NULL
                     UNION
                     SELECT account_id, comp_b, type_b, origin_b, file_b
-                    FROM resolved
+                    FROM live_candidates
                     WHERE file_b IS NOT NULL
                 )
                 -- The two clauses below are assign_components' two skips, in
@@ -2577,7 +2598,7 @@ class DoctorService:
                 --    about a pair no refresh can ever clear, since the remedy
                 --    this check recommends is the very pass that re-drops it.
                 SELECT r.account_id, COUNT(*) AS pairs
-                FROM resolved AS r
+                FROM live_candidates AS r
                 WHERE r.comp_a <> r.comp_b
                   AND NOT EXISTS (
                     SELECT 1
@@ -2590,16 +2611,6 @@ class DoctorService:
                     WHERE sa.acct = r.account_id
                       AND sa.comp = r.comp_a
                       AND sb.comp = r.comp_b
-                )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM rejected_pairs AS rp
-                    WHERE rp.acct = r.account_id
-                      AND rp.stid_a = r.id_a
-                      AND rp.stype_a = r.type_a
-                      AND rp.sorigin_a = r.origin_a
-                      AND rp.stid_b = r.id_b
-                      AND rp.stype_b = r.type_b
-                      AND rp.sorigin_b = r.origin_b
                 )
                 GROUP BY r.account_id
                 ORDER BY r.account_id
