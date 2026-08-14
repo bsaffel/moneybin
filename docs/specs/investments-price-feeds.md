@@ -1280,8 +1280,10 @@ investment/report integration. The first-available floor was dropped as a no-op
 - `src/moneybin/connectors/prices/__init__.py`
 - `src/moneybin/connectors/prices/protocol.py`
 - `src/moneybin/connectors/prices/errors.py`
-- `src/moneybin/connectors/prices/_http.py` — the one request path both adapters
-  share: retry on rate limit only, map status to a typed error, and parse with
+- `src/moneybin/connectors/_http.py` — the one request path every feed shares
+  (the exchange-rate adapter joined it at M1K.2, which is why it sits above the
+  `prices` package and takes the caller's `FeedErrorTypes`): retry on rate limit
+  only, map status to a typed error, and parse with
   `parse_float=Decimal` so a quote never becomes a float. Returns `object` rather
   than `Any`, so a provider shape change degrades to a named per-security failure
   instead of a traceback mid-refresh

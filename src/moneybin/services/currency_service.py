@@ -55,6 +55,12 @@ MONEY_QUANTUM = Decimal("0.01")
 #: table and no provider row ever spells this.
 OVERRIDE_SOURCE = "override"
 
+#: The sentinel for a pair that prices itself. No layer answered, so naming the
+#: currency here would put a value in `source` that is neither a provider's
+#: `source_type` nor the override sentinel — and every surface renders that
+#: field as provenance.
+IDENTITY_SOURCE = "identity"
+
 _RAW_RATE_SCHEMA = {
     "from_currency": pl.Utf8,
     "to_currency": pl.Utf8,
@@ -74,9 +80,9 @@ class ResolvedRate:
     which means naming the day it was published, not the day asked about.
 
     ``source`` is not called ``source_type`` on purpose. It holds a provider's
-    ``source_type`` *or* the ``"override"`` sentinel, and that sentinel never
-    appears in ``raw.exchange_rates.source_type``. Sharing the name would claim
-    the two are joinable, which is exactly the layer-specific-alias failure
+    ``source_type`` *or* the ``"override"`` / ``"identity"`` sentinel, and no
+    sentinel ever appears in ``raw.exchange_rates.source_type``. Sharing the
+    name would claim the two are joinable, which is exactly the alias failure
     `database.md`'s one-concept-one-name rule guards against — read in the
     other direction.
     """
@@ -146,7 +152,7 @@ class CurrencyService:
             # is the common case once a display currency is set, and counting it
             # would swamp the override/cached/fetched ratio this counter exists
             # to expose.
-            return ResolvedRate(base, quote, on, on, Decimal(1), base)
+            return ResolvedRate(base, quote, on, on, Decimal(1), IDENTITY_SOURCE)
 
         stored = self._stored_rate(base, quote, on)
         if stored is not None:
@@ -164,13 +170,26 @@ class CurrencyService:
 
         observation = self._fetch(base, quote, on)
         self._store(observation)
+
+        # The provider can also resolve backwards — a weekday holiday reaches
+        # here, because only a weekend is hopped before the fetch. An override
+        # outranks the provider on its own date however that date is reached,
+        # so the correction has to be consulted again once the provider names
+        # the day it actually priced.
+        override = self._override_rate(base, quote, observation.rate_date)
+        if override is not None:
+            FX_RATE_RESOLUTION_TOTAL.labels(outcome="override").inc()
+            return ResolvedRate(
+                base, quote, on, observation.rate_date, override, OVERRIDE_SOURCE
+            )
+
         FX_RATE_RESOLUTION_TOTAL.labels(outcome="fetched").inc()
         return ResolvedRate(
             base,
             quote,
             on,
             observation.rate_date,
-            observation.rate,
+            _as_stored(observation.rate),
             observation.source_type,
         )
 
@@ -306,13 +325,9 @@ class CurrencyService:
         expressed — both the exact-date lookup and the weekend fallback go
         through here, so the two cannot drift apart.
         """
-        override = self._db.execute(
-            f"SELECT rate FROM {EXCHANGE_RATE_OVERRIDES.full_name} "  # noqa: S608  # TableRef + parameterized values
-            "WHERE from_currency = ? AND to_currency = ? AND rate_date = ?",
-            [base, quote, day],
-        ).fetchone()
+        override = self._override_rate(base, quote, day)
         if override is not None:
-            return override[0], OVERRIDE_SOURCE
+            return override, OVERRIDE_SOURCE
 
         # Newest write wins when two providers priced the same day; source_type
         # breaks the tie so the choice is deterministic rather than whatever the
@@ -326,6 +341,20 @@ class CurrencyService:
         if cached is None:
             return None
         return cached[0], str(cached[1])
+
+    def _override_rate(self, base: str, quote: str, day: date) -> Decimal | None:
+        """The user's own rate for one exact day, or ``None``.
+
+        Its own method because two paths need it: ``_stored_rate``'s ordered
+        lookup, and the post-fetch check for a provider that resolved back to a
+        day the user has already corrected.
+        """
+        row = self._db.execute(
+            f"SELECT rate FROM {EXCHANGE_RATE_OVERRIDES.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE from_currency = ? AND to_currency = ? AND rate_date = ?",
+            [base, quote, day],
+        ).fetchone()
+        return None if row is None else row[0]
 
     def _store(self, observation: RateObservation) -> int:
         """Append one observation to the cache, returning rows actually written.
@@ -342,7 +371,7 @@ class CurrencyService:
                     "from_currency": observation.from_currency,
                     "to_currency": observation.to_currency,
                     "rate_date": observation.rate_date,
-                    "rate": observation.rate,
+                    "rate": _as_stored(observation.rate),
                     "source_type": observation.source_type,
                 }
             ],
@@ -492,6 +521,17 @@ def _require_storable(rate: Decimal) -> None:
             "different number than the one reported back. Round it first.",
             code=error_codes.FX_OVERRIDE_RATE_INVALID,
         )
+
+
+def _as_stored(rate: Decimal) -> Decimal:
+    """The rate as ``DECIMAL(18,8)`` keeps it.
+
+    A provider free to publish more places than the column holds would otherwise
+    have its extra digits dropped on the way in and kept on the way out — so the
+    fetch that seeded the cache would answer with a number every later cached
+    read contradicts, for the same pair and the same day.
+    """
+    return rate.quantize(RATE_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 def _outcome_for(source: str) -> str:

@@ -83,8 +83,8 @@ def test_a_conversion_preserves_sign(amount: Decimal, rate: Decimal) -> None:
         assert (converted > 0) == (amount > 0)
 
 
-@given(amount=amounts, rate=rates)
-def test_converting_zero_yields_zero(amount: Decimal, rate: Decimal) -> None:
+@given(rate=rates)
+def test_converting_zero_yields_zero(rate: Decimal) -> None:
     """No rate invents money from nothing."""
     assert apply_rate(Decimal("0.00"), rate) == 0
 

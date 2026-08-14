@@ -239,6 +239,69 @@ def test_a_weekday_gap_is_not_answered_from_an_earlier_cached_day(
         service.resolve_rate("USD", "EUR", _TUE)
 
 
+def test_an_override_wins_the_day_a_holiday_fetch_resolves_back_to(
+    db: Database,
+) -> None:
+    """Precedence survives the *provider's* hop, not only the weekend one.
+
+    Only a weekend is walked back before the fetch, so a weekday the provider
+    was closed for reaches the network — and Frankfurter answers it with the
+    preceding business day. If that answer were taken at face value, a
+    correction the user made for that very day would be ignored the moment it
+    was reached from a holiday instead of directly: the same pair, the same
+    published day, the wrong number.
+    """
+    adapter = _StubAdapter(
+        RateObservation("USD", "EUR", _MON, Decimal("0.92"), "frankfurter")
+    )
+    service = CurrencyService(db, adapter=adapter, actor="test")
+    service.set_override("USD", "EUR", _MON, Decimal("0.95"), note="bank rate")
+
+    resolved = service.resolve_rate("USD", "EUR", _TUE)
+
+    assert resolved.rate == Decimal("0.95")
+    assert resolved.source == "override"
+    assert resolved.requested_date == _TUE
+    assert resolved.rate_date == _MON
+
+
+def test_a_fetched_rate_is_reported_at_the_precision_it_is_stored_at(
+    db: Database,
+) -> None:
+    """The seeding call and every cached call afterwards must agree.
+
+    ``raw.exchange_rates.rate`` is ``DECIMAL(18,8)``, so a provider publishing
+    more places than that has them dropped on the way in. Reporting the
+    unrounded number back would make the fetch that seeded the cache the one
+    answer no later read can reproduce.
+    """
+    adapter = _StubAdapter(
+        RateObservation("USD", "EUR", _MON, Decimal("0.1234567891"), "frankfurter")
+    )
+    service = CurrencyService(db, adapter=adapter, actor="test")
+
+    fetched = service.resolve_rate("USD", "EUR", _MON)
+    cached = service.resolve_rate("USD", "EUR", _MON)
+
+    assert fetched.rate == cached.rate == Decimal("0.12345679")
+
+
+def test_an_identity_pair_reports_a_source_that_is_not_a_currency(
+    db: Database,
+) -> None:
+    """``source`` is provenance, and every surface renders it as such.
+
+    Naming the currency there would put a value in the field that is neither a
+    provider's ``source_type`` nor the override sentinel, so `fx rate USD USD`
+    would report its provenance as "USD".
+    """
+    resolved = CurrencyService(db, adapter=_StubAdapter(None)).resolve_rate(
+        "USD", "USD", _MON
+    )
+
+    assert resolved.source == "identity"
+
+
 def test_a_missing_rate_while_offline_raises_rather_than_guessing(
     db: Database,
 ) -> None:
