@@ -14,6 +14,7 @@ deliberately does not: see
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 
@@ -21,8 +22,11 @@ import pytest
 from prometheus_client import REGISTRY
 
 from moneybin import error_codes
-from moneybin.connectors.rates.errors import RateFeedUnreachableError
-from moneybin.connectors.rates.protocol import RateObservation
+from moneybin.connectors.rates.errors import (
+    RateFeedAPIError,
+    RateFeedUnreachableError,
+)
+from moneybin.connectors.rates.protocol import RateAdapter, RateObservation
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.services.currency_service import CurrencyService, RateUnavailableError
@@ -50,6 +54,20 @@ class _OfflineAdapter:
 
     def supported_currencies(self) -> frozenset[str]:
         raise RateFeedUnreachableError("rate feed unreachable: ConnectError")
+
+
+class _BrokenAdapter:
+    """The network is fine; the provider answers with something unusable."""
+
+    source_type = "frankfurter"
+
+    def fetch(
+        self, from_currency: str, to_currency: str, on: date
+    ) -> RateObservation | None:
+        raise RateFeedAPIError("Exchange rate feed returned a non-object body")
+
+    def supported_currencies(self) -> frozenset[str]:
+        return frozenset({"USD", "EUR"})
 
 
 class _StubAdapter:
@@ -343,6 +361,71 @@ def test_a_supported_pair_missing_one_date_reports_the_rate_as_unavailable(
         service.resolve_rate("USD", "GBP", _MON)
 
     assert caught.value.code == error_codes.FX_RATE_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    ("build_adapter", "quote"),
+    [
+        pytest.param(lambda: None, "EUR", id="no-provider-configured"),
+        pytest.param(_OfflineAdapter, "EUR", id="provider-unreachable"),
+        pytest.param(lambda: _StubAdapter(None), "GBP", id="pair-missing-the-date"),
+    ],
+)
+def test_an_unresolvable_rate_keeps_the_date_out_of_the_logged_message(
+    db: Database,
+    build_adapter: Callable[[], RateAdapter | None],
+    quote: str,
+) -> None:
+    """The date the user asked about must not reach the durable log.
+
+    In text mode ``handle_cli_errors`` sends ``UserError.message`` to
+    ``logger.error``, and the file handler is unfiltered, so the message
+    persists to ``cli_YYYY-MM-DD.log``. That call site justifies itself on the
+    grounds that ``message`` "IS a fixed MoneyBin string" — an FX date
+    interpolated into it breaks exactly that invariant. ``SanitizedLogFormatter``
+    is no backstop: its account pattern wants eight consecutive digits and
+    ``2026-03-16`` is hyphenated, so nothing masks it.
+
+    The date is not dropped, only moved. ``hint`` goes straight to stderr and is
+    never logged (``cli.md`` "Secrets in Error Output"), and it rides the JSON
+    envelope as ``ErrorDetail.hint`` — so both surfaces still tell the user which
+    day failed.
+
+    Parametrized over all three paths that reach the raise with a date in hand,
+    because a fix applied to one message and not its two siblings leaks from the
+    others while looking done.
+    """
+    service = CurrencyService(db, adapter=build_adapter())
+
+    with pytest.raises(RateUnavailableError) as caught:
+        service.resolve_rate("USD", quote, _MON)
+
+    asked = _MON.isoformat()
+    assert asked not in caught.value.message
+    assert caught.value.hint is not None
+    assert asked in caught.value.hint
+
+
+def test_a_broken_provider_is_not_reported_as_an_unreachable_network(
+    db: Database,
+) -> None:
+    """A corrupt 200 must not send the user to wait for a network that is fine.
+
+    The adapter now raises rather than reporting a malformed body as an absent
+    series. That fix is only half done if the service then renders every feed
+    failure as "could not be reached": a provider answering steady garbage would
+    have the user retrying a working connection forever, which is the same wrong
+    remedy the adapter fix removed, one layer up.
+    """
+    service = CurrencyService(db, adapter=_BrokenAdapter())
+
+    with pytest.raises(RateUnavailableError) as caught:
+        service.resolve_rate("USD", "EUR", _MON)
+
+    assert caught.value.code == error_codes.FX_RATE_UNAVAILABLE
+    assert "could not be reached" not in caught.value.message
+    assert caught.value.hint is not None
+    assert "network" not in caught.value.hint
 
 
 def test_an_identity_pair_needs_neither_storage_nor_network(db: Database) -> None:

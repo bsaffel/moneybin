@@ -22,7 +22,7 @@ from decimal import ROUND_HALF_UP, Decimal
 import polars as pl
 
 from moneybin import error_codes
-from moneybin.connectors.feed_errors import FeedError
+from moneybin.connectors.feed_errors import FeedError, FeedUnreachableError
 from moneybin.connectors.rates.protocol import RateAdapter, RateObservation
 from moneybin.database import Database
 from moneybin.errors import UserError
@@ -168,6 +168,15 @@ class CurrencyService:
                 FX_RATE_RESOLUTION_TOTAL.labels(outcome=_outcome_for(source)).inc()
                 return ResolvedRate(base, quote, on, published, rate, source)
 
+        # Known gap: `_store` files the row under the day the provider PUBLISHED,
+        # so a weekday holiday — which `_last_publication_day` deliberately does
+        # not hop — misses both lookups above on every later call. The same
+        # question re-fetches, and offline it fails outright even though its
+        # answer is on disk under another date. Closing it needs a stored
+        # requested-to-published mapping; do NOT close it by widening the lookup
+        # to the nearest earlier stored day, which would answer an ordinary
+        # Tuesday with Monday's rate as if it were Tuesday's (Requirement 12,
+        # and `_last_publication_day`'s docstring).
         observation = self._fetch(base, quote, on)
         self._store(observation)
 
@@ -400,26 +409,52 @@ class CurrencyService:
     # --------------------------------- fetch ---------------------------------
 
     def _fetch(self, base: str, quote: str, on: date) -> RateObservation:
-        """One live call, or a ``RateUnavailableError`` naming which absence it is."""
+        """One live call, or a ``RateUnavailableError`` naming which absence it is.
+
+        The requested date rides the ``hint``, never the ``message``. Text-mode
+        ``handle_cli_errors`` sends ``message`` to ``logger.error`` on the
+        strength of it being a fixed MoneyBin string, and the file handler is
+        unfiltered — so a date interpolated there persists to
+        ``cli_YYYY-MM-DD.log``, which ``FxRatePayload`` classifies ``TXN_DATE``
+        precisely because one is asked about a day when money moved on it. The
+        ``hint`` goes straight to stderr and rides the JSON envelope, so the user
+        still learns which day failed on both surfaces.
+        """
         if self._adapter is None:
             FX_RATE_RESOLUTION_TOTAL.labels(outcome="unavailable").inc()
             raise RateUnavailableError(
-                f"No stored {base}/{quote} rate for {on.isoformat()}, and no rate "
-                "provider is configured.",
+                f"No stored {base}/{quote} rate for the requested date, and no "
+                "rate provider is configured.",
                 code=error_codes.FX_RATE_UNAVAILABLE,
-                hint="Record the rate yourself with 'moneybin fx set'.",
+                hint=f"Record the {on.isoformat()} rate yourself with "
+                "'moneybin fx set'.",
             )
 
         started = time.monotonic()
         try:
             observation = self._adapter.fetch(base, quote, on)
-        except FeedError as exc:
+        except FeedUnreachableError as exc:
             FX_RATE_RESOLUTION_TOTAL.labels(outcome="unavailable").inc()
             raise RateUnavailableError(
-                f"No stored {base}/{quote} rate for {on.isoformat()}, and the rate "
-                "provider could not be reached.",
+                f"No stored {base}/{quote} rate for the requested date, and the "
+                "rate provider could not be reached.",
                 code=error_codes.FX_RATE_UNAVAILABLE,
-                hint="Retry when the network is back, or record the rate yourself "
+                hint=f"Retry when the network is back, or record the "
+                f"{on.isoformat()} rate yourself with 'moneybin fx set'.",
+            ) from exc
+        except FeedError as exc:
+            # Split from the branch above because the remedies differ. The
+            # provider answered — with a 5xx, a quota refusal, or a body the
+            # adapter could not read — so telling the user to wait for the
+            # network would have them retrying a connection that is already
+            # working, for as long as the provider stays broken.
+            FX_RATE_RESOLUTION_TOTAL.labels(outcome="unavailable").inc()
+            raise RateUnavailableError(
+                f"No stored {base}/{quote} rate for the requested date, and the "
+                "rate provider did not return one.",
+                code=error_codes.FX_RATE_UNAVAILABLE,
+                hint=f"The provider is answering but not with a usable rate. "
+                f"Try again later, or record the {on.isoformat()} rate yourself "
                 "with 'moneybin fx set'.",
             ) from exc
         finally:
@@ -438,6 +473,11 @@ class CurrencyService:
         unsupported currency needs a manual override and always will, while a
         supported pair missing one date needs a different date. Reporting only
         "no rate available" sends the user to the wrong one.
+
+        The date stays out of the message here for the same reason as in
+        ``_fetch``. The unsupported-currency branch carries no date at all —
+        that failure is about the currency, and naming a day would suggest
+        another one might work.
         """
         FX_RATE_RESOLUTION_TOTAL.labels(outcome="unavailable").inc()
         unsupported = self._unsupported(base, quote)
@@ -450,10 +490,11 @@ class CurrencyService:
                 "pair will not become available by retrying.",
             )
         return RateUnavailableError(
-            f"The rate provider published no {base}/{quote} rate for {on.isoformat()}.",
+            f"The rate provider published no {base}/{quote} rate for the "
+            "requested date.",
             code=error_codes.FX_RATE_UNAVAILABLE,
-            hint="Try a nearby date, or record the rate yourself with "
-            "'moneybin fx set'.",
+            hint=f"Nothing was published for {on.isoformat()}. Try a nearby "
+            "date, or record the rate yourself with 'moneybin fx set'.",
         )
 
     def _unsupported(self, base: str, quote: str) -> set[str]:

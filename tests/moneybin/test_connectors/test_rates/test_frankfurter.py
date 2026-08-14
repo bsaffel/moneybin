@@ -11,6 +11,7 @@ with 422 — none of which is guessable from the shape of a successful response.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from decimal import Decimal
 
@@ -143,6 +144,42 @@ def test_a_date_before_the_ecb_series_returns_none() -> None:
 
 
 @respx.mock
+def test_the_absent_series_log_line_does_not_carry_the_requested_date(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 404 is routine, so it logs — and the log outlives the session.
+
+    The pair stays: a currency code is ``DataClass.CURRENCY``, which the fx
+    payload module records as disclosing no balance and no amount. The date does
+    not, because ``FxRatePayload`` classifies it ``TXN_DATE`` on the reasoning
+    that one is asked about a particular day because money moved on it.
+
+    Scoped to ``moneybin.*`` records on purpose, and the narrowing is a finding
+    rather than a convenience: httpx logs ``HTTP Request: GET
+    .../v1/2026-03-13?base=USD&symbols=EUR`` at INFO, and ``httpx`` sits in
+    ``_CONSOLE_SUPPRESSED_PREFIXES``, which suppresses the console *and keeps
+    the file copy*. So the same date still reaches the same log through the
+    client, on every request rather than only on a 404. That exposure is not
+    this branch's — `tiingo` has sent `startDate`/`endDate` and a ticker in the
+    URL since #373 — and closing it means overturning a documented decision to
+    retain per-request lines for sync debugging. Asserting it here would pin an
+    unrelated config to this adapter's test.
+    """
+    respx.get(_url(_FRIDAY)).mock(return_value=httpx.Response(404))
+
+    with caplog.at_level(logging.INFO):
+        assert FrankfurterRateAdapter().fetch("USD", "EUR", _FRIDAY) is None
+
+    logged = " ".join(
+        record.getMessage()
+        for record in caplog.records
+        if record.name.startswith("moneybin.")
+    )
+    assert _FRIDAY.isoformat() not in logged
+    assert "USD/EUR" in logged, "the pair is what makes the line worth keeping"
+
+
+@respx.mock
 def test_a_response_without_the_requested_rate_returns_none() -> None:
     """A 200 that omits the pair is absence, not a malformed provider."""
     respx.get(_url(_FRIDAY)).mock(
@@ -183,45 +220,59 @@ def test_a_whole_number_rate_is_a_rate_not_an_absence() -> None:
     assert isinstance(obs.rate, Decimal)
 
 
-@respx.mock
-def test_a_non_numeric_rate_returns_none_rather_than_a_wrong_number() -> None:
-    """`true` is an int in Python; converting it would store a rate of 1."""
-    respx.get(_url(_FRIDAY)).mock(
-        return_value=httpx.Response(
-            200,
-            json={
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param([1, 2], id="body-is-not-an-object"),
+        pytest.param(
+            {"amount": 1.0, "base": "USD", "date": "2026-03-13", "rates": "0.87138"},
+            id="rates-is-not-an-object",
+        ),
+        pytest.param(
+            {
                 "amount": 1.0,
                 "base": "USD",
                 "date": "2026-03-13",
                 "rates": {"EUR": True},
             },
-        )
-    )
-
-    assert FrankfurterRateAdapter().fetch("USD", "EUR", _FRIDAY) is None
-
-
-@respx.mock
-def test_an_unparseable_provider_date_returns_none_rather_than_crashing() -> None:
-    """`rate_date` is load-bearing, so a date we cannot read is not a rate.
-
-    Falling back to the requested day would file the rate under a day the
-    provider never published, which is the one thing storing the resolved day
-    exists to prevent.
-    """
-    respx.get(_url(_FRIDAY)).mock(
-        return_value=httpx.Response(
-            200,
-            json={
+            id="rate-is-the-wrong-type",
+        ),
+        pytest.param(
+            {
                 "amount": 1.0,
                 "base": "USD",
                 "date": "not-a-date",
                 "rates": {"EUR": 0.87138},
             },
-        )
-    )
+            id="resolved-date-is-unreadable",
+        ),
+    ],
+)
+@respx.mock
+def test_a_malformed_200_is_a_feed_failure_not_an_absent_series(
+    body: object,
+) -> None:
+    """A present-but-corrupt field is the provider's fault, so it raises.
 
-    assert FrankfurterRateAdapter().fetch("USD", "EUR", _FRIDAY) is None
+    ``RateAdapter.fetch`` promises None only for "an absence the caller can
+    route around", and raises "for every condition that is the provider's fault
+    or the network's". Returning None here spent that promise: ``_absence``
+    would find both currencies supported and tell the user no rate was published
+    for the date, so the remedy offered — try a nearby date, or record it
+    yourself — cannot work, and the corrupt response never surfaces.
+
+    All four malformed shapes are parametrized together because they are one
+    defect with four spellings. Fixing the wrong-typed rate alone would leave
+    three siblings answering absence for a provider fault, which is the same bug
+    wearing a different field name.
+
+    ``true`` earns its own case: it is an ``int`` in Python, so a conversion that
+    forgot to exclude ``bool`` would store a rate of exactly 1.
+    """
+    respx.get(_url(_FRIDAY)).mock(return_value=httpx.Response(200, json=body))
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().fetch("USD", "EUR", _FRIDAY)
 
 
 @respx.mock

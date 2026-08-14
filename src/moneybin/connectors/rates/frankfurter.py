@@ -107,26 +107,44 @@ class FrankfurterRateAdapter:
             # The provider answers 404 for both an unsupported currency and a
             # date before its series begins. Either way it has no row, which is
             # the caller's None, not a failure.
-            logger.info(f"No {base}/{quote} series published for {on.isoformat()}")
+            #
+            # The date is deliberately absent: this line reaches the durable
+            # cli_YYYY-MM-DD.log, and `FxRatePayload` classifies an FX date
+            # TXN_DATE. The pair stays — a currency code is CURRENCY, which
+            # discloses no amount — and it is what makes the line worth keeping.
+            logger.info(f"No {base}/{quote} series published for the requested date")
             return None
 
+        # A 200 the caller cannot read is the provider's fault, and the Protocol
+        # reserves None for "an absence the caller can route around". Returning
+        # None for any of the four shapes below would send `_absence` looking for
+        # an unsupported currency, find both supported, and tell the user no rate
+        # was published that day — so the offered remedy (a nearby date, or your
+        # own override) cannot work and the corrupt response never surfaces.
         if not isinstance(payload, dict):
-            logger.warning("Exchange rate feed returned a non-object body")
-            return None
+            raise RateFeedAPIError("Exchange rate feed returned a non-object body")
         fields: dict[str, object] = payload
         rates = fields.get("rates")
         if not isinstance(rates, dict):
-            logger.warning("Exchange rate feed response carried no 'rates' object")
-            return None
+            raise RateFeedAPIError(
+                "Exchange rate feed response carried no 'rates' object"
+            )
         quoted: dict[str, object] = rates
 
-        rate = _as_exact_decimal(quoted.get(quote))
-        if rate is None:
+        # Absent key is the one genuine absence in this block: the provider
+        # answered, and simply prices no such series.
+        if quote not in quoted:
             return None
+        rate = _as_exact_decimal(quoted[quote])
+        if rate is None:
+            raise RateFeedAPIError(
+                "Exchange rate feed answered with a rate it could not read"
+            )
         rate_date = _as_date(fields.get("date"), default=on)
         if rate_date is None:
-            logger.warning("Exchange rate feed answered with an unreadable date")
-            return None
+            raise RateFeedAPIError(
+                "Exchange rate feed answered with an unreadable date"
+            )
 
         return RateObservation(
             from_currency=base,
@@ -142,9 +160,12 @@ def _as_exact_decimal(raw: object) -> Decimal | None:
 
     The helper's `parse_float=Decimal` covers `0.87138` but not `109`, because
     a JSON integer never reaches parse_float. Accepting int as well keeps a
-    whole-number rate — plausible on JPY or KRW — from reading as an absent
-    series. bool is excluded explicitly: it is an int in Python, so `true`
-    would otherwise become a rate of exactly 1.
+    whole-number rate — plausible on JPY or KRW — from reading as a broken feed.
+    bool is excluded explicitly: it is an int in Python, so `true` would
+    otherwise become a rate of exactly 1.
+
+    None means "present but unreadable", never "absent" — the caller checks for
+    the key first and raises on the None this returns.
     """
     if isinstance(raw, Decimal):
         return raw

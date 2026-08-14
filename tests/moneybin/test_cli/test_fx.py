@@ -141,21 +141,30 @@ class TestFxRate:
     @patch("moneybin.cli.commands.fx.get_database")
     @_patched_resolve_raising(
         RateUnavailableError(
-            "The rate provider published no USD/EUR rate for 2026-03-13.",
+            "The rate provider published no USD/EUR rate for the requested date.",
             code=error_codes.FX_RATE_UNAVAILABLE,
-            hint="Try a nearby date, or record the rate yourself with "
-            "'moneybin fx set'.",
+            hint="Nothing was published for 2026-03-13. Try a nearby date, or "
+            "record the rate yourself with 'moneybin fx set'.",
         )
     )
     def test_an_unresolvable_rate_exits_one_and_says_why(
         self, _resolve: MagicMock, _db: MagicMock, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Nothing is substituted, so the exit code is the whole signal."""
+        """Nothing is substituted, so the exit code is the whole signal.
+
+        The date assertion is the CLI half of the service's own guarantee: the
+        message goes through ``logger.error`` and persists to the durable log,
+        while the hint carrying the date goes to stderr and never does. Only this
+        layer can prove the split, because the routing lives in
+        ``handle_cli_errors`` rather than in the error.
+        """
         with caplog.at_level(logging.ERROR):
             result = runner.invoke(app, ["rate", "USD", "EUR", "2026-03-13"])
 
         assert result.exit_code == 1
         assert "no USD/EUR rate" in caplog.text
+        assert "2026-03-13" not in caplog.text
+        assert "2026-03-13" in result.output, "the user is still told which day"
 
     @patch("moneybin.cli.commands.fx.get_database")
     @_patched_resolve_raising(
