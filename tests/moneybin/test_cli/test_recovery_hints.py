@@ -18,10 +18,10 @@ import pytest
 from moneybin.cli.commands.accounts.links import (
     _report_rematch,  # pyright: ignore[reportPrivateUsage]  # the unit that emits the hints
 )
-from moneybin.cli.utils import (
+from moneybin.cli.utils import warn_transfers_retired
+from moneybin.matching.reconciliation import (
     RETIRED_SIDES_COLLAPSED,
     RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED,
-    warn_transfers_retired,
 )
 from moneybin.services.refresh import RefreshResult
 from tests.cli_command_helpers import assert_published_commands_resolve
@@ -196,6 +196,31 @@ def test_mcp_partial_rematch_action_names_the_decisions_that_landed() -> None:
 
     partial = next(a for a in actions if "stopped partway" in a)
     assert "4" in partial, f"the agent-facing action hid the merges: {partial}"
+
+
+def test_mcp_partial_rematch_states_its_counts_once() -> None:
+    """The crash branch owns the counts; the clean hints must not restate them.
+
+    Both fire off the same fields, so an agent reading the unfiltered list gets
+    "its remaining counts are incomplete" and, two lines later, a flat "the
+    merge exposed 2 new duplicate proposal(s)" that reads like a finished pass.
+    The CLI twin never had this — its branches are exclusive.
+    """
+    from moneybin.mcp.rematch_report import rematch_actions
+
+    actions = rematch_actions(
+        RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matching_error="boom",
+            matches_pending_review=2,
+            matches_pending_transfers=1,
+        )
+    )
+
+    assert sum("proposal(s)" in action for action in actions) == 1, actions
+    assert sum("transfer(s)" in action for action in actions) == 1, actions
+    assert "stopped partway" in " ".join(actions)
 
 
 def test_pending_transfer_hint_publishes_runnable_recovery(

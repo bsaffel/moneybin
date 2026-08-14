@@ -1,5 +1,5 @@
 {
-  "sha256": "a0bb19b0226cad556677cc14e10e6f741a72206e514fbdc34504c8ccc4898937",
+  "sha256": "0b764dbd7c1a643bc67d150174802f29d3aa66db704d92d8d821a22eeda9736e",
   "tool_count": 49,
   "tools": [
     {
@@ -2802,7 +2802,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Accept or reject an atomic batch of transaction, match, or auto-rule review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; keep auto-rule and ordinary decisions in separate calls.",
+        "description": "Accept or reject an atomic batch of transaction, match, or auto-rule review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; keep auto-rule and ordinary decisions in separate calls. Accepting a match can reverse a transfer the user already accepted, once one component holds both its legs: `transfers_retired` counts those, and each result's `status` is what committed \u2014 an accept that loses that tiebreak reads 'reversed'.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3033,12 +3033,12 @@
         },
         "name": "reviews_decide"
       },
-      "description_bytes": 248,
+      "description_bytes": 492,
       "input_schema_bytes": 2039,
       "name": "reviews_decide",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 2480
+      "total_bytes": 2727
     },
     {
       "annotation_bytes": 89,
@@ -5027,5 +5027,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 55151
+  "total_bytes": 55398
 }

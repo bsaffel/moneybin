@@ -12,6 +12,17 @@ from moneybin.cli.commands.transactions.matches import app
 runner = CliRunner()
 
 
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """The WARNING-level records only — the surface's disclosure channel.
+
+    A failed matcher run emits three kinds of record: the disclosures
+    (WARNING), the frame chain (ERROR), and the classified ``❌`` line
+    (ERROR). Filtering by level keeps a disclosure assertion pointed at the
+    disclosure whatever the failure path logs around it.
+    """
+    return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+
 class TestMatchesRun:
     """Tests for the matches run command."""
 
@@ -109,8 +120,12 @@ class TestMatchesRun:
             result = runner.invoke(app, ["run", "--skip-transform"])
 
         assert result.exit_code != 0, "a crashed run must not report success"
-        assert caplog.messages, "the crash swallowed the retirement disclosure"
-        assert "2" in caplog.messages[-1]
+        # The disclosure is the WARNING; the ❌ line and the frame-chain log
+        # that follow it are the failure's own presentation, so a positional
+        # `messages[-1]` would read one of those instead.
+        warnings = _warnings(caplog)
+        assert warnings, "the crash swallowed the retirement disclosure"
+        assert "2" in warnings[-1]
 
     @patch("moneybin.cli.commands.transactions.matches.get_database")
     @patch("moneybin.services.matching_service.MatchingService.run")
@@ -140,8 +155,9 @@ class TestMatchesRun:
             result = runner.invoke(app, ["run", "--skip-transform"])
 
         assert result.exit_code != 0, "a crashed run must not report success"
-        assert caplog.messages, "the crash swallowed the committed merges"
-        assert "4" in caplog.messages[-1]
+        warnings = _warnings(caplog)
+        assert warnings, "the crash swallowed the committed merges"
+        assert "4" in warnings[-1]
 
     @patch("moneybin.cli.commands.transactions.matches.get_database")
     @patch("moneybin.services.matching_service.MatchingService.run")
@@ -169,7 +185,46 @@ class TestMatchesRun:
             result = runner.invoke(app, ["run", "--skip-transform"])
 
         assert result.exit_code != 0
-        assert caplog.messages == []
+        assert _warnings(caplog) == []
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_run_fails_through_the_cli_error_path_not_a_traceback(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The re-raise above must land on the ``❌`` + ``Exit(1)`` presentation.
+
+        ``MatchRunError``'s own message *is* ``str(cause)``, and everything
+        downstream of the tiers is DuckDB and repository work — so an
+        unclassified re-raise puts binder text and file paths on the terminal
+        as an unhandled traceback. The MCP twin was hardened against exactly
+        this in this PR; the CLI twin is what this asserts.
+
+        The exit code cannot tell the two apart: CliRunner reports 1 for a
+        clean ``typer.Exit(1)`` and for a crash alike, which is why the three
+        sibling tests above stayed green while the crash was raw.
+        """
+        from moneybin.matching.engine import MatchResult, MatchRunError
+
+        mock_get_db.return_value = MagicMock()
+        mock_run.side_effect = MatchRunError(
+            RuntimeError("Binder Error: no column 'amt' in /Users/x/moneybin.duckdb"),
+            partial=MatchResult(auto_merged=4),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = runner.invoke(app, ["run", "--skip-transform"])
+
+        assert not isinstance(result.exception, MatchRunError), (
+            "the matcher error reached the terminal as an unhandled traceback"
+        )
+        assert result.exit_code == 1
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any(m.startswith("❌") for m in errors), errors
+        assert not any("Binder Error" in m for m in errors), errors
 
 
 class TestMatchesBackfill:
@@ -231,8 +286,9 @@ class TestMatchesBackfill:
             result = runner.invoke(app, ["backfill", "--skip-transform"])
 
         assert result.exit_code != 0, "a crashed backfill must not report success"
-        assert caplog.messages, "the crash swallowed the retirement disclosure"
-        assert "2" in caplog.messages[-1]
+        warnings = _warnings(caplog)
+        assert warnings, "the crash swallowed the retirement disclosure"
+        assert "2" in warnings[-1]
 
     @patch("moneybin.cli.commands.transactions.matches.get_database")
     @patch("moneybin.services.matching_service.MatchingService.run")
@@ -257,8 +313,44 @@ class TestMatchesBackfill:
             result = runner.invoke(app, ["backfill", "--skip-transform"])
 
         assert result.exit_code != 0, "a crashed backfill must not report success"
-        assert caplog.messages, "the crash swallowed the committed merges"
-        assert "4" in caplog.messages[-1]
+        warnings = _warnings(caplog)
+        assert warnings, "the crash swallowed the committed merges"
+        assert "4" in warnings[-1]
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_backfill_fails_through_the_cli_error_path_not_a_traceback(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The backfill's own twin of the raw-crash gap above.
+
+        Separate test for the reason the pairs above are separate: the two
+        commands re-raise independently, so one can regain the clean
+        presentation while the other keeps leaking.
+        """
+        from moneybin.matching.engine import MatchResult, MatchRunError
+
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = mock_db
+        mock_db.execute.return_value.fetchone.return_value = (0,)
+        mock_run.side_effect = MatchRunError(
+            RuntimeError("Binder Error: no column 'amt' in /Users/x/moneybin.duckdb"),
+            partial=MatchResult(auto_merged=4),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = runner.invoke(app, ["backfill", "--skip-transform"])
+
+        assert not isinstance(result.exception, MatchRunError), (
+            "the matcher error reached the terminal as an unhandled traceback"
+        )
+        assert result.exit_code == 1
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any(m.startswith("❌") for m in errors), errors
+        assert not any("Binder Error" in m for m in errors), errors
 
 
 class TestMatchesHistory:

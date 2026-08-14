@@ -13,10 +13,10 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import (
-    RETIRED_SIDES_COLLAPSED,
     handle_cli_errors,
     warn_transfers_retired,
 )
+from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 
 logger = logging.getLogger(__name__)
 

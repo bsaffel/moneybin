@@ -142,7 +142,13 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "accounts_balance_assert": (1_416, 1_679),
     "transactions_annotate": (3_457, 3_653),
     "transactions_categorize_rules_set": (3_043, 2_670),
-    "reviews_decide": (2_480, 2_566),
+    # The one cohort whose candidate now costs more than the four tools it
+    # replaced (2,727 vs 2,566). The overrun is a disclosure the replaced
+    # tools never owed: accepting a match can reverse a transfer the user
+    # accepted, and an agent that cannot read that from the description
+    # reports the reversal as a clean accept. Registry-wide the consolidation
+    # still stands at -38.9%.
+    "reviews_decide": (2_727, 2_566),
     "identity_links_decide": (3_124, 5_762),
     "taxonomy_set": (3_480, 3_223),
     "privacy_consent_set": (1_217, 2_188),

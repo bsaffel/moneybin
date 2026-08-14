@@ -989,6 +989,9 @@ def reviews_decide_coarse(
     """Accept or reject one atomic ordinary or auto-rule decision batch."""
     operation_id = current_operation_id()
     auto_rule_impact: AutoAcceptPayload | None = None
+    # Stays None on the auto-rule branch, which folds no match edge and so
+    # runs no reconciliation — distinct from a pass that reversed nothing.
+    transfers_retired: int | None = None
     with get_database(read_only=False) as db:
         auto_rule_decisions = [
             decision
@@ -1046,9 +1049,10 @@ def reviews_decide_coarse(
                 list[OrdinaryReviewDecisionRequest],
                 decisions,
             )
-            results = ReviewDecisionsService(db, actor="mcp").apply_ordinary(
+            applied = ReviewDecisionsService(db, actor="mcp").apply_ordinary(
                 ordinary_decisions
             )
+            transfers_retired = applied.transfers_retired
             outcomes = [
                 ReviewDecisionOutcome(
                     kind=item.request.kind,
@@ -1058,19 +1062,33 @@ def reviews_decide_coarse(
                     changed=item.changed,
                     operation_id=operation_id,
                 )
-                for item in results
+                for item in applied.items
             ]
+    actions = [
+        "Use reviews(status='pending') to continue review",
+        "Use system_audit_undo(operation_id=...) to reverse this batch",
+    ]
+    if transfers_retired:
+        # First, and ahead of the batch undo: that one reverses the decisions
+        # in this call, which does not restore the *other* transfer the fold
+        # retired — the one the user is about to find missing.
+        actions.insert(
+            0,
+            f"This batch retired {transfers_retired} previously accepted "
+            "transfer(s) — inspect with system_audit(), restore with "
+            "system_audit_undo() if that was wrong, then "
+            "refresh_run(steps=['match']) to re-propose over the legs the "
+            "reversal freed",
+        )
     return build_envelope(
         data=ReviewsDecidePayload(
             results=outcomes,
             applied_count=sum(item.changed for item in outcomes),
             operation_id=operation_id,
             auto_rule_impact=auto_rule_impact,
+            transfers_retired=transfers_retired,
         ),
-        actions=[
-            "Use reviews(status='pending') to continue review",
-            "Use system_audit_undo(operation_id=...) to reverse this batch",
-        ],
+        actions=actions,
     )
 
 
@@ -1276,7 +1294,10 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         "Accept or reject an atomic batch of transaction, match, or auto-rule "
         "review decisions. Auto-rule decisions use kind='auto_rule' and may set "
         "allow_broad after inspecting estimated_match_count; keep auto-rule and "
-        "ordinary decisions in separate calls.",
+        "ordinary decisions in separate calls. Accepting a match can reverse a "
+        "transfer the user already accepted, once one component holds both its "
+        "legs: `transfers_retired` counts those, and each result's `status` is "
+        "what committed — an accept that loses that tiebreak reads 'reversed'.",
         privacy_actor="reviews_decide",
     )
     register(

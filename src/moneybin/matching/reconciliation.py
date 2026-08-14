@@ -22,6 +22,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The clause naming what collapsed. Two constants rather than one per trigger,
+# and none of them names its trigger: the reconciliation walks every accepted
+# transfer, not only the ones this call invalidated, so a count can include a
+# transfer that an unrelated earlier decision broke and this call merely found.
+# Saying "this decision invalidated" asserted a cause the number does not carry.
+# What legitimately differs between surfaces is what *can* collapse — only a
+# merge folds two accounts into one, so only its wording may say so.
+#
+# Here rather than in either surface's helpers, for the reason this module is
+# separate at all: the sentence belongs to the event, and a copy per surface
+# is how the CLI and MCP wordings drifted apart in the first place.
+RETIRED_SIDES_COLLAPSED = "their two sides turned out to be one transaction"
+RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED = (
+    "their two sides turned out to be one transaction, "
+    "or their two accounts one account"
+)
+
 
 class ReconciliationError(Exception):
     """A reconciliation that raised after committing some of its reversals.

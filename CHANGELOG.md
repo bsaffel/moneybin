@@ -961,6 +961,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   links candidates as it walks them, so three mutually duplicate rows with no
   prior decision count as three pairs and become two proposals — the remedy the
   finding recommends under-delivered against its own number.
+
+  The batch review path reconciles too. `reviews_decide` accepts match rows
+  through `ReviewDecisionsService.apply_ordinary`, which wrote them straight to
+  the repo — so an agent folding a queued duplicate that way left two accepted
+  transfers resolving to one gold transaction, the exact corruption the single
+  and bulk accepts were fixed for. The batch now runs the same reconciliation
+  once after its writes, reports `transfers_retired` in `data` beside an
+  `actions[]` route back, and re-reads each decision's committed status: an
+  accept that loses the reconciliation's tiebreak comes back `reversed` instead
+  of claiming it stands.
+
+  A crashed matcher no longer reaches the terminal as a traceback.
+  `MatchRunError`'s own message is `str(cause)` — DuckDB binder text, file
+  paths — and it was registered nowhere in the user-error classifier, whose
+  contract is that unrecognized exceptions propagate unchanged. `matches run`
+  and `matches backfill` therefore printed all of it, the leak the MCP twin was
+  hardened against in this same change. Both now exit through the `❌` + code-1
+  path with a message MoneyBin wrote; the frame chain, not the message, goes to
+  the log.
 - **An accepted merge no longer strands the match decisions made under the old
   account, which could silently reverse a rejection.** Accepting a link
   re-points `app.account_links`, but a row in `app.match_decisions` stores the

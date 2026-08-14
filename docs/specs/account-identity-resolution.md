@@ -604,17 +604,26 @@ Guard-2 free-text resolution):
   of the collapse `repoint_account` already retires at account level.
 
   **The reconciliation belongs to no single trigger.** A merge is one way a
-  component grows past a transfer's legs; accepting a queued duplicate through
-  the review queue is another, and a bulk `--confirm-all` is a third. They share
-  no chokepoint, so the rule lives in
+  component grows past a transfer's legs; accepting a queued duplicate one at a
+  time is another, a batch of them through `reviews_decide` a third, and a bulk
+  `--confirm-all` a fourth. They share no chokepoint, so the rule lives in
   `moneybin/matching/reconciliation.py::retire_transfers_invalidated_by_dedup`
   and each calls it:
 
   | Trigger | Caller | Where it runs |
   |---|---|---|
   | Matcher pass (auto-merge, post-merge re-match, any `refresh`) | `TransactionMatcher.run` | Between the dedup tiers and Tier 4 |
-  | Review-queue accept (`reviews decide`, `transactions_matches_set`) | `MatchingService.set_status` | Inside the accept's own transaction |
+  | Single accept (`transactions_matches_set`, `review --confirm`) | `MatchingService.set_status` | Inside the accept's own transaction |
+  | Batch review accept (`reviews_decide`) | `ReviewDecisionsService.apply_ordinary` | Once after the batch's writes, inside its transaction |
   | Bulk accept (`review --confirm-all`) | `MatchingService.accept_all_pending` | Inside the batch transaction |
+
+  The batch row is the one that reads as a duplicate of the single accept and
+  is not: `reviews_decide` never reaches `set_status`. It writes match rows
+  through `MatchDecisionsRepo.update_status` directly, so for three rounds it
+  was the one accept path that folded duplicates without reconciling. Once per
+  batch rather than once per row — the pass walks every accepted transfer
+  whatever triggered it, so a per-row call repeats one scan to the same
+  fixpoint.
 
   The matcher's position is the load-bearing one: it is the only point where the
   components already include the edges that run just wrote *and* Tier 4 has not
@@ -623,8 +632,8 @@ Guard-2 free-text resolution):
   precedes `transform`, so a corrupt `bridge_transfers` is never built rather
   than rebuilt correctly one refresh later.
 
-  The two accept paths need their own call because they re-derive nothing: both
-  write the decision and return. **That is not a deferral.**
+  The three accept paths need their own call because they re-derive nothing:
+  each writes the decision and returns. **That is not a deferral.**
   `prep.int_transactions__matched`, `core.fct_transactions` and
   `core.bridge_transfers` are all `kind VIEW`, so a component that now holds two
   accepted transfers' legs double-counts on the next read whether or not a
@@ -638,7 +647,7 @@ Guard-2 free-text resolution):
   and `matching_skipped` — an ordinary refresh reaches the match step, so it can
   auto-merge or reverse without a merge anywhere in sight.
 
-  Neither accept path is scoped to `match_type = 'dedup'`. Accepting a duplicate
+  No accept path is scoped to `match_type = 'dedup'`. Accepting a duplicate
   is the usual way to collide two transfers' legs, but a *transfer* proposed
   before the edge that invalidated it survives in the queue — Tier 4 refuses to
   raise that shape and never revisits what it already raised — so accepting it
@@ -666,6 +675,14 @@ Guard-2 free-text resolution):
   `transfers_retired` cannot stand in for the subtraction — it also counts
   transfers accepted in earlier sessions, so netting it against the batch would
   under-report an ordinary bulk accept.
+
+  `reviews_decide` owes the correction per decision, not in aggregate: it
+  returns one outcome per row, so `apply_ordinary` re-reads the committed
+  status of every match it accepted and reports that instead of the requested
+  one. Its `transfers_retired` discounts the rows the batch itself flipped, for
+  the reason the other two do, and is `null` rather than `0` when the batch
+  accepted no match at all — no pass ran, which is not the same as a pass that
+  reversed nothing.
 
   Components here are built from **accepted dedup edges only**, which is
   narrower than the accepted+pending graph the matcher seeds union-find with

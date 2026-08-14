@@ -385,4 +385,38 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         return UserError(str(exc), code=error_codes.INFRA_NOT_FOUND)
     if isinstance(exc, SyncError):
         return UserError(str(exc), code=error_codes.SYNC_ERROR)
+    if _is_match_run_error(exc):
+        # Registered centrally rather than wrapped at each matcher command:
+        # `MatchRunError.__init__` passes `str(cause)` to `Exception`, so the
+        # carrier's own message IS the raw failure — DuckDB binder text, file
+        # paths, row values. Left unclassified it propagates unchanged (see the
+        # docstring), which on the CLI means an unhandled traceback carrying all
+        # of that. The counts are the disclosable part and each surface already
+        # reports them off `exc.partial` before re-raising; this branch supplies
+        # only the failure's presentation. `partway through` holds for every
+        # instance: the engine wraps a run solely once it has durable writes.
+        return UserError(
+            "Matching failed partway through — the decisions it had already "
+            "committed are durable; the cause is in the local log",
+            code=error_codes.REFRESH_MATCH_FAILED,
+            hint=(
+                "💡 Review what landed with 'moneybin transactions matches "
+                "pending', then rerun 'moneybin transactions matches run'"
+            ),
+        )
     return None
+
+
+def _is_match_run_error(exc: BaseException) -> bool:
+    """True if ``exc`` is the matcher's partial-run carrier.
+
+    Imported inside the call because `moneybin.matching.engine` reaches back
+    into repositories that import this module — the same cycle the deferred
+    imports above avoid. Kept out of the hot path: only an exception that
+    matched no branch above gets this far.
+    """
+    from moneybin.matching.engine import (  # noqa: PLC0415 — errors<->matching cycle
+        MatchRunError,
+    )
+
+    return isinstance(exc, MatchRunError)

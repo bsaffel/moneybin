@@ -18,12 +18,12 @@ import typer
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import (
-    RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED,
     handle_cli_errors,
     warn_transfers_retired,
 )
 from moneybin.database import get_database
 from moneybin.errors import UserError
+from moneybin.matching.reconciliation import RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
 from moneybin.privacy.payloads.accounts import (
     AccountLinksHistoryPayload,
     AccountLinksPendingPayload,

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from moneybin.matching.reconciliation import RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
+
 if TYPE_CHECKING:
     from moneybin.services.refresh import RefreshResult
 
@@ -72,12 +74,19 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
             "The merge's rebuild failed, so the collapse is not reflected in "
             "core yet — retry with refresh_run(steps=['transform'])"
         )
-    if rematch.matches_pending_review:
+    # Suppressed on the crash branch, which already named these exact counts
+    # and already sent the caller to `reviews(kind='matches')`. Repeating them
+    # in a sentence that reads as a finished pass works against the one above
+    # saying the run's remaining counts are incomplete. The CLI twin gets this
+    # from its if/elif/else; here the branches stay independent because a
+    # failed match and a failed transform can both be true at once.
+    partial = rematch.matching_error is not None
+    if rematch.matches_pending_review and not partial:
         actions.append(
             f"The merge exposed {rematch.matches_pending_review} new duplicate "
             "proposal(s) — review with reviews(kind='matches')"
         )
-    if rematch.matches_pending_transfers:
+    if rematch.matches_pending_transfers and not partial:
         actions.append(
             f"The merge's pass raised {rematch.matches_pending_transfers} "
             "possible transfer(s) — review with reviews(kind='matches')"
@@ -90,11 +99,12 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
         # because the caller is owed one fact either way — a decision of theirs
         # was undone — and one route back. The sentence says the merge *retired*
         # them, not that it invalidated them: the pass walks every accepted
-        # transfer, so a count can include one an earlier decision broke.
+        # transfer, so a count can include one an earlier decision broke. The
+        # clause itself is the constant the CLI warning uses, so the two
+        # surfaces cannot describe the same event differently.
         actions.append(
             f"The merge retired {rematch.transfers_retired} previously "
-            "accepted transfer(s) — their two sides turned out "
-            "to be one transaction, or their two accounts one account — "
+            f"accepted transfer(s) — {RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED} — "
             "inspect with system_audit(), restore with system_audit_undo() if "
             "that was wrong"
         )

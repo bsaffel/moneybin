@@ -152,10 +152,10 @@ def _review_matches_noninteractive(
     *, confirm_id: str | None, reject_id: str | None, confirm_all: bool
 ) -> None:
     from moneybin.cli.utils import (
-        RETIRED_SIDES_COLLAPSED,
         handle_cli_errors,
         warn_transfers_retired,
     )
+    from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
     from moneybin.services.matching_service import MatchingService
 
     # --confirm-all bulk-accepts the whole queue; pairing it with a targeted

@@ -959,6 +959,92 @@ class TestRetirementOnDedupAccept:
             "tx_stale00001": "reversed",
         }
 
+    def test_the_review_batch_retires_the_transfer_its_accept_invalidates(
+        self, db: Database
+    ) -> None:
+        """A third entry point to the same corruption, and the same fixture.
+
+        ``reviews_decide`` routes match rows through
+        ``ReviewDecisionsService.apply_ordinary``, which writes them with
+        ``MatchDecisionsRepo.update_status`` directly — past both guards above.
+        An agent folding a queued duplicate that way left two accepted
+        transfers resolving to one gold transaction.
+        """
+        from moneybin.mcp.write_contracts import MatchDecisionRequest
+        from moneybin.services.review_decisions_service import ReviewDecisionsService
+
+        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
+
+        outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary([
+            MatchDecisionRequest(
+                kind="match", decision_id="dd_1000000001", decision="accept"
+            )
+        ])
+
+        assert outcome.transfers_retired == 1
+        assert [item.status for item in outcome.items] == ["accepted"]
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_drop00001": "reversed",
+        }
+
+    def test_the_review_batch_retires_nothing_when_it_rejects(
+        self, db: Database
+    ) -> None:
+        """Negative twin: the same fixture, decided the other way.
+
+        ``None`` rather than ``0``: no accept means no reconciliation ran at
+        all, which is a different fact from a pass that ran and reversed
+        nothing — the same distinction the identity payload draws for its
+        re-match counts.
+        """
+        from moneybin.mcp.write_contracts import MatchDecisionRequest
+        from moneybin.services.review_decisions_service import ReviewDecisionsService
+
+        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
+
+        outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary([
+            MatchDecisionRequest(
+                kind="match", decision_id="dd_1000000001", decision="reject"
+            )
+        ])
+
+        assert outcome.transfers_retired is None
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_drop00001": "accepted",
+        }
+
+    def test_the_review_batch_reports_a_row_its_own_reconciliation_reversed(
+        self, db: Database
+    ) -> None:
+        """The batch twin of the self-reversing accept.
+
+        The plan's ``status`` is the *requested* one, so returning it unread
+        tells the agent its accept stands while the row committed as
+        ``reversed`` — the defect ``set_status`` and ``accept_all_pending``
+        were each corrected for. The retirement stays uncounted for the same
+        reason it does there: undo returns this row to ``pending``, so no
+        standing decision of the user's was undone.
+        """
+        from moneybin.mcp.write_contracts import MatchDecisionRequest
+        from moneybin.services.review_decisions_service import ReviewDecisionsService
+
+        _seed_a_stale_pending_transfer(db)
+
+        outcome = ReviewDecisionsService(db, actor="mcp").apply_ordinary([
+            MatchDecisionRequest(
+                kind="match", decision_id="tx_stale00001", decision="accept"
+            )
+        ])
+
+        assert [item.status for item in outcome.items] == ["reversed"]
+        assert outcome.transfers_retired == 0
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_stale00001": "reversed",
+        }
+
     def test_accepting_a_stale_queued_transfer_refuses_the_claimed_component(
         self, db: Database
     ) -> None:

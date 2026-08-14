@@ -148,20 +148,6 @@ def handle_cli_errors(
             raise typer.Exit(1) from e
 
 
-# The clause naming what collapsed. Two constants rather than one per trigger,
-# and none of them names its trigger: the reconciliation walks every accepted
-# transfer, not only the ones this call invalidated, so a count can include a
-# transfer that an unrelated earlier decision broke and this call merely found.
-# Saying "this decision invalidated" asserted a cause the number does not carry.
-# What legitimately differs between surfaces is what *can* collapse — only a
-# merge folds two accounts into one, so only its wording may say so.
-RETIRED_SIDES_COLLAPSED = "their two sides turned out to be one transaction"
-RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED = (
-    "their two sides turned out to be one transaction, "
-    "or their two accounts one account"
-)
-
-
 def warn_transfers_retired(
     count: int, *, cause: str, rematch_follow_up: bool = False
 ) -> None:

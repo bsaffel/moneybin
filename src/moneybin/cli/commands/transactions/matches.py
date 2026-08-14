@@ -8,15 +8,16 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import (
-    RETIRED_SIDES_COLLAPSED,
     emit_json,
     handle_cli_errors,
     warn_match_decisions_committed,
     warn_transfers_retired,
 )
 from moneybin.database import get_database
+from moneybin.errors import exception_origin
 from moneybin.matching.engine import MatchRunError
 from moneybin.matching.persistence import VALID_MATCH_TYPES
+from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
 from moneybin.tables import INT_TRANSACTIONS_UNIONED
 
@@ -107,10 +108,16 @@ def matches_run(
                     # The decisions and the reversals both committed before
                     # whatever failed; this exception is the last thing that
                     # knows either count. Warn, then re-raise so the failure
-                    # keeps its own presentation.
+                    # keeps its own presentation — `classify_user_error`
+                    # answers this type with a message that withholds the
+                    # cause, which is why the frames are logged here.
                     warn_match_decisions_committed(exc.partial)
                     warn_transfers_retired(
                         exc.partial.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                    )
+                    logger.error(
+                        f"Matching failed during 'matches run' at "
+                        f"{exception_origin(exc.__cause__ or exc)}"
                     )
                     raise
                 if result.has_matches:
@@ -270,6 +277,10 @@ def matches_backfill(
                     warn_match_decisions_committed(exc.partial)
                     warn_transfers_retired(
                         exc.partial.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                    )
+                    logger.error(
+                        f"Matching failed during 'matches backfill' at "
+                        f"{exception_origin(exc.__cause__ or exc)}"
                     )
                     raise
 

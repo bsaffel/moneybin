@@ -104,6 +104,31 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.matching.engine",
         "MatchRunError",
     ),
+    # The clause naming what collapsed, in the module that does the
+    # collapsing. Pure text, no side effects. It lives there rather than in
+    # each surface's helpers because the MCP twin (mcp/rematch_report.py)
+    # prints the same sentence, and a copy per surface is exactly how the two
+    # wordings drifted apart before.
+    (
+        "cli/commands/transactions/matches.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/transactions/review.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/refresh.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_COLLAPSED",
+    ),
+    (
+        "cli/commands/accounts/links.py",
+        "moneybin.matching.reconciliation",
+        "RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED",
+    ),
     # Format descriptors and column-mapping types from the tabular
     # extractor subpackage — pure types and constants, no DB access.
     (

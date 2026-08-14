@@ -984,6 +984,56 @@ def test_set_accept_does_not_report_a_collapsed_pending_transfer(
     )
 
 
+def test_set_accept_does_not_report_a_collapsed_rejected_transfer(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The third status, and the one the pair above cannot speak for.
+
+    A rejected row shares the ``reverse()`` call with the accepted one and the
+    silence with the pending one, so neither existing test constrains it: the
+    accepted twin fixes the count at 1 and the pending twin reaches the count
+    through a different branch (``update_status``). Asserted together because
+    the negative claim needs its positive half — ``transfers_retired == 0``
+    over a row that was never retired would pass while proving nothing.
+
+    Reversing a rejection removes nothing from the ledger. Counting it would
+    tell the user an accepted transfer had gone and point them at an undo that
+    restores a "these are not duplicates" answer they never lost.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00007",
+        source_transaction_id_a="ofx13",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx12",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="rejected",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    row = db.execute(
+        "SELECT match_status FROM app.match_decisions WHERE match_id = 'match_id00007'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "reversed", "the collapse must retire a rejection too"
+    assert result is not None
+    assert result.transfers_retired == 0, (
+        "a reversed rejection takes nothing out of the ledger, so there is "
+        "nothing for the user to restore"
+    )
+
+
 def test_the_collapse_count_reaches_the_batched_path_s_separate_rematch(
     seeded: AccountLinksService, db: Database, rematch: MagicMock
 ) -> None:

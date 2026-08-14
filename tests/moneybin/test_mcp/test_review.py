@@ -1010,6 +1010,47 @@ async def test_ordinary_decisions_route_by_kind_and_share_operation() -> None:
     )
 
 
+async def test_a_batch_match_accept_reports_that_it_reconciled() -> None:
+    """The count is 0 here, and the point is that it is not ``None``.
+
+    Accepting a match runs the transfer reconciliation, so this batch's
+    ``transfers_retired`` is a measurement — nothing collided in this fixture.
+    Collapsing that to ``None`` would make "no reconciliation ran" and "one
+    ran and reversed nothing" the same answer, which is the distinction the
+    identity payload's re-match counts already draw.
+    """
+    _transaction_id, _categorization_id, match_id, _category = (
+        _seed_ordinary_decisions()
+    )
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            MatchDecisionRequest(kind="match", decision_id=match_id, decision="accept")
+        ]
+    )
+
+    assert response.error is None
+    assert response.data.results[0].status == "accepted"
+    assert response.data.transfers_retired == 0
+    assert not any("retired" in action for action in response.actions)
+
+
+async def test_a_batch_without_a_match_accept_runs_no_reconciliation() -> None:
+    """Negative twin: a rejection folds nothing, so no pass runs at all."""
+    _transaction_id, _categorization_id, match_id, _category = (
+        _seed_ordinary_decisions()
+    )
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            MatchDecisionRequest(kind="match", decision_id=match_id, decision="reject")
+        ]
+    )
+
+    assert response.error is None
+    assert response.data.transfers_retired is None
+
+
 async def test_auto_rule_decisions_route_through_existing_decision_tool() -> None:
     request_type = reviews_module.AutoRuleDecisionRequest
     decisions = [
