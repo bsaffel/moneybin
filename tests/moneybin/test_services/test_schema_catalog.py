@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import duckdb
 import pytest
 
 import moneybin.services.schema_catalog as schema_catalog_module
@@ -22,7 +23,7 @@ from moneybin.services.schema_catalog import (
     build_live_catalog,
     build_schema_doc,
 )
-from moneybin.tables import INTERFACE_TABLES
+from moneybin.tables import IMPORT_LOG, INTERFACE_TABLES
 
 pytestmark = pytest.mark.unit
 
@@ -390,6 +391,31 @@ def test_schema_doc_holds_one_transaction_across_its_reads(
     )
     names = {t["name"] for t in build_schema_doc()["tables"]}
     assert "raw.gsheet_probe" not in names
+
+
+def test_catalog_survives_a_database_missing_its_optional_tables(
+    schema_catalog_db: Database,
+) -> None:
+    """A missing optional table degrades the catalog; it must not abort the read.
+
+    Both seed-view helpers swallow `CatalogException` so a database that never
+    ran `init_schemas` still gets a document. That recovery now happens inside
+    an explicit transaction, and an engine that poisons a transaction on a
+    failed statement would turn a silently-skipped table into the failure of
+    the whole document. DuckDB does not — a binder error never reaches the
+    transaction — but nothing else in the suite would notice if that changed,
+    and the recovery is invisible in the passing case.
+
+    Dropping the two optional tables and proving one of them really raises is
+    what keeps this from passing on a database that still has them.
+    """
+    schema_catalog_db.execute("DROP TABLE app.gsheet_connections")
+    schema_catalog_db.execute(f"DROP TABLE {IMPORT_LOG.full_name}")
+    with pytest.raises(duckdb.CatalogException):
+        schema_catalog_db.execute("SELECT 1 FROM app.gsheet_connections")
+
+    assert build_schema_doc()["tables"]
+    assert build_live_catalog(schema="raw")
 
 
 def test_live_catalog_distinguishes_a_view_from_a_table(
