@@ -29,6 +29,7 @@ from .commands import (
     db,
     demo,
     export,
+    fx,
     gsheet,
     import_cmd,
     investments,
@@ -217,6 +218,11 @@ app.add_typer(
     privacy.app, name="privacy", help="Privacy utilities: redaction and audit"
 )
 app.add_typer(budget_cmd.app, name="budget")
+app.add_typer(
+    fx.app,
+    name="fx",
+    help="Exchange rates: inspect cached reference rates and record corrections",
+)
 app.add_typer(system.app, name="system")
 app.command(
     name="refresh",

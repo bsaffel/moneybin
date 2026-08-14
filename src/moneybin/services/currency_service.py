@@ -284,7 +284,7 @@ class CurrencyService:
         override stored under one spelling cannot become unreachable under
         another.
         """
-        candidate = _canonical(value)
+        candidate = canonical_currency(value)
         try:
             validate_currency_code(candidate)
         except ValueError as exc:
@@ -366,7 +366,7 @@ class CurrencyService:
                 f"No stored {base}/{quote} rate for {on.isoformat()}, and no rate "
                 "provider is configured.",
                 code=error_codes.FX_RATE_UNAVAILABLE,
-                hint="Record the rate yourself with 'moneybin fx override'.",
+                hint="Record the rate yourself with 'moneybin fx set'.",
             )
 
         started = time.monotonic()
@@ -379,7 +379,7 @@ class CurrencyService:
                 "provider could not be reached.",
                 code=error_codes.FX_RATE_UNAVAILABLE,
                 hint="Retry when the network is back, or record the rate yourself "
-                "with 'moneybin fx override'.",
+                "with 'moneybin fx set'.",
             ) from exc
         finally:
             FX_RATE_FETCH_DURATION_SECONDS.labels(
@@ -405,14 +405,14 @@ class CurrencyService:
             return RateUnavailableError(
                 f"The rate provider publishes no series for {names}.",
                 code=error_codes.FX_CURRENCY_UNSUPPORTED,
-                hint="Record the rate yourself with 'moneybin fx override' — this "
+                hint="Record the rate yourself with 'moneybin fx set' — this "
                 "pair will not become available by retrying.",
             )
         return RateUnavailableError(
             f"The rate provider published no {base}/{quote} rate for {on.isoformat()}.",
             code=error_codes.FX_RATE_UNAVAILABLE,
             hint="Try a nearby date, or record the rate yourself with "
-            "'moneybin fx override'.",
+            "'moneybin fx set'.",
         )
 
     def _unsupported(self, base: str, quote: str) -> set[str]:
@@ -432,8 +432,28 @@ class CurrencyService:
         return {code for code in (base, quote) if code not in published}
 
 
-def _canonical(value: str) -> str:
-    """Trim and upper a currency code so one spelling reaches every lookup."""
+def build_currency_service(db: Database, *, actor: str = "system") -> CurrencyService:
+    """Wire a CurrencyService with the real rate adapter.
+
+    Kept out of ``CurrencyService.__init__`` so tests inject fakes without a
+    production seam, matching ``build_price_service``. No credential is read:
+    Frankfurter is keyless, so unlike the price feeds there is nothing here that
+    can fail because a token is missing.
+    """
+    from moneybin.connectors.rates.frankfurter import (  # noqa: PLC0415  # httpx is not cold-start cheap
+        FrankfurterRateAdapter,
+    )
+
+    return CurrencyService(db, adapter=FrankfurterRateAdapter(), actor=actor)
+
+
+def canonical_currency(value: str) -> str:
+    """Trim and upper a currency code so one spelling reaches every lookup.
+
+    Public because surfaces need it too: a command that echoes back the pair it
+    just wrote must spell it the way storage did, and a second ``.upper()`` at
+    the call site is a copy that drifts the moment this one changes.
+    """
     return value.strip().upper()
 
 
