@@ -1,5 +1,5 @@
 {
-  "sha256": "a0bb19b0226cad556677cc14e10e6f741a72206e514fbdc34504c8ccc4898937",
+  "sha256": "d4cc3967a261055db1ab5b830e733dc852751ec11f056fe77c6c4ca64f8fa773",
   "tool_count": 49,
   "tools": [
     {
@@ -3443,7 +3443,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Return selected operator status sections. Sections cover overview inventory, integrity doctor checks, categorization coverage, and export readiness. detail='full' deepens the doctor scan and includes auto-categorization health.",
+        "description": "Return selected operator status sections. Sections cover overview inventory, integrity doctor checks, categorization coverage, and export readiness. detail='full' deepens the doctor scan and includes auto-categorization health. overview.build names the version and commit this server is running; cite it before concluding that live behavior contradicts the code, because a long-lived process can predate the checkout.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3485,12 +3485,12 @@
         },
         "name": "system_status"
       },
-      "description_bytes": 227,
+      "description_bytes": 417,
       "input_schema_bytes": 287,
       "name": "system_status",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 706
+      "total_bytes": 896
     },
     {
       "annotation_bytes": 89,
@@ -5027,5 +5027,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 55151
+  "total_bytes": 55341
 }

@@ -11,6 +11,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`system_status` names the build it is running.** The envelope carries a
+  `build` block with the package `version` and the `revision` the source
+  checkout was on when the process started (`null` for an installed wheel).
+  A stdio MCP server is a long-lived process pinned to whatever the checkout
+  held at boot, and until now nothing in the surface said which. A caller
+  comparing live behaviour against `main` could not separate a stale process
+  from a real defect — and did not: a three-day-old server rendered a
+  confirmation prompt without the ledger-evidence sentence added in #387, which
+  was written up as the confirmation gate being absent. The gate was present.
+
+  Both fields are resolved once at import rather than per call. A checkout can
+  move underneath a running server and an environment can be upgraded beneath
+  one; a per-call read would then report the new commit or the new version while
+  the process still ran the old code — corroborating precisely the wrong
+  conclusion. `version` is the more dangerous of the two to read late, because
+  a wheel install reports no revision and leaves the version as the only signal.
+  Reported on the degraded database-locked path too, since it needs no database
+  connection and that is when a caller most needs it.
+
+  The registered `system_status` description tells the agent to cite
+  `overview.build` before concluding that live behavior contradicts the code.
+  A docstring cannot: the agent never reads one, and the field is only as
+  useful as the instruction to look at it. `revision` is read from the
+  repository top level only, so a wheel installed beneath an unrelated checkout
+  reports `null` rather than that project's commit.
 - **Read the ingestion pipeline through `sql_query` (M2O.2).** `sql_query` and
   `moneybin sql query` reach `raw` and `prep` alongside `core`, `app`, and
   `reports` — five schemas, up from three. The seed sheets the gsheet and PDF
