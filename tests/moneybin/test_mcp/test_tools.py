@@ -340,6 +340,42 @@ class TestToolRegistration:
         assert [t["name"] for t in payload["data"]["tables"]] == [table]
 
     @pytest.mark.unit
+    async def test_sql_schema_quotes_an_identifier_its_describe_hint_names(
+        self, mcp_db: object
+    ) -> None:
+        """The advertised recovery has to parse for the name it is advertised for.
+
+        `raw` accepts any relation an operator creates, so a name needing SQL
+        quotes reaches the uncurated refusal like any other. Interpolated bare,
+        it advised `DESCRIBE raw.monthly spend` -- an agent following the hint
+        gets a parse error instead of the columns the refusal promised.
+        """
+        with get_database(read_only=False) as db:
+            db.execute('CREATE VIEW raw."monthly spend" AS SELECT 1 AS n')
+
+        payload = (await sql_schema(table="raw.monthly spend")).to_dict()
+        assert payload["error"]["code"] == "sql_table_not_curated"
+
+        quoted = '"raw"."monthly spend"'
+        assert quoted in payload["error"]["hint"]
+        assert quoted in " ".join(payload["actions"])
+
+    @pytest.mark.unit
+    async def test_sql_schema_describe_hint_names_the_catalog_spelling(
+        self, mcp_db: object
+    ) -> None:
+        """The hint names the relation, not the spelling the caller guessed.
+
+        The refusal is reached case-insensitively, so the caller's casing need
+        not be the catalog's. Echoing the input back hands the agent a name to
+        paste that is not the one the catalog holds.
+        """
+        payload = (await sql_schema(table="RAW.OFX_INSTITUTIONS")).to_dict()
+        assert payload["error"]["code"] == "sql_table_not_curated"
+        assert '"raw"."ofx_institutions"' in payload["error"]["hint"]
+        assert "RAW.OFX_INSTITUTIONS" not in payload["error"]["hint"]
+
+    @pytest.mark.unit
     async def test_sql_schema_exact_name_is_case_insensitive(
         self, mcp_db: object
     ) -> None:

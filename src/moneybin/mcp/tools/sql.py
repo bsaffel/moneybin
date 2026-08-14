@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastmcp import FastMCP
+from sqlglot import exp
 
 from moneybin import error_codes
 from moneybin.database import get_database
@@ -167,6 +168,7 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         # told "not curated" reaches for DESCRIBE. Different recovery, so a
         # different code.
         if live is not None:
+            described = _describable(live["name"])
             return build_error_envelope(
                 error=UserError(
                     f"Not in the curated catalog: {table}",
@@ -174,13 +176,13 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
                     hint=(
                         "The relation exists and sql_query reads it; only its "
                         "curated entry (purpose and example queries) is "
-                        f"missing. Run sql_query with DESCRIBE {table} for its "
-                        "columns."
+                        f"missing. Run sql_query with DESCRIBE {described} for "
+                        "its columns."
                     ),
                     details={"table": table},
                 ),
                 sensitivity="low",
-                actions=[f"Call sql_query(query='DESCRIBE {table}')"],
+                actions=[f"Call sql_query(query='DESCRIBE {described}')"],
             )
         return build_error_envelope(
             error=UserError(
@@ -202,6 +204,29 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         sensitivity="low",
         classes_returned=["aggregate"],
         returned_count=len(matches),
+    )
+
+
+def _describable(name: str) -> str:
+    """Return a catalog name the agent can paste straight into ``DESCRIBE``.
+
+    The hint is advice, but `sql_query` still has to parse it. `raw` holds
+    whatever an operator created, so a relation carrying a space or a reserved
+    word makes `DESCRIBE raw.monthly spend` a bind error — the refusal would
+    promise columns and hand back a syntax failure.
+
+    Quoted unconditionally rather than only where required: a "does this need
+    quoting" predicate is one more thing to get wrong, and DuckDB reads a
+    quoted identifier the same either way.
+
+    Built from the catalog row, not the caller's string: the lookup that found
+    this relation folds case, so the spelling asked for need not be the one the
+    catalog holds, and only the catalog's resolves.
+    """
+    schema, _, relation = name.partition(".")
+    return ".".join(
+        exp.to_identifier(part, quoted=True).sql("duckdb")
+        for part in (schema, relation)
     )
 
 
