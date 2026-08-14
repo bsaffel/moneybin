@@ -7,7 +7,10 @@ from typing import Any
 import pytest
 
 import moneybin.services.schema_catalog as schema_catalog_module
-from moneybin.database import Database
+from moneybin.database import (  # noqa: PLC2701  # the single definition of "point a new cursor at the attached DB"
+    Database,
+    _pin_cursor_to_moneybin,  # pyright: ignore[reportPrivateUsage]
+)
 from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS, execute_sql_query
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 from moneybin.reports._framework.registry import spec_of
@@ -322,6 +325,71 @@ def test_live_catalog_reads_both_of_its_sets_from_one_snapshot(
     monkeypatch.setattr(schema_catalog_module, "get_database", counting_get_database)
     assert build_live_catalog(schema="raw"), "fixture must reach the predicate"
     assert opened == 1
+
+
+def test_live_catalog_holds_one_transaction_across_both_of_its_sets(
+    schema_catalog_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One connection is not one snapshot: DuckDB autocommits every statement.
+
+    Pinning both sets to a single connection (the test above) is necessary and
+    not sufficient. Each statement on that connection opens and closes its own
+    transaction, so a relation another connection commits in between still lands
+    in the rows while the curated names predate it — the same `curated: false`
+    on a curated relation, one layer below the two-connection race.
+
+    A second cursor on the same DuckDB instance is the concurrent writer the
+    fixture's one shared `Database` otherwise cannot supply.
+    """
+    writer = schema_catalog_db.conn.cursor()
+    _pin_cursor_to_moneybin(writer)
+    # The seam the race opens at.
+    schema_doc = schema_catalog_module._schema_doc  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    def doc_then_commit_a_view(db: Database) -> dict[str, Any]:
+        doc = schema_doc(db)
+        writer.execute("CREATE VIEW raw.committed_mid_read AS SELECT 1 AS n")
+        return doc
+
+    monkeypatch.setattr(schema_catalog_module, "_schema_doc", doc_then_commit_a_view)
+    names = {r["name"] for r in build_live_catalog(schema="raw")}
+    assert "raw.committed_mid_read" not in names
+
+
+def test_schema_doc_holds_one_transaction_across_its_reads(
+    schema_catalog_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The curated document reads the database three times, and needs the rule too.
+
+    Its interface relations come from one query and its runtime seed views from
+    two more. A gsheet connection committed after the first read gives it a seed
+    view the interface query never saw — a document describing a state the
+    database was never in. Same defect as the listing above, so the module gets
+    one rule rather than a transaction at whichever call site was reviewed.
+    """
+    writer = schema_catalog_db.conn.cursor()
+    _pin_cursor_to_moneybin(writer)
+    # The read the race lands in front of.
+    gsheet_seed_views = schema_catalog_module._gsheet_seed_views  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    def commit_a_seed_view_then_read(db: Database) -> list[dict[str, Any]]:
+        writer.execute("CREATE OR REPLACE VIEW raw.gsheet_probe AS SELECT 1 AS id")
+        writer.execute(
+            """
+            INSERT INTO app.gsheet_connections (
+                connection_id, spreadsheet_id, sheet_gid, sheet_name, workbook_name,
+                adapter, column_mapping, header_signature, status, alias
+            ) VALUES ('conn-probe', 'sheet-1', 0, 'Sheet1', 'Workbook', 'seed',
+                      '{}', '[]', 'healthy', 'probe')
+            """
+        )
+        return gsheet_seed_views(db)
+
+    monkeypatch.setattr(
+        schema_catalog_module, "_gsheet_seed_views", commit_a_seed_view_then_read
+    )
+    names = {t["name"] for t in build_schema_doc()["tables"]}
+    assert "raw.gsheet_probe" not in names
 
 
 def test_live_catalog_distinguishes_a_view_from_a_table(

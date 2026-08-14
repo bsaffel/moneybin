@@ -8,6 +8,8 @@ declared in `moneybin.tables`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -700,6 +702,26 @@ _BEYOND_NOTE = (
 _BEYOND_QUERY = "SHOW ALL TABLES"
 
 
+@contextmanager
+def _read_snapshot() -> Generator[Database]:
+    """Yield a connection whose every read sees one state of the database.
+
+    Both builders below read the catalog more than once, and one connection is
+    not one snapshot: DuckDB autocommits each statement, so a relation another
+    connection commits between two reads lands in the later one and not the
+    earlier. That describes a database state that never existed — a seed view
+    listed as uncurated while its curated entry is already there.
+    """
+    with get_database(read_only=True) as db:
+        db.begin()
+        try:
+            yield db
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+
+
 def build_schema_doc() -> dict[str, Any]:
     """Return the schema document for the LLM-facing catalog.
 
@@ -707,7 +729,7 @@ def build_schema_doc() -> dict[str, Any]:
     table that exists in the live database; missing tables are silently
     skipped (the test/dev DB may not have every interface table).
     """
-    with get_database(read_only=True) as db:
+    with _read_snapshot() as db:
         return _schema_doc(db)
 
 
@@ -833,9 +855,7 @@ def build_live_catalog(schema: str | None = None) -> list[dict[str, Any]]:
         schemas = [schema]
 
     placeholders = ",".join(["?"] * len(schemas))
-    with get_database(read_only=True) as db:
-        # One connection for both halves: a seed view created between two would
-        # be listed uncurated while its curated entry already exists.
+    with _read_snapshot() as db:
         curated = {t["name"] for t in _schema_doc(db)["tables"]}
         rows = db.execute(
             f"""
