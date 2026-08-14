@@ -97,11 +97,12 @@ class TestMatchesRun:
         ``refresh()`` was reading it; this command let the exception through and
         took the sole record of a destructive, user-visible change with it.
         """
-        from moneybin.matching.engine import MatchRunError
+        from moneybin.matching.engine import MatchResult, MatchRunError
 
         mock_get_db.return_value = MagicMock()
         mock_run.side_effect = MatchRunError(
-            RuntimeError("transfer tier failed"), transfers_retired=2
+            RuntimeError("transfer tier failed"),
+            partial=MatchResult(transfers_retired=2),
         )
 
         with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
@@ -110,6 +111,65 @@ class TestMatchesRun:
         assert result.exit_code != 0, "a crashed run must not report success"
         assert caplog.messages, "the crash swallowed the retirement disclosure"
         assert "2" in caplog.messages[-1]
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_run_discloses_merges_that_outlived_a_crash(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A crash before any retirement still leaves committed merges behind.
+
+        Keying the disclosure on ``transfers_retired`` alone goes silent on
+        exactly this run: a dedup tier persisted four merges — which suppress the
+        duplicate side of four transactions — and then died before the
+        reconciliation could reverse anything. Nothing was undone, so the
+        retirement warning is correctly quiet; the merges still happened.
+        """
+        from moneybin.matching.engine import MatchResult, MatchRunError
+
+        mock_get_db.return_value = MagicMock()
+        mock_run.side_effect = MatchRunError(
+            RuntimeError("tier 3 failed"),
+            partial=MatchResult(auto_merged=4, transfers_retired=0),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
+            result = runner.invoke(app, ["run", "--skip-transform"])
+
+        assert result.exit_code != 0, "a crashed run must not report success"
+        assert caplog.messages, "the crash swallowed the committed merges"
+        assert "4" in caplog.messages[-1]
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_run_stays_quiet_when_a_crash_committed_nothing(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Negative twin: a crash with an empty ledger claims no committed work.
+
+        The engine only wraps a run that wrote something, but the surface must
+        not invent a disclosure from the wrapper's mere presence either — a
+        warning naming zero merges would send the user hunting for state that is
+        not there.
+        """
+        from moneybin.matching.engine import MatchResult, MatchRunError
+
+        mock_get_db.return_value = MagicMock()
+        mock_run.side_effect = MatchRunError(
+            RuntimeError("tier 3 failed"), partial=MatchResult()
+        )
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
+            result = runner.invoke(app, ["run", "--skip-transform"])
+
+        assert result.exit_code != 0
+        assert caplog.messages == []
 
 
 class TestMatchesBackfill:
@@ -157,13 +217,14 @@ class TestMatchesBackfill:
         commands catch independently, so one can regain the disclosure while the
         other loses it.
         """
-        from moneybin.matching.engine import MatchRunError
+        from moneybin.matching.engine import MatchResult, MatchRunError
 
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__.return_value = mock_db
         mock_db.execute.return_value.fetchone.return_value = (0,)
         mock_run.side_effect = MatchRunError(
-            RuntimeError("transfer tier failed"), transfers_retired=2
+            RuntimeError("transfer tier failed"),
+            partial=MatchResult(transfers_retired=2),
         )
 
         with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
@@ -172,6 +233,32 @@ class TestMatchesBackfill:
         assert result.exit_code != 0, "a crashed backfill must not report success"
         assert caplog.messages, "the crash swallowed the retirement disclosure"
         assert "2" in caplog.messages[-1]
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_backfill_discloses_merges_that_outlived_a_crash(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The backfill's own twin of the committed-merges gap above."""
+        from moneybin.matching.engine import MatchResult, MatchRunError
+
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = mock_db
+        mock_db.execute.return_value.fetchone.return_value = (0,)
+        mock_run.side_effect = MatchRunError(
+            RuntimeError("tier 3 failed"),
+            partial=MatchResult(auto_merged=4, transfers_retired=0),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
+            result = runner.invoke(app, ["backfill", "--skip-transform"])
+
+        assert result.exit_code != 0, "a crashed backfill must not report success"
+        assert caplog.messages, "the crash swallowed the committed merges"
+        assert "4" in caplog.messages[-1]
 
 
 class TestMatchesHistory:

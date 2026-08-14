@@ -533,17 +533,46 @@ def test_refresh_reports_retirements_a_crashed_match_step_already_committed() ->
     genuinely reversed while ``run()`` never returns its ``MatchResult``.
     Reporting zero there describes a decision of the user's as untouched.
     """
-    from moneybin.matching.engine import MatchRunError
+    from moneybin.matching.engine import MatchResult, MatchRunError
 
     with patch.object(
         matching_service.MatchingService,
         "run",
-        side_effect=MatchRunError(RuntimeError("tier 4 boom"), transfers_retired=3),
+        side_effect=MatchRunError(
+            RuntimeError("tier 4 boom"), partial=MatchResult(transfers_retired=3)
+        ),
     ):
         result = refresh(MagicMock(), steps=["match"])
 
     assert result.matching_error == "tier 4 boom"
     assert result.transfers_retired == 3
+    assert result.matching_skipped is False
+
+
+@pytest.mark.unit
+def test_refresh_reports_decisions_a_crashed_match_step_already_committed() -> None:
+    """The tiers commit too, and their counts die with the same exception.
+
+    A dedup tier persists one decision per pair with no transaction around the
+    loop, so a pair that raises leaves every earlier merge in the ledger — where
+    it suppresses the duplicate side of a transaction. Reporting zero auto-merges
+    there tells the caller the ledger is unchanged when it is not.
+    """
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    with patch.object(
+        matching_service.MatchingService,
+        "run",
+        side_effect=MatchRunError(
+            RuntimeError("tier 3 boom"),
+            partial=MatchResult(auto_merged=4, pending_review=2),
+        ),
+    ):
+        result = refresh(MagicMock(), steps=["match"])
+
+    assert result.matches_auto_merged == 4
+    assert result.matches_pending_review == 2
+    assert result.matching_error == "tier 3 boom"
     assert result.matching_skipped is False
 
 
@@ -557,13 +586,14 @@ def test_refresh_does_not_call_a_late_view_failure_a_skipped_match_step() -> Non
     the reversal. Only a failure that reaches ``run()`` unwrapped is the
     first-load precondition.
     """
-    from moneybin.matching.engine import MatchRunError
+    from moneybin.matching.engine import MatchResult, MatchRunError
 
     with patch.object(
         matching_service.MatchingService,
         "run",
         side_effect=MatchRunError(
-            duckdb.CatalogException("no view"), transfers_retired=1
+            duckdb.CatalogException("no view"),
+            partial=MatchResult(transfers_retired=1),
         ),
     ):
         result = refresh(MagicMock(), steps=["match"])

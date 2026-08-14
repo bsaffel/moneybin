@@ -21,6 +21,7 @@ from moneybin.utils.user_config import ensure_default_profile
 
 if TYPE_CHECKING:
     from moneybin.database import Database
+    from moneybin.matching.engine import MatchResult
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,28 @@ def warn_transfers_retired(count: int, *, cause: str) -> None:
         f"⚠️  Retired {count} previously accepted transfer(s) — {cause}; "
         "inspect with 'moneybin system audit list' and restore with "
         "'moneybin system audit undo <operation-id>' if that was wrong"
+    )
+
+
+def warn_match_decisions_committed(partial: MatchResult) -> None:
+    """Warn that a failed run had already written these decisions.
+
+    Sibling of `warn_transfers_retired`, and one helper for the same reason: a
+    tier persists one decision per pair with no transaction around the loop, so
+    every command that can reach the tiers can end up here, and the route back to
+    the decisions must not drift between them. Retirements are reported
+    separately because only they undo something the user decided; these are
+    merges and proposals the run made and kept.
+
+    Silent when the run found nothing, so the warning keeps its meaning — a
+    failure that committed no decision has none to point at.
+    """
+    if not partial.has_matches:
+        return
+    logger.warning(
+        f"⚠️  Committed {partial.summary().lower()} before matching failed — "
+        "those decisions are durable; review them with "
+        "'moneybin transactions matches pending'"
     )
 
 

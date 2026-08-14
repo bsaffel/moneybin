@@ -872,24 +872,40 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
         try:
             result = MatchingService(db).run(actor="mcp")
         except MatchRunError as exc:
-            if not exc.transfers_retired:
+            if not exc.partial.has_durable_writes:
                 raise
-            # The reconciliation commits before the tiers that can fail, so this
-            # exception is the only thing that still knows a decision the user
-            # made was undone. Letting it through as a bare crash loses that —
-            # and an agent cannot see the reversal any other way.
+            # The tiers persist as they go and the reconciliation commits before
+            # the tiers that can fail, so this exception is the only thing that
+            # still knows what landed — merges that suppress a duplicate side,
+            # and reversals that undo a decision the user made. Letting it
+            # through as a bare crash loses both, and an agent cannot see either
+            # any other way.
+            committed: list[str] = []
+            if exc.partial.has_matches:
+                committed.append(f"committing {exc.partial.summary().lower()}")
+            if exc.partial.transfers_retired:
+                committed.append(
+                    f"reversing {exc.partial.transfers_retired} previously "
+                    "accepted transfer(s)"
+                )
             raise UserError(
-                f"Matching failed after reversing {exc.transfers_retired} "
-                f"previously accepted transfer(s): {exc}",
+                f"Matching failed after {' and '.join(committed)}: {exc}",
                 code=error_codes.REFRESH_MATCH_FAILED,
                 recovery_actions=[
                     RecoveryAction(
                         tool="system_audit",
                         arguments={},
                         rationale=(
-                            "The run reversed accepted transfers before it "
-                            "failed; list the operation to see what it undid "
-                            "and restore it with system_audit_undo."
+                            "The run committed decisions before it failed; list "
+                            "the operation to see what landed"
+                            + (
+                                " and restore it with system_audit_undo."
+                                if exc.partial.transfers_retired
+                                # Undo refuses an outcome nothing reversed, so
+                                # naming it here would send the agent at a route
+                                # that cannot apply.
+                                else "."
+                            )
                         ),
                         confidence="suggested",
                         idempotent=True,

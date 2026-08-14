@@ -433,10 +433,11 @@ async def test_matches_run_discloses_a_retirement_that_outlived_a_crash(
     decision died with it — the outcome an agent is least able to notice.
     """
     from moneybin.errors import UserError
-    from moneybin.matching.engine import MatchRunError
+    from moneybin.matching.engine import MatchResult, MatchRunError
 
     mock_run.side_effect = MatchRunError(
-        RuntimeError("transfer tier failed"), transfers_retired=2
+        RuntimeError("transfer tier failed"),
+        partial=MatchResult(transfers_retired=2),
     )
 
     with pytest.raises(UserError) as excinfo:
@@ -445,6 +446,59 @@ async def test_matches_run_discloses_a_retirement_that_outlived_a_crash(
     assert "2" in str(excinfo.value), "the failure hid how many transfers it reversed"
     tools = {a.tool for a in excinfo.value.recovery_actions or []}
     assert "system_audit" in tools, f"no recovery action reaches the audit: {tools}"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_discloses_merges_that_outlived_a_crash(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """A crash before any retirement still leaves committed merges behind.
+
+    Keying the disclosure on ``transfers_retired`` alone re-raises this run bare:
+    a tier persisted four merges — which suppress the duplicate side of four
+    transactions — and died before the reconciliation could reverse anything. An
+    agent that sees only a crash has no way to learn the ledger moved.
+    """
+    from moneybin.errors import UserError
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    mock_run.side_effect = MatchRunError(
+        RuntimeError("tier 3 failed"),
+        partial=MatchResult(auto_merged=4, transfers_retired=0),
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        transactions_matches_run()
+
+    assert "4" in str(excinfo.value), "the failure hid the merges it had committed"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_lets_a_crash_that_committed_nothing_through_bare(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """Negative twin: no committed work, no disclosure to make.
+
+    Translating every wrapped failure into a partial-progress ``UserError`` would
+    tell an agent to go looking for decisions that were never written. The
+    ordinary crash presentation is the correct one there.
+    """
+    from moneybin.errors import UserError
+    from moneybin.matching.engine import MatchResult, MatchRunError
+
+    mock_run.side_effect = MatchRunError(
+        RuntimeError("tier 3 failed"), partial=MatchResult()
+    )
+
+    with pytest.raises(MatchRunError):
+        transactions_matches_run()
+    with pytest.raises(BaseException) as excinfo:  # noqa: B017, PT011  # identity check
+        transactions_matches_run()
+    assert not isinstance(excinfo.value, UserError)
 
 
 @pytest.mark.unit

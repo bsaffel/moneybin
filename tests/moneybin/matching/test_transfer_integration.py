@@ -963,13 +963,13 @@ class TestRetirementOnDedupAccept:
 
 
 class TestPartialMatchRunDisclosure:
-    """A run that dies after the reconciliation still owes its retirement count.
+    """A run that dies partway still owes whatever it already committed.
 
-    The reversals commit individually and land before Tier 4, so a Tier 4 failure
-    leaves them durable while ``run()`` returns nothing. That count is the whole
-    disclosure — a decision the user made has been undone — so it has to survive
-    the exception that swallowed the result. Its clean-run twin is the existing
-    pass that asserts the same count off a returned ``MatchResult``.
+    The matcher opens no transaction, so every dedup decision and every reversal
+    is durable the moment it is written — and ``run()`` returns none of them when
+    a later step raises. The disclosure is the same in both halves: work the user
+    can see in the ledger, reported as zero. Its clean-run twin is the existing
+    pass that asserts the same counts off a returned ``MatchResult``.
     """
 
     def test_a_tier_4_failure_still_reports_the_transfers_already_reversed(
@@ -988,7 +988,7 @@ class TestPartialMatchRunDisclosure:
         with pytest.raises(MatchRunError) as excinfo:
             TransactionMatcher(db, MatchingSettings(), table="main._test_unioned").run()
 
-        assert excinfo.value.transfers_retired == 1
+        assert excinfo.value.partial.transfers_retired == 1
         assert str(excinfo.value) == "tier 4 boom"
         # The reversal is durable: the wrapper reports it, it does not undo it.
         assert _transfer_statuses(db) == {
@@ -1024,7 +1024,7 @@ class TestPartialMatchRunDisclosure:
         with pytest.raises(MatchRunError) as excinfo:
             TransactionMatcher(db, MatchingSettings(), table="main._test_unioned").run()
 
-        assert excinfo.value.transfers_retired == 1
+        assert excinfo.value.partial.transfers_retired == 1
         assert str(excinfo.value) == "reconciliation boom"
         statuses = _transfer_statuses(db)
         assert sum(1 for s in statuses.values() if s == "reversed") == 1
@@ -1057,3 +1057,81 @@ class TestPartialMatchRunDisclosure:
             "dd_1000000001": "pending",
             "dd_1000000002": "pending",
         }
+
+    def test_a_dedup_tier_crash_still_reports_the_decisions_it_committed(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The tiers commit as they go, exactly like the reconciliation below them.
+
+        A tier persists one decision per assigned pair with no transaction around
+        the loop, so a pair that raises leaves every earlier pair's decision in
+        the ledger. Those merges suppress the duplicate side in
+        ``core.fct_transactions`` — the ledger changes — while a caller told only
+        "matching failed" reads zero and concludes nothing was written.
+        """
+        from moneybin.matching.engine import MatchRunError
+
+        _setup_tables(db)
+        for n in (1, 2):
+            _insert(
+                db, f"csv_dup{n}", "acct1", "2026-03-15", f"-{n}0.00", f"COFFEE {n}"
+            )
+            _insert(
+                db,
+                f"ofx_dup{n}",
+                "acct1",
+                "2026-03-15",
+                f"-{n}0.00",
+                f"COFFEE {n}",
+                "ofx",
+                "bank_ofx",
+            )
+
+        real_persist = TransactionMatcher._persist_dedup_match  # pyright: ignore[reportPrivateUsage]
+        calls = {"n": 0}
+
+        def _flaky(self: TransactionMatcher, *args: object, **kwargs: object) -> None:
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise RuntimeError("tier 3 boom")
+            real_persist(self, *args, **kwargs)  # pyright: ignore[reportPrivateUsage, reportArgumentType]  # passthrough
+
+        monkeypatch.setattr(TransactionMatcher, "_persist_dedup_match", _flaky)
+
+        with pytest.raises(MatchRunError) as excinfo:
+            TransactionMatcher(db, MatchingSettings(), table="main._test_unioned").run()
+
+        assert str(excinfo.value) == "tier 3 boom"
+        assert excinfo.value.partial.auto_merged == 1
+        # The count names what committed, not what the loop reached: the second
+        # pair incremented no counter because its write never landed.
+        assert len(_dedup_statuses(db)) == 1
+
+    def test_a_run_that_committed_nothing_raises_its_own_error_unwrapped(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Negative twin: the carrier is earned by a durable write, not by failing.
+
+        ``refresh()`` reads a bare ``CatalogException`` from the tiers as the
+        first-load "views not built yet" precondition and stays quiet. Wrapping
+        every failure would turn that expected first run into a reported error,
+        so a run with nothing in the ledger has to let its own exception through.
+        """
+        import duckdb
+
+        from moneybin.matching.engine import MatchRunError
+
+        _setup_tables(db)
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise duckdb.CatalogException("no view")
+
+        monkeypatch.setattr(TransactionMatcher, "_run_tier", _boom)
+
+        with pytest.raises(duckdb.CatalogException):
+            TransactionMatcher(db, MatchingSettings(), table="main._test_unioned").run()
+
+        # Not merely "some exception": the wrapper must not be what escaped.
+        with pytest.raises(BaseException) as excinfo:  # noqa: B017, PT011  # identity check
+            TransactionMatcher(db, MatchingSettings(), table="main._test_unioned").run()
+        assert not isinstance(excinfo.value, MatchRunError)

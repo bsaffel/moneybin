@@ -79,6 +79,17 @@ class MatchResult:
         """True if any matches are awaiting user review."""
         return self.pending_review > 0 or self.pending_transfers > 0
 
+    @property
+    def has_durable_writes(self) -> bool:
+        """True if the run has already committed something to the ledger.
+
+        Distinct from ``has_matches``, which answers "did it find anything" and
+        deliberately excludes retirements. This one answers "is there state
+        behind it now" — the question that decides whether a failed run owes the
+        caller a report.
+        """
+        return self.has_matches or self.transfers_retired > 0
+
     def summary(self) -> str:
         """Return a human-readable summary of the matching run."""
         parts: list[str] = []
@@ -94,23 +105,26 @@ class MatchResult:
 
 
 class MatchRunError(Exception):
-    """A run that raised after the reconciliation had already reversed transfers.
+    """A run that raised after it had already committed part of its work.
 
-    The matcher opens no transaction around the run, and the reconciliation
-    commits each reversal as it goes, so those reversals are durable by the time
-    anything downstream of them can fail. Without this carrier the partial result
-    dies with the exception and the caller reports zero — describing a decision
-    the user made as untouched when it has in fact been undone.
+    The matcher opens no transaction around the run: each dedup tier persists one
+    decision per pair, and the reconciliation commits each reversal as it goes, so
+    everything written before the failing step is durable. Without this carrier the
+    partial result dies with the exception and the caller reports zero — naming
+    merges the user can see in the ledger as never made, and a transfer the user
+    accepted as untouched when it has in fact been undone.
 
     It also keeps a *late* ``CatalogException`` from being read as the first-load
     "views not built yet" precondition: that classification claims nothing was
-    examined, which stops being true the moment the dedup tiers write a decision.
+    examined, which stops being true the moment a tier writes a decision. Only a
+    run that committed something is wrapped, so a genuinely empty first load still
+    reaches that branch as its own exception.
     """
 
-    def __init__(self, cause: BaseException, *, transfers_retired: int) -> None:
-        """Wrap ``cause``, carrying the reversals that had already committed."""
+    def __init__(self, cause: BaseException, *, partial: MatchResult) -> None:
+        """Wrap ``cause``, carrying the work that had already committed."""
         super().__init__(str(cause))
-        self.transfers_retired = transfers_retired
+        self.partial = partial
 
 
 @dataclass
@@ -172,52 +186,57 @@ class TransactionMatcher:
         seed = self._fetch_active_dedup_decisions()
         component_edges: list[tuple[NodeKey, NodeKey]] = list(seed.active_edges)
 
-        # Tier 2b: within-source overlap (high-confidence only)
-        tier_2b_edges = self._run_tier(
-            tier="2b",
-            candidates_fn=lambda: get_candidates_within_source(
-                self._db,
-                table=self._table,
-                date_window_days=self._settings.date_window_days,
-                excluded_ids=None,
-                rejected_pairs=rejected,
-            ),
-            seed_edges=component_edges,
-            result=result,
-        )
-        component_edges.extend(tier_2b_edges)
-
-        # Tier 3: cross-source. Passing high_confidence_threshold enables the
-        # agreement floor: a pair whose descriptions agree scores at/above the
-        # threshold at any gap inside the window, regardless of similarity
-        # (assign_components' source_file guard keeps N true duplicates 1:1).
-        tier_3_edges = self._run_tier(
-            tier="3",
-            candidates_fn=lambda: get_candidates_cross_source(
-                self._db,
-                table=self._table,
-                date_window_days=self._settings.date_window_days,
-                excluded_ids=None,
-                rejected_pairs=rejected,
-                high_confidence_threshold=self._settings.high_confidence_threshold,
-            ),
-            seed_edges=component_edges,
-            result=result,
-        )
-        component_edges.extend(tier_3_edges)
-
-        # Between the tiers: dedup is settled, transfer detection has not run.
-        # This is the only point where both are true, and it is what the
-        # reconciliation needs from either side — the components it reads
-        # include the edges this run just wrote, and the transfers it reverses
-        # are gone before the exclusion set below is built, so a leg it frees
-        # is a Tier 4 candidate in this same run rather than the next one.
-        # The reconciliation and everything after it run under this guard: its
-        # reversals commit as it goes and are destructive, so an exception that
-        # discards `result` would take the only record of them with it. The
-        # guard has to start at the reconciliation rather than after it — a
-        # crash inside its own loop leaves the same durable reversals behind.
+        # Everything that writes runs under this guard, starting at Tier 2b —
+        # the run's first durable write. The matcher opens no transaction, so a
+        # tier's decisions and the reconciliation's reversals are committed by
+        # the time any later step can fail, and an exception that discarded
+        # `result` would take the only record of them with it. Starting the
+        # guard lower (at the reconciliation, or after it) leaves the same
+        # partial state behind with nothing left to report it. The reads above
+        # stay outside: they precede every write, so a failure there genuinely
+        # has nothing to carry.
         try:
+            # Tier 2b: within-source overlap (high-confidence only)
+            tier_2b_edges = self._run_tier(
+                tier="2b",
+                candidates_fn=lambda: get_candidates_within_source(
+                    self._db,
+                    table=self._table,
+                    date_window_days=self._settings.date_window_days,
+                    excluded_ids=None,
+                    rejected_pairs=rejected,
+                ),
+                seed_edges=component_edges,
+                result=result,
+            )
+            component_edges.extend(tier_2b_edges)
+
+            # Tier 3: cross-source. Passing high_confidence_threshold enables the
+            # agreement floor: a pair whose descriptions agree scores at/above the
+            # threshold at any gap inside the window, regardless of similarity
+            # (assign_components' source_file guard keeps N true duplicates 1:1).
+            tier_3_edges = self._run_tier(
+                tier="3",
+                candidates_fn=lambda: get_candidates_cross_source(
+                    self._db,
+                    table=self._table,
+                    date_window_days=self._settings.date_window_days,
+                    excluded_ids=None,
+                    rejected_pairs=rejected,
+                    high_confidence_threshold=self._settings.high_confidence_threshold,
+                ),
+                seed_edges=component_edges,
+                result=result,
+            )
+            component_edges.extend(tier_3_edges)
+
+            # Between the tiers: dedup is settled, transfer detection has not
+            # run. This is the only point where both are true, and it is what
+            # the reconciliation needs from either side — the components it
+            # reads include the edges this run just wrote, and the transfers it
+            # reverses are gone before the exclusion set below is built, so a
+            # leg it frees is a Tier 4 candidate in this same run rather than
+            # the next one.
             result.transfers_retired = retire_transfers_invalidated_by_dedup(
                 self._db, decisions=self._decisions, actor=self._actor
             )
@@ -241,11 +260,19 @@ class TransactionMatcher:
             )
         except ReconciliationError as exc:
             # Its own count, not `result`'s: the assignment above never ran.
-            raise MatchRunError(exc, transfers_retired=exc.transfers_retired) from exc
+            # Wrapped unconditionally, unlike the branch below — this exception
+            # exists only because reversals committed, and it is never the
+            # first-load precondition that branch has to leave alone.
+            result.transfers_retired = exc.transfers_retired
+            raise MatchRunError(exc, partial=result) from exc
         except Exception as exc:
-            raise MatchRunError(
-                exc, transfers_retired=result.transfers_retired
-            ) from exc
+            if not result.has_durable_writes:
+                # Nothing committed, so there is no partial outcome to carry —
+                # and wrapping here would hide the bare CatalogException that
+                # `refresh()` reads as "views not built yet" on a first load.
+                # The carrier is earned by a durable write, not by failing.
+                raise
+            raise MatchRunError(exc, partial=result) from exc
 
         return result
 
@@ -358,6 +385,13 @@ class TransactionMatcher:
             DEDUP_MATCH_CONFIDENCE.observe(pair.confidence_score)
             status, decided_by = mergeable[pair]
 
+            # Persist first, count second — the order Tier 4 already uses.
+            # `result` now rides out on MatchRunError when a later pair raises,
+            # so its counters have to name what committed rather than what the
+            # loop reached. A clean run completes the loop and totals the same
+            # either way; a crashing one differs by exactly the failed pair.
+            self._persist_dedup_match(pair, tier, status, decided_by)
+
             if status == "accepted":
                 result.auto_merged += 1
                 tier_merged += 1
@@ -367,7 +401,6 @@ class TransactionMatcher:
                 tier_pending += 1
                 DEDUP_REVIEW_PENDING.inc()
 
-            self._persist_dedup_match(pair, tier, status, decided_by)
             newly_added.append((
                 (pair.source_type_a, pair.source_transaction_id_a, pair.account_id),
                 (pair.source_type_b, pair.source_transaction_id_b, pair.account_id),

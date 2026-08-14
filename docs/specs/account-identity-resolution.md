@@ -695,6 +695,24 @@ Guard-2 free-text resolution):
   has-matches branch, where "No new matches found" would otherwise be the whole
   output of a run that undid a decision.
 
+  **A run that fails owes the same disclosure for whatever it already
+  committed.** `TransactionMatcher.run` opens no transaction: each dedup tier
+  persists one decision per pair, and the reconciliation commits each reversal as
+  it goes, so everything written before the failing step is durable while the
+  `MatchResult` dies with the exception. `MatchRunError` carries that partial
+  result — all three match counts and `transfers_retired` — and `refresh`,
+  `matches run`, `matches backfill`, and `transactions_matches_run` each report
+  it before failing. The guard spans every step that writes, starting at the
+  first dedup tier rather than at the reconciliation: a tier crash strands
+  committed merges exactly the way a Tier 4 crash strands committed reversals.
+  Two consequences fall out. A run that committed **nothing** raises its own
+  exception unwrapped, because `refresh` reads a bare `CatalogException` from the
+  tiers as the first-load "views not built yet" precondition and stays quiet —
+  wrapping every failure would report that expected first run as an error, while
+  wrapping a *late* one would claim nothing was examined after decisions were
+  written. And the tier counters increment after each write rather than before,
+  so a carried count names what committed rather than what the loop reached.
+
   **The notices say what was reversed, never what caused it.** The pass walks
   every accepted transfer, not only the ones this call invalidated, so a count
   can include a transfer that an unrelated earlier decision broke and this run

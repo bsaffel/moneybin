@@ -11,6 +11,7 @@ from moneybin.cli.utils import (
     RETIRED_SIDES_COLLAPSED,
     emit_json,
     handle_cli_errors,
+    warn_match_decisions_committed,
     warn_transfers_retired,
 )
 from moneybin.database import get_database
@@ -103,11 +104,13 @@ def matches_run(
                         auto_accept_transfers=auto_accept_transfers, actor="cli"
                     )
                 except MatchRunError as exc:
-                    # The reversals committed before whatever failed; this
-                    # exception is the last thing that knows the count. Warn,
-                    # then re-raise so the failure keeps its own presentation.
+                    # The decisions and the reversals both committed before
+                    # whatever failed; this exception is the last thing that
+                    # knows either count. Warn, then re-raise so the failure
+                    # keeps its own presentation.
+                    warn_match_decisions_committed(exc.partial)
                     warn_transfers_retired(
-                        exc.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                        exc.partial.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
                     )
                     raise
                 if result.has_matches:
@@ -260,8 +263,9 @@ def matches_backfill(
                     # Same guard as `run` above, repeated rather than shared:
                     # the two commands own their own summaries, and a helper
                     # here would hide which one lost the disclosure.
+                    warn_match_decisions_committed(exc.partial)
                     warn_transfers_retired(
-                        exc.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                        exc.partial.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
                     )
                     raise
 

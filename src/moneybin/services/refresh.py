@@ -243,15 +243,19 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                 if match_result.has_pending:
                     logger.info(PENDING_MATCHES_HINT)
         except MatchRunError as exc:
-            # The run died downstream of the reconciliation, which had already
-            # committed its reversals. Take the count off the exception: this
-            # branch is the only place it still exists, and it names a decision
-            # of the user's that has been undone. Caught before the catalog
-            # branch below on purpose — a *late* CatalogException reaches here
-            # wrapped, and calling it a skipped step would claim nothing was
-            # examined after the tiers had already written decisions.
+            # The run died after committing part of its work — tier decisions,
+            # reversals, or both. Take every count off the exception: this
+            # branch is the only place they still exist, and between them they
+            # name merges now visible in the ledger and a transfer decision of
+            # the user's that has been undone. Caught before the catalog branch
+            # below on purpose — a *late* CatalogException reaches here wrapped,
+            # and calling it a skipped step would claim nothing was examined
+            # after the tiers had already written decisions.
             matching_error = str(exc)
-            transfers_retired = exc.transfers_retired
+            auto_merged = exc.partial.auto_merged
+            pending_review = exc.partial.pending_review
+            pending_transfers = exc.partial.pending_transfers
+            transfers_retired = exc.partial.transfers_retired
             logger.error(f"Matching failed during refresh: {exc}", exc_info=True)
         except (duckdb.CatalogException, duckdb.BinderException):
             # Views not built yet (first load precedes SQLMesh apply) — an

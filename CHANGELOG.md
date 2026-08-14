@@ -919,6 +919,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it reported the count with no action beside it — so the surface most users
   reach the reconciliation through named the reversal without naming the
   restore. Both halves now match what the accept path already did.
+
+  That guard started one step too low. It opened after the two dedup tiers, but
+  the tiers are the run's *first* durable writes: each persists one decision per
+  pair with no transaction around the loop, so a pair that raises leaves every
+  earlier merge on disk — suppressing the duplicate side of those transactions —
+  while the caller was told only that matching failed. A late `CatalogException`
+  from a tier was worse than silent: `refresh` read it as the first-load "views
+  not built yet" precondition and reported a *skipped* step, claiming nothing had
+  been examined after decisions were already written. The guard now spans every
+  step that writes, and the error carries the whole partial result rather than
+  the retirement count alone, so all four surfaces report the merges as well as
+  the reversals. A run that committed nothing is still left unwrapped, which is
+  what keeps a genuine first load quiet.
 - **An accepted merge no longer strands the match decisions made under the old
   account, which could silently reverse a rejection.** Accepting a link
   re-points `app.account_links`, but a row in `app.match_decisions` stores the
