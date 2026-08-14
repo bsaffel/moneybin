@@ -8,8 +8,7 @@ Anchor shape
 ------------
 ``dict[str, list[str]]`` — field name → ordered list of single-capture-group
 patterns.  The first pattern whose first capture group matches wins; None if no
-pattern matches.  All five fields (account_id, period_start, period_end,
-opening_balance, closing_balance) are single-group anchors.
+pattern matches. All fields are single-group anchors.
 
 period_start / period_end use independent patterns rather than a shared
 "Statement Period: <start> - <end>" two-group anchor.  This keeps the anchor
@@ -43,6 +42,10 @@ _TIMEOUT_SEC = 0.1
 # dict[str, list[str]] shape throughout; two-group anchors would require a
 # special-case code path for one field.
 #: Public alias used by auto_derive to freeze metadata anchors into a Recipe.
+_COMPLETE_ACCOUNT_ID_PATTERN = (
+    r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)(?![-\w*])"
+)
+
 DEFAULT_ANCHORS: dict[str, list[str]] = {
     "account_id": [
         # Card numbers print as space- or hyphen-separated groups
@@ -57,10 +60,25 @@ DEFAULT_ANCHORS: dict[str, list[str]] = {
         # all-or-nothing: without it a token like "123-ABC-456" matches only
         # its leading "123", and because _first_match is first-match-wins that
         # partial hit permanently retires the (\S+) anchor below.
-        r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)(?![-\w*])",
+        _COMPLETE_ACCOUNT_ID_PATTERN,
         r"Account\s+ending\s+in\s+(\d+)",
         # Institution-specific tokens that aren't digit/mask runs (e.g. "ACCT-9Z").
         r"Account\s+Number[:\s]+(\S+)",
+    ],
+    "account_label": [
+        r"^Account\s+(?:Name|Nickname):[ \t]*([^\r\n]+?)[ \t]*$",
+    ],
+    "account_type": [
+        r"^Account\s+Type:[ \t]*([^\r\n]+?)[ \t]*$",
+    ],
+    "product_name": [
+        r"^Product(?:\s+Name)?:[ \t]*([^\r\n]+?)[ \t]*$",
+    ],
+    "routing_number": [
+        r"^Routing\s+Number:[ \t]*(\d{9})[ \t]*$",
+    ],
+    "currency_code": [
+        r"^Currency:[ \t]*([A-Za-z]{3})[ \t]*$",
     ],
     "period_start": [
         r"Statement\s+Period:\s+(\d{2}/\d{2}/\d{4})",
@@ -96,6 +114,12 @@ class StatementMetadata:
     period_end: date | None
     opening_balance: Decimal | None
     closing_balance: Decimal | None
+    account_label: str | None = None
+    account_type: str | None = None
+    product_name: str | None = None
+    routing_number: str | None = None
+    currency_code: str | None = None
+    account_id_complete: bool = False
 
     def is_complete_for_reconciliation(self) -> bool:
         """Return True when both balances are present (Req 7a reconciliation gate)."""
@@ -119,15 +143,32 @@ def capture_metadata(
     """
     resolved = anchors if anchors is not None else DEFAULT_ANCHORS
     raw: dict[str, str | None] = {}
+    account_id_pattern: str | None = None
     for field_name, patterns in resolved.items():
-        raw[field_name] = _first_match(document_text, patterns)
+        raw[field_name], matched_pattern = _first_match_with_pattern(
+            document_text, patterns
+        )
+        if field_name == "account_id":
+            account_id_pattern = matched_pattern
+
+    account_id = raw.get("account_id")
 
     return StatementMetadata(
-        account_id=raw.get("account_id"),
+        account_id=account_id,
         period_start=_parse_date(raw.get("period_start")),
         period_end=_parse_date(raw.get("period_end")),
         opening_balance=_parse_decimal(raw.get("opening_balance")),
         closing_balance=_parse_decimal(raw.get("closing_balance")),
+        account_label=raw.get("account_label"),
+        account_type=raw.get("account_type"),
+        product_name=raw.get("product_name"),
+        routing_number=raw.get("routing_number"),
+        currency_code=_normalize_currency_code(raw.get("currency_code")),
+        account_id_complete=(
+            account_id_pattern == _COMPLETE_ACCOUNT_ID_PATTERN
+            and account_id is not None
+            and not any(char in "*Xx•●" for char in account_id)
+        ),
     )
 
 
@@ -136,8 +177,10 @@ def capture_metadata(
 # ---------------------------------------------------------------------------
 
 
-def _first_match(text: str, patterns: list[str]) -> str | None:
-    """Return the first capture group from the first matching pattern, or None."""
+def _first_match_with_pattern(
+    text: str, patterns: list[str]
+) -> tuple[str | None, str | None]:
+    """Return the first capture and the pattern that produced it."""
     for pattern in patterns:
         try:
             m = _re.search(pattern, text, _re.MULTILINE, timeout=_TIMEOUT_SEC)
@@ -145,10 +188,10 @@ def _first_match(text: str, patterns: list[str]) -> str | None:
             continue
         if m is not None:
             try:
-                return m.group(1)
+                return m.group(1), pattern
             except IndexError:
                 continue
-    return None
+    return None, None
 
 
 def _parse_date(raw: str | None) -> date | None:
@@ -180,3 +223,8 @@ def _parse_decimal(raw: str | None) -> Decimal | None:
         return Decimal(cleaned)
     except InvalidOperation:
         return None
+
+
+def _normalize_currency_code(raw: str | None) -> str | None:
+    """Normalize a captured three-letter currency code."""
+    return raw.upper() if raw is not None else None

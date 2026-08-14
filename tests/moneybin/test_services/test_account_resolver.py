@@ -1396,6 +1396,84 @@ def test_propose_strong_ref_adopts_without_writing(db: Database) -> None:
     assert n_decisions is not None and n_decisions[0] == 0
 
 
+def test_partial_pdf_legacy_link_is_only_a_candidate(db: Database) -> None:
+    """An issuer-plus-last-four legacy link is evidence, not a strong ref."""
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "(account_id, display_name, institution_slug, last_four) VALUES "
+        "('acct_legacy_pdf', 'Legacy Chase account', 'chase', '9999'), "
+        "('acct_current_pdf', 'Current Chase account', 'chase', '1234')"
+    )
+    AccountLinksRepo(db).insert(
+        link_id="link_legacy_pdf",
+        account_id="acct_legacy_pdf",
+        ref_kind="source_native",
+        ref_value="chase_1234",
+        source_type="pdf",
+        source_origin="chase",
+        decided_by="auto",
+        actor="system",
+    )
+    src = SourceAccount(
+        source_type="pdf",
+        source_origin="chase",
+        source_account_key="pdf_doc_0123456789abcdef",
+        account_name="statement",
+        last_four="1234",
+        institution="Chase",
+        legacy_source_account_key="chase_1234",
+    )
+
+    proposal = AccountResolver(db, actor="system").propose(src)
+
+    assert proposal.adopted_via is None
+    assert proposal.requires_confirm is True
+    assert [
+        (candidate.account_id, candidate.signal) for candidate in proposal.candidates
+    ] == [
+        ("acct_current_pdf", "institution_last4"),
+        ("acct_legacy_pdf", "legacy_pdf_identity"),
+    ]
+
+
+def test_current_pdf_signal_replaces_legacy_signal_for_same_account(
+    db: Database,
+) -> None:
+    """Legacy evidence never hides a current signal for the same account."""
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "(account_id, display_name, institution_slug, last_four) "
+        "VALUES ('acct_pdf', 'Current Chase account', 'chase', '1234')"
+    )
+    AccountLinksRepo(db).insert(
+        link_id="link_legacy_pdf_same",
+        account_id="acct_pdf",
+        ref_kind="source_native",
+        ref_value="chase_1234",
+        source_type="pdf",
+        source_origin="chase",
+        decided_by="auto",
+        actor="system",
+    )
+    src = SourceAccount(
+        source_type="pdf",
+        source_origin="chase",
+        source_account_key="pdf_doc_fedcba9876543210",
+        account_name="statement",
+        last_four="1234",
+        institution="Chase",
+        legacy_source_account_key="chase_1234",
+    )
+
+    proposal = AccountResolver(db, actor="system").propose(src)
+
+    assert [
+        (candidate.account_id, candidate.signal) for candidate in proposal.candidates
+    ] == [("acct_pdf", "institution_last4")]
+
+
 # ---------------------------------------------------------------------------
 # M1S.5b — propose_existing() backfill read-only preview
 # ---------------------------------------------------------------------------

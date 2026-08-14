@@ -145,14 +145,13 @@ def _apply_bridge(
 
     Every document here is the same stub Chase statement, whose account identity
     is incidental to what these tests assert — so bind it once rather than
-    restate it at twenty call sites. ``chase_1234`` is the source key
-    ``_pdf_source_account`` derives from that fixture's issuer and masked
-    number.
+    restate it at twenty call sites. The positional ``@0`` referent is stable
+    across source-key derivation changes and names the fixture's only account.
     """
     return ImportService(db).apply_pdf_bridge_response(
         file_path,
         bridge_response,
-        account_bindings={"chase_1234": "new"},
+        account_bindings={"@0": "new"},
         **kwargs,
     )
 
@@ -654,10 +653,9 @@ def test_bridge_apply_gates_account_identity_before_begin_import(
     outcome = exc.value.outcome
     assert outcome.reason == "account_confirmation"
     assert outcome.channel == "pdf"
-    # The issuer-slug + masked-account native key is what the user binds.
-    assert [p["source_account_key"] for p in outcome.account_proposals] == [
-        "chase_1234"
-    ]
+    [source_key] = [p["source_account_key"] for p in outcome.account_proposals]
+    assert source_key.startswith("pdf_doc_")
+    assert "1234" not in source_key
     # The seeded twin is offered as the merge candidate, not silently adopted.
     assert [c["account_id"] for c in outcome.account_proposals[0]["candidates"]] == [
         "acct_existing01"
@@ -701,7 +699,7 @@ def test_bridge_apply_reports_the_account_it_minted(
     # The opaque canonical id, and it is the account the link actually points at.
     linked = db.conn.execute(
         "SELECT account_id FROM app.account_links "
-        "WHERE ref_kind = 'source_native' AND ref_value = 'chase_1234'"
+        "WHERE ref_kind = 'source_native' AND ref_value LIKE 'pdf_doc_%'"
     ).fetchone()
     assert linked is not None
     assert created.account_id == linked[0]

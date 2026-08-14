@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from moneybin.services.ledger_overlap import LedgerOverlap
 
@@ -15,6 +15,10 @@ class AccountCandidateDict(TypedDict):
     display_name: str
     confidence: float
     signal: str
+    overlap_matched: NotRequired[int]
+    overlap_comparable: NotRequired[int]
+    overlap_window_start: NotRequired[str | None]
+    overlap_window_end: NotRequired[str | None]
 
 
 class AccountProposalDict(TypedDict):
@@ -36,12 +40,12 @@ class AccountCandidate:
     account_id: str
     display_name: str
     confidence: float
-    # "institution_last4" | "name" | "institution_reissue" | "institution" |
-    # "fallback". The first three fired on real evidence and reach the persisted
-    # decision log. The last two are the interactive import gate's last-resort
-    # pick-list (existing accounts shown when nothing cleared); never emitted on
-    # the backfill link queue.
+    # "legacy_pdf_identity" | "institution_last4" | "name" |
+    # "institution_reissue" | "institution" | "fallback". The first four fired
+    # on real evidence. The last two are the interactive import gate's
+    # last-resort pick-list; never emitted on the backfill link queue.
     signal: str
+    overlap: LedgerOverlap | None = None
 
 
 @dataclass(frozen=True)
@@ -81,9 +85,10 @@ class AccountProposal:
     Date/Description/Amount CSV. Set by the caller that asked for a fallback
     pick-list, because only the caller knows the file carried no signal.
 
-    Distinct from "new". Every other mint records an identity the file actually
-    stated (an OFX ``<ACCTID>``, a statement's issuer + last four); this one
-    would mint under the filename stem, which is a guess. Candidates cannot
+    Distinct from "new". Every other mint records identity evidence from the
+    file (an OFX ``<ACCTID>``, or captured PDF account traits alongside its
+    exact-document digest); this one has only a placeholder display name and no
+    evidence linking it across files. Candidates cannot
     express it: on a first import there is nothing to offer, so the pick-list is
     empty and the proposal would be indistinguishable from a confident mint."""
 
@@ -95,13 +100,38 @@ class AccountProposal:
     def to_dict(self, *, proposal_ref: str) -> AccountProposalDict:
         """Serialise to a typed dict for surface display.
 
-        Includes opaque ids, display_name, confidence, and signal.
+        Includes opaque ids, display_name, confidence, signal, and optional
+        aggregate/date-window ledger-overlap evidence.
         Never exposes ref_value or other PII-bearing fields.
 
         ``proposal_ref`` is supplied by the caller rather than held on the
         proposal: it names this account's position in the file being imported,
         which is a fact about that import, not about the resolver's verdict.
         """
+        candidates: list[AccountCandidateDict] = []
+        for candidate in self.candidates:
+            serialized: AccountCandidateDict = {
+                "account_id": candidate.account_id,
+                "display_name": candidate.display_name,
+                "confidence": candidate.confidence,
+                "signal": candidate.signal,
+            }
+            if candidate.overlap is not None:
+                serialized.update({
+                    "overlap_matched": candidate.overlap.matched,
+                    "overlap_comparable": candidate.overlap.comparable,
+                    "overlap_window_start": (
+                        candidate.overlap.window_start.isoformat()
+                        if candidate.overlap.window_start is not None
+                        else None
+                    ),
+                    "overlap_window_end": (
+                        candidate.overlap.window_end.isoformat()
+                        if candidate.overlap.window_end is not None
+                        else None
+                    ),
+                })
+            candidates.append(serialized)
         return {
             "source_account_key": self.source_account_key,
             "proposal_ref": proposal_ref,
@@ -109,15 +139,7 @@ class AccountProposal:
             "is_new": self.is_new,
             "adopted_via": self.adopted_via,
             "requires_confirm": self.requires_confirm,
-            "candidates": [
-                {
-                    "account_id": c.account_id,
-                    "display_name": c.display_name,
-                    "confidence": c.confidence,
-                    "signal": c.signal,
-                }
-                for c in self.candidates
-            ],
+            "candidates": candidates,
         }
 
 
@@ -125,8 +147,9 @@ class AccountProposal:
 class SourceAccount:
     """One source account presented to the resolver.
 
-    ``source_account_key`` is the source's own native account key (OFX number,
-    CSV slug, Plaid token) — the ``source_native`` ref_value staging joins on.
+    ``source_account_key`` is the source's native key (OFX number, CSV slug,
+    Plaid token, or PDF document digest) — the ``source_native`` ref_value
+    staging joins on.
     PII fields (``account_number``) are used as scoped confirmers and never logged.
     """
 
@@ -138,6 +161,9 @@ class SourceAccount:
     last_four: str | None = None
     institution: str | None = None
     persistent_token: str | None = None
+    legacy_source_account_key: str | None = None
+    """A superseded source key that may nominate a review candidate, never adopt."""
+
     explicit_account_id: str | None = None
     force_standalone: bool = False
     """User declared this a NEW standalone account: mint fresh, skip the

@@ -67,7 +67,7 @@ gate — is **blocked on account identity**, not on matching heuristics.
 | OFX/QFX/QBO | raw bank account number (`<ACCTID>`, PII) | number, routing (`<BANKID>`), FID | ✅ | `RIGHT(number,4)` | `institution_org` / `institution_fid` |
 | Plaid sync | opaque Plaid token | token, `mask`, `official_name`, subtype; `persistent_account_id` at some institutions | ❌ never | `mask` | `institution_name` |
 | CSV / tabular | `slugify(account_name)` or prior match | user-supplied name; `account_number`/`account_number_masked` when present | sometimes | `account_number_masked` | `institution_name` |
-| PDF | tabular path → same as CSV | last4 if the statement exposes it | sometimes | sometimes | sometimes |
+| PDF | opaque document-content key | proven-complete scoped identifier; last4 and label/product as candidate signals; currency-aware ledger overlap; balances for reconciliation | sometimes | sometimes | issuer fingerprint; validated routing fallback |
 
 **What the signals can and can't do.** `institution + last4` is the only
 identifier a bank file **and** Plaid both expose — but it is a *weak candidate*,
@@ -215,6 +215,13 @@ the existing repo-enforced-invariant pattern):**
   (e.g. a CSV number column, unknown institution) is **demoted to a candidate**
   signal (below), never a global auto-adopt key. `persistent_token` is globally
   unique by construction.
+- **PDF document identity is not account identity.** A PDF `source_native` value
+  is `pdf_doc_<document digest>`, which makes exact-file re-import idempotent.
+  Cross-document adoption requires a proven-complete `full_number` scoped by a
+  known issuer or validated routing number. Masked, suffix-only, bridge-authored,
+  and otherwise unproven captures never produce that ref. The former
+  issuer-plus-last-four PDF derivation is consulted only as
+  `legacy_pdf_identity` review evidence and does not suppress current candidates.
 
 ### `app.account_link_decisions` — the merge-proposal review queue
 
@@ -326,7 +333,7 @@ signal reliability:
    (`persistent_token`, scoped `full_number`)** — safe because step 1 just proved
    no existing account holds them, and it lets a later source bearing the same
    token / scoped number auto-adopt via step 1 instead of minting a duplicate.
-   Then look for existing accounts sharing `institution + last4` (when institution
+  Then look for a legacy PDF-link candidate, existing accounts sharing `institution + last4` (when institution
    is known), then fuzzy `account_name`, then the **reissue signal** — same
    institution where both sides carry a last-four and the two *differ*
    (`institution_reissue`, confidence 0.3) — querying `core.dim_accounts`. The
@@ -375,7 +382,7 @@ signal reliability:
 | Adopt (pinned) | explicit `account_id` | bind to the named canonical | accepted mapping (`decided_by=user`¹) |
 | Auto-adopt | remembered `source_native`, scoped full number, or persistent token | reuse existing canonical | accepted mapping (`auto`) |
 | Mint new | no candidate at all | new standalone canonical account | accepted `source_native` + any scoped strong ref (`auto`) |
-| Propose / review | `institution+last4` or fuzzy name | new account + `pending` decision(s) | accepted `source_native` + any scoped strong ref **plus** pending decision(s) |
+| Propose / review | legacy PDF link, `institution+last4`, fuzzy name, or reissue evidence | new account + `pending` decision(s) | accepted `source_native` + any scoped strong ref **plus** pending decision(s) |
 
 ¹ `decided_by` is `auto | user | system`; **agent ratification maps to `user`**
 (consistent with `match_decisions_repo`) — `actor_kind` is a runtime distinction,
@@ -537,6 +544,11 @@ Guard-2 free-text resolution):
   user who widened it would get a larger number that means less. Each group states how many transactions an
   accepted merge would move, so the magnitude and the evidence are both present
   at browse time rather than only inside the confirm.
+  The PDF import gate uses the same probe before loading: normalized incoming
+  statement rows are compared directly with each candidate account, and the
+  confirmation carries matched/comparable counts and the comparable date window.
+  This ranks human evidence; it never answers the gate or creates an auto-merge
+  threshold.
   Three properties are load-bearing:
   - **Keyed on two account ids, not a decision id.** The matcher excludes
     same-`account_id` pairs, so the overlap cannot be computed *after* the merge
@@ -695,7 +707,10 @@ remembered, so re-imports are silent.
 
 **AX (agent).** The same envelope is the agent's structured contract: per detected
 account an `account_proposal` (`{proposal_ref, proposed_account_id, is_new,
-candidates:[{account_id, display_name, confidence, signal}]}`) plus `actions[]`.
+candidates:[{account_id, display_name, confidence, signal, overlap_matched?,
+overlap_comparable?, overlap_window_start?, overlap_window_end?}]}`) plus
+`actions[]`. `legacy_pdf_identity` is a review-only signal; overlap fields are
+aggregate/date-window evidence and never change the confirmation requirement.
 The agent (a) returns an `account_bindings` map to `import_files` or
 `import_confirm` to bind deterministically — preferred, keyed by `proposal_ref`;
 or (b) self-accepts **only a strong-confirmer adoption** when `self_accept` is

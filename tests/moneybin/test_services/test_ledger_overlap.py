@@ -9,12 +9,18 @@ one carrying different ones — never from real institution or account data.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from prometheus_client import REGISTRY
 
 from moneybin.database import Database
-from moneybin.services.ledger_overlap import LedgerOverlap, probe_ledger_overlap
+from moneybin.services.ledger_overlap import (
+    IncomingTransaction,
+    LedgerOverlap,
+    probe_incoming_ledger_overlap,
+    probe_ledger_overlap,
+)
 from tests.moneybin.db_helpers import create_core_tables
 
 _TWIN = "twin_acct0001"
@@ -80,6 +86,42 @@ def test_a_true_twin_matches_every_row(core_db: Database) -> None:
         matched=3,
         window_start=date(2026, 5, 3),
         window_end=date(2026, 5, 11),
+    )
+
+
+def test_incoming_statement_matches_existing_account_within_posting_window(
+    core_db: Database,
+) -> None:
+    _insert_txn(
+        core_db,
+        account_id=_SURVIVOR,
+        txn_date=date(2026, 5, 4),
+        amount="-12.00",
+        currency="USD",
+    )
+
+    overlap = probe_incoming_ledger_overlap(
+        core_db,
+        transactions=(
+            IncomingTransaction(
+                transaction_date=date(2026, 5, 1),
+                amount=Decimal("-12.00"),
+                currency_code="usd",
+            ),
+            IncomingTransaction(
+                transaction_date=date(2026, 5, 20),
+                amount=Decimal("-99.00"),
+                currency_code="USD",
+            ),
+        ),
+        against_account_id=_SURVIVOR,
+    )
+
+    assert overlap == LedgerOverlap(
+        comparable=1,
+        matched=1,
+        window_start=date(2026, 5, 1),
+        window_end=date(2026, 5, 1),
     )
 
 

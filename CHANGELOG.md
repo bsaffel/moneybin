@@ -36,6 +36,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   useful as the instruction to look at it. `revision` is read from the
   repository top level only, so a wheel installed beneath an unrelated checkout
   reports `null` rather than that project's commit.
+- **PDF account matching now uses complete statement identity without a new
+  secret or user setting.** Exact files get opaque content-derived keys; complete
+  account identifiers proven complete are retained only as issuer- or validated
+  routing-scoped `full_number` links in the encrypted database. Masked,
+  suffix-only, and unscoped statements stay review-only;
+  labelled account metadata is captured and incoming-ledger overlap is shown as
+  matched/comparable evidence.
+  The old issuer-plus-last-four PDF links are migration candidates rather than
+  silent matches, preventing distinct same-bank accounts with the same suffix
+  from merging invisibly.
 - **Read the ingestion pipeline through `sql_query` (M2O.2).** `sql_query` and
   `moneybin sql query` reach `raw` and `prep` alongside `core`, `app`, and
   `reports` — five schemas, up from three. The seed sheets the gsheet and PDF

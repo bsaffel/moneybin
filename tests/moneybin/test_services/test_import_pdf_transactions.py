@@ -13,6 +13,7 @@ is text the extractor has to actually surface.
 
 from __future__ import annotations
 
+import hashlib
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -102,9 +103,9 @@ def _anchorless_doc(opening: str = "1000.00", closing: str = "1100.00") -> PdfDo
     """The standard statement with its account-number line removed.
 
     Everything else still reads — issuer, balances, rows — so routing reaches
-    ``transactions`` exactly as usual. Only the account identity is missing,
-    which is the whole point: it isolates the derivation that falls back to the
-    filename stem.
+    ``transactions`` exactly as usual. Only cross-document account evidence is
+    missing, which isolates the path where an opaque document digest preserves
+    exact-file identity but cannot identify another statement for the account.
     """
     return _make_doc(
         text_lines=[
@@ -976,6 +977,89 @@ def test_consecutive_statements_of_one_card_share_one_account(
     assert len(accounts) == 1, (
         f"one card resolved to {len(accounts)} accounts across two statements"
     )
+
+
+@pytest.mark.integration
+def test_distinct_full_pdf_account_numbers_with_same_last_four_do_not_collide(
+    db: Database, tmp_path: Path
+) -> None:
+    """Complete identifiers distinguish accounts that share issuer and last four."""
+    svc = ImportService(db)
+    account_numbers = ("001234567890", "991234567890")
+
+    first_doc = _make_doc(
+        text_lines=[
+            line.replace(
+                "Account Number: 1234", f"Account Number: {account_numbers[0]}"
+            )
+            for line in _standard_text_lines()
+        ],
+        tables=[_standard_table()],
+    )
+    first_pdf = tmp_path / "first.pdf"
+    first_pdf.write_bytes(b"%PDF-1.4 first account")
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=first_doc
+    ):
+        first_result = svc.import_file(first_pdf, refresh=False)
+    assert first_result.transactions == 2
+    first_link = db.execute(
+        "SELECT account_id FROM app.account_links "
+        "WHERE ref_kind = 'source_native' AND status = 'accepted'"
+    ).fetchone()
+    assert first_link is not None
+    create_core_tables(db)
+    db.conn.execute(
+        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "(account_id, display_name, institution_slug, last_four) "
+        "VALUES (?, ?, ?, ?)",
+        [first_link[0], "First Chase account", "chase", "7890"],
+    )
+
+    second_doc = _make_doc(
+        text_lines=[
+            line.replace(
+                "Account Number: 1234", f"Account Number: {account_numbers[1]}"
+            )
+            for line in _standard_text_lines()
+        ],
+        tables=[_standard_table()],
+    )
+    second_pdf = tmp_path / "second.pdf"
+    second_pdf.write_bytes(b"%PDF-1.4 second account")
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=second_doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(second_pdf, refresh=False)
+
+    [proposal] = exc.value.outcome.account_proposals
+    assert proposal["source_account_key"].startswith("pdf_doc_")
+    assert account_numbers[1] not in proposal["source_account_key"]
+    assert proposal["candidates"]
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=second_doc,
+    ):
+        second_result = svc.import_file(
+            second_pdf,
+            refresh=False,
+            account_bindings={proposal["source_account_key"]: "new"},
+        )
+    assert second_result.transactions == 2
+
+    full_number_links = db.execute(
+        "SELECT ref_value, account_id FROM app.account_links "
+        "WHERE ref_kind = 'full_number' AND status = 'accepted'"
+    ).fetchall()
+    assert {row[0] for row in full_number_links} == {
+        f"chase:{number}" for number in account_numbers
+    }
+    assert len({row[1] for row in full_number_links}) == 2
 
 
 @pytest.mark.integration
@@ -2023,15 +2107,82 @@ def test_pdf_import_gates_account_identity_before_begin_import(
     outcome = exc.value.outcome
     assert outcome.reason == "account_confirmation"
     assert outcome.channel == "pdf"
-    # The issuer-slug + masked-account native key is what the user binds.
-    assert [p["source_account_key"] for p in outcome.account_proposals] == [
-        "chase_1234"
-    ]
+    # The user binds an opaque document key; the partial account number is only
+    # candidate evidence and never appears in the durable native key.
+    [source_key] = [p["source_account_key"] for p in outcome.account_proposals]
+    assert source_key.startswith("pdf_doc_")
+    assert "1234" not in source_key
     # Nothing loaded, no batch opened, no link written, no recipe saved.
     assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
     assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
     assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
     assert _count(db, "SELECT COUNT(*) FROM app.pdf_formats") == 0
+
+
+@pytest.mark.integration
+def test_partial_pdf_confirmation_reports_ledger_overlap(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    _seed_chase_twin(db)
+    for transaction_id, transaction_date, amount in (
+        ("existing-coffee", "2024-01-15", "-50.00"),
+        ("existing-paycheck", "2024-01-21", "150.00"),
+    ):
+        db.execute(
+            "INSERT INTO core.fct_transactions "  # noqa: S608  # test fixture
+            "(transaction_id, account_id, transaction_date, amount, currency_code) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [transaction_id, "acct_existing01", transaction_date, amount, None],
+        )
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as exc,
+    ):
+        svc.import_file(fake_pdf, refresh=False)
+
+    [candidate] = exc.value.outcome.account_proposals[0]["candidates"]
+    assert candidate.get("overlap_matched") == 2
+    assert candidate.get("overlap_comparable") == 2
+    assert candidate.get("overlap_window_start") == "2024-01-15"
+    assert candidate.get("overlap_window_end") == "2024-01-20"
+
+
+@pytest.mark.integration
+def test_pdf_account_metadata_populates_the_raw_account(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    doc = _make_doc(
+        text_lines=[
+            *_standard_text_lines(),
+            "Account Name: Household Checking",
+            "Account Type: Personal Checking",
+            "Product Name: Total Checking",
+            "Routing Number: 021000021",
+            "Currency: usd",
+        ],
+        tables=[_standard_table()],
+    )
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
+    ):
+        result = import_answering_gate(svc, fake_pdf, refresh=False)
+
+    assert result.transactions == 2
+    row = db.execute(
+        "SELECT account_name, account_type, currency "
+        "FROM raw.tabular_accounts WHERE source_type = 'pdf'"
+    ).fetchone()
+    assert row == ("Household Checking", "Personal Checking", "USD")
 
 
 @pytest.mark.integration
@@ -2041,12 +2192,13 @@ def test_pdf_with_no_account_anchor_gates_before_minting(
 ) -> None:
     """A statement naming no account is ``identity_unknown``, not a confident mint.
 
-    With no readable account number the source-native key falls back to the
-    filename stem, so proceeding silently would attach a card's whole history to
-    a guess about what the file happened to be called. No twin is seeded here on
-    purpose: the point is that a proposal with an EMPTY candidate list still has
-    to stop, which is the half ``identity_unknown`` exists to express — the
-    tabular bare-file branch already opts in this way via ``fallback_keys``.
+    With no readable account number the source-native key identifies only these
+    exact document bytes. Proceeding silently would still mint an account with
+    no cross-document evidence and only a placeholder display name. No twin is
+    seeded here on purpose: the point is that a proposal with an EMPTY candidate
+    list still has to stop, which is the half ``identity_unknown`` exists to
+    express — the tabular bare-file branch already opts in this way via
+    ``fallback_keys``.
     """
     create_core_tables(db)
     doc = _anchorless_doc()
@@ -2072,18 +2224,11 @@ def test_pdf_with_no_account_anchor_gates_before_minting(
 
 
 @pytest.mark.integration
-def test_pinning_an_anchorless_pdf_does_not_teach_the_filename(
+def test_pinning_an_anchorless_pdf_teaches_exact_document_identity(
     db: Database,
     tmp_path: Path,
 ) -> None:
-    """A pin must not promote a filename guess to a strong ``source_native`` ref.
-
-    ``unpinned_account_key`` exists so a pin also teaches what the document
-    yields on its own, sparing the next unpinned statement a second account.
-    When the document yields nothing, that key is the file stem — and accepting
-    it means any later same-named statement from the same issuer adopts this
-    account with no confirm, merging two cards on the strength of a filename.
-    """
+    """An exact re-import adopts the document digest learned by an explicit pin."""
     _seed_chase_twin(db)
     doc = _anchorless_doc()
     svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
@@ -2102,10 +2247,26 @@ def test_pinning_an_anchorless_pdf_does_not_teach_the_filename(
 
     taught = db.execute(
         "SELECT ref_value FROM app.account_links "
-        "WHERE ref_kind = 'source_native' AND status = 'accepted'"
+        "WHERE ref_kind = 'source_native' AND status = 'accepted' "
+        "ORDER BY ref_value"
     ).fetchall()
-    # Only the pin's own self-map; never the "statement" stem.
-    assert [row[0] for row in taught] == ["acct_existing01"]
+    assert [row[0] for row in taught] == [
+        "acct_existing01",
+        f"pdf_doc_{hashlib.sha256(b'%PDF-1.4 fake').hexdigest()[:16]}",
+    ]
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ):
+        repeated = svc.import_file(
+            fake_pdf,
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+        )
+
+    assert repeated.accounts_created == ()
 
 
 @pytest.mark.integration
@@ -2155,21 +2316,11 @@ def test_pdf_binding_new_mints_and_loads(
 
 
 @pytest.mark.integration
-def test_pdf_second_statement_does_not_re_ask(
+def test_partial_pdf_second_statement_requires_review_again(
     db: Database,
     tmp_path: Path,
 ) -> None:
-    """Next month's statement of the same card imports silently.
-
-    The identity scope is the issuer slug, deliberately identical across every
-    statement of one card, so the second statement hits ``source_native`` and
-    passes the gate without a confirm. This is the property that keeps the
-    gate's volume tied to new account identities rather than to statements —
-    a per-statement confirm would be a design failure.
-
-    The seeded twin makes the FIRST statement gate; the assertion is that the
-    second one doesn't, having been answered once.
-    """
+    """A later partial-only statement stays reviewable instead of auto-linking."""
     _seed_chase_twin(db)
     doc = _standard_doc()
     svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
@@ -2194,20 +2345,22 @@ def test_pdf_second_statement_does_not_re_ask(
             account_bindings={key: "new"},
         )
 
-    # Next month: same card, different statement period and balances.
-    # Plain import_file: "did it re-ask?" is the assertion, and the answering
-    # helper would silently absorb a second ask and report success.
+    # Next month: same card, different statement bytes. Last four plus issuer is
+    # still partial evidence, so the new document cannot silently reuse a link.
     next_doc = _standard_doc(opening="1100.00", closing="1200.00")
     next_pdf = tmp_path / "statement_february.pdf"
     next_pdf.write_bytes(b"%PDF-1.4 fake february")
-    with patch(
-        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
-        return_value=next_doc,
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=next_doc,
+        ),
+        pytest.raises(ImportConfirmationRequiredError) as next_exc,
     ):
-        result = svc.import_file(
-            next_pdf, refresh=False, confirm=True, actor_kind="human"
-        )
-    assert result.transactions == 2
+        svc.import_file(next_pdf, refresh=False, confirm=True, actor_kind="human")
+    [next_proposal] = next_exc.value.outcome.account_proposals
+    assert next_proposal["source_account_key"] != key
+    assert next_proposal["candidates"]
 
 
 @pytest.mark.integration
@@ -2218,10 +2371,7 @@ def test_account_id_pin_teaches_the_statements_own_key(
     """Pinning with --account-id must teach the key the statement derives on its own.
 
     ``account_id_override`` replaces the source-native key with the canonical id,
-    so the ladder wrote only ``<canonical> -> <canonical>``. The key the document
-    actually yields ("chase_1234") was never linked, so the *next* statement of
-    the same card — imported without the pin, as any drop-folder or inbox run
-    would — found no link and minted a second account for the same card.
+    so the ladder writes both the self-map and this exact document's opaque key.
 
     The pin must write both links: the canonical self-map the staging JOIN needs,
     and the statement's own derived key pointing at the same account.
@@ -2251,12 +2401,10 @@ def test_account_id_pin_teaches_the_statements_own_key(
             "WHERE ref_kind='source_native' AND status='accepted'"
         ).fetchall()
     )
-    # Both keys resolve to the pinned account: the canonical self-map, and the
-    # key this statement derives without the pin.
-    assert linked == {
-        "acct_pinned01": "acct_pinned01",
-        "chase_1234": "acct_pinned01",
-    }
+    assert linked["acct_pinned01"] == "acct_pinned01"
+    document_keys = [key for key in linked if key.startswith("pdf_doc_")]
+    assert len(document_keys) == 1
+    assert linked[document_keys[0]] == "acct_pinned01"
 
 
 @pytest.mark.integration
@@ -2266,10 +2414,8 @@ def test_account_id_pin_does_not_repoint_an_existing_key(
 ) -> None:
     """The forward-teaching link never steals a key already bound elsewhere.
 
-    If "chase_1234" is already accepted onto another account, pinning a statement
-    to a different account must not re-point it. Re-pointing is an explicit,
-    surfaced operation, never an import-time side effect. The import proceeds on
-    the pin the caller gave; only the extra teaching link is skipped.
+    If an exact document key is already accepted onto another account, pinning
+    that document to a different account must not re-point the remembered key.
     """
     create_core_tables(db)
     for account_id, name in (
@@ -2283,10 +2429,7 @@ def test_account_id_pin_does_not_repoint_an_existing_key(
     doc = _standard_doc()
     svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
 
-    # First: bind chase_1234 to acct_other01. The binding is stated outright
-    # rather than read off a gate — the statement's own derived key is asserted
-    # verbatim at the bottom of this test, so naming it here is the same fact,
-    # and this test is about where the key POINTS, not about what raised it.
+    # First: bind this exact document to acct_other01 by its positional ref.
     with patch(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
     ):
@@ -2295,12 +2438,12 @@ def test_account_id_pin_does_not_repoint_an_existing_key(
             refresh=False,
             confirm=True,
             actor_kind="human",
-            account_bindings={"chase_1234": "acct_other01"},
+            account_bindings={"@0": "acct_other01"},
         )
 
     # Now pin a statement of the same card to a DIFFERENT account.
     other_pdf = tmp_path / "statement_pinned.pdf"
-    other_pdf.write_bytes(b"%PDF-1.4 fake pinned")
+    other_pdf.write_bytes(fake_pdf.read_bytes())
     with patch(
         "moneybin.extractors.pdf.extractor.PDFExtractor.extract", return_value=doc
     ):
@@ -2319,6 +2462,7 @@ def test_account_id_pin_does_not_repoint_an_existing_key(
             "WHERE ref_kind='source_native' AND status='accepted'"
         ).fetchall()
     )
-    # chase_1234 keeps its original binding; the pin still self-maps.
-    assert linked["chase_1234"] == "acct_other01"
     assert linked["acct_pinned01"] == "acct_pinned01"
+    document_keys = [key for key in linked if key.startswith("pdf_doc_")]
+    assert len(document_keys) == 1
+    assert linked[document_keys[0]] == "acct_other01"

@@ -87,7 +87,8 @@ $ moneybin import files statement.ofx
 The same two fields reach every other surface: `accounts_created` on the
 `--output json` per-file rows, on the `import_files` MCP result, and on
 `import_confirm`. It carries the id and the name only — never the file's own
-account key, which is an account number on OFX and PDF.
+account key. An OFX key can be an account number; a PDF key is an opaque
+document digest.
 
 ## What information is used, per format
 
@@ -102,12 +103,15 @@ makes a candidate recognizable but is never a key on its own; **institution** an
 | **Plaid** | `account_id` (same connection only) | `mask` | `institution_name` | official account name |
 | **Tabular — aggregator export** (Tiller, Monarch, …, with account info) | *none* — labels are mutable | parsed from the account-label / `Account #` column | a per-row `Institution` column, or parsed from the label | the account label |
 | **Tabular — bare bank export** (Date / Description / Amount only) | *none* | *none* | filename heuristic, or unknown | filename stem (a placeholder) |
+| **PDF statement** | identifier proven complete, scoped by issuer or validated routing number; exact document bytes for re-import only | captured suffix or mask | statement issuer / routing number | labelled account/product name when present |
 
 Reading the table precisely requires four caveats:
 
-- **Last 4, not the full number.** MoneyBin derives and stores only the last four
-  digits; the full account number is never kept in the canonical account
-  dimension and is masked everywhere (`****4267`).
+- **Full numbers stay encrypted and scoped.** A complete identifier from OFX or
+  PDF may be retained only as an issuer/routing-scoped `full_number` account
+  link inside the encrypted database. It never enters the canonical account
+  dimension, raw source key, logs, or responses. Partial values remain last-four
+  evidence and never auto-adopt.
 - **Institution ≠ exporter.** The *exporter* (Tiller, Monarch, a bank's web
   export) decides how the file is parsed. The *institution* is a property of the
   account and comes from row data (an `Institution` column, OFX `<ORG>`, Plaid

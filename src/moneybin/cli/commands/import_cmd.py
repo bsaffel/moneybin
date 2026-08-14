@@ -1170,10 +1170,11 @@ def _import_files_account_args(
     # gate's own proposals, but the sign gate fires BEFORE the account gate on
     # PDF, so there are no proposals here to re-key from — and passing the
     # caller's key through would put a raw source_account_key (an OFX <ACCTID>,
-    # or issuer+last4 on PDF) into `actions[]`, which sits outside the redaction
-    # walk. Dropping it is the honest half: a ref answers the same account and
-    # discloses nothing, a raw key cannot be printed, and `_sign_recovery_note`
-    # tells the caller what to re-supply rather than letting the pin vanish.
+    # or an opaque PDF document digest) into `actions[]`, which sits outside the
+    # redaction walk. Dropping it is the honest half: a ref answers the same
+    # account and discloses nothing, a raw key cannot be printed, and
+    # `_sign_recovery_note` tells the caller what to re-supply rather than
+    # letting the pin vanish.
     from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
         is_proposal_ref,
     )

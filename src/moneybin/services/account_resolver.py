@@ -126,11 +126,24 @@ class _Candidate:
     """
 
     account_id: str
-    # "institution_last4" | "name" | "institution_reissue" | "institution" |
-    # "fallback" — the last two are the gate's last-resort pick-list.
+    # "legacy_pdf_identity" | "institution_last4" | "name" |
+    # "institution_reissue" | "institution" | "fallback" — the last two are
+    # the gate's last-resort pick-list.
     signal: str
     value: str
     confidence: float
+
+
+def _dedupe_candidates(*groups: list[_Candidate]) -> list[_Candidate]:
+    """Combine candidate rungs without showing the same account twice."""
+    seen: set[str] = set()
+    combined: list[_Candidate] = []
+    for candidate in (item for group in groups for item in group):
+        if candidate.account_id in seen:
+            continue
+        seen.add(candidate.account_id)
+        combined.append(candidate)
+    return combined
 
 
 def _retyped_reissue_candidates(
@@ -780,6 +793,8 @@ class AccountResolver:
         empty set. Off by default so ``accounts_links_run`` isn't flooded with an
         all-accounts proposal for every provisional account.
         """
+        legacy = self._legacy_source_candidate(src, exclude_account_id)
+        legacy_candidates = [legacy] if legacy is not None else []
         try:
             out: list[_Candidate] = []
             if (
@@ -813,7 +828,7 @@ class AccountResolver:
                     if r[1] and _institution_key(str(r[1])) == target_inst
                 )
             if out:
-                return out
+                return _dedupe_candidates(out, legacy_candidates)
             name_rows = self._db.execute(
                 f"SELECT account_id, display_name, last_four, institution_slug "  # noqa: S608  # TableRef + parameterized values
                 f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id != ? "
@@ -860,10 +875,32 @@ class AccountResolver:
                 out = self._reissue_candidates(src, exclude_account_id)
             if not out and fallback:
                 out = self._fallback_candidates(src, exclude_account_id)
-            return out
+            return _dedupe_candidates(out, legacy_candidates)
         except duckdb.CatalogException:
             logger.debug("core.dim_accounts unavailable; no candidates")
-            return []
+            return legacy_candidates
+
+    def _legacy_source_candidate(
+        self, src: SourceAccount, exclude_account_id: str
+    ) -> _Candidate | None:
+        """Return a superseded PDF native link as review-only evidence."""
+        legacy_key = src.legacy_source_account_key
+        if not legacy_key or legacy_key == src.source_account_key:
+            return None
+        row = self._db.execute(
+            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+            "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
+            [src.source_type, src.source_origin, legacy_key],
+        ).fetchone()
+        if row is None or str(row[0]) == exclude_account_id:
+            return None
+        return _Candidate(
+            account_id=str(row[0]),
+            signal="legacy_pdf_identity",
+            value="legacy_pdf_identity",
+            confidence=0.5,
+        )
 
     def _reissue_candidates(
         self, src: SourceAccount, exclude_account_id: str

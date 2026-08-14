@@ -33,7 +33,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.extractors.pdf.auto_derive import derive_recipe, recipe_polarity_fits
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
-from moneybin.extractors.pdf.metadata import StatementMetadata
+from moneybin.extractors.pdf.metadata import DEFAULT_ANCHORS, StatementMetadata
 from moneybin.extractors.pdf.recipe import Recipe
 from moneybin.extractors.pdf.routing import route_forced_recipe, route_pdf_import
 from moneybin.metrics.registry import (
@@ -151,6 +151,22 @@ def _recipe(sign_convention: str = "negative_is_expense") -> Recipe:
         **_valid_recipe_dict(),
         "sign_convention": sign_convention,
     })
+
+
+def _legacy_default_metadata_anchors() -> list[dict[str, str]]:
+    """Metadata anchors frozen by auto-derive before richer fields shipped."""
+    casts = {
+        "account_id": "str",
+        "period_start": "date",
+        "period_end": "date",
+        "opening_balance": "decimal",
+        "closing_balance": "decimal",
+    }
+    return [
+        {"name": name, "pattern": pattern, "cast": casts[name]}
+        for name in casts
+        for pattern in DEFAULT_ANCHORS[name]
+    ]
 
 
 def _save_chase_format(
@@ -421,6 +437,60 @@ def test_replay_success_does_not_set_replay_guard(db: Database) -> None:
     assert decision.outcome == "transactions"
     assert decision.replay_guard_failed is False
     assert decision.matched_format_name == "chase_checking_pdf"
+
+
+def test_old_derived_recipe_gains_new_default_metadata_fields(db: Database) -> None:
+    """Pre-change auto recipes keep their frozen anchors and gain new fields."""
+    _save_chase_format(
+        db,
+        recipe={
+            **_valid_recipe_dict(),
+            "metadata_anchors": _legacy_default_metadata_anchors(),
+        },
+    )
+    doc = _make_doc(
+        text_lines=[
+            *_standard_text_lines(),
+            "Account Name: Household Checking",
+            "Account Type: checking",
+            "Product: Premier Checking",
+            "Routing Number: 021000021",
+            "Currency: usd",
+        ],
+        tables=[_standard_table()],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.metadata.account_label == "Household Checking"
+    assert decision.metadata.account_type == "checking"
+    assert decision.metadata.product_name == "Premier Checking"
+    assert decision.metadata.routing_number == "021000021"
+    assert decision.metadata.currency_code == "USD"
+
+
+def test_old_bridge_recipe_does_not_gain_unrequested_metadata_fields(
+    db: Database,
+) -> None:
+    """Explicit bridge omissions remain authoritative on saved replay."""
+    _save_chase_format(
+        db,
+        recipe={
+            **_valid_recipe_dict(),
+            "metadata_anchors": _legacy_default_metadata_anchors(),
+        },
+        source="bridge",
+    )
+    doc = _make_doc(
+        text_lines=[*_standard_text_lines(), "Currency: usd"],
+        tables=[_standard_table()],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.metadata.currency_code is None
 
 
 # ---------------------------------------------------------------------------
