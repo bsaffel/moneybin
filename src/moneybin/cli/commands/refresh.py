@@ -13,7 +13,7 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import (
-    RETIRED_BY_MATCH_STEP,
+    RETIRED_SIDES_COLLAPSED,
     handle_cli_errors,
     warn_transfers_retired,
 )
@@ -102,7 +102,7 @@ def refresh_command(
     # --quiet and is emitted under --output json too (where the count is also in
     # the payload). Every refresh reaches the reconciliation through the match
     # step, so an ordinary `moneybin refresh` after an import can hit it.
-    warn_transfers_retired(result.transfers_retired, cause=RETIRED_BY_MATCH_STEP)
+    warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
     has_step_error = (
         result.matching_error is not None
         or result.categorization_error is not None

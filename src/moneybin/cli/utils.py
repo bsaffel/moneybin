@@ -147,17 +147,16 @@ def handle_cli_errors(
             raise typer.Exit(1) from e
 
 
-# The `cause` clauses. Constants because two surfaces share the first and the
-# distinction between them is load-bearing: only a merge can collapse two
-# *accounts*, so only its wording may claim that.
-RETIRED_BY_THIS_DECISION = (
-    "this decision invalidated — their two sides turned out to be one transaction"
-)
-RETIRED_BY_MATCH_STEP = (
-    "the match step invalidated — their two sides turned out to be one transaction"
-)
-RETIRED_BY_MERGE = (
-    "the merge invalidated — their two sides turned out to be one transaction, "
+# The clause naming what collapsed. Two constants rather than one per trigger,
+# and none of them names its trigger: the reconciliation walks every accepted
+# transfer, not only the ones this call invalidated, so a count can include a
+# transfer that an unrelated earlier decision broke and this call merely found.
+# Saying "this decision invalidated" asserted a cause the number does not carry.
+# What legitimately differs between surfaces is what *can* collapse — only a
+# merge folds two accounts into one, so only its wording may say so.
+RETIRED_SIDES_COLLAPSED = "their two sides turned out to be one transaction"
+RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED = (
+    "their two sides turned out to be one transaction, "
     "or their two accounts one account"
 )
 
@@ -168,15 +167,16 @@ def warn_transfers_retired(count: int, *, cause: str) -> None:
     One helper rather than a line per surface because the thing being reported
     is the same everywhere and its recovery route must not drift: every path
     that folds a duplicate can reach the reconciliation, and a user who reads
-    the way back on one surface should find it on the next. ``cause`` names the
-    trigger, which is the only part that differs — the merge case can also
-    reverse a transfer whose two *accounts* collapsed, which no other trigger
-    can. Silent on zero, so the warning keeps its meaning.
+    the way back on one surface should find it on the next. ``cause`` names what
+    collapsed, which is the only part that differs. The reversal itself is
+    always this call's doing, so the sentence may claim that much; what it may
+    not claim is that this call caused the invalidation. Silent on zero, so the
+    warning keeps its meaning.
     """
     if not count:
         return
     logger.warning(
-        f"⚠️  Retired {count} previously accepted transfer(s) {cause}; "
+        f"⚠️  Retired {count} previously accepted transfer(s) — {cause}; "
         "inspect with 'moneybin system audit list' and restore with "
         "'moneybin system audit undo <operation-id>' if that was wrong"
     )

@@ -686,6 +686,26 @@ Guard-2 free-text resolution):
   reports what the pass *found*, while this one reports a decision of the
   user's that it *undid*.
 
+  **The disclosure is owed by every trigger, including the ones that report no
+  matches.** The reconciliation runs inside `TransactionMatcher.run` between the
+  dedup tiers and Tier 4, so it fires whatever the tiers return — a run that
+  finds nothing can still reverse an accepted transfer. `matches run`,
+  `matches backfill`, and `transactions_matches_run` therefore report
+  `transfers_retired` beside the match counts rather than inside the
+  has-matches branch, where "No new matches found" would otherwise be the whole
+  output of a run that undid a decision.
+
+  **The notices say what was reversed, never what caused it.** The pass walks
+  every accepted transfer, not only the ones this call invalidated, so a count
+  can include a transfer that an unrelated earlier decision broke and this run
+  merely reached first — most likely on the first pass over a ledger carrying
+  historical corruption. Wording of the form "this decision invalidated"
+  asserted a cause the counter does not carry. What the sentence may claim is
+  that this call did the reversing, which is always true, and what collapsed:
+  two sides into one transaction, or — only after a merge, the one trigger that
+  can fold accounts — two accounts into one. That distinction is the reason two
+  cause clauses survive where three trigger-named ones did not.
+
   **One counter covers both ways a merge invalidates an accepted transfer.**
   The transaction-level form above is the dedup pass's; the account-level form
   is `repoint_account`'s, which retires a transfer whose two endpoints just

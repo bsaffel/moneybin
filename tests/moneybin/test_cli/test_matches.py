@@ -31,6 +31,89 @@ class TestMatchesRun:
         assert result.exit_code == 0
         mock_run.assert_called_once_with(auto_accept_transfers=False, actor="cli")
 
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_run_discloses_transfers_it_retired(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A run that reverses accepted transfers may not report only "no matches".
+
+        The reconciliation fires inside ``run()`` regardless of what the tiers
+        find, so the two counts are independent: this fixture retires two
+        transfers while finding nothing, which is exactly the case where the
+        summary line alone tells the user their ledger is unchanged.
+
+        Asserted through ``caplog`` rather than ``result.output`` because the CLI
+        logger writes to stderr and CliRunner leaves that out of ``output`` — an
+        output-based assertion here reads empty and proves nothing either way.
+        """
+        from moneybin.matching.engine import MatchResult
+
+        mock_get_db.return_value = MagicMock()
+        mock_run.return_value = MatchResult(transfers_retired=2)
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
+            result = runner.invoke(app, ["run", "--skip-transform"])
+
+        assert result.exit_code == 0
+        assert caplog.messages, "the run never disclosed the retirement"
+        assert "2" in caplog.messages[-1]
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_run_is_silent_when_nothing_was_retired(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Negative twin: an ordinary run must not imply a decision was undone."""
+        from moneybin.matching.engine import MatchResult
+
+        mock_get_db.return_value = MagicMock()
+        mock_run.return_value = MatchResult(auto_merged=3, transfers_retired=0)
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
+            result = runner.invoke(app, ["run", "--skip-transform"])
+
+        assert result.exit_code == 0
+        assert caplog.messages == []
+
+
+class TestMatchesBackfill:
+    """Tests for the matches backfill command."""
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_backfill_discloses_transfers_it_retired(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The backfill's own twin of the run gap above.
+
+        Separate test rather than a parametrize over both commands: they build
+        their summaries independently, so one can regain the disclosure while the
+        other loses it, and a shared case would report that as green.
+        """
+        from moneybin.matching.engine import MatchResult
+
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = mock_db
+        mock_db.execute.return_value.fetchone.return_value = (0,)
+        mock_run.return_value = MatchResult(transfers_retired=2)
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
+            result = runner.invoke(app, ["backfill", "--skip-transform"])
+
+        assert result.exit_code == 0
+        assert caplog.messages, "the backfill never disclosed the retirement"
+        assert "2" in caplog.messages[-1]
+
 
 class TestMatchesHistory:
     """Tests for the matches history command."""

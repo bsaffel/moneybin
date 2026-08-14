@@ -18,7 +18,7 @@ import typer
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import (
-    RETIRED_BY_MERGE,
+    RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED,
     handle_cli_errors,
     warn_transfers_retired,
 )
@@ -249,7 +249,9 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     # Independent of every branch above: this is a decision the *user* made being
     # undone, so it must be stated whether or not the pass was otherwise clean,
     # and it must name the way back.
-    warn_transfers_retired(rematch.transfers_retired, cause=RETIRED_BY_MERGE)
+    warn_transfers_retired(
+        rematch.transfers_retired, cause=RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
+    )
     if rematch.error is not None:
         # The counts above are true — match decisions were written — but the
         # SQLMesh apply that follows them is what rebuilds core.dim_accounts,

@@ -67,15 +67,17 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
             "possible transfer(s) — review with reviews(kind='matches')"
         )
     if rematch.transfers_retired:
-        # The user accepted these, and the merge invalidated them two ways:
-        # dedup made a leg name a physical transaction another accepted
-        # transfer already claims (bridge_transfers would double-count), or
-        # the collapse made both endpoints one account (a transfer to itself).
-        # One counter, because the caller is owed one fact either way — a
-        # decision of theirs was undone — and one route back.
+        # The user accepted these, and two things can invalidate them: dedup
+        # made a leg name a physical transaction another accepted transfer
+        # already claims (bridge_transfers would double-count), or the collapse
+        # made both endpoints one account (a transfer to itself). One counter,
+        # because the caller is owed one fact either way — a decision of theirs
+        # was undone — and one route back. The sentence says the merge *retired*
+        # them, not that it invalidated them: the pass walks every accepted
+        # transfer, so a count can include one an earlier decision broke.
         actions.append(
             f"The merge retired {rematch.transfers_retired} previously "
-            "accepted transfer(s) it invalidated — their two sides turned out "
+            "accepted transfer(s) — their two sides turned out "
             "to be one transaction, or their two accounts one account — "
             "inspect with system_audit(), restore with system_audit_undo() if "
             "that was wrong"

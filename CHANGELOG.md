@@ -888,6 +888,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   previously auto-merge duplicates or reverse an accepted transfer and report an
   ordinary success. `matching_skipped` separates a zero that means "found
   nothing" from one that means "never looked".
+
+  Every surface that can reach the reconciliation now discloses it, not just
+  the ones that report matches. `moneybin transactions matches run`,
+  `moneybin transactions matches backfill`, and the `transactions_matches_run`
+  tool each ran the pass and reported only what the tiers found, so a run that
+  reversed an accepted transfer while finding nothing printed "No new matches
+  found". The two counts are independent: the reconciliation fires whatever the
+  tiers return.
+
+  The retirement notices no longer claim the triggering action caused the
+  invalidation. The pass walks every accepted transfer, so a count can include
+  one an earlier decision had already broken and this run merely found —
+  wording that said "this decision invalidated" asserted a cause the number
+  does not carry. The notices now report what was reversed and leave the cause
+  to the audit log.
 - **An accepted merge no longer strands the match decisions made under the old
   account, which could silently reverse a rejection.** Accepting a link
   re-points `app.account_links`, but a row in `app.match_decisions` stores the

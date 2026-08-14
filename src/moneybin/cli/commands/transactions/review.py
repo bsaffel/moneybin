@@ -152,7 +152,7 @@ def _review_matches_noninteractive(
     *, confirm_id: str | None, reject_id: str | None, confirm_all: bool
 ) -> None:
     from moneybin.cli.utils import (
-        RETIRED_BY_THIS_DECISION,
+        RETIRED_SIDES_COLLAPSED,
         handle_cli_errors,
         warn_transfers_retired,
     )
@@ -190,7 +190,7 @@ def _review_matches_noninteractive(
                         "pair, and the earlier decision stands"
                     )
                 warn_transfers_retired(
-                    bulk.transfers_retired, cause=RETIRED_BY_THIS_DECISION
+                    bulk.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
                 )
                 return
             # Independent ifs (not elif): `--confirm X --reject Y` targets two
@@ -209,7 +209,7 @@ def _review_matches_noninteractive(
                         "claims the merged pair, and the earlier decision stands"
                     )
                 warn_transfers_retired(
-                    outcome.transfers_retired, cause=RETIRED_BY_THIS_DECISION
+                    outcome.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
                 )
             if reject_id:
                 svc.set_status(reject_id, status="rejected", actor="cli")

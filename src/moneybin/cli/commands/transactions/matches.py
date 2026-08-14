@@ -8,7 +8,7 @@ import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
 from moneybin.cli.utils import (
-    RETIRED_BY_THIS_DECISION,
+    RETIRED_SIDES_COLLAPSED,
     emit_json,
     handle_cli_errors,
     warn_transfers_retired,
@@ -106,6 +106,13 @@ def matches_run(
                         logger.info(PENDING_MATCHES_HINT)
                 else:
                     logger.info("No new matches found")
+                # Outside the branch above: the reconciliation runs inside
+                # `run()` whatever the tiers find, so "No new matches found" is
+                # the very case where a silent retirement reads as "nothing
+                # changed".
+                warn_transfers_retired(
+                    result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                )
 
                 if not skip_transform and result.auto_merged:
                     from moneybin.services.import_service import ImportService
@@ -209,7 +216,7 @@ def matches_set(
             f"{outcome.match_status} — an accepted transfer already claims the "
             "merged pair, and the earlier decision stands"
         )
-    warn_transfers_retired(outcome.transfers_retired, cause=RETIRED_BY_THIS_DECISION)
+    warn_transfers_retired(outcome.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
 
 
 @app.command("backfill")
@@ -242,6 +249,9 @@ def matches_backfill(
                 logger.info(f"Backfill complete: {result.summary()}")
                 if result.has_pending:
                     logger.info(PENDING_MATCHES_HINT)
+                warn_transfers_retired(
+                    result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                )
 
                 if not skip_transform and result.auto_merged:
                     from moneybin.services.import_service import ImportService

@@ -19,9 +19,8 @@ from moneybin.cli.commands.accounts.links import (
     _report_rematch,  # pyright: ignore[reportPrivateUsage]  # the unit that emits the hints
 )
 from moneybin.cli.utils import (
-    RETIRED_BY_MATCH_STEP,
-    RETIRED_BY_MERGE,
-    RETIRED_BY_THIS_DECISION,
+    RETIRED_SIDES_COLLAPSED,
+    RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED,
     warn_transfers_retired,
 )
 from moneybin.services.refresh import RefreshResult
@@ -30,13 +29,13 @@ from tests.cli_command_helpers import assert_published_commands_resolve
 
 @pytest.mark.parametrize(
     "cause",
-    [RETIRED_BY_THIS_DECISION, RETIRED_BY_MATCH_STEP, RETIRED_BY_MERGE],
-    ids=["this-decision", "match-step", "merge"],
+    [RETIRED_SIDES_COLLAPSED, RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED],
+    ids=["sides", "sides-or-accounts"],
 )
 def test_retirement_warning_publishes_runnable_recovery(
     cause: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """All three triggers share one helper, so all three share its recovery route.
+    """Every cause shares one helper, so every cause shares its recovery route.
 
     Parametrized over the causes rather than the helper's single body because
     the reason the wording is shared is that the way back must not drift between
@@ -49,6 +48,23 @@ def test_retirement_warning_publishes_runnable_recovery(
     assert_published_commands_resolve(caplog.messages[-1])
 
 
+def test_only_the_merge_clause_claims_two_accounts_collapsed() -> None:
+    """The one distinction the two cause clauses exist to keep.
+
+    Collapsing the old per-trigger constants dropped a causal claim the count
+    could not support, but it must not also drop this: a merge is the only
+    trigger that can fold two *accounts* into one, so a warning printed after a
+    dedup accept may not offer that as an explanation. Asserted as a difference
+    between the two constants rather than against a quoted sentence, so
+    rewording either one stays free.
+    """
+    assert "accounts" in RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
+    assert "accounts" not in RETIRED_SIDES_COLLAPSED
+    assert RETIRED_SIDES_COLLAPSED in RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED, (
+        "the shared explanation drifted apart between the two clauses"
+    )
+
+
 def test_retirement_warning_is_silent_on_zero(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -59,7 +75,7 @@ def test_retirement_warning_is_silent_on_zero(
     ordinary accept.
     """
     with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
-        warn_transfers_retired(0, cause=RETIRED_BY_THIS_DECISION)
+        warn_transfers_retired(0, cause=RETIRED_SIDES_COLLAPSED)
 
     assert caplog.messages == []
 

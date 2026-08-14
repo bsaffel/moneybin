@@ -378,6 +378,48 @@ async def test_matches_run_threads_mcp_actor(
 
 
 @pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_discloses_transfers_it_retired(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """The MCP twin of the CLI run gap: the agent gets the count and a way back.
+
+    ``transactions_matches_set`` already reports this; the run tool reaches the
+    same reconciliation through ``MatchingService.run`` and owed the same
+    disclosure. Without it an agent reads ``auto_merged=0`` as "nothing
+    happened" while accepted transfers were reversed underneath it.
+    """
+    from moneybin.matching.engine import MatchResult
+
+    mock_run.return_value = MatchResult(transfers_retired=2)
+
+    parsed = transactions_matches_run().to_dict()
+
+    assert parsed["data"]["transfers_retired"] == 2
+    assert any("system_audit_undo" in a for a in parsed["actions"]), (
+        f"no action points at the recovery route: {parsed['actions']}"
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_omits_the_retirement_action_when_none_retired(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """Negative twin: the urgent action appears only when it is true."""
+    from moneybin.matching.engine import MatchResult
+
+    mock_run.return_value = MatchResult(auto_merged=2, transfers_retired=0)
+
+    parsed = transactions_matches_run().to_dict()
+
+    assert parsed["data"]["transfers_retired"] == 0
+    assert not any("system_audit_undo" in a for a in parsed["actions"])
+
+
+@pytest.mark.unit
 async def test_standard_registrar_has_no_review_aliases() -> None:
     srv = FastMCP("test")
     register_transactions_tools(srv)

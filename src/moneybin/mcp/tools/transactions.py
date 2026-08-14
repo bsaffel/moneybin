@@ -709,11 +709,13 @@ def transactions_matches_set(
     yet). Find ids with transactions_matches_pending.
 
     `transfers_retired` counts transfers the user had already accepted that this
-    acceptance invalidated and therefore reversed: once one dedup component holds
-    both of their legs they name the same physical transaction, which would
-    double-count it in core.bridge_transfers. Always 0 on a rejection. A non-zero
-    count undoes a decision the user made — report it and point at
-    `system_audit_undo` rather than treating the accept as clean.
+    acceptance reversed: once one dedup component holds both of their legs they
+    name the same physical transaction, which would double-count it in
+    core.bridge_transfers. The pass walks every accepted transfer, so a count can
+    include one an earlier decision had already invalidated and this call merely
+    found — it reports what was reversed, not what this accept broke. Always 0 on
+    a rejection. A non-zero count undoes a decision the user made — report it and
+    point at `system_audit_undo` rather than treating the accept as clean.
 
     Read `match_status` rather than assuming `status` held: that same pass walks
     every accepted transfer including this row, so an accept that loses the
@@ -739,7 +741,7 @@ def transactions_matches_set(
         actions.insert(
             0,
             f"This accept retired {outcome.transfers_retired} previously "
-            "accepted transfer(s) it invalidated — inspect with system_audit(), "
+            "accepted transfer(s) — inspect with system_audit(), "
             "restore with system_audit_undo() if that was wrong",
         )
     return build_envelope(
@@ -845,16 +847,34 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
     rows to app.match_decisions; review them with transactions_matches_pending and
     finalize each with transactions_matches_set. Does not auto-accept. Reverse an
     accepted match via `moneybin transactions matches undo` (no MCP undo tool yet).
+
+    `transfers_retired` counts transfers the user had already accepted that this
+    run reversed, because one dedup component now holds both of their legs and
+    they name the same physical transaction. It is independent of the three
+    match counts — a run that finds nothing can still retire transfers — so do
+    not read `auto_merged=0` as "nothing changed". A non-zero count undoes a
+    decision the user made: report it and point at `system_audit_undo`.
     """
     with get_database(read_only=False) as db:
         result = MatchingService(db).run(actor="mcp")
+    actions = ["Use reviews(kind='matches') to review proposed matches"]
+    if result.transfers_retired:
+        # Ahead of the review hint: that one is routine housekeeping, this one
+        # says a decision the user already made was undone.
+        actions.insert(
+            0,
+            f"This run retired {result.transfers_retired} previously accepted "
+            "transfer(s) — inspect with system_audit(), restore with "
+            "system_audit_undo() if that was wrong",
+        )
     return build_envelope(
         data=MatchRunPayload(
             auto_merged=result.auto_merged,
             pending_review=result.pending_review,
             pending_transfers=result.pending_transfers,
+            transfers_retired=result.transfers_retired,
         ),
-        actions=["Use reviews(kind='matches') to review proposed matches"],
+        actions=actions,
     )
 
 
