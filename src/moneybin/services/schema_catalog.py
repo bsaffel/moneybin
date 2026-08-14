@@ -707,41 +707,50 @@ def build_schema_doc() -> dict[str, Any]:
     table that exists in the live database; missing tables are silently
     skipped (the test/dev DB may not have every interface table).
     """
+    with get_database(read_only=True) as db:
+        return _schema_doc(db)
+
+
+def _schema_doc(db: Database) -> dict[str, Any]:
+    """Build the document from a connection the caller already holds.
+
+    Split out for `build_live_catalog`, which needs the curated names and the
+    relation rows to come from one snapshot. Read across two connections, a
+    seed view created between them is listed uncurated while the curated entry
+    `sql_schema(table=...)` answers with already exists.
+    """
     interface_names = [t.full_name for t in INTERFACE_TABLES]
     placeholders = ",".join(["?"] * len(interface_names))
     # Union tables and views — `duckdb_tables()` excludes views, but
     # interface objects like `core.dim_categories` are SQLMesh-managed views.
-    with get_database(read_only=True) as db:
-        rows = db.execute(
-            f"""
-            WITH interface_objects AS (
-                SELECT schema_name, table_name, comment, 'table' AS kind
-                FROM duckdb_tables()
-                UNION ALL
-                SELECT schema_name, view_name AS table_name, comment, 'view' AS kind
-                FROM duckdb_views()
-                WHERE NOT internal
-            )
-            SELECT
-                t.schema_name || '.' || t.table_name AS full_name,
-                COALESCE(t.comment, '') AS table_comment,
-                t.kind,
-                c.column_name,
-                c.data_type,
-                c.is_nullable,
-                COALESCE(c.comment, '') AS column_comment
-            FROM interface_objects t
-            JOIN duckdb_columns() c
-              ON t.schema_name = c.schema_name AND t.table_name = c.table_name
-            WHERE t.schema_name || '.' || t.table_name IN ({placeholders})
-            ORDER BY t.schema_name, t.table_name, c.column_index
-            """,  # noqa: S608  # INTERFACE_TABLES is a compile-time allowlist, not user input
-            interface_names,
-        ).fetchall()
-        # Build seed-view entries while db is open — reuses this one
-        # connection rather than opening a second.
-        seed_view_entries = _gsheet_seed_views(db)
-        pdf_view_entries = _pdf_seed_views(db)
+    rows = db.execute(
+        f"""
+        WITH interface_objects AS (
+            SELECT schema_name, table_name, comment, 'table' AS kind
+            FROM duckdb_tables()
+            UNION ALL
+            SELECT schema_name, view_name AS table_name, comment, 'view' AS kind
+            FROM duckdb_views()
+            WHERE NOT internal
+        )
+        SELECT
+            t.schema_name || '.' || t.table_name AS full_name,
+            COALESCE(t.comment, '') AS table_comment,
+            t.kind,
+            c.column_name,
+            c.data_type,
+            c.is_nullable,
+            COALESCE(c.comment, '') AS column_comment
+        FROM interface_objects t
+        JOIN duckdb_columns() c
+          ON t.schema_name = c.schema_name AND t.table_name = c.table_name
+        WHERE t.schema_name || '.' || t.table_name IN ({placeholders})
+        ORDER BY t.schema_name, t.table_name, c.column_index
+        """,  # noqa: S608  # INTERFACE_TABLES is a compile-time allowlist, not user input
+        interface_names,
+    ).fetchall()
+    seed_view_entries = _gsheet_seed_views(db)
+    pdf_view_entries = _pdf_seed_views(db)
 
     tables_by_name: dict[str, dict[str, Any]] = {}
     for full_name, table_comment, kind, col_name, dtype, nullable, col_comment in rows:
@@ -803,7 +812,6 @@ def build_live_catalog(schema: str | None = None) -> list[dict[str, Any]]:
     the catalog footer recommends, which reaches `meta` and `seeds` because it
     names no table for the query gate to resolve.
     """
-    curated = {t["name"] for t in build_schema_doc()["tables"]}
     schemas = sorted(ALLOWED_QUERY_SCHEMAS)
     if schema is not None:
         # DuckDB folds unquoted identifiers, so `sql_query` reads `RAW.x` and
@@ -826,6 +834,9 @@ def build_live_catalog(schema: str | None = None) -> list[dict[str, Any]]:
 
     placeholders = ",".join(["?"] * len(schemas))
     with get_database(read_only=True) as db:
+        # One connection for both halves: a seed view created between two would
+        # be listed uncurated while its curated entry already exists.
+        curated = {t["name"] for t in _schema_doc(db)["tables"]}
         rows = db.execute(
             f"""
             SELECT schema_name, table_name, 'table' AS kind

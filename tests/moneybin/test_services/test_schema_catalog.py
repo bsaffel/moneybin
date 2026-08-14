@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
+import moneybin.services.schema_catalog as schema_catalog_module
 from moneybin.database import Database
 from moneybin.privacy.sql_query import ALLOWED_QUERY_SCHEMAS, execute_sql_query
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
@@ -290,6 +293,35 @@ def test_live_catalog_never_contradicts_the_curated_doc(
         name for name, row in live.items() if name in curated_doc and not row["curated"]
     }
     assert not contradictions
+
+
+def test_live_catalog_reads_both_of_its_sets_from_one_snapshot(
+    schema_catalog_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `curated` names and the relation rows must come from one connection.
+
+    They came from two: `build_schema_doc` closed its connection before the
+    listing query opened another. A `raw.gsheet_<alias>` view created in that
+    window is missing from the curated names but present in the rows, so the
+    listing reports `curated: false` for a relation `sql_schema(table=...)`
+    answers with a full entry — the contradiction the test above rules out,
+    reached through snapshot skew rather than a stale name set.
+
+    Counting connection requests is what makes the guarantee testable: the
+    fixture hands every caller one shared `Database`, so comparing the two
+    connections would compare an object with itself and pass either way.
+    """
+    opened = 0
+    connect = schema_catalog_module.get_database
+
+    def counting_get_database(*args: object, **kwargs: object) -> Any:
+        nonlocal opened
+        opened += 1
+        return connect(*args, **kwargs)
+
+    monkeypatch.setattr(schema_catalog_module, "get_database", counting_get_database)
+    assert build_live_catalog(schema="raw"), "fixture must reach the predicate"
+    assert opened == 1
 
 
 def test_live_catalog_distinguishes_a_view_from_a_table(
