@@ -607,3 +607,46 @@ def test_matches_set_stays_quiet_about_undo_when_nothing_was_retired() -> None:
 
     actions = envelope.to_dict()["actions"]
     assert not any("system_audit_undo" in action for action in actions)
+
+
+def test_matches_set_withholds_undo_when_the_accept_came_back_reversed() -> None:
+    """``undo`` is the one command guaranteed to fail on a reversed row.
+
+    ``MatchDecisionsRepo.reverse`` raises unless the status is accepted or
+    rejected, so advertising it here sends the agent at a ValueError in exactly
+    the outcome the reconciliation just produced. The row is not the agent's to
+    undo — it never stood.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="reversed", transfers_retired=0
+        )
+        envelope = transactions_matches_set("tx_stale00001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    assert not any("matches undo" in action for action in actions), (
+        "a reversed decision was offered an undo that reverse() refuses"
+    )
+    assert any("reversed" in action for action in actions), (
+        "the reversed outcome was left with no applicable next step"
+    )
+
+
+def test_matches_set_still_offers_undo_when_the_decision_stood() -> None:
+    """Negative twin: withholding undo everywhere would also pass the test above.
+
+    An accept that committed as accepted is precisely what ``undo`` exists for,
+    and it is the only MCP-reachable route back.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="accepted", transfers_retired=0
+        )
+        envelope = transactions_matches_set("dd_100000001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    assert any("matches undo" in action for action in actions)

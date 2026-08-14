@@ -878,7 +878,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rest separately, since a batch can hold both a duplicate and the transfer that
   duplicate invalidates. A crashed match step no longer drops the count either:
   the matcher wraps no transaction around a run, so reversals already committed
-  are reported even when the reconciliation or a later tier raises.
+  are reported even when the reconciliation or a later tier raises. The recovery
+  hint follows the same status: `transactions_matches_set` offered
+  `transactions matches undo` unconditionally, and undo refuses a row that is
+  already reversed — so the one outcome the reconciliation had just produced was
+  handed the one command certain to fail. It is now offered only for a decision
+  that stood, and a reversed one gets a route that works.
 
   `refresh_run` and `moneybin refresh` now disclose what the match step decided
   — `matches_auto_merged`, `matches_pending_review`,
@@ -935,8 +940,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   guard that keeps two rows of one import file apart — or the exact pair was
   rejected. Accepted and pending decisions read at component grain, rejections at
   pair grain, and each keyed exactly as the matcher keys it — components on
-  `NodeKey`, which carries no `source_origin`, rejections on the origin-bearing
-  pair key `get_rejected_pairs` selects. Scoping both by `account_id` is what
+  `NodeKey` and rejections on the pair tuple `scoring.py` actually tests, neither
+  of which carries `source_origin`. `get_rejected_pairs` selects origin, but the
+  matcher discards it when building its rejected set, so requiring it here would
+  warn about a pair no refresh can clear. Scoping both by `account_id` is what
   keeps a source-native id reused by an unrelated account from marking a row
   "already decided."
 - **Undoing a decision puts it back in the review queue, and the queue count now

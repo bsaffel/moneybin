@@ -2424,8 +2424,12 @@ class DoctorService:
                 -- find(a) == find(b) and assign_components drops the candidate
                 -- without writing anything. Adding origin here would split that
                 -- single node in two and warn about a pair no refresh can
-                -- clear. Rejected pairs are the opposite case and keep origin
-                -- below -- get_rejected_pairs selects it on both sides.
+                -- clear. Rejected pairs key the same way below, and for the
+                -- same reason: get_rejected_pairs selects origin, but scoring.py
+                -- drops it when building rejected_set, so the matcher skips a
+                -- rejected pair whatever origin the rows now carry. Demanding
+                -- origin there would warn about a pair no refresh can clear --
+                -- the identical failure, one CTE down.
                 -- Two kinds of decision suppress, at two different grains,
                 -- because the matcher treats them differently.
                 --
@@ -2500,20 +2504,16 @@ class DoctorService:
                     SELECT account_id AS acct,
                            source_transaction_id_a AS stid_a,
                            source_type_a AS stype_a,
-                           source_origin_a AS sorigin_a,
                            source_transaction_id_b AS stid_b,
-                           source_type_b AS stype_b,
-                           source_origin_b AS sorigin_b
+                           source_type_b AS stype_b
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup' AND match_status = 'rejected'
                     UNION
                     SELECT account_id,
                            source_transaction_id_b,
                            source_type_b,
-                           source_origin_b,
                            source_transaction_id_a,
-                           source_type_a,
-                           source_origin_a
+                           source_type_a
                     FROM {MATCH_DECISIONS.full_name}
                     WHERE match_type = 'dedup' AND match_status = 'rejected'
                 ),
@@ -2550,10 +2550,8 @@ class DoctorService:
                         WHERE rp.acct = r.account_id
                           AND rp.stid_a = r.id_a
                           AND rp.stype_a = r.type_a
-                          AND rp.sorigin_a = r.origin_a
                           AND rp.stid_b = r.id_b
                           AND rp.stype_b = r.type_b
-                          AND rp.sorigin_b = r.origin_b
                     )
                 ),
                 -- Physical sources per component, for the cardinality guard

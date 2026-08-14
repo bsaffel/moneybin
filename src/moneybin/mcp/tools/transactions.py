@@ -729,11 +729,22 @@ def transactions_matches_set(
     """
     with get_database(read_only=False) as db:
         outcome = MatchingService(db).set_status(match_id, status=status, actor="mcp")
-    actions = [
-        "Use reviews(kind='matches') to review remaining pending matches",
-        "Run `moneybin transactions matches undo <match_id>` (CLI) to reverse "
-        "an accepted match — there is no MCP undo tool yet",
-    ]
+    actions = ["Use reviews(kind='matches') to review remaining pending matches"]
+    if outcome.match_status == "reversed":
+        # Keyed on the committed status, not the requested one: `undo` calls
+        # MatchDecisionsRepo.reverse(), which refuses anything but an
+        # accepted/rejected row. Offering it here would point the agent at the
+        # one command certain to raise in precisely this outcome.
+        actions.append(
+            f"This decision committed as 'reversed', not '{status}' — there is "
+            "nothing to undo; see what stands with system_audit() and re-read "
+            "the queue with reviews(kind='matches')"
+        )
+    else:
+        actions.append(
+            "Run `moneybin transactions matches undo <match_id>` (CLI) to "
+            "reverse an accepted match — there is no MCP undo tool yet"
+        )
     if outcome.transfers_retired:
         # Most urgent first, and ahead of the undo above because that one
         # reverses this row only: it cannot restore the *other* transfer this

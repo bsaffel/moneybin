@@ -3451,6 +3451,46 @@ def test_a_rejection_against_a_different_partner_does_not_suppress(
 
 
 @pytest.mark.unit
+def test_a_rejection_suppresses_on_the_matchers_key_not_on_origin(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rule: this check's suppression key must be the matcher's key.
+
+    ``scoring.py`` builds ``rejected_set`` from ``(source_type,
+    source_transaction_id)`` on both sides plus ``account_id`` — origin is
+    selected onto the decision row but never enters the tuple it tests. So the
+    matcher skips a rejected pair whatever origin the rows now carry. A check
+    that additionally demands origin equality warns about a pair the matcher
+    will never propose, and the refresh it recommends cannot clear it.
+
+    Here the rejection was recorded against the same two nodes under a different
+    origin, which is reachable whenever a source-native id is reused across
+    origins within one account.
+    """
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx", source_origin="a")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv", source_origin="b")
+    doctor_db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv1', 'csv', 'bank',
+                  'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'rejected', NULL,
+                  'user', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.status == "pass", (
+        "warned about a pair the matcher's rejected-pair test already excludes"
+    )
+
+
+@pytest.mark.unit
 def test_an_accepted_decision_on_only_one_side_does_not_suppress(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
