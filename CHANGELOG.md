@@ -948,6 +948,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the only counter here that measures an undo of something the user decided,
   which the match counts cannot show.
 
+  The post-merge re-match's crash branch names what landed. Carrying the partial
+  counts through `MatchRunError` made them real on that path, but both the CLI
+  warning and the agent-facing action still said duplicates "may" have been
+  merged — spending an exact number on a hedge, about the one outcome that
+  changes the ledger without being asked. Both now name the committed merges and
+  proposals, and say plainly when nothing had committed, which the carrier makes
+  trustworthy.
+
   `doctor`'s unproposed-duplicates finding now reports its pair count as an upper
   bound. Its component closure reads persisted decisions, while the matcher also
   links candidates as it walks them, so three mutually duplicate rows with no

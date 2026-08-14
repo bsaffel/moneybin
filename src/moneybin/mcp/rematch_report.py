@@ -40,13 +40,29 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
     if rematch.matching_error is not None:
         # Not "still unproposed": the matcher commits each edge as it goes and
         # opens no transaction around the run, so a crash mid-pass leaves
-        # earlier tiers' decisions durable while the counts stay at zero. The
-        # honest statement is that the pass stopped partway and its effects are
-        # unknown — including auto-merges that already landed.
+        # earlier tiers' decisions durable. `MatchRunError` carries those counts
+        # and `refresh` copies them onto the result, so this names them instead
+        # of calling the effects unknown. Zero is trustworthy too: a run that
+        # committed nothing raises unwrapped and never populates them. Kept in
+        # step with the CLI twin in cli/commands/accounts/links.py.
+        landed = ", ".join(
+            f"{count} {noun}"
+            for count, noun in (
+                (rematch.matches_auto_merged, "auto-merged"),
+                (rematch.matches_pending_review, "new duplicate proposal(s)"),
+                (rematch.matches_pending_transfers, "possible transfer(s)"),
+            )
+            if count
+        )
+        committed = (
+            f"after committing {landed}, which are durable"
+            if landed
+            else "before it had committed anything"
+        )
         actions.append(
-            "The merge's re-match stopped partway, so its reported counts are "
-            "incomplete and some duplicates may already have been merged — "
-            "rerun refresh_run(steps=['match','transform']), then check "
+            f"The merge's re-match stopped partway {committed}; its remaining "
+            "counts are incomplete — rerun "
+            "refresh_run(steps=['match','transform']), then check "
             "reviews(kind='matches') and system_audit"
         )
     if rematch.error is not None:

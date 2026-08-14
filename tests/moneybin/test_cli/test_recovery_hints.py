@@ -128,6 +128,76 @@ def test_partial_rematch_report_publishes_runnable_recovery(
     assert_published_commands_resolve("\n".join(caplog.messages))
 
 
+def test_partial_rematch_report_names_the_decisions_that_landed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The crash branch has real counts now, and hedging past them hides merges.
+
+    ``MatchRunError`` carries the committed counts and ``refresh`` copies them
+    onto the result, so this branch knows exactly how many auto-merges and
+    proposals are durable. Saying duplicates "may" have been merged spends that
+    number on a hedge — and an auto-merge is what suppresses the duplicate side
+    of a transaction in the ledger.
+    """
+    with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.accounts.links"):
+        _report_rematch(
+            RefreshResult(
+                applied=True,
+                duration_seconds=0.0,
+                matching_error="boom",
+                matches_auto_merged=4,
+                matches_pending_review=2,
+            )
+        )
+
+    joined = "\n".join(caplog.messages)
+    assert "4" in joined, f"the crash branch hid the merges that landed: {joined}"
+    assert "2" in joined, f"the crash branch hid the proposals that landed: {joined}"
+    assert_published_commands_resolve(joined)
+
+
+def test_partial_rematch_report_claims_nothing_landed_when_nothing_did(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Negative twin: zero is now trustworthy, so it may be stated plainly.
+
+    The engine leaves a run that committed nothing unwrapped, so zero counts on
+    this branch mean the failure really did land before any write. A message that
+    always hinted at possible merges would send the user hunting through the
+    audit log for decisions that were never made.
+    """
+    with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.accounts.links"):
+        _report_rematch(
+            RefreshResult(applied=True, duration_seconds=0.0, matching_error="boom")
+        )
+
+    joined = "\n".join(caplog.messages)
+    assert "may already have been merged" not in joined
+
+
+def test_mcp_partial_rematch_action_names_the_decisions_that_landed() -> None:
+    """The MCP twin of the crash-branch hedge above.
+
+    Codex reported only the CLI, but `rematch_actions` carries the same sentence
+    off the same ``RefreshResult``. Fixing one surface would leave the agent —
+    the caller least able to go read the audit log on a hunch — holding the
+    vaguer of the two.
+    """
+    from moneybin.mcp.rematch_report import rematch_actions
+
+    actions = rematch_actions(
+        RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            matching_error="boom",
+            matches_auto_merged=4,
+        )
+    )
+
+    partial = next(a for a in actions if "stopped partway" in a)
+    assert "4" in partial, f"the agent-facing action hid the merges: {partial}"
+
+
 def test_pending_transfer_hint_publishes_runnable_recovery(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

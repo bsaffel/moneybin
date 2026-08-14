@@ -216,13 +216,30 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     elif rematch.matching_error is not None:
         # Not "still unproposed": the matcher commits each edge as it goes and
         # wraps no transaction around the run, so a crash mid-pass leaves
-        # earlier tiers' decisions durable while the counts stay at zero.
-        # Claiming nothing was proposed would hide an auto-merge that landed.
+        # earlier tiers' decisions durable. `MatchRunError` carries those counts
+        # and `refresh` copies them onto the result, so this branch can name
+        # them exactly instead of hedging — and zero is trustworthy too, because
+        # a run that committed nothing raises unwrapped and never reaches the
+        # branch that would populate them.
+        landed = ", ".join(
+            f"{count} {noun}"
+            for count, noun in (
+                (rematch.matches_auto_merged, "auto-merged"),
+                (rematch.matches_pending_review, "new proposal(s)"),
+                (rematch.matches_pending_transfers, "possible transfer(s)"),
+            )
+            if count
+        )
+        committed = (
+            f"after committing {landed}, which are durable"
+            if landed
+            else "before it had committed anything"
+        )
         logger.warning(
-            "⚠️  Re-match after the merge stopped partway, so its counts are "
-            "incomplete and some duplicates may already have been merged; "
-            "re-run 'moneybin refresh', then check "
-            "'moneybin review --type matches' and 'moneybin system audit list'"
+            f"⚠️  Re-match after the merge stopped partway {committed}; its "
+            "remaining counts are incomplete — re-run 'moneybin refresh', then "
+            "check 'moneybin review --type matches' and "
+            "'moneybin system audit list'"
         )
     else:
         merged = rematch.matches_auto_merged
