@@ -85,6 +85,50 @@ def test_revision_is_absent_outside_a_source_checkout(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_revision_is_absent_when_the_repository_is_merely_an_ancestor() -> None:
+    """A directory *inside* someone's checkout is not that checkout's build.
+
+    ``git`` answers about the nearest enclosing repository, so an installed
+    wheel under a virtualenv in the user's own project would otherwise stamp
+    MoneyBin's build with that project's HEAD — a confident wrong answer where
+    the contract promises ``null``.
+    """
+    assert _read_git_revision(Path(__file__).resolve().parent) is None
+
+
+@pytest.mark.unit
+def test_revision_survives_a_checkout_path_containing_a_space(tmp_path: Path) -> None:
+    """A space in the checkout path must not silently blank the stamp.
+
+    ``git rev-parse --show-toplevel`` prints the path unquoted, so splitting its
+    two-line answer on arbitrary whitespace turns one such path into three
+    tokens and discards the revision. macOS paths routinely contain spaces, and
+    the failure is invisible: the field reads ``null``, which is also exactly
+    what a legitimate wheel install reports.
+    """
+    repo = tmp_path / "space test dir"
+    repo.mkdir()
+    for command in (
+        ["init", "-q"],
+        ["-c", "user.email=t@example.com", "-c", "user.name=t"]
+        + ["commit", "-q", "--allow-empty", "-m", "x"],
+    ):
+        subprocess.run(  # noqa: S603 — git with static args
+            ["git", "-C", str(repo), *command],  # noqa: S607
+            capture_output=True,
+            check=True,
+        )
+    head = subprocess.run(  # noqa: S603 — git with static args
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    assert _read_git_revision(repo) == head
+
+
+@pytest.mark.unit
 async def test_the_registered_tool_surfaces_the_build(mcp_db: object) -> None:
     """The build reaches the agent through the tool it actually calls.
 
@@ -93,7 +137,7 @@ async def test_the_registered_tool_surfaces_the_build(mcp_db: object) -> None:
     A projection that dropped the field on the way out would leave every test
     above green while the stamp never reached a caller.
     """
-    response = await system_status_coarse()
+    response = await system_status_coarse(sections=["overview"])
 
     overview = next(
         section

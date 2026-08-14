@@ -26,6 +26,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   new commit while the process still ran the old code — corroborating precisely
   the wrong conclusion. Reported on the degraded database-locked path too,
   since it needs no database connection and that is when a caller most needs it.
+
+  The registered `system_status` description tells the agent to cite
+  `overview.build` before concluding that live behavior contradicts the code.
+  A docstring cannot: the agent never reads one, and the field is only as
+  useful as the instruction to look at it. `revision` is read from the
+  repository top level only, so a wheel installed beneath an unrelated checkout
+  reports `null` rather than that project's commit.
 - **Read the ingestion pipeline through `sql_query` (M2O.2).** `sql_query` and
   `moneybin sql query` reach `raw` and `prep` alongside `core`, `app`, and
   `reports` — five schemas, up from three. The seed sheets the gsheet and PDF

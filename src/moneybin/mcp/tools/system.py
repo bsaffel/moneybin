@@ -289,16 +289,30 @@ _GIT_REVISION_TIMEOUT_SECONDS = 5.0
 
 
 def _read_git_revision(root: Path) -> str | None:
-    """Return the commit ``root`` is checked out at, or None if it is not a repo.
+    """Return the commit ``root`` is checked out at, or None if it is not a repo root.
 
     Delegates to ``git`` rather than parsing ``.git`` by hand: a linked worktree
     stores a *file* there pointing elsewhere, and a branch tip may live in
     ``packed-refs`` rather than as a loose ref. Both are cases this project
     actually runs in, and both are ones a hand-rolled reader gets wrong.
+
+    ``root`` must be the repository's own top level, and that is checked rather
+    than assumed. ``git`` answers about the nearest enclosing checkout, so an
+    installed wheel sitting under someone else's repository — a virtualenv
+    inside the user's own project, which is where ``uv`` puts one by default —
+    would otherwise report *that* project's HEAD as MoneyBin's build: a
+    confidently wrong stamp, worse than the documented ``null``.
     """
     try:
         completed = subprocess.run(  # noqa: S603 — git with static args
-            ["git", "-C", str(root), "rev-parse", "HEAD"],  # noqa: S607
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(root),
+                "rev-parse",
+                "--show-toplevel",
+                "HEAD",
+            ],
             capture_output=True,
             text=True,
             timeout=_GIT_REVISION_TIMEOUT_SECONDS,
@@ -310,7 +324,17 @@ def _read_git_revision(root: Path) -> str | None:
         return None
     if completed.returncode != 0:
         return None
-    return completed.stdout.strip() or None
+    # Split on line terminators, never on arbitrary whitespace: git prints the
+    # top level unquoted, so a checkout path containing a space would otherwise
+    # parse as three tokens and silently blank the stamp — and a blank reads as
+    # a legitimate wheel install, hiding the failure.
+    lines = completed.stdout.splitlines()
+    if len(lines) != 2:
+        return None
+    toplevel, revision = lines
+    if Path(toplevel).resolve() != root.resolve():
+        return None
+    return revision or None
 
 
 #: Resolved once at import — that is, at server boot — rather than per call.
@@ -319,7 +343,12 @@ def _read_git_revision(root: Path) -> str | None:
 #: per-call read would then report the *new* commit while still running the old
 #: code, which is worse than reporting nothing: it would corroborate exactly the
 #: wrong conclusion.
-_REVISION: str | None = _read_git_revision(Path(__file__).resolve().parent)
+#:
+#: ``parents[4]`` is the checkout root of a source tree laid out as
+#: ``<root>/src/moneybin/mcp/tools/system.py``; from an installed wheel it is
+#: some directory above ``site-packages``, which is not a repository top level
+#: and so answers None.
+_REVISION: str | None = _read_git_revision(Path(__file__).resolve().parents[4])
 
 
 def _build_info() -> SystemStatusBuildInfo:
@@ -1200,7 +1229,10 @@ def register_system_coarse_reads(mcp: FastMCP) -> None:
         "inventory, integrity doctor checks, categorization coverage, and export "
         "readiness. "
         "detail='full' deepens the "
-        "doctor scan and includes auto-categorization health.",
+        "doctor scan and includes auto-categorization health. "
+        "overview.build names the version and commit this server is running; "
+        "cite it before concluding that live behavior contradicts the code, "
+        "because a long-lived process can predate the checkout.",
         privacy_actor="system_status",
     )
     register(

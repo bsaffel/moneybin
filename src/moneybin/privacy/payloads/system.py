@@ -25,6 +25,7 @@ Tier derivation summary:
   - ``SystemStatusWriter``          → Tier.LOW (RECORD_ID + TXN_TYPE + TIMESTAMP_OBSERVABILITY)
   - ``SystemStatusReader``          → Tier.LOW (RECORD_ID + TXN_TYPE)
   - ``SystemStatusDatabaseConnectionsInfo`` → Tier.LOW (composition only)
+  - ``SystemStatusBuildInfo``       → Tier.LOW (AGGREGATE + RECORD_ID)
   - ``SystemStatusPayload``         → Tier.LOW (no DESCRIPTION fields)
   - ``ExportsStatus``               → Tier.MEDIUM (destination name = USER_NOTE)
   - ``SystemStatusCLIPayload``      → Tier.MEDIUM (exports include USER_NOTE)
