@@ -1,5 +1,5 @@
 {
-  "sha256": "db2b14b59135a3f3e5dcaeb64617dd93a26d44b3ff3f21e58a9b65c96a034ec4",
+  "sha256": "7ad09206175186633b2f36b15cd7c93664eb5cab7e799b8081613dcb16940732",
   "tool_count": 49,
   "tools": [
     {
@@ -1829,11 +1829,6 @@
                       "required": [
                         "format_name"
                       ]
-                    },
-                    {
-                      "required": [
-                        "confirmation_token"
-                      ]
                     }
                   ]
                 },
@@ -1902,11 +1897,11 @@
         "name": "import_revert"
       },
       "description_bytes": 383,
-      "input_schema_bytes": 916,
+      "input_schema_bytes": 880,
       "name": "import_revert",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 1494
+      "total_bytes": 1458
     },
     {
       "annotation_bytes": 89,
@@ -5027,5 +5022,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 55480
+  "total_bytes": 55444
 }

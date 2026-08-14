@@ -129,12 +129,10 @@ _IMPORT_REVERT_INPUT_SCHEMA_EXTRA: dict[str, Any] = {
             "then": {
                 "properties": {"import_id": {"type": "string", "minLength": 1}},
                 "required": ["import_id"],
-                "not": {
-                    "anyOf": [
-                        {"required": ["format_name"]},
-                        {"required": ["confirmation_token"]},
-                    ]
-                },
+                # ``confirmation_token`` stays admissible here: the reversion
+                # gate hands non-eliciting clients a token to send back, and a
+                # schema-validating client could not make that second call.
+                "not": {"anyOf": [{"required": ["format_name"]}]},
             },
         },
     ]

@@ -13,6 +13,9 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jsonschema import Draft202012Validator
+from jsonschema import validate as validate_json_schema
+from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from pytest import MonkeyPatch
 
 import moneybin.mcp.tools.import_tools as import_tools_module
@@ -46,7 +49,7 @@ from moneybin.services.import_service import (
     ReviewedTabularPlan,
 )
 from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
-from tests.moneybin.test_mcp.schema_assertions import isolated_server
+from tests.moneybin.test_mcp.schema_assertions import isolated_server, listed_tool
 
 
 async def test_import_workflow_registrar_preserves_seven_trust_boundaries() -> None:
@@ -78,6 +81,49 @@ async def test_import_workflow_registrar_preserves_seven_trust_boundaries() -> N
     assert "confirmation_token" in revert.parameters["properties"]
     confirm = next(tool for tool in tools if tool.name == "import_confirm")
     assert "confirmation_token" in confirm.parameters["properties"]
+
+
+async def test_import_revert_schema_admits_the_confirmation_token_round_trip() -> None:
+    """The advertised schema must accept the token the tool tells clients to send.
+
+    The non-eliciting path issues a token on the first call and requires it on
+    the second. A client that validates arguments against ``inputSchema`` before
+    dispatch — standard behavior — cannot make that second call unless the
+    revert branch admits ``confirmation_token``, leaving the fallback gate
+    unusable for exactly the clients it exists to serve.
+    """
+    mcp = isolated_server(import_tools_module.register_import_workflow_tools)
+    revert = await listed_tool(mcp, "import_revert")
+
+    Draft202012Validator.check_schema(revert.inputSchema)
+    validate_json_schema(
+        {
+            "operation": "revert_import",
+            "import_id": "imp_20260809_abc",
+            "confirmation_token": "tok_abc",
+        },
+        revert.inputSchema,
+        cls=Draft202012Validator,
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"operation": "revert_import", "import_id": "imp_1", "format_name": "tiller"},
+        {"operation": "delete_saved_format", "format_name": "t", "import_id": "imp_1"},
+    ],
+    ids=["revert_rejects_format_name", "delete_rejects_import_id"],
+)
+async def test_import_revert_schema_still_forbids_cross_branch_targets(
+    arguments: dict[str, str],
+) -> None:
+    """Admitting the token must not open the branches' target fields to each other."""
+    mcp = isolated_server(import_tools_module.register_import_workflow_tools)
+    revert = await listed_tool(mcp, "import_revert")
+
+    with pytest.raises(JSONSchemaValidationError):
+        validate_json_schema(arguments, revert.inputSchema, cls=Draft202012Validator)
 
 
 def test_import_human_confirmation_tools_allow_decision_window() -> None:
