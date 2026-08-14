@@ -250,9 +250,26 @@ class TestToolRegistration:
         upper = await sql_schema(table="RAW.*")
         lower = await sql_schema(table="raw.*")
         assert upper.to_dict()["status"] != "error"
-        assert {t["name"] for t in upper.to_dict()["data"]["tables"]} == {
-            t["name"] for t in lower.to_dict()["data"]["tables"]
-        }
+        # The whole payload, not just the name set: the echoed `schema` field
+        # is the one place the two spellings could still disagree, and the
+        # CHANGELOG promises they are one request.
+        assert upper.to_dict()["data"] == lower.to_dict()["data"]
+
+    @pytest.mark.unit
+    async def test_sql_schema_listing_counts_the_relations_it_returns(
+        self, mcp_db: object
+    ) -> None:
+        """`build_envelope` counts a dict as one item, which the listing is not.
+
+        The payload is a dict wrapping N relations, so the shape heuristic
+        reports `returned_count: 1` for every schema — telling an agent one
+        relation came back when the list underneath holds many.
+        """
+        listing = await sql_schema(table="raw.*")
+        payload = listing.to_dict()
+        assert len(payload["data"]["tables"]) > 1, "fixture must have >1 relation"
+        assert payload["summary"]["returned_count"] == len(payload["data"]["tables"])
+        assert payload["summary"]["total_count"] == len(payload["data"]["tables"])
 
     @pytest.mark.unit
     async def test_sql_schema_exact_name_is_case_insensitive(

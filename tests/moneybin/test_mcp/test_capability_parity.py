@@ -321,6 +321,17 @@ def test_flagged_routes_map_their_actual_owners() -> None:
         "moneybin.services.auto_rule_service.AutoRuleService.decide"
         in rows["reviews.decide"].service_methods
     )
+    # `sql_schema` owns two service paths, not one: the curated doc and the
+    # live relation listing. Naming only the first leaves the listing outside
+    # the executable contract, so a change that broke or dropped it would keep
+    # this map green while the documented MCP-only outcome disappeared.
+    assert (
+        "moneybin.services.schema_catalog.build_live_catalog"
+        in rows["sql.schema"].service_methods
+    )
+    assert any(
+        "live" in outcome for outcome in rows["sql.schema"].observable_outcomes
+    ), rows["sql.schema"].observable_outcomes
 
 
 def test_flagged_cli_routes_execute_the_mapped_owner(

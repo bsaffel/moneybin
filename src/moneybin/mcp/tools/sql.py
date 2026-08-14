@@ -213,11 +213,21 @@ def _live_schema_listing(schema: str) -> ResponseEnvelope[Any]:
     A disallowed schema propagates `build_live_catalog`'s ``UserError`` to the
     `@mcp_tool` decorator, which builds the identical low-sensitivity envelope
     — the same path `sql_query` uses for the same refusal.
+
+    The echoed ``schema`` is lowered because the rows underneath it are: the
+    gate normalizes before querying, so echoing the caller's spelling back
+    would have `'RAW.*'` answer with a `schema` disagreeing in case with every
+    row it contains, and with what `'raw.*'` returns for the same request.
+    Counts are explicit because `build_envelope`'s shape heuristic reads any
+    dict as a single item, which would report one relation for a schema of 21.
     """
+    schema = schema.lower()
+    relations = build_live_catalog(schema=schema)
     return build_envelope(
-        data={"schema": schema, "tables": build_live_catalog(schema=schema)},
+        data={"schema": schema, "tables": relations},
         sensitivity="low",
         classes_returned=["aggregate"],
+        returned_count=len(relations),
         actions=[
             "Pass table='<schema.name>' for a curated table's columns and "
             "example queries.",
