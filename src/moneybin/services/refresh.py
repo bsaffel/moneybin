@@ -107,11 +107,13 @@ class RefreshResult:
     # result. Expected on a first load, where the views postdate SQLMesh apply.
     matching_skipped: bool = False
     # Accepted transfers reversed because the match step's dedup pass collapsed
-    # their legs. Never set by `refresh` itself — only the post-merge re-match
-    # revisits existing transfer decisions (see
-    # AccountLinksService.retire_transfers_invalidated_by_dedup), and it fills
-    # this in on the way out. Reported rather than left in the log: the user
-    # accepted those transfers.
+    # their legs — the matcher reconciles them mid-run (see
+    # TransactionMatcher._retire_transfers_invalidated_by_dedup), so every
+    # trigger that reaches the match step reports them, not only the post-merge
+    # re-match. That caller adds one more of its own: transfers whose two
+    # *accounts* the merge collapsed, which happen inside `set`'s transaction
+    # and never reach the matcher. Reported rather than left in the log: the
+    # user accepted those transfers.
     transfers_retired: int = 0
     # tuple, not list: frozen=True blocks reassignment but not in-place
     # mutation of a list field — a tuple keeps the result carrier truly immutable.
@@ -226,6 +228,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     auto_merged = 0
     pending_review = 0
     pending_transfers = 0
+    transfers_retired = 0
     matching_skipped = False
     if "match" in requested:
         try:
@@ -233,6 +236,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             auto_merged = match_result.auto_merged
             pending_review = match_result.pending_review
             pending_transfers = match_result.pending_transfers
+            transfers_retired = match_result.transfers_retired
             if match_result.has_matches:
                 logger.info(f"Matching: {match_result.summary()}")
                 if match_result.has_pending:
@@ -270,6 +274,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             matches_pending_review=pending_review,
             matches_pending_transfers=pending_transfers,
             matching_skipped=matching_skipped,
+            transfers_retired=transfers_retired,
         )
 
     apply_result = TransformService(db).apply()
@@ -286,6 +291,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
             matches_pending_review=pending_review,
             matches_pending_transfers=pending_transfers,
             matching_skipped=matching_skipped,
+            transfers_retired=transfers_retired,
         )
 
     if "categorize" in requested:
@@ -303,6 +309,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         matches_pending_review=pending_review,
         matches_pending_transfers=pending_transfers,
         matching_skipped=matching_skipped,
+        transfers_retired=transfers_retired,
     )
 
 

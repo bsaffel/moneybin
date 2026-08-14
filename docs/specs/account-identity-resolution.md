@@ -597,11 +597,25 @@ Guard-2 free-text resolution):
   anything joining `fct_transactions` to `bridge_transfers`. Tier 4 already
   refuses to *propose* that shape — it excludes rows in active transfers and
   every non-primary dedup member — but nothing revisited decisions made before
-  the merge, so `rematch_after_merge()` enforces the same rule in the missing
+  the collapse, so the match pass itself enforces the same rule in the missing
   direction: **a dedup component is a leg of at most one accepted transfer**,
   walked earliest-decided first so the first claimant keeps it. A transfer whose
   own two legs share a component always goes; it is the transaction-level form
   of the collapse `repoint_account` already retires at account level.
+
+  **The reconciliation belongs to the matcher, not to this trigger.** A merge is
+  one way a component grows past a transfer's legs; an ordinary accept through
+  the review queue is another, and `MatchingService.set_status` writes that
+  decision and returns without transforming, so the corruption would land on
+  whatever refresh came next with nothing left to notice it. It therefore runs
+  inside `TransactionMatcher.run`, between the dedup tiers and Tier 4 — the one
+  point where the components include the edges this run just wrote *and* the
+  transfer tier has not yet built its exclusion set. Placing it there settles
+  three things at once: every trigger that reaches the match step reconciles,
+  a leg the reversal frees is a Tier 4 candidate in that same run rather than
+  the next one, and the reversal precedes `transform`, so the corrupt
+  `bridge_transfers` is never built rather than rebuilt correctly one refresh
+  later. `refresh` reports the count on `RefreshResult.transfers_retired`.
 
   Components here are built from **accepted dedup edges only**, which is
   narrower than the accepted+pending graph the matcher seeds union-find with
@@ -632,10 +646,13 @@ Guard-2 free-text resolution):
   `AccountLinksService` carries it to `rematch_after_merge()`, which sums the
   two. Splitting them into two counters would ask the user to learn a
   distinction that changes nothing they do: either way a transfer they
-  accepted is gone, and either way `system audit undo` is the way back. It is deliberately global rather than scoped to the
-  merged account, because the invariant is global, the batched path merges
-  several accounts at once, and a pre-existing violation is corrupt whichever
-  merge exposed it.
+  accepted is gone, and either way `system audit undo` is the way back. The
+  transaction-level form is deliberately global rather than scoped to the merged
+  account, because the invariant is global, the batched path merges several
+  accounts at once, and a pre-existing violation is corrupt whichever run
+  exposed it. The account-level form is the one piece `rematch_after_merge()`
+  still adds itself: it happens inside `set`'s transaction and reaches no
+  matcher, so `refresh`'s count would omit it.
 
   A **partially failed pass reports as partial**, and the two halves fail
   independently. `RefreshResult.matching_error` means no duplicates were

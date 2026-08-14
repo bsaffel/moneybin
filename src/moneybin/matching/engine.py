@@ -43,6 +43,7 @@ from moneybin.metrics.registry import (
     TRANSFER_MATCHES_PROPOSED,
     TRANSFER_PAIRS_SCORED,
 )
+from moneybin.tables import MATCH_DECISIONS
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,11 @@ class MatchResult:
     auto_merged: int = 0
     pending_review: int = 0
     pending_transfers: int = 0
+    # Accepted transfers this run reversed because a dedup component now holds
+    # both of their legs. Not part of has_matches: nothing was *found*, and a
+    # caller reporting "no new matches" is still right. It is reported rather
+    # than left in the log because the user accepted those transfers.
+    transfers_retired: int = 0
 
     @property
     def has_matches(self) -> bool:
@@ -175,6 +181,14 @@ class TransactionMatcher:
             result=result,
         )
         component_edges.extend(tier_3_edges)
+
+        # Between the tiers: dedup is settled, transfer detection has not run.
+        # This is the only point where both are true, and it is what the
+        # reconciliation needs from either side — the components it reads
+        # include the edges this run just wrote, and the transfers it reverses
+        # are gone before the exclusion set below is built, so a leg it frees
+        # is a Tier 4 candidate in this same run rather than the next one.
+        result.transfers_retired = self._retire_transfers_invalidated_by_dedup()
 
         # Tier 4: transfer detection (runs after dedup).
         # Exclude transactions in active transfers AND the non-primary side of
@@ -365,6 +379,91 @@ class TransactionMatcher:
                 if n != primary:
                     secondary.add((n[1], n[0], n[2]))  # (stid, source_type, account_id)
         return _DedupDecisions(active_edges=edges, secondary_ids=secondary)
+
+    def _retire_transfers_invalidated_by_dedup(self) -> int:
+        """Retire accepted transfers whose legs the dedup pass has collapsed.
+
+        What this protects is ``core.bridge_transfers``, which resolves each leg
+        through the dedup mapping (``MAX(transaction_id)`` per group). Two
+        transfer decisions whose legs landed in one component then name the same
+        physical transaction, and it is double-counted by everything joining
+        ``fct_transactions`` to ``bridge_transfers``. Tier 4 below already
+        refuses to *propose* that shape — it excludes rows in active transfers
+        and every non-primary dedup member — but nothing revisited decisions
+        made before the collapse. This is that missing direction.
+
+        Every trigger owes it, which is why it lives in the run rather than at
+        one caller. A merge makes two accounts' rows dedup candidates for the
+        first time; an ordinary accept through the review queue folds an edge
+        the matcher proposed earlier. Both end at the same corrupt bridge, and
+        the accept path does not even transform — it writes the decision and
+        returns, so the damage lands on whatever refresh comes next. Running
+        here also puts the reversal *before* the transform, so the corrupt
+        bridge is never built rather than being rebuilt correctly one refresh
+        later.
+
+        The invariant enforced is Tier 4's own: **a dedup component is a leg of
+        at most one accepted transfer.** Decisions are walked earliest-decided
+        first, so the first claimant of a component keeps it and any later
+        decision reusing it is reversed; a transfer whose *own* two legs share a
+        component is impossible at any ordering and always goes. Reversal (not
+        deletion) leaves the row and its audit trail intact, so
+        ``system audit undo`` can restore it.
+
+        Deliberately global rather than scoped to any one account: the invariant
+        is global, and a pre-existing violation is corrupt whichever run exposed
+        it. The count is returned so callers can report it — a silent retirement
+        of a decision the user accepted is exactly the unreviewed action this
+        reconciliation exists to prevent.
+        """
+        edges = [
+            (
+                (e["source_type_a"], e["source_transaction_id_a"], e["account_id"]),
+                (e["source_type_b"], e["source_transaction_id_b"], e["account_id"]),
+            )
+            # Accepted only. A pending dedup row is an unreviewed proposal and
+            # the prep fold ignores it, so both source rows are still distinct
+            # transactions in core and neither transfer is invalid yet.
+            # Reversing one on that signal would undo a decision the user made
+            # on the strength of a merge that has not happened — and may never,
+            # if they reject the proposal.
+            for e in get_active_dedup_edges(self._db, statuses=("accepted",))
+        ]
+        component: dict[tuple[str, str, str], tuple[str, str, str]] = {}
+        for members in connected_components(edges):
+            root = min(members)
+            for node in members:
+                component[node] = root
+
+        rows = self._db.execute(
+            f"""
+            SELECT match_id, source_type_a, source_transaction_id_a, account_id,
+                   source_type_b, source_transaction_id_b, account_id_b
+            FROM {MATCH_DECISIONS.full_name}
+            WHERE match_type = 'transfer' AND match_status = 'accepted'
+            ORDER BY decided_at, match_id
+            """  # noqa: S608 — TableRef constant, no interpolated values
+        ).fetchall()
+
+        claimed: set[tuple[str, str, str]] = set()
+        retired = 0
+        for match_id, type_a, stid_a, acct_a, type_b, stid_b, acct_b in rows:
+            node_a = (type_a, stid_a, acct_a)
+            # account_id_b is NULL on a same-account transfer; the leg still
+            # belongs to account_id, and reading NULL as a distinct account
+            # would put the two legs in different components and hide a
+            # genuine self-collapse.
+            node_b = (type_b, stid_b, acct_b if acct_b is not None else acct_a)
+            comp_a = component.get(node_a, node_a)
+            comp_b = component.get(node_b, node_b)
+            if comp_a != comp_b and comp_a not in claimed and comp_b not in claimed:
+                claimed.update((comp_a, comp_b))
+                continue
+            self._decisions.reverse(match_id, reversed_by="system", actor=self._actor)
+            retired += 1
+        if retired:
+            logger.info(f"Retired {retired} transfer decision(s) invalidated by dedup")
+        return retired
 
     def _get_transfer_matched_ids(self) -> set[tuple[str, str, str]]:
         """Get (source_transaction_id, source_type, account_id) in active/pending transfers.

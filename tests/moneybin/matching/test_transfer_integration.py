@@ -294,3 +294,406 @@ class TestTransferPipeline:
         assert result.pending_transfers >= 1
         best = max(pending, key=lambda p: float(p["confidence_score"]))
         assert best["account_id_b"] == "savings"
+
+
+def _insert_transfer(
+    db: Database,
+    *,
+    match_id: str,
+    stid_a: str,
+    stid_b: str,
+    account_id: str,
+    account_id_b: str,
+    decided_at: str,
+    type_a: str = "ofx",
+    type_b: str = "ofx",
+) -> None:
+    """Seed one accepted transfer decision with an explicit decision time.
+
+    ``decided_at`` is explicit because the retirement keeps the *earliest*
+    claimant of a dedup component; rows stamped CURRENT_TIMESTAMP in one
+    statement are indistinguishable and the tiebreak would fall to match_id.
+    ``type_a``/``type_b`` are explicit because a leg's node identity is
+    ``(source_type, source_transaction_id, account_id)`` — a leg typed
+    differently from the dedup edge naming it lands in no component at all.
+    """
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES (?, ?, ?, 'bank', ?, ?, 'bank', ?, 0.95, '{}',
+                  'transfer', '4', ?, 'accepted', NULL, 'user', ?)
+        """,  # noqa: S608 — test input, not user data
+        [
+            match_id,
+            stid_a,
+            type_a,
+            stid_b,
+            type_b,
+            account_id,
+            account_id_b,
+            decided_at,
+        ],
+    )
+
+
+def _insert_dedup(
+    db: Database,
+    *,
+    match_id: str,
+    stid_a: str,
+    stid_b: str,
+    account_id: str,
+    status: str = "accepted",
+) -> None:
+    """Seed one dedup edge; only an accepted one actually forms a component.
+
+    ``status`` is explicit because ``prep.int_transactions__matched`` folds
+    ``match_status = 'accepted'`` rows only — a pending dedup row is an
+    unreviewed proposal and both source rows stay distinct in ``core``.
+    """
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, confidence_score, match_signals, match_type, match_tier,
+            account_id_b, match_status, match_reason, decided_by, decided_at
+        ) VALUES (?, ?, 'ofx', 'bank', ?, 'csv', 'bank', ?, 0.95, '{}',
+                  'dedup', '3', NULL, ?, NULL, 'auto',
+                  CURRENT_TIMESTAMP)
+        """,  # noqa: S608 — test input, not user data
+        [match_id, stid_a, stid_b, account_id, status],
+    )
+
+
+def _transfer_statuses(db: Database) -> dict[str, str]:
+    return dict(
+        db.execute(
+            "SELECT match_id, match_status FROM app.match_decisions "
+            "WHERE match_type = 'transfer'"
+        ).fetchall()
+    )
+
+
+class TestTransferRetirement:
+    """The matcher's own reconciliation of transfers its dedup pass invalidated.
+
+    ``bridge_transfers`` resolves each leg through the dedup mapping
+    (``MAX(transaction_id)`` per group), so two accepted transfers whose legs
+    landed in one dedup component name the same physical transaction and
+    double-count it in every report joining ``fct_transactions`` to
+    ``bridge_transfers``. Tier 4 refuses to *propose* that shape; this is the
+    other direction — decisions accepted before the collapse.
+
+    The unioned table is left empty wherever the run's own tiers are not the
+    subject, so each fixture isolates the retirement rather than the matcher.
+    """
+
+    def test_a_plain_matcher_run_retires_a_transfer_invalidated_by_dedup(
+        self, db: Database
+    ) -> None:
+        """No account merge anywhere — every matcher run owes this reconciliation.
+
+        The dedup edge here is already accepted, which is what the ordinary
+        review path leaves behind: ``reviews_decide`` writes the decision and
+        returns, and nothing folds it into ``core`` until the next refresh. If
+        the reconciliation is reachable only from the post-merge re-match, that
+        refresh builds a corrupt ``bridge_transfers`` and no trigger ever
+        revisits it.
+        """
+        _setup_tables(db)
+        _insert_transfer(
+            db,
+            match_id="tx_keep00001",
+            stid_a="ofx_p",
+            stid_b="ofx_x",
+            account_id="checking",
+            account_id_b="brokerage",
+            decided_at="2026-01-01 00:00:00",
+        )
+        _insert_transfer(
+            db,
+            match_id="tx_drop00001",
+            stid_a="csv_c",
+            stid_b="ofx_y",
+            type_a="csv",
+            account_id="checking",
+            account_id_b="savings",
+            decided_at="2026-02-01 00:00:00",
+        )
+        _insert_dedup(
+            db,
+            match_id="dd_1000000001",
+            stid_a="ofx_p",
+            stid_b="csv_c",
+            account_id="checking",
+        )
+
+        result = TransactionMatcher(
+            db, MatchingSettings(), table="main._test_unioned"
+        ).run()
+
+        statuses = _transfer_statuses(db)
+        assert statuses["tx_keep00001"] == "accepted", (
+            "the earliest transfer keeps the component it claimed first"
+        )
+        assert statuses["tx_drop00001"] == "reversed", (
+            "the later transfer now names the same physical transaction as its "
+            "debit leg, so it must not reach bridge_transfers"
+        )
+        assert result.transfers_retired == 1
+
+    def test_a_leg_the_retirement_frees_is_paired_in_the_same_run(
+        self, db: Database
+    ) -> None:
+        """Tier 4 must see the legs this run's own retirement released.
+
+        ``_get_transfer_matched_ids`` excludes every leg of an active transfer,
+        so ``ofx_y`` is invisible to Tier 4 while ``tx_drop00001`` still stands.
+        Retiring that transfer after the transfer tier has already run leaves
+        ``ofx_y`` waiting for an unrelated later refresh to notice it is free.
+        """
+        _setup_tables(db)
+        _insert(
+            db,
+            "ofx_y",
+            "savings",
+            "2026-03-15",
+            "500.00",
+            "TRANSFER FROM CHK",
+            stype="ofx",
+        )
+        _insert(
+            db,
+            "csv_new",
+            "checking",
+            "2026-03-15",
+            "-500.00",
+            "ONLINE TRANSFER TO SAV",
+        )
+        _insert_transfer(
+            db,
+            match_id="tx_keep00001",
+            stid_a="ofx_p",
+            stid_b="ofx_x",
+            account_id="checking",
+            account_id_b="brokerage",
+            decided_at="2026-01-01 00:00:00",
+        )
+        _insert_transfer(
+            db,
+            match_id="tx_drop00001",
+            stid_a="csv_c",
+            stid_b="ofx_y",
+            type_a="csv",
+            account_id="checking",
+            account_id_b="savings",
+            decided_at="2026-02-01 00:00:00",
+        )
+        _insert_dedup(
+            db,
+            match_id="dd_1000000001",
+            stid_a="ofx_p",
+            stid_b="csv_c",
+            account_id="checking",
+        )
+
+        result = TransactionMatcher(
+            db, MatchingSettings(), table="main._test_unioned"
+        ).run()
+
+        assert result.pending_transfers == 1, (
+            "the freed leg has a valid same-day counterpart and must be "
+            "proposed by the run that freed it"
+        )
+        pending = get_pending_matches(db, match_type="transfer")
+        assert {pending[0]["source_transaction_id_a"]} | {
+            pending[0]["source_transaction_id_b"]
+        } == {"csv_new", "ofx_y"}
+
+    def test_the_same_two_rows_stay_unpaired_while_the_transfer_stands(
+        self, db: Database
+    ) -> None:
+        """The fixture above minus the dedup edge — nothing is freed, nothing pairs.
+
+        Differs by exactly one property: whether a dedup decision joins the two
+        debit legs. Without this partner the test above would pass on a matcher
+        that never retires anything, because ``csv_new`` and ``ofx_y`` are a
+        transfer pair on their own merits.
+        """
+        _setup_tables(db)
+        _insert(
+            db,
+            "ofx_y",
+            "savings",
+            "2026-03-15",
+            "500.00",
+            "TRANSFER FROM CHK",
+            stype="ofx",
+        )
+        _insert(
+            db,
+            "csv_new",
+            "checking",
+            "2026-03-15",
+            "-500.00",
+            "ONLINE TRANSFER TO SAV",
+        )
+        _insert_transfer(
+            db,
+            match_id="tx_keep00001",
+            stid_a="ofx_p",
+            stid_b="ofx_x",
+            account_id="checking",
+            account_id_b="brokerage",
+            decided_at="2026-01-01 00:00:00",
+        )
+        _insert_transfer(
+            db,
+            match_id="tx_drop00001",
+            stid_a="csv_c",
+            stid_b="ofx_y",
+            type_a="csv",
+            account_id="checking",
+            account_id_b="savings",
+            decided_at="2026-02-01 00:00:00",
+        )
+
+        result = TransactionMatcher(
+            db, MatchingSettings(), table="main._test_unioned"
+        ).run()
+
+        assert result.transfers_retired == 0
+        assert result.pending_transfers == 0, (
+            "ofx_y is still claimed by an accepted transfer, so Tier 4 must "
+            "leave it alone"
+        )
+
+    def test_a_pending_dedup_edge_retires_no_transfer(self, db: Database) -> None:
+        """The first fixture with the dedup edge left pending — nothing retires.
+
+        Differs by exactly one property: ``match_status`` on the dedup row. A
+        pending dedup decision is an unreviewed *proposal*;
+        ``prep.int_transactions__matched`` folds accepted rows only, so `ofx_p`
+        and `csv_c` are still two distinct transactions in ``core`` and neither
+        transfer is invalid yet. Retiring one here would reverse a decision the
+        user made on the strength of a proposal nobody confirmed — and the
+        human may go on to reject it.
+        """
+        _setup_tables(db)
+        _insert_transfer(
+            db,
+            match_id="tx_keep00001",
+            stid_a="ofx_p",
+            stid_b="ofx_x",
+            account_id="checking",
+            account_id_b="brokerage",
+            decided_at="2026-01-01 00:00:00",
+        )
+        _insert_transfer(
+            db,
+            match_id="tx_keep00002",
+            stid_a="csv_c",
+            stid_b="ofx_y",
+            type_a="csv",
+            account_id="checking",
+            account_id_b="savings",
+            decided_at="2026-02-01 00:00:00",
+        )
+        _insert_dedup(
+            db,
+            match_id="dd_1000000001",
+            stid_a="ofx_p",
+            stid_b="csv_c",
+            account_id="checking",
+            status="pending",
+        )
+
+        result = TransactionMatcher(
+            db, MatchingSettings(), table="main._test_unioned"
+        ).run()
+
+        assert result.transfers_retired == 0
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_keep00002": "accepted",
+        }, "an unreviewed dedup proposal must not reverse an accepted transfer"
+
+    def test_transfers_on_distinct_components_all_survive(self, db: Database) -> None:
+        """The same two transfers with no dedup edge joining them — nothing retires.
+
+        Differs from the first fixture by exactly one property: whether a dedup
+        decision links the two debit legs. Without this partner, a retirement
+        that keyed on "two accepted transfers on one account" rather than on a
+        shared component would pass that test and quietly delete correct
+        transfers.
+        """
+        _setup_tables(db)
+        _insert_transfer(
+            db,
+            match_id="tx_keep00001",
+            stid_a="ofx_p",
+            stid_b="ofx_x",
+            account_id="checking",
+            account_id_b="brokerage",
+            decided_at="2026-01-01 00:00:00",
+        )
+        _insert_transfer(
+            db,
+            match_id="tx_keep00002",
+            stid_a="csv_c",
+            stid_b="ofx_y",
+            account_id="checking",
+            account_id_b="savings",
+            decided_at="2026-02-01 00:00:00",
+        )
+
+        result = TransactionMatcher(
+            db, MatchingSettings(), table="main._test_unioned"
+        ).run()
+
+        assert result.transfers_retired == 0
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_keep00002": "accepted",
+        }
+
+    def test_a_transfer_whose_own_two_legs_dedup_together_is_retired(
+        self, db: Database
+    ) -> None:
+        """Both legs in one component — a transfer from a transaction to itself.
+
+        ``repoint_account`` already retires the account-level form of this (the
+        two legs collapsing onto one account). This is the transaction-level
+        form, and it is equally impossible: ``bridge_transfers`` would emit a
+        row whose debit and credit ``transaction_id`` are the same.
+        """
+        _setup_tables(db)
+        _insert_transfer(
+            db,
+            match_id="tx_self00001",
+            stid_a="ofx_p",
+            stid_b="csv_c",
+            type_b="csv",
+            account_id="checking",
+            account_id_b="checking",
+            decided_at="2026-01-01 00:00:00",
+        )
+        _insert_dedup(
+            db,
+            match_id="dd_1000000001",
+            stid_a="ofx_p",
+            stid_b="csv_c",
+            account_id="checking",
+        )
+
+        result = TransactionMatcher(
+            db, MatchingSettings(), table="main._test_unioned"
+        ).run()
+
+        assert result.transfers_retired == 1
+        assert _transfer_statuses(db) == {"tx_self00001": "reversed"}
