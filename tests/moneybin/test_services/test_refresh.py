@@ -522,3 +522,52 @@ def test_refresh_gsheet_step_skippable(
     assert patched_services["transform_apply"].call_count == 1
     assert patched_services["categorize_pending"].call_count == 1
     assert result.applied is True
+
+
+@pytest.mark.unit
+def test_refresh_reports_retirements_a_crashed_match_step_already_committed() -> None:
+    """A crash after the reconciliation must not swallow what it reversed.
+
+    ``retire_transfers_invalidated_by_dedup`` commits each reversal individually
+    and runs before Tier 4, so a Tier 4 failure leaves accepted transfers
+    genuinely reversed while ``run()`` never returns its ``MatchResult``.
+    Reporting zero there describes a decision of the user's as untouched.
+    """
+    from moneybin.matching.engine import MatchRunError
+
+    with patch.object(
+        matching_service.MatchingService,
+        "run",
+        side_effect=MatchRunError(RuntimeError("tier 4 boom"), transfers_retired=3),
+    ):
+        result = refresh(MagicMock(), steps=["match"])
+
+    assert result.matching_error == "tier 4 boom"
+    assert result.transfers_retired == 3
+    assert result.matching_skipped is False
+
+
+@pytest.mark.unit
+def test_refresh_does_not_call_a_late_view_failure_a_skipped_match_step() -> None:
+    """A catalog error *after* the tiers ran is a crash, not a missing view.
+
+    ``matching_skipped`` claims nothing was examined and suppresses the error
+    entirely. Once the dedup tiers have written decisions and the reconciliation
+    has reversed a transfer, that claim is false — and it is the one that hides
+    the reversal. Only a failure that reaches ``run()`` unwrapped is the
+    first-load precondition.
+    """
+    from moneybin.matching.engine import MatchRunError
+
+    with patch.object(
+        matching_service.MatchingService,
+        "run",
+        side_effect=MatchRunError(
+            duckdb.CatalogException("no view"), transfers_retired=1
+        ),
+    ):
+        result = refresh(MagicMock(), steps=["match"])
+
+    assert result.matching_skipped is False
+    assert result.matching_error is not None
+    assert result.transfers_retired == 1

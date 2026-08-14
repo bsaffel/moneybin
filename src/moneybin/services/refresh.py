@@ -108,7 +108,7 @@ class RefreshResult:
     matching_skipped: bool = False
     # Accepted transfers reversed because the match step's dedup pass collapsed
     # their legs — the matcher reconciles them mid-run (see
-    # TransactionMatcher._retire_transfers_invalidated_by_dedup), so every
+    # matching.reconciliation.retire_transfers_invalidated_by_dedup), so every
     # trigger that reaches the match step reports them, not only the post-merge
     # re-match. That caller adds one more of its own: transfers whose two
     # *accounts* the merge collapsed, which happen inside `set`'s transaction
@@ -172,6 +172,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
     in their response envelope.
     """
     from moneybin.errors import UserError  # noqa: PLC0415
+    from moneybin.matching.engine import MatchRunError  # noqa: PLC0415
     from moneybin.services.matching_service import (  # noqa: PLC0415
         PENDING_MATCHES_HINT,
         MatchingService,
@@ -241,6 +242,17 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
                 logger.info(f"Matching: {match_result.summary()}")
                 if match_result.has_pending:
                     logger.info(PENDING_MATCHES_HINT)
+        except MatchRunError as exc:
+            # The run died downstream of the reconciliation, which had already
+            # committed its reversals. Take the count off the exception: this
+            # branch is the only place it still exists, and it names a decision
+            # of the user's that has been undone. Caught before the catalog
+            # branch below on purpose — a *late* CatalogException reaches here
+            # wrapped, and calling it a skipped step would claim nothing was
+            # examined after the tiers had already written decisions.
+            matching_error = str(exc)
+            transfers_retired = exc.transfers_retired
+            logger.error(f"Matching failed during refresh: {exc}", exc_info=True)
         except (duckdb.CatalogException, duckdb.BinderException):
             # Views not built yet (first load precedes SQLMesh apply) — an
             # expected precondition, not a crash. Stay quiet; no error surfaced

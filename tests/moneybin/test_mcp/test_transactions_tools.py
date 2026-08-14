@@ -499,3 +499,69 @@ async def test_matches_pending_dedup_group_count_zero_for_transfer_scope(
     # ...transfer scope sees none (no dedup rows in scope).
     transfer = (transactions_matches_pending(match_type="transfer")).to_dict()
     assert transfer["data"]["n_dedup_groups"] == 0
+
+
+def _set_outcome(*, match_status: str, transfers_retired: int) -> object:
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    return MatchDecisionOutcome(
+        match_status=match_status, transfers_retired=transfers_retired
+    )
+
+
+def test_matches_set_reports_the_status_that_committed() -> None:
+    """An agent's accept can be refused by the reconciliation it triggers.
+
+    ``set_status`` writes the decision, then reverses whichever accepted transfer
+    loses the earliest-decided-first tiebreak — possibly this very row. Echoing
+    the requested status back contradicts ``MatchSetPayload``'s own docstring and
+    leaves the agent no way to detect that its write did not stand.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="reversed", transfers_retired=1
+        )
+        envelope = transactions_matches_set("tx_stale00001", "accepted")
+
+    payload = envelope.to_dict()["data"]
+    assert payload["match_status"] == "reversed"
+    assert payload["transfers_retired"] == 1
+
+
+def test_matches_set_points_a_retiring_accept_at_the_operation_undo() -> None:
+    """``matches undo`` reverses this row only, never the transfer it retired.
+
+    An agent driving off ``actions[]`` gets one route back; if that route cannot
+    restore the *other* transfer this call reversed, the user's transfer stays
+    missing.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="accepted", transfers_retired=2
+        )
+        envelope = transactions_matches_set("dd_100000001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    assert any("system_audit_undo" in action for action in actions)
+
+
+def test_matches_set_stays_quiet_about_undo_when_nothing_was_retired() -> None:
+    """Negative twin: an ordinary accept must not advertise a recovery it needs.
+
+    Without it, an unconditional hint would satisfy the test above while telling
+    every caller that a decision of the user's had been undone.
+    """
+    from moneybin.mcp.tools.transactions import transactions_matches_set
+
+    with patch("moneybin.mcp.tools.transactions.MatchingService") as service:
+        service.return_value.set_status.return_value = _set_outcome(
+            match_status="accepted", transfers_retired=0
+        )
+        envelope = transactions_matches_set("dd_100000001", "accepted")
+
+    actions = envelope.to_dict()["actions"]
+    assert not any("system_audit_undo" in action for action in actions)

@@ -177,8 +177,8 @@ def warn_transfers_retired(count: int, *, cause: str) -> None:
         return
     logger.warning(
         f"⚠️  Retired {count} previously accepted transfer(s) {cause}; "
-        "inspect with 'moneybin audit' and restore with 'moneybin audit undo' "
-        "if that was wrong"
+        "inspect with 'moneybin system audit list' and restore with "
+        "'moneybin system audit undo <operation-id>' if that was wrong"
     )
 
 

@@ -3314,6 +3314,29 @@ def test_cross_source_pair_with_no_decision_either_side_warns(
 
 
 @pytest.mark.unit
+def test_unproposed_duplicates_detail_publishes_runnable_commands(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The finding's two-step remedy has to be two commands the CLI registers.
+
+    A `doctor` finding is read by someone who already knows something is wrong;
+    a name that exits 2 sends them looking for a second fault that isn't there.
+    Resolves what the invariant emitted rather than the literal, so the wording
+    stays free to change.
+    """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    _seed_prep_unioned(doctor_db, 0)
+    _insert_unioned_row(doctor_db, stid="ofx1", source_type="ofx")
+    _insert_unioned_row(doctor_db, stid="csv1", source_type="csv")
+
+    result = _unproposed_result(doctor_db, monkeypatch)
+
+    assert result.detail is not None
+    assert_published_commands_resolve(result.detail)
+
+
+@pytest.mark.unit
 def test_cross_source_pair_the_matcher_already_ruled_on_passes(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

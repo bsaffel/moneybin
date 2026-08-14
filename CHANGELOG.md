@@ -849,7 +849,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dedup decisions count toward a component: a pending one is an unreviewed
   proposal that leaves both rows distinct in `core`, so it never retires a
   transfer. Reversed, not deleted, and reported as `rematch_transfers_retired`
-  on both tools plus a CLI warning naming `moneybin audit undo`, because the
+  on both tools plus a CLI warning naming `moneybin system audit undo`, because the
   user accepted those transfers. That counter also covers the account-level
   form of the same collapse — a transfer whose two endpoints became one
   account, retired during the re-key — which previously reversed an accepted
@@ -867,6 +867,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   re-examined as a transfer candidate by the same pass and the reversal lands
   before `transform`, leaving the corrupt bridge never built rather than rebuilt
   correctly one refresh later.
+
+  Because that pass walks every accepted transfer — including the row the accept
+  just wrote — **an accept can be the decision it reverses**, and the surfaces
+  now report the committed status instead of the requested one.
+  `transactions_matches_set` returns the re-read value in `data.match_status`;
+  `moneybin transactions matches set` and `moneybin review --confirm` print a
+  refusal naming the standing decision rather than a success mark. A crashed
+  match step no longer drops the count either: the matcher wraps no transaction
+  around a run, so reversals already committed are reported even when a later
+  tier raises.
 
   `refresh_run` and `moneybin refresh` now disclose what the match step decided
   — `matches_auto_merged`, `matches_pending_review`,
@@ -890,7 +900,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   undo can replay them individually. Reachable before through any refresh
   following a merge; the post-merge re-match above would have made it
   deterministic.
-- **`moneybin doctor` can now see a duplicate nobody proposed.** Neither existing
+- **`moneybin system doctor` can now see a duplicate nobody proposed.** Neither existing
   invariant could. `dedup_reconciliation` asserts
   `raw_total - core_count == dedup_absorbed`, which balances whether or not a
   duplicate was ever *proposed* — a pair nobody looked at moves both sides of the

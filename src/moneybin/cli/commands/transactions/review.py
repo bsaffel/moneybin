@@ -184,9 +184,21 @@ def _review_matches_noninteractive(
             # Independent ifs (not elif): `--confirm X --reject Y` targets two
             # different matches in one invocation.
             if confirm_id:
-                retired = svc.set_status(confirm_id, status="accepted", actor="cli")
-                logger.info(f"✅ Accepted match {confirm_id[:8]}...")
-                warn_transfers_retired(retired, cause=RETIRED_BY_THIS_DECISION)
+                outcome = svc.set_status(confirm_id, status="accepted", actor="cli")
+                if outcome.match_status == "accepted":
+                    logger.info(f"✅ Accepted match {confirm_id[:8]}...")
+                else:
+                    # Same refusal `matches set` can hit: the reconciliation this
+                    # accept triggers walks every accepted transfer, this row
+                    # included, and the earliest-decided one keeps the component.
+                    logger.warning(
+                        f"⚠️  Match {confirm_id[:8]}... was not accepted: it is "
+                        f"{outcome.match_status} — an accepted transfer already "
+                        "claims the merged pair, and the earlier decision stands"
+                    )
+                warn_transfers_retired(
+                    outcome.transfers_retired, cause=RETIRED_BY_THIS_DECISION
+                )
             if reject_id:
                 svc.set_status(reject_id, status="rejected", actor="cli")
                 logger.info(f"✅ Rejected match {reject_id[:8]}...")

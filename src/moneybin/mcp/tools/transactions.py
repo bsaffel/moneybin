@@ -713,7 +713,12 @@ def transactions_matches_set(
     both of their legs they name the same physical transaction, which would
     double-count it in core.bridge_transfers. Always 0 on a rejection. A non-zero
     count undoes a decision the user made — report it and point at
-    `moneybin audit undo` rather than treating the accept as clean.
+    `system_audit_undo` rather than treating the accept as clean.
+
+    Read `match_status` rather than assuming `status` held: that same pass walks
+    every accepted transfer including this row, so an accept that loses the
+    earliest-decided-first tiebreak comes back `reversed`. The request was
+    refused; the standing transfer keeps the component.
 
     Args:
         match_id: The match decision id (from transactions_matches_pending).
@@ -721,16 +726,29 @@ def transactions_matches_set(
             prevents re-proposal.
     """
     with get_database(read_only=False) as db:
-        retired = MatchingService(db).set_status(match_id, status=status, actor="mcp")
+        outcome = MatchingService(db).set_status(match_id, status=status, actor="mcp")
+    actions = [
+        "Use reviews(kind='matches') to review remaining pending matches",
+        "Run `moneybin transactions matches undo <match_id>` (CLI) to reverse "
+        "an accepted match — there is no MCP undo tool yet",
+    ]
+    if outcome.transfers_retired:
+        # Most urgent first, and ahead of the undo above because that one
+        # reverses this row only: it cannot restore the *other* transfer this
+        # call retired, which is the one the user is about to find missing.
+        actions.insert(
+            0,
+            f"This accept retired {outcome.transfers_retired} previously "
+            "accepted transfer(s) it invalidated — inspect with system_audit(), "
+            "restore with system_audit_undo() if that was wrong",
+        )
     return build_envelope(
         data=MatchSetPayload(
-            match_id=match_id, match_status=status, transfers_retired=retired
+            match_id=match_id,
+            match_status=outcome.match_status,
+            transfers_retired=outcome.transfers_retired,
         ),
-        actions=[
-            "Use reviews(kind='matches') to review remaining pending matches",
-            "Run `moneybin transactions matches undo <match_id>` (CLI) to reverse "
-            "an accepted match — there is no MCP undo tool yet",
-        ],
+        actions=actions,
     )
 
 

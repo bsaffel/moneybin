@@ -761,11 +761,16 @@ class TestRetirementOnDedupAccept:
         """
         _seed_two_transfers_one_pending_edge(db, edge_status="pending")
 
-        retired = MatchingService(db).set_status(
+        outcome = MatchingService(db).set_status(
             "dd_1000000001", status="accepted", actor="cli"
         )
 
-        assert retired == 1
+        assert outcome.transfers_retired == 1
+        # The reconciliation retired a *different* row, so this accept committed
+        # exactly what was asked for. Twin of the stale-accept case below: without
+        # it, an implementation that reported "reversed" whenever anything was
+        # retired would pass that test.
+        assert outcome.match_status == "accepted"
         assert _transfer_statuses(db) == {
             "tx_keep00001": "accepted",
             "tx_drop00001": "reversed",
@@ -781,11 +786,12 @@ class TestRetirementOnDedupAccept:
         """
         _seed_two_transfers_one_pending_edge(db, edge_status="pending")
 
-        retired = MatchingService(db).set_status(
+        outcome = MatchingService(db).set_status(
             "dd_1000000001", status="rejected", actor="cli"
         )
 
-        assert retired == 0
+        assert outcome.transfers_retired == 0
+        assert outcome.match_status == "rejected"
         assert _transfer_statuses(db) == {
             "tx_keep00001": "accepted",
             "tx_drop00001": "accepted",
@@ -853,12 +859,51 @@ class TestRetirementOnDedupAccept:
             """  # noqa: S608 — test input, not user data
         )
 
-        retired = MatchingService(db).set_status(
+        outcome = MatchingService(db).set_status(
             "tx_stale00001", status="accepted", actor="cli"
         )
 
-        assert retired == 1
+        assert outcome.transfers_retired == 1
+        # The row this call asked to accept is the one the reconciliation
+        # reversed. Echoing the requested status here reports the opposite of
+        # what committed, and both surfaces print it as a success.
+        assert outcome.match_status == "reversed"
         assert _transfer_statuses(db) == {
             "tx_keep00001": "accepted",
             "tx_stale00001": "reversed",
+        }
+
+
+class TestPartialMatchRunDisclosure:
+    """A run that dies after the reconciliation still owes its retirement count.
+
+    The reversals commit individually and land before Tier 4, so a Tier 4 failure
+    leaves them durable while ``run()`` returns nothing. That count is the whole
+    disclosure — a decision the user made has been undone — so it has to survive
+    the exception that swallowed the result. Its clean-run twin is the existing
+    pass that asserts the same count off a returned ``MatchResult``.
+    """
+
+    def test_a_tier_4_failure_still_reports_the_transfers_already_reversed(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tier 4 raises after a real reversal has already committed."""
+        from moneybin.matching.engine import MatchRunError
+
+        _seed_two_transfers_one_pending_edge(db, edge_status="accepted")
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("tier 4 boom")
+
+        monkeypatch.setattr(TransactionMatcher, "_run_transfer_tier", _boom)
+
+        with pytest.raises(MatchRunError) as excinfo:
+            TransactionMatcher(db, MatchingSettings(), table="main._test_unioned").run()
+
+        assert excinfo.value.transfers_retired == 1
+        assert str(excinfo.value) == "tier 4 boom"
+        # The reversal is durable: the wrapper reports it, it does not undo it.
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_drop00001": "reversed",
         }

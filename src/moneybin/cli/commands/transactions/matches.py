@@ -195,11 +195,21 @@ def matches_set(
         raise typer.Exit(2)
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            retired = MatchingService(db).set_status(
+            outcome = MatchingService(db).set_status(
                 match_id, status=status, actor="cli"
             )
-    logger.info(f"✅ Set match {match_id[:8]}... to {status}")
-    warn_transfers_retired(retired, cause=RETIRED_BY_THIS_DECISION)
+    if outcome.match_status == status:
+        logger.info(f"✅ Set match {match_id[:8]}... to {status}")
+    else:
+        # The reconciliation this accept triggered reversed this very row. A ✅
+        # here would report the opposite of what committed, and the count-shaped
+        # warning below would not contradict it.
+        logger.warning(
+            f"⚠️  Match {match_id[:8]}... was not {status}: it is "
+            f"{outcome.match_status} — an accepted transfer already claims the "
+            "merged pair, and the earlier decision stands"
+        )
+    warn_transfers_retired(outcome.transfers_retired, cause=RETIRED_BY_THIS_DECISION)
 
 
 @app.command("backfill")

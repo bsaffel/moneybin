@@ -645,6 +645,17 @@ Guard-2 free-text resolution):
   claims a component another transfer holds. Earliest-decided-first means the
   standing decision wins and the stale accept is the one reversed.
 
+  **So an accept can reverse itself, and the surfaces report the committed
+  status rather than the requested one.** The reconciliation walks every
+  accepted transfer including the row `set_status` just wrote, inside the same
+  transaction; when that row loses the tiebreak it commits as `reversed`. The
+  requested status is therefore the one value that cannot describe the outcome,
+  so `set_status` re-reads the row and returns `MatchDecisionOutcome`
+  (`match_status`, `transfers_retired`). `transactions_matches_set` puts that
+  field in `data.match_status`; `transactions matches set` and
+  `review --confirm` print a refusal instead of a success mark. A count-shaped
+  warning alone does not correct a "✅ accepted" line printed above it.
+
   Components here are built from **accepted dedup edges only**, which is
   narrower than the accepted+pending graph the matcher seeds union-find with
   and the review queue clusters by. Those two want the *prospective* shape —
@@ -683,8 +694,17 @@ Guard-2 free-text resolution):
   matcher, so `refresh`'s count would omit it.
 
   A **partially failed pass reports as partial**, and the two halves fail
-  independently. `RefreshResult.matching_error` means no duplicates were
-  proposed at all. `RefreshResult.error` means matching succeeded — the
+  independently. `RefreshResult.matching_error` means the proposals are
+  incomplete — but not that nothing happened. The matcher wraps no transaction
+  around the run and the reconciliation commits each reversal as it goes, so a
+  failure anywhere after it leaves those reversals durable. `TransactionMatcher`
+  raises `MatchRunError` carrying `transfers_retired`, and `refresh` takes the
+  count off the exception: a dropped count would report a decision the user made
+  as untouched when it has in fact been undone. Catching it before the
+  first-load `CatalogException` branch is part of the same rule — a *late*
+  catalog failure is not a skipped match step, and calling it one claims nothing
+  was examined after the tiers had already written decisions.
+  `RefreshResult.error` means matching succeeded — the
   decisions are written and the counts are true — but the SQLMesh apply did
   not, so `core.dim_accounts` was never rebuilt and still lists both accounts.
   Reporting the counts alone there would describe a collapse the user cannot

@@ -9,6 +9,7 @@ Exposes ``run``, ``seed_priority``, ``undo``, ``get_log``, and
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import duckdb
@@ -48,6 +49,22 @@ PENDING_MATCHES_HINT = (
 )
 
 _SETTABLE_STATUSES: frozenset[str] = frozenset({"accepted", "rejected"})
+
+
+@dataclass(frozen=True)
+class MatchDecisionOutcome:
+    """What :meth:`MatchingService.set_status` actually committed.
+
+    ``match_status`` is re-read after the reconciliation rather than echoed from
+    the request, because accepting a match runs a pass over *every* accepted
+    transfer — including the row just written. When that row loses the
+    earliest-decided-first tiebreak it is reversed inside the same transaction,
+    so the requested status is the one value that cannot be trusted to describe
+    the outcome. Surfaces report this field, never their own argument.
+    """
+
+    match_status: str
+    transfers_retired: int
 
 
 def _non_pending_recovery(
@@ -183,7 +200,7 @@ class MatchingService:
         status: str,
         decided_by: str = "user",
         actor: str = "system",
-    ) -> int:
+    ) -> MatchDecisionOutcome:
         """Accept or reject one pending match decision by id (audited via repo).
 
         Validates the transition: only a ``pending`` decision may move to
@@ -193,12 +210,16 @@ class MatchingService:
         (``user``/``system``); ``actor`` is the audit surface (``cli``/``mcp``,
         default ``"system"``).
 
-        Returns the number of accepted transfers this acceptance invalidated and
-        therefore reversed — see
+        ``transfers_retired`` counts the accepted transfers this acceptance
+        invalidated and therefore reversed — see
         :func:`~moneybin.matching.reconciliation.retire_transfers_invalidated_by_dedup`.
         Zero on a rejection and on the idempotent no-op: neither collapses
         anything, so neither can invalidate a transfer. Surfaces are expected to
         report a non-zero count rather than swallow it.
+
+        ``match_status`` is what committed, which is not always ``status``: that
+        same reconciliation can reverse *this* row when it loses the
+        earliest-decided-first tiebreak against a standing transfer.
         """
         if status not in _SETTABLE_STATUSES:
             raise UserError(
@@ -221,6 +242,7 @@ class MatchingService:
         # retirements it forces commit together or not at all — a crash between
         # them would otherwise leave exactly the corrupt bridge it prevents.
         retired = 0
+        committed_status = status
         self._db.begin()
         try:
             current = get_match_decision(self._db, match_id)
@@ -284,12 +306,31 @@ class MatchingService:
                         actor=actor,
                         in_outer_txn=True,
                     )
+                    # That pass walks every accepted transfer, this row
+                    # included, so it can have reversed the acceptance written
+                    # two lines up. Re-read rather than echo `status`: this is
+                    # the only branch where the two can differ, and reporting
+                    # the request here tells the caller the opposite of what
+                    # committed.
+                    committed_status = self._read_status(match_id)
             # current_status == status falls through as an idempotent no-op.
             self._db.commit()
         except BaseException:
             self._db.rollback()
             raise
-        return retired
+        return MatchDecisionOutcome(
+            match_status=committed_status, transfers_retired=retired
+        )
+
+    def _read_status(self, match_id: str) -> str:
+        """Current ``match_status`` for ``match_id``, read inside the caller's txn."""
+        row = get_match_decision(self._db, match_id)
+        if row is None:  # pragma: no cover — the caller just wrote this row
+            raise UserError(
+                f"No match decision found for id {match_id!r}.",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        return str(row["match_status"])
 
     def _compute_component_keys(self) -> dict[tuple[str, str, str], str]:
         """Build a map from (account_id, source_type, stid) to component_key.

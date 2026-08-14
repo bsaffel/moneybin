@@ -89,6 +89,26 @@ class MatchResult:
         return ", ".join(parts)
 
 
+class MatchRunError(Exception):
+    """A run that raised after the reconciliation had already reversed transfers.
+
+    The matcher opens no transaction around the run, and the reconciliation
+    commits each reversal as it goes, so those reversals are durable by the time
+    anything downstream of them can fail. Without this carrier the partial result
+    dies with the exception and the caller reports zero — describing a decision
+    the user made as untouched when it has in fact been undone.
+
+    It also keeps a *late* ``CatalogException`` from being read as the first-load
+    "views not built yet" precondition: that classification claims nothing was
+    examined, which stops being true the moment the dedup tiers write a decision.
+    """
+
+    def __init__(self, cause: BaseException, *, transfers_retired: int) -> None:
+        """Wrap ``cause``, carrying the reversals that had already committed."""
+        super().__init__(str(cause))
+        self.transfers_retired = transfers_retired
+
+
 @dataclass
 class _DedupDecisions:
     """Projections derived from a single active-dedup-decisions query."""
@@ -192,22 +212,31 @@ class TransactionMatcher:
             self._db, decisions=self._decisions, actor=self._actor
         )
 
-        # Tier 4: transfer detection (runs after dedup).
-        # Exclude transactions in active transfers AND the non-primary side of
-        # each dedup group. Without this, duplicate source rows (e.g., csv_chk1
-        # and ofx_chk1 both deduped) can each form separate transfer proposals
-        # that resolve to the same merged transaction pair in bridge_transfers.
-        # Re-query after tiers so decisions created in this run are included.
-        transfer_excluded = self._get_transfer_matched_ids()
-        transfer_excluded |= self._fetch_active_dedup_decisions().secondary_ids
-        rejected_transfer = get_rejected_pairs(self._db, match_type="transfer")
+        # Everything past the reconciliation runs under this guard: the
+        # reversals above are committed and destructive, so an exception that
+        # discards `result` would take the only record of them with it.
+        try:
+            # Tier 4: transfer detection (runs after dedup).
+            # Exclude transactions in active transfers AND the non-primary side
+            # of each dedup group. Without this, duplicate source rows (e.g.,
+            # csv_chk1 and ofx_chk1 both deduped) can each form separate transfer
+            # proposals that resolve to the same merged transaction pair in
+            # bridge_transfers. Re-query after tiers so decisions created in this
+            # run are included.
+            transfer_excluded = self._get_transfer_matched_ids()
+            transfer_excluded |= self._fetch_active_dedup_decisions().secondary_ids
+            rejected_transfer = get_rejected_pairs(self._db, match_type="transfer")
 
-        self._run_transfer_tier(
-            excluded_ids=transfer_excluded,
-            rejected_pairs=rejected_transfer,
-            result=result,
-            auto_accept=auto_accept_transfers,
-        )
+            self._run_transfer_tier(
+                excluded_ids=transfer_excluded,
+                rejected_pairs=rejected_transfer,
+                result=result,
+                auto_accept=auto_accept_transfers,
+            )
+        except Exception as exc:
+            raise MatchRunError(
+                exc, transfers_retired=result.transfers_retired
+            ) from exc
 
         return result
 

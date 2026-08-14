@@ -221,8 +221,8 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
         logger.warning(
             "⚠️  Re-match after the merge stopped partway, so its counts are "
             "incomplete and some duplicates may already have been merged; "
-            "re-run 'moneybin refresh', then check 'moneybin reviews' and "
-            "'moneybin audit'"
+            "re-run 'moneybin refresh', then check "
+            "'moneybin review --type matches' and 'moneybin system audit list'"
         )
     else:
         merged = rematch.matches_auto_merged
@@ -243,8 +243,8 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
                 logger.info(f"  💡 {PENDING_MATCHES_HINT}")
             if transfers:
                 logger.info(
-                    "  💡 Review possible transfers with 'moneybin reviews' "
-                    "(kind: matches)"
+                    "  💡 Review possible transfers with "
+                    "'moneybin review --type matches'"
                 )
     # Independent of every branch above: this is a decision the *user* made being
     # undone, so it must be stated whether or not the pass was otherwise clean,

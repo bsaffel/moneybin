@@ -43,7 +43,7 @@ def refresh_run(
     ``matches_pending_review`` / ``matches_pending_transfers`` (queued for the
     user), and ``transfers_retired`` (transfers the user had accepted that a
     dedup collapse invalidated, reversed — report these and point at
-    ``moneybin audit undo``, since they undo a decision of the user's). Read all
+    ``system_audit_undo``, since they undo a decision of the user's). Read all
     four against ``matching_skipped``: when it is true the step could not run and
     the counts are zero because nothing was examined, so "no duplicates found"
     is not a claim they support.

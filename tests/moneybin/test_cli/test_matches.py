@@ -1,8 +1,10 @@
 """Tests for matches CLI commands."""
 
 import json
+import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.transactions.matches import app
@@ -123,6 +125,68 @@ class TestMatchesPending:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["matches"][0]["component_key"] == "csv|t1"
+
+
+class TestMatchesSet:
+    """The confirmation must name the status that committed, not the requested one.
+
+    Accepting a match runs the transfer reconciliation, which walks every
+    accepted transfer including the row this call just wrote. When that row
+    loses the earliest-decided-first tiebreak it is reversed inside the same
+    transaction, so the requested status is the one thing that cannot be trusted
+    to describe the outcome.
+    """
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.set_status")
+    def test_set_confirms_an_accept_that_committed(
+        self,
+        mock_set_status: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from moneybin.services.matching_service import MatchDecisionOutcome
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set_status.return_value = MatchDecisionOutcome(
+            match_status="accepted", transfers_retired=0
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["set", "dd_100000001", "--status", "accepted"])
+
+        assert result.exit_code == 0
+        assert any("✅" in m for m in caplog.messages)
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.set_status")
+    def test_set_does_not_claim_success_when_the_accept_was_reversed(
+        self,
+        mock_set_status: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Twin of the case above, decided against the caller.
+
+        A ✅ here tells the user their request landed when the committed row says
+        the opposite, and the generic retirement warning that follows names a
+        count rather than this decision — so nothing on screen contradicts it.
+        """
+        from moneybin.services.matching_service import MatchDecisionOutcome
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set_status.return_value = MatchDecisionOutcome(
+            match_status="reversed", transfers_retired=1
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(
+                app, ["set", "tx_stale00001", "--status", "accepted"]
+            )
+
+        assert result.exit_code == 0
+        assert not any("✅" in m for m in caplog.messages)
+        assert any("reversed" in m for m in caplog.messages)
 
 
 class TestMatchesUndo:
