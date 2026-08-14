@@ -715,9 +715,9 @@ def _schema_doc(db: Database) -> dict[str, Any]:
     """Build the document from a connection the caller already holds.
 
     Split out for `build_live_catalog`, which needs the curated names and the
-    relation rows to come from one snapshot. Read across two connections, a
-    seed view created between them is listed uncurated while the curated entry
-    `sql_schema(table=...)` answers with already exists.
+    relation rows to come from one snapshot. Across two connections, a seed
+    view created between them is listed as uncurated even though
+    `sql_schema(table=...)` already answers it with a curated entry.
     """
     interface_names = [t.full_name for t in INTERFACE_TABLES]
     placeholders = ",".join(["?"] * len(interface_names))
