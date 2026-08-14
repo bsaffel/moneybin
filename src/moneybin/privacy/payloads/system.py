@@ -275,6 +275,32 @@ class SystemStatusDatabaseConnectionsInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class SystemStatusBuildInfo:
+    """Which build of MoneyBin this server process is actually running.
+
+    Operations metadata, not user data: a version string and a commit id
+    describe the software, not the ledger. Classified RECORD_ID (LOW) on that
+    basis — see `.claude/rules/security.md`, "Operations metadata is judged by
+    disclosure, not by column class".
+
+    Load-bearing because a stdio MCP server is pinned to whatever the checkout
+    held when it started. A caller who cannot name the build cannot distinguish
+    a stale process from a real defect, and will attribute one to the other.
+    """
+
+    # AGGREGATE rather than RECORD_ID to match every registry column named
+    # ``version``; the registry-sync guard cross-checks payload fields by name,
+    # and two classes for one column name is the drift it exists to catch.
+    version: Annotated[str, DataClass.AGGREGATE]
+    # The version alone cannot identify a build — it reads the same on every
+    # commit between releases. ``revision`` is what actually separates two
+    # servers started days apart. None when running from an installed wheel,
+    # which has no repository to interrogate. RECORD_ID because a commit id is
+    # exactly that: an opaque surrogate, with no registry column to match.
+    revision: Annotated[str | None, DataClass.RECORD_ID]
+
+
+@dataclass(frozen=True, slots=True)
 class SystemStatusPayload:
     """Payload for ``system_status`` — data inventory snapshot."""
 
@@ -292,6 +318,10 @@ class SystemStatusPayload:
     # the degraded "database locked" path (it reads the lock file + lsof, no DB
     # connection required).
     database_connections: SystemStatusDatabaseConnectionsInfo
+    # Same contract as database_connections, and for the same reason: it needs
+    # no DB connection, and the degraded path is exactly when a caller most
+    # needs to know which build produced the answer.
+    build: SystemStatusBuildInfo
 
 
 # ---------------------------------------------------------------------------

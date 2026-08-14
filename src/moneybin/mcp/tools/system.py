@@ -8,8 +8,10 @@ import inspect
 import json
 import logging
 import os
+import subprocess  # noqa: S404 — subprocess used for git rev-parse; static args only
 from collections.abc import Callable
 from datetime import datetime
+from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
@@ -49,6 +51,7 @@ from moneybin.privacy.payloads.system import (
     SystemDoctorPayload,
     SystemStatusAccountLinksInfo,
     SystemStatusAccountsInfo,
+    SystemStatusBuildInfo,
     SystemStatusCategorizationInfo,
     SystemStatusCoarsePayload,
     SystemStatusDatabaseConnectionsInfo,
@@ -280,6 +283,50 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     return {"writers": writers, "readers": readers}
 
 
+#: Bound on the `git rev-parse` probe. Generous for a local repository read;
+#: it exists so a wedged git can never delay server import indefinitely.
+_GIT_REVISION_TIMEOUT_SECONDS = 5.0
+
+
+def _read_git_revision(root: Path) -> str | None:
+    """Return the commit ``root`` is checked out at, or None if it is not a repo.
+
+    Delegates to ``git`` rather than parsing ``.git`` by hand: a linked worktree
+    stores a *file* there pointing elsewhere, and a branch tip may live in
+    ``packed-refs`` rather than as a loose ref. Both are cases this project
+    actually runs in, and both are ones a hand-rolled reader gets wrong.
+    """
+    try:
+        completed = subprocess.run(  # noqa: S603 — git with static args
+            ["git", "-C", str(root), "rev-parse", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=_GIT_REVISION_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # No git on PATH, or it failed to launch. An unknown revision is a
+        # perfectly good answer here; a broken system_status is not.
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+#: Resolved once at import — that is, at server boot — rather than per call.
+#: The whole point of reporting a revision is to name the code this process
+#: actually loaded, and a checkout can move underneath a long-lived server. A
+#: per-call read would then report the *new* commit while still running the old
+#: code, which is worse than reporting nothing: it would corroborate exactly the
+#: wrong conclusion.
+_REVISION: str | None = _read_git_revision(Path(__file__).resolve().parent)
+
+
+def _build_info() -> SystemStatusBuildInfo:
+    """Name the build this process is running."""
+    return SystemStatusBuildInfo(version=version("moneybin"), revision=_REVISION)
+
+
 def _locked_status_envelope(
     db_connections: SystemStatusDatabaseConnectionsInfo,
 ) -> ResponseEnvelope[SystemStatusPayload]:
@@ -311,6 +358,7 @@ def _locked_status_envelope(
                 total_connections=0, by_status={}, needs_attention=[]
             ),
             database_connections=db_connections,
+            build=_build_info(),
         ),
         degraded=True,
         degraded_reason=(
@@ -331,6 +379,9 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     needs user attention before suggesting any analytical query. The
     ``gsheet`` block summarizes Google Sheets connection health: drift-detected
     connections surface a paired ``gsheet_reconnect`` hint in ``actions[]``.
+    The ``build`` block names the package version and source revision this
+    server is running: cite it before concluding that any MCP behaviour
+    contradicts the code, because a long-running server can predate it.
     """
     from moneybin.config import get_settings
     from moneybin.database import DatabaseLockError, get_database
@@ -445,6 +496,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
                 ],
             ),
             database_connections=db_connections,
+            build=_build_info(),
         ),
         actions=actions,
     )
