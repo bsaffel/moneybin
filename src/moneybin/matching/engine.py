@@ -47,6 +47,7 @@ from moneybin.metrics.registry import (
     TRANSFER_MATCHES_PROPOSED,
     TRANSFER_PAIRS_SCORED,
 )
+from moneybin.tables import MATCH_DECISIONS
 
 logger = logging.getLogger(__name__)
 
@@ -426,14 +427,14 @@ class TransactionMatcher:
         account-scoped IDs repeat across different source types.
         """
         rows = self._db.execute(
-            """
+            f"""
             SELECT source_transaction_id_a, source_type_a, account_id,
                    source_transaction_id_b, source_type_b, account_id_b
-            FROM app.match_decisions
+            FROM {MATCH_DECISIONS.full_name}
             WHERE match_status IN ('accepted', 'pending')
               AND reversed_at IS NULL
               AND match_type = 'transfer'
-            """
+            """  # noqa: S608 — TableRef constant; no interpolated values
         ).fetchall()
         ids: set[tuple[str, str, str]] = set()
         for row in rows:

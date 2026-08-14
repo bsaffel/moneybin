@@ -908,6 +908,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wording that said "this decision invalidated" asserted a cause the number
   does not carry. The notices now report what was reversed and leave the cause
   to the audit log.
+
+  A retirement now survives the crash that follows it. The reconciliation
+  commits its reversals as it goes, so a later transfer-tier failure leaves them
+  on disk — which is why the error carries the count. Only `refresh` read it:
+  `transactions_matches_run`, `moneybin transactions matches run`, and `matches
+  backfill` let the exception through, and the sole record that a decision the
+  user made had been undone died with it. All three now report the count and the
+  way back before failing. `refresh_run` had the opposite half of the same gap —
+  it reported the count with no action beside it — so the surface most users
+  reach the reconciliation through named the reversal without naming the
+  restore. Both halves now match what the accept path already did.
 - **An accepted merge no longer strands the match decisions made under the old
   account, which could silently reverse a rejection.** Accepting a link
   re-points `app.account_links`, but a row in `app.match_decisions` stores the

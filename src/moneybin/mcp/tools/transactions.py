@@ -30,7 +30,7 @@ from pydantic import BeforeValidator, Field, JsonValue
 from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
@@ -866,8 +866,36 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
     not read `auto_merged=0` as "nothing changed". A non-zero count undoes a
     decision the user made: report it and point at `system_audit_undo`.
     """
+    from moneybin.matching.engine import MatchRunError  # noqa: PLC0415 — cycle
+
     with get_database(read_only=False) as db:
-        result = MatchingService(db).run(actor="mcp")
+        try:
+            result = MatchingService(db).run(actor="mcp")
+        except MatchRunError as exc:
+            if not exc.transfers_retired:
+                raise
+            # The reconciliation commits before the tiers that can fail, so this
+            # exception is the only thing that still knows a decision the user
+            # made was undone. Letting it through as a bare crash loses that —
+            # and an agent cannot see the reversal any other way.
+            raise UserError(
+                f"Matching failed after reversing {exc.transfers_retired} "
+                f"previously accepted transfer(s): {exc}",
+                code=error_codes.REFRESH_MATCH_FAILED,
+                recovery_actions=[
+                    RecoveryAction(
+                        tool="system_audit",
+                        arguments={},
+                        rationale=(
+                            "The run reversed accepted transfers before it "
+                            "failed; list the operation to see what it undid "
+                            "and restore it with system_audit_undo."
+                        ),
+                        confidence="suggested",
+                        idempotent=True,
+                    )
+                ],
+            ) from exc
     actions = ["Use reviews(kind='matches') to review proposed matches"]
     if result.transfers_retired:
         # Ahead of the review hint: that one is routine housekeeping, this one

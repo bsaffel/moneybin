@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from typing import Any, Literal, get_args
 
 from moneybin.database import Database
+from moneybin.tables import MATCH_DECISIONS
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def get_active_matches(
         params.append(match_type)
     rows = db.execute(
         f"""
-        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         {where}
         ORDER BY decided_at DESC
         """,  # noqa: S608 — match_type validated above
@@ -92,7 +93,7 @@ def get_pending_matches(
         params.append(limit)
     rows = db.execute(
         f"""
-        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         {where}
         ORDER BY confidence_score DESC
         {limit_clause}
@@ -106,7 +107,7 @@ def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
     """Return one match decision by id, or None if absent."""
     row = db.execute(
         f"""
-        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         WHERE match_id = ?
         """,  # noqa: S608 — column list is a module constant, not user input
         [match_id],
@@ -130,7 +131,7 @@ def count_matches_with_status(
     placeholders = ", ".join("?" for _ in match_ids)
     row = db.execute(
         f"""
-        SELECT COUNT(*) FROM app.match_decisions
+        SELECT COUNT(*) FROM {MATCH_DECISIONS.full_name}
         WHERE match_status = ? AND match_id IN ({placeholders})
         """,  # noqa: S608 — placeholders are '?' literals; every value is parameterized
         [status, *match_ids],
@@ -166,7 +167,7 @@ def get_active_dedup_edges(
         SELECT source_type_a, source_transaction_id_a,
                source_type_b, source_transaction_id_b,
                account_id
-        FROM app.match_decisions
+        FROM {MATCH_DECISIONS.full_name}
         WHERE match_type = 'dedup'
           AND match_status IN ({placeholders})
           AND reversed_at IS NULL
@@ -190,14 +191,14 @@ def get_rejected_pairs(
 ) -> list[dict[str, Any]]:
     """Return rejected pair keys to avoid re-proposing them."""
     rows = db.execute(
-        """
+        f"""
         SELECT source_type_a, source_transaction_id_a, source_origin_a,
                source_type_b, source_transaction_id_b, source_origin_b,
                account_id, account_id_b
-        FROM app.match_decisions
+        FROM {MATCH_DECISIONS.full_name}
         WHERE match_status = 'rejected'
           AND match_type = ?
-        """,
+        """,  # noqa: S608 — TableRef constant; match_type is parameterized
         [match_type],
     ).fetchall()
     columns = [
@@ -235,7 +236,7 @@ def get_match_log(
         params.append(limit)
     rows = db.execute(
         f"""
-        SELECT {_MATCH_DECISION_SELECT} FROM app.match_decisions
+        SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         {where}
         ORDER BY decided_at DESC, match_id DESC
         {limit_clause}

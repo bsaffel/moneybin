@@ -420,6 +420,34 @@ async def test_matches_run_omits_the_retirement_action_when_none_retired(
 
 
 @pytest.mark.unit
+@patch("moneybin.mcp.tools.transactions.get_database")
+@patch("moneybin.services.matching_service.MatchingService.run")
+async def test_matches_run_discloses_a_retirement_that_outlived_a_crash(
+    mock_run: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """A crashed run still owes the agent the reversals it already committed.
+
+    ``MatchRunError`` carries the count precisely because the reconciliation
+    commits before the tiers that can fail. ``refresh()`` was its only reader,
+    so this tool raised a bare error and the one record of an undone user
+    decision died with it — the outcome an agent is least able to notice.
+    """
+    from moneybin.errors import UserError
+    from moneybin.matching.engine import MatchRunError
+
+    mock_run.side_effect = MatchRunError(
+        RuntimeError("transfer tier failed"), transfers_retired=2
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        transactions_matches_run()
+
+    assert "2" in str(excinfo.value), "the failure hid how many transfers it reversed"
+    tools = {a.tool for a in excinfo.value.recovery_actions or []}
+    assert "system_audit" in tools, f"no recovery action reaches the audit: {tools}"
+
+
+@pytest.mark.unit
 async def test_standard_registrar_has_no_review_aliases() -> None:
     srv = FastMCP("test")
     register_transactions_tools(srv)

@@ -82,6 +82,35 @@ class TestMatchesRun:
         assert result.exit_code == 0
         assert caplog.messages == []
 
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_run_discloses_a_retirement_that_outlived_a_crash(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A failed run still owes the user the reversals it already committed.
+
+        The reconciliation commits as it goes, so a later tier crash leaves them
+        behind — which is why ``MatchRunError`` carries the count at all. Only
+        ``refresh()`` was reading it; this command let the exception through and
+        took the sole record of a destructive, user-visible change with it.
+        """
+        from moneybin.matching.engine import MatchRunError
+
+        mock_get_db.return_value = MagicMock()
+        mock_run.side_effect = MatchRunError(
+            RuntimeError("transfer tier failed"), transfers_retired=2
+        )
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
+            result = runner.invoke(app, ["run", "--skip-transform"])
+
+        assert result.exit_code != 0, "a crashed run must not report success"
+        assert caplog.messages, "the crash swallowed the retirement disclosure"
+        assert "2" in caplog.messages[-1]
+
 
 class TestMatchesBackfill:
     """Tests for the matches backfill command."""
@@ -112,6 +141,36 @@ class TestMatchesBackfill:
 
         assert result.exit_code == 0
         assert caplog.messages, "the backfill never disclosed the retirement"
+        assert "2" in caplog.messages[-1]
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.run")
+    def test_backfill_discloses_a_retirement_that_outlived_a_crash(
+        self,
+        mock_run: MagicMock,
+        mock_get_db: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The backfill's own twin of the crash gap above.
+
+        Separate test for the same reason the success pair is separate: the two
+        commands catch independently, so one can regain the disclosure while the
+        other loses it.
+        """
+        from moneybin.matching.engine import MatchRunError
+
+        mock_db = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = mock_db
+        mock_db.execute.return_value.fetchone.return_value = (0,)
+        mock_run.side_effect = MatchRunError(
+            RuntimeError("transfer tier failed"), transfers_retired=2
+        )
+
+        with caplog.at_level(logging.WARNING, logger="moneybin.cli.utils"):
+            result = runner.invoke(app, ["backfill", "--skip-transform"])
+
+        assert result.exit_code != 0, "a crashed backfill must not report success"
+        assert caplog.messages, "the crash swallowed the retirement disclosure"
         assert "2" in caplog.messages[-1]
 
 

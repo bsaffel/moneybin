@@ -14,6 +14,7 @@ from moneybin.cli.utils import (
     warn_transfers_retired,
 )
 from moneybin.database import get_database
+from moneybin.matching.engine import MatchRunError
 from moneybin.matching.persistence import VALID_MATCH_TYPES
 from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
 from moneybin.tables import INT_TRANSACTIONS_UNIONED
@@ -97,9 +98,18 @@ def matches_run(
     try:
         with handle_cli_errors():
             with get_database(read_only=False) as db:
-                result = MatchingService(db).run(
-                    auto_accept_transfers=auto_accept_transfers, actor="cli"
-                )
+                try:
+                    result = MatchingService(db).run(
+                        auto_accept_transfers=auto_accept_transfers, actor="cli"
+                    )
+                except MatchRunError as exc:
+                    # The reversals committed before whatever failed; this
+                    # exception is the last thing that knows the count. Warn,
+                    # then re-raise so the failure keeps its own presentation.
+                    warn_transfers_retired(
+                        exc.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                    )
+                    raise
                 if result.has_matches:
                     logger.info(f"Matching: {result.summary()}")
                     if result.has_pending:
@@ -242,9 +252,18 @@ def matches_backfill(
                     f"Scanning {total:,} existing transactions for duplicates and transfers..."
                 )
 
-                result = MatchingService(db).run(
-                    auto_accept_transfers=auto_accept_transfers, actor="cli"
-                )
+                try:
+                    result = MatchingService(db).run(
+                        auto_accept_transfers=auto_accept_transfers, actor="cli"
+                    )
+                except MatchRunError as exc:
+                    # Same guard as `run` above, repeated rather than shared:
+                    # the two commands own their own summaries, and a helper
+                    # here would hide which one lost the disclosure.
+                    warn_transfers_retired(
+                        exc.transfers_retired, cause=RETIRED_SIDES_COLLAPSED
+                    )
+                    raise
 
                 logger.info(f"Backfill complete: {result.summary()}")
                 if result.has_pending:
