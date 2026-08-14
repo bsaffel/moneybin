@@ -103,7 +103,10 @@ def _confirmation_timed_out() -> UserError:
     return UserError(
         "Nobody answered the confirmation prompt in time. Nothing was written.",
         code=error_codes.MUTATION_CONFIRMATION_DECLINED,
-        hint="Ask the user to answer the prompt, then request this operation again.",
+        hint=(
+            "Request this operation again to raise a fresh prompt, then have "
+            "the user answer it."
+        ),
         details={"reason": "timeout"},
     )
 

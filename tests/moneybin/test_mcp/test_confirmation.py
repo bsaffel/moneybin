@@ -449,6 +449,12 @@ async def test_unanswered_elicitation_refuses_without_issuing_a_token(
     assert raised.value.code == error_codes.MUTATION_CONFIRMATION_DECLINED
     assert raised.value.details == {"reason": "timeout"}
     assert broker.issued == []
+    # `wait_for` already cancelled the elicitation, so no dialog is live to
+    # answer. The hint has to order the retry first or it sends the user to a
+    # dead prompt and burns a second wait window before the retry that would
+    # have rendered a fresh one.
+    hint = raised.value.hint or ""
+    assert hint.index("again") < hint.index("answer")
 
 
 @pytest.mark.asyncio
