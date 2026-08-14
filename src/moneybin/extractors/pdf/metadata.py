@@ -45,6 +45,7 @@ _TIMEOUT_SEC = 0.1
 _COMPLETE_ACCOUNT_ID_PATTERN = (
     r"Account\s+Number[:\s]+([\dXx*]{3,}(?:[ -][\dXx*]{3,})*)(?![-\w*])"
 )
+ACCOUNT_ID_MASK_CHARACTERS = frozenset("*Xx•●")
 
 DEFAULT_ANCHORS: dict[str, list[str]] = {
     "account_id": [
@@ -167,7 +168,7 @@ def capture_metadata(
         account_id_complete=(
             account_id_pattern == _COMPLETE_ACCOUNT_ID_PATTERN
             and account_id is not None
-            and not any(char in "*Xx•●" for char in account_id)
+            and not any(char in ACCOUNT_ID_MASK_CHARACTERS for char in account_id)
         ),
     )
 

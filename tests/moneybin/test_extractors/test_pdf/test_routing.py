@@ -493,6 +493,52 @@ def test_old_bridge_recipe_does_not_gain_unrequested_metadata_fields(
     assert decision.metadata.currency_code is None
 
 
+def test_saved_bridge_recipe_keeps_complete_account_id_review_only(
+    db: Database,
+) -> None:
+    """A saved bridge recipe cannot promote an unmasked identifier to strong evidence."""
+    _save_chase_format(
+        db,
+        recipe={
+            **_valid_recipe_dict(),
+            "metadata_anchors": _legacy_default_metadata_anchors(),
+        },
+        source="bridge",
+    )
+    text_lines = [
+        line.replace("Account Number: 1234", "Account Number: 123456789")
+        for line in _standard_text_lines()
+    ]
+    doc = _make_doc(text_lines=text_lines, tables=[_standard_table()])
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.metadata.account_id == "123456789"
+    assert decision.metadata.account_id_complete is False
+
+
+def test_saved_detected_recipe_can_prove_complete_account_id(db: Database) -> None:
+    """A deterministic saved recipe can still promote an unmasked identifier."""
+    _save_chase_format(
+        db,
+        recipe={
+            **_valid_recipe_dict(),
+            "metadata_anchors": _legacy_default_metadata_anchors(),
+        },
+    )
+    text_lines = [
+        line.replace("Account Number: 1234", "Account Number: 123456789")
+        for line in _standard_text_lines()
+    ]
+    doc = _make_doc(text_lines=text_lines, tables=[_standard_table()])
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.metadata.account_id_complete is True
+
+
 # ---------------------------------------------------------------------------
 # Additional: metadata_incomplete on seed path preserves metadata fields
 # ---------------------------------------------------------------------------
@@ -574,6 +620,22 @@ def test_forced_recipe_reconciles_routes_to_transactions(db: Database) -> None:
     assert decision.replay_guard_failed is False
     assert len(decision.rows) > 0
     assert decision.fp is not None
+
+
+def test_forced_recipe_keeps_complete_account_id_review_only(db: Database) -> None:
+    """A first-contact bridge recipe cannot promote an unmasked identifier."""
+    recipe = Recipe.model_validate(_valid_recipe_dict())
+    text_lines = [
+        line.replace("Account Number: 1234", "Account Number: 123456789")
+        for line in _standard_text_lines()
+    ]
+    doc = _make_doc(text_lines=text_lines, tables=[_standard_table()])
+
+    decision = route_forced_recipe(doc, recipe)
+
+    assert decision.outcome == "transactions"
+    assert decision.metadata.account_id == "123456789"
+    assert decision.metadata.account_id_complete is False
 
 
 def test_forced_recipe_does_not_emit_replay_metrics(db: Database) -> None:

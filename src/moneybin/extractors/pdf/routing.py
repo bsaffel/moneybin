@@ -937,6 +937,8 @@ def _run_recipe_pipeline(
     if use_recipe_anchors:
         anchors_dict = _replay_metadata_anchors(recipe, recipe_origin)
     metadata = capture_metadata(document_text, anchors=anchors_dict)
+    if recipe_source == "bridge" or recipe_origin == "bridge":
+        metadata = replace(metadata, account_id_complete=False)
 
     if not metadata.is_complete_for_reconciliation():
         return RouteDecision(

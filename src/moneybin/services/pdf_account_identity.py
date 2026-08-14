@@ -5,11 +5,11 @@ from __future__ import annotations
 import string
 from dataclasses import dataclass
 
+from moneybin.extractors.pdf.metadata import ACCOUNT_ID_MASK_CHARACTERS
 from moneybin.utils import slugify
 
 _DOCUMENT_KEY_HEX_LENGTH = 16
 _ASCII_ALPHANUMERIC = frozenset(string.ascii_letters + string.digits)
-_MASK_CHARACTERS = frozenset("*Xx•●")
 
 
 def _is_valid_aba_routing_number(value: str) -> bool:
@@ -67,7 +67,7 @@ def derive_pdf_account_identity(
         character.upper() for character in stripped if character in _ASCII_ALPHANUMERIC
     )
     is_partial = (
-        any(character in _MASK_CHARACTERS for character in stripped)
+        any(character in ACCOUNT_ID_MASK_CHARACTERS for character in stripped)
         or len(normalized) <= 4
     )
     strong_scope: str | None = issuer_slug if issuer_slug != "unknown" else None
