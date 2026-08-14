@@ -46,7 +46,7 @@ declaration covers.
 
 ### The fence this spec removed
 Before M2O, `sql_query` refused any schema outside `core`/`app`
-(`_ALLOWED_QUERY_SCHEMAS` in `privacy/sql_query.py`). The reason was
+(`ALLOWED_QUERY_SCHEMAS` in `privacy/sql_query.py`). The reason was
 sound: CRITICAL columns (account/routing numbers) are masked by
 resolving each output column's `DataClass`, and only `core`/`app` were in
 the `CLASSIFICATION` registry. An unclassified-schema query hit
@@ -112,7 +112,7 @@ flowchart TD
 
 ### Detailed design
 
-**D1 — Widen the queryable-schema gate.** `_ALLOWED_QUERY_SCHEMAS` grows
+**D1 — Widen the queryable-schema gate.** `ALLOWED_QUERY_SCHEMAS` grows
 from `{core, app}` to `{core, app, reports, raw, prep}`. `meta` and
 `seeds` stay fenced (no consumer need surfaced).
 
@@ -288,7 +288,7 @@ wiring `consent` through, rather than inheriting this behavior by default.
 
 A durable report saved through `reports create` reads the same five schemas
 `sql_query` does: `reports/_framework/derive.py::SAVE_SCHEMAS` equals
-`_ALLOWED_QUERY_SCHEMAS`, asserted as equality against the live constant so
+`ALLOWED_QUERY_SCHEMAS`, asserted as equality against the live constant so
 the two cannot drift. `reports-dynamic.md` deferred this question under
 `SAVE_SCHEMAS`; M2O.2 answers it yes, on three grounds:
 

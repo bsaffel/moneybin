@@ -11,6 +11,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`sql_schema` can name what it does not curate.** Two sets governed the SQL
+  surface and nothing said they were different: `sql_query` reads five schemas
+  (`core`, `app`, `reports`, `raw`, `prep`), while the curated catalog describes
+  only the 35 of 93 `TableRef`s tagged `audience="interface"`. Everything in the
+  gap — every `raw` and `prep` model, the internal `app` tables — was queryable
+  but undiscoverable, and asking `sql_schema` for one returned
+  `sql_unknown_table`. That is a false negative on a table that exists and reads
+  fine, and it steers an agent toward correcting the name instead of reaching
+  for `DESCRIBE`.
+
+  `sql_schema(table='<schema>.*')` — for example `table='raw.*'` — now lists one
+  schema's live relations with their `kind` (`table` or `view`) and a `curated`
+  flag. A name that exists but carries no curated entry returns the new
+  `sql_table_not_curated` code, whose hint names `DESCRIBE <table>`; a schema
+  outside the queryable five returns `sql_schema_not_allowed`. Compact-catalog
+  entries gained `kind` for the same reason, and the compact response's
+  `actions` name the `'<schema>.*'` path so the default call reaches it. `table`
+  is matched the way DuckDB resolves an unquoted identifier — case-insensitively
+  — so `'RAW.*'` and `'raw.*'` are one request, and any spelling `sql_query`
+  accepts, `sql_schema` accepts. Every `sql_schema` response now reports
+  `summary.returned_count` as the number of tables it actually returned; the
+  compact catalog and full document previously reported `1` regardless.
+
+  This narrows disclosure rather than widening it. The listing is bounded by the
+  same `ALLOWED_QUERY_SCHEMAS` that gates querying, so it can never name a
+  relation the caller cannot then query and never reaches `meta` or `seeds` —
+  unlike the `SHOW ALL TABLES` catalog route, which does surface their shape. No
+  new tool and no new parameter: the existing `table` argument gained a pattern
+  alongside the `'*'` it already accepted.
 - **`system_status` names the build it is running.** The envelope carries a
   `build` block with the package `version` and the `revision` the source
   checkout was on when the process started (`null` for an installed wheel).

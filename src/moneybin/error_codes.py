@@ -222,6 +222,10 @@ PRICE_FEED_ERROR = "price_feed_error"
 SQL_INVALID_QUERY = "sql_invalid_query"
 SQL_QUERY_ERROR = "sql_query_error"
 SQL_SCHEMA_NOT_ALLOWED = "sql_schema_not_allowed"
+# Distinct from SQL_UNKNOWN_TABLE: the relation exists and `sql_query` reads
+# it, but it carries no `audience="interface"` tag so the curated doc has no
+# entry. The caller's recovery differs — reach for DESCRIBE, not a name fix.
+SQL_TABLE_NOT_CURATED = "sql_table_not_curated"
 SQL_UNKNOWN_TABLE = "sql_unknown_table"
 
 

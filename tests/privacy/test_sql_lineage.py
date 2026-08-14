@@ -41,7 +41,7 @@ from moneybin.privacy.sql_lineage import (
     tables_outside_schemas,
 )
 from moneybin.privacy.sql_query import (
-    _ALLOWED_QUERY_SCHEMAS,  # pyright: ignore[reportPrivateUsage]
+    ALLOWED_QUERY_SCHEMAS,
 )
 from moneybin.privacy.taxonomy import CLASSIFICATION, INTERNAL_CRITICAL, DataClass, Tier
 
@@ -110,10 +110,10 @@ _FENCED_SCHEMAS = ("meta", "seeds")
 def test_the_snapshot_covers_exactly_the_schemas_the_gate_admits(
     populated_db: Database,
 ) -> None:
-    """Set equality against ``_ALLOWED_QUERY_SCHEMAS``, derived — never a literal.
+    """Set equality against ``ALLOWED_QUERY_SCHEMAS``, derived — never a literal.
 
     ``get_current_schema_snapshot``'s ``schema_name IN (…)`` list and
-    ``sql_query._ALLOWED_QUERY_SCHEMAS`` are two hand-maintained copies of one
+    ``sql_query.ALLOWED_QUERY_SCHEMAS`` are two hand-maintained copies of one
     list, and nothing but this test couples them. A schema admitted by the gate
     but missing from the snapshot does NOT fail closed: ``_column_key`` resolves
     against ``snapshot.columns``, so an absent column returns None, the
@@ -131,7 +131,7 @@ def test_the_snapshot_covers_exactly_the_schemas_the_gate_admits(
     a probe table — otherwise the positive half would fail for the wrong reason
     and the negative half would hold vacuously.
     """
-    for schema in sorted(_ALLOWED_QUERY_SCHEMAS) + list(_FENCED_SCHEMAS):
+    for schema in sorted(ALLOWED_QUERY_SCHEMAS) + list(_FENCED_SCHEMAS):
         populated_db.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         populated_db.execute(
             f'CREATE TABLE IF NOT EXISTS "{schema}".snapshot_probe (marker VARCHAR)'  # noqa: S608  # schema names come from a frozenset constant, not user input
@@ -146,7 +146,7 @@ def test_the_snapshot_covers_exactly_the_schemas_the_gate_admits(
     snap = get_current_schema_snapshot(populated_db)
 
     assert {schema for schema, _table, _col in snap.columns} == set(
-        _ALLOWED_QUERY_SCHEMAS
+        ALLOWED_QUERY_SCHEMAS
     )
     assert ("prep", "stg_ofx__accounts", "routing_number") in snap.columns
 
@@ -170,7 +170,7 @@ def test_every_admitted_schema_has_a_declaration_source() -> None:
     declared = {schema for schema, _table in CLASSIFICATION}
     declared |= {schema for schema, _table in reports_class_map()}
 
-    assert declared | _FLOORED_SCHEMAS == set(_ALLOWED_QUERY_SCHEMAS)
+    assert declared | _FLOORED_SCHEMAS == set(ALLOWED_QUERY_SCHEMAS)
     assert {schema for schema, _table in INTERNAL_CRITICAL} == _FLOORED_SCHEMAS
 
 

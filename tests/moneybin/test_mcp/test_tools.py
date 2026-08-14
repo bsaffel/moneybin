@@ -8,6 +8,7 @@ with the FastMCP server is covered by tests/mcp/test_visibility.py.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastmcp import Client, FastMCP
@@ -17,6 +18,7 @@ from moneybin.mcp.surface import ADMITTED_OUTPUT_SCHEMA_NAMES, STANDARD_TOOL_COU
 from moneybin.mcp.tools.accounts import accounts, register_accounts_tools
 from moneybin.mcp.tools.reports import register_reports_tools
 from moneybin.mcp.tools.sql import register_sql_tools, sql_query, sql_schema
+from moneybin.services.schema_catalog import build_live_catalog, build_schema_doc
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -171,3 +173,267 @@ class TestToolRegistration:
         assert parsed["status"] == "error"
         assert parsed["error"]["code"] == "sql_unknown_table"
         assert "core.fct_transactions" in parsed["error"]["details"]["available_tables"]
+
+    @pytest.mark.unit
+    async def test_sql_schema_wildcard_lists_one_schema(self, mcp_db: object) -> None:
+        """table='<schema>.*' enumerates that schema's live relations.
+
+        `raw` holds 21 `TableRef`s and zero `audience="interface"` tags, so the
+        curated catalog cannot see it at all. Before this, the only enumeration
+        was `SHOW ALL TABLES` through `sql_query`, which returned 117 KB on a
+        real profile because DuckDB attaches every column name and type.
+        """
+        result = await sql_schema(table="raw.*")
+        parsed = result.to_dict()
+        assert parsed["status"] != "error"
+        listed = {t["name"] for t in parsed["data"]["tables"]}
+        assert "raw.ofx_institutions" in listed
+        # Name and kind only — the point is that this fits in a context window.
+        assert "columns" not in next(iter(parsed["data"]["tables"]))
+
+    @pytest.mark.unit
+    async def test_sql_schema_wildcard_refuses_a_schema_sql_query_refuses(
+        self, mcp_db: object
+    ) -> None:
+        """Listing must not reach a schema the query gate would refuse."""
+        result = await sql_schema(table="meta.*")
+        parsed = result.to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "sql_schema_not_allowed"
+
+    @pytest.mark.unit
+    async def test_sql_schema_answers_one_schema_question_one_way(
+        self, mcp_db: object
+    ) -> None:
+        """Both spellings of "is this schema queryable" must answer alike.
+
+        `meta.*` refuses with `sql_schema_not_allowed`; an exact name under
+        the same schema used to fall through to `sql_unknown_table` plus a
+        list of curated names, which reads as a typo the agent should fix.
+        The table is not unknown — the schema is fenced, and no spelling of
+        the name gets in.
+        """
+        wildcard = await sql_schema(table="meta.*")
+        exact = await sql_schema(table="meta.model_freshness")
+        assert exact.to_dict()["status"] == "error"
+        assert (
+            exact.to_dict()["error"]["code"]
+            == wildcard.to_dict()["error"]["code"]
+            == "sql_schema_not_allowed"
+        )
+
+    @pytest.mark.unit
+    async def test_sql_schema_unqualified_name_is_unknown_not_refused(
+        self, mcp_db: object
+    ) -> None:
+        """A bare name names no schema, so it is a typo — not a fenced schema.
+
+        The refusal above keys on the schema qualifier, so a name without one
+        must not borrow it: `fct_transactions` is a caller who forgot `core.`,
+        and the recovery is the available-table list, not "that schema is
+        internal."
+        """
+        parsed = (await sql_schema(table="fct_transactions")).to_dict()
+        assert parsed["error"]["code"] == "sql_unknown_table"
+        assert "core.fct_transactions" in parsed["error"]["details"]["available_tables"]
+
+    @pytest.mark.unit
+    async def test_sql_schema_listing_accepts_the_casing_sql_query_accepts(
+        self, mcp_db: object
+    ) -> None:
+        """DuckDB folds unquoted identifiers, so the two surfaces must agree.
+
+        `tables_outside_schemas` already normalizes for `sql_query` — its
+        docstring records refusing `DESCRIBE CORE.dim_accounts` while allowing
+        `SELECT ... FROM CORE.dim_accounts`. Comparing raw casing here brings
+        that same split back on a path whose whole job is answering "is this
+        schema queryable".
+        """
+        upper = await sql_schema(table="RAW.*")
+        lower = await sql_schema(table="raw.*")
+        assert upper.to_dict()["status"] != "error"
+        # The whole payload, not just the name set: the echoed `schema` field
+        # is the one place the two spellings could still disagree, and the
+        # CHANGELOG promises they are one request.
+        assert upper.to_dict()["data"] == lower.to_dict()["data"]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("table", [None, "*", "raw.*", "core.fct_transactions"])
+    async def test_sql_schema_counts_the_tables_it_returns(
+        self, mcp_db: object, table: str | None
+    ) -> None:
+        """One counting rule for every branch, not one per payload shape.
+
+        Each branch answers with a dict wrapping a `tables` list, and
+        `build_envelope`'s shape heuristic reads any dict as a single item. So
+        the compact catalog reported 35 tables as `returned_count: 1`, and the
+        listing reported 21 relations the same way — an agent deciding whether
+        to paginate is told one row came back every time.
+        """
+        payload = (await sql_schema(table=table)).to_dict()
+        assert payload["status"] != "error"
+        expected = len(payload["data"]["tables"])
+        assert payload["summary"]["returned_count"] == expected
+        assert payload["summary"]["total_count"] == expected
+
+    @pytest.mark.unit
+    async def test_sql_schema_listing_builds_no_curated_document_of_its_own(
+        self, mcp_db: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The listing branch reads nothing from the curated doc, so it builds none.
+
+        `build_live_catalog` builds its own copy to derive `curated`, so a
+        `'<schema>.*'` call that also builds one at the top of the dispatch pays
+        for two full catalog builds to answer a question that needs neither.
+        """
+        builds = 0
+
+        def counting_build_schema_doc() -> dict[str, Any]:
+            nonlocal builds
+            builds += 1
+            return build_schema_doc()
+
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.sql.build_schema_doc", counting_build_schema_doc
+        )
+        payload = (await sql_schema(table="raw.*")).to_dict()
+        assert payload["status"] != "error"
+        assert builds == 0
+
+    @pytest.mark.unit
+    async def test_sql_schema_describes_a_relation_curated_after_its_doc_was_read(
+        self, mcp_db: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relation curated after the doc was read is described, not refused.
+
+        The exact-name path reads the curated doc through one connection and
+        the live catalog through another. A runtime `raw.gsheet_<alias>` view
+        materialized between the two is missing from the doc but present in the
+        live catalog with `curated: true`, and the miss path answered
+        `sql_table_not_curated` on name alone -- calling uncurated a relation
+        whose full curated entry an immediate retry returns.
+
+        A first read that omits the table stands in for that window; only the
+        doc is stubbed, so the `curated: true` that drives the branch is the
+        live value the real database reports.
+        """
+        table = "core.fct_transactions"
+        live = next(r for r in build_live_catalog(schema="core") if r["name"] == table)
+        assert live["curated"] is True, "fixture must reach the branch under test"
+
+        reads = 0
+
+        def doc_missing_the_table_on_first_read() -> dict[str, Any]:
+            nonlocal reads
+            reads += 1
+            doc = build_schema_doc()
+            if reads > 1:
+                return doc
+            return {**doc, "tables": [t for t in doc["tables"] if t["name"] != table]}
+
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.sql.build_schema_doc",
+            doc_missing_the_table_on_first_read,
+        )
+        payload = (await sql_schema(table=table)).to_dict()
+        assert payload["status"] != "error"
+        assert [t["name"] for t in payload["data"]["tables"]] == [table]
+
+    @pytest.mark.unit
+    async def test_sql_schema_quotes_an_identifier_its_describe_hint_names(
+        self, mcp_db: object
+    ) -> None:
+        """The advertised recovery has to parse for the name it is advertised for.
+
+        `raw` accepts any relation an operator creates, so a name needing SQL
+        quotes reaches the uncurated refusal like any other. Interpolated bare,
+        it advised `DESCRIBE raw.monthly spend` -- an agent following the hint
+        gets a parse error instead of the columns the refusal promised.
+        """
+        with get_database(read_only=False) as db:
+            db.execute('CREATE VIEW raw."monthly spend" AS SELECT 1 AS n')
+
+        payload = (await sql_schema(table="raw.monthly spend")).to_dict()
+        assert payload["error"]["code"] == "sql_table_not_curated"
+
+        quoted = '"raw"."monthly spend"'
+        assert quoted in payload["error"]["hint"]
+        assert quoted in " ".join(payload["actions"])
+
+    @pytest.mark.unit
+    async def test_sql_schema_describe_hint_names_the_catalog_spelling(
+        self, mcp_db: object
+    ) -> None:
+        """The hint names the relation, not the spelling the caller guessed.
+
+        The refusal is reached case-insensitively, so the caller's casing need
+        not be the catalog's. Echoing the input back hands the agent a name to
+        paste that is not the one the catalog holds.
+        """
+        payload = (await sql_schema(table="RAW.OFX_INSTITUTIONS")).to_dict()
+        assert payload["error"]["code"] == "sql_table_not_curated"
+        assert '"raw"."ofx_institutions"' in payload["error"]["hint"]
+        assert "RAW.OFX_INSTITUTIONS" not in payload["error"]["hint"]
+
+    @pytest.mark.unit
+    async def test_sql_schema_exact_name_is_case_insensitive(
+        self, mcp_db: object
+    ) -> None:
+        """A spelling DuckDB resolves must not change which answer comes back.
+
+        Both halves matter: an uncurated relation keeps `sql_table_not_curated`
+        rather than falling through to "unknown", and a curated one still
+        resolves to its entry instead of being refused as a fenced schema —
+        which is what an uppercase qualifier produced, since the raw string
+        reached the allowlist before anything lowercased it.
+        """
+        uncurated = (await sql_schema(table="RAW.OFX_INSTITUTIONS")).to_dict()
+        assert uncurated["error"]["code"] == "sql_table_not_curated"
+
+        curated = (await sql_schema(table="CORE.FCT_TRANSACTIONS")).to_dict()
+        assert curated["status"] != "error"
+        assert [t["name"] for t in curated["data"]["tables"]] == [
+            "core.fct_transactions"
+        ]
+
+    @pytest.mark.unit
+    async def test_compact_actions_name_the_schema_listing(
+        self, mcp_db: object
+    ) -> None:
+        """The orienting response must name every path it can hand out.
+
+        The compact catalog is the documented default, so a path missing from
+        its `actions` is a path an agent does not know exists — and the
+        fallback it does name (`SHOW ALL TABLES`) is the wider one this
+        listing was added to replace.
+        """
+        actions = (await sql_schema()).to_dict()["actions"]
+        assert any(".*'" in a for a in actions)
+
+    @pytest.mark.unit
+    async def test_sql_schema_does_not_call_a_queryable_table_unknown(
+        self, mcp_db: object
+    ) -> None:
+        """An uncurated relation exists; saying "Unknown table" is a false negative.
+
+        Server instructions point agents at `sql_schema` as *the* schema
+        surface, so "Unknown table: raw.ofx_institutions" reads as "does not
+        exist" when `sql_query` reads that table fine. The refusal has to
+        separate "not in the curated catalog" from "not in the database", and
+        name the path that does work.
+        """
+        result = await sql_schema(table="raw.ofx_institutions")
+        parsed = result.to_dict()
+        assert parsed["error"]["code"] == "sql_table_not_curated"
+        assert parsed["error"]["code"] != "sql_unknown_table"
+        hint = parsed["error"]["hint"] or ""
+        assert "DESCRIBE" in hint
+
+    @pytest.mark.unit
+    async def test_compact_catalog_entries_carry_relation_kind(
+        self, mcp_db: object
+    ) -> None:
+        """The curated view must also say table vs view, not just the live one."""
+        result = await sql_schema()
+        for entry in result.to_dict()["data"]["tables"]:
+            assert entry["kind"] in {"table", "view"}

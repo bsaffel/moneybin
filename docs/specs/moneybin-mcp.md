@@ -98,7 +98,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `exports_set` | `confirmation_token`, `target` | Export-destination target state | Audited write / maximum medium |
 | `refresh_run` | `steps` | Refresh derived state | Audited workflow / maximum medium |
 | `sql_query` | `query` | Operator SQL escape hatch | Read / dynamic / maximum critical / query-derived |
-| `sql_schema` | `table` | Curated SQL schema | Read / dynamic / maximum critical / schema-derived |
+| `sql_schema` | `table` | Curated SQL schema, plus a live relation listing per queryable schema | Read / dynamic / maximum critical / schema-derived |
 
 ### Transaction annotation requests
 
