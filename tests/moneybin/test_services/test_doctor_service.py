@@ -750,12 +750,13 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + dedup_reconciliation + categorization + 29 app.* integrity
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 30 app.* integrity
     # checks (audit coverage for user_categories / category_overrides /
     # gsheet_connections / user_merchants / categorization_rules / proposed_rules /
     # transaction_categories / account_settings / balance_assertions / budgets /
     # tabular_formats / match_decisions / imports / import_previews / pdf_formats /
     # securities / security_price_overrides (M1J.3 C.2) /
+    # exchange_rate_overrides (M1K.2, composite pk_expr) /
     # lot_selections + user_categories uniqueness + user_merchants orphans +
     # proposed_rules->rule FK + transaction_categories->fct FK +
     # account_settings->dim_accounts FK + balance_assertions->dim_accounts FK +
@@ -775,7 +776,7 @@ def test_run_all_returns_expected_invariants(
     # audit coverage (M2P.2) + duplicate_account_overlap (one account imported
     # under two identities — invisible to the matcher, which blocks candidate
     # pairs on account_id).
-    assert len(report.invariants) == 56
+    assert len(report.invariants) == 57
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names

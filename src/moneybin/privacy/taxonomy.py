@@ -289,6 +289,24 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "workbook_name": DataClass.INSTITUTION,
     },
+    ("app", "exchange_rate_overrides"): {
+        "from_currency": DataClass.CURRENCY,
+        "to_currency": DataClass.CURRENCY,
+        # MEDIUM, unlike security_price_overrides.price_date. That column is
+        # LOW because a price mark exists precisely where no execution does;
+        # the reason to override an FX rate is the opposite — the bank's rate
+        # on a day the user actually converted money — so the date carries the
+        # same signal as a transaction date and takes the same class.
+        "rate_date": DataClass.TXN_DATE,
+        # A published daily reference rate is a market fact, not a personal
+        # one: it discloses no balance or amount, and the pair it prices is
+        # already CURRENCY/LOW. Requirement 10 also requires showing the exact
+        # rate behind any converted figure, which a HIGH class would fight.
+        "rate": DataClass.CURRENCY,
+        "note": DataClass.USER_NOTE,
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "export_destinations"): {
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "destination_id": DataClass.RECORD_ID,
