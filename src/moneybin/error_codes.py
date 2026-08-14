@@ -276,6 +276,21 @@ ENTITY_REFERENCE_NOT_FOUND = "entity_reference_not_found"
 
 
 # ---------------------------------------------------------------------------
+# FX — currency conversion (the `moneybin fx` surface)
+# ---------------------------------------------------------------------------
+# Distinct from rate_feed_: those report that the provider failed, these report
+# that no rate could be resolved from any layer — override, cache, or provider.
+# The two codes below are deliberately not one. `fetch` answers None for both an
+# unsupported currency and a supported pair missing one date, and the remedies
+# differ: the first needs a manual override, the second needs a different date.
+
+FX_CURRENCY_INVALID = "fx_currency_invalid"
+FX_CURRENCY_UNSUPPORTED = "fx_currency_unsupported"
+FX_OVERRIDE_RATE_INVALID = "fx_override_rate_invalid"
+FX_RATE_UNAVAILABLE = "fx_rate_unavailable"
+
+
+# ---------------------------------------------------------------------------
 # Investment — holdings, lots, securities
 # ---------------------------------------------------------------------------
 

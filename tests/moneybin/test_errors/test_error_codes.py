@@ -35,6 +35,9 @@ VALID_PREFIXES = (
     "sql_",
     "account_",
     "entity_",
+    # Resolution failures, not provider failures — rate_feed_ above covers the
+    # provider. A pair with no rate anywhere is an fx_ code.
+    "fx_",
     "investment_",
     "privacy_",
     "report_",
