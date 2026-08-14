@@ -21,11 +21,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   confirmation prompt without the ledger-evidence sentence added in #387, which
   was written up as the confirmation gate being absent. The gate was present.
 
-  `revision` is resolved once at import rather than per call. A checkout can
-  move underneath a running server, and a per-call read would then report the
-  new commit while the process still ran the old code — corroborating precisely
-  the wrong conclusion. Reported on the degraded database-locked path too,
-  since it needs no database connection and that is when a caller most needs it.
+  Both fields are resolved once at import rather than per call. A checkout can
+  move underneath a running server and an environment can be upgraded beneath
+  one; a per-call read would then report the new commit or the new version while
+  the process still ran the old code — corroborating precisely the wrong
+  conclusion. `version` is the more dangerous of the two to read late, because
+  a wheel install reports no revision and leaves the version as the only signal.
+  Reported on the degraded database-locked path too, since it needs no database
+  connection and that is when a caller most needs it.
 
   The registered `system_status` description tells the agent to cite
   `overview.build` before concluding that live behavior contradicts the code.

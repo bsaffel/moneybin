@@ -11,14 +11,16 @@ was missing from a three-day-old server.
 from __future__ import annotations
 
 import subprocess  # noqa: S404 — reads HEAD to derive the expected value
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import pytest
 
 from moneybin.database import DatabaseLockError
 from moneybin.mcp.tools.system import (
+    _build_info,  # pyright: ignore[reportPrivateUsage]
     _read_git_revision,  # pyright: ignore[reportPrivateUsage]
+    _read_package_version,  # pyright: ignore[reportPrivateUsage]
     system_status,
     system_status_coarse,
 )
@@ -76,6 +78,49 @@ async def test_source_checkout_reports_the_commit_it_is_running(
     data = system_status().to_dict()["data"]
 
     assert data["build"]["revision"] == head
+
+
+@pytest.mark.unit
+def test_version_is_resolved_at_import_not_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Upgrading the environment must not make a live server claim the new version.
+
+    ``importlib.metadata.version`` re-reads the installed distribution's
+    metadata on every call, so upgrading MoneyBin underneath a running server
+    would report the *new* version while the process still holds the old
+    modules. That is the stale-server scenario this whole block exists to
+    diagnose, and it is the worst place to be confidently wrong: an installed
+    wheel reports ``revision: null``, leaving ``version`` as the only signal.
+    """
+    captured = _build_info().version
+
+    def _upgraded(_name: str) -> str:
+        return "99.99.99"
+
+    monkeypatch.setattr("moneybin.mcp.tools.system.version", _upgraded)
+
+    assert _build_info().version == captured
+
+
+@pytest.mark.unit
+def test_absent_distribution_metadata_reports_no_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unreadable metadata degrades the field; it must never fail the import.
+
+    The version is resolved at import, so an unguarded lookup would turn a
+    missing distribution into a server that cannot boot — trading a rare
+    degraded answer for a total outage on the one surface whose job is to keep
+    answering when everything else is broken.
+    """
+
+    def _missing(_name: str) -> str:
+        raise PackageNotFoundError("moneybin")
+
+    monkeypatch.setattr("moneybin.mcp.tools.system.version", _missing)
+
+    assert _read_package_version() is None
 
 
 @pytest.mark.unit

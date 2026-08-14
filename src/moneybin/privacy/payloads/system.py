@@ -292,7 +292,9 @@ class SystemStatusBuildInfo:
     # AGGREGATE rather than RECORD_ID to match every registry column named
     # ``version``; the registry-sync guard cross-checks payload fields by name,
     # and two classes for one column name is the drift it exists to catch.
-    version: Annotated[str, DataClass.AGGREGATE]
+    # None when the distribution metadata is unreadable — the same posture as
+    # ``revision``: say nothing rather than guess.
+    version: Annotated[str | None, DataClass.AGGREGATE]
     # The version alone cannot identify a build — it reads the same on every
     # commit between releases. ``revision`` is what actually separates two
     # servers started days apart. None when running from an installed wheel,

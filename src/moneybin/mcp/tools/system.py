@@ -11,7 +11,7 @@ import os
 import subprocess  # noqa: S404 — subprocess used for git rev-parse; static args only
 from collections.abc import Callable
 from datetime import datetime
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
@@ -289,7 +289,11 @@ _GIT_REVISION_TIMEOUT_SECONDS = 5.0
 
 
 def _read_git_revision(root: Path) -> str | None:
-    """Return the commit ``root`` is checked out at, or None if it is not a repo root.
+    """Return the commit ``root`` is checked out at, or None when it can't be read.
+
+    None covers every unreadable case, not just a non-repository: no ``git`` on
+    PATH, a launch failure, a timeout, an unparseable answer, or a ``root`` that
+    is inside a checkout rather than its top level.
 
     Delegates to ``git`` rather than parsing ``.git`` by hand: a linked worktree
     stores a *file* there pointing elsewhere, and a branch tip may live in
@@ -351,9 +355,34 @@ def _read_git_revision(root: Path) -> str | None:
 _REVISION: str | None = _read_git_revision(Path(__file__).resolve().parents[4])
 
 
+def _read_package_version() -> str | None:
+    """Return the installed distribution version, or None when it has none.
+
+    Guarded rather than allowed to propagate: this value is resolved at import,
+    so an unreadable distribution would otherwise take the whole server down at
+    boot. A missing version is a fine answer from a status tool; a server that
+    will not start is not.
+    """
+    try:
+        return version("moneybin")
+    except PackageNotFoundError:
+        return None
+
+
+#: Captured at import for the same reason as ``_REVISION``, and it is the more
+#: dangerous of the two to read late. ``version()`` re-reads the installed
+#: distribution's metadata on every call, so upgrading the environment beneath a
+#: live server reports the *new* version while the process still holds the old
+#: modules — and a wheel install answers ``revision: None``, leaving this field
+#: as the only signal a caller has. Reading it per call therefore produces a
+#: confident wrong answer in precisely the stale-server case the block exists to
+#: diagnose.
+_VERSION: str | None = _read_package_version()
+
+
 def _build_info() -> SystemStatusBuildInfo:
     """Name the build this process is running."""
-    return SystemStatusBuildInfo(version=version("moneybin"), revision=_REVISION)
+    return SystemStatusBuildInfo(version=_VERSION, revision=_REVISION)
 
 
 def _locked_status_envelope(
