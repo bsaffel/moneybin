@@ -131,7 +131,9 @@ class TestImportOFXBatchLifecycle:
         import_id = latest["import_id"]
         assert isinstance(import_id, str)
 
-        result = ImportService(db).revert(import_id)
+        result = ImportService(db).revert_confirmed(
+            import_id, verify=lambda _live: None
+        )
         assert result["status"] == "reverted"
 
         remaining_row = db.execute(
