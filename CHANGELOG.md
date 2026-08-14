@@ -11,6 +11,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`system_status` names the build it is running.** The envelope carries a
+  `build` block with the package `version` and the `revision` the source
+  checkout was on when the process started (`null` for an installed wheel).
+  A stdio MCP server is a long-lived process pinned to whatever the checkout
+  held at boot, and until now nothing in the surface said which. A caller
+  comparing live behaviour against `main` could not separate a stale process
+  from a real defect — and did not: a three-day-old server rendered a
+  confirmation prompt without the ledger-evidence sentence added in #387, which
+  was written up as the confirmation gate being absent. The gate was present.
+
+  Both fields are resolved once at import rather than per call. A checkout can
+  move underneath a running server and an environment can be upgraded beneath
+  one; a per-call read would then report the new commit or the new version while
+  the process still ran the old code — corroborating precisely the wrong
+  conclusion. `version` is the more dangerous of the two to read late, because
+  a wheel install reports no revision and leaves the version as the only signal.
+  Reported on the degraded database-locked path too, since it needs no database
+  connection and that is when a caller most needs it.
+
+  The registered `system_status` description tells the agent to cite
+  `overview.build` before concluding that live behavior contradicts the code.
+  A docstring cannot: the agent never reads one, and the field is only as
+  useful as the instruction to look at it. `revision` is read from the
+  repository top level only, so a wheel installed beneath an unrelated checkout
+  reports `null` rather than that project's commit.
 - **Read the ingestion pipeline through `sql_query` (M2O.2).** `sql_query` and
   `moneybin sql query` reach `raw` and `prep` alongside `core`, `app`, and
   `reports` — five schemas, up from three. The seed sheets the gsheet and PDF
@@ -1441,6 +1466,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   update.
 
 ### Security
+- **`import_revert` no longer deletes raw rows on the first call (#391).**
+  `import_revert(operation="revert_import")` explicitly *rejected* a
+  `confirmation_token` and went straight to the delete, so one call permanently
+  destroyed a batch's raw rows with no prompt, no token, and no undo — 368 rows
+  across 14 batches went in a single session before anyone noticed. The branch
+  now plans read-only, binds approval to the exact live row counts, and verifies
+  that binding against live state inside the write transaction, matching the
+  `delete_saved_format` branch beside it. Outcomes that would delete nothing
+  (`not_found`, `already_reverted`, `unsupported`, `superseded`) return their
+  error without prompting. The CLI already confirmed and still does; its prompt
+  now names the row count. The registered description carried the same defect —
+  its confirmation and `system_audit_undo` clauses sat next to the format branch
+  but read as covering the whole tool, so an agent could infer reversions were
+  recoverable. Each clause now sits with its own branch, and reversion is
+  labelled `permanent — no revert`.
+- **An unanswered confirmation prompt no longer mints a redeemable token
+  (#389).**
+  `grant_confirmation_or_raise` waited `elicitation_wait_seconds` (120 by
+  default) for a human and then issued an opaque confirmation token, which is
+  returned to the caller — so ignoring a destructive prompt for two minutes
+  handed the calling agent a key to its own unconfirmed operation. The timeout
+  now refuses with `MUTATION_CONFIRMATION_DECLINED` and `reason: "timeout"`,
+  minting nothing. Clients that never declared elicitation support keep the
+  token path, the only case with no prompt to retry. All 13 confirm-gated tool
+  modules share the helper, so this covers every destructive confirm.
 - **A `UserError` hint shown on the CLI no longer reaches the durable log file
   (#382).** `handle_cli_errors` logged every hint via `logger.info` and the CLI
   file handler has no level filter, which became a disclosure once `sql_query`'s

@@ -1,5 +1,5 @@
 {
-  "sha256": "0b764dbd7c1a643bc67d150174802f29d3aa66db704d92d8d821a22eeda9736e",
+  "sha256": "6ad878fff4149f792b14454d18c6d307b04b98c0cef94152023385978686d99f",
   "tool_count": 49,
   "tools": [
     {
@@ -1773,7 +1773,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Revert one completed import or delete one user-saved format. Import reversion permanently removes its raw rows; saved-format deletion writes app.tabular_formats, requires exact payload-bound confirmation, and is recoverable with system_audit_undo.",
+        "description": "Revert one completed import or delete one user-saved format. Both branches require exact payload-bound confirmation. Import reversion deletes that batch's rows from raw.tabular_*/raw.ofx_* and flips raw.import_log to 'reverted': permanent \u2014 no revert, and no system_audit_undo counterpart. Saved-format deletion writes app.tabular_formats and is recoverable with system_audit_undo.",
         "inputSchema": {
           "additionalProperties": false,
           "allOf": [
@@ -1828,11 +1828,6 @@
                     {
                       "required": [
                         "format_name"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "confirmation_token"
                       ]
                     }
                   ]
@@ -1901,12 +1896,12 @@
         },
         "name": "import_revert"
       },
-      "description_bytes": 247,
-      "input_schema_bytes": 916,
+      "description_bytes": 383,
+      "input_schema_bytes": 880,
       "name": "import_revert",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 1355
+      "total_bytes": 1458
     },
     {
       "annotation_bytes": 89,
@@ -3443,7 +3438,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Return selected operator status sections. Sections cover overview inventory, integrity doctor checks, categorization coverage, and export readiness. detail='full' deepens the doctor scan and includes auto-categorization health.",
+        "description": "Return selected operator status sections. Sections cover overview inventory, integrity doctor checks, categorization coverage, and export readiness. detail='full' deepens the doctor scan and includes auto-categorization health. overview.build names the version and commit this server is running; cite it before concluding that live behavior contradicts the code, because a long-lived process can predate the checkout.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3485,12 +3480,12 @@
         },
         "name": "system_status"
       },
-      "description_bytes": 227,
+      "description_bytes": 417,
       "input_schema_bytes": 287,
       "name": "system_status",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 706
+      "total_bytes": 896
     },
     {
       "annotation_bytes": 89,
@@ -5027,5 +5022,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 55398
+  "total_bytes": 55691
 }

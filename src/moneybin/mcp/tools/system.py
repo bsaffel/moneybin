@@ -8,8 +8,10 @@ import inspect
 import json
 import logging
 import os
+import subprocess  # noqa: S404 — subprocess used for git rev-parse; static args only
 from collections.abc import Callable
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
@@ -49,6 +51,7 @@ from moneybin.privacy.payloads.system import (
     SystemDoctorPayload,
     SystemStatusAccountLinksInfo,
     SystemStatusAccountsInfo,
+    SystemStatusBuildInfo,
     SystemStatusCategorizationInfo,
     SystemStatusCoarsePayload,
     SystemStatusDatabaseConnectionsInfo,
@@ -280,6 +283,108 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     return {"writers": writers, "readers": readers}
 
 
+#: Bound on the `git rev-parse` probe. Generous for a local repository read;
+#: it exists so a wedged git can never delay server import indefinitely.
+_GIT_REVISION_TIMEOUT_SECONDS = 5.0
+
+
+def _read_git_revision(root: Path) -> str | None:
+    """Return the commit ``root`` is checked out at, or None when it can't be read.
+
+    None covers every unreadable case, not just a non-repository: no ``git`` on
+    PATH, a launch failure, a timeout, an unparseable answer, or a ``root`` that
+    is inside a checkout rather than its top level.
+
+    Delegates to ``git`` rather than parsing ``.git`` by hand: a linked worktree
+    stores a *file* there pointing elsewhere, and a branch tip may live in
+    ``packed-refs`` rather than as a loose ref. Both are cases this project
+    actually runs in, and both are ones a hand-rolled reader gets wrong.
+
+    ``root`` must be the repository's own top level, and that is checked rather
+    than assumed. ``git`` answers about the nearest enclosing checkout, so an
+    installed wheel sitting under someone else's repository — a virtualenv
+    inside the user's own project, which is where ``uv`` puts one by default —
+    would otherwise report *that* project's HEAD as MoneyBin's build: a
+    confidently wrong stamp, worse than the documented ``null``.
+    """
+    try:
+        completed = subprocess.run(  # noqa: S603 — git with static args
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(root),
+                "rev-parse",
+                "--show-toplevel",
+                "HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_REVISION_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # No git on PATH, or it failed to launch. An unknown revision is a
+        # perfectly good answer here; a broken system_status is not.
+        return None
+    if completed.returncode != 0:
+        return None
+    # Split on line terminators, never on arbitrary whitespace: git prints the
+    # top level unquoted, so a checkout path containing a space would otherwise
+    # parse as three tokens and silently blank the stamp — and a blank reads as
+    # a legitimate wheel install, hiding the failure.
+    lines = completed.stdout.splitlines()
+    if len(lines) != 2:
+        return None
+    toplevel, revision = lines
+    if Path(toplevel).resolve() != root.resolve():
+        return None
+    return revision or None
+
+
+#: Resolved once at import — that is, at server boot — rather than per call.
+#: The whole point of reporting a revision is to name the code this process
+#: actually loaded, and a checkout can move underneath a long-lived server. A
+#: per-call read would then report the *new* commit while still running the old
+#: code, which is worse than reporting nothing: it would corroborate exactly the
+#: wrong conclusion.
+#:
+#: ``parents[4]`` is the checkout root of a source tree laid out as
+#: ``<root>/src/moneybin/mcp/tools/system.py``; from an installed wheel it is
+#: some directory above ``site-packages``, which is not a repository top level
+#: and so answers None.
+_REVISION: str | None = _read_git_revision(Path(__file__).resolve().parents[4])
+
+
+def _read_package_version() -> str | None:
+    """Return the installed distribution version, or None when it has none.
+
+    Guarded rather than allowed to propagate: this value is resolved at import,
+    so an unreadable distribution would otherwise take the whole server down at
+    boot. A missing version is a fine answer from a status tool; a server that
+    will not start is not.
+    """
+    try:
+        return version("moneybin")
+    except PackageNotFoundError:
+        return None
+
+
+#: Captured at import for the same reason as ``_REVISION``, and it is the more
+#: dangerous of the two to read late. ``version()`` re-reads the installed
+#: distribution's metadata on every call, so upgrading the environment beneath a
+#: live server reports the *new* version while the process still holds the old
+#: modules — and a wheel install answers ``revision: None``, leaving this field
+#: as the only signal a caller has. Reading it per call therefore produces a
+#: confident wrong answer in precisely the stale-server case the block exists to
+#: diagnose.
+_VERSION: str | None = _read_package_version()
+
+
+def _build_info() -> SystemStatusBuildInfo:
+    """Name the build this process is running."""
+    return SystemStatusBuildInfo(version=_VERSION, revision=_REVISION)
+
+
 def _locked_status_envelope(
     db_connections: SystemStatusDatabaseConnectionsInfo,
 ) -> ResponseEnvelope[SystemStatusPayload]:
@@ -311,6 +416,7 @@ def _locked_status_envelope(
                 total_connections=0, by_status={}, needs_attention=[]
             ),
             database_connections=db_connections,
+            build=_build_info(),
         ),
         degraded=True,
         degraded_reason=(
@@ -331,6 +437,9 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     needs user attention before suggesting any analytical query. The
     ``gsheet`` block summarizes Google Sheets connection health: drift-detected
     connections surface a paired ``gsheet_reconnect`` hint in ``actions[]``.
+    The ``build`` block names the package version and source revision this
+    server is running: cite it before concluding that any MCP behaviour
+    contradicts the code, because a long-running server can predate it.
     """
     from moneybin.config import get_settings
     from moneybin.database import DatabaseLockError, get_database
@@ -445,6 +554,7 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
                 ],
             ),
             database_connections=db_connections,
+            build=_build_info(),
         ),
         actions=actions,
     )
@@ -1148,7 +1258,10 @@ def register_system_coarse_reads(mcp: FastMCP) -> None:
         "inventory, integrity doctor checks, categorization coverage, and export "
         "readiness. "
         "detail='full' deepens the "
-        "doctor scan and includes auto-categorization health.",
+        "doctor scan and includes auto-categorization health. "
+        "overview.build names the version and commit this server is running; "
+        "cite it before concluding that live behavior contradicts the code, "
+        "because a long-lived process can predate the checkout.",
         privacy_actor="system_status",
     )
     register(

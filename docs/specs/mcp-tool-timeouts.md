@@ -40,8 +40,13 @@ Related code: `src/moneybin/mcp/` (tool registration and dispatch), `src/moneybi
    the operation. The exclusion is safe because no confirm-gated tool holds a
    DuckDB connection across its prompt; verify that still holds before adding a
    confirm to a tool that opens one first. The human wait has its own separate
-   bound (below), after which the call degrades to the opaque-token path rather
-   than failing. Every bounded wait increments
+   bound (below), after which the call refuses with
+   `MUTATION_CONFIRMATION_DECLINED` and `reason: "timeout"`, minting no token.
+   The token travels to the caller, so degrading an unanswered prompt into one
+   hands the calling agent a key to its own unconfirmed operation — a client
+   that rendered the prompt can render it again. The opaque-token path stays
+   for clients that never declared elicitation support, which is the only case
+   with no prompt to retry. Every bounded wait increments
    `moneybin_mcp_elicitations_total{site,outcome}` — both `answered` and
    `timeout`, because a miss count without the answers it is a fraction of
    cannot say whether the configured window is long enough.

@@ -99,6 +99,18 @@ def _confirmation_declined() -> UserError:
     )
 
 
+def _confirmation_timed_out() -> UserError:
+    return UserError(
+        "Nobody answered the confirmation prompt in time. Nothing was written.",
+        code=error_codes.MUTATION_CONFIRMATION_DECLINED,
+        hint=(
+            "Request this operation again to raise a fresh prompt, then have "
+            "the user answer it."
+        ),
+        details={"reason": "timeout"},
+    )
+
+
 def _require_digest(expected: bytes, binding: ConfirmationBinding) -> None:
     actual = _binding_digest(binding)
     if not secrets.compare_digest(expected, actual):
@@ -241,12 +253,16 @@ async def grant_confirmation_or_raise(
             ),
             site="confirmation_grant",
         )
-        # result is None only when nobody answered in time; fall through to the
-        # opaque-token path so the caller keeps a way to finish, not a dead end.
-        if result is not None:
-            if isinstance(result, AcceptedElicitation) and result.data is True:
-                return ConfirmationGrant(expected_digest)
-            raise _confirmation_declined()
+        # result is None only when nobody answered in time. Refuse rather than
+        # minting a token: the token is returned to the *caller*, so degrading
+        # an unanswered prompt into one hands the calling agent a key to its
+        # own unconfirmed operation. A client that rendered the prompt can
+        # render it again; only a client that never offered one needs a token.
+        if result is None:
+            raise _confirmation_timed_out()
+        if isinstance(result, AcceptedElicitation) and result.data is True:
+            return ConfirmationGrant(expected_digest)
+        raise _confirmation_declined()
 
     token = broker.issue(binding, now=_utcnow())
     raise _confirmation_required(

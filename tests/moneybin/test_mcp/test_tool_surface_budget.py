@@ -127,7 +127,7 @@ _REPLACED_TOOL_NAME_COHORTS = {
 }
 
 _CANONICAL_CARRYING_WEIGHT_BYTES = {
-    "system_status": (706, 2_725),
+    "system_status": (896, 2_725),
     "system_audit": (746, 1_958),
     "accounts": (823, 2_240),
     "accounts_balances": (1_069, 2_786),
