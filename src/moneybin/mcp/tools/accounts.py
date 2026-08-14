@@ -715,9 +715,9 @@ async def accounts_links_set(
     the rest for review; `rematch_auto_merged`, `rematch_pending_review` and
     `rematch_pending_transfers` report all three, and are null on a reject (no
     pass ran). `rematch_transfers_retired` counts transfers you had already
-    accepted that the pass reversed, because deduplication made both of their
-    sides the same physical transaction — check it before reporting the merge
-    as clean.
+    accepted that the merge reversed — their two sides turned out to be one
+    transaction, or their two accounts one account — check it before reporting
+    the merge as clean.
 
     Mutation surface: writes app.account_link_decisions + app.account_links, and
     on an accept also app.match_decisions (the re-match pass, including

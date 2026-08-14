@@ -1185,8 +1185,9 @@ async def identity_links_decide_coarse(
     `rematch_pending_review`, and `rematch_pending_transfers` report it, and are
     null when the batch held no accept (no pass ran).
     `rematch_transfers_retired` counts transfers the user had already accepted
-    that the pass reversed, because deduplication made both of their sides the
-    same physical transaction — check it before reporting the batch as clean.
+    that the merge reversed — their two sides turned out to be one transaction,
+    or their two accounts one account — check it before reporting the batch as
+    clean.
 
     Mutation surface: writes app.account_link_decisions + app.account_links,
     app.merchant_links, app.security_links, and on an account accept also

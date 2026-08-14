@@ -248,9 +248,10 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
         # otherwise clean, and it must name the way back.
         logger.warning(
             f"⚠️  Retired {rematch.transfers_retired} previously accepted "
-            "transfer(s) whose two sides turned out to be the same "
-            "transaction; inspect with 'moneybin audit' and restore with "
-            "'moneybin audit undo' if that was wrong"
+            "transfer(s) the merge invalidated — their two sides turned out "
+            "to be one transaction, or their two accounts one account; "
+            "inspect with 'moneybin audit' and restore with 'moneybin audit "
+            "undo' if that was wrong"
         )
     if rematch.error is not None:
         # The counts above are true — match decisions were written — but the

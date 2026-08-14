@@ -16,6 +16,7 @@ caller supplies both.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from moneybin.repositories.base import BaseRepo
@@ -43,6 +44,23 @@ _MATCH_DECISIONS_COLUMNS = (
     "reversed_at",
     "reversed_by",
 )
+
+
+@dataclass(frozen=True)
+class RepointAccountResult:
+    """What :meth:`MatchDecisionsRepo.repoint_account` did.
+
+    ``accepted_transfers_retired`` is separate from ``events`` because it is
+    the only part a *user* has to be told about: every other effect of a
+    re-key is bookkeeping, while reversing an accepted transfer undoes a
+    decision they made. Counting it here rather than at the call site keeps
+    the collapse predicate in one place — the caller cannot re-derive which
+    rows collapsed without copying it.
+    """
+
+    events: tuple[AuditEvent, ...]
+    accepted_transfers_retired: int
+
 
 # Columns stored as JSON-encoded text. Reads decode them to Python objects so the
 # audit ``before``/``after`` payload carries nested JSON, not a doubly-encoded
@@ -192,7 +210,7 @@ class MatchDecisionsRepo(BaseRepo):
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
-    ) -> tuple[AuditEvent, ...]:
+    ) -> RepointAccountResult:
         """Re-key decisions naming a merged-away account onto the survivor.
 
         An account merge re-points ``app.account_links``, but a decision row
@@ -217,7 +235,9 @@ class MatchDecisionsRepo(BaseRepo):
 
         One audit per row, like every other method here — the undo engine
         replays rows individually, and a single event covering N updates could
-        not restore them one at a time. Returns the events in mutation order.
+        not restore them one at a time. Returns the events in mutation order,
+        alongside a count of the *accepted* transfers the collapse retired —
+        the caller owes the user a disclosure for those and nothing else here.
         Re-keying is idempotent: a second call finds no rows and returns empty.
         """
         if from_account_id == to_account_id:
@@ -235,6 +255,7 @@ class MatchDecisionsRepo(BaseRepo):
                 [from_account_id, from_account_id],
             ).fetchall()
             events: list[AuditEvent] = []
+            accepted_transfers_retired = 0
             for (match_id,) in rows:
                 before = self._require(self._fetch_row(match_id), "match_id", match_id)
                 # A transfer whose other leg is already the survivor has both
@@ -289,6 +310,11 @@ class MatchDecisionsRepo(BaseRepo):
                 if not collapsed:
                     continue
                 status = before["match_status"]
+                if status == "accepted":
+                    # Only this branch is disclosable. A rejected row being
+                    # reversed removes nothing from the ledger, and a pending
+                    # one was never the user's decision to undo.
+                    accepted_transfers_retired += 1
                 if status in ("accepted", "rejected"):
                     events.append(
                         self.reverse(
@@ -310,7 +336,10 @@ class MatchDecisionsRepo(BaseRepo):
                             in_outer_txn=True,
                         )
                     )
-            return tuple(events)
+            return RepointAccountResult(
+                events=tuple(events),
+                accepted_transfers_retired=accepted_transfers_retired,
+            )
 
     def reverse(
         self,

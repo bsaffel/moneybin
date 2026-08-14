@@ -849,7 +849,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   component: a pending one is an unreviewed proposal that leaves both rows
   distinct in `core`, so it never retires a transfer. Reversed, not deleted,
   and reported as `rematch_transfers_retired` on both tools plus a CLI warning
-  naming `moneybin audit undo`, because the user accepted those transfers.
+  naming `moneybin audit undo`, because the user accepted those transfers. That
+  counter also covers the account-level form of the same collapse — a transfer
+  whose two endpoints became one account, retired during the re-key — which
+  previously reversed an accepted transfer while every surface reported `0`.
 - **An accepted merge no longer strands the match decisions made under the old
   account, which could silently reverse a rejection.** Accepting a link
   re-points `app.account_links`, but a row in `app.match_decisions` stores the

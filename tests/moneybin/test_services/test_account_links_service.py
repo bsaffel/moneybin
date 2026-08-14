@@ -904,6 +904,126 @@ def test_set_accept_rejects_a_pending_transfer_whose_two_legs_collapse(
     assert row[2] == _CAND_A
 
 
+def test_set_accept_reports_the_collapsed_transfer_it_retired(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """Retiring the transfer is half the job; telling the caller is the other half.
+
+    Same fixture as the accepted-collapse test above, asserting the *return*
+    rather than the row. No dedup edge exists here, so
+    ``retire_transfers_invalidated_by_dedup`` finds nothing and contributes 0 —
+    a zero total therefore means the collapse branch's own retirement went
+    unreported, and every surface prints its silent "no transfers retired"
+    over a decision of the user's that this call just undid.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00005",
+        source_transaction_id_a="ofx9",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx8",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert result is not None
+    assert result.transfers_retired == 1, (
+        "the merge reversed an accepted transfer; a caller told 0 has no "
+        "reason to look for it in the audit log"
+    )
+
+
+def test_set_accept_does_not_report_a_collapsed_pending_transfer(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The pending twin of the test above — retired, but nothing to disclose.
+
+    One property apart: ``match_status``. The collapse rejects this row too,
+    but the counter says "transfers you had already accepted", and the user
+    never accepted this one. Counting it would send them to ``audit undo`` to
+    restore a proposal they had not yet answered.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00006",
+        source_transaction_id_a="ofx11",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx10",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="pending",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="system",
+        actor="test",
+    )
+
+    result = seeded.set(_DEC1, target_account_id=_CAND_A)
+
+    assert result is not None
+    assert result.transfers_retired == 0, (
+        "a pending transfer was never the user's decision, so its collapse "
+        "is not something they need to be told was undone"
+    )
+
+
+def test_the_collapse_count_reaches_the_batched_path_s_separate_rematch(
+    seeded: AccountLinksService, db: Database, rematch: MagicMock
+) -> None:
+    """The batch splits retirement and disclosure across two calls.
+
+    ``ReviewDecisionsService.apply_identity`` calls ``set(in_outer_txn=True)``
+    — which returns before its own post-commit tail — and then
+    ``rematch_after_merge()`` separately on the same service. The retirement
+    happens in the first call and the count is reported by the second, so a
+    count held only in ``set``'s locals would be dropped on exactly the path
+    that merges several accounts at once. Shaped like the batch, not mocked
+    like it, because what is under test is that seam.
+    """
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    MatchDecisionsRepo(db).insert(
+        match_id="match_id00007",
+        source_transaction_id_a="ofx13",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="ofx12",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id=_CAND_A,
+        confidence_score=0.95,
+        match_signals={},
+        match_status="accepted",
+        match_type="transfer",
+        account_id_b=_PROV1,
+        decided_by="user",
+        actor="test",
+    )
+
+    db.begin()
+    assert seeded.set(_DEC1, target_account_id=_CAND_A, in_outer_txn=True) is None
+    db.commit()
+
+    assert seeded.rematch_after_merge().transfers_retired == 1
+
+
 def _insert_transfer(
     db: Database,
     *,

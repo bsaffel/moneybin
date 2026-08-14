@@ -67,14 +67,17 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
             "possible transfer(s) — review with reviews(kind='matches')"
         )
     if rematch.transfers_retired:
-        # The user accepted these. Deduplication made each one name a physical
-        # transaction another accepted transfer already claims, which
-        # bridge_transfers would double-count — but the caller has to be told a
-        # decision of theirs was undone, and how to put it back.
+        # The user accepted these, and the merge invalidated them two ways:
+        # dedup made a leg name a physical transaction another accepted
+        # transfer already claims (bridge_transfers would double-count), or
+        # the collapse made both endpoints one account (a transfer to itself).
+        # One counter, because the caller is owed one fact either way — a
+        # decision of theirs was undone — and one route back.
         actions.append(
-            f"The merge's pass retired {rematch.transfers_retired} previously "
-            "accepted transfer(s) whose two sides turned out to be the same "
-            "transaction — inspect with system_audit(), restore with "
-            "system_audit_undo() if that was wrong"
+            f"The merge retired {rematch.transfers_retired} previously "
+            "accepted transfer(s) it invalidated — their two sides turned out "
+            "to be one transaction, or their two accounts one account — "
+            "inspect with system_audit(), restore with system_audit_undo() if "
+            "that was wrong"
         )
     return actions

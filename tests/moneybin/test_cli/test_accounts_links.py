@@ -551,9 +551,10 @@ class TestLinksSet:
 
         Every other counter reports what the pass *found*. This one reports
         what it took away: a transfer the user had accepted, reversed because
-        deduplication made both of its sides the same physical transaction.
-        Riding along inside the ordinary "re-matched" line would bury it, so it
-        warns and names the route back.
+        the merge invalidated it — its two sides turned out to be one
+        transaction, or its two accounts one account. Riding along inside the
+        ordinary "re-matched" line would bury it, so it warns and names the
+        route back.
         """
         from moneybin.services.refresh import RefreshResult
 

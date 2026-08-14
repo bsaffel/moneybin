@@ -620,7 +620,19 @@ Guard-2 free-text resolution):
   `rematch_transfers_retired` in `data` on both tools, plus a CLI warning
   naming the undo path. That disclosure is not optional: every other counter
   reports what the pass *found*, while this one reports a decision of the
-  user's that it *undid*. It is deliberately global rather than scoped to the
+  user's that it *undid*.
+
+  **One counter covers both ways a merge invalidates an accepted transfer.**
+  The transaction-level form above is the dedup pass's; the account-level form
+  is `repoint_account`'s, which retires a transfer whose two endpoints just
+  became one account and does so *inside* the accept transaction, before the
+  disclosure is assembled. `MatchDecisionsRepo.repoint_account` therefore
+  returns that count — accepted rows only, since a pending proposal was never
+  the user's decision and a reversed rejection removes nothing — and
+  `AccountLinksService` carries it to `rematch_after_merge()`, which sums the
+  two. Splitting them into two counters would ask the user to learn a
+  distinction that changes nothing they do: either way a transfer they
+  accepted is gone, and either way `system audit undo` is the way back. It is deliberately global rather than scoped to the
   merged account, because the invariant is global, the batched path merges
   several accounts at once, and a pre-existing violation is corrupt whichever
   merge exposed it.

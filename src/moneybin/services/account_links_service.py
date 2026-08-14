@@ -100,6 +100,13 @@ class AccountLinksService:
         self._actor = actor
         self._links = AccountLinksRepo(db)
         self._decisions = AccountLinkDecisionsRepo(db)
+        # Accepted transfers the account collapse retired inside set()'s
+        # transaction, waiting for rematch_after_merge to disclose them. The
+        # retirement has to happen before the commit (the FK invariant), the
+        # disclosure is assembled after it, and on the batched path those are
+        # two separate calls on this instance — so the count travels here.
+        # Read-and-reset in rematch_after_merge keeps it to one merge.
+        self._transfers_retired_by_collapse = 0
 
     # ------------------------------------------------------------------
     # Read-only methods
@@ -578,11 +585,19 @@ class AccountLinksService:
                 # auto-accept a pair the user explicitly rejected. Ordering is
                 # load-bearing: this must precede the commit that rematch_after_merge
                 # reads.
-                MatchDecisionsRepo(self._db).repoint_account(
+                repointed = MatchDecisionsRepo(self._db).repoint_account(
                     from_account_id=provisional_id,
                     to_account_id=target_account_id,
                     actor=self._actor,
                     in_outer_txn=True,
+                )
+                # A transfer whose two accounts just became one is retired in
+                # there. That is a decision of the user's being undone, so it
+                # is owed the same disclosure as the dedup retirement below —
+                # dropping the count would report "0 transfers retired" over
+                # an accepted transfer this call had just reversed.
+                self._transfers_retired_by_collapse += (
+                    repointed.accepted_transfers_retired
                 )
                 # Accept the named decision.
                 self._decisions.update_status(
@@ -675,14 +690,24 @@ class AccountLinksService:
         Callers on the batched path (``ReviewDecisionsService.apply_identity``)
         invoke this themselves after their own commit — ``set`` returns early
         under ``in_outer_txn`` and never reaches it.
+
+        ``transfers_retired`` sums the two ways this merge can invalidate an
+        accepted transfer: its two legs turning out to be one transaction
+        (the dedup pass, below) and its two accounts turning out to be one
+        account (the collapse, already done inside ``set``'s transaction).
+        One counter because the user is owed one fact — a transfer they
+        accepted is gone — and one way back for both.
         """
         from moneybin.services.refresh import (
             refresh,  # noqa: PLC0415 — cycle: refresh's identity step imports this module
         )
 
+        collapsed = self._transfers_retired_by_collapse
+        self._transfers_retired_by_collapse = 0
         result = refresh(self._db, steps=["match", "transform"])
         return replace(
-            result, transfers_retired=self.retire_transfers_invalidated_by_dedup()
+            result,
+            transfers_retired=collapsed + self.retire_transfers_invalidated_by_dedup(),
         )
 
     def retire_transfers_invalidated_by_dedup(self) -> int:
