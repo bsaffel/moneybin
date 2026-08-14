@@ -27,6 +27,9 @@ VALID_PREFIXES = (
     "infra_",
     "sync_",
     "gsheet_",
+    # The shape shared by every external data feed. Reported only by a feed with
+    # no code of its own; price_feed_ and its siblings override it.
+    "feed_",
     "price_feed_",
     "sql_",
     "account_",

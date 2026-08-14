@@ -17,33 +17,49 @@ Adapters decide containment on the type alone, which is why these cases need
 separate types rather than one status-carrying error: a 404 and a 500 are both
 "a 4xx/5xx arrived", but treating them alike either reports a broken provider as
 "this security has no coverage" or lets one unknown ticker abort the batch.
+
+Each type also inherits the matching feed-neutral shape from
+``connectors.feed_errors``, so the shared HTTP helper can raise a transport
+error without knowing which feed asked. The price code is preserved by
+calling ``UserError.__init__`` directly: ``FeedError.__init__`` sits in the
+MRO and would otherwise relabel every price failure ``feed_error``.
 """
 
+from moneybin.connectors.feed_errors import (
+    FeedAPIError,
+    FeedAuthError,
+    FeedError,
+    FeedErrorTypes,
+    FeedNotFoundError,
+    FeedRateLimitError,
+    FeedRequestRejectedError,
+    FeedUnreachableError,
+)
 from moneybin.error_codes import PRICE_FEED_ERROR
 from moneybin.errors import UserError
 
 
-class PriceFeedError(UserError):
+class PriceFeedError(FeedError):
     """Base for all price-feed adapter errors."""
 
     def __init__(self, message: str) -> None:
-        """Initialize with a user-safe message."""
-        super().__init__(message, code=PRICE_FEED_ERROR)
+        """Initialize with a user-safe message, keeping the price-feed code."""
+        UserError.__init__(self, message, code=PRICE_FEED_ERROR)
 
 
-class PriceFeedAuthError(PriceFeedError):
+class PriceFeedAuthError(PriceFeedError, FeedAuthError):
     """The provider's credential is absent, malformed, or rejected (401/403)."""
 
 
-class PriceFeedRateLimitError(PriceFeedError):
+class PriceFeedRateLimitError(PriceFeedError, FeedRateLimitError):
     """The provider rate-limited the request (429)."""
 
 
-class PriceFeedUnreachableError(PriceFeedError):
+class PriceFeedUnreachableError(PriceFeedError, FeedUnreachableError):
     """DNS failure, connection refused, or timeout — no response arrived."""
 
 
-class PriceFeedNotFoundError(PriceFeedError):
+class PriceFeedNotFoundError(PriceFeedError, FeedNotFoundError):
     """The provider does not know this symbol (404) — the one per-security error.
 
     Deliberately not a PriceFeedAPIError: adapters catch this to record a
@@ -52,7 +68,7 @@ class PriceFeedNotFoundError(PriceFeedError):
     """
 
 
-class PriceFeedRequestRejectedError(PriceFeedError):
+class PriceFeedRequestRejectedError(PriceFeedError, FeedRequestRejectedError):
     """The provider rejected this request's parameters (400) — per-security.
 
     Deliberately not a PriceFeedAPIError, for the same reason as
@@ -67,7 +83,7 @@ class PriceFeedRequestRejectedError(PriceFeedError):
     """
 
 
-class PriceFeedAPIError(PriceFeedError):
+class PriceFeedAPIError(PriceFeedError, FeedAPIError):
     """A provider response that is not auth, rate limit, not-found, rejected, or unreachable."""
 
 
@@ -83,3 +99,17 @@ class PriceFeedWindowUnsupportedError(PriceFeedError):
     kind: nothing is wrong with the provider, and the fix is a narrower window
     argument rather than a retry.
     """
+
+
+# What the shared HTTP helper raises on a price feed's behalf. The label keeps
+# every message reading "price feed ..." exactly as it did before the helper
+# became feed-neutral.
+PRICE_FEED_ERRORS = FeedErrorTypes(
+    label="price feed",
+    auth=PriceFeedAuthError,
+    rate_limit=PriceFeedRateLimitError,
+    unreachable=PriceFeedUnreachableError,
+    not_found=PriceFeedNotFoundError,
+    rejected=PriceFeedRequestRejectedError,
+    api=PriceFeedAPIError,
+)

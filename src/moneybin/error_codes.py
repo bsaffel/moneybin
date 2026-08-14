@@ -206,6 +206,15 @@ GSHEET_RECONNECT_ARGUMENT_CONFLICT = "gsheet_reconnect_argument_conflict"
 
 
 # ---------------------------------------------------------------------------
+# External data feeds — the shape shared by every provider
+# ---------------------------------------------------------------------------
+# Reported only by a feed that has no code of its own. Each concrete feed
+# overrides this with its own code, so a caller can still tell a rate failure
+# from a price failure.
+
+FEED_ERROR = "feed_error"
+
+# ---------------------------------------------------------------------------
 # Price feeds — market data providers (Tiingo, CoinGecko)
 # ---------------------------------------------------------------------------
 # Distinct from sync_* (mediated account providers): a price feed carries no

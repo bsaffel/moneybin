@@ -34,8 +34,9 @@ from decimal import Decimal
 
 import httpx
 
-from moneybin.connectors.prices._http import DEFAULT_TIMEOUT, fetch_json
+from moneybin.connectors._http import DEFAULT_TIMEOUT, fetch_json
 from moneybin.connectors.prices.errors import (
+    PRICE_FEED_ERRORS,
     PriceFeedNotFoundError,
     PriceFeedRequestRejectedError,
     PriceFeedWindowUnsupportedError,
@@ -100,6 +101,7 @@ class CoinGeckoPriceAdapter:
                     f"{COINGECKO_BASE_URL}/coins/{ref.provider_security_key}/market_chart",
                     params=params,
                     sleep=self._sleep,
+                    errors=PRICE_FEED_ERRORS,
                 )
             except (PriceFeedNotFoundError, PriceFeedRequestRejectedError) as exc:
                 # Two conditions here are about this coin alone, one more than the

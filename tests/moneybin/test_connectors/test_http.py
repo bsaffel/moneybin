@@ -17,8 +17,9 @@ import httpx
 import pytest
 import respx
 
-from moneybin.connectors.prices._http import fetch_json
+from moneybin.connectors._http import fetch_json
 from moneybin.connectors.prices.errors import (
+    PRICE_FEED_ERRORS,
     PriceFeedAPIError,
     PriceFeedNotFoundError,
     PriceFeedRateLimitError,
@@ -42,6 +43,7 @@ def _fetch(client: httpx.Client) -> object:
         _URL,
         params={"token": _TOKEN},
         sleep=lambda _seconds: None,
+        errors=PRICE_FEED_ERRORS,
     )
 
 
