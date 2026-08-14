@@ -37,6 +37,25 @@ def _does_not_support_elicitation(_context: object) -> bool:
     return False
 
 
+class _RecordingBroker(ConfirmationBroker):
+    """Real broker that also records every token it mints.
+
+    Asserting only on the raised error would still pass if a token were minted
+    and merely withheld from the response — the entry would sit live for the
+    next call to redeem. This records the mint itself.
+    """
+
+    def __init__(self, *, ttl_seconds: int | None = None) -> None:
+        super().__init__(ttl_seconds=ttl_seconds)
+        self.issued: list[str] = []
+
+    def issue(self, binding: ConfirmationBinding, *, now: datetime) -> str:
+        """Issue through the real broker, recording the token."""
+        token = super().issue(binding, now=now)
+        self.issued.append(token)
+        return token
+
+
 def _make_binding(**updates: object) -> ConfirmationBinding:
     values: dict[str, object] = {
         "arguments": {
@@ -391,10 +410,16 @@ async def test_declined_or_cancelled_elicitation_refuses_confirmation(
 
 
 @pytest.mark.asyncio
-async def test_unanswered_elicitation_degrades_to_a_usable_token(
+async def test_unanswered_elicitation_refuses_without_issuing_a_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A prompt nobody answers must leave a working token, not a dead end."""
+    """A dialog nobody answered must not degrade into a token.
+
+    The token travels to the *caller*, so minting one after an unanswered
+    prompt hands the calling agent a key to its own unanswered confirmation.
+    A client that showed the dialog has a working way to ask again; only a
+    client that never offered one needs the token path.
+    """
 
     async def answers_too_late(
         *_args: object, **_kwargs: object
@@ -411,7 +436,7 @@ async def test_unanswered_elicitation_degrades_to_a_usable_token(
     monkeypatch.setattr(
         "moneybin.mcp.elicitation.elicitation_wait_seconds", lambda: 0.05
     )
-    broker = ConfirmationBroker(ttl_seconds=300)
+    broker = _RecordingBroker(ttl_seconds=300)
 
     with pytest.raises(UserError) as raised:
         await grant_confirmation_or_raise(
@@ -421,11 +446,15 @@ async def test_unanswered_elicitation_degrades_to_a_usable_token(
             broker=broker,
         )
 
-    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
-    details = raised.value.details or {}
-    # A token that cannot be redeemed is still a dead end — redeem it.
-    grant = broker.consume(details["confirmation_token"], now=datetime.now(UTC))
-    grant.verify(BINDING)
+    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_DECLINED
+    assert raised.value.details == {"reason": "timeout"}
+    assert broker.issued == []
+    # `wait_for` already cancelled the elicitation, so no dialog is live to
+    # answer. The hint has to order the retry first or it sends the user to a
+    # dead prompt and burns a second wait window before the retry that would
+    # have rendered a fresh one.
+    hint = raised.value.hint or ""
+    assert hint.index("again") < hint.index("answer")
 
 
 @pytest.mark.asyncio

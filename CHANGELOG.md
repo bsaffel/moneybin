@@ -1235,6 +1235,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   update.
 
 ### Security
+- **An unanswered confirmation prompt no longer mints a redeemable token
+  (#389).**
+  `grant_confirmation_or_raise` waited `elicitation_wait_seconds` (120 by
+  default) for a human and then issued an opaque confirmation token, which is
+  returned to the caller — so ignoring a destructive prompt for two minutes
+  handed the calling agent a key to its own unconfirmed operation. The timeout
+  now refuses with `MUTATION_CONFIRMATION_DECLINED` and `reason: "timeout"`,
+  minting nothing. Clients that never declared elicitation support keep the
+  token path, the only case with no prompt to retry. All 13 confirm-gated tool
+  modules share the helper, so this covers every destructive confirm.
 - **A `UserError` hint shown on the CLI no longer reaches the durable log file
   (#382).** `handle_cli_errors` logged every hint via `logger.info` and the CLI
   file handler has no level filter, which became a disclosure once `sql_query`'s
