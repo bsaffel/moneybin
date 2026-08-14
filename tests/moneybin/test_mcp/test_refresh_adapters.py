@@ -162,3 +162,49 @@ def test_recovery_actions_are_idempotent() -> None:
         requested=expand_steps(None),
     )
     assert all(ra.idempotent for ra in env.recovery_actions or [])
+
+
+@pytest.mark.unit
+def test_envelope_discloses_what_the_match_step_decided() -> None:
+    """A refresh that merges rows or undoes a transfer must say so.
+
+    The match step auto-merges above the confidence threshold without asking
+    and reverses transfers a dedup collapse invalidated. Both are decisions the
+    user did not make, and until these keys existed only the two merge-accept
+    tools reported them — a plain ``refresh_run`` after an import returned an
+    ordinary success.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            matches_auto_merged=3,
+            matches_pending_review=2,
+            matches_pending_transfers=1,
+            transfers_retired=4,
+        ),
+        requested=expand_steps(None),
+    )
+    payload = _payload(env)
+    assert payload.matches_auto_merged == 3
+    assert payload.matches_pending_review == 2
+    assert payload.matches_pending_transfers == 1
+    assert payload.transfers_retired == 4
+    assert payload.matching_skipped is False
+
+
+@pytest.mark.unit
+def test_envelope_marks_zero_counts_as_unexamined_when_match_was_skipped() -> None:
+    """``matching_skipped`` is what separates an honest zero from an invented one.
+
+    The counts are zero on a skipped step because nothing was examined, not
+    because nothing was found. Without this key an agent reads the same payload
+    as "no duplicates" — which is the claim the flag exists to refuse.
+    """
+    env = refresh_envelope(
+        RefreshResult(applied=True, duration_seconds=1.0, matching_skipped=True),
+        requested=expand_steps(None),
+    )
+    payload = _payload(env)
+    assert payload.matching_skipped is True
+    assert payload.matches_auto_merged == 0

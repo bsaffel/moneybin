@@ -7,7 +7,12 @@ import duckdb as duckdb_mod
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import emit_json, handle_cli_errors
+from moneybin.cli.utils import (
+    RETIRED_BY_THIS_DECISION,
+    emit_json,
+    handle_cli_errors,
+    warn_transfers_retired,
+)
 from moneybin.database import get_database
 from moneybin.matching.persistence import VALID_MATCH_TYPES
 from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
@@ -190,8 +195,11 @@ def matches_set(
         raise typer.Exit(2)
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            MatchingService(db).set_status(match_id, status=status, actor="cli")
+            retired = MatchingService(db).set_status(
+                match_id, status=status, actor="cli"
+            )
     logger.info(f"✅ Set match {match_id[:8]}... to {status}")
+    warn_transfers_retired(retired, cause=RETIRED_BY_THIS_DECISION)
 
 
 @app.command("backfill")

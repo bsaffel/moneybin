@@ -855,16 +855,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   account, retired during the re-key — which previously reversed an accepted
   transfer while every surface reported `0`.
 
-  The reconciliation runs inside the matcher, between the dedup tiers and
-  transfer detection, so it is not merge-only: accepting a queued duplicate
-  through the ordinary review queue reaches the same corrupt
-  `bridge_transfers`, and `set_status` writes that decision without
-  transforming, leaving the damage for whatever refresh came next. Running
-  between the tiers also means a leg the reversal frees is re-examined as a
-  transfer candidate by the same pass, and that the reversal lands before
-  `transform`, so the corrupt bridge is never built rather than rebuilt
-  correctly one refresh later. Every path through the match step now reports
-  the count on `RefreshResult.transfers_retired`.
+  The reconciliation is not merge-only. Every path that folds a duplicate runs
+  it: the matcher (so any `refresh` covers it), a review-queue accept
+  (`moneybin review --confirm`, `transactions_matches_set`), and a bulk
+  `moneybin review --confirm-all`. `core.fct_transactions` and
+  `core.bridge_transfers` are views over `app.match_decisions`, so a collision
+  double-counts on the next read rather than waiting for a refresh — which is
+  why the two accept paths, which re-derive nothing, each fold the reversals
+  into the transaction that accepted the duplicate. Inside the matcher it runs
+  between the dedup tiers and transfer detection, so a leg the reversal frees is
+  re-examined as a transfer candidate by the same pass and the reversal lands
+  before `transform`, leaving the corrupt bridge never built rather than rebuilt
+  correctly one refresh later.
+
+  `refresh_run` and `moneybin refresh` now disclose what the match step decided
+  — `matches_auto_merged`, `matches_pending_review`,
+  `matches_pending_transfers`, `matching_skipped`, and `transfers_retired` —
+  and the CLI warns when a transfer was retired. Any refresh reaches the match
+  step, including the one every import and sync triggers, so a pass could
+  previously auto-merge duplicates or reverse an accepted transfer and report an
+  ordinary success. `matching_skipped` separates a zero that means "found
+  nothing" from one that means "never looked".
 - **An accepted merge no longer strands the match decisions made under the old
   account, which could silently reverse a rejection.** Accepting a link
   re-points `app.account_links`, but a row in `app.match_decisions` stores the

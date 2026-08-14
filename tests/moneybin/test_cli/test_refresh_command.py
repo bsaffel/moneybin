@@ -269,6 +269,68 @@ def test_refresh_apply_failure_with_matcher_crash_suppresses_retry_hint(
     assert "Refresh failed: apply boom" in result.output
 
 
+def test_refresh_warns_when_the_match_step_retired_an_accepted_transfer(
+    runner: CliRunner,
+) -> None:
+    """Reversing a decision the user made is never a silent ✅.
+
+    ``accounts links set`` already warns on this; a plain ``moneybin refresh``
+    reaches the same reconciliation through the match step and reported a clean
+    success.
+    """
+    fake_result = RefreshResult(applied=True, duration_seconds=2.0, transfers_retired=2)
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh"])
+
+    assert result.exit_code == 0
+    assert "Retired 2 previously accepted transfer" in result.output
+
+
+def test_refresh_clean_pass_does_not_warn_about_retired_transfers(
+    runner: CliRunner,
+) -> None:
+    """Negative twin: nothing retired, nothing said.
+
+    Without it the test above would pass on an implementation that prints the
+    warning unconditionally, which would train the user to ignore it.
+    """
+    fake_result = RefreshResult(applied=True, duration_seconds=2.0)
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh"])
+
+    assert result.exit_code == 0
+    assert "previously accepted transfer" not in result.output
+
+
+def test_refresh_json_discloses_the_match_counts(runner: CliRunner) -> None:
+    """The JSON surface carries the same disclosure as the MCP envelope."""
+    fake_result = RefreshResult(
+        applied=True,
+        duration_seconds=1.0,
+        matches_auto_merged=3,
+        transfers_retired=1,
+    )
+    with (
+        patch("moneybin.services.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh", "--output", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["data"]["matches_auto_merged"] == 3
+    assert payload["data"]["transfers_retired"] == 1
+
+
 def test_refresh_unknown_step_rejected_at_parse_time(runner: CliRunner) -> None:
     """Unknown step name is rejected by Typer before the service runs (exit 2)."""
     result = runner.invoke(app, ["refresh", "--step", "bogus"])

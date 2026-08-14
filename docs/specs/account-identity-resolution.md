@@ -603,19 +603,47 @@ Guard-2 free-text resolution):
   own two legs share a component always goes; it is the transaction-level form
   of the collapse `repoint_account` already retires at account level.
 
-  **The reconciliation belongs to the matcher, not to this trigger.** A merge is
-  one way a component grows past a transfer's legs; an ordinary accept through
-  the review queue is another, and `MatchingService.set_status` writes that
-  decision and returns without transforming, so the corruption would land on
-  whatever refresh came next with nothing left to notice it. It therefore runs
-  inside `TransactionMatcher.run`, between the dedup tiers and Tier 4 — the one
-  point where the components include the edges this run just wrote *and* the
-  transfer tier has not yet built its exclusion set. Placing it there settles
-  three things at once: every trigger that reaches the match step reconciles,
-  a leg the reversal frees is a Tier 4 candidate in that same run rather than
-  the next one, and the reversal precedes `transform`, so the corrupt
-  `bridge_transfers` is never built rather than rebuilt correctly one refresh
-  later. `refresh` reports the count on `RefreshResult.transfers_retired`.
+  **The reconciliation belongs to no single trigger.** A merge is one way a
+  component grows past a transfer's legs; accepting a queued duplicate through
+  the review queue is another, and a bulk `--confirm-all` is a third. They share
+  no chokepoint, so the rule lives in
+  `moneybin/matching/reconciliation.py::retire_transfers_invalidated_by_dedup`
+  and each calls it:
+
+  | Trigger | Caller | Where it runs |
+  |---|---|---|
+  | Matcher pass (auto-merge, post-merge re-match, any `refresh`) | `TransactionMatcher.run` | Between the dedup tiers and Tier 4 |
+  | Review-queue accept (`reviews decide`, `transactions_matches_set`) | `MatchingService.set_status` | Inside the accept's own transaction |
+  | Bulk accept (`review --confirm-all`) | `MatchingService.accept_all_pending` | Inside the batch transaction |
+
+  The matcher's position is the load-bearing one: it is the only point where the
+  components already include the edges that run just wrote *and* Tier 4 has not
+  yet built its exclusion set, so a leg the reversal frees is a transfer
+  candidate in that same run rather than the next one — and the reversal
+  precedes `transform`, so a corrupt `bridge_transfers` is never built rather
+  than rebuilt correctly one refresh later.
+
+  The two accept paths need their own call because they re-derive nothing: both
+  write the decision and return. **That is not a deferral.**
+  `prep.int_transactions__matched`, `core.fct_transactions` and
+  `core.bridge_transfers` are all `kind VIEW`, so a component that now holds two
+  accepted transfers' legs double-counts on the next read whether or not a
+  refresh ever follows. Each folds the reversals into the transaction that
+  accepted the duplicate, so the accept and the retirements it forces commit
+  together or not at all.
+
+  `refresh` reports the count on `RefreshResult.transfers_retired`, which
+  `refresh_run` and `moneybin refresh` both disclose alongside
+  `matches_auto_merged`, `matches_pending_review`, `matches_pending_transfers`,
+  and `matching_skipped` — an ordinary refresh reaches the match step, so it can
+  auto-merge or reverse without a merge anywhere in sight.
+
+  Neither accept path is scoped to `match_type = 'dedup'`. Accepting a duplicate
+  is the usual way to collide two transfers' legs, but a *transfer* proposed
+  before the edge that invalidated it survives in the queue — Tier 4 refuses to
+  raise that shape and never revisits what it already raised — so accepting it
+  claims a component another transfer holds. Earliest-decided-first means the
+  standing decision wins and the stale accept is the one reversed.
 
   Components here are built from **accepted dedup edges only**, which is
   narrower than the accepted+pending graph the matcher seeds union-find with

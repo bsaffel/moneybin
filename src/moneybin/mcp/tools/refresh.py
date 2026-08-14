@@ -38,6 +38,16 @@ def refresh_run(
     ``error``. (A first-load missing-view precondition is not a crash and
     leaves matching/categorization fields unset.)
 
+    The match step acts without asking, so the response says what it decided:
+    ``matches_auto_merged`` (duplicates folded above the confidence threshold),
+    ``matches_pending_review`` / ``matches_pending_transfers`` (queued for the
+    user), and ``transfers_retired`` (transfers the user had accepted that a
+    dedup collapse invalidated, reversed — report these and point at
+    ``moneybin audit undo``, since they undo a decision of the user's). Read all
+    four against ``matching_skipped``: when it is true the step could not run and
+    the counts are zero because nothing was examined, so "no duplicates found"
+    is not a claim they support.
+
     Args:
         steps: Subset of ``["gsheet", "match", "transform", "categorize",
             "identity"]``

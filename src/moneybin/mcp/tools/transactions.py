@@ -708,15 +708,24 @@ def transactions_matches_set(
     accepted match via `moneybin transactions matches undo` (no MCP undo tool
     yet). Find ids with transactions_matches_pending.
 
+    `transfers_retired` counts transfers the user had already accepted that this
+    acceptance invalidated and therefore reversed: once one dedup component holds
+    both of their legs they name the same physical transaction, which would
+    double-count it in core.bridge_transfers. Always 0 on a rejection. A non-zero
+    count undoes a decision the user made — report it and point at
+    `moneybin audit undo` rather than treating the accept as clean.
+
     Args:
         match_id: The match decision id (from transactions_matches_pending).
         status: 'accepted' folds the pair via dedup; 'rejected' keeps both and
             prevents re-proposal.
     """
     with get_database(read_only=False) as db:
-        MatchingService(db).set_status(match_id, status=status, actor="mcp")
+        retired = MatchingService(db).set_status(match_id, status=status, actor="mcp")
     return build_envelope(
-        data=MatchSetPayload(match_id=match_id, match_status=status),
+        data=MatchSetPayload(
+            match_id=match_id, match_status=status, transfers_retired=retired
+        ),
         actions=[
             "Use reviews(kind='matches') to review remaining pending matches",
             "Run `moneybin transactions matches undo <match_id>` (CLI) to reverse "

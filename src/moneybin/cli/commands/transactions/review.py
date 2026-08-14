@@ -151,7 +151,11 @@ def transactions_review(
 def _review_matches_noninteractive(
     *, confirm_id: str | None, reject_id: str | None, confirm_all: bool
 ) -> None:
-    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.cli.utils import (
+        RETIRED_BY_THIS_DECISION,
+        handle_cli_errors,
+        warn_transfers_retired,
+    )
     from moneybin.services.matching_service import MatchingService
 
     # --confirm-all bulk-accepts the whole queue; pairing it with a targeted
@@ -173,14 +177,16 @@ def _review_matches_noninteractive(
         with get_database(read_only=False) as db:
             svc = MatchingService(db)
             if confirm_all:
-                n = svc.accept_all_pending(actor="cli")
+                n, retired = svc.accept_all_pending(actor="cli")
                 logger.info(f"✅ Accepted {n} pending match(es)")
+                warn_transfers_retired(retired, cause=RETIRED_BY_THIS_DECISION)
                 return
             # Independent ifs (not elif): `--confirm X --reject Y` targets two
             # different matches in one invocation.
             if confirm_id:
-                svc.set_status(confirm_id, status="accepted", actor="cli")
+                retired = svc.set_status(confirm_id, status="accepted", actor="cli")
                 logger.info(f"✅ Accepted match {confirm_id[:8]}...")
+                warn_transfers_retired(retired, cause=RETIRED_BY_THIS_DECISION)
             if reject_id:
                 svc.set_status(reject_id, status="rejected", actor="cli")
                 logger.info(f"✅ Rejected match {reject_id[:8]}...")

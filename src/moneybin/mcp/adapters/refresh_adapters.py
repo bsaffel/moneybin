@@ -131,6 +131,11 @@ def refresh_envelope(
             matching_error=result.matching_error,
             categorization_error=result.categorization_error,
             identity_errors=list(result.identity_errors),
+            matches_auto_merged=result.matches_auto_merged,
+            matches_pending_review=result.matches_pending_review,
+            matches_pending_transfers=result.matches_pending_transfers,
+            matching_skipped=result.matching_skipped,
+            transfers_retired=result.transfers_retired,
             self_heal_actions=[
                 SelfHealActionRow(
                     recipe_id=r.recipe_id,

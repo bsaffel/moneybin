@@ -27,6 +27,7 @@ from moneybin.matching.persistence import (
     get_pending_matches,
 )
 from moneybin.matching.priority import seed_source_priority
+from moneybin.matching.reconciliation import retire_transfers_invalidated_by_dedup
 from moneybin.tables import MATCH_DECISIONS
 
 if TYPE_CHECKING:
@@ -182,7 +183,7 @@ class MatchingService:
         status: str,
         decided_by: str = "user",
         actor: str = "system",
-    ) -> None:
+    ) -> int:
         """Accept or reject one pending match decision by id (audited via repo).
 
         Validates the transition: only a ``pending`` decision may move to
@@ -191,6 +192,13 @@ class MatchingService:
         carrying ``recovery_actions``. ``decided_by`` is the domain column
         (``user``/``system``); ``actor`` is the audit surface (``cli``/``mcp``,
         default ``"system"``).
+
+        Returns the number of accepted transfers this acceptance invalidated and
+        therefore reversed — see
+        :func:`~moneybin.matching.reconciliation.retire_transfers_invalidated_by_dedup`.
+        Zero on a rejection and on the idempotent no-op: neither collapses
+        anything, so neither can invalidate a transfer. Surfaces are expected to
+        report a non-zero count rather than swallow it.
         """
         if status not in _SETTABLE_STATUSES:
             raise UserError(
@@ -209,6 +217,10 @@ class MatchingService:
 
         # Read-validate-write in one transaction so a concurrent writer can't
         # slip between the guard read and the update (closes the TOCTOU window).
+        # The reconciliation below joins it, so the acceptance and the
+        # retirements it forces commit together or not at all — a crash between
+        # them would otherwise leave exactly the corrupt bridge it prevents.
+        retired = 0
         self._db.begin()
         try:
             current = get_match_decision(self._db, match_id)
@@ -259,11 +271,25 @@ class MatchingService:
                     actor=actor,
                     in_outer_txn=True,
                 )
+                if status == "accepted":
+                    # Not gated on match_type='dedup'. Accepting a dedup edge is
+                    # the common way to collide two transfers' legs, but a
+                    # transfer proposed *before* an edge that invalidated it
+                    # survives in the queue — Tier 4 refuses to raise that shape
+                    # and never revisits the ones it already raised — so
+                    # accepting it claims a component another transfer holds.
+                    retired = retire_transfers_invalidated_by_dedup(
+                        self._db,
+                        decisions=self._match_repo(),
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
             # current_status == status falls through as an idempotent no-op.
             self._db.commit()
         except BaseException:
             self._db.rollback()
             raise
+        return retired
 
     def _compute_component_keys(self) -> dict[tuple[str, str, str], str]:
         """Build a map from (account_id, source_type, stid) to component_key.
@@ -382,18 +408,41 @@ class MatchingService:
 
     def accept_all_pending(
         self, *, match_type: str | None = None, actor: str = "system"
-    ) -> int:
-        """Accept every pending match decision in scope. Returns the count accepted.
+    ) -> tuple[int, int]:
+        """Accept every pending match decision in scope.
 
-        Routes through ``MatchDecisionsRepo.accept_pending`` so each acceptance
-        emits a paired ``app.audit_log`` row (Invariant 10), all inside one
-        transaction (all-or-nothing). ``actor`` is the audit surface
-        (``cli``/``mcp``, default ``"system"``). ``match_type``, when given, is
-        validated here (the repo's filter is parameterized but unguarded) so a
-        bad value raises instead of silently accepting nothing.
+        Returns ``(accepted, transfers_retired)``. Routes through
+        ``MatchDecisionsRepo.accept_pending`` so each acceptance emits a paired
+        ``app.audit_log`` row (Invariant 10), all inside one transaction
+        (all-or-nothing) that the reconciliation joins — a bulk accept is the
+        sharpest way to collide two transfers' legs, since it folds every queued
+        edge at once. ``actor`` is the audit surface (``cli``/``mcp``, default
+        ``"system"``). ``match_type``, when given, is validated here (the repo's
+        filter is parameterized but unguarded) so a bad value raises instead of
+        silently accepting nothing.
         """
         if match_type is not None and match_type not in VALID_MATCH_TYPES:
             raise ValueError(f"Invalid match_type: {match_type!r}")
-        return self._match_repo().accept_pending(
-            match_type=match_type, decided_by="user", actor=actor
-        )
+        repo = self._match_repo()
+        self._db.begin()
+        try:
+            accepted = repo.accept_pending(
+                match_type=match_type,
+                decided_by="user",
+                actor=actor,
+                in_outer_txn=True,
+            )
+            # Skip the scan when the queue was empty: nothing was folded, so
+            # nothing can have been invalidated.
+            retired = (
+                retire_transfers_invalidated_by_dedup(
+                    self._db, decisions=repo, actor=actor, in_outer_txn=True
+                )
+                if accepted
+                else 0
+            )
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        return accepted, retired

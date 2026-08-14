@@ -303,10 +303,18 @@ class MatchesPendingPayload:
 
 @dataclass(frozen=True, slots=True)
 class MatchSetPayload:
-    """Payload for transactions_matches_set — the decision's new state."""
+    """Payload for transactions_matches_set — the decision's new state.
+
+    ``transfers_retired`` counts accepted transfers this acceptance invalidated
+    and therefore reversed: once a dedup component holds both of their legs they
+    name the same physical transaction, which would double-count it in
+    ``core.bridge_transfers``. AGGREGATE (Tier.MEDIUM) — a count, naming no
+    transaction. Always zero on a rejection.
+    """
 
     match_id: Annotated[str, DataClass.RECORD_ID]
     match_status: Annotated[str, DataClass.TXN_TYPE]
+    transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
 
 
 # ---------------------------------------------------------------------------

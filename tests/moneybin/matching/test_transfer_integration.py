@@ -12,6 +12,7 @@ from moneybin.matching.persistence import (
     get_pending_matches,
 )
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+from moneybin.services.matching_service import MatchingService
 
 
 def _setup_tables(db: Database) -> None:
@@ -697,3 +698,167 @@ class TestTransferRetirement:
 
         assert result.transfers_retired == 1
         assert _transfer_statuses(db) == {"tx_self00001": "reversed"}
+
+
+def _seed_two_transfers_one_pending_edge(db: Database, *, edge_status: str) -> None:
+    """Two valid transfers plus the dedup edge that would collide their legs.
+
+    ``tx_keep00001`` and ``tx_drop00001`` are independently valid: their legs sit
+    in four distinct components while the edge is unaccepted. Accepting
+    ``dd_1000000001`` merges ``ofx_p`` with ``csv_c``, at which point both
+    transfers resolve their debit leg to the same physical transaction.
+    """
+    _setup_tables(db)
+    _insert_transfer(
+        db,
+        match_id="tx_keep00001",
+        stid_a="ofx_p",
+        stid_b="ofx_x",
+        account_id="checking",
+        account_id_b="brokerage",
+        decided_at="2026-01-01 00:00:00",
+    )
+    _insert_transfer(
+        db,
+        match_id="tx_drop00001",
+        stid_a="csv_c",
+        stid_b="ofx_y",
+        type_a="csv",
+        account_id="checking",
+        account_id_b="savings",
+        decided_at="2026-02-01 00:00:00",
+    )
+    _insert_dedup(
+        db,
+        match_id="dd_1000000001",
+        stid_a="ofx_p",
+        stid_b="csv_c",
+        account_id="checking",
+        status=edge_status,
+    )
+
+
+class TestRetirementOnDedupAccept:
+    """The reconciliation on the review-queue accept, where no matcher runs.
+
+    ``MatchingService.set_status`` writes the decision and returns; nothing
+    downstream re-derives anything, and nothing needs to. ``core.fct_transactions``
+    and ``core.bridge_transfers`` are ``kind VIEW`` over ``app.match_decisions``,
+    so the collision this reconciliation prevents is live on the next read rather
+    than deferred to the next refresh. Every fixture here leaves the unioned
+    table empty — the accept path is the subject, not the tiers.
+    """
+
+    def test_accepting_a_queued_dedup_retires_the_transfer_it_invalidates(
+        self, db: Database
+    ) -> None:
+        """The queue accept, driven the way ``review --confirm`` drives it.
+
+        The edge starts ``pending`` — an unreviewed proposal collapses nothing,
+        so both transfers are still valid when this test begins. Accepting it is
+        what makes ``tx_drop00001``'s debit leg the same physical transaction as
+        ``tx_keep00001``'s.
+        """
+        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
+
+        retired = MatchingService(db).set_status(
+            "dd_1000000001", status="accepted", actor="cli"
+        )
+
+        assert retired == 1
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_drop00001": "reversed",
+        }
+
+    def test_rejecting_the_queued_dedup_retires_nothing(self, db: Database) -> None:
+        """Negative twin: the same fixture, decided the other way.
+
+        Without it the test above would pass on an implementation that
+        reconciles after *any* decision, which would reverse an accepted
+        transfer on the strength of a duplicate the user explicitly said was
+        not one.
+        """
+        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
+
+        retired = MatchingService(db).set_status(
+            "dd_1000000001", status="rejected", actor="cli"
+        )
+
+        assert retired == 0
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_drop00001": "accepted",
+        }
+
+    def test_accepting_every_queued_match_at_once_retires_what_it_invalidates(
+        self, db: Database
+    ) -> None:
+        """``review --confirm-all`` folds every pending edge in one transaction.
+
+        It routes through ``MatchDecisionsRepo.accept_pending`` rather than
+        ``set_status``, so it is a second entry point to the same corruption and
+        owes the same reconciliation.
+        """
+        _seed_two_transfers_one_pending_edge(db, edge_status="pending")
+
+        accepted, retired = MatchingService(db).accept_all_pending(actor="cli")
+
+        assert accepted == 1
+        assert retired == 1
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_drop00001": "reversed",
+        }
+
+    def test_accepting_a_stale_queued_transfer_refuses_the_claimed_component(
+        self, db: Database
+    ) -> None:
+        """A transfer proposed before the dedup edge that invalidated it.
+
+        Tier 4 refuses to *propose* a transfer over an already-merged component,
+        but a proposal raised earlier survives in the queue and Tier 4 never
+        revisits it. This is why the reconciliation is not scoped to dedup
+        accepts. The newest claimant loses, so the effect is that the stale
+        accept is refused rather than the standing decision undone.
+        """
+        _setup_tables(db)
+        _insert_transfer(
+            db,
+            match_id="tx_keep00001",
+            stid_a="ofx_p",
+            stid_b="ofx_x",
+            account_id="checking",
+            account_id_b="brokerage",
+            decided_at="2026-01-01 00:00:00",
+        )
+        _insert_dedup(
+            db,
+            match_id="dd_1000000001",
+            stid_a="ofx_p",
+            stid_b="csv_c",
+            account_id="checking",
+        )
+        db.execute(
+            """
+            INSERT INTO app.match_decisions (
+                match_id, source_transaction_id_a, source_type_a, source_origin_a,
+                source_transaction_id_b, source_type_b, source_origin_b,
+                account_id, confidence_score, match_signals, match_type,
+                match_tier, account_id_b, match_status, match_reason, decided_by,
+                decided_at
+            ) VALUES ('tx_stale00001', 'csv_c', 'csv', 'bank', 'ofx_y', 'ofx',
+                      'bank', 'checking', 0.95, '{}', 'transfer', '4', 'savings',
+                      'pending', NULL, 'auto', '2026-02-01 00:00:00')
+            """  # noqa: S608 — test input, not user data
+        )
+
+        retired = MatchingService(db).set_status(
+            "tx_stale00001", status="accepted", actor="cli"
+        )
+
+        assert retired == 1
+        assert _transfer_statuses(db) == {
+            "tx_keep00001": "accepted",
+            "tx_stale00001": "reversed",
+        }

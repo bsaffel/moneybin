@@ -17,7 +17,11 @@ import typer
 
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import (
+    RETIRED_BY_MERGE,
+    handle_cli_errors,
+    warn_transfers_retired,
+)
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.accounts import (
@@ -242,17 +246,10 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
                     "  💡 Review possible transfers with 'moneybin reviews' "
                     "(kind: matches)"
                 )
-    if rematch.transfers_retired:
-        # Independent of every branch above: this is a decision the *user* made
-        # being undone, so it must be stated whether or not the pass was
-        # otherwise clean, and it must name the way back.
-        logger.warning(
-            f"⚠️  Retired {rematch.transfers_retired} previously accepted "
-            "transfer(s) the merge invalidated — their two sides turned out "
-            "to be one transaction, or their two accounts one account; "
-            "inspect with 'moneybin audit' and restore with 'moneybin audit "
-            "undo' if that was wrong"
-        )
+    # Independent of every branch above: this is a decision the *user* made being
+    # undone, so it must be stated whether or not the pass was otherwise clean,
+    # and it must name the way back.
+    warn_transfers_retired(rematch.transfers_retired, cause=RETIRED_BY_MERGE)
     if rematch.error is not None:
         # The counts above are true — match decisions were written — but the
         # SQLMesh apply that follows them is what rebuilds core.dim_accounts,
