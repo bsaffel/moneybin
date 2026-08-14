@@ -251,6 +251,47 @@ def test_live_catalog_lists_a_queryable_table_the_curated_doc_omits(
     assert live["core.fct_transactions"]["curated"] is True
 
 
+def test_live_catalog_never_contradicts_the_curated_doc(
+    schema_catalog_db: Database,
+) -> None:
+    """The `curated` flag must agree with what `build_schema_doc` actually curates.
+
+    `build_schema_doc` curates two families that can never be `TableRef`s: the
+    `raw.gsheet_<alias>` / `raw.pdf_<alias>` seed views, whose alias is chosen at
+    connection time. Deriving the flag from `INTERFACE_TABLES` alone reports
+    `curated: false` for a relation `sql_schema(table='raw.gsheet_<alias>')`
+    answers with a full entry — and the listing's own hint then routes the agent
+    to a bare `DESCRIBE` instead of the richer entry that already exists.
+
+    The seed view is the fixture that makes the predicate non-vacuous; the
+    assertion is the rule, so a third runtime-curated family cannot reintroduce
+    the same contradiction.
+    """
+    schema_catalog_db.execute(
+        "CREATE OR REPLACE VIEW raw.gsheet_probe AS SELECT 1 AS id"
+    )
+    schema_catalog_db.execute(
+        """
+        INSERT INTO app.gsheet_connections (
+            connection_id, spreadsheet_id, sheet_gid, sheet_name, workbook_name,
+            adapter, column_mapping, header_signature, status, alias
+        ) VALUES ('conn-probe', 'sheet-1', 0, 'Sheet1', 'Workbook', 'seed',
+                  '{}', '[]', 'healthy', 'probe')
+        """
+    )
+
+    curated_doc = {t["name"] for t in build_schema_doc()["tables"]}
+    assert "raw.gsheet_probe" in curated_doc, "fixture must reach the predicate"
+
+    live = {r["name"]: r for r in build_live_catalog()}
+    assert live["raw.gsheet_probe"]["curated"] is True
+
+    contradictions = {
+        name for name, row in live.items() if name in curated_doc and not row["curated"]
+    }
+    assert not contradictions
+
+
 def test_live_catalog_distinguishes_a_view_from_a_table(
     schema_catalog_db: Database,
 ) -> None:

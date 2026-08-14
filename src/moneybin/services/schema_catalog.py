@@ -785,18 +785,25 @@ def build_schema_doc() -> dict[str, Any]:
 def build_live_catalog(schema: str | None = None) -> list[dict[str, Any]]:
     """Return every queryable relation as ``{name, schema, kind, curated}``.
 
-    The curated document (`build_schema_doc`) covers only the 35 `TableRef`s
-    tagged ``audience="interface"``, so a relation that `sql_query` reads
-    happily — every `raw` and `prep` model, and the internal `app` tables — has
-    no entry anywhere. This listing closes that gap without widening the
-    curated surface: it carries names and kinds, never columns or data.
+    The curated document (`build_schema_doc`) covers the `TableRef`s tagged
+    ``audience="interface"`` plus the runtime `raw.gsheet_<alias>` /
+    `raw.pdf_<alias>` seed views, so most relations `sql_query` reads happily —
+    every other `raw` and `prep` model, and the internal `app` tables — have no
+    entry anywhere. This listing closes that gap without widening the curated
+    surface: it carries names and kinds, never columns or data.
+
+    ``curated`` is read off that document rather than off ``INTERFACE_TABLES``,
+    because the seed views are curated at runtime and can never be `TableRef`s
+    — their alias is chosen at connection time. Deriving it from the static set
+    would flag a relation uncurated here while `sql_schema(table=...)` answers
+    it with a full entry, and send the agent to a bare `DESCRIBE` instead.
 
     Bounded by ``ALLOWED_QUERY_SCHEMAS`` so listing can never exceed querying.
     That makes it a strictly narrower disclosure than the `SHOW ALL TABLES`
     the catalog footer recommends, which reaches `meta` and `seeds` because it
     names no table for the query gate to resolve.
     """
-    curated = {t.full_name for t in INTERFACE_TABLES}
+    curated = {t["name"] for t in build_schema_doc()["tables"]}
     schemas = sorted(ALLOWED_QUERY_SCHEMAS)
     if schema is not None:
         if schema not in ALLOWED_QUERY_SCHEMAS:
