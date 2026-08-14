@@ -482,6 +482,28 @@ class CurrencyService:
                 f"Record the {on.isoformat()} rate yourself with "
                 "'moneybin fx set'.",
             )
+        if observation.rate_date > on:
+            # `RateObservation` documents the hop as resolving *back* to the last
+            # published day, so a later one is not a rate that exists yet. The
+            # immediate error is pricing `on` with another day's number; the
+            # lasting one is that `_store` files rows under `rate_date`, so the
+            # row lands on a future date and `_stored_rate` then answers that day
+            # from cache with a rate the provider never published for it — ahead
+            # of the real publication, on a table only an override can displace.
+            #
+            # Here rather than in the adapter because the bound is the
+            # Protocol's, not one provider's response shape: `on` and the write
+            # that gets corrupted both live at this layer, so one guard covers
+            # every adapter instead of each having to remember its own.
+            FX_RATE_RESOLUTION_TOTAL.labels(outcome="unavailable").inc()
+            raise RateUnavailableError(
+                f"No stored {base}/{quote} rate for the requested date, and the "
+                "rate provider answered for a later day.",
+                code=error_codes.FX_RATE_UNAVAILABLE,
+                hint="The provider priced a day after the one asked about. "
+                f"Record the {on.isoformat()} rate yourself with "
+                "'moneybin fx set'.",
+            )
         return observation
 
     def _absence(self, base: str, quote: str, on: date) -> RateUnavailableError:

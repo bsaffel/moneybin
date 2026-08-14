@@ -283,6 +283,37 @@ def test_an_override_wins_the_day_a_holiday_fetch_resolves_back_to(
     assert resolved.rate_date == _MON
 
 
+def test_a_provider_date_after_the_requested_day_is_not_a_rate(
+    db: Database,
+) -> None:
+    """Resolution runs backwards only, so a later day is a broken answer.
+
+    ``RateObservation`` documents the hop as "a weekend or holiday resolves back
+    to the last published day" — there is no forward case, because a reference
+    rate for a day that has not been published yet does not exist. A proxy, a
+    cached answer, or a provider bug can still send one.
+
+    Refusing it matters twice over, and the second is the durable half. The
+    immediate error is pricing ``on`` with a later day's rate. The lasting one is
+    that ``resolve_rate`` stores what it fetched under ``observation.rate_date``,
+    so the row lands on a *future* date — and ``_stored_rate`` reads by that
+    column, so when the day arrives the cache answers it with a rate the
+    provider never published for it, ahead of the real publication. The table is
+    append-only, so only an override can displace it afterwards.
+    """
+    adapter = _StubAdapter(
+        RateObservation("USD", "EUR", _TUE, Decimal("0.92"), "frankfurter")
+    )
+    service = CurrencyService(db, adapter=adapter, actor="test")
+
+    with pytest.raises(RateUnavailableError) as caught:
+        service.resolve_rate("USD", "EUR", _MON)
+
+    assert caught.value.code == error_codes.FX_RATE_UNAVAILABLE
+    row = db.execute("SELECT COUNT(*) FROM raw.exchange_rates").fetchone()
+    assert row is not None and row[0] == 0, "a forward-dated rate is not cached"
+
+
 def test_a_fetched_rate_is_reported_at_the_precision_it_is_stored_at(
     db: Database,
 ) -> None:
