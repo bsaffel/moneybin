@@ -8,6 +8,7 @@ with the FastMCP server is covered by tests/mcp/test_visibility.py.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastmcp import Client, FastMCP
@@ -17,6 +18,7 @@ from moneybin.mcp.surface import ADMITTED_OUTPUT_SCHEMA_NAMES, STANDARD_TOOL_COU
 from moneybin.mcp.tools.accounts import accounts, register_accounts_tools
 from moneybin.mcp.tools.reports import register_reports_tools
 from moneybin.mcp.tools.sql import register_sql_tools, sql_query, sql_schema
+from moneybin.services.schema_catalog import build_schema_doc
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -273,6 +275,30 @@ class TestToolRegistration:
         expected = len(payload["data"]["tables"])
         assert payload["summary"]["returned_count"] == expected
         assert payload["summary"]["total_count"] == expected
+
+    @pytest.mark.unit
+    async def test_sql_schema_listing_builds_no_curated_document_of_its_own(
+        self, mcp_db: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The listing branch reads nothing from the curated doc, so it builds none.
+
+        `build_live_catalog` builds its own copy to derive `curated`, so a
+        `'<schema>.*'` call that also builds one at the top of the dispatch pays
+        for two full catalog builds to answer a question that needs neither.
+        """
+        builds = 0
+
+        def counting_build_schema_doc() -> dict[str, Any]:
+            nonlocal builds
+            builds += 1
+            return build_schema_doc()
+
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.sql.build_schema_doc", counting_build_schema_doc
+        )
+        payload = (await sql_schema(table="raw.*")).to_dict()
+        assert payload["status"] != "error"
+        assert builds == 0
 
     @pytest.mark.unit
     async def test_sql_schema_exact_name_is_case_insensitive(

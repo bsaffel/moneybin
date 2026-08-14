@@ -91,6 +91,12 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             relations as names and kinds; ``'*'`` returns the full schema
             document.
     """
+    # Dispatched before the curated doc is built, not after: the listing reads
+    # nothing from it, and `build_live_catalog` builds its own copy to derive
+    # `curated`. Below this line, one wildcard call pays for two catalogs.
+    if table is not None and table.endswith(".*"):
+        return _live_schema_listing(table.removesuffix(".*"))
+
     doc = build_schema_doc()
     tables: list[dict[str, Any]] = doc["tables"]
 
@@ -138,9 +144,6 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             classes_returned=["aggregate"],
             returned_count=len(tables),
         )
-
-    if table.endswith(".*"):
-        return _live_schema_listing(table.removesuffix(".*"))
 
     matches = [t for t in tables if t["name"].lower() == table.lower()]
     if not matches:
