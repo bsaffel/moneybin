@@ -91,7 +91,19 @@ def test_routing_number_scopes_complete_identifier_when_issuer_is_unknown() -> N
         identifier_is_complete=True,
     )
 
-    assert identity.scoped_full_number == "routing-021000021:001234567890"
+    assert identity.scoped_full_number == "021000021:001234567890"
+
+
+def test_routing_number_uses_ofx_scope_even_when_issuer_is_known() -> None:
+    identity = derive_pdf_account_identity(
+        issuer="Chase Bank",
+        routing_number="021000021",
+        identifier="001234567890",
+        document_sha256="3" * 64,
+        identifier_is_complete=True,
+    )
+
+    assert identity.scoped_full_number == "021000021:001234567890"
 
 
 def test_checksum_invalid_routing_number_cannot_create_strong_scope() -> None:

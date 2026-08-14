@@ -1497,10 +1497,10 @@ def _pdf_source_account(
     ratifies is exactly the one bound.
 
     Every PDF gets a document-content ``source_native`` key. A complete captured
-    identifier separately becomes an issuer-scoped ``full_number`` strong ref
-    inside the encrypted database; a masked or last-four-only value remains weak
-    evidence. This prevents two same-issuer/same-last-four accounts from sharing
-    a native key while preserving exact-file re-import idempotency.
+    identifier separately becomes a routing- or issuer-scoped ``full_number``
+    strong ref inside the encrypted database; a masked or last-four-only value
+    remains weak evidence. This prevents two same-issuer/same-last-four accounts
+    from sharing a native key while preserving exact-file re-import idempotency.
 
     A statement with no readable account number has no account identity of its
     own. Its document key still makes the file idempotent, while

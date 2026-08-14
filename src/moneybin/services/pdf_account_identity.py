@@ -70,10 +70,11 @@ def derive_pdf_account_identity(
         any(character in ACCOUNT_ID_MASK_CHARACTERS for character in stripped)
         or len(normalized) <= 4
     )
-    strong_scope: str | None = issuer_slug if issuer_slug != "unknown" else None
-    if strong_scope is None and routing_number:
-        if _is_valid_aba_routing_number(routing_number):
-            strong_scope = f"routing-{routing_number}"
+    strong_scope: str | None = None
+    if routing_number and _is_valid_aba_routing_number(routing_number):
+        strong_scope = routing_number
+    elif issuer_slug != "unknown":
+        strong_scope = issuer_slug
     scoped_full_number = (
         f"{strong_scope}:{normalized}"
         if identifier_is_complete and not is_partial and strong_scope
