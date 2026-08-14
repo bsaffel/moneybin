@@ -170,6 +170,9 @@ def fx_set(
     The rate is stored to 8 decimal places and must be positive: a zero rate
     would convert every balance in that currency to nothing, and since this
     outranks the provider nothing downstream would contradict it.
+
+    FROM and TO must differ. A currency prices itself at exactly 1, and 'fx
+    rate' answers that without reading this table at all.
     """
     parsed_date = parse_cli_date(rate_date, "RATE_DATE")
     parsed_rate = parse_cli_decimal(rate, "RATE")

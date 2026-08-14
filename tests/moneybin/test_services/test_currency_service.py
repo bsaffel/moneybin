@@ -417,6 +417,27 @@ def test_set_override_refuses_a_rate_the_column_would_silently_round(
     assert caught.value.code == error_codes.FX_OVERRIDE_RATE_INVALID
 
 
+def test_set_override_refuses_a_pair_that_prices_itself(db: Database) -> None:
+    """An identity pair answers 1 before any override is read.
+
+    Accepting the write would store an audited correction that ``list_rates``
+    displays and ``resolve_rate`` can never honour — the succeeds-and-joins-
+    nothing failure ``_require_currency`` refuses a malformed code for, reached
+    through a pair that is spelled perfectly well.
+
+    The two codes are spelled differently on purpose: the rule is about the
+    canonical pair, so a check placed above canonicalization would let ``usd``
+    through against ``USD``.
+    """
+    service = CurrencyService(db, adapter=_StubAdapter(None), actor="test")
+
+    with pytest.raises(UserError) as caught:
+        service.set_override("USD", " usd ", _MON, Decimal(2), note=None)
+
+    assert caught.value.code == error_codes.FX_OVERRIDE_PAIR_INVALID
+    assert service.list_rates("USD", "USD") == []
+
+
 @pytest.mark.parametrize("code", ["US", "USDX"])
 def test_set_override_refuses_a_malformed_currency_code(
     db: Database, code: str

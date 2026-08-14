@@ -268,6 +268,18 @@ class CurrencyService:
         """
         base = self._require_currency(from_currency)
         quote = self._require_currency(to_currency)
+        if base == quote:
+            # `resolve_rate` answers an identity pair from `IDENTITY_SOURCE`
+            # without reading this table, so a row stored here would be listed
+            # by `list_rates` and honoured by nothing. Refusing the write is the
+            # only place that gap closes: the read cannot consult the override
+            # instead, because a correction to a pair that is 1 by definition
+            # would silently restate every balance already in that currency.
+            raise UserError(
+                f"{base} prices itself at exactly 1, so there is no "
+                "correction to record for it.",
+                code=error_codes.FX_OVERRIDE_PAIR_INVALID,
+            )
         _require_storable(rate)
         if note is not None:
             # DuckDB VARCHAR is unbounded, so the bound has to be the

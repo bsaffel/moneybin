@@ -286,6 +286,7 @@ ENTITY_REFERENCE_NOT_FOUND = "entity_reference_not_found"
 
 FX_CURRENCY_INVALID = "fx_currency_invalid"
 FX_CURRENCY_UNSUPPORTED = "fx_currency_unsupported"
+FX_OVERRIDE_PAIR_INVALID = "fx_override_pair_invalid"
 FX_OVERRIDE_RATE_INVALID = "fx_override_rate_invalid"
 FX_RATE_UNAVAILABLE = "fx_rate_unavailable"
 
