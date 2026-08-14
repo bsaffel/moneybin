@@ -440,6 +440,51 @@ def test_an_identity_pair_needs_neither_storage_nor_network(db: Database) -> Non
     assert row is not None and row[0] == 0
 
 
+@pytest.mark.parametrize(
+    "rate",
+    [
+        pytest.param(Decimal("0"), id="zero"),
+        pytest.param(Decimal("-0.87138"), id="negative"),
+        pytest.param(Decimal("0.000000001"), id="rounds-to-zero-at-eight-places"),
+        pytest.param(Decimal("1E+30"), id="wider-than-the-column"),
+        pytest.param(Decimal("NaN"), id="not-a-number"),
+    ],
+)
+def test_a_fetched_rate_the_column_cannot_hold_fails_as_a_provider_would(
+    db: Database, rate: Decimal
+) -> None:
+    """A provider fault must arrive typed, not as whatever DuckDB raised.
+
+    ``set_override`` refuses these values outright; this is the fetch-path half
+    of that rule, and ``PriceService.pull`` hardens the same class for the same
+    reason. Without it the value reaches ``_store``: a rate that quantizes to
+    exactly 0 trips ``CHECK (rate > 0)`` and an oversized one fails the DECIMAL
+    conversion, both as a ``duckdb`` error that ``classify_user_error`` does not
+    recognise — so a corrupt response surfaces as a traceback instead of the
+    ``RateUnavailableError`` every other unusable answer produces.
+
+    ``NaN`` pins the ordering rather than a fifth failure: comparing it with
+    ``>`` raises ``InvalidOperation``, so a magnitude test placed above the
+    finite test could never see one.
+    """
+    adapter = _StubAdapter(
+        RateObservation(
+            from_currency="USD",
+            to_currency="EUR",
+            rate_date=_MON,
+            rate=rate,
+            source_type="frankfurter",
+        )
+    )
+
+    with pytest.raises(RateUnavailableError) as caught:
+        CurrencyService(db, adapter=adapter).resolve_rate("USD", "EUR", _MON)
+
+    assert caught.value.code == error_codes.FX_RATE_UNAVAILABLE
+    row = db.execute("SELECT COUNT(*) FROM raw.exchange_rates").fetchone()
+    assert row is not None and row[0] == 0, "an unstorable rate is not half-stored"
+
+
 def test_convert_returns_cents_and_the_rate_behind_them(db: Database) -> None:
     """Requirement 10: a converted figure is never shown without its rate."""
     service = CurrencyService(db, adapter=_StubAdapter(None))

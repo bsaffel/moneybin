@@ -275,6 +275,60 @@ def test_a_malformed_200_is_a_feed_failure_not_an_absent_series(
         FrankfurterRateAdapter().fetch("USD", "EUR", _FRIDAY)
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            {
+                "amount": 1.0,
+                "base": "GBP",
+                "date": "2026-03-13",
+                "rates": {"EUR": 1.17},
+            },
+            id="priced-from-a-different-base",
+        ),
+        pytest.param(
+            {
+                "amount": 100.0,
+                "base": "USD",
+                "date": "2026-03-13",
+                "rates": {"EUR": 87.138},
+            },
+            id="priced-for-a-hundred-units",
+        ),
+        pytest.param(
+            {
+                "amount": 1.0,
+                "base": 840,
+                "date": "2026-03-13",
+                "rates": {"EUR": 0.87138},
+            },
+            id="base-is-not-a-currency-code",
+        ),
+    ],
+)
+@respx.mock
+def test_a_200_answering_another_question_is_a_feed_failure(body: object) -> None:
+    """The response says which question it answered, so the adapter must read it.
+
+    Every other malformed shape is unreadable, so it announces itself. This one
+    parses cleanly and is wrong only in what it is *about* — a rate the provider
+    computed from GBP, or over 100 units, relabelled as one USD buys. Nothing
+    downstream can notice: `_store` keeps it, `raw.exchange_rates` is
+    append-only, and every later conversion for that date answers from the
+    cache, so one unchecked response becomes a wrong number presented as
+    authoritative for as long as the row lives.
+
+    ``amount`` earns a case beside ``base`` because the provider takes it as a
+    request parameter. MoneyBin never sends one, but a proxy or a redirect that
+    does turns 0.87 into 87 with no other field disagreeing.
+    """
+    respx.get(_url(_FRIDAY)).mock(return_value=httpx.Response(200, json=body))
+
+    with pytest.raises(RateFeedAPIError):
+        FrankfurterRateAdapter().fetch("USD", "EUR", _FRIDAY)
+
+
 @respx.mock
 def test_an_identity_pair_never_reaches_the_provider() -> None:
     """Recorded live: `?base=USD&symbols=USD` answers 422.

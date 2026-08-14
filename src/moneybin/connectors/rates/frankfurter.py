@@ -124,6 +124,30 @@ class FrankfurterRateAdapter:
         if not isinstance(payload, dict):
             raise RateFeedAPIError("Exchange rate feed returned a non-object body")
         fields: dict[str, object] = payload
+
+        # A body that parses cleanly can still be about a different question.
+        # Both `base` and `amount` are request parameters the provider echoes
+        # back, so a proxy, a redirect, or a cached answer can return a
+        # well-formed rate for a pair or a unit count MoneyBin never asked for.
+        # Nothing downstream can notice: the rate is labelled with the requested
+        # pair, `raw.exchange_rates` is append-only, and every later conversion
+        # for that date reads the cache. Absent is trusted and present-but-wrong
+        # is not, the same split `_as_date` makes — a provider that omits the
+        # field cannot be checked, and refusing it would reject a shape the
+        # Protocol allows.
+        echoed = fields.get("base")
+        if echoed is not None and (
+            not isinstance(echoed, str) or echoed.upper() != base
+        ):
+            raise RateFeedAPIError(
+                "Exchange rate feed answered for a different base currency"
+            )
+        amount = fields.get("amount")
+        if amount is not None and _as_exact_decimal(amount) != 1:
+            raise RateFeedAPIError(
+                "Exchange rate feed priced something other than one unit"
+            )
+
         rates = fields.get("rates")
         if not isinstance(rates, dict):
             raise RateFeedAPIError(

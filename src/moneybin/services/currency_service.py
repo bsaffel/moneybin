@@ -464,6 +464,24 @@ class CurrencyService:
 
         if observation is None:
             raise self._absence(base, quote, on)
+        if not _is_storable_after_rounding(observation.rate):
+            # `resolve_rate` stores this observation outside the `FeedError`
+            # handling above, so an unstorable rate reaches DuckDB: one that
+            # quantizes to zero trips `CHECK (rate > 0)`, an oversized one
+            # overflows `_as_stored`, and a NaN panics the frame builder in
+            # native code. None of those is something `classify_user_error`
+            # recognises, so a corrupt response would surface as a traceback
+            # rather than the typed failure every other unusable answer gets.
+            # `PriceService.pull` guards the same class for the same reason.
+            FX_RATE_RESOLUTION_TOTAL.labels(outcome="unavailable").inc()
+            raise RateUnavailableError(
+                f"No stored {base}/{quote} rate for the requested date, and the "
+                "rate provider did not return a usable one.",
+                code=error_codes.FX_RATE_UNAVAILABLE,
+                hint="The provider answered with a rate MoneyBin cannot store. "
+                f"Record the {on.isoformat()} rate yourself with "
+                "'moneybin fx set'.",
+            )
         return observation
 
     def _absence(self, base: str, quote: str, on: date) -> RateUnavailableError:
@@ -574,6 +592,27 @@ def _require_storable(rate: Decimal) -> None:
             "different number than the one reported back. Round it first.",
             code=error_codes.FX_OVERRIDE_RATE_INVALID,
         )
+
+
+def _is_storable_after_rounding(rate: Decimal) -> bool:
+    """Whether ``DECIMAL(18,8)`` can hold this rate at all, once quantized.
+
+    Deliberately not ``_require_storable``, which the override path uses. That
+    one also refuses excess precision, because a user who typed nine places has
+    to be told the ninth will not be kept. A provider is *allowed* more places
+    than the column holds — quantizing them is what ``_as_stored`` exists for —
+    so the only question here is whether anything survives the rounding.
+
+    The order is ``_require_storable``'s, for its reasons: a ``NaN`` raises
+    ``InvalidOperation`` when compared, so it is excluded first, and a value
+    past the magnitude bound overflows the decimal context when quantized, so
+    magnitude runs before the rounded value is computed.
+    """
+    if not rate.is_finite():
+        return False
+    if abs(rate) > MAX_STORED_RATE:
+        return False
+    return _as_stored(rate) > 0
 
 
 def _as_stored(rate: Decimal) -> Decimal:
