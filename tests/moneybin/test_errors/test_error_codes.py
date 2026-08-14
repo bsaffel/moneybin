@@ -31,6 +31,7 @@ VALID_PREFIXES = (
     # no code of its own; price_feed_ and its siblings override it.
     "feed_",
     "price_feed_",
+    "rate_feed_",
     "sql_",
     "account_",
     "entity_",

@@ -225,6 +225,17 @@ PRICE_FEED_ERROR = "price_feed_error"
 
 
 # ---------------------------------------------------------------------------
+# Exchange-rate feeds — currency reference rates (Frankfurter / ECB)
+# ---------------------------------------------------------------------------
+# Its own code rather than price_feed_: the two fail independently, and a user
+# whose net worth will not convert needs to know it is the rate feed that is
+# down, not the market-data one. Like price_feed_, no credential and no PII —
+# only a currency pair and a date leave the machine.
+
+RATE_FEED_ERROR = "rate_feed_error"
+
+
+# ---------------------------------------------------------------------------
 # SQL — ad-hoc read-only query surface (sql_query / sql_schema)
 # ---------------------------------------------------------------------------
 
